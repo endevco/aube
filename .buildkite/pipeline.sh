@@ -65,7 +65,7 @@ steps:
           # hk thinks stderr is interactive and emits ~10k spinner-frame lines
           # that Buildkite captures as log rows after stripping the cursor
           # escapes. Kept at the pipeline layer (not in mise.toml) so local
-          # $(mise run lint) keeps its animated UI.
+          # runs of mise run lint keep their animated UI.
           - "mise run lint 2>&1 | cat"
           - "mise run render"
           - "mise run docs:build"
