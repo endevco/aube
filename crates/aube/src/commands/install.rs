@@ -3378,6 +3378,44 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &supported_architectures,
                 &ignored_optional_deps,
             );
+            // npm/yarn(v1)/bun lockfiles serialize a flat, pre-hoisted
+            // tree with no peer context — they rely on Node's upward
+            // `node_modules/` walk to find peer deps, which the
+            // isolated virtual store breaks. Fresh resolves flow
+            // through `Resolver::resolve_workspace`, which runs
+            // `hoist_auto_installed_peers` + `apply_peer_contexts` on
+            // its way out; the lockfile path has to replicate those
+            // two steps explicitly or peer-dependent packages
+            // (e.g. `@tanstack/devtools-vite` peering on `vite`)
+            // install with no sibling peer link and die at runtime
+            // with `Cannot find package`.
+            //
+            // `aube-lock.yaml` / `pnpm-lock.yaml` already carry
+            // peer-context suffixes and peer edges merged into
+            // `dependencies`, so we skip them — re-running the pass
+            // would double-suffix every key.
+            if matches!(
+                kind,
+                aube_lockfile::LockfileKind::Npm | aube_lockfile::LockfileKind::NpmShrinkwrap
+            ) {
+                let peer_pass_start = std::time::Instant::now();
+                let pkgs_before = graph.packages.len();
+                graph = aube_resolver::hoist_auto_installed_peers(graph);
+                let peer_options = aube_resolver::PeerContextOptions {
+                    dedupe_peer_dependents: resolve_dedupe_peer_dependents(&settings_ctx),
+                    dedupe_peers: resolve_dedupe_peers(&settings_ctx),
+                    resolve_from_workspace_root: resolve_peers_from_workspace_root(&settings_ctx),
+                    peers_suffix_max_length: resolve_peers_suffix_max_length(&settings_ctx),
+                };
+                graph = aube_resolver::apply_peer_contexts(graph, &peer_options);
+                tracing::debug!(
+                    "peer-context pass (lockfile={:?}) {} → {} packages in {:.1?}",
+                    kind,
+                    pkgs_before,
+                    graph.packages.len(),
+                    peer_pass_start.elapsed()
+                );
+            }
             let source_label = match kind {
                 aube_lockfile::LockfileKind::Aube => "Lockfile",
                 aube_lockfile::LockfileKind::Pnpm => "pnpm-lock.yaml",
