@@ -190,8 +190,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
       # When release-plz opens or updates a release PR, regenerate the
-      # usage-spec/CLI docs to match the new version, rewrite the PR
-      # body with communique-generated release notes, and squash.
+      # usage-spec/CLI docs to match the new version and squash.
+      # Communique-generated narrative notes are deliberately NOT run
+      # here — they only run on the real release in `enhance-release`
+      # above, so the PR keeps release-plz's raw git-cliff body.
       # release-plz sets `prs_created=true` on both initial create and
       # subsequent updates (it's "there are PRs this run"), so this
       # condition fires on every run that touches the release PR.
@@ -200,7 +202,6 @@ jobs:
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Route JSON through env vars — never inline `${{ ... }}`
           # into shell because single-quotes in the output would break
           # out of the `echo '...'` string boundary.
@@ -227,24 +228,15 @@ jobs:
           # the new version.
           mise run render ::: lint-fix
 
-          cargo install communique --locked
           VERSION=$(cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | select(.name == "aube") | .version')
           TAG="v${VERSION}"
 
-          FULL_NOTES=$(communique generate "$TAG" --changelog || true)
-
-          if [ -n "$FULL_NOTES" ]; then
-            PR_TITLE=$(echo "$FULL_NOTES" | head -1 | sed 's/^# //')
-            PR_BODY=$(echo "$FULL_NOTES" | tail -n +3)
-            gh pr edit "$PR_NUMBER" --title "$PR_TITLE" --body "$PR_BODY"
-          fi
-
-          # Squash any rendered-doc / communique-changelog changes
-          # onto the release-plz commit so the PR stays one commit.
-          # Use `-A` on the paths the `render` task writes to, so NEW
-          # files (e.g. docs/cli/<new-subcommand>.md after `docs/cli`
-          # is regenerated from scratch) are picked up — `git add -u`
+          # Squash any rendered-doc changes onto the release-plz commit
+          # so the PR stays one commit. Use `-A` on the paths the
+          # `render` task writes to, so NEW files (e.g.
+          # docs/cli/<new-subcommand>.md after `docs/cli` is
+          # regenerated from scratch) are picked up — `git add -u`
           # would silently omit them.
           git add -A aube.usage.kdl docs CHANGELOG.md Cargo.toml Cargo.lock crates
           MERGE_BASE=$(git merge-base HEAD origin/main)
