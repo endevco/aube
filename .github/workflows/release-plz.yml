@@ -11,7 +11,7 @@ permissions:
 jobs:
   # On every push to main: run `release-plz release`. If the current
   # workspace version has no tag yet (because the release PR was just
-  # merged), this tags `aube-cli` as `v<version>`, opens a draft GitHub
+  # merged), this tags `aube` as `v<version>`, opens a draft GitHub
   # release, and publishes every workspace crate to crates.io in
   # dependency order. Otherwise it's a no-op.
   release-plz-release:
@@ -41,20 +41,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       # The `releases` output is an array of every crate that was
-      # published, in dependency order. Since aube-cli depends on all
+      # published, in dependency order. Since aube depends on all
       # 9 other internal crates, it is the LAST entry — and only it
       # has `git_tag_enable = true` in release-plz.toml, so only its
       # `.tag` is meaningful for downstream jobs. Pull that tag out by
       # package name rather than by position.
-      - name: Extract aube-cli tag
+      - name: Extract aube tag
         id: tag
         if: steps.release-plz.outputs.releases_created == 'true'
         env:
           RELEASES_JSON: ${{ steps.release-plz.outputs.releases }}
         run: |
-          TAG=$(echo "$RELEASES_JSON" | jq -r '.[] | select(.package_name == "aube-cli") | .tag')
+          TAG=$(echo "$RELEASES_JSON" | jq -r '.[] | select(.package_name == "aube") | .tag')
           if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "::error::aube-cli was not in the releases output"
+            echo "::error::aube was not in the releases output"
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -63,7 +63,7 @@ jobs:
         run: git fetch --tags
       # release-plz creates the draft release before pushing the tag,
       # so the release API briefly has `tag_name: "untagged-<sha>"`.
-      # Patch the single aube-cli draft back to its real tag once it
+      # Patch the single aube draft back to its real tag once it
       # lands. (The other 9 crates have `git_release_enable = false`
       # and don't create drafts.)
       - name: Fix draft release tag
@@ -228,7 +228,7 @@ jobs:
 
           cargo install communique --locked
           VERSION=$(cargo metadata --format-version=1 --no-deps \
-            | jq -r '.packages[] | select(.name == "aube-cli") | .version')
+            | jq -r '.packages[] | select(.name == "aube") | .version')
           TAG="v${VERSION}"
 
           FULL_NOTES=$(communique generate "$TAG" --changelog || true)

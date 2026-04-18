@@ -6,7 +6,7 @@
 # proxy JSON and would otherwise drown out every source diff).
 test/registry/storage/** linguist-generated=true
 
-# Golden file consumed by `crates/aube-cli/src/main.rs`'s
+# Golden file consumed by `crates/aube/src/main.rs`'s
 # `usage_kdl_matches_committed_golden_file` test via `include_str!`.
 # Force LF regardless of the checkout platform's `core.autocrlf`
 # setting — Windows runners default to `autocrlf=true`, which would

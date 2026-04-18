@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Re-export of [`registry_uri_key_pub`] under the name used elsewhere
-/// in aube-cli. `login` and `logout` call this to build the
+/// in aube. `login` and `logout` call this to build the
 /// `//host[:port]/path/` prefix that keys `.npmrc` auth entries; the
 /// canonical implementation lives in `aube-registry` so both the
 /// registry client and the npmrc editor agree on the shape of the key.

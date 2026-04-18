@@ -23,7 +23,7 @@ use std::process::Command;
 
 /// The effective `--filter` / `--filter-prod` input for a single command
 /// invocation. Commands receive this after `compute_effective_filter` in
-/// `aube-cli/src/main.rs` has merged the global `-r` wildcard into
+/// `aube/src/main.rs` has merged the global `-r` wildcard into
 /// `filters` and pulled `filter_prods` from the separate global flag.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EffectiveFilter {

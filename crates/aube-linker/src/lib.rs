@@ -298,7 +298,7 @@ impl Linker {
         self
     }
 
-    /// Project-level modules directory name. `aube-cli` reads this
+    /// Project-level modules directory name. `aube` reads this
     /// when it needs the same path the linker writes into — keeping
     /// the computation DRY with whatever the linker was built with.
     pub fn modules_dir_name(&self) -> &str {
@@ -307,7 +307,7 @@ impl Linker {
 
     /// Override the per-project virtual-store path (pnpm's
     /// `virtualStoreDir`). The supplied path should be *absolute* —
-    /// `aube-cli` resolves relative `.npmrc` / `pnpm-workspace.yaml`
+    /// `aube` resolves relative `.npmrc` / `pnpm-workspace.yaml`
     /// values against the project dir before handing them here.
     /// When not set, the linker derives the virtual store path as
     /// `<project_dir>/<modules_dir_name>/.aube` at link time, which

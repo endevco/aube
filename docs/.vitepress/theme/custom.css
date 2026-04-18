@@ -718,17 +718,17 @@ body {
   white-space: nowrap;
 }
 
-.aube-cli-name {
+.aube-name {
   color: var(--aube-accent-2);
   font-weight: 500;
 }
 
-.aube-cli-version,
-.aube-cli-byline {
+.aube-version,
+.aube-byline {
   color: oklch(0.55 0.012 50);
 }
 
-.aube-cli-phase {
+.aube-phase {
   color: var(--aube-accent-2);
 }
 
@@ -1285,8 +1285,8 @@ body {
     grid-template-columns: auto auto auto;
   }
 
-  .aube-cli-byline,
-  .aube-cli-phase {
+  .aube-byline,
+  .aube-phase {
     display: none;
   }
 

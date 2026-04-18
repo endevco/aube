@@ -160,7 +160,7 @@ pub const DEP_LIFECYCLE_HOOKS: [LifecycleHook; 3] = [
     LifecycleHook::PostInstall,
 ];
 
-/// Holds the real stderr fd saved before `aube-cli` redirects fd 2 to
+/// Holds the real stderr fd saved before `aube` redirects fd 2 to
 /// `/dev/null` under `--silent`. Child processes spawned through
 /// `child_stderr()` get a fresh dup of this fd so their stderr still
 /// reaches the user's terminal — `--silent` only silences aube's own
@@ -170,7 +170,7 @@ pub const DEP_LIFECYCLE_HOOKS: [LifecycleHook; 3] = [
 #[cfg(unix)]
 static SAVED_STDERR_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-/// Called once by `aube-cli` after it saves + redirects fd 2. Passing
+/// Called once by `aube` after it saves + redirects fd 2. Passing
 /// the caller-owned saved fd here means child processes spawned via
 /// `child_stderr()` will write to the real terminal stderr instead of
 /// `/dev/null`.
@@ -179,9 +179,9 @@ pub fn set_saved_stderr_fd(fd: std::os::fd::RawFd) {
     SAVED_STDERR_FD.store(fd, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Windows has no equivalent fd-based silencing plumbing: aube-cli's
+/// Windows has no equivalent fd-based silencing plumbing: aube's
 /// `SilentStderrGuard` is `libc::dup`/`libc::dup2` on fd 2, and those
-/// calls are gated to unix in `aube-cli`. The stub keeps the public
+/// calls are gated to unix in `aube`. The stub keeps the public
 /// API shape identical so call sites compile unchanged.
 #[cfg(not(unix))]
 pub fn set_saved_stderr_fd(_fd: i32) {}
@@ -197,7 +197,7 @@ pub fn child_stderr() -> std::process::Stdio {
         return std::process::Stdio::inherit();
     }
     // SAFETY: `fd` was registered by `set_saved_stderr_fd` from a live
-    // `dup` that `aube-cli`'s `SilentStderrGuard` keeps open for the
+    // `dup` that `aube`'s `SilentStderrGuard` keeps open for the
     // duration of main. `BorrowedFd` only borrows, so this does not
     // transfer ownership.
     let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };

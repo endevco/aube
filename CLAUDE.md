@@ -19,7 +19,7 @@ we're done, delete the whole section.
   leaves future contributors unsure whether a flag is shipped,
   half-wired, or intentionally deferred.
 - **Keep `aube.usage.kdl` in sync**. Run `cargo build && ./target/debug/aube usage > aube.usage.kdl`
-  after any clap change. The golden test in `crates/aube-cli/src/main.rs`
+  after any clap change. The golden test in `crates/aube/src/main.rs`
   fails loudly if you forget.
 - **Hide aliases that aube makes redundant**. Commands we only keep for
   pnpm muscle memory (e.g. `install-test`, `ll`, `la`) should be
@@ -51,12 +51,12 @@ cargo fmt --check              # Check formatting
 
 ## Architecture
 
-Cargo workspace with 9 crates under `crates/`. The binary entry point is `crates/aube-cli/src/main.rs`.
+Cargo workspace with 9 crates under `crates/`. The binary entry point is `crates/aube/src/main.rs`.
 
-**Install pipeline flow:** CLI (`aube-cli`) -> resolve deps (`aube-resolver`) -> fetch from registry (`aube-registry`) -> import tarballs into global CAS (`aube-store`) -> link into `node_modules` (`aube-linker`)
+**Install pipeline flow:** CLI (`aube`) -> resolve deps (`aube-resolver`) -> fetch from registry (`aube-registry`) -> import tarballs into global CAS (`aube-store`) -> link into `node_modules` (`aube-linker`)
 
 Key crates:
-- **aube-cli** — Clap-based CLI, command implementations, auto-install state tracking (`state.rs`)
+- **aube** — Clap-based CLI, command implementations, auto-install state tracking (`state.rs`)
 - **aube-resolver** — BFS dependency resolver with semver satisfaction and packument caching
 - **aube-registry** — HTTP client for npm registry (abbreviated packument format, tarball downloads)
 - **aube-lockfile** — Read/write support for `aube-lock.yaml`, `pnpm-lock.yaml` (v9), `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`. The install path preserves the existing lockfile kind via `detect_existing_lockfile_kind` (precedence: aube > pnpm > bun > yarn > npm-shrinkwrap > npm)
@@ -76,9 +76,9 @@ Key crates:
 
 ## Output and Progress UI
 
-Install-time progress is built on `clx::progress` (see `crates/aube-cli/src/progress.rs`). While a progress bar is active, **never** call `eprintln!` / `println!` / `print!` / `write!(stderr, ...)` directly — the output will collide with the animated display and corrupt the terminal. Instead:
+Install-time progress is built on `clx::progress` (see `crates/aube/src/progress.rs`). While a progress bar is active, **never** call `eprintln!` / `println!` / `print!` / `write!(stderr, ...)` directly — the output will collide with the animated display and corrupt the terminal. Instead:
 
-- In `aube-cli`, route user-visible messages through `crate::progress::println(prog_ref, msg)`. It calls `ProgressJob::println` (which pauses the render, writes the line, and resumes) when a bar is active, and falls back to plain `eprintln` when it isn't.
+- In `aube`, route user-visible messages through `crate::progress::println(prog_ref, msg)`. It calls `ProgressJob::println` (which pauses the render, writes the line, and resumes) when a bar is active, and falls back to plain `eprintln` when it isn't.
 - Lifecycle scripts and anything that writes directly to stdout/stderr (child processes, `println!` in tools we don't control) must run either *before* `InstallProgress::try_new` or *after* `InstallProgress::finish`. In `install::run`, `preinstall` runs before the progress UI is constructed; `install` / `postinstall` / `prepare` and the final summary run after `finish`.
 - `tracing::*` logging is fine — tracing writes through its own path and clx handles it correctly.
 - When adding a new install phase, call `InstallProgress::set_phase` so the header reflects what's running.

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Summary of one merge pass, surfaced to callers so they can log it
-/// through their preferred UI (aube-cli uses `progress::println`).
+/// through their preferred UI (aube uses `progress::println`).
 #[derive(Debug, Default, Clone)]
 pub struct MergeReport {
     /// Branch-lockfile paths that were parsed and merged, then deleted.

@@ -81,7 +81,7 @@ diffy = "0.4"
 # Internal crates — `version` is required so `cargo publish` can resolve
 # transitive crate dependencies via crates.io. release-plz keeps these
 # versions in sync with [workspace.package].version during release PRs.
-aube-cli = { path = "crates/aube-cli", version = "1.0.0-beta.1" }
+aube = { path = "crates/aube", version = "1.0.0-beta.1" }
 aube-settings = { path = "crates/aube-settings", version = "1.0.0-beta.1" }
 aube-resolver = { path = "crates/aube-resolver", version = "1.0.0-beta.1" }
 aube-registry = { path = "crates/aube-registry", version = "1.0.0-beta.1" }

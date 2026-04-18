@@ -112,7 +112,7 @@ impl MinimumReleaseAge {
 /// formatter and skip pulling in `chrono`/`time`. Algorithm adapted
 /// from the days-from-epoch trick used by `time` and `civil` crates.
 ///
-/// `aube-cli/src/commands/sbom.rs` carries a near-identical formatter
+/// `aube/src/commands/sbom.rs` carries a near-identical formatter
 /// for the SPDX/CycloneDX writers; that one emits seconds-only
 /// (`...:00Z`) since SBOM consumers don't expect millis. Don't merge
 /// without checking which format each caller needs — the npm registry
@@ -241,7 +241,7 @@ pub struct Resolver {
     catalogs: BTreeMap<String, BTreeMap<String, String>>,
     /// Optional `readPackage` hook, invoked once per resolved package
     /// before its transitive deps are enqueued. See [`ReadPackageHook`].
-    /// Wired up by `aube-cli` when a `.pnpmfile.cjs` is detected and
+    /// Wired up by `aube` when a `.pnpmfile.cjs` is detected and
     /// `--ignore-pnpmfile` was not set.
     read_package_hook: Option<Box<dyn ReadPackageHook>>,
     dependency_policy: DependencyPolicy,
@@ -250,7 +250,7 @@ pub struct Resolver {
     /// this list, the store attempts `git fetch --depth 1 origin
     /// <sha>` (falling back to a full fetch if the server refuses);
     /// otherwise it goes straight to a full fetch. Defaults to an
-    /// empty list — `aube-cli` populates it from the generated
+    /// empty list — `aube` populates it from the generated
     /// `aube_settings::resolved::git_shallow_hosts` accessor (which
     /// carries the pnpm-compat default list baked in from
     /// `settings.toml`) via [`Self::with_git_shallow_hosts`]. Library

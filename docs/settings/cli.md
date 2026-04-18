@@ -147,7 +147,7 @@ Perform a headless install if the lockfile already satisfies package.json.
 - CLI flags: `prefer-frozen-lockfile`
 
 aube's default outside CI. Maps to `FrozenMode::Prefer` in
-`crates/aube-cli/src/commands/install.rs`. Inside CI the default flips
+`crates/aube/src/commands/install.rs`. Inside CI the default flips
 to `FrozenMode::Frozen` (see `default_for_env`).
 
 Examples:
@@ -167,7 +167,7 @@ Maximum concurrent HTTP(S) requests.
 - CLI flags: `network-concurrency`
 
 Caps the tokio semaphores that gate concurrent tarball downloads
-inside `crates/aube-cli/src/commands/install.rs`. When set, both the
+inside `crates/aube/src/commands/install.rs`. When set, both the
 lockfile-driven and streaming fetch paths use the configured value
 instead of the built-in defaults (128 for tarballs, 64 for the
 streaming path). The resolver's packument fetcher still uses its own

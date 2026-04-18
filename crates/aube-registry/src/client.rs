@@ -76,7 +76,7 @@ impl RegistryClient {
     }
 
     /// Build a client with an explicit [`FetchPolicy`]. This is the
-    /// primary constructor used by `aube-cli::commands::make_client`,
+    /// primary constructor used by `aube::commands::make_client`,
     /// which resolves the policy from the full settings precedence
     /// chain before calling in.
     pub fn from_config_with_policy(config: NpmConfig, fetch_policy: FetchPolicy) -> Self {
