@@ -73,6 +73,15 @@ steps:
           - "set -o pipefail; mise run lint 2>&1 | cat"
           - "mise run render"
           - "mise run docs:build"
+          # Diagnostic: the cargo-linux-test cache has been mounting at 4.0K
+          # since build #23 even though this job passes most of the time.
+          # Print final sizes + free space right before pre-exit so we can
+          # tell whether the save step is dropping populated content
+          # (→ Buildkite-side issue: eviction, concurrent-save clobber, or
+          # silent save failure) or whether something in the commands above
+          # is wiping /tmp/aube-cache before the hook fires. Remove once
+          # diagnosed.
+          - "echo '--- final cache sizes ---'; du -sh /tmp/aube-cache/* 2>/dev/null || true; echo '--- df /tmp ---'; df -h /tmp || true"
 
       - label: "linux / bats 1/4"
         key: "linux-bats-0"
