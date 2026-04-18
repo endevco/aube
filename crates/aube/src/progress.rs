@@ -354,28 +354,16 @@ impl InstallProgress {
             };
             // Same `aube VERSION by en.dev · …` shape in both TTY and
             // CI modes so the no-op line reads as part of the install
-            // UI family. CI mode force-styles the ANSI escapes
-            // (matching `render_header` / the CI final summary) —
-            // GitHub Actions and the other supported CI runners render
-            // them correctly.
-            let line = match &self.mode {
-                Mode::Tty { .. } => format!(
-                    "{} {} {} {} {}",
-                    style::emagenta("aube").bold(),
-                    style::edim(env!("CARGO_PKG_VERSION")),
-                    style::edim("by en.dev"),
-                    style::edim("·"),
-                    style::egreen(msg).bold(),
-                ),
-                Mode::Ci(_) => format!(
-                    "{} {} {} {} {}",
-                    forced(console::style("aube").magenta().bold()),
-                    forced(console::style(env!("CARGO_PKG_VERSION")).dim()),
-                    forced(console::style("by en.dev").dim()),
-                    forced(console::style("·").dim()),
-                    forced(console::style(msg).green().bright().bold()),
-                ),
-            };
+            // UI family. `style::e*` respects `NO_COLOR` / `--no-color`,
+            // so CI environments that strip styling get plain text.
+            let line = format!(
+                "{} {} {} {} {}",
+                style::emagenta("aube").bold(),
+                style::edim(env!("CARGO_PKG_VERSION")),
+                style::edim("by en.dev"),
+                style::edim("·"),
+                style::egreen(msg).bold(),
+            );
             let _ = writeln!(std::io::stderr(), "{line}");
             return;
         }
@@ -638,15 +626,17 @@ impl CiState {
         render_bar_with_label(completed, resolved, term_width(), &label)
     }
 
-    /// Colored, framed header line. Emitted once, on the first heartbeat
-    /// tick where there's something to show — so the CI log only grows
-    /// an aube banner when an install is actually happening.
+    /// Framed header line. Emitted once, on the first heartbeat tick
+    /// where there's something to show — so the CI log only grows an
+    /// aube banner when an install is actually happening. Styling
+    /// routes through `style::e*`, so `NO_COLOR` / `--no-color` drops
+    /// the ANSI escapes automatically.
     fn render_header() -> String {
         let header_text = format!(
             "{} {} {}",
-            forced(console::style("aube").magenta().bold()),
-            forced(console::style(env!("CARGO_PKG_VERSION")).dim()),
-            forced(console::style("by en.dev").dim()),
+            style::emagenta("aube").bold(),
+            style::edim(env!("CARGO_PKG_VERSION")),
+            style::edim("by en.dev"),
         );
         render_centered_line(&header_text, term_width())
     }
@@ -762,8 +752,8 @@ impl CiState {
         let elapsed = self.start.elapsed();
         let summary = format!(
             "{} {} · resolved {} · reused {} · downloaded {} ({})",
-            forced(console::style("✓").green().bright()),
-            forced(console::style(format_duration(elapsed)).dim()),
+            style::egreen("✓"),
+            style::edim(format_duration(elapsed)),
             resolved,
             reused,
             downloaded,
@@ -790,15 +780,6 @@ fn format_duration(d: Duration) -> String {
         let total = d.as_secs();
         format!("{}m{:02}s", total / 60, total % 60)
     }
-}
-
-/// Force-enable ANSI styling on a `console::StyledObject` regardless
-/// of TTY detection. clx/console both strip colors by default when
-/// stderr isn't a terminal, but GitHub Actions (the primary target
-/// for CI mode) renders ANSI just fine, and we want the framed
-/// status block to look the same in CI as it does interactively.
-fn forced<D>(s: console::StyledObject<D>) -> console::StyledObject<D> {
-    s.force_styling(true)
 }
 
 /// Render a plain-text line centered inside the same `[ ]` bracket
