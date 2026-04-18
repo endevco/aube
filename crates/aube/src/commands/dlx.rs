@@ -80,6 +80,14 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
         .ok_or_else(|| miette!("dlx: missing command to run"))?;
     let bin_args: Vec<String> = params.iter().skip(1).cloned().collect();
 
+    // Remember whether `-p` was given. With `-p` the user has named the
+    // bin explicitly (`aube dlx -p which node-which`), so we run their
+    // command verbatim. Without `-p` the command doubles as the package
+    // name and we may need to cross-reference the installed package's
+    // `bin` map — e.g. `@tanstack/cli` ships its bin under the name
+    // `tanstack`, not `cli`.
+    let explicit_package = !package.is_empty();
+
     // Derive the packages to install. `-p` wins; otherwise the command name
     // is the package name (the common `pnpm dlx <pkg>` case). Under
     // `--shell-mode` the first positional is a shell line, not a bin name,
@@ -179,12 +187,21 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
             .into_diagnostic()
             .wrap_err("failed to execute dlx shell command")?
     } else {
-        let bin_path = super::project_modules_dir(&project_dir)
-            .join(".bin")
-            .join(&bin_name);
+        let bin_dir = super::project_modules_dir(&project_dir).join(".bin");
+        // If `-p` wasn't given, the command doubles as the package name
+        // and the bin is a best-guess derivation from it. Check the
+        // installed package's `bin` field and prefer the actual bin name
+        // it ships — e.g. `@tanstack/cli` ships `tanstack`, not `cli`.
+        let resolved_bin_name = if !explicit_package && !bin_dir.join(&bin_name).exists() {
+            resolve_bin_from_package(&project_dir, &install_specs[0])
+                .unwrap_or_else(|| bin_name.clone())
+        } else {
+            bin_name.clone()
+        };
+        let bin_path = bin_dir.join(&resolved_bin_name);
         if !bin_path.exists() {
             return Err(miette!(
-                "dlx: binary not found after install: {bin_name}\n\
+                "dlx: binary not found after install: {resolved_bin_name}\n\
                  help: the package may ship the binary under a different name — try `aube dlx -p <package> <bin>`"
             ));
         }
@@ -247,6 +264,45 @@ fn bin_name_for(command: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_string()
 }
 
+/// When the bin derived from the package name doesn't match the installed
+/// package's actual bin, fall back to reading the package's `bin` field to
+/// find the right name. Matches `npx`/`pnpm dlx` behavior so e.g.
+/// `aube dlx @tanstack/cli create` works (ships its bin as `tanstack`, not
+/// `cli`) and `aube dlx which` works (ships `node-which`).
+///
+/// Returns `None` when we can't make a confident pick — caller keeps the
+/// original inference and lets the bin-missing error fire.
+fn resolve_bin_from_package(project_dir: &std::path::Path, install_spec: &str) -> Option<String> {
+    let (pkg_name, _) = split_spec(install_spec);
+    let pkg_json_path = project_dir
+        .join("node_modules")
+        .join(pkg_name)
+        .join("package.json");
+    let content = std::fs::read_to_string(&pkg_json_path).ok()?;
+    let pkg_json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let bin = pkg_json.get("bin")?;
+    let inferred = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
+    match bin {
+        // String bin: npm always names it after the unscoped package name,
+        // so this matches what `bin_name_for` already derived. Returning
+        // it explicitly keeps the lookup path symmetric.
+        serde_json::Value::String(_) => Some(inferred.to_string()),
+        serde_json::Value::Object(bins) => {
+            if bins.contains_key(inferred) {
+                Some(inferred.to_string())
+            } else if bins.len() == 1 {
+                // Single bin under a different name — unambiguous pick.
+                bins.keys().next().cloned()
+            } else {
+                // Multiple bins, none matching the package name. We don't
+                // know which one the user wants; let them pick via `-p`.
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +332,87 @@ mod tests {
         assert_eq!(bin_name_for("cowsay@1.5.0"), "cowsay");
         assert_eq!(bin_name_for("@scope/foo@2"), "foo");
         assert_eq!(bin_name_for("@scope/foo"), "foo");
+    }
+
+    fn write_pkg_json(project_dir: &std::path::Path, pkg_name: &str, pkg_json: serde_json::Value) {
+        let dir = project_dir.join("node_modules").join(pkg_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::to_string_pretty(&pkg_json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_bin_single_object_bin_picks_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pkg_json(
+            tmp.path(),
+            "@tanstack/cli",
+            serde_json::json!({
+                "name": "@tanstack/cli",
+                "bin": {"tanstack": "dist/bin.js"},
+            }),
+        );
+        assert_eq!(
+            resolve_bin_from_package(tmp.path(), "@tanstack/cli@latest"),
+            Some("tanstack".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_bin_object_with_matching_key_prefers_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pkg_json(
+            tmp.path(),
+            "foo",
+            serde_json::json!({
+                "name": "foo",
+                "bin": {"foo": "x.js", "foo-helper": "y.js"},
+            }),
+        );
+        assert_eq!(
+            resolve_bin_from_package(tmp.path(), "foo"),
+            Some("foo".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_bin_object_multiple_no_match_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pkg_json(
+            tmp.path(),
+            "foo",
+            serde_json::json!({
+                "name": "foo",
+                "bin": {"a": "a.js", "b": "b.js"},
+            }),
+        );
+        assert_eq!(resolve_bin_from_package(tmp.path(), "foo"), None);
+    }
+
+    #[test]
+    fn resolve_bin_string_bin_returns_package_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pkg_json(
+            tmp.path(),
+            "@scope/foo",
+            serde_json::json!({
+                "name": "@scope/foo",
+                "bin": "./x.js",
+            }),
+        );
+        assert_eq!(
+            resolve_bin_from_package(tmp.path(), "@scope/foo"),
+            Some("foo".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_bin_no_bin_field_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pkg_json(tmp.path(), "foo", serde_json::json!({"name": "foo"}));
+        assert_eq!(resolve_bin_from_package(tmp.path(), "foo"), None);
     }
 }

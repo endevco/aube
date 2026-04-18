@@ -39,6 +39,17 @@ teardown() {
 	assert_output --partial "/node"
 }
 
+@test "aube dlx falls back to the package's single bin when names differ" {
+	# `which` ships its bin as `node-which`, so the naive
+	# "bin name == unscoped package name" inference would look for
+	# `.bin/which` and fail. With the installed-package fallback aube
+	# should pick `node-which` (the only bin) and run it — exactly
+	# what `npx which node` does.
+	run aube dlx which node
+	assert_success
+	assert_output --partial "/node"
+}
+
 @test "aube dlx accepts an @version suffix on the command" {
 	# semver@7.7.4 is what the fixture set has pinned. Run it against a
 	# prerelease version so the output is distinguishable from the default.
