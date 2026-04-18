@@ -69,15 +69,11 @@ struct Sources {
 }
 
 fn main() {
-    // Locate the workspace-root settings.toml. This crate lives at
-    // `crates/aube-settings`, so the workspace root is two levels up.
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let settings_path = workspace_root.join("settings.toml");
+    // `settings.toml` lives inside this crate so it ships in the
+    // published tarball — `cargo publish --verify` runs the build
+    // script from `target/package/aube-settings-<ver>/`, which can
+    // only see files under the crate root.
+    let settings_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
 
     println!("cargo:rerun-if-changed={}", settings_path.display());
 

@@ -1,7 +1,7 @@
 //! Static metadata for every setting in `settings.toml`.
 //!
 //! The `SETTINGS` slice is emitted at build time by `build.rs` from
-//! the workspace-root `settings.toml`. Each entry is a `'static`
+//! the crate-local `settings.toml`. Each entry is a `'static`
 //! borrow so there's zero runtime allocation and the compiler
 //! verifies the schema shape at compile time.
 //!

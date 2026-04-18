@@ -29,7 +29,7 @@ struct SettingRef<'a> {
 
 fn main() {
     let root = workspace_root();
-    let settings_path = root.join("settings.toml");
+    let settings_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
     let out_dir = root.join("docs/settings");
     let raw = fs::read_to_string(&settings_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", settings_path.display()));

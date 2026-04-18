@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 build = "build.rs"
+include = ["src/**/*.rs", "build.rs", "settings.toml"]
 
 [[bin]]
 name = "generate-settings-docs"
