@@ -119,6 +119,30 @@ JSON
 	refute_output --partial "disableGlobalVirtualStoreForPackages"
 }
 
+@test "npm_config_ci without CI does not skip the override" {
+	# Regression guard: an earlier version of this check treated
+	# `npm_config_ci` / `NPM_CONFIG_CI` as equivalent to `CI`, but
+	# `Linker::new` only reads `CI`. If the suppression set here drifts
+	# wider than the linker's set, the override is skipped while gvs
+	# stays on — the Turbopack bug resurfaces silently. Pin the exact
+	# match.
+	_make_fake_dep next
+	mkdir -p app
+	cd app
+	cat >package.json <<'JSON'
+{"name":"app","version":"0.0.0","dependencies":{"next":"link:../fake-next","is-odd":"3.0.1"}}
+JSON
+
+	npm_config_ci=true run aube install
+	assert_success
+	assert_output --partial "disableGlobalVirtualStoreForPackages"
+	# gvs must be off — `.aube/<pkg>` is a real directory, not a
+	# symlink. This is the only assertion that actually catches the
+	# original bug; the output check is just for the warning text.
+	[ -d node_modules/.aube/is-odd@3.0.1 ]
+	[ ! -L node_modules/.aube/is-odd@3.0.1 ]
+}
+
 @test "custom entry in disableGlobalVirtualStoreForPackages triggers the disable" {
 	# The whole point of making this a list: users can add packages
 	# they discover have the same filesystem-root problem. Use a

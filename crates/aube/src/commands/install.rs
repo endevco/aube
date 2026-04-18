@@ -3134,10 +3134,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         aube_settings::resolved::disable_global_virtual_store_for_packages(&settings_ctx);
     let use_global_virtual_store_override = {
         let triggered_by = find_gvs_incompatible_trigger(&manifests, &gvs_triggers);
-        let ci_mode = opts
-            .env_snapshot
-            .iter()
-            .any(|(k, _)| k == "CI" || k == "npm_config_ci" || k == "NPM_CONFIG_CI");
+        // Match `Linker::new`'s exact gvs check — it keys off the `CI`
+        // env var alone, not `npm_config_ci` / `NPM_CONFIG_CI`. Using a
+        // broader set here would silently skip the override (and the
+        // warning) in a scenario where the linker still turns gvs on,
+        // leaving the Turbopack symlink error unmitigated. The snapshot
+        // is populated from `std::env` at `InstallOptions::from_cli`
+        // time, so it reflects the same environment the linker reads.
+        let ci_mode = opts.env_snapshot.iter().any(|(k, _)| k == "CI");
         let virtual_store_only_setting = aube_settings::resolved::virtual_store_only(&settings_ctx);
         if let Some(name) = triggered_by
             && !ci_mode
