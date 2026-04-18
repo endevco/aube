@@ -3,11 +3,14 @@ LABEL maintainer="jdx"
 
 # Install packaging dependencies. `cargo vendor` is built in to the
 # cargo shipped with Fedora, so we don't need a separate tool.
+# `copr-cli` is installed from Fedora's own packages because
+# Fedora 38+ enforces PEP 668 and blocks `pip install` into the
+# system Python.
 RUN dnf update -y && \
     dnf install -y \
         rpm-build \
         rpmdevtools \
-        python3-pip \
+        copr-cli \
         git \
         rust \
         cargo \
@@ -17,7 +20,5 @@ RUN dnf update -y && \
         tar \
         gzip && \
     dnf clean all
-
-RUN pip3 install copr-cli
 
 RUN rpmdev-setuptree

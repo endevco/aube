@@ -28,8 +28,10 @@ jobs:
       - name: Install packaging deps
         run: |
           dnf update -y
-          dnf install -y rpm-build rpmdevtools python3-pip git rust cargo gcc openssl-devel pkgconf-pkg-config tar gzip
-          pip3 install copr-cli
+          # copr-cli comes from Fedora's own packages — Fedora 38+
+          # enforces PEP 668 and blocks `pip install` into the system
+          # Python.
+          dnf install -y rpm-build rpmdevtools copr-cli git rust cargo gcc openssl-devel pkgconf-pkg-config tar gzip
           rpmdev-setuptree
 
       - name: Checkout repository
