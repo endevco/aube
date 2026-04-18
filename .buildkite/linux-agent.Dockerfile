@@ -20,7 +20,7 @@ RUN apt-get update \
 RUN curl https://mise.run | sh
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile default --default-toolchain stable \
-  && /root/.cargo/bin/rustup toolchain install 1.88.0 --profile default \
+  && /root/.cargo/bin/rustup toolchain install 1.93.0 --profile default \
   && /root/.cargo/bin/rustup component add rustfmt clippy --toolchain stable
 
 ENV PATH="/root/.cargo/bin:/root/.local/bin:/root/.local/share/mise/shims:${PATH}"

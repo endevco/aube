@@ -11,7 +11,7 @@ env:
   CARGO_HOME: "/tmp/aube-cache/cargo"
   CARGO_INCREMENTAL: "0"
   CARGO_TARGET_DIR: "/tmp/aube-cache/cargo-target"
-  MSRV_TOOLCHAIN: "1.88.0"
+  MSRV_TOOLCHAIN: "1.93.0"
   MISE_CACHE_DIR: "/tmp/aube-cache/mise-cache"
   MISE_DATA_DIR: "/tmp/aube-cache/mise"
   MISE_EXPERIMENTAL: "true"
