@@ -163,13 +163,19 @@ cd ../..
 rm -rf "SOURCES/${PACKAGE_NAME}-${TARBALL_VERSION}"
 
 echo "=== Creating RPM Spec File ==="
-cat >"SPECS/${PACKAGE_NAME}.spec" <<'EOF'
+CHANGELOG_DATE=$(date +'%a %b %d %Y')
+
+# Direct interpolation via unquoted heredoc. RPM macros use `%{...}`
+# which doesn't collide with shell `${...}` expansion, so we can emit
+# the spec without running it through sed — which would corrupt on `&`
+# or `/` in any of the maintainer-supplied values.
+cat >"SPECS/${PACKAGE_NAME}.spec" <<EOF
 %global debug_package %{nil}
 %global _missing_build_ids_terminate_build 0
-%global tarball_version __TARBALL_VERSION__
+%global tarball_version ${TARBALL_VERSION}
 
-Name:           __PACKAGE_NAME__
-Version:        __RPM_VERSION__
+Name:           ${PACKAGE_NAME}
+Version:        ${RPM_VERSION}
 Release:        1%{?dist}
 Summary:        A fast Node.js package manager
 
@@ -208,11 +214,11 @@ replace-with = "vendored-sources"
 directory = "vendor"
 CARGO_EOF
 
-cargo build --profile __BUILD_PROFILE__ --frozen --bin aube --bin aubr --bin aubx
+cargo build --profile ${BUILD_PROFILE} --frozen --bin aube --bin aubr --bin aubx
 
 %install
 mkdir -p %{buildroot}%{_bindir}
-cp target/__BUILD_PROFILE__/aube %{buildroot}%{_bindir}/aube
+cp target/${BUILD_PROFILE}/aube %{buildroot}%{_bindir}/aube
 # aubr/aubx are multicall shims that dispatch on argv[0]; ship them
 # as symlinks to keep the package small.
 ln -s aube %{buildroot}%{_bindir}/aubr
@@ -233,18 +239,9 @@ TOML
 %{_libdir}/aube/aube-self-update-instructions.toml
 
 %changelog
-* __CHANGELOG_DATE__ __MAINTAINER_NAME__ <__MAINTAINER_EMAIL__> - %{version}-1
+* ${CHANGELOG_DATE} ${MAINTAINER_NAME} <${MAINTAINER_EMAIL}> - %{version}-1
 - New upstream release %{version}
 EOF
-
-CHANGELOG_DATE=$(date +'%a %b %d %Y')
-sed -i "s/__PACKAGE_NAME__/${PACKAGE_NAME}/g" "SPECS/${PACKAGE_NAME}.spec"
-sed -i "s/__RPM_VERSION__/${RPM_VERSION}/g" "SPECS/${PACKAGE_NAME}.spec"
-sed -i "s/__TARBALL_VERSION__/${TARBALL_VERSION}/g" "SPECS/${PACKAGE_NAME}.spec"
-sed -i "s/__BUILD_PROFILE__/${BUILD_PROFILE}/g" "SPECS/${PACKAGE_NAME}.spec"
-sed -i "s/__CHANGELOG_DATE__/${CHANGELOG_DATE}/g" "SPECS/${PACKAGE_NAME}.spec"
-sed -i "s/__MAINTAINER_NAME__/${MAINTAINER_NAME}/g" "SPECS/${PACKAGE_NAME}.spec"
-sed -i "s/__MAINTAINER_EMAIL__/${MAINTAINER_EMAIL}/g" "SPECS/${PACKAGE_NAME}.spec"
 
 echo "=== Building Source RPM ==="
 rpmbuild -bs "SPECS/${PACKAGE_NAME}.spec"
@@ -262,14 +259,17 @@ if [ "$DRY_RUN" != "true" ]; then
 	echo "=== Submitting to COPR ==="
 	echo "Submitting $(basename "$SRPM_FILE") to COPR project $COPR_OWNER/$COPR_PROJECT"
 
-	copr_cmd="copr-cli build"
+	# Build the copr-cli invocation as an array so chroot names and
+	# paths that ever grow spaces or shell metacharacters don't get
+	# re-split by `eval`.
+	copr_cmd=(copr-cli build)
 	IFS=' ' read -ra chroot_array <<<"$CHROOTS"
 	for chroot in "${chroot_array[@]}"; do
-		copr_cmd="$copr_cmd --chroot $chroot"
+		copr_cmd+=(--chroot "$chroot")
 	done
-	copr_cmd="$copr_cmd $COPR_OWNER/$COPR_PROJECT $SRPM_FILE"
+	copr_cmd+=("$COPR_OWNER/$COPR_PROJECT" "$SRPM_FILE")
 
-	eval "$copr_cmd"
+	"${copr_cmd[@]}"
 
 	echo "Build submitted successfully!"
 else
