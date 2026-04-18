@@ -2132,22 +2132,33 @@ fn resolve_exclude_links_from_lockfile(ctx: &aube_settings::ResolveCtx<'_>) -> b
     aube_settings::resolved::exclude_links_from_lockfile(ctx)
 }
 
-/// Does the root / any workspace manifest declare a dependency on
-/// `next`? Next.js's Turbopack canonicalizes every `node_modules/<pkg>`
-/// symlink and rejects targets that escape the project's filesystem
-/// root — aube's global virtual store makes `.aube/<pkg>` an absolute
-/// symlink into `~/.cache/aube/virtual-store/`, which trips that
-/// check. Detection covers `dependencies`, `devDependencies`, and
-/// `optionalDependencies` on every importer in the install so a
-/// monorepo with a Next.js app under any workspace still opts out.
-/// `peerDependencies` intentionally doesn't count — a library that
-/// declares `next` as a peer isn't itself a Next.js app.
-fn manifests_depend_on_nextjs(manifests: &[(String, aube_manifest::PackageJson)]) -> bool {
-    manifests.iter().any(|(_, m)| {
-        m.dependencies.contains_key("next")
-            || m.dev_dependencies.contains_key("next")
-            || m.optional_dependencies.contains_key("next")
-    })
+/// Scan `manifests` for any `trigger` name that appears in an
+/// importer's `dependencies`, `devDependencies`, or
+/// `optionalDependencies`, and return the first match. Used to power
+/// `disableGlobalVirtualStoreForPackages` — some tools (Next.js's
+/// Turbopack is the canonical example) canonicalize every
+/// `node_modules/<pkg>` symlink and reject targets that escape the
+/// project's filesystem root, which aube's global virtual store
+/// produces by default. When a manifest declares one of those
+/// packages, the install driver falls back to per-project
+/// materialization. `peerDependencies` intentionally doesn't count —
+/// a library that declares `next` as a peer isn't itself a Next.js
+/// app.
+fn find_gvs_incompatible_trigger<'a>(
+    manifests: &[(String, aube_manifest::PackageJson)],
+    triggers: &'a [String],
+) -> Option<&'a str> {
+    for (_, m) in manifests {
+        for name in triggers {
+            if m.dependencies.contains_key(name)
+                || m.dev_dependencies.contains_key(name)
+                || m.optional_dependencies.contains_key(name)
+            {
+                return Some(name.as_str());
+            }
+        }
+    }
+    None
 }
 
 /// Honor `cleanupUnusedCatalogs` by pruning declared-but-unreferenced
@@ -3107,30 +3118,33 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         }
     }
 
-    // Auto-disable the global virtual store when Next.js is present in
-    // the dep graph. Turbopack canonicalizes every `node_modules/<pkg>`
-    // symlink and rejects targets outside its "filesystem root" (the
-    // project dir); gvs makes `.aube/<pkg>` an absolute symlink into
-    // `~/.cache/aube/virtual-store/`, which trips that check.
-    // `autoDisableGlobalVirtualStoreForNextjs` (default `true`) is the
-    // escape hatch — flip it off and you keep gvs even with Next.js
-    // present. `CI=1` already forces per-project mode in `Linker::new`,
-    // so we don't warn in that case (the behavior wouldn't change and
-    // the message would just be noise). `virtualStoreOnly` installs
-    // skip the final top-level symlink pass, so Turbopack never sees
-    // the gvs path — the warning would be wrong, so suppress it too.
+    // Auto-disable the global virtual store when any importer depends
+    // on a package listed in `disableGlobalVirtualStoreForPackages`
+    // (default `["next"]`). Turbopack canonicalizes every
+    // `node_modules/<pkg>` symlink and rejects targets outside the
+    // project dir; gvs makes `.aube/<pkg>` an absolute symlink into
+    // `~/.cache/aube/virtual-store/`, which trips that check. The
+    // list is the extension point — add other tools as they surface.
+    // `CI=1` already forces per-project mode in `Linker::new`, so we
+    // don't warn in that case (behavior wouldn't change and the
+    // message would just be noise). `virtualStoreOnly` installs skip
+    // the final top-level symlink pass, so Turbopack never sees the
+    // gvs path — suppress the warning there too.
+    let gvs_triggers =
+        aube_settings::resolved::disable_global_virtual_store_for_packages(&settings_ctx);
     let use_global_virtual_store_override = {
-        let next_js_present = manifests_depend_on_nextjs(&manifests);
-        let auto_disable =
-            aube_settings::resolved::auto_disable_global_virtual_store_for_nextjs(&settings_ctx);
+        let triggered_by = find_gvs_incompatible_trigger(&manifests, &gvs_triggers);
         let ci_mode = opts
             .env_snapshot
             .iter()
             .any(|(k, _)| k == "CI" || k == "npm_config_ci" || k == "NPM_CONFIG_CI");
         let virtual_store_only_setting = aube_settings::resolved::virtual_store_only(&settings_ctx);
-        if next_js_present && auto_disable && !ci_mode && !virtual_store_only_setting {
+        if let Some(name) = triggered_by
+            && !ci_mode
+            && !virtual_store_only_setting
+        {
             tracing::warn!(
-                "Next.js detected in package.json; disabling global virtual store for this install to keep node_modules compatible with Turbopack. Set autoDisableGlobalVirtualStoreForNextjs=false in .npmrc to opt out."
+                "disabling global virtual store: `{name}` is in disableGlobalVirtualStoreForPackages (packages in that list are known to be incompatible with gvs-linked node_modules, e.g. Next.js's Turbopack rejects symlinks that escape the project root). Set the list to `[]` in .npmrc to opt out."
             );
             Some(false)
         } else {

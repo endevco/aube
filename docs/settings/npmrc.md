@@ -50,7 +50,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`modulesCacheMaxAge`](#setting-modulescachemaxage) | `int` | implemented | Minutes before orphan packages are removed from the virtual store. |
 | [`dlxCacheMaxAge`](#setting-dlxcachemaxage) | `int` | implemented | Minutes before the dlx cache is considered stale. |
 | [`enableGlobalVirtualStore`](#setting-enableglobalvirtualstore) | `bool` | implemented | Use a per-user virtual store for all projects. |
-| [`autoDisableGlobalVirtualStoreForNextjs`](#setting-autodisableglobalvirtualstorefornextjs) | `bool` | implemented | Disable the global virtual store when a Next.js dependency is detected. |
+| [`disableGlobalVirtualStoreForPackages`](#setting-disableglobalvirtualstoreforpackages) | `list<string>` | implemented | Package names whose presence in any importer forces per-project materialization. |
 | [`storeDir`](#setting-storedir) | `path` | implemented | Location where packages are saved on disk (content-addressable store). |
 | [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | implemented | Check store file integrity before linking. |
 | [`useRunningStoreServer`](#setting-userunningstoreserver) | `bool` | implemented | Only allow installs when the store server is running. |
@@ -677,30 +677,30 @@ It's enabled by default and disabled under CI (see `aube-linker`, which
 checks the `CI` env var). pnpm gained the same feature later; we expose
 it through `CI=1` rather than a dedicated config knob.
 
-### `autoDisableGlobalVirtualStoreForNextjs` {#setting-autodisableglobalvirtualstorefornextjs}
+### `disableGlobalVirtualStoreForPackages` {#setting-disableglobalvirtualstoreforpackages}
 
-Disable the global virtual store when a Next.js dependency is detected.
+Package names whose presence in any importer forces per-project materialization.
 
-- Type: `bool`
-- Default: `true`
+- Type: `list<string>`
+- Default: `["next"]`
 - Status: implemented
 - Added to registry: `2026-04-18`
-- .npmrc keys: `autoDisableGlobalVirtualStoreForNextjs`
+- .npmrc keys: `disableGlobalVirtualStoreForPackages`
 
-Next.js's Turbopack canonicalizes every symlink under `node_modules/`
-and rejects any target that resolves outside the project's "filesystem
-root". aube's global virtual store makes `node_modules/.aube/<pkg>` an
-absolute symlink into `~/.cache/aube/virtual-store/`, which Turbopack
-then reports as `Symlink ... is invalid, it points out of the
-filesystem root`.
+aube's global virtual store makes `node_modules/.aube/<pkg>` an
+absolute symlink into `~/.cache/aube/virtual-store/`. Some tools —
+most notably Next.js's Turbopack — canonicalize every symlink under
+`node_modules/` and reject any target that resolves outside the
+project's "filesystem root", producing errors like `Symlink ... is
+invalid, it points out of the filesystem root`.
 
-When this setting is `true` (the default) and `aube install` detects
-`next` in the root `package.json`'s dependencies, aube forces
-per-project materialization for this install and prints a one-line
-warning explaining why. Set to `false` to keep the global virtual
-store enabled even when Next.js is present — useful if you're working
-around the Turbopack issue another way (e.g. `next dev --webpack`) and
-want the throughput win.
+When `aube install` finds one of these names in any importer's
+`dependencies`, `devDependencies`, or `optionalDependencies`, it
+forces per-project materialization for that install and prints a
+one-line warning naming the trigger. Defaults to `["next"]`; add
+other packages here as you discover them, or set the list to `[]` to
+disable the heuristic. `CI=1` already forces per-project mode, so the
+warning suppresses itself in that case.
 
 ## Store
 

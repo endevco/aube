@@ -28,15 +28,17 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub enable_global_virtual_store: Option<bool>,
 
-    /// Auto-disable the global virtual store when Next.js is detected
-    /// in the root package.json (default: true). Turbopack rejects
-    /// `node_modules/<pkg>` symlinks that canonicalize outside the
-    /// project's filesystem root, which trips on aube's default gvs
-    /// layout. Set `false` to keep gvs enabled even with Next.js
-    /// present. Declared here so `settings.toml`'s workspaceYaml
-    /// source stays in sync with the actual deserialize surface.
+    /// Package names whose presence in any importer forces
+    /// per-project materialization (disabling the global virtual
+    /// store for that install). Defaults to `["next"]` — Turbopack
+    /// rejects `node_modules/<pkg>` symlinks that canonicalize
+    /// outside the project's filesystem root. Add more names as
+    /// you discover tools with the same restriction; set to `[]` to
+    /// disable the heuristic. Declared here so `settings.toml`'s
+    /// workspaceYaml source stays in sync with the actual
+    /// deserialize surface.
     #[serde(default)]
-    pub auto_disable_global_virtual_store_for_nextjs: Option<bool>,
+    pub disable_global_virtual_store_for_packages: Option<Vec<String>>,
 
     /// Package import method: "auto", "hardlink", "copy", "clone", "clone-or-copy".
     #[serde(default)]

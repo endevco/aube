@@ -598,30 +598,30 @@ examples = []
 # `aube-linker`. The typed accessor would double up on that path.
 typedAccessorUnused = true
 
-[autoDisableGlobalVirtualStoreForNextjs]
-description = "Disable the global virtual store when a Next.js dependency is detected."
-type = "bool"
-default = "true"
+[disableGlobalVirtualStoreForPackages]
+description = "Package names whose presence in any importer forces per-project materialization."
+type = "list<string>"
+default = "[\"next\"]"
 docs = """
-Next.js's Turbopack canonicalizes every symlink under `node_modules/`
-and rejects any target that resolves outside the project's "filesystem
-root". aube's global virtual store makes `node_modules/.aube/<pkg>` an
-absolute symlink into `~/.cache/aube/virtual-store/`, which Turbopack
-then reports as `Symlink ... is invalid, it points out of the
-filesystem root`.
+aube's global virtual store makes `node_modules/.aube/<pkg>` an
+absolute symlink into `~/.cache/aube/virtual-store/`. Some tools —
+most notably Next.js's Turbopack — canonicalize every symlink under
+`node_modules/` and reject any target that resolves outside the
+project's "filesystem root", producing errors like `Symlink ... is
+invalid, it points out of the filesystem root`.
 
-When this setting is `true` (the default) and `aube install` detects
-`next` in the root `package.json`'s dependencies, aube forces
-per-project materialization for this install and prints a one-line
-warning explaining why. Set to `false` to keep the global virtual
-store enabled even when Next.js is present — useful if you're working
-around the Turbopack issue another way (e.g. `next dev --webpack`) and
-want the throughput win.
+When `aube install` finds one of these names in any importer's
+`dependencies`, `devDependencies`, or `optionalDependencies`, it
+forces per-project materialization for that install and prints a
+one-line warning naming the trigger. Defaults to `["next"]`; add
+other packages here as you discover them, or set the list to `[]` to
+disable the heuristic. `CI=1` already forces per-project mode, so the
+warning suppresses itself in that case.
 """
 sources.cli = []
 sources.env = []
-sources.npmrc = ["autoDisableGlobalVirtualStoreForNextjs"]
-sources.workspaceYaml = ["autoDisableGlobalVirtualStoreForNextjs"]
+sources.npmrc = ["disableGlobalVirtualStoreForPackages"]
+sources.workspaceYaml = ["disableGlobalVirtualStoreForPackages"]
 examples = []
 
 # ========================================= Store =========================================
