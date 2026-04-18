@@ -15,8 +15,22 @@ else
 	targets=(test/)
 fi
 
-exec ./test/bats/bin/bats \
+# Files tagged `# bats file_tags=serial` mutate shared state (Verdaccio
+# storage, `git checkout` in fixtures) and can't race against each
+# other or against the rest of the suite — mirror the CI split by
+# running non-serial files in parallel first, then serial files
+# sequentially. Both phases are scoped to the same targets, so
+# passing specific files still works.
+status=0
+./test/bats/bin/bats \
 	--jobs "$jobs" \
 	--parallel-binary-name parallel \
 	--no-parallelize-within-files \
-	"${targets[@]}"
+	--filter-tags "!serial" \
+	"${targets[@]}" || status=$?
+
+./test/bats/bin/bats \
+	--filter-tags "serial" \
+	"${targets[@]}" || status=$?
+
+exit "$status"
