@@ -4,7 +4,7 @@
 //! Walks `~/.cache/aube/index/*.json`, parses each cached `PackageIndex`,
 //! and prints every `<name>@<version>` whose index contains the given
 //! hash along with the relative path the hash lives at. Accepts both
-//! `sha512-<base64>` integrity strings and raw hex SHA-512 digests;
+//! `sha512-<base64>` integrity strings and raw hex CAS digests;
 //! the integrity form is normalized to hex before comparison.
 //!
 //! Complement to `cat-file` / `cat-index`: once you have a store file
@@ -39,7 +39,7 @@ pub struct FindHashArgs {
     /// Hash to look up.
     ///
     /// Accepts `sha512-<base64>` (pnpm integrity format) or a raw hex
-    /// SHA-512 digest.
+    /// CAS digest.
     pub hash: String,
 
     /// Emit a machine-readable JSON array of
@@ -67,7 +67,7 @@ pub async fn run(args: FindHashArgs) -> miette::Result<()> {
     } else {
         if args.hash.is_empty() || !args.hash.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(miette!(
-                "invalid hash: {}\nhelp: expected a `sha512-<base64>` integrity string or a hex SHA-512 digest",
+                "invalid hash: {}\nhelp: expected a `sha512-<base64>` integrity string or a hex CAS digest",
                 args.hash
             ));
         }

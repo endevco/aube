@@ -15,8 +15,8 @@
 //!   fall back to removing only files that no cached package index in
 //!   `~/.cache/aube/index/` points at.
 //! - `aube store status` — verify every file referenced by a cached package
-//!   index still exists in the store and its SHA-512 matches. Exits 0 when
-//!   everything is consistent, 1 when any corruption is found.
+//!   index still exists in the store and its BLAKE3 hash matches. Exits 0
+//!   when everything is consistent, 1 when any corruption is found.
 //!
 //! None of these subcommands touch `node_modules/`, the lockfile, or the
 //! project manifest, so they deliberately skip the project lock and the
@@ -25,7 +25,6 @@
 use crate::commands::{make_client, packument_full_cache_dir, resolve_version, split_name_spec};
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, miette};
-use sha2::{Digest, Sha512};
 use std::path::Path;
 
 #[derive(Debug, Args)]
@@ -51,7 +50,7 @@ pub enum StoreCommand {
     /// Remove unreferenced packages from the global store.
     Prune,
     /// Verify that every file referenced by a cached package index is
-    /// still present in the store and its SHA-512 matches.
+    /// still present in the store and its BLAKE3 hash matches.
     ///
     /// Exits non-zero when any corruption is detected.
     Status,
@@ -315,16 +314,16 @@ fn status() -> miette::Result<()> {
     }
 }
 
-/// Stream the file at `path` through SHA-512 and compare to the expected
+/// Stream the file at `path` through BLAKE3 and compare to the expected
 /// hex digest. Missing files count as a mismatch.
 fn verify_stored_file(path: &Path, expected_hex: &str) -> bool {
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
     };
-    let mut hasher = Sha512::new();
+    let mut hasher = blake3::Hasher::new();
     if std::io::copy(&mut f, &mut hasher).is_err() {
         return false;
     }
-    let actual = hex::encode(hasher.finalize());
+    let actual = hasher.finalize().to_hex().to_string();
     actual == expected_hex
 }

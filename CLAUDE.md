@@ -78,7 +78,7 @@ Key crates:
 - **aube-resolver** — BFS dependency resolver with semver satisfaction and packument caching
 - **aube-registry** — HTTP client for npm registry (abbreviated packument format, tarball downloads)
 - **aube-lockfile** — Read/write support for `aube-lock.yaml`, `pnpm-lock.yaml` (v9), `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`. The install path preserves the existing lockfile kind via `detect_existing_lockfile_kind` (precedence: aube > pnpm > bun > yarn > npm-shrinkwrap > npm)
-- **aube-store** — Content-addressable store under `~/.aube-store/v1/files/` using SHA-512 with 2-char directory sharding
+- **aube-store** — Content-addressable store under `~/.aube-store/v1/files/` using BLAKE3 with 2-char directory sharding. Tarball integrity is still SHA-512 because that's the registry format
 - **aube-linker** — isolated symlink layout (same shape as pnpm's `node-linker=isolated`, but under `.aube/` instead of `.pnpm/`): top-level `node_modules/<name>` entries are symlinks into `.aube/<dep_path>/node_modules/<name>`. Transitive deps live as sibling symlinks inside `.aube/<dep_path>/node_modules/` so Node's directory walk finds them.
 - **aube-manifest** — package.json parser with workspace glob support
 - **aube-scripts** — Root-package lifecycle script runner (preinstall, install, postinstall, prepare). Dependency scripts are always skipped; the allowlist surface is designed but not yet wired
@@ -87,7 +87,7 @@ Key crates:
 ## Key Design Decisions
 
 - **Isolated symlink layout, aube-owned**: Top-level `node_modules/<name>` entries are symlinks into `.aube/<dep_path>/node_modules/<name>`, the same shape as pnpm's `node-linker=isolated` mode but under `.aube/` so we never collide with an existing pnpm tree. Each `.aube/<dep_path>/node_modules/` directory contains the real package and sibling symlinks to its declared dependencies, so Node's directory walk gives strict isolation. The store materializes package files via reflink (APFS/btrfs), hardlink (ext4), or copy (fallback) — only when extracting tarballs into the global virtual store, never at link time.
-- **Aube-owned global store**: `~/.aube-store/v1/files/` is a SHA-512 CAS with 2-char directory sharding. Aube never reads from or writes to `~/.pnpm-store/`.
+- **Aube-owned global store**: `~/.aube-store/v1/files/` is a BLAKE3 CAS with 2-char directory sharding. Aube never reads from or writes to `~/.pnpm-store/`.
 - **Lockfile format**: `aube-lock.yaml` is the canonical format and the default when no lockfile exists yet. When a project already has a supported lockfile (`pnpm-lock.yaml` v9, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, or `bun.lock`), aube reads it and — via `write_lockfile_preserving_existing` — writes back that same kind rather than leaving a surprise `aube-lock.yaml` alongside it. Package indices are cached per version in `~/.cache/aube/index/`. Packument metadata is cached in `~/.cache/aube/packuments-v1/` with a 5-minute TTL fast path and ETag/Last-Modified revalidation beyond it.
 - **Co-existence with other package managers**: If `node_modules` was built by another pm, aube leaves it alone — no detect-and-wipe, no reuse. Our tree goes into our own `.aube/` virtual store alongside whatever's already there.
 - **Auto-install**: Tracks hashes of lockfile + package.json in `node_modules/.aube-state` to detect staleness.

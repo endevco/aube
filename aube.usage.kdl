@@ -151,7 +151,7 @@ cmd cache subcommand_required=#true help="Inspect and manage the packument metad
     }
 }
 cmd cat-file help="Print a file from the global store by integrity or hex hash" {
-    arg <HASH> help="File hash to look up" help_long="File hash to look up.\n\nAccepts `sha512-<base64>` (pnpm integrity format) or a raw hex SHA-512 digest."
+    arg <HASH> help="File hash to look up" help_long="File hash to look up.\n\nAccepts `sha512-<base64>` (pnpm integrity format) or a raw hex CAS digest."
 }
 cmd cat-index help="Print the cached package index JSON for `<name>@<version>`" {
     arg <PACKAGE> help="Package to inspect, in `name@version` form (e.g. `lodash@4.17.21`, `@babel/core@7.26.0`)" help_long="Package to inspect, in `name@version` form (e.g. `lodash@4.17.21`, `@babel/core@7.26.0`).\n\nAn exact version is required — ranges and dist-tags aren't resolved here."
@@ -317,7 +317,7 @@ cmd fetch help="Download lockfile dependencies into the store without linking no
 cmd find-hash help="List packages whose cached index references a given file hash" {
     after_long_help "Examples:\n\n  # Accepts integrity strings\n  $ aube find-hash sha512-abc123...\n  lodash@4.17.21\tpackage/lodash.js\n  express@4.19.2\tnode_modules/lodash/lodash.js\n\n  # ...or raw hex digests\n  $ aube find-hash 5d41402abc4b2a76b9719d911017c592...\n\n  # Machine-readable\n  $ aube find-hash --json sha512-abc123...\n"
     flag --json help="Emit a machine-readable JSON array of `{ \"name\", \"version\", \"path\" }` objects instead of a plain text listing"
-    arg <HASH> help="Hash to look up" help_long="Hash to look up.\n\nAccepts `sha512-<base64>` (pnpm integrity format) or a raw hex SHA-512 digest."
+    arg <HASH> help="Hash to look up" help_long="Hash to look up.\n\nAccepts `sha512-<base64>` (pnpm integrity format) or a raw hex CAS digest."
 }
 cmd get hide=#true help="Alias for `config get` (hidden; prefer `config get`)" {
     flag --json help="Emit the value as JSON" {
@@ -722,8 +722,8 @@ cmd store subcommand_required=#true help="Manage the global store" {
     }
     cmd path help="Show the store path"
     cmd prune help="Remove unreferenced packages from the global store"
-    cmd status help="Verify that every file referenced by a cached package index is still present in the store and its SHA-512 matches" {
-        long_help "Verify that every file referenced by a cached package index is still present in the store and its SHA-512 matches.\n\nExits non-zero when any corruption is detected."
+    cmd status help="Verify that every file referenced by a cached package index is still present in the store and its BLAKE3 hash matches" {
+        long_help "Verify that every file referenced by a cached package index is still present in the store and its BLAKE3 hash matches.\n\nExits non-zero when any corruption is detected."
     }
 }
 cmd test help="Run the `test` script (shortcut for `run test`)" {

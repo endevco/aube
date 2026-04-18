@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 /// The global content-addressable store, owned by aube.
 ///
 /// Default location: `~/.aube-store/v1/files/`
-/// Files are stored by SHA-512 hash with two-char hex directory sharding.
+/// Files are stored by BLAKE3 hash with two-char hex directory sharding.
+/// (Tarball-level integrity is still SHA-512 because that's the format the
+/// npm registry returns; the per-file CAS key is an internal choice.)
 #[derive(Clone)]
 pub struct Store {
     root: PathBuf,
@@ -196,10 +198,7 @@ impl Store {
     /// exist yet, the `create_new` open will fail with `NotFound`; we
     /// fall back to the slow path for correctness.
     pub fn import_bytes(&self, content: &[u8], executable: bool) -> Result<StoredFile, Error> {
-        let mut hasher = Sha512::new();
-        hasher.update(content);
-        let hash_bytes = hasher.finalize();
-        let hex_hash = hex::encode(hash_bytes);
+        let hex_hash = blake3::hash(content).to_hex().to_string();
 
         let store_path = self.file_path_from_hex(&hex_hash);
 
@@ -481,9 +480,9 @@ pub fn validate_pkg_content(
     Ok(())
 }
 
-/// Convert an integrity string ("sha512-<base64>") to a hex hash string.
-/// Decode a pnpm-style `sha512-<base64>` integrity string into the raw
-/// hex SHA-512 digest we use as the on-disk store key. Returns `None` if
+/// Decode a pnpm-style `sha512-<base64>` integrity string into its raw
+/// hex SHA-512 digest. Used by introspection commands that accept the
+/// registry integrity format as an ergonomic input. Returns `None` if
 /// the input isn't a well-formed integrity string.
 pub fn integrity_to_hex(integrity: &str) -> Option<String> {
     let b64 = integrity.strip_prefix("sha512-")?;
@@ -702,12 +701,12 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     // under different shallow settings can reuse each other's work,
     // and `import_directory` ignores `.git/` so the store sees
     // identical output either way.
-    let mut hasher = Sha512::new();
+    let mut hasher = blake3::Hasher::new();
     hasher.update(url.as_bytes());
     hasher.update(b"\0");
     hasher.update(commit.as_bytes());
     let digest = hasher.finalize();
-    let key: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let key: String = digest.as_bytes().iter().take(8).map(|b| format!("{b:02x}")).collect();
     let commit_short = commit.get(..commit.len().min(12)).unwrap_or(commit);
     let target = std::env::temp_dir().join(format!("aube-git-{key}-{commit_short}"));
 

@@ -1,7 +1,7 @@
 //! `aube cat-file <hash>` — print the contents of a file from the global store.
 //!
 //! Accepts either a pnpm-style integrity hash (`sha512-<base64>`) or a raw
-//! hex SHA-512 hash. Writes the file's bytes directly to stdout without any
+//! hex CAS digest. Writes the file's bytes directly to stdout without any
 //! encoding or framing, matching `pnpm cat-file`'s behavior — so piping into
 //! `cat`, `less`, `file`, or `jq` works the same way.
 //!
@@ -19,7 +19,7 @@ pub struct CatFileArgs {
     /// File hash to look up.
     ///
     /// Accepts `sha512-<base64>` (pnpm integrity format) or a raw hex
-    /// SHA-512 digest.
+    /// CAS digest.
     pub hash: String,
 }
 
@@ -38,13 +38,13 @@ pub async fn run(args: CatFileArgs) -> miette::Result<()> {
         // store root on anything containing `/` or `..`). Hex-only +
         // length >= 2 closes both holes at once.
         //
-        // Also lowercase up front: `hex::encode` writes lowercase shards
+        // Also lowercase up front: BLAKE3's hex encoding is lowercase
         // (`ab/cdef...`), so an uppercase input like `ABCDEF...` would
         // otherwise resolve to `AB/CDEF...` on case-sensitive filesystems
         // (Linux) and miss the real file.
         if args.hash.len() < 2 || !args.hash.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(miette!(
-                "invalid hash: {}\nhelp: expected a `sha512-<base64>` integrity string or a hex SHA-512 digest",
+                "invalid hash: {}\nhelp: expected a `sha512-<base64>` integrity string or a hex CAS digest",
                 args.hash
             ));
         }
