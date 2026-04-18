@@ -1,0 +1,83 @@
+name: copr-publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build from (e.g. v1.0.0-beta.1)"
+        required: true
+        type: string
+      chroots:
+        description: "COPR chroots to target (space-separated)"
+        required: false
+        default: "fedora-rawhide-aarch64 fedora-rawhide-x86_64 fedora-43-aarch64 fedora-43-x86_64 fedora-42-aarch64 fedora-42-x86_64 epel-10-aarch64 epel-10-x86_64 epel-9-aarch64 epel-9-x86_64"
+        type: string
+
+env:
+  PACKAGE_NAME: aube
+
+jobs:
+  publish-copr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    container:
+      image: fedora:45
+    steps:
+      - name: Install packaging deps
+        run: |
+          dnf update -y
+          dnf install -y rpm-build rpmdevtools python3-pip git rust cargo gcc openssl-devel pkgconf-pkg-config tar gzip
+          pip3 install copr-cli
+          rpmdev-setuptree
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.ref || inputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up environment variables
+        run: |
+          TAG="${{ github.event_name == 'release' && github.ref_name || inputs.tag }}"
+          VERSION="${TAG#v}"
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            CHROOTS="fedora-rawhide-aarch64 fedora-rawhide-x86_64 fedora-43-aarch64 fedora-43-x86_64 fedora-42-aarch64 fedora-42-x86_64 epel-10-aarch64 epel-10-x86_64 epel-9-aarch64 epel-9-x86_64"
+          else
+            CHROOTS="${{ inputs.chroots }}"
+          fi
+
+          {
+            echo "VERSION=${VERSION}"
+            echo "CHROOTS=${CHROOTS}"
+            echo "PACKAGE_NAME=${PACKAGE_NAME}"
+            echo "MAINTAINER_NAME=${{ vars.COPR_MAINTAINER_NAME || 'aube Release Bot' }}"
+            echo "MAINTAINER_EMAIL=${{ vars.COPR_MAINTAINER_EMAIL || 'noreply@aube.en.dev' }}"
+            echo "COPR_OWNER=${{ vars.COPR_OWNER || 'jdxcode' }}"
+            echo "COPR_PROJECT=${{ vars.COPR_PROJECT || 'aube' }}"
+            echo "BUILD_PROFILE=release"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and submit to COPR
+        run: |
+          ./packaging/copr/build-copr.sh \
+            --version "${VERSION}" \
+            --profile "${BUILD_PROFILE}" \
+            --chroots "${CHROOTS}" \
+            --owner "${COPR_OWNER}" \
+            --project "${COPR_PROJECT}" \
+            --name "${PACKAGE_NAME}" \
+            --maintainer-name "${MAINTAINER_NAME}" \
+            --maintainer-email "${MAINTAINER_EMAIL}"
+        env:
+          COPR_API_LOGIN: ${{ secrets.COPR_API_LOGIN }}
+          COPR_API_TOKEN: ${{ secrets.COPR_API_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: copr-${{ env.VERSION }}
+          path: artifacts/
+          if-no-files-found: warn
