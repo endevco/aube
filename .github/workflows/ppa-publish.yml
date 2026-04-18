@@ -264,11 +264,19 @@ jobs:
         run: |
           cd /tmp/packages
 
+          # Launchpad's FTP path is ~<owner>/ubuntu/<ppa_name>/ — the
+          # distro component sits between owner and PPA name. Split
+          # PPA_NAME (e.g. "ppa:jdxcode/aube") into its two halves
+          # rather than dropping `/ubuntu/` at the end.
+          PPA_ID="${PPA_NAME#ppa:}"
+          PPA_OWNER="${PPA_ID%%/*}"
+          PPA_SHORT="${PPA_ID#*/}"
+
           cat > ~/.dput.cf << EOF
           [aube-ppa]
           fqdn = ppa.launchpad.net
           method = ftp
-          incoming = ~${PPA_NAME#ppa:}/ubuntu/
+          incoming = ~${PPA_OWNER}/ubuntu/${PPA_SHORT}/
           login = anonymous
           allow_unsigned_uploads = 0
           EOF
