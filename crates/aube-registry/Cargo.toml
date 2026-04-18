@@ -12,7 +12,7 @@ include = ["src/**/*.rs"]
 [dependencies]
 aube-manifest = { workspace = true }
 aube-settings = { workspace = true }
-reqwest = { workspace = true, features = ["native-tls"] }
+reqwest = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"
 serde = { workspace = true }

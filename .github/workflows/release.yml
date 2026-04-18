@@ -38,16 +38,22 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            build-tool: cargo
           - target: x86_64-apple-darwin
             os: macos-latest
+            build-tool: cargo
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            build-tool: cross
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            build-tool: cross
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            build-tool: cargo
           - target: aarch64-pc-windows-msvc
             os: windows-latest
+            build-tool: cargo
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,10 +65,6 @@ jobs:
         with:
           p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
           p12-password: ${{ secrets.CERTIFICATES_P12_PASS }}
-      - name: Install cross-compilation tools
-        uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-${{ matrix.target }}
@@ -80,6 +82,7 @@ jobs:
           bin: aube,aubr,aubx
           archive: aube-$tag-$target
           target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
           ref: refs/tags/${{ inputs.tag }}
           token: ${{ secrets.AUBE_GH_TOKEN }}
           codesign: "Developer ID Application: Jeffrey Dickey (4993Y37DX6)"
@@ -91,5 +94,6 @@ jobs:
           bin: aube,aubr,aubx
           archive: aube-$tag-$target
           target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
           ref: refs/tags/${{ inputs.tag }}
           token: ${{ secrets.AUBE_GH_TOKEN }}

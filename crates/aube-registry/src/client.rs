@@ -952,7 +952,13 @@ fn build_http_client(
             }
         }
         if let (Some(cert), Some(key)) = (&registry_config.tls.cert, &registry_config.tls.key) {
-            match reqwest::Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
+            let mut pem = Vec::with_capacity(cert.len() + key.len() + 1);
+            pem.extend_from_slice(cert.as_bytes());
+            if !cert.ends_with('\n') {
+                pem.push(b'\n');
+            }
+            pem.extend_from_slice(key.as_bytes());
+            match reqwest::Identity::from_pem(&pem) {
                 Ok(identity) => builder = builder.identity(identity),
                 Err(e) => tracing::warn!("ignoring invalid per-registry client cert/key: {e}"),
             }
