@@ -298,16 +298,23 @@ impl InstallProgress {
     }
 
     /// Finalize and clear the progress display. TTY mode leaves no output
-    /// behind. CI mode prints a final status line + `Done in Xs` summary
-    /// and blocks until the heartbeat thread has actually stopped, so no
-    /// stray tick can appear after the summary. Idempotent.
-    pub fn finish(&self) {
+    /// behind. CI mode blocks until the heartbeat thread has actually
+    /// stopped so no stray tick can appear after this returns, and
+    /// optionally writes the final framed `[ ✓ … ]` status line.
+    /// Idempotent.
+    ///
+    /// `print_ci_summary`: set to `false` when a later call site will
+    /// print its own end-of-install line (so the main install path
+    /// doesn't double up with [`print_install_summary`]). Set to `true`
+    /// for early-return paths (`--lockfile-only`, drift check) that
+    /// want the framed summary to remain the end of CI log output.
+    pub fn finish(&self, print_ci_summary: bool) {
         match &self.mode {
             Mode::Tty { root, .. } => {
                 root.set_status(ProgressStatus::Done);
                 clx::progress::stop_clear();
             }
-            Mode::Ci(s) => s.stop(true),
+            Mode::Ci(s) => s.stop(print_ci_summary),
         }
     }
 

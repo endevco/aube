@@ -3137,7 +3137,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         if fresh {
             tracing::debug!("--lockfile-only: lockfile already up to date");
             if let Some(p) = prog_ref {
-                p.finish();
+                p.finish(true);
             }
             eprintln!("Lockfile is up to date, resolution step is skipped");
             return Ok(());
@@ -3212,7 +3212,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // primary output.
         maybe_cleanup_unused_catalogs(&cwd, &settings_ctx, &workspace_catalogs, &graph.catalogs)?;
         if let Some(p) = prog_ref {
-            p.finish();
+            p.finish(true);
         }
         eprintln!(
             "Lockfile written ({} packages); skipped node_modules linking",
@@ -4272,8 +4272,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // Tear down the progress display before running post-link lifecycle
     // scripts or printing the final summary — scripts write directly to
     // stdout/stderr and would collide with an active progress bar.
+    //
+    // Skip the CI-mode framed summary on a no-op install: `print_install_summary`
+    // below will print the "Already up to date" branded line, and we don't
+    // want CI users to see both the framed `[ ✓ … resolved N · reused N ]`
+    // block and the branded line as redundant twins.
+    let install_is_noop = stats.packages_linked == 0 && stats.top_level_linked == 0;
     if let Some(p) = prog_ref {
-        p.finish();
+        p.finish(!install_is_noop);
     }
 
     if !opts.ignore_scripts && strict_dep_builds_setting && !virtual_store_only {
