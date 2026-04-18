@@ -85,7 +85,7 @@ if [[ "$AUBE_BOOTSTRAP_PARALLEL" == "1" ]] && command -v brew >/dev/null && ! co
 	brew install parallel
 fi
 
-mise install -v --locked
+mise install --locked
 eval "$(mise activate bash --shims)"
 
 if [[ "$AUBE_BOOTSTRAP_RUST" != "0" ]]; then
