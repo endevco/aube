@@ -187,13 +187,14 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
             .into_diagnostic()
             .wrap_err("failed to execute dlx shell command")?
     } else {
-        let bin_dir = super::project_modules_dir(&project_dir).join(".bin");
+        let modules_dir = super::project_modules_dir(&project_dir);
+        let bin_dir = modules_dir.join(".bin");
         // If `-p` wasn't given, the command doubles as the package name
         // and the bin is a best-guess derivation from it. Check the
         // installed package's `bin` field and prefer the actual bin name
         // it ships — e.g. `@tanstack/cli` ships `tanstack`, not `cli`.
         let resolved_bin_name = if !explicit_package && !bin_dir.join(&bin_name).exists() {
-            resolve_bin_from_package(&project_dir, &install_specs[0])
+            resolve_bin_from_package(&modules_dir, &install_specs[0])
                 .unwrap_or_else(|| bin_name.clone())
         } else {
             bin_name.clone()
@@ -270,14 +271,14 @@ fn bin_name_for(command: &str) -> String {
 /// `aube dlx @tanstack/cli create` works (ships its bin as `tanstack`, not
 /// `cli`) and `aube dlx which` works (ships `node-which`).
 ///
-/// Returns `None` when we can't make a confident pick — caller keeps the
-/// original inference and lets the bin-missing error fire.
-fn resolve_bin_from_package(project_dir: &std::path::Path, install_spec: &str) -> Option<String> {
+/// `modules_dir` is the project's resolved virtual-modules directory — the
+/// same one we derive the `.bin` path from, so a user with a custom
+/// `modulesDir` still sees the fallback work. Returns `None` when we can't
+/// make a confident pick; caller keeps the original inference and lets the
+/// bin-missing error fire.
+fn resolve_bin_from_package(modules_dir: &std::path::Path, install_spec: &str) -> Option<String> {
     let (pkg_name, _) = split_spec(install_spec);
-    let pkg_json_path = project_dir
-        .join("node_modules")
-        .join(pkg_name)
-        .join("package.json");
+    let pkg_json_path = modules_dir.join(pkg_name).join("package.json");
     let content = std::fs::read_to_string(&pkg_json_path).ok()?;
     let pkg_json: serde_json::Value = serde_json::from_str(&content).ok()?;
     let bin = pkg_json.get("bin")?;
@@ -334,8 +335,8 @@ mod tests {
         assert_eq!(bin_name_for("@scope/foo"), "foo");
     }
 
-    fn write_pkg_json(project_dir: &std::path::Path, pkg_name: &str, pkg_json: serde_json::Value) {
-        let dir = project_dir.join("node_modules").join(pkg_name);
+    fn write_pkg_json(modules_dir: &std::path::Path, pkg_name: &str, pkg_json: serde_json::Value) {
+        let dir = modules_dir.join(pkg_name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("package.json"),
