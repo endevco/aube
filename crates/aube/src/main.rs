@@ -9,8 +9,32 @@ mod update_check;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use miette::{Context, IntoDiagnostic, miette};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use tracing_subscriber::prelude::*;
+
+/// Inspect `argv[0]` and, when invoked as a multicall shim (`aubr`, `aubx`),
+/// rewrite the argv so clap sees the equivalent `aube run …` / `aube dlx …`.
+/// Shims are installed as hardlinks (or copies on Windows) that point at the
+/// same `aube` executable; dispatch happens purely at runtime via basename.
+fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
+    let Some(argv0) = args.first() else {
+        return args;
+    };
+    let stem = std::path::Path::new(argv0)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("aube")
+        .to_ascii_lowercase();
+    let subcommand = match stem.as_str() {
+        "aubr" => "run",
+        "aubx" => "dlx",
+        _ => return args,
+    };
+    args[0] = OsString::from("aube");
+    args.insert(1, OsString::from(subcommand));
+    args
+}
 
 #[derive(Parser)]
 #[command(name = "aube", about = "A fast Node.js package manager", version)]
@@ -446,7 +470,7 @@ enum Commands {
 }
 
 fn main() -> miette::Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(rewrite_multicall_argv(std::env::args_os().collect()));
 
     // `--color` / `--no-color` take effect before anything else touches
     // color state: we translate the flags into the env vars that miette,
@@ -1257,6 +1281,62 @@ mod cli_spec_tests {
                  Regenerate with: cargo build && ./target/debug/aube usage > aube.usage.kdl"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod multicall_tests {
+    use super::*;
+
+    fn os(strs: &[&str]) -> Vec<OsString> {
+        strs.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn aube_passes_through_unchanged() {
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aube", "install"])),
+            os(&["aube", "install"])
+        );
+    }
+
+    #[test]
+    fn aubr_rewrites_to_run() {
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubr", "build"])),
+            os(&["aube", "run", "build"])
+        );
+    }
+
+    #[test]
+    fn aubx_rewrites_to_dlx() {
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubx", "cowsay", "hi"])),
+            os(&["aube", "dlx", "cowsay", "hi"])
+        );
+    }
+
+    #[test]
+    fn absolute_path_and_exe_suffix_are_handled() {
+        // argv[0] can be an absolute path (exec-style invocation) or carry
+        // a `.exe` suffix on Windows. `Path::file_stem` takes care of both
+        // so dispatch stays purely basename-driven.
+        assert_eq!(
+            rewrite_multicall_argv(os(&["/usr/local/bin/aubr", "test"])),
+            os(&["aube", "run", "test"])
+        );
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubx.exe", "pkg"])),
+            os(&["aube", "dlx", "pkg"])
+        );
+    }
+
+    #[test]
+    fn bare_shim_invocation_passes_through_to_subcommand() {
+        // `aubr` with no further args becomes `aube run`, which clap
+        // parses as the `run` subcommand with no positional — same as
+        // the user typing `aube run` directly.
+        assert_eq!(rewrite_multicall_argv(os(&["aubr"])), os(&["aube", "run"]));
     }
 }
 
