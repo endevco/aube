@@ -1,6 +1,6 @@
 [package]
-name = "aube-cli"
-description = "Aube CLI — a fast Node.js package manager"
+name = "aube"
+description = "Aube — a fast Node.js package manager"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -246,7 +246,7 @@ impl Store {
             //     writer).
             //   - `aube-store` tests (assert the marker exists after
             //     an `executable=true` import).
-            //   - `aube-cli::commands::store` (`aube store prune`)
+            //   - `aube::commands::store` (`aube store prune`)
             //     uses the marker to skip bumping the "freed bytes"
             //     counter when unlinking exec-marker sidecars.
             // No code path reads the marker to decide executability —

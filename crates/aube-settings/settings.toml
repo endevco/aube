@@ -922,7 +922,7 @@ implemented = true
 since = "2026-04-12"
 docs = """
 aube's default outside CI. Maps to `FrozenMode::Prefer` in
-`crates/aube-cli/src/commands/install.rs`. Inside CI the default flips
+`crates/aube/src/commands/install.rs`. Inside CI the default flips
 to `FrozenMode::Frozen` (see `default_for_env`).
 """
 sources.cli = ["prefer-frozen-lockfile"]
@@ -1113,7 +1113,7 @@ implemented = true
 since = "2026-04-12"
 docs = """
 Caps the tokio semaphores that gate concurrent tarball downloads
-inside `crates/aube-cli/src/commands/install.rs`. When set, both the
+inside `crates/aube/src/commands/install.rs`. When set, both the
 lockfile-driven and streaming fetch paths use the configured value
 instead of the built-in defaults (128 for tarballs, 64 for the
 streaming path). The resolver's packument fetcher still uses its own
@@ -1432,7 +1432,7 @@ sources.cli = ["color", "no-color"]
 sources.env = []
 sources.npmrc = ["color"]
 examples = []
-# Resolved in `aube-cli/src/main.rs` via `string_from_env` +
+# Resolved in `aube/src/main.rs` via `string_from_env` +
 # `string_from_npmrc` before argv parsing completes and before a
 # `ResolveCtx` exists — the color choice drives miette/tracing init
 # and has to happen first. Uses the same underlying helpers as
@@ -1450,7 +1450,7 @@ sources.cli = ["loglevel", "verbose", "v", "silent"]
 sources.env = []
 sources.npmrc = ["loglevel"]
 examples = []
-# Resolved in `aube-cli/src/main.rs` via `string_from_env` +
+# Resolved in `aube/src/main.rs` via `string_from_env` +
 # `string_from_npmrc` at the very top of `main` so the tracing
 # subscriber can be configured before any command runs — the typed
 # `resolved::loglevel` accessor would need a `ResolveCtx` that

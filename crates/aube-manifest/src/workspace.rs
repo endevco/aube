@@ -299,7 +299,7 @@ pub struct WorkspaceConfig {
 
     /// pnpm-style peer dependency escape hatches. Read by
     /// `PeerDependencyRules::resolve` during install; the actual matching
-    /// logic lives in `aube-cli`. We only need the container here so the
+    /// logic lives in `aube`. We only need the container here so the
     /// settings-meta parity test can see the top-level key as a real
     /// field (not falling into `extra`). Leaves of the map are
     /// deserialized lazily on demand.

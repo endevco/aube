@@ -5,7 +5,7 @@
 #     PR that bumps the workspace version and regenerates CHANGELOG.md.
 #   * `release` after that PR merges — publishes each crate to crates.io in
 #     dependency order and creates a single draft GitHub release for the
-#     binary under the `aube-cli` crate's tag.
+#     binary under the `aube` crate's tag.
 #
 # Draft releases become non-drafts only after the binary-upload workflow
 # finishes — see the `publish-release` job in `release-plz.yml`.
@@ -13,7 +13,7 @@
 [workspace]
 # The whole workspace shares one version (`version.workspace = true`),
 # so we only want ONE GitHub release and ONE tag per cut — the crate
-# ("aube-cli") that owns the binary. Every other crate publishes to
+# ("aube") that owns the binary. Every other crate publishes to
 # crates.io but is otherwise silent (no per-crate tag, no per-crate
 # GitHub release).
 dependencies_update = true
@@ -23,8 +23,8 @@ git_tag_enable = false
 git_release_enable = false
 
 [[package]]
-name = "aube-cli"
-# aube-cli owns the binary and the user-facing release; this crate alone
+name = "aube"
+# aube owns the binary and the user-facing release; this crate alone
 # gets the short `v{{ version }}` tag plus a draft GitHub release.
 git_tag_enable = true
 git_tag_name = "v{{ version }}"

@@ -148,7 +148,7 @@ async fn web_login(registry: &str) -> miette::Result<String> {
 
     let hostname = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "aube-cli".to_string());
+        .unwrap_or_else(|_| "aube".to_string());
 
     let resp = client
         .post(&login_endpoint)

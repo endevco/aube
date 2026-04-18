@@ -18,7 +18,7 @@ build flow:
 ```sh
 git clone https://github.com/endevco/aube
 cd aube
-cargo install --path crates/aube-cli
+cargo install --path crates/aube
 ```
 
 This installs the `aube` binary into `~/.cargo/bin`.

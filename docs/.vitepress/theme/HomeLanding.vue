@@ -282,10 +282,10 @@ watch(progressBarEl, (el, previousEl) => {
             <div class="aube-command">$ aube install</div>
             <template v-if="!done">
               <div class="aube-progress-root">
-                <span class="aube-cli-name">aube</span>
-                <span class="aube-cli-version">{{ terminalVersion }}</span>
-                <span class="aube-cli-byline">by en.dev</span>
-                <span class="aube-cli-phase">fetching</span>
+                <span class="aube-name">aube</span>
+                <span class="aube-version">{{ terminalVersion }}</span>
+                <span class="aube-byline">by en.dev</span>
+                <span class="aube-phase">fetching</span>
                 <span ref="progressBarEl" class="aube-progress-bar">{{ progressBar }}</span>
                 <span class="aube-progress-count">{{ installed }}/{{ installedPackageTotal }}</span>
               </div>
@@ -301,9 +301,9 @@ watch(progressBarEl, (el, previousEl) => {
             </template>
             <template v-else>
               <div class="aube-install-summary">
-                <span class="aube-cli-name">aube</span>
+                <span class="aube-name">aube</span>
                 <span>{{ aubeVersion }}</span>
-                <span class="aube-cli-byline">by en.dev ·</span>
+                <span class="aube-byline">by en.dev ·</span>
                 <span class="aube-done-check">✓</span>
                 <span>installed {{ installedPackageTotal }} packages in 3.7s</span>
               </div>

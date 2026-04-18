@@ -266,7 +266,7 @@ impl NpmConfig {
                 }
             }
             // Generic pnpm settings (`auto-install-peers`, etc) are NOT
-            // matched here — they're resolved by aube-cli's settings
+            // matched here — they're resolved by aube's settings
             // module against the raw entries, using the canonical
             // source list from settings.toml. Add a new branch here
             // only if the key maps to a registry-client concept.
@@ -1088,7 +1088,7 @@ mod tests {
         assert!(config.strict_ssl);
     }
 
-    // `auto-install-peers` parsing lives in aube-cli's settings_values
+    // `auto-install-peers` parsing lives in aube's settings_values
     // module now — see tests there. NpmConfig only knows about
     // registry-client config (URL, auth, scopes).
 
