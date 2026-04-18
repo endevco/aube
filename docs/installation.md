@@ -33,11 +33,6 @@ npm install -g @endevco/aube
 npx @endevco/aube --version
 ```
 
-No Rust toolchain required — the package's preinstall step downloads
-the matching prebuilt binary for your platform (Linux, macOS, Windows;
-x64 and arm64) from npm. `npm install -g` puts `aube`, `aubr`, and
-`aubx` on your PATH.
-
 Because the install happens via `preinstall`, this does not work with
 `--ignore-scripts` or in offline/air-gapped caches. Prefer mise or
 `cargo install` for those environments.
