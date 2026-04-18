@@ -876,10 +876,12 @@ impl Linker {
                             let index = match package_indices.get(dep_path) {
                                 Some(idx) => idx,
                                 None => {
-                                    owned_index =
-                                        self.store.load_index(&pkg.name, &pkg.version).ok_or_else(
-                                            || Error::MissingPackageIndex(dep_path.to_string()),
-                                        )?;
+                                    owned_index = self
+                                        .store
+                                        .load_index(pkg.registry_name(), &pkg.version)
+                                        .ok_or_else(|| {
+                                            Error::MissingPackageIndex(dep_path.to_string())
+                                        })?;
                                     &owned_index
                                 }
                             };
@@ -944,7 +946,7 @@ impl Linker {
                     None => {
                         owned_index = self
                             .store
-                            .load_index(&pkg.name, &pkg.version)
+                            .load_index(pkg.registry_name(), &pkg.version)
                             .ok_or_else(|| Error::MissingPackageIndex(dep_path.to_string()))?;
                         &owned_index
                     }
@@ -1227,7 +1229,7 @@ impl Linker {
             let index = match package_indices.get(dep_path) {
                 Some(idx) => idx,
                 None => {
-                    let Some(idx) = self.store.load_index(&pkg.name, &pkg.version) else {
+                    let Some(idx) = self.store.load_index(pkg.registry_name(), &pkg.version) else {
                         return Err(Error::MissingPackageIndex(dep_path.to_string()));
                     };
                     owned_index = idx;

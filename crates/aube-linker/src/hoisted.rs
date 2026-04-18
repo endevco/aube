@@ -391,9 +391,12 @@ pub(crate) fn link_hoisted_importer(
         let index = match package_indices.get(&dep_path) {
             Some(i) => i,
             None => {
+                // `registry_name()` is the lookup key for npm-aliased
+                // packages (`"h3-v2": "npm:h3@..."`), which saved the
+                // index under the real package name at fetch time.
                 let loaded = linker
                     .store
-                    .load_index(&pkg.name, &pkg.version)
+                    .load_index(pkg.registry_name(), &pkg.version)
                     .ok_or_else(|| Error::MissingPackageIndex(dep_path.clone()))?;
                 owned_index = loaded;
                 &owned_index

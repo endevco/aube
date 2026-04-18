@@ -30,12 +30,25 @@ struct RawNpmLockfile {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawNpmPackage {
+    /// npm emits this field only when the entry is an npm-alias
+    /// (`"h3-v2": "npm:h3@..."` resolves to `node_modules/h3-v2` with
+    /// `name: "h3"`). For non-aliased packages the name is recoverable
+    /// from the install path and npm omits the field. We use the
+    /// presence of this field — combined with inequality against the
+    /// install-path segment — to detect aliases.
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
     integrity: Option<String>,
+    /// Full registry tarball URL npm wrote when it locked this entry.
+    /// We capture it so aliased packages (whose registry name differs
+    /// from the install-path-derived name used to key the graph) don't
+    /// need to re-derive the URL from the registry base — and so we
+    /// can round-trip `resolved:` faithfully when we write back.
+    #[serde(default)]
+    resolved: Option<String>,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
     #[serde(default)]
@@ -76,7 +89,14 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             continue; // root project, handled separately
         }
 
-        let name = package_name_from_install_path(install_path)
+        // The install-path segment is what every other package in the
+        // tree refers to. For non-aliased deps that's the real package
+        // name; for `"h3-v2": "npm:h3@..."` it's the alias `h3-v2`.
+        // Keep it as the LockedPackage.name so the linker drops the
+        // dep into `node_modules/<alias>/` and transitive symlinks
+        // resolve by the string that appears in consumers'
+        // `dependencies` maps.
+        let install_name = package_name_from_install_path(install_path)
             .or_else(|| entry.name.clone())
             .ok_or_else(|| {
                 Error::Parse(
@@ -84,15 +104,27 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                     format!("could not determine package name for '{install_path}'"),
                 )
             })?;
+        // npm writes `name:` only for aliases. If present and different
+        // from the install-path segment, this is `"<alias>": "npm:<real>@..."`
+        // and the real name is what we hit the registry with. If absent
+        // or equal, it's a regular dep.
+        let alias_of = entry
+            .name
+            .as_ref()
+            .filter(|real| real.as_str() != install_name.as_str())
+            .cloned();
         let version = entry.version.clone().ok_or_else(|| {
             Error::Parse(
                 path.to_path_buf(),
-                format!("package '{name}' has no version"),
+                format!("package '{install_name}' has no version"),
             )
         })?;
-        install_path_info.insert(install_path.clone(), (name.clone(), version.clone()));
+        install_path_info.insert(
+            install_path.clone(),
+            (install_name.clone(), version.clone()),
+        );
 
-        let dep_path = format!("{name}@{version}");
+        let dep_path = format!("{install_name}@{version}");
 
         // Same (name, version) may appear at multiple nest levels; keep the first occurrence.
         if graph.packages.contains_key(&dep_path) {
@@ -110,14 +142,31 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             deps.insert(dep_name.clone(), String::new());
         }
 
+        // Keep the `resolved` URL for aliased entries so the fetcher
+        // doesn't try to re-derive it from the alias-qualified name.
+        // For non-aliased entries the stock name-based derivation is
+        // what other paths already expect, so leave `tarball_url`
+        // unset and let the default code path handle it.
+        let tarball_url = if alias_of.is_some() {
+            entry
+                .resolved
+                .as_ref()
+                .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+                .cloned()
+        } else {
+            None
+        };
+
         graph.packages.insert(
             dep_path.clone(),
             LockedPackage {
-                name,
+                name: install_name,
                 version,
                 integrity: entry.integrity.clone(),
                 dependencies: deps,
                 dep_path,
+                alias_of,
+                tarball_url,
                 ..Default::default()
             },
         );
@@ -129,11 +178,18 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // `node_modules/bar` exists — npm hoists shared versions to the root but
     // keeps conflicting versions nested.
     //
-    // We then write the resolved (name → dep_path) back onto the LockedPackage
-    // keyed by the *first* dep_path (name@version) we stored. This may lose
-    // fidelity if two entries share (name, version) but have different
-    // resolved transitives — npm.rs's data model doesn't express that, and
-    // in practice npm dedupes only when the transitives match anyway.
+    // We then write the resolved (name → dep_path tail) back onto the
+    // LockedPackage keyed by the *first* dep_path (name@version) we
+    // stored. The map value is the substring that follows `<name>@` in
+    // the target dep_path (just the version for simple packages), per
+    // `LockedPackage.dependencies` doc — the linker recombines the
+    // name and tail with an `@` separator when walking siblings.
+    // Emitting the full dep_path here doubled the name and produced
+    // broken sibling symlinks like `rolldown@rolldown@1.0.0` for every
+    // transitive dep. This may lose fidelity if two entries share
+    // (name, version) but have different resolved transitives —
+    // npm.rs's data model doesn't express that, and in practice npm
+    // dedupes only when the transitives match anyway.
     let mut resolved_by_dep_path: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (install_path, entry) in &raw.packages {
         if install_path.is_empty() {
@@ -158,9 +214,9 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         {
             if let Some(target_install_path) =
                 resolve_nested(install_path, dep_name, &install_path_info)
-                && let Some((dname, dver)) = install_path_info.get(&target_install_path)
+                && let Some((_, dver)) = install_path_info.get(&target_install_path)
             {
-                resolved.insert(dep_name.clone(), format!("{dname}@{dver}"));
+                resolved.insert(dep_name.clone(), dver.clone());
             }
         }
         resolved_by_dep_path.insert(dep_path, resolved);
@@ -330,11 +386,14 @@ struct WriteNpmPackage<'a> {
 /// Lossy areas (documented so callers know what to expect):
 ///  - Peer-contextualized variants of the same `name@version` collapse
 ///    to one entry. npm's layout can't represent per-context peers.
-///  - `resolved` tarball URLs are omitted — we don't persist the
-///    origin URL in [`LockedPackage`]. npm's own consumers tolerate
-///    missing `resolved` (they refetch from the registry); aube's own
-///    parser only needs `integrity`, so round-trip through the parser
-///    is lossless for the data it inspects.
+///  - `resolved` tarball URLs are omitted for non-aliased packages —
+///    we don't persist the origin URL in [`LockedPackage`]. npm's own
+///    consumers tolerate missing `resolved` (they refetch from the
+///    registry); aube's own parser only needs `integrity`, so round-trip
+///    through the parser is lossless for the data it inspects. Aliased
+///    entries always emit `resolved:` because the install-path name is
+///    the alias — without the URL the consumer can't recover the real
+///    registry location.
 ///  - `file:` / `link:` / git sources aren't emitted yet.
 ///  - Multiple workspace importers aren't emitted — only the root
 ///    importer's tree is walked. Workspace + npm-lockfile projects
@@ -438,10 +497,25 @@ pub fn write(
         let dev = is_dev && !dev_optional;
         let optional = is_opt && !dev_optional;
 
+        // Aliased deps (`"h3-v2": "npm:h3@..."` in package.json) round-trip
+        // as `node_modules/h3-v2` with an explicit `name: "h3"` and the
+        // captured `resolved:` URL. Without both fields npm (and aube's
+        // own reader on a subsequent install) has no way to recover
+        // the real package identity from an alias-qualified install
+        // path.
+        let alias_name = pkg.alias_of.as_deref();
+        let resolved = if alias_name.is_some() {
+            pkg.tarball_url.clone()
+        } else {
+            None
+        };
+
         packages.insert(
             install_path.clone(),
             WriteNpmPackage {
+                name: alias_name,
                 version: Some(pkg.version.as_str()),
+                resolved,
                 integrity: pkg.integrity.as_deref(),
                 dependencies: deps,
                 dev,
@@ -776,9 +850,12 @@ mod tests {
 
         let foo = &graph.packages["foo@1.2.3"];
         assert_eq!(foo.integrity.as_deref(), Some("sha512-aaa"));
+        // `LockedPackage.dependencies` values are dep_path *tails* (the
+        // substring after `<name>@`), not full dep_paths — matches the
+        // pnpm parser and the linker's sibling-symlink builder.
         assert_eq!(
             foo.dependencies.get("nested").map(String::as_str),
-            Some("nested@3.1.0")
+            Some("3.1.0")
         );
 
         let root = graph.importers.get(".").unwrap();
@@ -852,10 +929,11 @@ mod tests {
         assert!(graph.packages.contains_key("foo@1.0.0"));
 
         // foo's transitive dep must point to the nested (1.0.0), not the hoisted (2.0.0).
+        // Value is the dep_path tail (version) — see the `LockedPackage.dependencies` doc.
         let foo = &graph.packages["foo@1.0.0"];
         assert_eq!(
             foo.dependencies.get("bar").map(String::as_str),
-            Some("bar@1.0.0")
+            Some("1.0.0")
         );
 
         // Root's direct bar dep points to the hoisted 2.0.0.
@@ -1092,11 +1170,12 @@ mod tests {
         let reparsed = parse(out.path()).unwrap();
 
         // baz's transitive dep must resolve to bar@2.0.0, not the
-        // shadowing bar@1.0.0 under foo.
+        // shadowing bar@1.0.0 under foo. Value is the dep_path tail
+        // (version) so the linker can recombine it with the dep name.
         let baz = &reparsed.packages["baz@1.0.0"];
         assert_eq!(
             baz.dependencies.get("bar").map(String::as_str),
-            Some("bar@2.0.0"),
+            Some("2.0.0"),
             "baz's bar dep was shadowed by foo/bar@1.0.0 — shadow-nest fix regressed",
         );
     }
@@ -1187,13 +1266,13 @@ mod tests {
         );
         // foo's nested bar dep still resolves to 1.0.0, not the
         // hoisted 2.0.0. If the writer failed to nest, reparse would
-        // snap this to bar@2.0.0.
+        // snap this to bar@2.0.0. Value is the dep_path tail.
         assert_eq!(
             reparsed.packages["foo@1.0.0"]
                 .dependencies
                 .get("bar")
                 .map(String::as_str),
-            Some("bar@1.0.0")
+            Some("1.0.0")
         );
     }
 
@@ -1276,5 +1355,146 @@ mod tests {
 
         let err = parse(tmp.path()).unwrap_err();
         assert!(matches!(err, Error::Parse(_, msg) if msg.contains("lockfileVersion 1")));
+    }
+
+    /// npm writes `"h3-v2": "npm:h3@..."` aliases as a packages entry
+    /// at `node_modules/h3-v2` with `name: "h3"` and the real registry
+    /// `resolved:` URL. Aube keys the graph on the *alias* (so
+    /// `node_modules/h3-v2` ends up at `.aube/h3-v2@.../node_modules/h3-v2`)
+    /// but remembers the real package name in `alias_of` so fetches
+    /// and store-index lookups use the URL that actually exists.
+    #[test]
+    fn test_parse_npm_alias_dependency() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": { "h3-v2": "npm:h3@2.0.1-rc.20" }
+                },
+                "node_modules/h3-v2": {
+                    "name": "h3",
+                    "version": "2.0.1-rc.20",
+                    "resolved": "https://registry.npmjs.org/h3/-/h3-2.0.1-rc.20.tgz",
+                    "integrity": "sha512-aliased"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        // Graph key and LockedPackage.name both carry the alias —
+        // that's what consumers (and the linker's folder-name logic)
+        // refer to when they say "h3-v2".
+        let pkg = graph
+            .packages
+            .get("h3-v2@2.0.1-rc.20")
+            .expect("aliased entry should be keyed by the alias dep_path");
+        assert_eq!(pkg.name, "h3-v2");
+        assert_eq!(pkg.version, "2.0.1-rc.20");
+        assert_eq!(pkg.alias_of.as_deref(), Some("h3"));
+        assert_eq!(pkg.registry_name(), "h3");
+        // `resolved:` round-trips into `tarball_url` so the fetcher
+        // skips re-deriving from the alias-qualified name (which
+        // would 404 the registry).
+        assert_eq!(
+            pkg.tarball_url.as_deref(),
+            Some("https://registry.npmjs.org/h3/-/h3-2.0.1-rc.20.tgz")
+        );
+
+        let root = graph.importers.get(".").unwrap();
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "h3-v2");
+        assert_eq!(root[0].dep_path, "h3-v2@2.0.1-rc.20");
+    }
+
+    /// Non-aliased entries (the common case) leave `alias_of` unset
+    /// and `registry_name()` degenerates to `name`. Regression guard
+    /// against over-aggressive alias detection that would flag every
+    /// entry carrying an explicit `name:` field (npm sometimes emits
+    /// one for non-aliased roots too).
+    #[test]
+    fn test_parse_non_alias_preserves_empty_alias_of() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": { "foo": "^1.0.0" }
+                },
+                "node_modules/foo": {
+                    "name": "foo",
+                    "version": "1.2.3",
+                    "integrity": "sha512-foo"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let pkg = &graph.packages["foo@1.2.3"];
+        assert_eq!(pkg.name, "foo");
+        assert!(pkg.alias_of.is_none());
+        assert_eq!(pkg.registry_name(), "foo");
+        assert!(pkg.tarball_url.is_none());
+    }
+
+    /// Round-trip: writer must emit `name:` and `resolved:` for the
+    /// aliased entry so a subsequent `parse()` still recognizes it as
+    /// an alias. Without both fields the re-parser would see
+    /// `node_modules/h3-v2` with no `name:` and treat it as a plain
+    /// package called `h3-v2` — which doesn't exist on the registry.
+    #[test]
+    fn test_write_roundtrip_npm_alias() {
+        let mut graph = LockfileGraph::default();
+        graph.packages.insert(
+            "h3-v2@2.0.1-rc.20".to_string(),
+            LockedPackage {
+                name: "h3-v2".to_string(),
+                version: "2.0.1-rc.20".to_string(),
+                integrity: Some("sha512-aliased".to_string()),
+                dep_path: "h3-v2@2.0.1-rc.20".to_string(),
+                alias_of: Some("h3".to_string()),
+                tarball_url: Some("https://registry.npmjs.org/h3/-/h3-2.0.1-rc.20.tgz".to_string()),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "h3-v2".to_string(),
+                dep_path: "h3-v2@2.0.1-rc.20".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("npm:h3@2.0.1-rc.20".to_string()),
+            }],
+        );
+
+        let manifest = test_manifest();
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+
+        let body = std::fs::read_to_string(out.path()).unwrap();
+        assert!(
+            body.contains("\"name\": \"h3\""),
+            "expected `name: h3` emitted for aliased entry; got:\n{body}"
+        );
+        assert!(
+            body.contains("\"resolved\": \"https://registry.npmjs.org/h3/-/h3-2.0.1-rc.20.tgz\""),
+            "expected `resolved:` URL emitted for aliased entry; got:\n{body}"
+        );
+
+        let reparsed = parse(out.path()).unwrap();
+        let pkg = &reparsed.packages["h3-v2@2.0.1-rc.20"];
+        assert_eq!(pkg.alias_of.as_deref(), Some("h3"));
+        assert_eq!(pkg.registry_name(), "h3");
     }
 }

@@ -303,6 +303,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 libc,
                 bundled_dependencies,
                 tarball_url,
+                alias_of: None,
             },
         );
     }

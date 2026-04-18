@@ -1436,6 +1436,7 @@ impl Resolver {
                                     libc: locked_pkg.libc.clone(),
                                     bundled_dependencies: locked_pkg.bundled_dependencies.clone(),
                                     tarball_url: locked_pkg.tarball_url.clone(),
+                                    alias_of: locked_pkg.alias_of.clone(),
                                 },
                             );
 
@@ -1872,6 +1873,7 @@ impl Resolver {
                             v
                         },
                         tarball_url: None,
+                        alias_of: None,
                     },
                 );
 
@@ -2980,6 +2982,7 @@ fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
                 libc: pkg.libc,
                 bundled_dependencies: pkg.bundled_dependencies,
                 tarball_url: pkg.tarball_url,
+                alias_of: pkg.alias_of,
             },
         );
     }
@@ -3375,6 +3378,7 @@ fn visit_peer_context(
             libc: pkg.libc.clone(),
             bundled_dependencies: pkg.bundled_dependencies.clone(),
             tarball_url: pkg.tarball_url.clone(),
+            alias_of: pkg.alias_of.clone(),
         },
     );
     Some(contextualized)

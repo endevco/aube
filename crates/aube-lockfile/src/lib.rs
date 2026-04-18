@@ -453,6 +453,32 @@ pub struct LockedPackage {
     /// remote tarball) already carry their own URL via `LocalSource`
     /// and don't populate this field.
     pub tarball_url: Option<String>,
+    /// For npm-alias deps (`"h3-v2": "npm:h3@2.0.1-rc.20"`): the real
+    /// package name on the registry (`"h3"`). `None` means the entry
+    /// is not aliased and `name` already holds the registry name.
+    ///
+    /// Install semantics when `Some(real)`:
+    /// - `name` is the *alias* — that's the folder under `node_modules/`,
+    ///   the symlink name for transitive deps, and the key every package
+    ///   that declares this dep refers to.
+    /// - `alias_of` is the real package name used for tarball URL lookup,
+    ///   store index keying, and packument fetches.
+    /// - `version` is the real resolved version.
+    ///
+    /// `registry_name()` returns the right name for registry IO; every
+    /// call site that talks to the registry or the CAS uses that helper.
+    pub alias_of: Option<String>,
+}
+
+impl LockedPackage {
+    /// The package name to use for registry / store operations — the real
+    /// name behind an npm-alias when aliased, otherwise just `name`. Used
+    /// at every site that derives a tarball URL, a packument URL, or a
+    /// `~/.aube-store/` cache key so aliased entries hit the actual
+    /// package instead of the alias-qualified name.
+    pub fn registry_name(&self) -> &str {
+        self.alias_of.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// Metadata about a single declared peer dependency. Matches the shape of

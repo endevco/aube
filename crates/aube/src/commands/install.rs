@@ -1791,7 +1791,10 @@ where
                     return (dep_path.clone(), pkg, CheckResult::AlreadyLinked);
                 }
             }
-            match store.load_index(&pkg.name, &pkg.version) {
+            // Keyed by registry name so two npm-aliases of the same
+            // real package share one store index entry instead of
+            // wastefully double-fetching under the alias.
+            match store.load_index(pkg.registry_name(), &pkg.version) {
                 Some(index) => (dep_path.clone(), pkg, CheckResult::Cached(index)),
                 None => (dep_path.clone(), pkg, CheckResult::NeedsFetch),
             }
@@ -1864,10 +1867,19 @@ where
                 cached_count += 1;
             }
             CheckResult::NeedsFetch => {
+                // `registry_name` is the real package name on the
+                // registry — equal to `name` for the common case, and
+                // the aliased-real-name for npm-alias entries. The
+                // tarball URL override is only present for aliased
+                // entries where `client.tarball_url(&name, ...)` would
+                // 404 the alias-qualified name; the lockfile reader
+                // populated it from `resolved:` at parse time.
                 to_fetch.push((
                     dep_path,
                     pkg.name.clone(),
+                    pkg.registry_name().to_string(),
                     pkg.version.clone(),
+                    pkg.tarball_url.clone(),
                     pkg.integrity.clone(),
                 ));
             }
@@ -1910,11 +1922,13 @@ where
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(sem_permits));
         let mut handles = Vec::new();
 
-        for (dep_path, name, version, integrity) in to_fetch {
+        for (dep_path, display_name, registry_name, version, tarball_url_override, integrity) in
+            to_fetch
+        {
             let sem = semaphore.clone();
             let store = store.clone();
             let client = client.clone();
-            let row = progress.map(|p| p.start_fetch(&name, &version));
+            let row = progress.map(|p| p.start_fetch(&display_name, &version));
             let bytes_progress = progress.cloned();
 
             let handle = tokio::spawn(async move {
@@ -1922,13 +1936,20 @@ where
                 let task_start = std::time::Instant::now();
                 let permit = sem.acquire().await.unwrap();
                 let wait_time = task_start.elapsed();
-                let url = client.tarball_url(&name, &version);
+                // Aliased entries (`"h3-v2": "npm:h3@..."`) carry the
+                // resolved tarball URL verbatim from the lockfile so
+                // we skip re-deriving it from `registry_name` — the
+                // lockfile captured the exact URL at write time
+                // against whatever registry was active then.
+                let url = tarball_url_override
+                    .clone()
+                    .unwrap_or_else(|| client.tarball_url(&registry_name, &version));
 
                 let dl_start = std::time::Instant::now();
                 let bytes = client
                     .fetch_tarball_bytes(&url)
                     .await
-                    .map_err(|e| miette!("failed to fetch {name}@{version}: {e}"))?;
+                    .map_err(|e| miette!("failed to fetch {display_name}@{version}: {e}"))?;
                 let dl_time = dl_start.elapsed();
 
                 if let Some(p) = bytes_progress.as_ref() {
@@ -1953,17 +1974,18 @@ where
                 let bytes_len = bytes.len();
                 let (index, import_time) = tokio::task::spawn_blocking({
                     let store = store.clone();
-                    let name = name.clone();
+                    let display_name = display_name.clone();
+                    let registry_name = registry_name.clone();
                     let version = version.clone();
                     move || -> miette::Result<_> {
                         if verify_integrity && let Some(ref expected) = integrity {
                             aube_store::verify_integrity(&bytes, expected)
-                                .map_err(|e| miette!("{name}@{version}: {e}"))?;
+                                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
                         }
                         let import_start = std::time::Instant::now();
-                        let index = store
-                            .import_tarball(&bytes)
-                            .map_err(|e| miette!("failed to import {name}@{version}: {e}"))?;
+                        let index = store.import_tarball(&bytes).map_err(|e| {
+                            miette!("failed to import {display_name}@{version}: {e}")
+                        })?;
                         let import_time = import_start.elapsed();
                         // strictStorePkgContentCheck: cross-check the
                         // freshly stored package.json against the
@@ -1974,12 +1996,23 @@ where
                         // read + JSON parse) but pnpm parity is to
                         // produce no error path at all when the user
                         // opted out.
+                        //
+                        // Validate against `registry_name` — the real
+                        // package name that appears in the tarball's
+                        // own `package.json` — not the alias, or this
+                        // would fail every npm-aliased entry.
                         if strict_pkg_content_check {
-                            aube_store::validate_pkg_content(&index, &name, &version)
-                                .map_err(|e| miette!("{name}@{version}: {e}"))?;
+                            aube_store::validate_pkg_content(&index, &registry_name, &version)
+                                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
                         }
-                        if let Err(e) = store.save_index(&name, &version, &index) {
-                            tracing::warn!("Failed to cache index for {name}@{version}: {e}");
+                        // Cache under `registry_name` so two aliases
+                        // of the same real package hit the same
+                        // on-disk index file and avoid redundant
+                        // fetches.
+                        if let Err(e) = store.save_index(&registry_name, &version, &index) {
+                            tracing::warn!(
+                                "Failed to cache index for {display_name}@{version}: {e}"
+                            );
                         }
                         Ok((index, import_time))
                     }
@@ -1988,7 +2021,7 @@ where
                 .into_diagnostic()??;
 
                 tracing::trace!(
-                    "fetch {name}@{version}: wait={:.0?} dl={:.0?} ({} bytes) import={:.0?}",
+                    "fetch {display_name}@{version}: wait={:.0?} dl={:.0?} ({} bytes) import={:.0?}",
                     wait_time,
                     dl_time,
                     bytes_len,
@@ -3192,7 +3225,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 if pkg.local_source.is_some() {
                     continue;
                 }
-                pkg.tarball_url = Some(lo_client.tarball_url(&pkg.name, &pkg.version));
+                // Preserve any URL the parser already captured from an
+                // aliased `resolved:` field — deriving from
+                // `(registry_name, version)` would also work for
+                // aliases but skips a redundant allocation.
+                if pkg.tarball_url.is_none() {
+                    pkg.tarball_url =
+                        Some(lo_client.tarball_url(pkg.registry_name(), &pkg.version));
+                }
             }
         }
         let lo_write_kind = source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube);
@@ -3530,7 +3570,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         continue;
                     }
 
-                    // Check index cache first
+                    // Check index cache first. This path consumes
+                    // `ResolvedPackage` values streaming from the
+                    // resolver, which already rewrites `npm:` aliases
+                    // into the real package name before emission — so
+                    // `pkg.name` is always the registry name here.
+                    // (Aliased entries round-tripping *from* the
+                    // lockfile go through `fetch_packages`, which
+                    // handles aliases via `LockedPackage::alias_of`.)
                     if let Some(index) = fetch_store.load_index(&pkg.name, &pkg.version) {
                         let _ = materialize_tx.send((pkg.dep_path.clone(), index.clone()));
                         indices.insert(pkg.dep_path, index);
@@ -3891,8 +3938,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         if pkg.local_source.is_some() {
                             continue;
                         }
-                        pkg.tarball_url =
-                            Some(post_fetch_client.tarball_url(&pkg.name, &pkg.version));
+                        // Preserve any URL already present — the npm
+                        // lockfile reader stashes the `resolved:` URL
+                        // for aliased entries at parse time because
+                        // `(alias, version)` doesn't resolve against
+                        // the registry.
+                        if pkg.tarball_url.is_none() {
+                            pkg.tarball_url = Some(
+                                post_fetch_client.tarball_url(pkg.registry_name(), &pkg.version),
+                            );
+                        }
                     }
                 }
                 let write_kind = source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube);

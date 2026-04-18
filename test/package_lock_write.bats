@@ -270,3 +270,79 @@ EOF
 	run grep -F "orphan-pkg" pnpm-lock.yaml
 	assert_failure
 }
+
+# Regression: `aube install` must handle npm-style aliases
+# (`"<alias>": "npm:<real>@..."`) captured in package-lock.json. npm
+# writes the entry at `node_modules/<alias>` with `name: "<real>"` and
+# a `resolved:` URL pointing at the *real* package; aube used to treat
+# the alias as the registry name and 404 on fetch. This verifies that
+# install from the captured lockfile completes and that the alias
+# lands as a distinct top-level folder, not as the real package name.
+#
+# Covers the lockfile-driven path (default / `--frozen-lockfile`).
+# A separate fresh-resolve path through the resolver does not yet
+# preserve the alias-as-folder-name — see the TODO in
+# `aube-resolver::task.name` rewriting for `npm:` specifiers.
+@test "aube install handles npm-alias in package-lock.json" {
+	cat >package.json <<'JSON'
+{
+  "name": "alias-via-npm-lock",
+  "version": "1.0.0",
+  "dependencies": {
+    "odd-alias": "npm:is-odd@3.0.1"
+  }
+}
+JSON
+
+	cat >package-lock.json <<'JSON'
+{
+  "name": "alias-via-npm-lock",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "alias-via-npm-lock",
+      "version": "1.0.0",
+      "dependencies": { "odd-alias": "npm:is-odd@3.0.1" }
+    },
+    "node_modules/is-number": {
+      "version": "6.0.0",
+      "resolved": "https://registry.npmjs.org/is-number/-/is-number-6.0.0.tgz",
+      "integrity": "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg=="
+    },
+    "node_modules/odd-alias": {
+      "name": "is-odd",
+      "version": "3.0.1",
+      "resolved": "https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz",
+      "integrity": "sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==",
+      "dependencies": { "is-number": "^6.0.0" }
+    }
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+
+	# The alias is the folder name that node_modules walks see — not
+	# the real package name. A top-level `is-odd` here would mean the
+	# installer collapsed the alias back to the real name, breaking
+	# any `require("odd-alias")` callers.
+	assert_link_exists node_modules/odd-alias
+	assert_not_exists node_modules/is-odd
+
+	# Virtual store entry goes under the alias so transitive
+	# lookups (`require("odd-alias")` from anywhere in the tree)
+	# resolve via the same folder name declared in package.json.
+	assert_dir_exists node_modules/.aube
+
+	# The lockfile's `name:` + `resolved:` fields must survive the
+	# pass-through. Without them a reparse has no way to recover the
+	# real registry identity from the alias-qualified install path.
+	run grep -F '"name": "is-odd"' package-lock.json
+	assert_success
+	run grep -F 'https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz' package-lock.json
+	assert_success
+	assert [ ! -f aube-lock.yaml ]
+}
