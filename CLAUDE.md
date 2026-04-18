@@ -118,6 +118,14 @@ flock /tmp/aube-bench.lock bench/run.sh
 but manual benchmark commands (hyperfine one-shots, ad-hoc
 `aube install` timing loops, etc.) must take the lock too.
 
+When `mise run bench:bump` rewrites [`benchmarks/results.json`](benchmarks/results.json),
+refresh the hardcoded ratios in [`README.md`](README.md) in the same
+commit. The docs site and landing page pull the numbers from
+`results.json` at VitePress build time, but the README is plain text —
+nothing regenerates it. The `Why Try It` section quotes both the
+warm-CI multiples (pnpm, bun) and the cross-fixture ranges; recompute
+them from the new JSON and update the sentence to match.
+
 ## Rust Configuration
 
 - Edition: 2024
