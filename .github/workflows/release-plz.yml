@@ -232,13 +232,27 @@ jobs:
             | jq -r '.packages[] | select(.name == "aube") | .version')
           TAG="v${VERSION}"
 
+          # Bump release.json so the docs homepage's "Released at" line
+          # tracks the new version. `releasedAt` is set to "now" on
+          # every PR regeneration, and since release-plz re-renders the
+          # PR on every push to main, the timestamp that actually lands
+          # is from the last run before merge — within one push-to-main
+          # of the real release, which is good enough for a display
+          # string. The vitepress config blanks the field when the
+          # version here doesn't match Cargo.toml, so an out-of-date
+          # release.json on a non-release branch can't render wrong.
+          RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          jq --arg v "$VERSION" --arg d "$RELEASED_AT" \
+            '.version = $v | .releasedAt = $d' release.json > release.json.tmp
+          mv release.json.tmp release.json
+
           # Squash any rendered-doc changes onto the release-plz commit
           # so the PR stays one commit. Use `-A` on the paths the
           # `render` task writes to, so NEW files (e.g.
           # docs/cli/<new-subcommand>.md after `docs/cli` is
           # regenerated from scratch) are picked up — `git add -u`
           # would silently omit them.
-          git add -A aube.usage.kdl docs CHANGELOG.md Cargo.toml Cargo.lock crates
+          git add -A aube.usage.kdl docs CHANGELOG.md Cargo.toml Cargo.lock crates release.json
           MERGE_BASE=$(git merge-base HEAD origin/main)
           git reset --soft "$MERGE_BASE"
           git commit -m "chore: release ${TAG}"
