@@ -8,11 +8,13 @@ cargo test                                 # Unit tests
 cargo clippy --all-targets -- -D warnings  # Lint
 cargo fmt --check                          # Formatting
 
-# BATS integration tests (needs Node.js 22 and `verdaccio` on PATH;
-# the first run will `npm i -g verdaccio@6` if it isn't installed).
-./test/bats/bin/bats test/
-./test/bats/bin/bats test/install.bats     # single file
-./test/bats/bin/bats -f "<substring>" test/  # filter by test name
+# BATS integration tests (needs Node.js 22, GNU `parallel`, and
+# `verdaccio` on PATH; the first run will `npm i -g verdaccio@6` if it
+# isn't installed). The mise task shards files across cores via
+# `bats --jobs` — prefer it over the raw runner.
+mise run test:bats                            # full suite, in parallel
+mise run test:bats test/install.bats          # one or more files
+./test/bats/bin/bats -f "<substring>" test/   # filter by test name
 ```
 
 ## The offline Verdaccio test registry

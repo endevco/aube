@@ -43,10 +43,11 @@ cargo test                     # Run unit tests
 cargo clippy --all-targets -- -D warnings  # Lint (CI enforces zero warnings)
 cargo fmt --check              # Check formatting
 
-# Integration tests (BATS framework, requires Node.js 22)
-# First: cargo build, then:
-./test/bats/bin/bats test/     # Run all BATS tests
-./test/bats/bin/bats test/install.bats  # Run a single test file
+# BATS integration tests (requires Node.js 22 and GNU parallel).
+# `cargo build` first, then run the mise task — it shards across cores
+# via `bats --jobs`, so prefer it over raw `./test/bats/bin/bats`.
+mise run test:bats                       # Run the full suite in parallel
+mise run test:bats test/install.bats     # Run a single file (or several)
 ```
 
 ## Commit Messages

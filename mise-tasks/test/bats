@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#MISE description="Run BATS integration tests in parallel"
+#USAGE arg "[files]..." help="Specific .bats files or directories (defaults to test/)"
+set -euo pipefail
+
+if command -v nproc >/dev/null; then
+	jobs="$(nproc)"
+else
+	jobs="$(sysctl -n hw.ncpu)"
+fi
+
+if (($# > 0)); then
+	targets=("$@")
+else
+	targets=(test/)
+fi
+
+exec ./test/bats/bin/bats \
+	--jobs "$jobs" \
+	--parallel-binary-name parallel \
+	--no-parallelize-within-files \
+	"${targets[@]}"
