@@ -28,7 +28,15 @@ function main() {
     var args = ['install', '--no-save', '--no-package-lock', subpkgName + '@' + version];
 
     var cp = spawn(npmCmd, args, { stdio: 'inherit', shell: true });
-    cp.on('close', function(code) {
+    cp.on('close', function(code, signal) {
+        // `code` is null when the child was killed by a signal (e.g.
+        // OOM). `process.exit(null)` coerces to 0, which would tell
+        // npm the preinstall succeeded — surface it as failure.
+        if (signal || code === null) {
+            console.error('[@endevco/aube] preinstall: `npm install ' + subpkgName + '` killed by ' + (signal || 'signal'));
+            process.exit(1);
+            return;
+        }
         if (code !== 0) {
             process.exit(code);
             return;
