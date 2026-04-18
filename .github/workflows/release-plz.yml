@@ -171,8 +171,7 @@ jobs:
   # happen in a single push: `release-plz update` writes the Cargo.toml
   # / Cargo.lock / CHANGELOG.md bumps locally, we then regenerate
   # `aube.usage.kdl` and the CLI docs against the new version, and only
-  # then do we commit and push the whole thing. One push means no race
-  # between a "raw bump" commit and a "render-done" amend, so CI
+  # then do we commit and push the whole thing. One push means CI
   # (Buildkite, windows, autofix) never sees an intermediate tree with
   # an out-of-date `aube.usage.kdl`.
   release-plz-pr:
@@ -271,12 +270,7 @@ jobs:
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
-      # Step 4: one commit, one push. The `[render-done]` subject
-      # marker is how Buildkite's pipeline filter
-      # (`.buildkite/pipeline.yml`) recognizes this branch as
-      # safe-to-build; without it Buildkite skips the build. GitHub
-      # squashes the PR on merge using the PR title (which never has
-      # this marker), so the final commit on main is clean.
+      # Step 4: one commit, one push.
       - name: Commit and push
         if: steps.update.outputs.changed == 'true'
         env:
@@ -285,7 +279,7 @@ jobs:
         run: |
           git checkout -B "$BRANCH"
           git add -A
-          git commit -m "chore: release ${TAG} [render-done]"
+          git commit -m "chore: release ${TAG}"
           git push --force-with-lease -u origin "$BRANCH"
 
       # Step 5: open the PR if it's new, or refresh its title if an
