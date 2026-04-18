@@ -8,6 +8,19 @@ _common_setup() {
 	PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 	export PATH="$PROJECT_ROOT/target/debug:$PATH"
 
+	# Ensure the multicall shims (`aubr`, `aubx`) exist alongside `aube`.
+	# Local `cargo build` produces all three as real binaries, but CI only
+	# uploads `target/debug/aube` as an artifact; the bats shards then
+	# download just that one file. Materialize the shims as hardlinks to
+	# the shared `aube` inode so the argv[0] dispatch in `main.rs` resolves
+	# correctly. `ln -f` is idempotent — it refreshes if `aube` was rebuilt
+	# and is a no-op if the hardlinks already point at the same inode.
+	local _aube_bin="$PROJECT_ROOT/target/debug/aube"
+	if [ -x "$_aube_bin" ]; then
+		ln -f "$_aube_bin" "$PROJECT_ROOT/target/debug/aubr" 2>/dev/null || true
+		ln -f "$_aube_bin" "$PROJECT_ROOT/target/debug/aubx" 2>/dev/null || true
+	fi
+
 	TEST_TEMP_DIR="$(temp_make)"
 	cd "$TEST_TEMP_DIR" || exit 1
 
