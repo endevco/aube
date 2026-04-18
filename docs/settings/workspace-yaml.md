@@ -16,59 +16,60 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 
 ## Summary
 
-49 settings are listed here.
+50 settings are listed here. 50 are currently implemented.
 
-| Setting | Type | Summary |
-| --- | --- | --- |
-| [`overrides`](#setting-overrides) | `object` | Instruct aube to override any dependency in the dependency graph, including peer dependencies. |
-| [`packageExtensions`](#setting-packageextensions) | `object` | Extend existing package definitions with additional information. |
-| [`allowedDeprecatedVersions`](#setting-alloweddeprecatedversions) | `object` | Mute deprecation warnings for specific package versions. |
-| [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | List of packages to ignore during update checks. |
-| [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
-| [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
-| [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
-| [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Behavior when a package's trust level decreases between installs. |
-| [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from trust policy checks. |
-| [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | Ignore trust policy for packages older than this age (minutes). |
-| [`blockExoticSubdeps`](#setting-blockexoticsubdeps) | `bool` | Restrict transitive dependencies to trusted sources (registries, not git/tarball URLs). |
-| [`hoist`](#setting-hoist) | `bool` | Hoist all dependencies to the hidden modules directory. |
-| [`hoistWorkspacePackages`](#setting-hoistworkspacepackages) | `bool` | Symlink workspace packages into node_modules. |
-| [`hoistPattern`](#setting-hoistpattern) | `list<string>` | Packages to hoist to the hidden modules directory. |
-| [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | Packages to hoist directly to the root node_modules. |
-| [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
-| [`modulesDir`](#setting-modulesdir) | `path` | Directory to install dependencies into. |
-| [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | Strategy for linking Node packages into node_modules. |
-| [`virtualStoreDir`](#setting-virtualstoredir) | `path` | Directory with links to the store. |
-| [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | Method for importing packages from the store into node_modules. |
-| [`enableGlobalVirtualStore`](#setting-enableglobalvirtualstore) | `bool` | Use a per-user virtual store for all projects. |
-| [`storeDir`](#setting-storedir) | `path` | Location where packages are saved on disk (content-addressable store). |
-| [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | Check store file integrity before linking. |
-| [`lockfile`](#setting-lockfile) | `bool` | Read and generate aube-lock.yaml. |
-| [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | Perform a headless install if the lockfile already satisfies package.json. |
-| [`lockfileIncludeTarballUrl`](#setting-lockfileincludetarballurl) | `bool` | Add the full tarball URL to each lockfile entry. |
-| [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | Skip local `link:` dependencies when writing the lockfile. |
-| [`gitBranchLockfile`](#setting-gitbranchlockfile) | `bool` | Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml). |
-| [`mergeGitBranchLockfilesBranchPattern`](#setting-mergegitbranchlockfilesbranchpattern) | `list<string>` | Branch-name glob list for auto-merging branch lockfiles. |
-| [`peersSuffixMaxLength`](#setting-peerssuffixmaxlength) | `int` | Max length of the peer-ID suffix in lockfile dep_paths. |
-| [`networkConcurrency`](#setting-networkconcurrency) | `int` | Maximum concurrent HTTP(S) requests. |
-| [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | Automatically install missing peer dependencies. |
-| [`dedupePeerDependents`](#setting-dedupepeerdependents) | `bool` | Deduplicate packages that have peer dependencies. |
-| [`dedupePeers`](#setting-dedupepeers) | `bool` | Use version-only identifiers for peer suffixes in the lockfile. |
-| [`strictPeerDependencies`](#setting-strictpeerdependencies) | `bool` | Fail if peer dependencies are missing or invalid. |
-| [`resolvePeersFromWorkspaceRoot`](#setting-resolvepeersfromworkspaceroot) | `bool` | Use root workspace dependencies for peer resolution. |
-| [`peerDependencyRules.ignoreMissing`](#setting-peerdependencyrules-ignoremissing) | `list<string>` | Suppress warnings for specific missing peer dependencies. |
-| [`peerDependencyRules.allowedVersions`](#setting-peerdependencyrules-allowedversions) | `object` | Override the accepted semver range for specific peer dependencies. |
-| [`peerDependencyRules.allowAny`](#setting-peerdependencyrules-allowany) | `list<string>` | Allow any peer version to resolve, bypassing semver checks. |
-| [`ignoreScripts`](#setting-ignorescripts) | `bool` | Skip all lifecycle scripts in package.json. |
-| [`childConcurrency`](#setting-childconcurrency) | `int` | Maximum number of concurrent script-executing child processes. |
-| [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
-| [`allowBuilds`](#setting-allowbuilds) | `object` | Explicitly allow or disallow script execution per package. |
-| [`deployAllFiles`](#setting-deployallfiles) | `bool` | Copy all files when deploying a workspace package. |
-| [`dedupeDirectDeps`](#setting-dedupedirectdeps) | `bool` | Skip symlinking workspace-root dependencies if identical across packages. |
-| [`cleanupUnusedCatalogs`](#setting-cleanupunusedcatalogs) | `bool` | Remove unused catalog entries during install. |
-| [`linkConcurrency`](#setting-linkconcurrency) | `int` | Maximum concurrent package materialization/linking tasks. |
-| [`aubeNoLock`](#setting-aubenolock) | `bool` | Disable aube's project-level advisory lock. |
-| [`aubeNoAutoInstall`](#setting-aubenoautoinstall) | `bool` | Skip the auto-install staleness check in `aube run` / `aube exec`. |
+| Setting | Type | Status | Summary |
+| --- | --- | --- | --- |
+| [`overrides`](#setting-overrides) | `object` | implemented | Instruct aube to override any dependency in the dependency graph, including peer dependencies. |
+| [`packageExtensions`](#setting-packageextensions) | `object` | implemented | Extend existing package definitions with additional information. |
+| [`allowedDeprecatedVersions`](#setting-alloweddeprecatedversions) | `object` | implemented | Mute deprecation warnings for specific package versions. |
+| [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | implemented | List of packages to ignore during update checks. |
+| [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | implemented | Delay installation of newly published versions (minutes). |
+| [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | implemented | Packages exempt from the minimumReleaseAge requirement. |
+| [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | implemented | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
+| [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | implemented | Behavior when a package's trust level decreases between installs. |
+| [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | implemented | Packages exempt from trust policy checks. |
+| [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | implemented | Ignore trust policy for packages older than this age (minutes). |
+| [`blockExoticSubdeps`](#setting-blockexoticsubdeps) | `bool` | implemented | Restrict transitive dependencies to trusted sources (registries, not git/tarball URLs). |
+| [`hoist`](#setting-hoist) | `bool` | implemented | Hoist all dependencies to the hidden modules directory. |
+| [`hoistWorkspacePackages`](#setting-hoistworkspacepackages) | `bool` | implemented | Symlink workspace packages into node_modules. |
+| [`hoistPattern`](#setting-hoistpattern) | `list<string>` | implemented | Packages to hoist to the hidden modules directory. |
+| [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | implemented | Packages to hoist directly to the root node_modules. |
+| [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | implemented | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
+| [`modulesDir`](#setting-modulesdir) | `path` | implemented | Directory to install dependencies into. |
+| [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | implemented | Strategy for linking Node packages into node_modules. |
+| [`virtualStoreDir`](#setting-virtualstoredir) | `path` | implemented | Directory with links to the store. |
+| [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | implemented | Method for importing packages from the store into node_modules. |
+| [`enableGlobalVirtualStore`](#setting-enableglobalvirtualstore) | `bool` | implemented | Use a per-user virtual store for all projects. |
+| [`autoDisableGlobalVirtualStoreForNextjs`](#setting-autodisableglobalvirtualstorefornextjs) | `bool` | implemented | Disable the global virtual store when a Next.js dependency is detected. |
+| [`storeDir`](#setting-storedir) | `path` | implemented | Location where packages are saved on disk (content-addressable store). |
+| [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | implemented | Check store file integrity before linking. |
+| [`lockfile`](#setting-lockfile) | `bool` | implemented | Read and generate aube-lock.yaml. |
+| [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | implemented | Perform a headless install if the lockfile already satisfies package.json. |
+| [`lockfileIncludeTarballUrl`](#setting-lockfileincludetarballurl) | `bool` | implemented | Add the full tarball URL to each lockfile entry. |
+| [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | implemented | Skip local `link:` dependencies when writing the lockfile. |
+| [`gitBranchLockfile`](#setting-gitbranchlockfile) | `bool` | implemented | Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml). |
+| [`mergeGitBranchLockfilesBranchPattern`](#setting-mergegitbranchlockfilesbranchpattern) | `list<string>` | implemented | Branch-name glob list for auto-merging branch lockfiles. |
+| [`peersSuffixMaxLength`](#setting-peerssuffixmaxlength) | `int` | implemented | Max length of the peer-ID suffix in lockfile dep_paths. |
+| [`networkConcurrency`](#setting-networkconcurrency) | `int` | implemented | Maximum concurrent HTTP(S) requests. |
+| [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | implemented | Automatically install missing peer dependencies. |
+| [`dedupePeerDependents`](#setting-dedupepeerdependents) | `bool` | implemented | Deduplicate packages that have peer dependencies. |
+| [`dedupePeers`](#setting-dedupepeers) | `bool` | implemented | Use version-only identifiers for peer suffixes in the lockfile. |
+| [`strictPeerDependencies`](#setting-strictpeerdependencies) | `bool` | implemented | Fail if peer dependencies are missing or invalid. |
+| [`resolvePeersFromWorkspaceRoot`](#setting-resolvepeersfromworkspaceroot) | `bool` | implemented | Use root workspace dependencies for peer resolution. |
+| [`peerDependencyRules.ignoreMissing`](#setting-peerdependencyrules-ignoremissing) | `list<string>` | implemented | Suppress warnings for specific missing peer dependencies. |
+| [`peerDependencyRules.allowedVersions`](#setting-peerdependencyrules-allowedversions) | `object` | implemented | Override the accepted semver range for specific peer dependencies. |
+| [`peerDependencyRules.allowAny`](#setting-peerdependencyrules-allowany) | `list<string>` | implemented | Allow any peer version to resolve, bypassing semver checks. |
+| [`ignoreScripts`](#setting-ignorescripts) | `bool` | implemented | Skip all lifecycle scripts in package.json. |
+| [`childConcurrency`](#setting-childconcurrency) | `int` | implemented | Maximum number of concurrent script-executing child processes. |
+| [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | implemented | Cache the results of install hooks. |
+| [`allowBuilds`](#setting-allowbuilds) | `object` | implemented | Explicitly allow or disallow script execution per package. |
+| [`deployAllFiles`](#setting-deployallfiles) | `bool` | implemented | Copy all files when deploying a workspace package. |
+| [`dedupeDirectDeps`](#setting-dedupedirectdeps) | `bool` | implemented | Skip symlinking workspace-root dependencies if identical across packages. |
+| [`cleanupUnusedCatalogs`](#setting-cleanupunusedcatalogs) | `bool` | implemented | Remove unused catalog entries during install. |
+| [`linkConcurrency`](#setting-linkconcurrency) | `int` | implemented | Maximum concurrent package materialization/linking tasks. |
+| [`aubeNoLock`](#setting-aubenolock) | `bool` | implemented | Disable aube's project-level advisory lock. |
+| [`aubeNoAutoInstall`](#setting-aubenoautoinstall) | `bool` | implemented | Skip the auto-install staleness check in `aube run` / `aube exec`. |
 
 ## Dependency Resolution
 
@@ -78,6 +79,8 @@ Instruct aube to override any dependency in the dependency graph, including peer
 
 - Type: `object`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `overrides`
 
 A root-level map of package specs to the versions aube should force them
@@ -91,6 +94,8 @@ Extend existing package definitions with additional information.
 
 - Type: `object`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `packageExtensions`
 
 Patches a package's `dependencies`, `peerDependencies`, etc. at resolve
@@ -103,6 +108,8 @@ Mute deprecation warnings for specific package versions.
 
 - Type: `object`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `allowedDeprecatedVersions`
 
 Maps a package name to a semver range for which the deprecation warning
@@ -115,6 +122,8 @@ List of packages to ignore during update checks.
 
 - Type: `list<string>`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `updateConfig.ignoreDependencies`
 
 Packages in this list are never bumped by `aube update`, even when a
@@ -126,6 +135,8 @@ Delay installation of newly published versions (minutes).
 
 - Type: `int`
 - Default: `1440`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `minimumReleaseAge`
 
 Supply-chain attack mitigation: packages published within the last N
@@ -140,6 +151,8 @@ Packages exempt from the minimumReleaseAge requirement.
 
 - Type: `list<string>`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `minimumReleaseAgeExclude`
 
 Use for trusted internal packages that need to be rolled out immediately
@@ -152,6 +165,8 @@ Fail the install when no version satisfies the minimumReleaseAge cutoff.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `minimumReleaseAgeStrict`
 
 By default the resolver falls back to the lowest satisfying version when
@@ -164,6 +179,8 @@ Behavior when a package's trust level decreases between installs.
 
 - Type: `"no-downgrade" | "off"`
 - Default: `"off"`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `trustPolicy`
 
 When set to `no-downgrade`, aube accepts and preserves the policy in the
@@ -177,6 +194,8 @@ Packages exempt from trust policy checks.
 
 - Type: `list<string>`
 - Default: `[]`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `trustPolicyExclude`
 
 Whitelist for `trustPolicy`. Entries skip the downgrade check.
@@ -187,6 +206,8 @@ Ignore trust policy for packages older than this age (minutes).
 
 - Type: `int`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `trustPolicyIgnoreAfter`
 
 Useful for pinning very old versions that predate signing infrastructure.
@@ -197,6 +218,8 @@ Restrict transitive dependencies to trusted sources (registries, not git/tarball
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `blockExoticSubdeps`
 
 When true, transitive deps referenced via `git+`, `file:`, or direct
@@ -211,6 +234,8 @@ Hoist all dependencies to the hidden modules directory.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `hoist`
 
 Controls whether aube populates `node_modules/.aube/node_modules/` —
@@ -239,6 +264,8 @@ Symlink workspace packages into node_modules.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `hoistWorkspacePackages`
 
 Controls whether workspace packages get their own symlinks in each
@@ -255,6 +282,8 @@ Packages to hoist to the hidden modules directory.
 
 - Type: `list<string>`
 - Default: `["*"]`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `hoistPattern`
 
 Glob list matched against package names. Any non-local package
@@ -276,6 +305,8 @@ Packages to hoist directly to the root node_modules.
 
 - Type: `list<string>`
 - Default: `[]`
+- Status: implemented
+- Added to registry: `2026-04-13`
 - Workspace YAML keys: `publicHoistPattern`
 
 Glob list matched against package names. Any non-local package in the
@@ -295,6 +326,8 @@ Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `shamefullyHoist`
 
 Emulates npm's flat `node_modules` layout. Enables phantom dep bugs by
@@ -308,6 +341,8 @@ Directory to install dependencies into.
 
 - Type: `path`
 - Default: `"node_modules"`
+- Status: implemented
+- Added to registry: `2026-04-17`
 - Workspace YAML keys: `modulesDir`
 
 The project-level directory that holds the top-level `<name>` entries
@@ -332,6 +367,8 @@ Strategy for linking Node packages into node_modules.
 
 - Type: `"isolated" | "hoisted" | "pnp"`
 - Default: `"isolated"`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `nodeLinker`
 
 aube defaults to `isolated`, a strict symlink layout under
@@ -346,6 +383,8 @@ Directory with links to the store.
 
 - Type: `path`
 - Default: `"node_modules/.aube"`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `virtualStoreDir`
 
 Relocates the per-project `.aube/<dep>/node_modules/` tree that the
@@ -374,6 +413,8 @@ Method for importing packages from the store into node_modules.
 
 - Type: `"auto" | "hardlink" | "copy" | "clone" | "clone-or-copy"`
 - Default: `"auto"`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `packageImportMethod`
 
 Controls how aube materializes files from the global content-addressable
@@ -393,12 +434,39 @@ Use a per-user virtual store for all projects.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `enableGlobalVirtualStore`
 
 aube ships its own global virtual store under `~/.cache/aube/virtual-store/`.
 It's enabled by default and disabled under CI (see `aube-linker`, which
 checks the `CI` env var). pnpm gained the same feature later; we expose
 it through `CI=1` rather than a dedicated config knob.
+
+### `autoDisableGlobalVirtualStoreForNextjs` {#setting-autodisableglobalvirtualstorefornextjs}
+
+Disable the global virtual store when a Next.js dependency is detected.
+
+- Type: `bool`
+- Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-18`
+- Workspace YAML keys: `autoDisableGlobalVirtualStoreForNextjs`
+
+Next.js's Turbopack canonicalizes every symlink under `node_modules/`
+and rejects any target that resolves outside the project's "filesystem
+root". aube's global virtual store makes `node_modules/.aube/<pkg>` an
+absolute symlink into `~/.cache/aube/virtual-store/`, which Turbopack
+then reports as `Symlink ... is invalid, it points out of the
+filesystem root`.
+
+When this setting is `true` (the default) and `aube install` detects
+`next` in the root `package.json`'s dependencies, aube forces
+per-project materialization for this install and prints a one-line
+warning explaining why. Set to `false` to keep the global virtual
+store enabled even when Next.js is present — useful if you're working
+around the Turbopack issue another way (e.g. `next dev --webpack`) and
+want the throughput win.
 
 ## Store
 
@@ -408,6 +476,8 @@ Location where packages are saved on disk (content-addressable store).
 
 - Type: `path`
 - Default: `~/.aube-store/v1/files/`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `storeDir`
 
 Defaults to aube's own store path (`~/.aube-store/v1/files/`). aube does not
@@ -435,6 +505,8 @@ Check store file integrity before linking.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `verifyStoreIntegrity`
 
 aube verifies each package's `integrity` (SHA-512) against the tarball
@@ -456,6 +528,8 @@ Read and generate aube-lock.yaml.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `lockfile`
 
 Controls whether aube reads and writes a lockfile during install. When
@@ -480,6 +554,8 @@ Perform a headless install if the lockfile already satisfies package.json.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `preferFrozenLockfile`
 
 aube's default outside CI. Maps to `FrozenMode::Prefer` in
@@ -496,6 +572,8 @@ Add the full tarball URL to each lockfile entry.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `lockfileIncludeTarballUrl`
 
 When true, aube's lockfile writer records the registry tarball URL in
@@ -523,6 +601,8 @@ Skip local `link:` dependencies when writing the lockfile.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-13`
 - Workspace YAML keys: `excludeLinksFromLockfile`
 
 When true, `link:` dependencies are omitted from the lockfile's
@@ -543,6 +623,8 @@ Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml).
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `gitBranchLockfile`
 
 When enabled, aube writes the lockfile to `aube-lock.<branch>.yaml`
@@ -570,6 +652,8 @@ Branch-name glob list for auto-merging branch lockfiles.
 
 - Type: `list<string>`
 - Default: `null`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `mergeGitBranchLockfilesBranchPattern`
 
 Complements `gitBranchLockfile`. Accepts a list of glob patterns. When
@@ -600,6 +684,8 @@ Max length of the peer-ID suffix in lockfile dep_paths.
 
 - Type: `int`
 - Default: `1000`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `peersSuffixMaxLength`
 
 Caps the length of the peer-ID suffix appended to a `dep_path` in the
@@ -620,6 +706,8 @@ Maximum concurrent HTTP(S) requests.
 
 - Type: `int`
 - Default: `128 (tarballs), 64 (packuments)`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `networkConcurrency`
 
 Caps the tokio semaphores that gate concurrent tarball downloads
@@ -643,6 +731,8 @@ Automatically install missing peer dependencies.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `autoInstallPeers`
 
 When true (the default), missing peer dependencies are auto-installed
@@ -656,6 +746,8 @@ Deduplicate packages that have peer dependencies.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `dedupePeerDependents`
 
 When true (the default), aube collapses packages that landed at
@@ -672,6 +764,8 @@ Use version-only identifiers for peer suffixes in the lockfile.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `dedupePeers`
 
 When true, lockfile peer suffixes emit `(18.2.0)` instead of the
@@ -686,6 +780,8 @@ Fail if peer dependencies are missing or invalid.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `strictPeerDependencies`
 
 When true, any unmet peer dependency (missing, or resolved to a version
@@ -702,6 +798,8 @@ Use root workspace dependencies for peer resolution.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `resolvePeersFromWorkspaceRoot`
 
 When true (the default), an unresolved peer falls back to the root
@@ -717,6 +815,8 @@ Suppress warnings for specific missing peer dependencies.
 
 - Type: `list<string>`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `peerDependencyRules.ignoreMissing`
 
 Glob list of peer dependency names whose "missing required peer" warning
@@ -733,6 +833,8 @@ Override the accepted semver range for specific peer dependencies.
 
 - Type: `object`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `peerDependencyRules.allowedVersions`
 
 Map of peer selector to an additional semver range. Keys are either a
@@ -750,6 +852,8 @@ Allow any peer version to resolve, bypassing semver checks.
 
 - Type: `list<string>`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `peerDependencyRules.allowAny`
 
 Glob list of peer dependency names whose semver check should be
@@ -767,6 +871,8 @@ Skip all lifecycle scripts in package.json.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `ignoreScripts`
 
 aube already skips dependency install scripts by default (security-first).
@@ -785,6 +891,8 @@ Maximum number of concurrent script-executing child processes.
 
 - Type: `int`
 - Default: `5`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `childConcurrency`
 
 Caps how many dependency lifecycle scripts run in parallel during the
@@ -804,6 +912,8 @@ Cache the results of install hooks.
 
 - Type: `bool`
 - Default: `true`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `sideEffectsCache`
 
 When an allowlisted dependency runs lifecycle scripts, aube snapshots
@@ -825,6 +935,8 @@ Explicitly allow or disallow script execution per package.
 
 - Type: `object`
 - Default: `undefined`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `allowBuilds`
 
 Per-package allowlist for dependency lifecycle scripts. Read from
@@ -846,6 +958,8 @@ Copy all files when deploying a workspace package.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `deployAllFiles`
 
 When true, `aube deploy` copies every file in the source workspace
@@ -864,6 +978,8 @@ Skip symlinking workspace-root dependencies if identical across packages.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `dedupeDirectDeps`
 
 When true, the linker skips creating a `node_modules/<name>` symlink in a
@@ -882,6 +998,8 @@ Remove unused catalog entries during install.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `cleanupUnusedCatalogs`
 
 When enabled, `aube install` rewrites `aube-workspace.yaml` (or
@@ -900,6 +1018,8 @@ Maximum concurrent package materialization/linking tasks.
 
 - Type: `int`
 - Default: `platform-specific`
+- Status: implemented
+- Added to registry: `2026-04-17`
 - Workspace YAML keys: `linkConcurrency`
 
 Caps the dedicated linker worker pool used for filesystem-heavy
@@ -922,6 +1042,8 @@ Disable aube's project-level advisory lock.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `aubeNoLock`
 
 aube takes an advisory lock on `node_modules/` at the start of every
@@ -952,6 +1074,8 @@ Skip the auto-install staleness check in `aube run` / `aube exec`.
 
 - Type: `bool`
 - Default: `false`
+- Status: implemented
+- Added to registry: `2026-04-12`
 - Workspace YAML keys: `aubeNoAutoInstall`
 
 `aube run <script>` normally checks `.aube/.state/install-state.json` and auto-installs

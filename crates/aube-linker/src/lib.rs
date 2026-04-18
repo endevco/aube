@@ -336,6 +336,17 @@ impl Linker {
         self
     }
 
+    /// Override the global-virtual-store toggle set by `Linker::new`
+    /// (which looks at `CI`). Callers use this to force per-project
+    /// materialization when they've detected a consumer that breaks on
+    /// directory symlinks escaping the project root — e.g. Next.js /
+    /// Turbopack, which canonicalizes `node_modules/<pkg>` and rejects
+    /// anything that lands outside its declared filesystem root.
+    pub fn with_use_global_virtual_store(mut self, enabled: bool) -> Self {
+        self.use_global_virtual_store = enabled;
+        self
+    }
+
     fn link_parallelism(&self) -> usize {
         self.link_concurrency
             .unwrap_or_else(default_linker_parallelism)
