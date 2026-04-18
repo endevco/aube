@@ -285,6 +285,11 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let os = pkg_info.map(|p| p.os.clone()).unwrap_or_default();
         let cpu = pkg_info.map(|p| p.cpu.clone()).unwrap_or_default();
         let libc = pkg_info.map(|p| p.libc.clone()).unwrap_or_default();
+        // Aube-specific extension (see `WritablePackageInfo::alias_of`)
+        // — ordinary pnpm lockfiles never carry it, so this stays
+        // `None` on pnpm-authored input and round-trips the resolver-
+        // emitted value for aliased packages.
+        let alias_of = pkg_info.and_then(|p| p.alias_of.clone());
 
         packages.insert(
             dep_path.clone(),
@@ -303,7 +308,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 libc,
                 bundled_dependencies,
                 tarball_url,
-                alias_of: None,
+                alias_of,
             },
         );
     }
@@ -588,6 +593,11 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 os: pkg.os.clone(),
                 cpu: pkg.cpu.clone(),
                 libc: pkg.libc.clone(),
+                // Preserve the alias→real-name mapping so a subsequent
+                // install from this lockfile still hits the real
+                // registry instead of re-404ing on the alias-qualified
+                // tarball URL.
+                alias_of: pkg.alias_of.clone(),
             },
         );
     }
@@ -856,6 +866,14 @@ struct WritablePackageInfo {
     peer_dependencies: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     peer_dependencies_meta: Option<BTreeMap<String, WritablePeerDepMeta>>,
+    /// Real registry name for npm-alias deps. Aube-specific extension
+    /// (pnpm encodes aliases in the snapshot key itself — e.g.
+    /// `odd-alias@npm:is-odd@3.0.1` — but aube keys by `alias@version`
+    /// for linker simplicity, so the real name has to round-trip
+    /// out-of-band via this field). Omitted for non-aliased packages
+    /// so non-alias lockfiles stay byte-identical to pnpm's output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alias_of: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -938,6 +956,10 @@ struct RawPackageInfo {
     cpu: Vec<String>,
     #[serde(default)]
     libc: Vec<String>,
+    /// Paired writer field. See `WritablePackageInfo::alias_of`. `None`
+    /// for ordinary (non-aliased) packages.
+    #[serde(default)]
+    alias_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -3570,15 +3570,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         continue;
                     }
 
-                    // Check index cache first. This path consumes
-                    // `ResolvedPackage` values streaming from the
-                    // resolver, which already rewrites `npm:` aliases
-                    // into the real package name before emission — so
-                    // `pkg.name` is always the registry name here.
-                    // (Aliased entries round-tripping *from* the
-                    // lockfile go through `fetch_packages`, which
-                    // handles aliases via `LockedPackage::alias_of`.)
-                    if let Some(index) = fetch_store.load_index(&pkg.name, &pkg.version) {
+                    // Check index cache first. `registry_name()` is
+                    // the real package name on the registry — equal
+                    // to `name` for the common case, and the alias's
+                    // real target for npm-alias entries (where the
+                    // alias-qualified name would miss the cache and
+                    // later 404 the tarball fetch).
+                    let pkg_registry_name = pkg.registry_name().to_string();
+                    if let Some(index) = fetch_store.load_index(&pkg_registry_name, &pkg.version) {
                         let _ = materialize_tx.send((pkg.dep_path.clone(), index.clone()));
                         indices.insert(pkg.dep_path, index);
                         cached_count += 1;
@@ -3599,7 +3598,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     handles.push(tokio::spawn(async move {
                         let _row = row;
                         let permit = sem.acquire().await.unwrap();
-                        let url = client.tarball_url(&pkg.name, &pkg.version);
+                        let url = client.tarball_url(&pkg_registry_name, &pkg.version);
                         tracing::trace!("Fetching {}@{}", pkg.name, pkg.version);
 
                         let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
@@ -3618,18 +3617,25 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         // even though the network itself is idle during extract.
                         drop(permit);
 
-                        // Move CPU/blocking work onto the blocking thread pool
-                        let pkg_name = pkg.name.clone();
+                        // Move CPU/blocking work onto the blocking thread pool.
+                        // `pkg_display_name` is the alias when aliased
+                        // (what the user wrote in package.json) —
+                        // nicer in progress/error output than the
+                        // real registry name. Validation and cache
+                        // key use `pkg_registry_name` to match the
+                        // tarball's actual identity.
+                        let pkg_display_name = pkg.name.clone();
                         let pkg_version = pkg.version.clone();
                         let dep_path = pkg.dep_path.clone();
                         let integrity = pkg.integrity.clone();
                         let index = tokio::task::spawn_blocking(move || -> miette::Result<_> {
                             if fetch_verify_integrity && let Some(ref expected) = integrity {
-                                aube_store::verify_integrity(&bytes, expected)
-                                    .map_err(|e| miette!("{pkg_name}@{pkg_version}: {e}"))?;
+                                aube_store::verify_integrity(&bytes, expected).map_err(|e| {
+                                    miette!("{pkg_display_name}@{pkg_version}: {e}")
+                                })?;
                             }
                             let index = store.import_tarball(&bytes).map_err(|e| {
-                                miette!("failed to import {pkg_name}@{pkg_version}: {e}")
+                                miette!("failed to import {pkg_display_name}@{pkg_version}: {e}")
                             })?;
                             // strictStorePkgContentCheck: see the
                             // matching block in `fetch_packages_with_root`
@@ -3637,13 +3643,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             // honor the same setting or the no-lockfile
                             // path would silently let through manifest
                             // mismatches that the lockfile path catches.
+                            // Validates against the *registry* name —
+                            // the tarball's package.json records the
+                            // real name, not the alias, so comparing
+                            // against `pkg_display_name` would fail
+                            // every aliased install.
                             if fetch_strict_pkg_content_check {
-                                aube_store::validate_pkg_content(&index, &pkg_name, &pkg_version)
-                                    .map_err(|e| miette!("{pkg_name}@{pkg_version}: {e}"))?;
+                                aube_store::validate_pkg_content(
+                                    &index,
+                                    &pkg_registry_name,
+                                    &pkg_version,
+                                )
+                                .map_err(|e| miette!("{pkg_display_name}@{pkg_version}: {e}"))?;
                             }
-                            if let Err(e) = store.save_index(&pkg_name, &pkg_version, &index) {
+                            if let Err(e) =
+                                store.save_index(&pkg_registry_name, &pkg_version, &index)
+                            {
                                 tracing::warn!(
-                                    "Failed to cache index for {pkg_name}@{pkg_version}: {e}"
+                                    "Failed to cache index for {pkg_display_name}@{pkg_version}: {e}"
                                 );
                             }
                             Ok(index)

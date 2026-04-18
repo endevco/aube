@@ -763,3 +763,56 @@ JSON
 	assert_output --partial "ignoring network-concurrency=0"
 	assert_dir_exists node_modules
 }
+
+# Fresh resolve: `"<alias>": "npm:<real>@<ver>"` must land as
+# `node_modules/<alias>/`, not `node_modules/<real>/`. The resolver
+# used to clobber `task.name` to the real name at the `npm:` rewrite
+# site, collapsing the alias and breaking `require("<alias>")` at
+# runtime. The lockfile round-trip (via `LockedPackage.alias_of`) was
+# already correct; this test guards the resolver path.
+@test "aube install preserves npm-alias as folder on fresh resolve" {
+	cat >package.json <<'JSON'
+{
+  "name": "alias-fresh",
+  "version": "1.0.0",
+  "dependencies": {
+    "odd-alias": "npm:is-odd@3.0.1"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+
+	# Alias survives as the top-level folder name.
+	assert_link_exists node_modules/odd-alias
+	assert_not_exists node_modules/is-odd
+
+	# Virtual store entry is keyed by the alias too — a transitive
+	# consumer declaring `odd-alias` walks the .aube tree by that
+	# exact string, so the folder has to match.
+	alias_dir="$(find -L node_modules/.aube -maxdepth 1 -type d -name 'odd-alias@3.0.1*' 2>/dev/null | head -1)"
+	assert [ -n "$alias_dir" ]
+	assert_not_exists node_modules/.aube/is-odd@3.0.1
+
+	# The emitted lockfile records the real name via `aliasOf:` so a
+	# subsequent install hits the real registry entry instead of
+	# re-404ing on the alias-qualified tarball URL. Also check the
+	# importer still encodes the original `npm:` specifier — without
+	# it, drift detection would see `odd-alias: 3.0.1` and re-resolve
+	# every install.
+	run grep -F "aliasOf: is-odd" aube-lock.yaml
+	assert_success
+	run grep -F "specifier: npm:is-odd@3.0.1" aube-lock.yaml
+	assert_success
+
+	# Round-trip: a second install from the emitted lockfile must
+	# re-use the alias identity — otherwise the writer lost the
+	# `aliasOf:` data and the reader would try to fetch `odd-alias`
+	# from the registry (404).
+	rm -rf node_modules
+	run aube install --frozen-lockfile
+	assert_success
+	assert_link_exists node_modules/odd-alias
+	assert_not_exists node_modules/is-odd
+}

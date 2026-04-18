@@ -152,10 +152,28 @@ pub struct ResolvedPackage {
     pub name: String,
     pub version: String,
     pub integrity: Option<String>,
+    /// Real registry name when this package is an npm-alias
+    /// (`"h3-v2": "npm:h3@..."`). `name` is the alias (`h3-v2` — the
+    /// folder in `node_modules/`), `alias_of` is what the streaming
+    /// fetch client uses to derive the tarball URL and store-index
+    /// key. `None` for non-aliased packages, in which case `name`
+    /// already matches the registry.
+    pub alias_of: Option<String>,
     /// Set for non-registry packages (`file:` / `link:`). Downstream
     /// fetchers short-circuit the tarball path and materialize from
     /// disk instead.
     pub local_source: Option<LocalSource>,
+}
+
+impl ResolvedPackage {
+    /// Registry lookup name — `alias_of` when set, otherwise `name`.
+    /// Every tarball URL + store index site routes through this
+    /// accessor so aliased packages resolve to the real registry
+    /// entry without leaking the alias-qualified name into network
+    /// requests (where it would 404).
+    pub fn registry_name(&self) -> &str {
+        self.alias_of.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// Which version-picking strategy the resolver uses for a workspace.
@@ -311,12 +329,39 @@ struct ResolveTask {
     /// (e.g. `"npm:real-pkg@^2.0.0"` for an alias, or `"^4.17.0"` for a normal range).
     /// Only set for root deps; recorded into the lockfile for drift detection.
     original_specifier: Option<String>,
+    /// Real registry package name for npm-alias tasks.
+    ///
+    /// When a task arrives with `range` like `"npm:h3@2.0.1-rc.20"`,
+    /// the preprocessing loop strips the prefix and sets this field to
+    /// the real package name (`"h3"`) while *keeping* `name` as the
+    /// user-facing alias (`"h3-v2"`, the key the package.json used).
+    /// Every identity-facing site — dep_path formation, direct-dep
+    /// records, parent `dependencies` wiring, the resolved-versions
+    /// dedupe map — uses `name`, so the alias survives all the way
+    /// to the linker and ends up as `node_modules/<alias>/` with
+    /// `LockedPackage.alias_of = Some(real_name)`. Only registry
+    /// I/O (packument fetch, tarball URL derivation) consults this
+    /// field.
+    ///
+    /// `None` for ordinary (non-aliased) tasks — `name` is already
+    /// the registry name and nothing downstream needs to distinguish.
+    real_name: Option<String>,
     /// Outermost-first chain of `(name, version)` ancestors above this
     /// task in the dependency graph, used by `parent>child` override
     /// selectors. Empty for root/importer deps. Each child-enqueue
     /// site is responsible for extending its parent's chain with the
     /// parent's own `(name, version)` frame.
     ancestors: Vec<(String, String)>,
+}
+
+impl ResolveTask {
+    /// Name to use for registry operations (packument fetch, tarball
+    /// URL). Returns `real_name` for aliased tasks and `name`
+    /// otherwise. Every call site that talks to the registry goes
+    /// through this accessor so alias handling stays localized.
+    fn registry_name(&self) -> &str {
+        self.real_name.as_deref().unwrap_or(&self.name)
+    }
 }
 
 impl Resolver {
@@ -664,6 +709,7 @@ impl Resolver {
                     parent: None,
                     importer: importer_path.clone(),
                     original_specifier: Some(range.clone()),
+                    real_name: None,
                     ancestors: Vec::new(),
                 });
             }
@@ -676,6 +722,7 @@ impl Resolver {
                     parent: None,
                     importer: importer_path.clone(),
                     original_specifier: Some(range.clone()),
+                    real_name: None,
                     ancestors: Vec::new(),
                 });
             }
@@ -694,6 +741,7 @@ impl Resolver {
                     parent: None,
                     importer: importer_path.clone(),
                     original_specifier: Some(range.clone()),
+                    real_name: None,
                     ancestors: Vec::new(),
                 });
             }
@@ -1024,14 +1072,27 @@ impl Resolver {
                     {
                         let real_name = rest[..at_idx].to_string();
                         let real_range = rest[at_idx + 1..].to_string();
-                        if real_name != task.name || real_range != task.range {
+                        // Keep `task.name` as the user-facing alias
+                        // (the key the package.json used) and stash
+                        // the registry name on `real_name` so every
+                        // identity-facing site — dep_path formation,
+                        // direct-dep records, parent wiring — sees
+                        // the alias, while only packument/tarball
+                        // fetch sites (via `task.registry_name()`)
+                        // hit the real package. Overwriting
+                        // `task.name` here would collapse
+                        // `node_modules/h3-v2/` to `node_modules/h3/`
+                        // and any `require("h3-v2")` would break.
+                        if task.real_name.as_deref() != Some(real_name.as_str())
+                            || real_range != task.range
+                        {
                             tracing::trace!(
                                 "npm alias: {} -> {}@{}",
                                 task.name,
                                 real_name,
                                 real_range
                             );
-                            task.name = real_name;
+                            task.real_name = Some(real_name);
                             task.range = real_range;
                             changed = true;
                         }
@@ -1211,6 +1272,11 @@ impl Resolver {
                                 name: linked_name.clone(),
                                 version: real_version.clone(),
                                 integrity: None,
+                                // local_source deps aren't aliased —
+                                // `file:`/`link:` specifiers go
+                                // through the local-source branch,
+                                // not the `npm:` rewrite.
+                                alias_of: None,
                                 local_source: Some(local.clone()),
                             });
                         }
@@ -1229,6 +1295,7 @@ impl Resolver {
                                     parent: Some(dep_path.clone()),
                                     importer: task.importer.clone(),
                                     original_specifier: None,
+                                    real_name: None,
                                     ancestors: child_ancestors.clone(),
                                 });
                             }
@@ -1410,6 +1477,14 @@ impl Resolver {
                                     name: task.name.clone(),
                                     version: version.clone(),
                                     integrity: locked_pkg.integrity.clone(),
+                                    // Carry the alias identity
+                                    // through the reuse path — the
+                                    // existing `locked_pkg` already
+                                    // records it if the lockfile held
+                                    // an aliased entry, so the
+                                    // streaming fetch still hits the
+                                    // real registry name.
+                                    alias_of: locked_pkg.alias_of.clone(),
                                     local_source: locked_pkg.local_source.clone(),
                                 });
                             }
@@ -1470,6 +1545,7 @@ impl Resolver {
                                     parent: Some(dep_path.clone()),
                                     importer: task.importer.clone(),
                                     original_specifier: None,
+                                    real_name: None,
                                     ancestors: child_ancestors.clone(),
                                 });
                             }
@@ -1493,8 +1569,14 @@ impl Resolver {
                 // in the cache because it landed while an earlier
                 // task was being waited on.
                 let wait_start = std::time::Instant::now();
-                while !self.cache.contains_key(&task.name) {
-                    ensure_fetch!(&task.name);
+                // Cache is keyed by the *registry* name — for aliased
+                // tasks `task.name` is the user-facing alias (e.g.
+                // `h3-v2`), which would never hit. `registry_name()`
+                // returns the alias-resolved target (`h3`) on
+                // aliased tasks and `task.name` otherwise.
+                let fetch_name = task.registry_name().to_string();
+                while !self.cache.contains_key(&fetch_name) {
+                    ensure_fetch!(&fetch_name);
                     match in_flight.join_next().await {
                         Some(Ok(Ok((name, packument)))) => {
                             in_flight_names.remove(&name);
@@ -1514,7 +1596,7 @@ impl Resolver {
                             // hold this name, so a None here means
                             // the spawn failed silently. Surface it.
                             return Err(Error::Registry(
-                                task.name.clone(),
+                                fetch_name.clone(),
                                 "packument fetch disappeared before completing".to_string(),
                             ));
                         }
@@ -1539,9 +1621,14 @@ impl Resolver {
                 // sub-loop over `processed_batch` in the old wave
                 // code; here it's inline as the tail of the per-task
                 // pipeline now that we know the packument is in
-                // cache.
-                let packument = self.cache.get(&task.name).ok_or_else(|| {
-                    Error::Registry(task.name.clone(), "packument not in cache".to_string())
+                // cache. `registry_name()` is the cache key for
+                // aliased tasks (cache is populated under the real
+                // registry name), so use the same accessor here.
+                let packument = self.cache.get(task.registry_name()).ok_or_else(|| {
+                    Error::Registry(
+                        task.registry_name().to_string(),
+                        "packument not in cache".to_string(),
+                    )
                 })?;
 
                 // Find locked version
@@ -1803,13 +1890,19 @@ impl Resolver {
 
                 let integrity = version_meta.dist.as_ref().and_then(|d| d.integrity.clone());
 
-                // Stream this resolved package for early tarball fetching
+                // Stream this resolved package for early tarball fetching.
+                // `alias_of` mirrors what the LockedPackage below
+                // will carry — the streaming fetch consumer in
+                // install.rs uses it to derive the real tarball URL
+                // for aliased packages where `name` alone (`h3-v2`)
+                // would 404.
                 if let Some(ref tx) = self.resolved_tx {
                     let _ = tx.send(ResolvedPackage {
                         dep_path: dep_path.clone(),
                         name: task.name.clone(),
                         version: version.clone(),
                         integrity: integrity.clone(),
+                        alias_of: task.real_name.clone(),
                         local_source: None,
                     });
                 }
@@ -1873,7 +1966,14 @@ impl Resolver {
                             v
                         },
                         tarball_url: None,
-                        alias_of: None,
+                        // `name` is the alias for npm-aliased tasks
+                        // (`"h3-v2": "npm:h3@..."` → name = "h3-v2"),
+                        // so stash the real registry name here. The
+                        // lockfile writer + installer consult
+                        // `alias_of` whenever they need to hit the
+                        // registry, matching how the npm-lockfile
+                        // reader populates this field.
+                        alias_of: task.real_name.clone(),
                     },
                 );
 
@@ -1921,6 +2021,7 @@ impl Resolver {
                         parent: Some(dep_path.clone()),
                         importer: task.importer.clone(),
                         original_specifier: None,
+                        real_name: None,
                         ancestors: child_ancestors.clone(),
                     });
                 }
@@ -1955,6 +2056,7 @@ impl Resolver {
                         parent: Some(dep_path.clone()),
                         importer: task.importer.clone(),
                         original_specifier: None,
+                        real_name: None,
                         ancestors: child_ancestors.clone(),
                     });
                 }
@@ -2042,6 +2144,7 @@ impl Resolver {
                             parent: Some(dep_path.clone()),
                             importer: task.importer.clone(),
                             original_specifier: None,
+                            real_name: None,
                             ancestors: child_ancestors.clone(),
                         });
                     }
@@ -6090,5 +6193,58 @@ mod tests {
             "default cap corrupted output: {:?}",
             out.packages.keys().collect::<Vec<_>>()
         );
+    }
+
+    // Fresh resolve: when the root manifest carries
+    // `"odd-alias": "npm:is-odd@3.0.1"`, the resolver must emit the
+    // graph keyed by the *alias* and stash the real registry name in
+    // `alias_of`. Before this fix, `task.name` was clobbered to
+    // `is-odd` at the `npm:` rewrite site, which collapsed
+    // `node_modules/odd-alias/` to `node_modules/is-odd/` and broke
+    // `require("odd-alias")` at runtime.
+    #[tokio::test]
+    async fn fresh_resolve_preserves_npm_alias_as_folder_name() {
+        let is_odd = make_packument("is-odd", &["3.0.1"], "3.0.1");
+
+        // Pre-seed the cache under the *real* package name — the
+        // whole point of the fix is that the registry fetch keys by
+        // the real name (`is-odd`), not the alias-qualified
+        // `odd-alias` that would 404 the registry.
+        let client = Arc::new(aube_registry::client::RegistryClient::new(
+            "http://127.0.0.1:0",
+        ));
+        let mut resolver = Resolver::new(client);
+        resolver.cache.insert("is-odd".to_string(), is_odd);
+
+        let mut manifest = PackageJson::default();
+        manifest
+            .dependencies
+            .insert("odd-alias".to_string(), "npm:is-odd@3.0.1".to_string());
+
+        let graph = resolver
+            .resolve(&manifest, None)
+            .await
+            .expect("alias resolve failed");
+
+        // Graph key and `LockedPackage.name` both carry the alias —
+        // that's what the linker drops into `node_modules/` and what
+        // any `require("odd-alias")` walks to.
+        let pkg = graph
+            .packages
+            .get("odd-alias@3.0.1")
+            .expect("aliased package must be keyed by the alias dep_path");
+        assert_eq!(pkg.name, "odd-alias");
+        assert_eq!(pkg.version, "3.0.1");
+        assert_eq!(pkg.alias_of.as_deref(), Some("is-odd"));
+        assert_eq!(pkg.registry_name(), "is-odd");
+
+        // No stray `is-odd@3.0.1` entry from the rewrite leaking the
+        // real name past the alias boundary.
+        assert!(!graph.packages.contains_key("is-odd@3.0.1"));
+
+        let root = graph.importers.get(".").unwrap();
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "odd-alias");
+        assert_eq!(root[0].dep_path, "odd-alias@3.0.1");
     }
 }
