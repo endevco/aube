@@ -255,5 +255,14 @@ jobs:
           git add -A aube.usage.kdl docs CHANGELOG.md Cargo.toml Cargo.lock crates release.json
           MERGE_BASE=$(git merge-base HEAD origin/main)
           git reset --soft "$MERGE_BASE"
-          git commit -m "chore: release ${TAG}"
+          # The `[render-done]` subject marker is how Buildkite's
+          # pipeline filter (`.buildkite/pipeline.yml`) knows the render
+          # step has run. Without it, Buildkite skips builds on
+          # `release-plz-*` branches, so the raw commit release-plz
+          # force-pushes (which doesn't yet include the regenerated
+          # `aube.usage.kdl`) can't report a spurious golden-file
+          # failure. GitHub squashes the PR on merge using the PR title
+          # (which release-plz sets separately and never gets this
+          # marker), so the final commit on main is clean.
+          git commit -m "chore: release ${TAG} [render-done]"
           git push --force-with-lease
