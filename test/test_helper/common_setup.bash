@@ -8,16 +8,6 @@ _common_setup() {
 	PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 	export PATH="$PROJECT_ROOT/target/debug:$PATH"
 
-	# Materialize the multicall shims (`aubr`, `aubx`) as hardlinks to the
-	# `aube` binary so basename dispatch in `main.rs` kicks in. The shims
-	# are not compiled separately, so we refresh them on every test run in
-	# case `aube` was rebuilt since the last invocation.
-	local _aube_bin="$PROJECT_ROOT/target/debug/aube"
-	if [ -x "$_aube_bin" ]; then
-		ln -f "$_aube_bin" "$PROJECT_ROOT/target/debug/aubr" 2>/dev/null || true
-		ln -f "$_aube_bin" "$PROJECT_ROOT/target/debug/aubx" 2>/dev/null || true
-	fi
-
 	TEST_TEMP_DIR="$(temp_make)"
 	cd "$TEST_TEMP_DIR" || exit 1
 

@@ -1,11 +1,13 @@
 name: release
 
-# Reusable workflow: builds + (on macOS) codesigns the `aube` binary
-# for every target, then uploads each archive onto the draft GitHub
-# release that `release-plz` already created for the tag. Driven by
-# `.github/workflows/release-plz.yml` — not triggered directly on
-# tag push, since release-plz owns the tag/release lifecycle and
-# dispatching on both would race.
+# Reusable workflow: builds + (on macOS) codesigns the `aube`, `aubr`,
+# and `aubx` binaries for every target, then uploads a single archive
+# per target onto the draft GitHub release that `release-plz` already
+# created for the tag. `aubr`/`aubx` are multicall shims that share
+# `src/main.rs` with `aube`; see `crates/aube-cli/Cargo.toml`.
+# Driven by `.github/workflows/release-plz.yml` — not triggered
+# directly on tag push, since release-plz owns the tag/release
+# lifecycle and dispatching on both would race.
 
 permissions:
   contents: write
@@ -65,14 +67,18 @@ jobs:
         with:
           shared-key: rust-${{ matrix.target }}
       # taiki-e/upload-rust-binary-action builds via cargo/cross, packages
-      # the binary into a `<bin>-<tag>-<target>.{tar.gz,zip}` archive, and
-      # uploads it onto the existing release for `tag`. On macOS we ask it
-      # to codesign with the Developer ID cert we just imported.
+      # the named bins into a single `<archive>.{tar.gz,zip}`, and uploads
+      # it onto the existing release for `tag`. Multi-bin mode requires an
+      # explicit `archive` name (the `$bin` placeholder isn't usable), so
+      # we keep the historical `aube-<tag>-<target>` pattern that installers
+      # already expect. On macOS we ask it to codesign with the Developer
+      # ID cert we just imported; the prefix applies to all three bins.
       - name: Upload binary (macOS signed)
         if: startsWith(matrix.os, 'macos')
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: aube
+          bin: aube,aubr,aubx
+          archive: aube-$tag-$target
           target: ${{ matrix.target }}
           ref: refs/tags/${{ inputs.tag }}
           token: ${{ secrets.AUBE_GH_TOKEN }}
@@ -82,7 +88,8 @@ jobs:
         if: ${{ !startsWith(matrix.os, 'macos') }}
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: aube
+          bin: aube,aubr,aubx
+          archive: aube-$tag-$target
           target: ${{ matrix.target }}
           ref: refs/tags/${{ inputs.tag }}
           token: ${{ secrets.AUBE_GH_TOKEN }}

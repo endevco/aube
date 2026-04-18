@@ -94,25 +94,17 @@ If the script exists in `package.json`, aube treats that as `aube run <script>`.
 
 ### Shortcuts: `aubr` and `aubx`
 
-`aubr` and `aubx` are optional multicall shims for `aube run` and `aube dlx`.
-They are installed as hardlinks to the same `aube` binary (copies on
-Windows) and dispatch purely on `argv[0]`, so every flag that works on the
-full command also works on the shim:
+`aubr` and `aubx` are multicall shims for `aube run` and `aube dlx`. They
+share a binary with `aube` and dispatch purely on `argv[0]`, so every flag
+that works on the full command also works on the shim:
 
 ```sh
 aubr build            # aube run build
 aubx cowsay hi        # aube dlx cowsay hi
 ```
 
-To enable the shims, create hardlinks named `aubr` and `aubx` next to
-your `aube` binary, e.g.:
-
-```sh
-ln "$(command -v aube)" "$(dirname "$(command -v aube)")/aubr"
-ln "$(command -v aube)" "$(dirname "$(command -v aube)")/aubx"
-```
-
-Official installers will grow support for this over time.
+The release archives ship all three binaries side by side; no extra
+setup is needed when you install aube via mise or the tarball.
 
 ## CI
 

@@ -13,6 +13,22 @@ include = ["src/**/*.rs"]
 name = "aube"
 path = "src/main.rs"
 
+# Multicall shims for `aube run` / `aube dlx`. Each stub `include!`s
+# `src/main.rs` so Cargo treats them as distinct targets (avoiding the
+# "same source in multiple bin targets" warning) while keeping a single
+# source of truth. Dispatch happens at runtime via `rewrite_multicall_argv`,
+# which keys off `argv[0]`. `test = false` prevents `cargo test` from
+# re-running the shared test suite three times.
+[[bin]]
+name = "aubr"
+path = "src/bin/aubr.rs"
+test = false
+
+[[bin]]
+name = "aubx"
+path = "src/bin/aubx.rs"
+test = false
+
 [dependencies]
 aube-lockfile = { workspace = true }
 aube-manifest = { workspace = true }

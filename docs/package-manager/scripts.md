@@ -47,6 +47,25 @@ aube dlx -p create-vite create-vite my-app
 
 `dlx` installs into a throwaway project and runs the requested binary.
 
+## Shortcuts: `aubr` and `aubx`
+
+`aubr` and `aubx` are multicall shims for `aube run` and `aube dlx`.
+They ship side by side with `aube` in the release archives and dispatch
+purely on `argv[0]`, so any flag that works on the full command works on
+the shim:
+
+```sh
+aubr build            # aube run build
+aubr -r test          # aube -r run test
+aubx cowsay hi        # aube dlx cowsay hi
+aubx -p create-vite create-vite my-app
+```
+
+The shims are identical aube binaries with a different filename; there is
+nothing to configure. If you install aube by hand — for example by
+copying the binary out of the tarball — bring `aubr` and `aubx` along so
+the shortcuts resolve on `PATH`.
+
 ## Workspace runs
 
 ```sh

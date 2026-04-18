@@ -18,16 +18,7 @@ run = "hk check --all --slow"
 run = "hk fix --all --slow"
 
 [tasks.build]
-# Compile once, then hardlink the multicall shims (`aubr`, `aubx`) next
-# to the freshly built `aube` so basename dispatch in `main.rs` works
-# for local `./target/debug/aubr …` / `./target/debug/aubx …` runs.
-# Hardlinks are free on disk, survive macOS codesign, and let the BATS
-# suite exercise the shims without a second compile pass.
-run = [
-  "cargo build",
-  "ln -f target/debug/aube target/debug/aubr",
-  "ln -f target/debug/aube target/debug/aubx",
-]
+run = "cargo build"
 
 [tasks.test]
 run = "cargo test"
