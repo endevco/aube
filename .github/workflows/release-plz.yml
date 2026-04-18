@@ -107,6 +107,8 @@ jobs:
     name: Upload assets
     needs: release-plz-release
     if: ${{ needs.release-plz-release.outputs.tag != '' }}
+    permissions:
+      contents: write
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release-plz-release.outputs.tag }}
