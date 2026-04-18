@@ -52,6 +52,17 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         None => return Some("node_modules not found or never installed by aube".into()),
     };
 
+    // The state file lives outside `node_modules`, so a user who runs
+    // `rm -rf node_modules` leaves the state behind. Verify the tree is
+    // still on disk — otherwise the lockfile+manifest hashes match but
+    // the packages are gone, and `aube run` would execute the script
+    // against a missing tree. Zero-dep projects still get a
+    // `node_modules/` (with `.bin/`) from install, so checking for the
+    // directory itself covers both cases.
+    if !project_dir.join("node_modules").exists() {
+        return Some("node_modules is missing".into());
+    }
+
     // Check lockfile hash. Honor `gitBranchLockfile` so a branch-specific
     // lockfile is the freshness anchor when present, but fall back to the
     // base lockfile names so a freshly-enabled branch doesn't loop on

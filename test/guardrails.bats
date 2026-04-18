@@ -198,6 +198,23 @@ _setup_workspace_fixture() {
 	[[ "$output" == *"dependencies need install before run"* ]]
 }
 
+@test "verifyDepsBeforeRun=error fails after node_modules is removed" {
+	_setup_basic_fixture
+	node -e 'let p=require("./package.json"); p.scripts={dev:"echo hello-dev"}; require("fs").writeFileSync("package.json", JSON.stringify(p))'
+
+	run aube install
+	assert_success
+	assert_dir_exists node_modules
+
+	rm -rf node_modules
+	echo "verifyDepsBeforeRun=error" >.npmrc
+
+	run aube dev
+	assert_failure
+	[[ "$output" == *"dependencies need install before run"* ]]
+	[[ "$output" != *"hello-dev"* ]]
+}
+
 @test "npmPath delegates npm-only fallback commands" {
 	fake_npm="$TEST_TEMP_DIR/fake-npm"
 	cat >"$fake_npm" <<-'SH'
