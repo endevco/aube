@@ -73,6 +73,22 @@ export default defineConfig({
     ],
     ["link", { rel: "manifest", href: "/site.webmanifest" }],
     ["meta", { name: "theme-color", content: "#FFB13B" }],
+    [
+      "script",
+      {
+        async: "",
+        src: "https://www.googletagmanager.com/gtag/js?id=G-WD1RRC0F8C",
+      },
+    ],
+    [
+      "script",
+      {},
+      `window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+
+gtag('config', 'G-WD1RRC0F8C');`,
+    ],
   ],
   themeConfig: {
     logo: "/logo.svg",
