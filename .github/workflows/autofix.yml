@@ -17,7 +17,14 @@ env:
 
 jobs:
   autofix:
-    if: github.actor != 'renovate[bot]' && github.actor != 'mend[bot]'
+    # release-plz PRs regenerate derived files inside the release-plz
+    # workflow itself (`.github/workflows/release-plz.yml`), so skip
+    # autofix here — otherwise the two jobs race on the same branch
+    # and whichever loses gets a `--force-with-lease` rejection.
+    if: >-
+      github.actor != 'renovate[bot]'
+      && github.actor != 'mend[bot]'
+      && !startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
