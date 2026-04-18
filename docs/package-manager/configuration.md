@@ -40,7 +40,7 @@ See [workspace YAML settings](/settings/workspace-yaml).
 
 ## Environment variables
 
-pnpm-compatible `NPM_CONFIG_*` aliases are supported for implemented settings:
+pnpm-compatible `NPM_CONFIG_*` aliases are supported:
 
 ```sh
 NPM_CONFIG_REGISTRY=https://registry.example.test aube install

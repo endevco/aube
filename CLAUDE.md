@@ -2,35 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Pre-1.0: pnpm parity
-
-Until aube ships 1.0 and hits drop-in parity with pnpm, this section
-calls out workflow rules that only apply during the parity push. Once
-we're done, delete the whole section.
-
-- **Every new CLI arg or flag must update two docs in the same PR**:
-  - [`README.md`](README.md) — the user-facing feature comparison table
-    (command row + any relevant flag row). If a command's notes column
-    is stale, fix it while you're there.
-  - [`CLI_SPEC.md`](CLI_SPEC.md) — the per-flag parity tracker. Flip
-    the status cell from ❌/🟡 to ✅ when you land the flag, and add
-    new rows for any pnpm flag the PR exposes for the first time.
-  Think of both docs as part of the CLI surface: a PR that skips them
-  leaves future contributors unsure whether a flag is shipped,
-  half-wired, or intentionally deferred.
-- **Keep `aube.usage.kdl` in sync**. Run `cargo build && ./target/debug/aube usage > aube.usage.kdl`
-  after any clap change. The golden test in `crates/aube/src/main.rs`
-  fails loudly if you forget.
-- **Hide aliases that aube makes redundant**. Commands we only keep for
-  pnpm muscle memory (e.g. `install-test`, `ll`, `la`) should be
-  `#[command(hide = true)]` so `aube --help` doesn't grow noise, and
-  the README row should explain *why* they're hidden. Feature-complete
-  commands stay visible.
-- **Every new command needs a BATS test.** The offline Verdaccio
-  fixture registry (`test/registry/`) exists so these tests can run
-  without network access; see the testing section below for the
-  recipe to add a fixture package.
-
 ## What is Aube?
 
 Aube is a fast Node.js package manager written in Rust. It mirrors pnpm's CLI surface and isolated symlink layout so users can swap it in, but it owns its own on-disk state: the global store lives in `~/.aube-store/`, the per-project virtual store is `node_modules/.aube/`, and the canonical lockfile is `aube-lock.yaml`. Aube reads and writes several lockfile formats — `aube-lock.yaml`, `pnpm-lock.yaml` (v9), `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock` — and preserves whatever kind is already on disk, so a project with only `pnpm-lock.yaml` keeps getting `pnpm-lock.yaml` updated. `aube-lock.yaml` is the default only when no lockfile exists yet. If a project already has a `node_modules` from another package manager, aube leaves it alone and installs into its own tree alongside — it never reaches into `.pnpm/` or `~/.pnpm-store/`. Lifecycle scripts are skipped by default for security.

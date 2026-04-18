@@ -228,27 +228,19 @@ fn same_filter(a: SourceFilter, b: SourceFilter) -> bool {
 }
 
 fn render_summary(out: &mut String, settings: &[&SettingRef<'_>]) {
-    let implemented = settings.iter().filter(|s| s.meta.implemented).count();
     writeln!(out, "## Summary").unwrap();
     writeln!(out).unwrap();
-    writeln!(
-        out,
-        "{} settings are listed here. {} are currently implemented.",
-        settings.len(),
-        implemented
-    )
-    .unwrap();
+    writeln!(out, "{} settings are listed here.", settings.len()).unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "| Setting | Type | Status | Summary |").unwrap();
-    writeln!(out, "| --- | --- | --- | --- |").unwrap();
+    writeln!(out, "| Setting | Type | Summary |").unwrap();
+    writeln!(out, "| --- | --- | --- |").unwrap();
     for setting in settings {
         writeln!(
             out,
-            "| [{}](#{}) | {} | {} | {} |",
+            "| [{}](#{}) | {} | {} |",
             code_span(setting.meta.name),
             setting_anchor(setting.meta.name),
             table_code_cell(setting.meta.type_),
-            status(setting.meta.implemented),
             table_text_cell(setting.meta.description),
         )
         .unwrap();
@@ -289,8 +281,6 @@ fn render_setting(out: &mut String, setting: &SettingMeta, filter: SourceFilter)
     writeln!(out).unwrap();
     writeln!(out, "- Type: {}", code_span(setting.type_)).unwrap();
     writeln!(out, "- Default: {}", code_span(setting.default)).unwrap();
-    writeln!(out, "- Status: {}", status(setting.implemented)).unwrap();
-    writeln!(out, "- Added to registry: {}", code_span(setting.since)).unwrap();
     render_sources(out, setting, filter);
     writeln!(out).unwrap();
 
@@ -328,19 +318,10 @@ fn render_sources(out: &mut String, setting: &SettingMeta, filter: SourceFilter)
 
 fn source_line(out: &mut String, label: &str, values: &[&str]) {
     if values.is_empty() {
-        writeln!(out, "- {label}: none").unwrap();
         return;
     }
     let values = values.iter().map(|v| code_span(v)).collect::<Vec<_>>();
     writeln!(out, "- {label}: {}", values.join(", ")).unwrap();
-}
-
-fn status(implemented: bool) -> &'static str {
-    if implemented {
-        "implemented"
-    } else {
-        "planned"
-    }
 }
 
 fn code_span(value: &str) -> String {

@@ -9,12 +9,12 @@
 //!
 //! This test recovers the intent (an unused setting should surface
 //! loudly) at `cargo test` time instead of compile time: for every
-//! `SettingMeta` with `implemented = true` and a supported scalar
-//! type, it verifies that *some* workspace `.rs` file outside
-//! `aube-settings` references the generated `resolved::<name>`
-//! accessor. Settings honored through other pathways (direct env
-//! reads, `NpmConfig` string lookups, accepted-for-parity no-ops)
-//! opt out with `typedAccessorUnused = true` in `settings.toml`.
+//! `SettingMeta` with a supported scalar type, it verifies that
+//! *some* workspace `.rs` file outside `aube-settings` references
+//! the generated `resolved::<name>` accessor. Settings honored
+//! through other pathways (direct env reads, `NpmConfig` string
+//! lookups, accepted-for-parity no-ops) opt out with
+//! `typedAccessorUnused = true` in `settings.toml`.
 //!
 //! Diagnostic on failure names the offending settings and suggests
 //! the two legal fixes: wire a `resolved::<name>(...)` caller, or
@@ -131,7 +131,7 @@ fn corpus_has_accessor_call(corpus: &str, accessor: &str) -> bool {
 }
 
 #[test]
-fn every_implemented_setting_has_a_typed_accessor_caller() {
+fn every_setting_has_a_typed_accessor_caller() {
     let root = workspace_root();
     let crates_dir = root.join("crates");
     let self_src = root.join("crates").join("aube-settings").join("src");
@@ -164,9 +164,6 @@ fn every_implemented_setting_has_a_typed_accessor_caller() {
     let mut reported: BTreeSet<String> = BTreeSet::new();
 
     for s in all() {
-        if !s.implemented {
-            continue;
-        }
         if s.typed_accessor_unused {
             continue;
         }
@@ -194,12 +191,11 @@ fn every_implemented_setting_has_a_typed_accessor_caller() {
     if !missing.is_empty() {
         panic!(
             "\n\
-             Settings marked `implemented = true` in settings.toml but with no call \
-             to their generated `resolved::<name>` accessor anywhere in the workspace \
-             ({n} total):\n\
+             Settings in settings.toml with no call to their generated \
+             `resolved::<name>` accessor anywhere in the workspace ({n} total):\n\
              {list}\n\n\
              Fix one of two ways:\n  \
-             1. Wire a real caller (typical path for a newly-implemented setting).\n  \
+             1. Wire a real caller (typical path for a newly-added setting).\n  \
              2. Set `typedAccessorUnused = true` in settings.toml with a comment \
              explaining how the setting *is* honored — e.g. read directly through \
              env at startup, looked up by string key in `NpmConfig`, or accepted \

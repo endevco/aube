@@ -8,9 +8,8 @@
 //! Use cases:
 //! - Future `aube settings` subcommand to render a CLI version of
 //!   pnpm's settings reference page
-//! - Sanity tests that verify every `implemented = true` entry still
-//!   maps to real behavior in the Rust source
-//! - A future docs generator that reads this and emits markdown
+//! - The docs generator that reads this and emits
+//!   `docs/settings/*.md`
 
 /// Metadata for one setting. Every field is `'static` because the
 /// containing `SETTINGS` slice is a `const` built from string
@@ -26,10 +25,6 @@ pub struct SettingMeta {
     pub type_: &'static str,
     /// Default value rendered as a string (e.g. `"true"`, `"undefined"`)
     pub default: &'static str,
-    /// Whether aube currently honors this setting. Transitional: removed at v1.
-    pub implemented: bool,
-    /// ISO date the setting was added to the registry (`YYYY-MM-DD`)
-    pub since: &'static str,
     /// Longer markdown docs body
     pub docs: &'static str,
     /// CLI flags that set this setting
@@ -50,10 +45,9 @@ pub struct SettingMeta {
     /// accessor" — e.g. read through `std::env::var` behind a
     /// hand-rolled `LazyLock`, looked up in `NpmConfig` by string
     /// key, or accepted for pnpm parity with no behavior wired.
-    /// Default `false`; the audit fails CI when an `implemented =
-    /// true` setting with a supported scalar type has no
-    /// `resolved::<name>` call site anywhere in the workspace and
-    /// this flag is not set.
+    /// Default `false`; the audit fails CI when a setting with a
+    /// supported scalar type has no `resolved::<name>` call site
+    /// anywhere in the workspace and this flag is not set.
     pub typed_accessor_unused: bool,
 }
 
@@ -89,7 +83,6 @@ mod tests {
             assert!(!s.name.is_empty(), "empty name in entry");
             assert!(!s.description.is_empty(), "{}: empty description", s.name);
             assert!(!s.type_.is_empty(), "{}: empty type", s.name);
-            assert!(!s.since.is_empty(), "{}: empty since", s.name);
         }
     }
 

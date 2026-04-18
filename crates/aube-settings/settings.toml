@@ -1,15 +1,11 @@
 # Aube Settings Registry
 #
-# Source of truth for every setting aube supports or plans to support.
-# Mirrors https://pnpm.io/next/settings exhaustively; the `implemented`
-# field marks which ones aube currently honors. When aube reaches v1
-# every setting will be implemented and this field will be removed.
+# Source of truth for every setting aube supports. Mirrors
+# https://pnpm.io/next/settings.
 #
 # Tooling consumes this file to generate:
 #   - docs/settings/*.md (pnpm-style reference pages)
 #   - Rust metadata/accessors in `aube-settings`
-#   - integration tests that verify each `implemented = true` setting
-#     actually affects observable behavior
 #
 # The `# ===== Category =====` separators below are intentionally
 # structured: the docs generator uses them for page grouping while
@@ -20,8 +16,6 @@
 #   type          = TOML-ish type spec ("bool", "string", "int",
 #                   "path", "url", "list<string>", "object", enum unions)
 #   default       = default value rendered as a string
-#   implemented   = whether aube currently honors this setting (dropped at v1)
-#   since         = ISO date the setting was added to this registry
 #   docs          = longer markdown explanation
 #   sources.cli   = CLI flags that set this setting (list, may be empty)
 #   sources.env   = env vars that set this setting (list, may be empty)
@@ -40,8 +34,6 @@
 description = "Instruct aube to override any dependency in the dependency graph, including peer dependencies."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 A root-level map of package specs to the versions aube should force them
 to, regardless of what any package's `dependencies` field requests. The
@@ -58,8 +50,6 @@ examples = []
 description = "Extend existing package definitions with additional information."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Patches a package's `dependencies`, `peerDependencies`, etc. at resolve
 time. Used to work around upstream packages that forget to declare their
@@ -75,8 +65,6 @@ examples = []
 description = "Mute deprecation warnings for specific package versions."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Maps a package name to a semver range for which the deprecation warning
 should be suppressed. Useful when a deprecated version is still pinned
@@ -92,8 +80,6 @@ examples = []
 description = "List of packages to ignore during update checks."
 type = "list<string>"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Packages in this list are never bumped by `aube update`, even when a
 newer version matching their range exists.
@@ -108,8 +94,6 @@ examples = []
 description = "Specify architectures for optional dependency installation."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Override the current platform/arch/libc triple used to filter optional
 dependencies. Useful when generating a lockfile for a target platform
@@ -124,8 +108,6 @@ examples = []
 description = "Skip optional dependencies by name."
 type = "list<string>"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Named entries are skipped even if their platform/arch matches. Distinct
 from `--no-optional`, which drops *all* optional deps at install time.
@@ -144,8 +126,6 @@ typedAccessorUnused = true
 description = "Delay installation of newly published versions (minutes)."
 type = "int"
 default = "1440"
-implemented = true
-since = "2026-04-12"
 docs = """
 Supply-chain attack mitigation: packages published within the last N
 minutes are skipped by the resolver. By default the resolver falls back
@@ -166,8 +146,6 @@ examples = []
 description = "Packages exempt from the minimumReleaseAge requirement."
 type = "list<string>"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Use for trusted internal packages that need to be rolled out immediately
 without waiting for the age gate. `pnpm audit --fix` (when implemented)
@@ -184,8 +162,6 @@ examples = []
 description = "Fail the install when no version satisfies the minimumReleaseAge cutoff."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 By default the resolver falls back to the lowest satisfying version when
 every candidate is younger than `minimumReleaseAge`. With this set, the
@@ -202,8 +178,6 @@ examples = []
 description = "Behavior when a package's trust level decreases between installs."
 type = '"no-downgrade" | "off"'
 default = "\"off\""
-implemented = true
-since = "2026-04-12"
 docs = """
 When set to `no-downgrade`, aube accepts and preserves the policy in the
 resolver configuration. Registry trust metadata is not exposed through
@@ -220,8 +194,6 @@ examples = []
 description = "Packages exempt from trust policy checks."
 type = "list<string>"
 default = "[]"
-implemented = true
-since = "2026-04-12"
 docs = "Whitelist for `trustPolicy`. Entries skip the downgrade check."
 sources.cli = []
 sources.env = []
@@ -233,8 +205,6 @@ examples = []
 description = "Ignore trust policy for packages older than this age (minutes)."
 type = "int"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Useful for pinning very old versions that predate signing infrastructure.
 """
@@ -248,8 +218,6 @@ examples = []
 description = "Restrict transitive dependencies to trusted sources (registries, not git/tarball URLs)."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, transitive deps referenced via `git+`, `file:`, or direct
 tarball URLs are rejected. Helps prevent supply-chain attacks via
@@ -265,8 +233,6 @@ examples = []
 description = "Registry URLs, including scoped registry overrides."
 type = "object"
 default = "{ default = \"https://registry.npmjs.org/\" }"
-implemented = true
-since = "2026-04-12"
 docs = """
 Maps `default` and `@scope` keys to registry URLs. aube reads these from
 `.npmrc` via `aube_registry::config::NpmConfig` (see
@@ -287,8 +253,6 @@ examples = [
 description = "Hoist all dependencies to the hidden modules directory."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls whether aube populates `node_modules/.aube/node_modules/` —
 the *hidden* hoist tree that lives inside the private virtual store.
@@ -318,8 +282,6 @@ examples = [
 description = "Symlink workspace packages into node_modules."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls whether workspace packages get their own symlinks in each
 importer's `node_modules/`. When true (the default), every importer
@@ -339,8 +301,6 @@ examples = []
 description = "Packages to hoist to the hidden modules directory."
 type = "list<string>"
 default = "[\"*\"]"
-implemented = true
-since = "2026-04-12"
 docs = """
 Glob list matched against package names. Any non-local package
 whose name matches at least one positive pattern (and no
@@ -365,8 +325,6 @@ examples = []
 description = "Packages to hoist directly to the root node_modules."
 type = "list<string>"
 default = "[]"
-implemented = true
-since = "2026-04-13"
 docs = """
 Glob list matched against package names. Any non-local package in the
 resolved graph whose name matches at least one positive pattern (and
@@ -389,8 +347,6 @@ examples = []
 description = "Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=[\"*\"])."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 Emulates npm's flat `node_modules` layout. Enables phantom dep bugs by
 design — only use as a last-resort compatibility knob.
@@ -407,8 +363,6 @@ examples = []
 description = "Directory to install dependencies into."
 type = "path"
 default = "\"node_modules\""
-implemented = true
-since = "2026-04-17"
 docs = """
 The project-level directory that holds the top-level `<name>` entries
 the user sees under the project root. Defaults to `"node_modules"`.
@@ -436,8 +390,6 @@ examples = []
 description = "Strategy for linking Node packages into node_modules."
 type = '"isolated" | "hoisted" | "pnp"'
 default = "\"isolated\""
-implemented = true
-since = "2026-04-12"
 docs = """
 aube defaults to `isolated`, a strict symlink layout under
 `node_modules/.aube/`. `hoisted` is also supported for projects that need an
@@ -455,8 +407,6 @@ examples = []
 description = "Create symlinks in the virtual store directory."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 Accepted for pnpm parity. aube's isolated layout is structurally
 defined by the symlink graph under `node_modules/.aube/` — each
@@ -485,8 +435,6 @@ examples = [
 description = "Write files to the modules directory."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When `false`, aube resolves the dependency graph and writes
 `aube-lock.yaml` but skips every `node_modules/` side effect: no
@@ -504,8 +452,6 @@ examples = []
 description = "Directory with links to the store."
 type = "path"
 default = "\"node_modules/.aube\""
-implemented = true
-since = "2026-04-12"
 docs = """
 Relocates the per-project `.aube/<dep>/node_modules/` tree that the
 isolated linker writes into. Relative paths resolve against the project
@@ -537,8 +483,6 @@ examples = []
 description = "Max length for virtual store directory names."
 type = "int"
 default = "120 (Linux/macOS), 60 (Windows)"
-implemented = true
-since = "2026-04-12"
 docs = """
 Caps the number of characters in a single `node_modules/.aube/<dep>`
 directory name. `dep_path_to_filename` already truncates-and-hashes
@@ -558,8 +502,6 @@ examples = []
 description = "Populate the virtual store without creating top-level symlinks."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When `true`, aube still materializes every package into
 `node_modules/.aube/<dep>/node_modules/<name>` (and, in global-store
@@ -580,8 +522,6 @@ examples = []
 description = "Method for importing packages from the store into node_modules."
 type = '"auto" | "hardlink" | "copy" | "clone" | "clone-or-copy"'
 default = "\"auto\""
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls how aube materializes files from the global content-addressable
 store into the virtual store. `auto` (default) probes the destination
@@ -604,8 +544,6 @@ examples = []
 description = "Minutes before orphan packages are removed from the virtual store."
 type = "int"
 default = "10080"
-since = "2026-04-12"
-implemented = true
 docs = """
 After each successful install, aube sweeps the per-project
 `node_modules/.aube/` virtual store and removes entries whose
@@ -627,8 +565,6 @@ examples = []
 description = "Minutes before the dlx cache is considered stale."
 type = "int"
 default = "1440"
-implemented = true
-since = "2026-04-12"
 docs = """
 Accepted for pnpm parity. `aube dlx` currently installs into a fresh
 `tempfile::TempDir` per invocation and removes it on exit, so there is
@@ -646,8 +582,6 @@ examples = []
 description = "Use a per-user virtual store for all projects."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube ships its own global virtual store under `~/.cache/aube/virtual-store/`.
 It's enabled by default and disabled under CI (see `aube-linker`, which
@@ -670,8 +604,6 @@ typedAccessorUnused = true
 description = "Location where packages are saved on disk (content-addressable store)."
 type = "path"
 default = "~/.aube-store/v1/files/"
-implemented = true
-since = "2026-04-12"
 docs = """
 Defaults to aube's own store path (`~/.aube-store/v1/files/`). aube does not
 read from or write to pnpm's `~/.pnpm-store/`. Set in `.npmrc` or
@@ -700,8 +632,6 @@ examples = [
 description = "Check store file integrity before linking."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube verifies each package's `integrity` (SHA-512) against the tarball
 bytes at import time in `aube_store::verify_integrity`, before extraction.
@@ -722,8 +652,6 @@ examples = [
 description = "Only allow installs when the store server is running."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 Accepted for pnpm parity. aube has no long-running store-daemon
 component — every install talks directly to the on-disk CAS at
@@ -741,8 +669,6 @@ examples = []
 description = "Validate package names and versions in the store."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 After each registry tarball is imported, aube reads the freshly stored
 `package.json` and confirms its `name` and `version` match what the
@@ -769,8 +695,6 @@ examples = [
 description = "Proxy URL for outgoing HTTPS requests."
 type = "url"
 default = "null"
-implemented = true
-since = "2026-04-12"
 docs = """
 Forwards every HTTPS registry fetch through the given proxy URL.
 Honored by the `aube-registry` reqwest client. Resolution mirrors
@@ -786,8 +710,6 @@ examples = []
 description = "Proxy URL for outgoing HTTP requests."
 type = "url"
 default = "null"
-implemented = true
-since = "2026-04-12"
 docs = """
 HTTP counterpart to `httpsProxy`. Resolution mirrors pnpm:
 `.npmrc http-proxy` ?? resolved `httpsProxy` ?? `HTTP_PROXY` /
@@ -804,8 +726,6 @@ examples = []
 description = "Comma-separated list of domains that bypass the proxy."
 type = "string"
 default = "null"
-implemented = true
-since = "2026-04-12"
 docs = """
 Passed through to `reqwest::NoProxy::from_string` verbatim, so
 wildcard and port-qualified hosts behave the same as curl / node.
@@ -826,8 +746,6 @@ typedAccessorUnused = true
 description = "Local interface IP address to bind registry connections to."
 type = "string"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Used on multi-homed hosts where outbound traffic must leave a
 specific interface. Parsed as `IpAddr`; unparseable values are
@@ -846,8 +764,6 @@ typedAccessorUnused = true
 description = "Maximum concurrent connections per origin."
 type = "int"
 default = "networkConcurrency x 3"
-implemented = true
-since = "2026-04-12"
 docs = """
 Plumbed into reqwest's `pool_max_idle_per_host`. This is the
 closest analogue to pnpm's per-origin socket cap — reqwest doesn't
@@ -867,8 +783,6 @@ typedAccessorUnused = true
 description = "Validate SSL certificates for HTTPS requests."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 Defaults to `true`. Setting `strict-ssl=false` disables TLS
 certificate verification entirely via
@@ -891,8 +805,6 @@ typedAccessorUnused = true
 description = "Read and generate aube-lock.yaml."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls whether aube reads and writes a lockfile during install. When
 false (npm's `--no-package-lock` equivalent), every `aube install` runs
@@ -918,8 +830,6 @@ examples = [
 description = "Perform a headless install if the lockfile already satisfies package.json."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube's default outside CI. Maps to `FrozenMode::Prefer` in
 `crates/aube/src/commands/install.rs`. Inside CI the default flips
@@ -935,8 +845,6 @@ examples = ["aube install --prefer-frozen-lockfile"]
 description = "Add the full tarball URL to each lockfile entry."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, aube's lockfile writer records the registry tarball URL in
 each package's `resolution:` block alongside the `integrity:` hash.
@@ -965,8 +873,6 @@ examples = [
 description = "Skip local `link:` dependencies when writing the lockfile."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-13"
 docs = """
 When true, `link:` dependencies are omitted from the lockfile's
 `importers.*.dependencies:` (and `devDependencies:` /
@@ -990,8 +896,6 @@ examples = []
 description = "Generate branch-specific lockfile names (aube-lock.<branch>.yaml)."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When enabled, aube writes the lockfile to `aube-lock.<branch>.yaml`
 instead of `aube-lock.yaml`, where `<branch>` is the current git branch
@@ -1022,8 +926,6 @@ examples = []
 description = "Branch-name glob list for auto-merging branch lockfiles."
 type = "list<string>"
 default = "null"
-implemented = true
-since = "2026-04-12"
 docs = """
 Complements `gitBranchLockfile`. Accepts a list of glob patterns. When
 `aube install` runs on a branch whose name matches any pattern, aube
@@ -1057,8 +959,6 @@ examples = []
 description = "Max length of the peer-ID suffix in lockfile dep_paths."
 type = "int"
 default = "1000"
-implemented = true
-since = "2026-04-12"
 docs = """
 Caps the length of the peer-ID suffix appended to a `dep_path` in the
 lockfile (e.g. `react-dom@18.2.0(react@18.2.0)`). When the suffix would
@@ -1082,8 +982,6 @@ examples = []
 description = "Hosts for which aube performs shallow git clones."
 type = "list<string>"
 default = "[\"github.com\", \"gist.github.com\", \"gitlab.com\", \"bitbucket.com\", \"bitbucket.org\"]"
-implemented = true
-since = "2026-04-12"
 docs = """
 Consulted by `aube-store::git_shallow_clone` when cloning a git
 dependency. When the URL's hostname matches an entry in this list
@@ -1109,8 +1007,6 @@ examples = []
 description = "Maximum concurrent HTTP(S) requests."
 type = "int"
 default = "128 (tarballs), 64 (packuments)"
-implemented = true
-since = "2026-04-12"
 docs = """
 Caps the tokio semaphores that gate concurrent tarball downloads
 inside `crates/aube/src/commands/install.rs`. When set, both the
@@ -1133,8 +1029,6 @@ examples = [
 description = "Number of retry attempts for failed registry fetches."
 type = "int"
 default = "2"
-implemented = true
-since = "2026-04-12"
 docs = """
 Number of *additional* attempts the registry client makes after a
 transient failure (5xx / 429 / connection error). `2` means up to 3
@@ -1155,8 +1049,6 @@ examples = []
 description = "Exponential backoff factor for fetch retries."
 type = "int"
 default = "10"
-implemented = true
-since = "2026-04-12"
 docs = """
 Multiplier used between retry attempts. Attempt `n` waits
 `min(fetchRetryMintimeout * fetchRetryFactor ^ (n-1), fetchRetryMaxtimeout)`
@@ -1172,8 +1064,6 @@ examples = []
 description = "Minimum retry timeout in milliseconds."
 type = "int"
 default = "10000"
-implemented = true
-since = "2026-04-12"
 docs = "Lower bound on the computed retry backoff. See `fetchRetryFactor`."
 sources.cli = []
 sources.env = []
@@ -1184,8 +1074,6 @@ examples = []
 description = "Maximum retry timeout in milliseconds."
 type = "int"
 default = "60000"
-implemented = true
-since = "2026-04-12"
 docs = "Upper bound on the computed retry backoff. See `fetchRetryFactor`."
 sources.cli = []
 sources.env = []
@@ -1196,8 +1084,6 @@ examples = []
 description = "Max time (ms) to wait for an HTTP request."
 type = "int"
 default = "60000"
-implemented = true
-since = "2026-04-12"
 docs = """
 Per-request HTTP timeout, applied via `reqwest`'s single-knob
 `.timeout()` so it covers headers + body together. A request that
@@ -1213,8 +1099,6 @@ examples = []
 description = "Warn if a metadata request exceeds this threshold (ms)."
 type = "int"
 default = "10000"
-implemented = true
-since = "2026-04-12"
 docs = """
 Observability threshold for registry *metadata* requests (packument,
 dist-tags). When a successful response takes longer than
@@ -1236,8 +1120,6 @@ examples = []
 description = "Warn if download speed falls below this threshold (KiB/s)."
 type = "int"
 default = "50"
-implemented = true
-since = "2026-04-12"
 docs = """
 Observability threshold for *tarball* downloads. When a tarball
 finishes with an end-to-end average throughput below this many KiB/s,
@@ -1261,8 +1143,6 @@ examples = []
 description = "Automatically install missing peer dependencies."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true (the default), missing peer dependencies are auto-installed
 during resolution and hoisted into the importer. Set to `false` to
@@ -1279,8 +1159,6 @@ examples = []
 description = "Deduplicate packages that have peer dependencies."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true (the default), aube collapses packages that landed at
 different peer-suffixed dep_paths but resolved every declared peer to
@@ -1300,8 +1178,6 @@ examples = []
 description = "Use version-only identifiers for peer suffixes in the lockfile."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, lockfile peer suffixes emit `(18.2.0)` instead of the
 default `(react@18.2.0)`. Applied as a post-pass over the resolved
@@ -1319,8 +1195,6 @@ examples = []
 description = "Fail if peer dependencies are missing or invalid."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, any unmet peer dependency (missing, or resolved to a version
 outside the declared range) fails the install with a miette diagnostic
@@ -1340,8 +1214,6 @@ examples = []
 description = "Use root workspace dependencies for peer resolution."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true (the default), an unresolved peer falls back to the root
 workspace importer's direct deps before the graph-wide scan tier.
@@ -1360,8 +1232,6 @@ examples = []
 description = "Suppress warnings for specific missing peer dependencies."
 type = "list<string>"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Glob list of peer dependency names whose "missing required peer" warning
 should be silenced. Only silences peers that are missing entirely — a peer
@@ -1381,8 +1251,6 @@ examples = []
 description = "Override the accepted semver range for specific peer dependencies."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Map of peer selector to an additional semver range. Keys are either a
 bare peer name (e.g. `react`) which applies regardless of parent, or
@@ -1403,8 +1271,6 @@ examples = []
 description = "Allow any peer version to resolve, bypassing semver checks."
 type = "list<string>"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Glob list of peer dependency names whose semver check should be
 bypassed entirely — any resolved version counts as satisfying the
@@ -1425,8 +1291,6 @@ examples = []
 description = "Control color output in aube's CLI."
 type = '"auto" | "always" | "never"'
 default = "\"auto\""
-implemented = true
-since = "2026-04-12"
 docs = "`--color` / `--no-color`, `color=always|never|auto` in `.npmrc`, and `NPM_CONFIG_COLOR` all resolve before output initializes. The resolved choice is translated into `FORCE_COLOR` / `CLICOLOR_FORCE` / `NO_COLOR` so aube, diagnostics, progress rendering, and child processes agree."
 sources.cli = ["color", "no-color"]
 sources.env = []
@@ -1443,8 +1307,6 @@ typedAccessorUnused = true
 description = "Minimum log level to display."
 type = '"debug" | "info" | "warn" | "error" | "silent"'
 default = "\"warn\""
-implemented = true
-since = "2026-04-12"
 docs = "Controls aube's tracing filter. `-v` / `--verbose` is a shortcut for `debug`; `--silent`, `--reporter=silent`, and `loglevel=silent` suppress aube's own non-error stderr output. Also readable from `.npmrc` `loglevel`. CLI flags override `.npmrc`."
 sources.cli = ["loglevel", "verbose", "v", "silent"]
 sources.env = []
@@ -1461,8 +1323,6 @@ typedAccessorUnused = true
 description = "Opt into experimental CLI features."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = "Accepted from env and `.npmrc` for pnpm parity. aube currently has no beta-gated commands, so the setting is a no-op after validation."
 sources.cli = []
 sources.env = []
@@ -1476,8 +1336,6 @@ typedAccessorUnused = true
 description = "Install on all workspace packages by default."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = "When true, workspace installs resolve and link all importers by default. Set to false to opt out of implicit workspace-wide install behavior; explicit `--filter` / `--recursive` still wins."
 sources.cli = []
 sources.env = []
@@ -1488,8 +1346,6 @@ examples = []
 description = "Fail if a package is incompatible with the current Node version."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = "When on, an `engines.node` mismatch on the root project or any dependency fails the install. When off, mismatches are warnings only."
 sources.cli = []
 sources.env = []
@@ -1500,8 +1356,6 @@ examples = []
 description = "Path to the npm binary aube should shell out to when needed."
 type = "path"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = "Used for npm-only compatibility commands (`owner`, `pkg`, `search`, `set-script`, `token`, `whoami`) when configured. Without it, aube keeps the explicit `use npm` error."
 sources.cli = []
 sources.env = []
@@ -1512,8 +1366,6 @@ examples = []
 description = "Enforce the `packageManager` field in package.json."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = "When a project declares `packageManager`, aube accepts `aube` and `pnpm` package-manager names and rejects npm/yarn/bun/etc. Set to false to skip this guard."
 sources.cli = []
 sources.env = []
@@ -1524,8 +1376,6 @@ examples = []
 description = "Enforce the exact `packageManager` version from package.json."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = "When enabled, `packageManager: \"aube@<version>\"` must match the running aube version exactly. `pnpm@...` cannot be exact-version satisfied by aube and fails with a clear diagnostic."
 sources.cli = []
 sources.env = []
@@ -1536,8 +1386,6 @@ examples = []
 description = "Auto-download the specified pnpm version when mismatched."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = "Accepted for pnpm parity. aube does not download or re-exec other package-manager versions; when exact version enforcement is enabled, mismatches are reported instead."
 sources.cli = []
 sources.env = []
@@ -1553,8 +1401,6 @@ typedAccessorUnused = true
 description = "Skip all lifecycle scripts in package.json."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube already skips dependency install scripts by default (security-first).
 The `--ignore-scripts` flag additionally skips root lifecycle hooks
@@ -1580,8 +1426,6 @@ typedAccessorUnused = true
 description = "Maximum number of concurrent script-executing child processes."
 type = "int"
 default = "5"
-implemented = true
-since = "2026-04-12"
 docs = """
 Caps how many dependency lifecycle scripts run in parallel during the
 post-link `allowBuilds` phase. Inside a single package the
@@ -1602,8 +1446,6 @@ examples = [
 description = "Cache the results of install hooks."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When an allowlisted dependency runs lifecycle scripts, aube snapshots
 the post-build package directory under the cache dir keyed by
@@ -1626,8 +1468,6 @@ examples = [
 description = "Only read from the side-effects cache; don't write."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, aube may restore allowlisted dependency build output from the
 side-effects cache but will not write new cache entries after scripts run.
@@ -1641,8 +1481,6 @@ examples = []
 description = "Drop to a non-root user when running scripts as root."
 type = "bool"
 default = "false (as root), true (otherwise)"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube exports the resolved value to lifecycle and `run` scripts as
 `npm_config_unsafe_perm`, matching the environment surface npm-style
@@ -1657,8 +1495,6 @@ examples = []
 description = "Options passed to Node.js via NODE_OPTIONS."
 type = "string"
 default = "null"
-implemented = true
-since = "2026-04-12"
 docs = """
 When set in `.npmrc`, aube exports the value as `NODE_OPTIONS` for
 lifecycle scripts and `aube run` scripts. An existing `NODE_OPTIONS`
@@ -1673,8 +1509,6 @@ examples = []
 description = "Check dependencies before running scripts."
 type = '"install" | "warn" | "error" | "prompt" | false'
 default = "\"install\""
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls `run`, lifecycle shortcuts, `exec`, and implicit script commands.
 `install` preserves aube's auto-install behavior, `warn` reports stale
@@ -1690,8 +1524,6 @@ examples = []
 description = "Exit with an error if dependencies have unreviewed build scripts."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube never runs dependency lifecycle scripts unless the package is
 listed in `allowBuilds` or `--dangerously-allow-all-builds` is set.
@@ -1710,8 +1542,6 @@ examples = []
 description = "Explicitly allow or disallow script execution per package."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Per-package allowlist for dependency lifecycle scripts. Read from
 `package.json`'s `pnpm.allowBuilds` field and `aube-workspace.yaml`'s
@@ -1730,8 +1560,6 @@ examples = ['pnpm.allowBuilds: { esbuild: true, "@some/pkg": false }']
 description = "Allow all dependency build scripts automatically."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 Opt-out escape hatch for the `allowBuilds` allowlist: when set, every
 dependency's `preinstall` / `install` / `postinstall` / `prepare`
@@ -1755,8 +1583,6 @@ typedAccessorUnused = true
 description = "Node.js version aube reports when evaluating `engines` checks."
 type = "string"
 default = "output of `node -v` with the leading `v` stripped"
-implemented = true
-since = "2026-04-12"
 docs = "Paired with `engineStrict`. Set this in .npmrc to pin the Node version engines checks validate against, rather than probing `node --version` at install time."
 sources.cli = []
 sources.env = []
@@ -1767,8 +1593,6 @@ examples = []
 description = "Custom Node.js download mirror URLs."
 type = "object"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Accepted for pnpm config parity. aube does not download Node.js itself,
 so the parsed mirror map is preserved for config introspection but has
@@ -1785,8 +1609,6 @@ examples = []
 description = "Version prefix used when installing a package."
 type = '"^" | "~" | ""'
 default = "\"^\""
-implemented = true
-since = "2026-04-12"
 docs = "Resolved from `.npmrc`. `--save-exact` overrides to empty prefix."
 sources.cli = []
 sources.env = []
@@ -1797,8 +1619,6 @@ examples = []
 description = "Default dist-tag used by `aube add` without a version."
 type = "string"
 default = "\"latest\""
-implemented = true
-since = "2026-04-12"
 docs = "Resolved from `.npmrc`. Used by `aube add` when no version or dist-tag is specified."
 sources.cli = []
 sources.env = []
@@ -1809,8 +1629,6 @@ examples = []
 description = "Directory where globally installed packages live."
 type = "path"
 default = "platform-specific"
-implemented = true
-since = "2026-04-12"
 docs = "Overrides the directory where globally installed packages live. Falls back to `AUBE_HOME` / `PNPM_HOME` / platform default."
 sources.cli = []
 sources.env = []
@@ -1821,8 +1639,6 @@ examples = []
 description = "Directory where global binaries are symlinked."
 type = "path"
 default = "platform-specific"
-implemented = true
-since = "2026-04-12"
 docs = "Overrides the directory where global binaries are symlinked. Independent of `globalDir`; falls back to `AUBE_HOME` / `PNPM_HOME` / platform default."
 sources.cli = []
 sources.env = []
@@ -1833,8 +1649,6 @@ examples = []
 description = "Path to an additional .npmrc file consulted for registry authentication tokens."
 type = "path"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 Points at an extra `.npmrc`-formatted file that aube reads *after*
 the user and project `.npmrc` files when resolving registry auth.
@@ -1867,8 +1681,6 @@ typedAccessorUnused = true
 description = "Directory for aube install-state files."
 type = "path"
 default = ".aube/.state"
-implemented = true
-since = "2026-04-12"
 docs = "Overrides the directory for install state tracking. Defaults to `.aube/.state` relative to the project root."
 sources.cli = []
 sources.env = []
@@ -1879,8 +1691,6 @@ examples = []
 description = "Directory for package metadata and dlx cache."
 type = "path"
 default = "~/.cache/aube"
-implemented = true
-since = "2026-04-12"
 docs = "Overrides the cache directory. `XDG_CACHE_HOME` is honored by the platform default (`aube_store::dirs::cache_dir`) which appends `/aube`; this setting takes a complete path."
 sources.cli = []
 sources.env = []
@@ -1891,8 +1701,6 @@ examples = []
 description = "Write all output to stderr instead of stdout."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = "Redirects stdout to stderr for the process lifetime. Resolved from `.npmrc` or the `--use-stderr` CLI flag."
 sources.cli = []
 sources.env = []
@@ -1903,8 +1711,6 @@ examples = []
 description = "Show an update notification when a newer aube is available."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 After a successful `install`, `add`, or `update`, aube fetches
 `https://aube.en.dev/VERSION` and prints a one-line notice if the
@@ -1926,8 +1732,6 @@ examples = []
 description = "Create symlinks instead of shims for `.bin` entries."
 type = "bool"
 default = "true (POSIX hoisted)"
-implemented = true
-since = "2026-04-12"
 docs = """
 POSIX only. Default (unset or `true`) creates a plain symlink from
 `node_modules/.bin/<name>` straight to the package's executable file —
@@ -1947,8 +1751,6 @@ examples = []
 description = "Disable pnpm's automatic dependency patching database."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 Accepted for pnpm config parity. pnpm ships a built-in compatibility
 database of auto-patches for known-broken packages; aube has no such
@@ -1967,8 +1769,6 @@ typedAccessorUnused = true
 description = "Dependency version resolution strategy."
 type = '"highest" | "time-based" | "lowest-direct"'
 default = "\"highest\""
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls how aube chooses versions during resolution. `highest` picks
 the newest satisfying version. `time-based` filters candidates through
@@ -1985,8 +1785,6 @@ examples = []
 description = "Whether the configured registry returns a `time` field in metadata."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When `false` (the default, matching pnpm and npmjs.org's behavior),
 aube fetches the full (non-corgi) packument to read the `time:` map
@@ -2012,8 +1810,6 @@ examples = [
 description = "Set NODE_PATH in command shims."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When `true` (default), aube-generated `.bin` shims export
 `NODE_PATH="$basedir/.."` so the shimmed binary can resolve modules
@@ -2033,8 +1829,6 @@ examples = []
 description = "Copy all files when deploying a workspace package."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, `aube deploy` copies every file in the source workspace
 package into the target directory instead of running pack's selection
@@ -2056,8 +1850,6 @@ examples = []
 description = "Skip symlinking workspace-root dependencies if identical across packages."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When true, the linker skips creating a `node_modules/<name>` symlink in a
 workspace package whose root importer already declares the same workspace
@@ -2079,8 +1871,6 @@ examples = []
 description = "Fast-path check before running a full install."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 When `true` (default), `aube run` / `aube exec` / `aube start` /
 `aube test` / `aube restart` consult `.aube/.state/install-state.json`
@@ -2100,8 +1890,6 @@ examples = []
 description = "Scripts that must be present in every workspace project."
 type = "list<string>"
 default = "undefined"
-implemented = true
-since = "2026-04-12"
 docs = """
 During install, aube verifies that the root package and every discovered
 workspace package define each required script in `package.json`.
@@ -2115,8 +1903,6 @@ examples = []
 description = "Run pre/post scripts automatically when a named script is invoked."
 type = "bool"
 default = "true"
-implemented = true
-since = "2026-04-12"
 docs = """
 Controls whether `aube run build` also runs `prebuild` before `build`
 and `postbuild` after it when those scripts exist.
@@ -2130,8 +1916,6 @@ examples = []
 description = "Shell used to invoke package scripts."
 type = "path"
 default = "null (uses /bin/sh on Unix, cmd on Windows)"
-implemented = true
-since = "2026-04-12"
 docs = """
 Overrides the shell executable used for lifecycle and `aube run`
 scripts. On Unix, aube invokes the configured shell with `-c`.
@@ -2145,8 +1929,6 @@ examples = []
 description = "Use a JavaScript bash-like shell to run scripts cross-platform."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 Accepted for pnpm config parity. aube does not embed pnpm's JavaScript
 shell emulator, but it exports `npm_config_shell_emulator=true` for
@@ -2161,8 +1943,6 @@ examples = []
 description = "How catalog references in package.json are handled by `add`."
 type = '"manual" | "strict" | "prefer"'
 default = "\"manual\""
-implemented = true
-since = "2026-04-12"
 docs = """
 `manual` (the default) writes whatever range `aube add` resolved, even
 when the package is declared in the default catalog. `prefer` rewrites
@@ -2188,8 +1968,6 @@ examples = []
 description = "Explicitly mark the environment as CI."
 type = "bool"
 default = "auto-detected"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube detects CI via `env::var("CI").is_ok()` in two places:
 `aube-linker` (disables the global virtual store) and
@@ -2209,8 +1987,6 @@ typedAccessorUnused = true
 description = "Remove unused catalog entries during install."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 When enabled, `aube install` rewrites `aube-workspace.yaml` (or
 `pnpm-workspace.yaml`, whichever is present) after resolution to drop
@@ -2235,8 +2011,6 @@ examples = []
 description = "Maximum concurrent package materialization/linking tasks."
 type = "int"
 default = "platform-specific"
-implemented = true
-since = "2026-04-17"
 docs = """
 Caps the dedicated linker worker pool used for filesystem-heavy
 materialization in `aube-linker`: creating package directories,
@@ -2260,8 +2034,6 @@ examples = [
 description = "Disable aube's project-level advisory lock."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 aube takes an advisory lock on `node_modules/` at the start of every
 mutating command (install, add, remove, etc.) so concurrent invocations
@@ -2293,8 +2065,6 @@ examples = [
 description = "Skip the auto-install staleness check in `aube run` / `aube exec`."
 type = "bool"
 default = "false"
-implemented = true
-since = "2026-04-12"
 docs = """
 `aube run <script>` normally checks `.aube/.state/install-state.json` and auto-installs
 before running if package.json or the lockfile has drifted. Setting

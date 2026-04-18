@@ -16,25 +16,25 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 
 ## Summary
 
-15 settings are listed here. 15 are currently implemented.
+15 settings are listed here.
 
-| Setting | Type | Status | Summary |
-| --- | --- | --- | --- |
-| [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | implemented | Packages to hoist directly to the root node_modules. |
-| [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | implemented | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
-| [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | implemented | Strategy for linking Node packages into node_modules. |
-| [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | implemented | Method for importing packages from the store into node_modules. |
-| [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | implemented | Check store file integrity before linking. |
-| [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | implemented | Perform a headless install if the lockfile already satisfies package.json. |
-| [`networkConcurrency`](#setting-networkconcurrency) | `int` | implemented | Maximum concurrent HTTP(S) requests. |
-| [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | implemented | Automatically install missing peer dependencies. |
-| [`color`](#setting-color) | `"auto" \| "always" \| "never"` | implemented | Control color output in aube's CLI. |
-| [`loglevel`](#setting-loglevel) | `"debug" \| "info" \| "warn" \| "error" \| "silent"` | implemented | Minimum log level to display. |
-| [`ignoreScripts`](#setting-ignorescripts) | `bool` | implemented | Skip all lifecycle scripts in package.json. |
-| [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | implemented | Cache the results of install hooks. |
-| [`dangerouslyAllowAllBuilds`](#setting-dangerouslyallowallbuilds) | `bool` | implemented | Allow all dependency build scripts automatically. |
-| [`resolutionMode`](#setting-resolutionmode) | `"highest" \| "time-based" \| "lowest-direct"` | implemented | Dependency version resolution strategy. |
-| [`aubeNoAutoInstall`](#setting-aubenoautoinstall) | `bool` | implemented | Skip the auto-install staleness check in `aube run` / `aube exec`. |
+| Setting | Type | Summary |
+| --- | --- | --- |
+| [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | Packages to hoist directly to the root node_modules. |
+| [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
+| [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | Strategy for linking Node packages into node_modules. |
+| [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | Method for importing packages from the store into node_modules. |
+| [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | Check store file integrity before linking. |
+| [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | Perform a headless install if the lockfile already satisfies package.json. |
+| [`networkConcurrency`](#setting-networkconcurrency) | `int` | Maximum concurrent HTTP(S) requests. |
+| [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | Automatically install missing peer dependencies. |
+| [`color`](#setting-color) | `"auto" \| "always" \| "never"` | Control color output in aube's CLI. |
+| [`loglevel`](#setting-loglevel) | `"debug" \| "info" \| "warn" \| "error" \| "silent"` | Minimum log level to display. |
+| [`ignoreScripts`](#setting-ignorescripts) | `bool` | Skip all lifecycle scripts in package.json. |
+| [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
+| [`dangerouslyAllowAllBuilds`](#setting-dangerouslyallowallbuilds) | `bool` | Allow all dependency build scripts automatically. |
+| [`resolutionMode`](#setting-resolutionmode) | `"highest" \| "time-based" \| "lowest-direct"` | Dependency version resolution strategy. |
+| [`aubeNoAutoInstall`](#setting-aubenoautoinstall) | `bool` | Skip the auto-install staleness check in `aube run` / `aube exec`. |
 
 ## Dependency Hoisting
 
@@ -44,8 +44,6 @@ Packages to hoist directly to the root node_modules.
 
 - Type: `list<string>`
 - Default: `[]`
-- Status: implemented
-- Added to registry: `2026-04-13`
 - CLI flags: `public-hoist-pattern`
 
 Glob list matched against package names. Any non-local package in the
@@ -65,8 +63,6 @@ Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `shamefully-hoist`
 
 Emulates npm's flat `node_modules` layout. Enables phantom dep bugs by
@@ -80,8 +76,6 @@ Strategy for linking Node packages into node_modules.
 
 - Type: `"isolated" | "hoisted" | "pnp"`
 - Default: `"isolated"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `node-linker`
 
 aube defaults to `isolated`, a strict symlink layout under
@@ -96,8 +90,6 @@ Method for importing packages from the store into node_modules.
 
 - Type: `"auto" | "hardlink" | "copy" | "clone" | "clone-or-copy"`
 - Default: `"auto"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `package-import-method`
 
 Controls how aube materializes files from the global content-addressable
@@ -119,8 +111,6 @@ Check store file integrity before linking.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `verify-store-integrity`
 
 aube verifies each package's `integrity` (SHA-512) against the tarball
@@ -142,8 +132,6 @@ Perform a headless install if the lockfile already satisfies package.json.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `prefer-frozen-lockfile`
 
 aube's default outside CI. Maps to `FrozenMode::Prefer` in
@@ -162,8 +150,6 @@ Maximum concurrent HTTP(S) requests.
 
 - Type: `int`
 - Default: `128 (tarballs), 64 (packuments)`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `network-concurrency`
 
 Caps the tokio semaphores that gate concurrent tarball downloads
@@ -187,8 +173,6 @@ Automatically install missing peer dependencies.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `auto-install-peers`
 
 When true (the default), missing peer dependencies are auto-installed
@@ -204,8 +188,6 @@ Control color output in aube's CLI.
 
 - Type: `"auto" | "always" | "never"`
 - Default: `"auto"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `color`, `no-color`
 
 `--color` / `--no-color`, `color=always|never|auto` in `.npmrc`, and `NPM_CONFIG_COLOR` all resolve before output initializes. The resolved choice is translated into `FORCE_COLOR` / `CLICOLOR_FORCE` / `NO_COLOR` so aube, diagnostics, progress rendering, and child processes agree.
@@ -216,8 +198,6 @@ Minimum log level to display.
 
 - Type: `"debug" | "info" | "warn" | "error" | "silent"`
 - Default: `"warn"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `loglevel`, `verbose`, `v`, `silent`
 
 Controls aube's tracing filter. `-v` / `--verbose` is a shortcut for `debug`; `--silent`, `--reporter=silent`, and `loglevel=silent` suppress aube's own non-error stderr output. Also readable from `.npmrc` `loglevel`. CLI flags override `.npmrc`.
@@ -230,8 +210,6 @@ Skip all lifecycle scripts in package.json.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `ignore-scripts`
 
 aube already skips dependency install scripts by default (security-first).
@@ -250,8 +228,6 @@ Cache the results of install hooks.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `side-effects-cache`
 
 When an allowlisted dependency runs lifecycle scripts, aube snapshots
@@ -273,8 +249,6 @@ Allow all dependency build scripts automatically.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `dangerously-allow-all-builds`
 
 Opt-out escape hatch for the `allowBuilds` allowlist: when set, every
@@ -295,8 +269,6 @@ Dependency version resolution strategy.
 
 - Type: `"highest" | "time-based" | "lowest-direct"`
 - Default: `"highest"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `resolution-mode`
 
 Controls how aube chooses versions during resolution. `highest` picks
@@ -313,8 +285,6 @@ Skip the auto-install staleness check in `aube run` / `aube exec`.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `no-install`
 
 `aube run <script>` normally checks `.aube/.state/install-state.json` and auto-installs

@@ -24,8 +24,6 @@ struct SettingDef {
     #[serde(rename = "type")]
     type_: String,
     default: String,
-    implemented: bool,
-    since: String,
     #[serde(default)]
     docs: String,
     #[serde(default)]
@@ -100,8 +98,6 @@ fn main() {
         writeln!(out, "        description: {},", lit(&def.description)).unwrap();
         writeln!(out, "        type_: {},", lit(&def.type_)).unwrap();
         writeln!(out, "        default: {},", lit(&def.default)).unwrap();
-        writeln!(out, "        implemented: {},", def.implemented).unwrap();
-        writeln!(out, "        since: {},", lit(&def.since)).unwrap();
         writeln!(out, "        docs: {},", lit(&def.docs)).unwrap();
         writeln!(out, "        cli_flags: {},", slice_lit(&def.sources.cli)).unwrap();
         // Env vars: always include the pnpm/npm-convention alias
