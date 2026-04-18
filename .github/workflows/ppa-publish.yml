@@ -12,7 +12,7 @@ on:
       distributions:
         description: "Ubuntu distributions to target (space-separated)"
         required: false
-        default: "noble"
+        default: "resolute"
         type: string
       build_revision:
         description: "Build revision number (increment for packaging fixes of same version)"
@@ -47,7 +47,7 @@ jobs:
           VERSION="${TAG#v}"
 
           if [ "${{ github.event_name }}" = "release" ]; then
-            DISTRIBUTIONS="noble"
+            DISTRIBUTIONS="resolute"
             BUILD_REVISION="1"
             VERSION_SUFFIX=""
           else
