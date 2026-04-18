@@ -174,11 +174,14 @@ jobs:
            and bun.lock in addition to its native aube-lock.yaml.
           EOF
 
-          if [ "${BUILD_PROFILE}" = "release" ]; then
-            TARGET_DIR="target/release"
-          else
-            TARGET_DIR="target/${BUILD_PROFILE}"
-          fi
+          # Cargo's profile→directory mapping isn't identity: the
+          # built-in `dev` profile (and anything inheriting from it,
+          # like `test`) lands in `target/debug/`, while `release`,
+          # `bench`, and any custom profile land in `target/<name>/`.
+          case "${BUILD_PROFILE}" in
+            dev|test) TARGET_DIR="target/debug" ;;
+            *)        TARGET_DIR="target/${BUILD_PROFILE}" ;;
+          esac
 
           # aubr/aubx are multicall shims that dispatch on argv[0]; ship
           # them as symlinks to keep the package small.

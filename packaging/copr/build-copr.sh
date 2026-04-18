@@ -165,6 +165,15 @@ rm -rf "SOURCES/${PACKAGE_NAME}-${TARBALL_VERSION}"
 echo "=== Creating RPM Spec File ==="
 CHANGELOG_DATE=$(date +'%a %b %d %Y')
 
+# Cargo's profile→directory mapping isn't identity: the built-in
+# `dev` profile (and anything inheriting from it) lands in
+# `target/debug/`, while `release`, `bench`, and any custom profile
+# land in `target/<name>/`.
+case "${BUILD_PROFILE}" in
+dev | test) TARGET_DIR="target/debug" ;;
+*) TARGET_DIR="target/${BUILD_PROFILE}" ;;
+esac
+
 # Direct interpolation via unquoted heredoc. RPM macros use `%{...}`
 # which doesn't collide with shell `${...}` expansion, so we can emit
 # the spec without running it through sed — which would corrupt on `&`
@@ -218,7 +227,7 @@ cargo build --profile ${BUILD_PROFILE} --frozen --bin aube --bin aubr --bin aubx
 
 %install
 mkdir -p %{buildroot}%{_bindir}
-cp target/${BUILD_PROFILE}/aube %{buildroot}%{_bindir}/aube
+cp ${TARGET_DIR}/aube %{buildroot}%{_bindir}/aube
 # aubr/aubx are multicall shims that dispatch on argv[0]; ship them
 # as symlinks to keep the package small.
 ln -s aube %{buildroot}%{_bindir}/aubr
