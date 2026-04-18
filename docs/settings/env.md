@@ -4,7 +4,7 @@
 
 Settings that can be read from environment variables, including pnpm-compatible `NPM_CONFIG_*` aliases.
 
-Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/blob/main/settings.toml). Edit that registry and rerun `cargo run -p aube-settings --bin generate-settings-docs` instead of editing this page by hand.
+Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/blob/main/crates/aube-settings/settings.toml). Edit that registry and rerun `cargo run -p aube-settings --bin generate-settings-docs` instead of editing this page by hand.
 
 ## Views
 
