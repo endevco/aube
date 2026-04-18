@@ -25,8 +25,7 @@ same dependency versions CI built against. The compiled binary lands in
 
 ## From npm
 
-For users who already have Node.js around, aube is also published on
-npm as `@endevco/aube`:
+aube is also published on npm as `@endevco/aube`:
 
 ```sh
 npm install -g @endevco/aube
