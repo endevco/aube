@@ -103,6 +103,10 @@ Install-time progress is built on `clx::progress` (see `crates/aube/src/progress
 
 ## Benchmarks
 
+The canonical benchmark harness lives at `benchmarks/bench.sh` and is
+driven by `mise run bench` (or `mise run bench:bump` to refresh
+`benchmarks/results.json`, which the docs site reads at build time).
+
 Any time we run a benchmark, serialize it with `flock` against a
 static lock path in a tmp directory so concurrent benchmark runs (on
 the same box, across worktrees, agents, terminals) can't fight each
@@ -111,12 +115,11 @@ other for disk/CPU and skew the numbers. Use
 benchmark invocation, e.g.:
 
 ```bash
-flock /tmp/aube-bench.lock bench/run.sh
+flock /tmp/aube-bench.lock mise run bench
 ```
 
-`bench/run.sh` already self-wraps with `flock` when invoked directly,
-but manual benchmark commands (hyperfine one-shots, ad-hoc
-`aube install` timing loops, etc.) must take the lock too.
+This applies to manual benchmark commands (hyperfine one-shots, ad-hoc
+`aube install` timing loops, etc.) too.
 
 ## Rust Configuration
 
