@@ -845,6 +845,7 @@ impl Resolver {
                 !r.starts_with("workspace:")
                     && !r.starts_with("catalog:")
                     && !r.starts_with("npm:")
+                    && !r.starts_with("jsr:")
                     && !is_non_registry_specifier(r)
                     && !self.overrides.contains_key(n)
             }};
@@ -1033,6 +1034,56 @@ impl Resolver {
                             task.name = real_name;
                             task.range = real_range;
                             changed = true;
+                        }
+                    }
+                    // `jsr:<range>` and `jsr:<@scope/name>[@<range>]` both
+                    // land here. JSR's npm-compat endpoint serves every
+                    // package under `@jsr/<scope>__<name>`, so we rewrite
+                    // the task to that name and let the rest of the
+                    // resolver treat it as an ordinary scoped dep — the
+                    // `@jsr` scope registry is auto-registered in
+                    // `NpmConfig::load` so the fetch targets
+                    // <https://npm.jsr.io> without any `.npmrc` setup.
+                    if let Some(rest) = task.range.strip_prefix("jsr:") {
+                        let (jsr_name_raw, jsr_range) = if let Some(body) = rest.strip_prefix('@') {
+                            match body.rfind('@') {
+                                Some(rel_at) => {
+                                    // Indices are relative to `body`; add 1 for
+                                    // the `@` we just stripped so we can slice
+                                    // against the original `rest`.
+                                    let at_idx = rel_at + 1;
+                                    (rest[..at_idx].to_string(), rest[at_idx + 1..].to_string())
+                                }
+                                None => (rest.to_string(), "latest".to_string()),
+                            }
+                        } else {
+                            // Bare range form — the manifest key carries the
+                            // JSR name (e.g. `"@std/collections": "jsr:^1"`).
+                            (task.name.clone(), rest.to_string())
+                        };
+                        match aube_registry::jsr::jsr_to_npm_name(&jsr_name_raw) {
+                            Some(npm_name) => {
+                                if npm_name != task.name || jsr_range != task.range {
+                                    tracing::trace!(
+                                        "jsr: {} -> {}@{}",
+                                        task.name,
+                                        npm_name,
+                                        jsr_range,
+                                    );
+                                    task.name = npm_name;
+                                    task.range = jsr_range;
+                                    changed = true;
+                                }
+                            }
+                            None => {
+                                return Err(Error::Registry(
+                                    task.name.clone(),
+                                    format!(
+                                        "invalid jsr: spec `{}` — expected `jsr:@scope/name[@range]`",
+                                        task.range,
+                                    ),
+                                ));
+                            }
                         }
                     }
                     if !changed {

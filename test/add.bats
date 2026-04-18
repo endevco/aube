@@ -122,6 +122,47 @@ EOF
 	assert_output --partial '"is-odd": "npm:is-odd@3.0.1"'
 }
 
+@test "aube add jsr: resolves against the @jsr scope and writes jsr:<range>" {
+	# The fixture package @jsr/std__collections@1.0.0 in
+	# test/registry/storage/@jsr/ is the npm-compat name that JSR serves
+	# `@std/collections` under. We point the `@jsr` scope at the local
+	# Verdaccio so the resolver's default https://npm.jsr.io redirect
+	# doesn't fire and the test stays offline.
+	cat >package.json <<'EOF'
+{
+  "name": "test-add-jsr",
+  "version": "0.0.0",
+  "dependencies": {}
+}
+EOF
+	echo "@jsr:registry=http://localhost:4873/" >>.npmrc
+
+	run aube add jsr:@std/collections@^1.0.0
+	assert_success
+
+	run cat package.json
+	# Manifest key is the JSR-style name; specifier uses the `jsr:` prefix
+	# with only the range (matches pnpm behavior when alias == JSR name).
+	assert_output --partial '"@std/collections": "jsr:^1.0.0"'
+
+	# The install materializes under the npm-compat name, which is what
+	# the resolver actually fetched from the registry.
+	assert_dir_exists node_modules/.aube/@jsr+std__collections@1.0.0
+}
+
+@test "aube add jsr: rejects non-scoped specs up front" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-add-jsr-bad",
+  "version": "0.0.0",
+  "dependencies": {}
+}
+EOF
+	run aube add jsr:collections
+	assert_failure
+	assert_output --partial 'JSR packages must be scoped'
+}
+
 @test "aube add: adds multiple packages" {
 	cat >package.json <<'EOF'
 {

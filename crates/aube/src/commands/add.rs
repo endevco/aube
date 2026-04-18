@@ -64,11 +64,19 @@ pub struct AddArgs {
 }
 
 /// Parsed result of a package spec like "lodash@^4" or "my-alias@npm:real-pkg@^2".
+#[cfg_attr(test, derive(Debug))]
 struct ParsedPkgSpec {
     /// The name to use in package.json (alias if provided, otherwise the real name)
     alias: Option<String>,
     /// The real package name on the registry
     name: String,
+    /// For `jsr:` specs, the JSR-style name (e.g. `@std/collections`).
+    /// `name` has already been translated to the npm-compat form
+    /// (`@jsr/std__collections`) so the registry fetch hits
+    /// <https://npm.jsr.io>; we keep the original around so the
+    /// manifest-write path can round-trip `jsr:…` back into
+    /// `package.json`. `None` for non-jsr specs.
+    jsr_name: Option<String>,
     /// The version range
     range: String,
     /// `true` when the user wrote an explicit `@<range>` (e.g. `lodash@latest`,
@@ -86,7 +94,26 @@ struct ParsedPkgSpec {
 /// - `@scope/pkg@latest` → name=@scope/pkg, range=latest
 /// - `npm:real-pkg@^4` → name=real-pkg, range=^4 (no alias)
 /// - `my-alias@npm:real-pkg@^4` → alias=my-alias, name=real-pkg, range=^4
-fn parse_pkg_spec(spec: &str) -> ParsedPkgSpec {
+/// - `jsr:@std/collections@^1` → alias=@std/collections,
+///   name=@jsr/std__collections, range=^1 (jsr translation)
+/// - `my-alias@jsr:@std/collections@^1` → alias=my-alias,
+///   name=@jsr/std__collections, range=^1
+fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
+    // Handle full alias form: alias@jsr:@scope/name[@range]
+    if let Some(jsr_idx) = spec.find("@jsr:") {
+        let before = &spec[..jsr_idx];
+        let after_jsr = &spec[jsr_idx + 5..]; // after "jsr:"
+        let alias = if before.is_empty() {
+            None
+        } else {
+            Some(before.to_string())
+        };
+        return parse_jsr_name_range(after_jsr, alias);
+    }
+    // Handle bare jsr: prefix: jsr:@scope/name[@range]
+    if let Some(rest) = spec.strip_prefix("jsr:") {
+        return parse_jsr_name_range(rest, None);
+    }
     // Handle full alias form: alias@npm:real-pkg@range
     if let Some(npm_idx) = spec.find("@npm:") {
         // Everything before @npm: could be empty (bare npm:pkg@range) or an alias name
@@ -100,16 +127,16 @@ fn parse_pkg_spec(spec: &str) -> ParsedPkgSpec {
         };
 
         // after_npm is "real-pkg@range" or "@scope/pkg@range" or just "real-pkg"
-        return parse_name_range(after_npm, alias);
+        return Ok(parse_name_range(after_npm, alias));
     }
 
     // Handle bare npm: prefix: npm:pkg@range
     if let Some(rest) = spec.strip_prefix("npm:") {
-        return parse_name_range(rest, None);
+        return Ok(parse_name_range(rest, None));
     }
 
     // Normal spec: name[@range]
-    parse_name_range(spec, None)
+    Ok(parse_name_range(spec, None))
 }
 
 fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
@@ -121,6 +148,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
                 return ParsedPkgSpec {
                     alias,
                     name: s[..slash_idx + 1 + at_idx].to_string(),
+                    jsr_name: None,
                     range: after_slash[at_idx + 1..].to_string(),
                     has_explicit_range: true,
                 };
@@ -129,6 +157,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
         return ParsedPkgSpec {
             alias,
             name: s.to_string(),
+            jsr_name: None,
             range: "latest".to_string(),
             has_explicit_range: false,
         };
@@ -139,6 +168,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
         ParsedPkgSpec {
             alias,
             name: s[..at_idx].to_string(),
+            jsr_name: None,
             range: s[at_idx + 1..].to_string(),
             has_explicit_range: true,
         }
@@ -146,10 +176,40 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
         ParsedPkgSpec {
             alias,
             name: s.to_string(),
+            jsr_name: None,
             range: "latest".to_string(),
             has_explicit_range: false,
         }
     }
+}
+
+/// Parse the `@scope/name[@range]` tail of a `jsr:` spec and translate
+/// the JSR-style scoped name into the npm-compat form served at
+/// <https://npm.jsr.io>. JSR packages always use scoped names — we
+/// reject anything that doesn't start with `@scope/` so the user gets a
+/// real error instead of a `latest` lookup against a garbled package
+/// name.
+///
+/// If `alias` is `None`, we default the manifest key to the JSR name
+/// itself so `aube add jsr:@std/collections` lands as
+/// `"@std/collections": "jsr:…"` — matching pnpm's behavior.
+fn parse_jsr_name_range(s: &str, alias: Option<String>) -> miette::Result<ParsedPkgSpec> {
+    let inner = parse_name_range(s, None);
+    let jsr_name = inner.name.clone();
+    let npm_name = aube_registry::jsr::jsr_to_npm_name(&jsr_name).ok_or_else(|| {
+        miette!(
+            "invalid jsr: spec — expected `jsr:@scope/name[@range]`, got `jsr:{s}` \
+             (JSR packages must be scoped, e.g. `jsr:@std/collections`)"
+        )
+    })?;
+    let final_alias = alias.or_else(|| Some(jsr_name.clone()));
+    Ok(ParsedPkgSpec {
+        alias: final_alias,
+        name: npm_name,
+        jsr_name: Some(jsr_name),
+        range: inner.range,
+        has_explicit_range: inner.has_explicit_range,
+    })
 }
 
 pub async fn run(
@@ -298,7 +358,7 @@ pub async fn run(
     let parsed: Vec<_> = packages
         .iter()
         .map(|s| {
-            let mut spec = parse_pkg_spec(s);
+            let mut spec = parse_pkg_spec(s)?;
             // Replace the implicit default tag with the configured one
             // so that `aube add lodash` respects `tag=next` in .npmrc.
             // Only applies when the user didn't write an explicit version
@@ -306,9 +366,9 @@ pub async fn run(
             if !spec.has_explicit_range && default_tag != "latest" {
                 spec.range = default_tag.clone();
             }
-            spec
+            Ok::<_, miette::Report>(spec)
         })
-        .collect();
+        .collect::<miette::Result<Vec<_>>>()?;
 
     let mut handles = Vec::new();
     for spec in &parsed {
@@ -377,15 +437,35 @@ pub async fn run(
         // an alias (`foo@npm:real@range`), which produced `spec.alias`, or they
         // used the bare form (`npm:real@range`), which leaves `alias` empty but
         // keeps the prefix on `orig`. Both cases round-trip back as `npm:...`.
-        let needs_npm_prefix = spec.alias.is_some() || orig.starts_with("npm:");
+        // `jsr:` is handled separately below, because the manifest form omits
+        // the name when the alias equals the JSR name (matching pnpm).
+        let is_jsr = spec.jsr_name.is_some();
+        let needs_npm_prefix = !is_jsr && (spec.alias.is_some() || orig.starts_with("npm:"));
         let prefix = &default_prefix;
+        let pin_to_resolved = spec.range == default_tag
+            || packument.dist_tags.contains_key(&spec.range)
+            || save_exact;
         // Dist-tags and `--save-exact` both resolve to a concrete version
         // with the configured prefix (empty when `--save-exact`). Non-dist-tag
         // explicit ranges (e.g. `lodash@^4`) are preserved as-is.
-        let manual_specifier = if spec.range == default_tag
-            || packument.dist_tags.contains_key(&spec.range)
-            || save_exact
-        {
+        let manual_specifier = if let Some(jsr_name) = spec.jsr_name.as_deref() {
+            // jsr:<range> when the manifest key matches the JSR name (the
+            // default when the user didn't supply an alias); otherwise we
+            // embed the JSR name so the resolver can rebuild the npm-compat
+            // name on its next read.
+            let effective_range = if pin_to_resolved {
+                format!("{prefix}{resolved_version}")
+            } else {
+                spec.range.clone()
+            };
+            let alias_matches_jsr_name =
+                spec.alias.as_deref() == Some(jsr_name) || spec.alias.is_none();
+            if alias_matches_jsr_name {
+                format!("jsr:{effective_range}")
+            } else {
+                format!("jsr:{jsr_name}@{effective_range}")
+            }
+        } else if pin_to_resolved {
             if needs_npm_prefix {
                 format!("npm:{}@{prefix}{resolved_version}", spec.name)
             } else {
@@ -408,7 +488,7 @@ pub async fn run(
             &spec.range,
             spec.has_explicit_range,
             &resolved_version,
-            needs_npm_prefix,
+            needs_npm_prefix || is_jsr,
         ) {
             CatalogRewrite::Manual => (manual_specifier, resolved_version.clone()),
             CatalogRewrite::UseDefaultCatalog => {
@@ -929,15 +1009,16 @@ mod tests {
 
     #[test]
     fn test_parse_pkg_spec_name_only() {
-        let s = parse_pkg_spec("lodash");
+        let s = parse_pkg_spec("lodash").unwrap();
         assert_eq!(s.name, "lodash");
         assert_eq!(s.range, "latest");
         assert!(s.alias.is_none());
+        assert!(s.jsr_name.is_none());
     }
 
     #[test]
     fn test_parse_pkg_spec_with_version() {
-        let s = parse_pkg_spec("lodash@^4.17.0");
+        let s = parse_pkg_spec("lodash@^4.17.0").unwrap();
         assert_eq!(s.name, "lodash");
         assert_eq!(s.range, "^4.17.0");
         assert!(s.alias.is_none());
@@ -945,28 +1026,28 @@ mod tests {
 
     #[test]
     fn test_parse_pkg_spec_exact_version() {
-        let s = parse_pkg_spec("lodash@4.17.21");
+        let s = parse_pkg_spec("lodash@4.17.21").unwrap();
         assert_eq!(s.name, "lodash");
         assert_eq!(s.range, "4.17.21");
     }
 
     #[test]
     fn test_parse_pkg_spec_scoped() {
-        let s = parse_pkg_spec("@babel/core");
+        let s = parse_pkg_spec("@babel/core").unwrap();
         assert_eq!(s.name, "@babel/core");
         assert_eq!(s.range, "latest");
     }
 
     #[test]
     fn test_parse_pkg_spec_scoped_with_version() {
-        let s = parse_pkg_spec("@babel/core@^7.24.0");
+        let s = parse_pkg_spec("@babel/core@^7.24.0").unwrap();
         assert_eq!(s.name, "@babel/core");
         assert_eq!(s.range, "^7.24.0");
     }
 
     #[test]
     fn test_parse_pkg_spec_dist_tag() {
-        let s = parse_pkg_spec("lodash@latest");
+        let s = parse_pkg_spec("lodash@latest").unwrap();
         assert_eq!(s.name, "lodash");
         assert_eq!(s.range, "latest");
     }
@@ -974,7 +1055,7 @@ mod tests {
     #[test]
     fn test_parse_pkg_spec_npm_bare() {
         // npm:string-width@^4.2.0 — no alias, just resolves real package
-        let s = parse_pkg_spec("npm:string-width@^4.2.0");
+        let s = parse_pkg_spec("npm:string-width@^4.2.0").unwrap();
         assert_eq!(s.name, "string-width");
         assert_eq!(s.range, "^4.2.0");
         assert!(s.alias.is_none());
@@ -983,7 +1064,7 @@ mod tests {
     #[test]
     fn test_parse_pkg_spec_npm_alias_full() {
         // string-width-cjs@npm:string-width@^4.2.0
-        let s = parse_pkg_spec("string-width-cjs@npm:string-width@^4.2.0");
+        let s = parse_pkg_spec("string-width-cjs@npm:string-width@^4.2.0").unwrap();
         assert_eq!(s.alias.as_deref(), Some("string-width-cjs"));
         assert_eq!(s.name, "string-width");
         assert_eq!(s.range, "^4.2.0");
@@ -992,7 +1073,7 @@ mod tests {
     #[test]
     fn test_parse_pkg_spec_npm_alias_scoped() {
         // my-react@npm:@preact/compat@^17.0.0
-        let s = parse_pkg_spec("my-react@npm:@preact/compat@^17.0.0");
+        let s = parse_pkg_spec("my-react@npm:@preact/compat@^17.0.0").unwrap();
         assert_eq!(s.alias.as_deref(), Some("my-react"));
         assert_eq!(s.name, "@preact/compat");
         assert_eq!(s.range, "^17.0.0");
@@ -1001,9 +1082,48 @@ mod tests {
     #[test]
     fn test_parse_pkg_spec_npm_alias_no_version() {
         // my-lodash@npm:lodash
-        let s = parse_pkg_spec("my-lodash@npm:lodash");
+        let s = parse_pkg_spec("my-lodash@npm:lodash").unwrap();
         assert_eq!(s.alias.as_deref(), Some("my-lodash"));
         assert_eq!(s.name, "lodash");
         assert_eq!(s.range, "latest");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_jsr_bare_no_range() {
+        // jsr:@std/collections — default alias is the JSR name itself
+        let s = parse_pkg_spec("jsr:@std/collections").unwrap();
+        assert_eq!(s.alias.as_deref(), Some("@std/collections"));
+        assert_eq!(s.name, "@jsr/std__collections");
+        assert_eq!(s.jsr_name.as_deref(), Some("@std/collections"));
+        assert_eq!(s.range, "latest");
+        assert!(!s.has_explicit_range);
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_jsr_bare_with_range() {
+        let s = parse_pkg_spec("jsr:@std/collections@^1.0.0").unwrap();
+        assert_eq!(s.alias.as_deref(), Some("@std/collections"));
+        assert_eq!(s.name, "@jsr/std__collections");
+        assert_eq!(s.jsr_name.as_deref(), Some("@std/collections"));
+        assert_eq!(s.range, "^1.0.0");
+        assert!(s.has_explicit_range);
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_jsr_aliased() {
+        let s = parse_pkg_spec("collections@jsr:@std/collections@^1.0.0").unwrap();
+        assert_eq!(s.alias.as_deref(), Some("collections"));
+        assert_eq!(s.name, "@jsr/std__collections");
+        assert_eq!(s.jsr_name.as_deref(), Some("@std/collections"));
+        assert_eq!(s.range, "^1.0.0");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_jsr_rejects_unscoped() {
+        let err = parse_pkg_spec("jsr:collections").unwrap_err();
+        assert!(
+            err.to_string().contains("JSR packages must be scoped"),
+            "unexpected error: {err}"
+        );
     }
 }

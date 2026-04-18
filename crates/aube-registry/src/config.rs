@@ -115,7 +115,19 @@ impl NpmConfig {
         // Env vars fill in any proxy fields the .npmrc didn't set.
         // npm/pnpm/curl all check both the upper- and lowercase forms.
         config.apply_proxy_env();
+        config.apply_builtin_scoped_defaults();
         config
+    }
+
+    /// Register default scope→registry mappings that aube ships with
+    /// out of the box. Currently only `@jsr` → <https://npm.jsr.io/>,
+    /// which lets `jsr:` specs work without the user touching `.npmrc`.
+    /// User-provided `.npmrc` entries win — `apply` has already run by
+    /// the time we get here, so we only fill in gaps.
+    fn apply_builtin_scoped_defaults(&mut self) {
+        self.scoped_registries
+            .entry(crate::jsr::JSR_NPM_SCOPE.to_string())
+            .or_insert_with(|| crate::jsr::JSR_DEFAULT_REGISTRY.to_string());
     }
 
     /// Fallback-only: populate proxy/no_proxy from the standard

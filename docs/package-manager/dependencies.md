@@ -18,16 +18,24 @@ aube add -g cowsay
 packages into the store, and relinks `node_modules`.
 
 Dependency specifiers can use npm aliases, ranges, dist-tags, workspace
-protocols, local directories, tarballs, git URLs, and direct tarball URLs:
+protocols, JSR packages, local directories, tarballs, git URLs, and direct
+tarball URLs:
 
 ```sh
 aube add react@latest
 aube add alias-name@npm:actual-name@^1
+aube add jsr:@std/collections@^1.0.0
 aube add workspace:*
 aube add file:../local-package
 aube add link:../linked-package
 aube add https://registry.example.test/pkg/-/pkg-1.0.0.tgz
 ```
+
+`jsr:@scope/name` specifiers resolve against JSR's npm-compat endpoint at
+<https://npm.jsr.io>. aube registers the `@jsr` scope for you, so no
+`.npmrc` setup is needed — the install fetches the package under its
+compat name (`@jsr/<scope>__<name>`) and writes `jsr:<range>` back to
+`package.json`.
 
 ## Remove
 
