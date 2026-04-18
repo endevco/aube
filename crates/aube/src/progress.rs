@@ -352,6 +352,12 @@ impl InstallProgress {
             } else {
                 format!("Already up to date ({total_packages} {word})")
             };
+            // Same `aube VERSION by en.dev · …` shape in both TTY and
+            // CI modes so the no-op line reads as part of the install
+            // UI family. CI mode force-styles the ANSI escapes
+            // (matching `render_header` / the CI final summary) —
+            // GitHub Actions and the other supported CI runners render
+            // them correctly.
             let line = match &self.mode {
                 Mode::Tty { .. } => format!(
                     "{} {} {} {} {}",
@@ -361,7 +367,14 @@ impl InstallProgress {
                     style::edim("·"),
                     style::egreen(msg).bold(),
                 ),
-                Mode::Ci(_) => msg,
+                Mode::Ci(_) => format!(
+                    "{} {} {} {} {}",
+                    forced(console::style("aube").magenta().bold()),
+                    forced(console::style(env!("CARGO_PKG_VERSION")).dim()),
+                    forced(console::style("by en.dev").dim()),
+                    forced(console::style("·").dim()),
+                    forced(console::style(msg).green().bright().bold()),
+                ),
             };
             let _ = writeln!(std::io::stderr(), "{line}");
             return;
