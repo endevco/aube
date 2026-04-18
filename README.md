@@ -53,6 +53,12 @@ Inside a project, you can also pin aube with mise:
 mise use aube
 ```
 
+If you already have Node.js around, aube is also on npm:
+
+```sh
+npm install -g @endevco/aube
+```
+
 See [other install methods](https://aube.en.dev/installation).
 
 ## First Install

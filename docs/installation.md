@@ -23,6 +23,26 @@ cargo install aube --locked
 same dependency versions CI built against. The compiled binary lands in
 `~/.cargo/bin/aube`.
 
+## From npm
+
+For users who already have Node.js around, aube is also published on
+npm as `@endevco/aube`:
+
+```sh
+npm install -g @endevco/aube
+# or
+npx @endevco/aube --version
+```
+
+No Rust toolchain required — the package's preinstall step downloads
+the matching prebuilt binary for your platform (Linux, macOS, Windows;
+x64 and arm64) from npm. `npm install -g` puts `aube`, `aubr`, and
+`aubx` on your PATH.
+
+Because the install happens via `preinstall`, this does not work with
+`--ignore-scripts` or in offline/air-gapped caches. Prefer mise or
+`cargo install` for those environments.
+
 ## From source
 
 If you want to build the current checkout yourself, use the standard source
