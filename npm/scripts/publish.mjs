@@ -144,7 +144,10 @@ async function buildPlatformPackage(repo, tag, version, target) {
 }
 
 function npmPublish(stageDir, npmTag, dryRun) {
-    const args = ['publish', '--access', 'public', '--tag', npmTag];
+    // `--provenance` is separate from Trusted Publishing: OIDC covers
+    // the auth handshake, but the provenance attestation is only
+    // attached when this flag is set explicitly.
+    const args = ['publish', '--access', 'public', '--tag', npmTag, '--provenance'];
     if (dryRun) args.push('--dry-run');
     run('npm', args, { cwd: stageDir });
 }
