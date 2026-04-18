@@ -3840,8 +3840,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 if !materialize_patches.is_empty() {
                     linker = linker.with_patches(materialize_patches);
                 }
+                // Carry the Next.js / `disableGlobalVirtualStoreForPackages`
+                // override the main linker got — without this the prewarm
+                // linker would still see `gvs = CI.is_err() = true`, spend
+                // the whole fetch phase materializing into
+                // `~/.cache/aube/virtual-store/`, and then throw all of that
+                // work away when link phase runs in per-project mode. The
+                // `!uses_global_virtual_store` short-circuit below depends
+                // on this being applied first.
+                if let Some(enabled) = use_global_virtual_store_override {
+                    linker = linker.with_use_global_virtual_store(enabled);
+                }
                 if !linker.uses_global_virtual_store() {
-                    // CI mode: `.aube/<dep_path>` is per-project so
+                    // Per-project mode (CI=1 or gvs-incompatible package
+                    // detected): `.aube/<dep_path>` is per-project so
                     // prewarming a shared store is pointless. Drain the
                     // channel to unblock the sender and return empty stats.
                     let mut rx = materialize_rx;

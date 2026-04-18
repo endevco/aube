@@ -56,6 +56,19 @@ JSON
 	[ -d node_modules/.aube/is-odd@3.0.1 ]
 	[ ! -L node_modules/.aube/is-odd@3.0.1 ]
 	[ -L node_modules/next ]
+
+	# Regression guard: the fetch-pipelined prewarm task builds its
+	# own Linker and used to miss this override, so it would spend
+	# the fetch phase materializing packages into
+	# `$XDG_CACHE_HOME/aube/virtual-store/` even though the main
+	# linker ran in per-project mode and threw all of that work
+	# away. HOME is isolated in setup, so the shared virtual store
+	# stays empty on a clean run — no per-dep_path subdir under
+	# `virtual-store/` means prewarm correctly skipped the pour.
+	if [ -d "$XDG_CACHE_HOME/aube/virtual-store" ]; then
+		run find "$XDG_CACHE_HOME/aube/virtual-store" -mindepth 1 -maxdepth 1 -type d
+		assert_output ""
+	fi
 }
 
 @test "aube install warns when next is in devDependencies" {

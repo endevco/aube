@@ -16,123 +16,123 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 
 ## Summary
 
-113 settings are listed here. 113 are currently implemented.
+113 settings are listed here.
 
-| Setting | Type | Status | Summary |
-| --- | --- | --- | --- |
-| [`overrides`](#setting-overrides) | `object` | implemented | Instruct aube to override any dependency in the dependency graph, including peer dependencies. |
-| [`packageExtensions`](#setting-packageextensions) | `object` | implemented | Extend existing package definitions with additional information. |
-| [`allowedDeprecatedVersions`](#setting-alloweddeprecatedversions) | `object` | implemented | Mute deprecation warnings for specific package versions. |
-| [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | implemented | List of packages to ignore during update checks. |
-| [`supportedArchitectures`](#setting-supportedarchitectures) | `object` | implemented | Specify architectures for optional dependency installation. |
-| [`ignoredOptionalDependencies`](#setting-ignoredoptionaldependencies) | `list<string>` | implemented | Skip optional dependencies by name. |
-| [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | implemented | Delay installation of newly published versions (minutes). |
-| [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | implemented | Packages exempt from the minimumReleaseAge requirement. |
-| [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | implemented | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
-| [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | implemented | Behavior when a package's trust level decreases between installs. |
-| [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | implemented | Packages exempt from trust policy checks. |
-| [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | implemented | Ignore trust policy for packages older than this age (minutes). |
-| [`blockExoticSubdeps`](#setting-blockexoticsubdeps) | `bool` | implemented | Restrict transitive dependencies to trusted sources (registries, not git/tarball URLs). |
-| [`registries`](#setting-registries) | `object` | implemented | Registry URLs, including scoped registry overrides. |
-| [`hoist`](#setting-hoist) | `bool` | implemented | Hoist all dependencies to the hidden modules directory. |
-| [`hoistWorkspacePackages`](#setting-hoistworkspacepackages) | `bool` | implemented | Symlink workspace packages into node_modules. |
-| [`hoistPattern`](#setting-hoistpattern) | `list<string>` | implemented | Packages to hoist to the hidden modules directory. |
-| [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | implemented | Packages to hoist directly to the root node_modules. |
-| [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | implemented | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
-| [`modulesDir`](#setting-modulesdir) | `path` | implemented | Directory to install dependencies into. |
-| [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | implemented | Strategy for linking Node packages into node_modules. |
-| [`symlink`](#setting-symlink) | `bool` | implemented | Create symlinks in the virtual store directory. |
-| [`enableModulesDir`](#setting-enablemodulesdir) | `bool` | implemented | Write files to the modules directory. |
-| [`virtualStoreDir`](#setting-virtualstoredir) | `path` | implemented | Directory with links to the store. |
-| [`virtualStoreDirMaxLength`](#setting-virtualstoredirmaxlength) | `int` | implemented | Max length for virtual store directory names. |
-| [`virtualStoreOnly`](#setting-virtualstoreonly) | `bool` | implemented | Populate the virtual store without creating top-level symlinks. |
-| [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | implemented | Method for importing packages from the store into node_modules. |
-| [`modulesCacheMaxAge`](#setting-modulescachemaxage) | `int` | implemented | Minutes before orphan packages are removed from the virtual store. |
-| [`dlxCacheMaxAge`](#setting-dlxcachemaxage) | `int` | implemented | Minutes before the dlx cache is considered stale. |
-| [`enableGlobalVirtualStore`](#setting-enableglobalvirtualstore) | `bool` | implemented | Use a per-user virtual store for all projects. |
-| [`disableGlobalVirtualStoreForPackages`](#setting-disableglobalvirtualstoreforpackages) | `list<string>` | implemented | Package names whose presence in any importer forces per-project materialization. |
-| [`storeDir`](#setting-storedir) | `path` | implemented | Location where packages are saved on disk (content-addressable store). |
-| [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | implemented | Check store file integrity before linking. |
-| [`useRunningStoreServer`](#setting-userunningstoreserver) | `bool` | implemented | Only allow installs when the store server is running. |
-| [`strictStorePkgContentCheck`](#setting-strictstorepkgcontentcheck) | `bool` | implemented | Validate package names and versions in the store. |
-| [`httpsProxy`](#setting-httpsproxy) | `url` | implemented | Proxy URL for outgoing HTTPS requests. |
-| [`httpProxy`](#setting-httpproxy) | `url` | implemented | Proxy URL for outgoing HTTP requests. |
-| [`noProxy`](#setting-noproxy) | `string` | implemented | Comma-separated list of domains that bypass the proxy. |
-| [`localAddress`](#setting-localaddress) | `string` | implemented | Local interface IP address to bind registry connections to. |
-| [`maxsockets`](#setting-maxsockets) | `int` | implemented | Maximum concurrent connections per origin. |
-| [`strictSsl`](#setting-strictssl) | `bool` | implemented | Validate SSL certificates for HTTPS requests. |
-| [`lockfile`](#setting-lockfile) | `bool` | implemented | Read and generate aube-lock.yaml. |
-| [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | implemented | Perform a headless install if the lockfile already satisfies package.json. |
-| [`lockfileIncludeTarballUrl`](#setting-lockfileincludetarballurl) | `bool` | implemented | Add the full tarball URL to each lockfile entry. |
-| [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | implemented | Skip local `link:` dependencies when writing the lockfile. |
-| [`gitBranchLockfile`](#setting-gitbranchlockfile) | `bool` | implemented | Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml). |
-| [`mergeGitBranchLockfilesBranchPattern`](#setting-mergegitbranchlockfilesbranchpattern) | `list<string>` | implemented | Branch-name glob list for auto-merging branch lockfiles. |
-| [`peersSuffixMaxLength`](#setting-peerssuffixmaxlength) | `int` | implemented | Max length of the peer-ID suffix in lockfile dep_paths. |
-| [`gitShallowHosts`](#setting-gitshallowhosts) | `list<string>` | implemented | Hosts for which aube performs shallow git clones. |
-| [`networkConcurrency`](#setting-networkconcurrency) | `int` | implemented | Maximum concurrent HTTP(S) requests. |
-| [`fetchRetries`](#setting-fetchretries) | `int` | implemented | Number of retry attempts for failed registry fetches. |
-| [`fetchRetryFactor`](#setting-fetchretryfactor) | `int` | implemented | Exponential backoff factor for fetch retries. |
-| [`fetchRetryMintimeout`](#setting-fetchretrymintimeout) | `int` | implemented | Minimum retry timeout in milliseconds. |
-| [`fetchRetryMaxtimeout`](#setting-fetchretrymaxtimeout) | `int` | implemented | Maximum retry timeout in milliseconds. |
-| [`fetchTimeout`](#setting-fetchtimeout) | `int` | implemented | Max time (ms) to wait for an HTTP request. |
-| [`fetchWarnTimeoutMs`](#setting-fetchwarntimeoutms) | `int` | implemented | Warn if a metadata request exceeds this threshold (ms). |
-| [`fetchMinSpeedKiBps`](#setting-fetchminspeedkibps) | `int` | implemented | Warn if download speed falls below this threshold (KiB/s). |
-| [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | implemented | Automatically install missing peer dependencies. |
-| [`dedupePeerDependents`](#setting-dedupepeerdependents) | `bool` | implemented | Deduplicate packages that have peer dependencies. |
-| [`dedupePeers`](#setting-dedupepeers) | `bool` | implemented | Use version-only identifiers for peer suffixes in the lockfile. |
-| [`strictPeerDependencies`](#setting-strictpeerdependencies) | `bool` | implemented | Fail if peer dependencies are missing or invalid. |
-| [`resolvePeersFromWorkspaceRoot`](#setting-resolvepeersfromworkspaceroot) | `bool` | implemented | Use root workspace dependencies for peer resolution. |
-| [`peerDependencyRules.ignoreMissing`](#setting-peerdependencyrules-ignoremissing) | `list<string>` | implemented | Suppress warnings for specific missing peer dependencies. |
-| [`peerDependencyRules.allowedVersions`](#setting-peerdependencyrules-allowedversions) | `object` | implemented | Override the accepted semver range for specific peer dependencies. |
-| [`peerDependencyRules.allowAny`](#setting-peerdependencyrules-allowany) | `list<string>` | implemented | Allow any peer version to resolve, bypassing semver checks. |
-| [`color`](#setting-color) | `"auto" \| "always" \| "never"` | implemented | Control color output in aube's CLI. |
-| [`loglevel`](#setting-loglevel) | `"debug" \| "info" \| "warn" \| "error" \| "silent"` | implemented | Minimum log level to display. |
-| [`useBetaCli`](#setting-usebetacli) | `bool` | implemented | Opt into experimental CLI features. |
-| [`recursiveInstall`](#setting-recursiveinstall) | `bool` | implemented | Install on all workspace packages by default. |
-| [`engineStrict`](#setting-enginestrict) | `bool` | implemented | Fail if a package is incompatible with the current Node version. |
-| [`npmPath`](#setting-npmpath) | `path` | implemented | Path to the npm binary aube should shell out to when needed. |
-| [`packageManagerStrict`](#setting-packagemanagerstrict) | `bool` | implemented | Enforce the `packageManager` field in package.json. |
-| [`packageManagerStrictVersion`](#setting-packagemanagerstrictversion) | `bool` | implemented | Enforce the exact `packageManager` version from package.json. |
-| [`managePackageManagerVersions`](#setting-managepackagemanagerversions) | `bool` | implemented | Auto-download the specified pnpm version when mismatched. |
-| [`ignoreScripts`](#setting-ignorescripts) | `bool` | implemented | Skip all lifecycle scripts in package.json. |
-| [`childConcurrency`](#setting-childconcurrency) | `int` | implemented | Maximum number of concurrent script-executing child processes. |
-| [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | implemented | Cache the results of install hooks. |
-| [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | implemented | Only read from the side-effects cache; don't write. |
-| [`unsafePerm`](#setting-unsafeperm) | `bool` | implemented | Drop to a non-root user when running scripts as root. |
-| [`nodeOptions`](#setting-nodeoptions) | `string` | implemented | Options passed to Node.js via NODE_OPTIONS. |
-| [`verifyDepsBeforeRun`](#setting-verifydepsbeforerun) | `"install" \| "warn" \| "error" \| "prompt" \| false` | implemented | Check dependencies before running scripts. |
-| [`strictDepBuilds`](#setting-strictdepbuilds) | `bool` | implemented | Exit with an error if dependencies have unreviewed build scripts. |
-| [`allowBuilds`](#setting-allowbuilds) | `object` | implemented | Explicitly allow or disallow script execution per package. |
-| [`dangerouslyAllowAllBuilds`](#setting-dangerouslyallowallbuilds) | `bool` | implemented | Allow all dependency build scripts automatically. |
-| [`nodeVersion`](#setting-nodeversion) | `string` | implemented | Node.js version aube reports when evaluating `engines` checks. |
-| [`nodeDownloadMirrors`](#setting-nodedownloadmirrors) | `object` | implemented | Custom Node.js download mirror URLs. |
-| [`savePrefix`](#setting-saveprefix) | `"^" \| "~" \| ""` | implemented | Version prefix used when installing a package. |
-| [`tag`](#setting-tag) | `string` | implemented | Default dist-tag used by `aube add` without a version. |
-| [`globalDir`](#setting-globaldir) | `path` | implemented | Directory where globally installed packages live. |
-| [`globalBinDir`](#setting-globalbindir) | `path` | implemented | Directory where global binaries are symlinked. |
-| [`npmrcAuthFile`](#setting-npmrcauthfile) | `path` | implemented | Path to an additional .npmrc file consulted for registry authentication tokens. |
-| [`stateDir`](#setting-statedir) | `path` | implemented | Directory for aube install-state files. |
-| [`cacheDir`](#setting-cachedir) | `path` | implemented | Directory for package metadata and dlx cache. |
-| [`useStderr`](#setting-usestderr) | `bool` | implemented | Write all output to stderr instead of stdout. |
-| [`updateNotifier`](#setting-updatenotifier) | `bool` | implemented | Show an update notification when a newer aube is available. |
-| [`preferSymlinkedExecutables`](#setting-prefersymlinkedexecutables) | `bool` | implemented | Create symlinks instead of shims for `.bin` entries. |
-| [`ignoreCompatibilityDb`](#setting-ignorecompatibilitydb) | `bool` | implemented | Disable pnpm's automatic dependency patching database. |
-| [`resolutionMode`](#setting-resolutionmode) | `"highest" \| "time-based" \| "lowest-direct"` | implemented | Dependency version resolution strategy. |
-| [`registrySupportsTimeField`](#setting-registrysupportstimefield) | `bool` | implemented | Whether the configured registry returns a `time` field in metadata. |
-| [`extendNodePath`](#setting-extendnodepath) | `bool` | implemented | Set NODE_PATH in command shims. |
-| [`deployAllFiles`](#setting-deployallfiles) | `bool` | implemented | Copy all files when deploying a workspace package. |
-| [`dedupeDirectDeps`](#setting-dedupedirectdeps) | `bool` | implemented | Skip symlinking workspace-root dependencies if identical across packages. |
-| [`optimisticRepeatInstall`](#setting-optimisticrepeatinstall) | `bool` | implemented | Fast-path check before running a full install. |
-| [`requiredScripts`](#setting-requiredscripts) | `list<string>` | implemented | Scripts that must be present in every workspace project. |
-| [`enablePrePostScripts`](#setting-enableprepostscripts) | `bool` | implemented | Run pre/post scripts automatically when a named script is invoked. |
-| [`scriptShell`](#setting-scriptshell) | `path` | implemented | Shell used to invoke package scripts. |
-| [`shellEmulator`](#setting-shellemulator) | `bool` | implemented | Use a JavaScript bash-like shell to run scripts cross-platform. |
-| [`catalogMode`](#setting-catalogmode) | `"manual" \| "strict" \| "prefer"` | implemented | How catalog references in package.json are handled by `add`. |
-| [`ci`](#setting-ci) | `bool` | implemented | Explicitly mark the environment as CI. |
-| [`cleanupUnusedCatalogs`](#setting-cleanupunusedcatalogs) | `bool` | implemented | Remove unused catalog entries during install. |
-| [`linkConcurrency`](#setting-linkconcurrency) | `int` | implemented | Maximum concurrent package materialization/linking tasks. |
-| [`aubeNoLock`](#setting-aubenolock) | `bool` | implemented | Disable aube's project-level advisory lock. |
-| [`aubeNoAutoInstall`](#setting-aubenoautoinstall) | `bool` | implemented | Skip the auto-install staleness check in `aube run` / `aube exec`. |
+| Setting | Type | Summary |
+| --- | --- | --- |
+| [`overrides`](#setting-overrides) | `object` | Instruct aube to override any dependency in the dependency graph, including peer dependencies. |
+| [`packageExtensions`](#setting-packageextensions) | `object` | Extend existing package definitions with additional information. |
+| [`allowedDeprecatedVersions`](#setting-alloweddeprecatedversions) | `object` | Mute deprecation warnings for specific package versions. |
+| [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | List of packages to ignore during update checks. |
+| [`supportedArchitectures`](#setting-supportedarchitectures) | `object` | Specify architectures for optional dependency installation. |
+| [`ignoredOptionalDependencies`](#setting-ignoredoptionaldependencies) | `list<string>` | Skip optional dependencies by name. |
+| [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
+| [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
+| [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
+| [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Behavior when a package's trust level decreases between installs. |
+| [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from trust policy checks. |
+| [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | Ignore trust policy for packages older than this age (minutes). |
+| [`blockExoticSubdeps`](#setting-blockexoticsubdeps) | `bool` | Restrict transitive dependencies to trusted sources (registries, not git/tarball URLs). |
+| [`registries`](#setting-registries) | `object` | Registry URLs, including scoped registry overrides. |
+| [`hoist`](#setting-hoist) | `bool` | Hoist all dependencies to the hidden modules directory. |
+| [`hoistWorkspacePackages`](#setting-hoistworkspacepackages) | `bool` | Symlink workspace packages into node_modules. |
+| [`hoistPattern`](#setting-hoistpattern) | `list<string>` | Packages to hoist to the hidden modules directory. |
+| [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | Packages to hoist directly to the root node_modules. |
+| [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
+| [`modulesDir`](#setting-modulesdir) | `path` | Directory to install dependencies into. |
+| [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | Strategy for linking Node packages into node_modules. |
+| [`symlink`](#setting-symlink) | `bool` | Create symlinks in the virtual store directory. |
+| [`enableModulesDir`](#setting-enablemodulesdir) | `bool` | Write files to the modules directory. |
+| [`virtualStoreDir`](#setting-virtualstoredir) | `path` | Directory with links to the store. |
+| [`virtualStoreDirMaxLength`](#setting-virtualstoredirmaxlength) | `int` | Max length for virtual store directory names. |
+| [`virtualStoreOnly`](#setting-virtualstoreonly) | `bool` | Populate the virtual store without creating top-level symlinks. |
+| [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | Method for importing packages from the store into node_modules. |
+| [`modulesCacheMaxAge`](#setting-modulescachemaxage) | `int` | Minutes before orphan packages are removed from the virtual store. |
+| [`dlxCacheMaxAge`](#setting-dlxcachemaxage) | `int` | Minutes before the dlx cache is considered stale. |
+| [`enableGlobalVirtualStore`](#setting-enableglobalvirtualstore) | `bool` | Use a per-user virtual store for all projects. |
+| [`disableGlobalVirtualStoreForPackages`](#setting-disableglobalvirtualstoreforpackages) | `list<string>` | Package names whose presence in any importer forces per-project materialization. |
+| [`storeDir`](#setting-storedir) | `path` | Location where packages are saved on disk (content-addressable store). |
+| [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | Check store file integrity before linking. |
+| [`useRunningStoreServer`](#setting-userunningstoreserver) | `bool` | Only allow installs when the store server is running. |
+| [`strictStorePkgContentCheck`](#setting-strictstorepkgcontentcheck) | `bool` | Validate package names and versions in the store. |
+| [`httpsProxy`](#setting-httpsproxy) | `url` | Proxy URL for outgoing HTTPS requests. |
+| [`httpProxy`](#setting-httpproxy) | `url` | Proxy URL for outgoing HTTP requests. |
+| [`noProxy`](#setting-noproxy) | `string` | Comma-separated list of domains that bypass the proxy. |
+| [`localAddress`](#setting-localaddress) | `string` | Local interface IP address to bind registry connections to. |
+| [`maxsockets`](#setting-maxsockets) | `int` | Maximum concurrent connections per origin. |
+| [`strictSsl`](#setting-strictssl) | `bool` | Validate SSL certificates for HTTPS requests. |
+| [`lockfile`](#setting-lockfile) | `bool` | Read and generate aube-lock.yaml. |
+| [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | Perform a headless install if the lockfile already satisfies package.json. |
+| [`lockfileIncludeTarballUrl`](#setting-lockfileincludetarballurl) | `bool` | Add the full tarball URL to each lockfile entry. |
+| [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | Skip local `link:` dependencies when writing the lockfile. |
+| [`gitBranchLockfile`](#setting-gitbranchlockfile) | `bool` | Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml). |
+| [`mergeGitBranchLockfilesBranchPattern`](#setting-mergegitbranchlockfilesbranchpattern) | `list<string>` | Branch-name glob list for auto-merging branch lockfiles. |
+| [`peersSuffixMaxLength`](#setting-peerssuffixmaxlength) | `int` | Max length of the peer-ID suffix in lockfile dep_paths. |
+| [`gitShallowHosts`](#setting-gitshallowhosts) | `list<string>` | Hosts for which aube performs shallow git clones. |
+| [`networkConcurrency`](#setting-networkconcurrency) | `int` | Maximum concurrent HTTP(S) requests. |
+| [`fetchRetries`](#setting-fetchretries) | `int` | Number of retry attempts for failed registry fetches. |
+| [`fetchRetryFactor`](#setting-fetchretryfactor) | `int` | Exponential backoff factor for fetch retries. |
+| [`fetchRetryMintimeout`](#setting-fetchretrymintimeout) | `int` | Minimum retry timeout in milliseconds. |
+| [`fetchRetryMaxtimeout`](#setting-fetchretrymaxtimeout) | `int` | Maximum retry timeout in milliseconds. |
+| [`fetchTimeout`](#setting-fetchtimeout) | `int` | Max time (ms) to wait for an HTTP request. |
+| [`fetchWarnTimeoutMs`](#setting-fetchwarntimeoutms) | `int` | Warn if a metadata request exceeds this threshold (ms). |
+| [`fetchMinSpeedKiBps`](#setting-fetchminspeedkibps) | `int` | Warn if download speed falls below this threshold (KiB/s). |
+| [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | Automatically install missing peer dependencies. |
+| [`dedupePeerDependents`](#setting-dedupepeerdependents) | `bool` | Deduplicate packages that have peer dependencies. |
+| [`dedupePeers`](#setting-dedupepeers) | `bool` | Use version-only identifiers for peer suffixes in the lockfile. |
+| [`strictPeerDependencies`](#setting-strictpeerdependencies) | `bool` | Fail if peer dependencies are missing or invalid. |
+| [`resolvePeersFromWorkspaceRoot`](#setting-resolvepeersfromworkspaceroot) | `bool` | Use root workspace dependencies for peer resolution. |
+| [`peerDependencyRules.ignoreMissing`](#setting-peerdependencyrules-ignoremissing) | `list<string>` | Suppress warnings for specific missing peer dependencies. |
+| [`peerDependencyRules.allowedVersions`](#setting-peerdependencyrules-allowedversions) | `object` | Override the accepted semver range for specific peer dependencies. |
+| [`peerDependencyRules.allowAny`](#setting-peerdependencyrules-allowany) | `list<string>` | Allow any peer version to resolve, bypassing semver checks. |
+| [`color`](#setting-color) | `"auto" \| "always" \| "never"` | Control color output in aube's CLI. |
+| [`loglevel`](#setting-loglevel) | `"debug" \| "info" \| "warn" \| "error" \| "silent"` | Minimum log level to display. |
+| [`useBetaCli`](#setting-usebetacli) | `bool` | Opt into experimental CLI features. |
+| [`recursiveInstall`](#setting-recursiveinstall) | `bool` | Install on all workspace packages by default. |
+| [`engineStrict`](#setting-enginestrict) | `bool` | Fail if a package is incompatible with the current Node version. |
+| [`npmPath`](#setting-npmpath) | `path` | Path to the npm binary aube should shell out to when needed. |
+| [`packageManagerStrict`](#setting-packagemanagerstrict) | `bool` | Enforce the `packageManager` field in package.json. |
+| [`packageManagerStrictVersion`](#setting-packagemanagerstrictversion) | `bool` | Enforce the exact `packageManager` version from package.json. |
+| [`managePackageManagerVersions`](#setting-managepackagemanagerversions) | `bool` | Auto-download the specified pnpm version when mismatched. |
+| [`ignoreScripts`](#setting-ignorescripts) | `bool` | Skip all lifecycle scripts in package.json. |
+| [`childConcurrency`](#setting-childconcurrency) | `int` | Maximum number of concurrent script-executing child processes. |
+| [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
+| [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | Only read from the side-effects cache; don't write. |
+| [`unsafePerm`](#setting-unsafeperm) | `bool` | Drop to a non-root user when running scripts as root. |
+| [`nodeOptions`](#setting-nodeoptions) | `string` | Options passed to Node.js via NODE_OPTIONS. |
+| [`verifyDepsBeforeRun`](#setting-verifydepsbeforerun) | `"install" \| "warn" \| "error" \| "prompt" \| false` | Check dependencies before running scripts. |
+| [`strictDepBuilds`](#setting-strictdepbuilds) | `bool` | Exit with an error if dependencies have unreviewed build scripts. |
+| [`allowBuilds`](#setting-allowbuilds) | `object` | Explicitly allow or disallow script execution per package. |
+| [`dangerouslyAllowAllBuilds`](#setting-dangerouslyallowallbuilds) | `bool` | Allow all dependency build scripts automatically. |
+| [`nodeVersion`](#setting-nodeversion) | `string` | Node.js version aube reports when evaluating `engines` checks. |
+| [`nodeDownloadMirrors`](#setting-nodedownloadmirrors) | `object` | Custom Node.js download mirror URLs. |
+| [`savePrefix`](#setting-saveprefix) | `"^" \| "~" \| ""` | Version prefix used when installing a package. |
+| [`tag`](#setting-tag) | `string` | Default dist-tag used by `aube add` without a version. |
+| [`globalDir`](#setting-globaldir) | `path` | Directory where globally installed packages live. |
+| [`globalBinDir`](#setting-globalbindir) | `path` | Directory where global binaries are symlinked. |
+| [`npmrcAuthFile`](#setting-npmrcauthfile) | `path` | Path to an additional .npmrc file consulted for registry authentication tokens. |
+| [`stateDir`](#setting-statedir) | `path` | Directory for aube install-state files. |
+| [`cacheDir`](#setting-cachedir) | `path` | Directory for package metadata and dlx cache. |
+| [`useStderr`](#setting-usestderr) | `bool` | Write all output to stderr instead of stdout. |
+| [`updateNotifier`](#setting-updatenotifier) | `bool` | Show an update notification when a newer aube is available. |
+| [`preferSymlinkedExecutables`](#setting-prefersymlinkedexecutables) | `bool` | Create symlinks instead of shims for `.bin` entries. |
+| [`ignoreCompatibilityDb`](#setting-ignorecompatibilitydb) | `bool` | Disable pnpm's automatic dependency patching database. |
+| [`resolutionMode`](#setting-resolutionmode) | `"highest" \| "time-based" \| "lowest-direct"` | Dependency version resolution strategy. |
+| [`registrySupportsTimeField`](#setting-registrysupportstimefield) | `bool` | Whether the configured registry returns a `time` field in metadata. |
+| [`extendNodePath`](#setting-extendnodepath) | `bool` | Set NODE_PATH in command shims. |
+| [`deployAllFiles`](#setting-deployallfiles) | `bool` | Copy all files when deploying a workspace package. |
+| [`dedupeDirectDeps`](#setting-dedupedirectdeps) | `bool` | Skip symlinking workspace-root dependencies if identical across packages. |
+| [`optimisticRepeatInstall`](#setting-optimisticrepeatinstall) | `bool` | Fast-path check before running a full install. |
+| [`requiredScripts`](#setting-requiredscripts) | `list<string>` | Scripts that must be present in every workspace project. |
+| [`enablePrePostScripts`](#setting-enableprepostscripts) | `bool` | Run pre/post scripts automatically when a named script is invoked. |
+| [`scriptShell`](#setting-scriptshell) | `path` | Shell used to invoke package scripts. |
+| [`shellEmulator`](#setting-shellemulator) | `bool` | Use a JavaScript bash-like shell to run scripts cross-platform. |
+| [`catalogMode`](#setting-catalogmode) | `"manual" \| "strict" \| "prefer"` | How catalog references in package.json are handled by `add`. |
+| [`ci`](#setting-ci) | `bool` | Explicitly mark the environment as CI. |
+| [`cleanupUnusedCatalogs`](#setting-cleanupunusedcatalogs) | `bool` | Remove unused catalog entries during install. |
+| [`linkConcurrency`](#setting-linkconcurrency) | `int` | Maximum concurrent package materialization/linking tasks. |
+| [`aubeNoLock`](#setting-aubenolock) | `bool` | Disable aube's project-level advisory lock. |
+| [`aubeNoAutoInstall`](#setting-aubenoautoinstall) | `bool` | Skip the auto-install staleness check in `aube run` / `aube exec`. |
 
 ## Dependency Resolution
 
@@ -142,9 +142,6 @@ Instruct aube to override any dependency in the dependency graph, including peer
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_overrides`, `NPM_CONFIG_OVERRIDES`
 - .npmrc keys: `overrides`
 - Workspace YAML keys: `overrides`
@@ -160,9 +157,6 @@ Extend existing package definitions with additional information.
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_package_extensions`, `NPM_CONFIG_PACKAGE_EXTENSIONS`
 - .npmrc keys: `packageExtensions`
 - Workspace YAML keys: `packageExtensions`
@@ -177,9 +171,6 @@ Mute deprecation warnings for specific package versions.
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_allowed_deprecated_versions`, `NPM_CONFIG_ALLOWED_DEPRECATED_VERSIONS`
 - .npmrc keys: `allowedDeprecatedVersions`
 - Workspace YAML keys: `allowedDeprecatedVersions`
@@ -194,9 +185,6 @@ List of packages to ignore during update checks.
 
 - Type: `list<string>`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_update_config_ignore_dependencies`, `NPM_CONFIG_UPDATE_CONFIG_IGNORE_DEPENDENCIES`
 - .npmrc keys: `updateConfig.ignoreDependencies`
 - Workspace YAML keys: `updateConfig.ignoreDependencies`
@@ -210,12 +198,8 @@ Specify architectures for optional dependency installation.
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_supported_architectures`, `NPM_CONFIG_SUPPORTED_ARCHITECTURES`
 - .npmrc keys: `supportedArchitectures`
-- Workspace YAML keys: none
 
 Override the current platform/arch/libc triple used to filter optional
 dependencies. Useful when generating a lockfile for a target platform
@@ -227,12 +211,8 @@ Skip optional dependencies by name.
 
 - Type: `list<string>`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_ignored_optional_dependencies`, `NPM_CONFIG_IGNORED_OPTIONAL_DEPENDENCIES`
 - .npmrc keys: `ignoredOptionalDependencies`
-- Workspace YAML keys: none
 
 Named entries are skipped even if their platform/arch matches. Distinct
 from `--no-optional`, which drops *all* optional deps at install time.
@@ -243,9 +223,6 @@ Delay installation of newly published versions (minutes).
 
 - Type: `int`
 - Default: `1440`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_minimum_release_age`, `NPM_CONFIG_MINIMUM_RELEASE_AGE`
 - .npmrc keys: `minimumReleaseAge`
 - Workspace YAML keys: `minimumReleaseAge`
@@ -262,9 +239,6 @@ Packages exempt from the minimumReleaseAge requirement.
 
 - Type: `list<string>`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_minimum_release_age_exclude`, `NPM_CONFIG_MINIMUM_RELEASE_AGE_EXCLUDE`
 - .npmrc keys: `minimumReleaseAgeExclude`
 - Workspace YAML keys: `minimumReleaseAgeExclude`
@@ -279,9 +253,6 @@ Fail the install when no version satisfies the minimumReleaseAge cutoff.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_minimum_release_age_strict`, `NPM_CONFIG_MINIMUM_RELEASE_AGE_STRICT`
 - .npmrc keys: `minimumReleaseAgeStrict`
 - Workspace YAML keys: `minimumReleaseAgeStrict`
@@ -296,9 +267,6 @@ Behavior when a package's trust level decreases between installs.
 
 - Type: `"no-downgrade" | "off"`
 - Default: `"off"`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_trust_policy`, `NPM_CONFIG_TRUST_POLICY`
 - .npmrc keys: `trustPolicy`
 - Workspace YAML keys: `trustPolicy`
@@ -314,9 +282,6 @@ Packages exempt from trust policy checks.
 
 - Type: `list<string>`
 - Default: `[]`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_trust_policy_exclude`, `NPM_CONFIG_TRUST_POLICY_EXCLUDE`
 - .npmrc keys: `trustPolicyExclude`
 - Workspace YAML keys: `trustPolicyExclude`
@@ -329,9 +294,6 @@ Ignore trust policy for packages older than this age (minutes).
 
 - Type: `int`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_trust_policy_ignore_after`, `NPM_CONFIG_TRUST_POLICY_IGNORE_AFTER`
 - .npmrc keys: `trustPolicyIgnoreAfter`
 - Workspace YAML keys: `trustPolicyIgnoreAfter`
@@ -344,9 +306,6 @@ Restrict transitive dependencies to trusted sources (registries, not git/tarball
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_block_exotic_subdeps`, `NPM_CONFIG_BLOCK_EXOTIC_SUBDEPS`
 - .npmrc keys: `blockExoticSubdeps`
 - Workspace YAML keys: `blockExoticSubdeps`
@@ -361,12 +320,8 @@ Registry URLs, including scoped registry overrides.
 
 - Type: `object`
 - Default: `{ default = "https://registry.npmjs.org/" }`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_registries`, `NPM_CONFIG_REGISTRIES`
 - .npmrc keys: `registry`, `@scope:registry`, `//host/:_authToken`, `//host/:_auth`
-- Workspace YAML keys: none
 
 Maps `default` and `@scope` keys to registry URLs. aube reads these from
 `.npmrc` via `aube_registry::config::NpmConfig` (see
@@ -386,9 +341,6 @@ Hoist all dependencies to the hidden modules directory.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_hoist`, `NPM_CONFIG_HOIST`
 - .npmrc keys: `hoist`
 - Workspace YAML keys: `hoist`
@@ -419,9 +371,6 @@ Symlink workspace packages into node_modules.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_hoist_workspace_packages`, `NPM_CONFIG_HOIST_WORKSPACE_PACKAGES`
 - .npmrc keys: `hoist-workspace-packages`, `hoistWorkspacePackages`
 - Workspace YAML keys: `hoistWorkspacePackages`
@@ -440,9 +389,6 @@ Packages to hoist to the hidden modules directory.
 
 - Type: `list<string>`
 - Default: `["*"]`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_hoist_pattern`, `NPM_CONFIG_HOIST_PATTERN`
 - .npmrc keys: `hoist-pattern`, `hoistPattern`
 - Workspace YAML keys: `hoistPattern`
@@ -466,8 +412,6 @@ Packages to hoist directly to the root node_modules.
 
 - Type: `list<string>`
 - Default: `[]`
-- Status: implemented
-- Added to registry: `2026-04-13`
 - CLI flags: `public-hoist-pattern`
 - Environment: `npm_config_public_hoist_pattern`, `NPM_CONFIG_PUBLIC_HOIST_PATTERN`
 - .npmrc keys: `public-hoist-pattern`, `publicHoistPattern`
@@ -490,8 +434,6 @@ Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `shamefully-hoist`
 - Environment: `npm_config_shamefully_hoist`, `NPM_CONFIG_SHAMEFULLY_HOIST`
 - .npmrc keys: `shamefully-hoist`, `shamefullyHoist`
@@ -508,9 +450,6 @@ Directory to install dependencies into.
 
 - Type: `path`
 - Default: `"node_modules"`
-- Status: implemented
-- Added to registry: `2026-04-17`
-- CLI flags: none
 - Environment: `npm_config_modules_dir`, `NPM_CONFIG_MODULES_DIR`
 - .npmrc keys: `modulesDir`, `modules-dir`
 - Workspace YAML keys: `modulesDir`
@@ -537,8 +476,6 @@ Strategy for linking Node packages into node_modules.
 
 - Type: `"isolated" | "hoisted" | "pnp"`
 - Default: `"isolated"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `node-linker`
 - Environment: `npm_config_node_linker`, `NPM_CONFIG_NODE_LINKER`
 - .npmrc keys: `nodeLinker`
@@ -556,12 +493,8 @@ Create symlinks in the virtual store directory.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_symlink`, `NPM_CONFIG_SYMLINK`
 - .npmrc keys: `symlink`
-- Workspace YAML keys: none
 
 Accepted for pnpm parity. aube's isolated layout is structurally
 defined by the symlink graph under `node_modules/.aube/` — each
@@ -589,12 +522,8 @@ Write files to the modules directory.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_enable_modules_dir`, `NPM_CONFIG_ENABLE_MODULES_DIR`
 - .npmrc keys: `enableModulesDir`
-- Workspace YAML keys: none
 
 When `false`, aube resolves the dependency graph and writes
 `aube-lock.yaml` but skips every `node_modules/` side effect: no
@@ -609,9 +538,6 @@ Directory with links to the store.
 
 - Type: `path`
 - Default: `"node_modules/.aube"`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_virtual_store_dir`, `NPM_CONFIG_VIRTUAL_STORE_DIR`
 - .npmrc keys: `virtualStoreDir`, `virtual-store-dir`
 - Workspace YAML keys: `virtualStoreDir`
@@ -642,12 +568,8 @@ Max length for virtual store directory names.
 
 - Type: `int`
 - Default: `120 (Linux/macOS), 60 (Windows)`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_virtual_store_dir_max_length`, `NPM_CONFIG_VIRTUAL_STORE_DIR_MAX_LENGTH`
 - .npmrc keys: `virtualStoreDirMaxLength`
-- Workspace YAML keys: none
 
 Caps the number of characters in a single `node_modules/.aube/<dep>`
 directory name. `dep_path_to_filename` already truncates-and-hashes
@@ -664,12 +586,8 @@ Populate the virtual store without creating top-level symlinks.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_virtual_store_only`, `NPM_CONFIG_VIRTUAL_STORE_ONLY`
 - .npmrc keys: `virtualStoreOnly`
-- Workspace YAML keys: none
 
 When `true`, aube still materializes every package into
 `node_modules/.aube/<dep>/node_modules/<name>` (and, in global-store
@@ -687,8 +605,6 @@ Method for importing packages from the store into node_modules.
 
 - Type: `"auto" | "hardlink" | "copy" | "clone" | "clone-or-copy"`
 - Default: `"auto"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `package-import-method`
 - Environment: `npm_config_package_import_method`, `NPM_CONFIG_PACKAGE_IMPORT_METHOD`
 - .npmrc keys: `packageImportMethod`, `package-import-method`
@@ -711,12 +627,8 @@ Minutes before orphan packages are removed from the virtual store.
 
 - Type: `int`
 - Default: `10080`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_modules_cache_max_age`, `NPM_CONFIG_MODULES_CACHE_MAX_AGE`
 - .npmrc keys: `modulesCacheMaxAge`
-- Workspace YAML keys: none
 
 After each successful install, aube sweeps the per-project
 `node_modules/.aube/` virtual store and removes entries whose
@@ -735,12 +647,8 @@ Minutes before the dlx cache is considered stale.
 
 - Type: `int`
 - Default: `1440`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_dlx_cache_max_age`, `NPM_CONFIG_DLX_CACHE_MAX_AGE`
 - .npmrc keys: `dlx-cache-max-age`, `dlxCacheMaxAge`
-- Workspace YAML keys: none
 
 Accepted for pnpm parity. `aube dlx` currently installs into a fresh
 `tempfile::TempDir` per invocation and removes it on exit, so there is
@@ -755,9 +663,6 @@ Use a per-user virtual store for all projects.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `CI`, `npm_config_enable_global_virtual_store`, `NPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
 - .npmrc keys: `enableGlobalVirtualStore`
 - Workspace YAML keys: `enableGlobalVirtualStore`
@@ -773,9 +678,6 @@ Package names whose presence in any importer forces per-project materialization.
 
 - Type: `list<string>`
 - Default: `["next"]`
-- Status: implemented
-- Added to registry: `2026-04-18`
-- CLI flags: none
 - Environment: `npm_config_disable_global_virtual_store_for_packages`, `NPM_CONFIG_DISABLE_GLOBAL_VIRTUAL_STORE_FOR_PACKAGES`
 - .npmrc keys: `disableGlobalVirtualStoreForPackages`
 - Workspace YAML keys: `disableGlobalVirtualStoreForPackages`
@@ -803,9 +705,6 @@ Location where packages are saved on disk (content-addressable store).
 
 - Type: `path`
 - Default: `~/.aube-store/v1/files/`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_store_dir`, `NPM_CONFIG_STORE_DIR`
 - .npmrc keys: `store-dir`, `storeDir`
 - Workspace YAML keys: `storeDir`
@@ -835,8 +734,6 @@ Check store file integrity before linking.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `verify-store-integrity`
 - Environment: `npm_config_verify_store_integrity`, `NPM_CONFIG_VERIFY_STORE_INTEGRITY`
 - .npmrc keys: `verify-store-integrity`, `verifyStoreIntegrity`
@@ -859,12 +756,8 @@ Only allow installs when the store server is running.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_use_running_store_server`, `NPM_CONFIG_USE_RUNNING_STORE_SERVER`
 - .npmrc keys: `use-running-store-server`, `useRunningStoreServer`
-- Workspace YAML keys: none
 
 Accepted for pnpm parity. aube has no long-running store-daemon
 component — every install talks directly to the on-disk CAS at
@@ -879,12 +772,8 @@ Validate package names and versions in the store.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_strict_store_pkg_content_check`, `NPM_CONFIG_STRICT_STORE_PKG_CONTENT_CHECK`
 - .npmrc keys: `strict-store-pkg-content-check`, `strictStorePkgContentCheck`
-- Workspace YAML keys: none
 
 After each registry tarball is imported, aube reads the freshly stored
 `package.json` and confirms its `name` and `version` match what the
@@ -910,12 +799,8 @@ Proxy URL for outgoing HTTPS requests.
 
 - Type: `url`
 - Default: `null`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `HTTPS_PROXY`, `https_proxy`, `npm_config_https_proxy`, `NPM_CONFIG_HTTPS_PROXY`
 - .npmrc keys: `https-proxy`, `httpsProxy`, `proxy`
-- Workspace YAML keys: none
 
 Forwards every HTTPS registry fetch through the given proxy URL.
 Honored by the `aube-registry` reqwest client. Resolution mirrors
@@ -928,12 +813,8 @@ Proxy URL for outgoing HTTP requests.
 
 - Type: `url`
 - Default: `null`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `HTTP_PROXY`, `http_proxy`, `PROXY`, `proxy`, `npm_config_http_proxy`, `NPM_CONFIG_HTTP_PROXY`
 - .npmrc keys: `http-proxy`, `httpProxy`
-- Workspace YAML keys: none
 
 HTTP counterpart to `httpsProxy`. Resolution mirrors pnpm:
 `.npmrc http-proxy` ?? resolved `httpsProxy` ?? `HTTP_PROXY` /
@@ -947,12 +828,8 @@ Comma-separated list of domains that bypass the proxy.
 
 - Type: `string`
 - Default: `null`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `NO_PROXY`, `no_proxy`, `npm_config_no_proxy`, `NPM_CONFIG_NO_PROXY`
 - .npmrc keys: `noproxy`, `noProxy`, `no-proxy`
-- Workspace YAML keys: none
 
 Passed through to `reqwest::NoProxy::from_string` verbatim, so
 wildcard and port-qualified hosts behave the same as curl / node.
@@ -965,12 +842,8 @@ Local interface IP address to bind registry connections to.
 
 - Type: `string`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_local_address`, `NPM_CONFIG_LOCAL_ADDRESS`
 - .npmrc keys: `local-address`, `localAddress`
-- Workspace YAML keys: none
 
 Used on multi-homed hosts where outbound traffic must leave a
 specific interface. Parsed as `IpAddr`; unparseable values are
@@ -982,12 +855,8 @@ Maximum concurrent connections per origin.
 
 - Type: `int`
 - Default: `networkConcurrency x 3`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_maxsockets`, `NPM_CONFIG_MAXSOCKETS`
 - .npmrc keys: `maxsockets`
-- Workspace YAML keys: none
 
 Plumbed into reqwest's `pool_max_idle_per_host`. This is the
 closest analogue to pnpm's per-origin socket cap — reqwest doesn't
@@ -1000,12 +869,8 @@ Validate SSL certificates for HTTPS requests.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_strict_ssl`, `NPM_CONFIG_STRICT_SSL`
 - .npmrc keys: `strict-ssl`, `strictSsl`
-- Workspace YAML keys: none
 
 Defaults to `true`. Setting `strict-ssl=false` disables TLS
 certificate verification entirely via
@@ -1021,9 +886,6 @@ Read and generate aube-lock.yaml.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_lockfile`, `NPM_CONFIG_LOCKFILE`
 - .npmrc keys: `lockfile`
 - Workspace YAML keys: `lockfile`
@@ -1050,8 +912,6 @@ Perform a headless install if the lockfile already satisfies package.json.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `prefer-frozen-lockfile`
 - Environment: `npm_config_prefer_frozen_lockfile`, `NPM_CONFIG_PREFER_FROZEN_LOCKFILE`
 - .npmrc keys: `prefer-frozen-lockfile`
@@ -1071,9 +931,6 @@ Add the full tarball URL to each lockfile entry.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_lockfile_include_tarball_url`, `NPM_CONFIG_LOCKFILE_INCLUDE_TARBALL_URL`
 - .npmrc keys: `lockfileIncludeTarballUrl`, `lockfile-include-tarball-url`
 - Workspace YAML keys: `lockfileIncludeTarballUrl`
@@ -1103,9 +960,6 @@ Skip local `link:` dependencies when writing the lockfile.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-13`
-- CLI flags: none
 - Environment: `npm_config_exclude_links_from_lockfile`, `NPM_CONFIG_EXCLUDE_LINKS_FROM_LOCKFILE`
 - .npmrc keys: `exclude-links-from-lockfile`, `excludeLinksFromLockfile`
 - Workspace YAML keys: `excludeLinksFromLockfile`
@@ -1128,9 +982,6 @@ Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml).
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_git_branch_lockfile`, `NPM_CONFIG_GIT_BRANCH_LOCKFILE`
 - .npmrc keys: `gitBranchLockfile`
 - Workspace YAML keys: `gitBranchLockfile`
@@ -1160,9 +1011,6 @@ Branch-name glob list for auto-merging branch lockfiles.
 
 - Type: `list<string>`
 - Default: `null`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_merge_git_branch_lockfiles_branch_pattern`, `NPM_CONFIG_MERGE_GIT_BRANCH_LOCKFILES_BRANCH_PATTERN`
 - .npmrc keys: `mergeGitBranchLockfilesBranchPattern`
 - Workspace YAML keys: `mergeGitBranchLockfilesBranchPattern`
@@ -1195,9 +1043,6 @@ Max length of the peer-ID suffix in lockfile dep_paths.
 
 - Type: `int`
 - Default: `1000`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_peers_suffix_max_length`, `NPM_CONFIG_PEERS_SUFFIX_MAX_LENGTH`
 - .npmrc keys: `peersSuffixMaxLength`
 - Workspace YAML keys: `peersSuffixMaxLength`
@@ -1220,12 +1065,8 @@ Hosts for which aube performs shallow git clones.
 
 - Type: `list<string>`
 - Default: `["github.com", "gist.github.com", "gitlab.com", "bitbucket.com", "bitbucket.org"]`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_git_shallow_hosts`, `NPM_CONFIG_GIT_SHALLOW_HOSTS`
 - .npmrc keys: `git-shallow-hosts`, `gitShallowHosts`
-- Workspace YAML keys: none
 
 Consulted by `aube-store::git_shallow_clone` when cloning a git
 dependency. When the URL's hostname matches an entry in this list
@@ -1248,8 +1089,6 @@ Maximum concurrent HTTP(S) requests.
 
 - Type: `int`
 - Default: `128 (tarballs), 64 (packuments)`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `network-concurrency`
 - Environment: `npm_config_network_concurrency`, `NPM_CONFIG_NETWORK_CONCURRENCY`
 - .npmrc keys: `network-concurrency`, `networkConcurrency`
@@ -1274,12 +1113,8 @@ Number of retry attempts for failed registry fetches.
 
 - Type: `int`
 - Default: `2`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_retries`, `NPM_CONFIG_FETCH_RETRIES`
 - .npmrc keys: `fetch-retries`, `fetchRetries`
-- Workspace YAML keys: none
 
 Number of *additional* attempts the registry client makes after a
 transient failure (5xx / 429 / connection error). `2` means up to 3
@@ -1297,12 +1132,8 @@ Exponential backoff factor for fetch retries.
 
 - Type: `int`
 - Default: `10`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_retry_factor`, `NPM_CONFIG_FETCH_RETRY_FACTOR`
 - .npmrc keys: `fetch-retry-factor`, `fetchRetryFactor`
-- Workspace YAML keys: none
 
 Multiplier used between retry attempts. Attempt `n` waits
 `min(fetchRetryMintimeout * fetchRetryFactor ^ (n-1), fetchRetryMaxtimeout)`
@@ -1315,12 +1146,8 @@ Minimum retry timeout in milliseconds.
 
 - Type: `int`
 - Default: `10000`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_retry_mintimeout`, `NPM_CONFIG_FETCH_RETRY_MINTIMEOUT`
 - .npmrc keys: `fetch-retry-mintimeout`, `fetchRetryMintimeout`
-- Workspace YAML keys: none
 
 Lower bound on the computed retry backoff. See `fetchRetryFactor`.
 
@@ -1330,12 +1157,8 @@ Maximum retry timeout in milliseconds.
 
 - Type: `int`
 - Default: `60000`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_retry_maxtimeout`, `NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT`
 - .npmrc keys: `fetch-retry-maxtimeout`, `fetchRetryMaxtimeout`
-- Workspace YAML keys: none
 
 Upper bound on the computed retry backoff. See `fetchRetryFactor`.
 
@@ -1345,12 +1168,8 @@ Max time (ms) to wait for an HTTP request.
 
 - Type: `int`
 - Default: `60000`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_timeout`, `NPM_CONFIG_FETCH_TIMEOUT`
 - .npmrc keys: `fetchTimeout`
-- Workspace YAML keys: none
 
 Per-request HTTP timeout, applied via `reqwest`'s single-knob
 `.timeout()` so it covers headers + body together. A request that
@@ -1363,12 +1182,8 @@ Warn if a metadata request exceeds this threshold (ms).
 
 - Type: `int`
 - Default: `10000`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_warn_timeout_ms`, `NPM_CONFIG_FETCH_WARN_TIMEOUT_MS`
 - .npmrc keys: `fetchWarnTimeoutMs`
-- Workspace YAML keys: none
 
 Observability threshold for registry *metadata* requests (packument,
 dist-tags). When a successful response takes longer than
@@ -1387,12 +1202,8 @@ Warn if download speed falls below this threshold (KiB/s).
 
 - Type: `int`
 - Default: `50`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_fetch_min_speed_ki_bps`, `NPM_CONFIG_FETCH_MIN_SPEED_KI_BPS`
 - .npmrc keys: `fetchMinSpeedKiBps`
-- Workspace YAML keys: none
 
 Observability threshold for *tarball* downloads. When a tarball
 finishes with an end-to-end average throughput below this many KiB/s,
@@ -1413,8 +1224,6 @@ Automatically install missing peer dependencies.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `auto-install-peers`
 - Environment: `npm_config_auto_install_peers`, `NPM_CONFIG_AUTO_INSTALL_PEERS`
 - .npmrc keys: `auto-install-peers`, `autoInstallPeers`
@@ -1431,9 +1240,6 @@ Deduplicate packages that have peer dependencies.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_dedupe_peer_dependents`, `NPM_CONFIG_DEDUPE_PEER_DEPENDENTS`
 - .npmrc keys: `dedupePeerDependents`
 - Workspace YAML keys: `dedupePeerDependents`
@@ -1452,9 +1258,6 @@ Use version-only identifiers for peer suffixes in the lockfile.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_dedupe_peers`, `NPM_CONFIG_DEDUPE_PEERS`
 - .npmrc keys: `dedupePeers`
 - Workspace YAML keys: `dedupePeers`
@@ -1471,9 +1274,6 @@ Fail if peer dependencies are missing or invalid.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_strict_peer_dependencies`, `NPM_CONFIG_STRICT_PEER_DEPENDENCIES`
 - .npmrc keys: `strict-peer-dependencies`, `strictPeerDependencies`
 - Workspace YAML keys: `strictPeerDependencies`
@@ -1492,9 +1292,6 @@ Use root workspace dependencies for peer resolution.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_resolve_peers_from_workspace_root`, `NPM_CONFIG_RESOLVE_PEERS_FROM_WORKSPACE_ROOT`
 - .npmrc keys: `resolvePeersFromWorkspaceRoot`
 - Workspace YAML keys: `resolvePeersFromWorkspaceRoot`
@@ -1512,9 +1309,6 @@ Suppress warnings for specific missing peer dependencies.
 
 - Type: `list<string>`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_peer_dependency_rules_ignore_missing`, `NPM_CONFIG_PEER_DEPENDENCY_RULES_IGNORE_MISSING`
 - .npmrc keys: `peerDependencyRules.ignoreMissing`
 - Workspace YAML keys: `peerDependencyRules.ignoreMissing`
@@ -1533,9 +1327,6 @@ Override the accepted semver range for specific peer dependencies.
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_peer_dependency_rules_allowed_versions`, `NPM_CONFIG_PEER_DEPENDENCY_RULES_ALLOWED_VERSIONS`
 - .npmrc keys: `peerDependencyRules.allowedVersions`
 - Workspace YAML keys: `peerDependencyRules.allowedVersions`
@@ -1555,9 +1346,6 @@ Allow any peer version to resolve, bypassing semver checks.
 
 - Type: `list<string>`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_peer_dependency_rules_allow_any`, `NPM_CONFIG_PEER_DEPENDENCY_RULES_ALLOW_ANY`
 - .npmrc keys: `peerDependencyRules.allowAny`
 - Workspace YAML keys: `peerDependencyRules.allowAny`
@@ -1577,12 +1365,9 @@ Control color output in aube's CLI.
 
 - Type: `"auto" | "always" | "never"`
 - Default: `"auto"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `color`, `no-color`
 - Environment: `npm_config_color`, `NPM_CONFIG_COLOR`
 - .npmrc keys: `color`
-- Workspace YAML keys: none
 
 `--color` / `--no-color`, `color=always|never|auto` in `.npmrc`, and `NPM_CONFIG_COLOR` all resolve before output initializes. The resolved choice is translated into `FORCE_COLOR` / `CLICOLOR_FORCE` / `NO_COLOR` so aube, diagnostics, progress rendering, and child processes agree.
 
@@ -1592,12 +1377,9 @@ Minimum log level to display.
 
 - Type: `"debug" | "info" | "warn" | "error" | "silent"`
 - Default: `"warn"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `loglevel`, `verbose`, `v`, `silent`
 - Environment: `npm_config_loglevel`, `NPM_CONFIG_LOGLEVEL`
 - .npmrc keys: `loglevel`
-- Workspace YAML keys: none
 
 Controls aube's tracing filter. `-v` / `--verbose` is a shortcut for `debug`; `--silent`, `--reporter=silent`, and `loglevel=silent` suppress aube's own non-error stderr output. Also readable from `.npmrc` `loglevel`. CLI flags override `.npmrc`.
 
@@ -1607,12 +1389,8 @@ Opt into experimental CLI features.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_use_beta_cli`, `NPM_CONFIG_USE_BETA_CLI`
 - .npmrc keys: `useBetaCli`
-- Workspace YAML keys: none
 
 Accepted from env and `.npmrc` for pnpm parity. aube currently has no beta-gated commands, so the setting is a no-op after validation.
 
@@ -1622,12 +1400,8 @@ Install on all workspace packages by default.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_recursive_install`, `NPM_CONFIG_RECURSIVE_INSTALL`
 - .npmrc keys: `recursiveInstall`
-- Workspace YAML keys: none
 
 When true, workspace installs resolve and link all importers by default. Set to false to opt out of implicit workspace-wide install behavior; explicit `--filter` / `--recursive` still wins.
 
@@ -1637,12 +1411,8 @@ Fail if a package is incompatible with the current Node version.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_engine_strict`, `NPM_CONFIG_ENGINE_STRICT`
 - .npmrc keys: `engine-strict`, `engineStrict`
-- Workspace YAML keys: none
 
 When on, an `engines.node` mismatch on the root project or any dependency fails the install. When off, mismatches are warnings only.
 
@@ -1652,12 +1422,8 @@ Path to the npm binary aube should shell out to when needed.
 
 - Type: `path`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_npm_path`, `NPM_CONFIG_NPM_PATH`
 - .npmrc keys: `npmPath`
-- Workspace YAML keys: none
 
 Used for npm-only compatibility commands (`owner`, `pkg`, `search`, `set-script`, `token`, `whoami`) when configured. Without it, aube keeps the explicit `use npm` error.
 
@@ -1667,12 +1433,8 @@ Enforce the `packageManager` field in package.json.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_package_manager_strict`, `NPM_CONFIG_PACKAGE_MANAGER_STRICT`
 - .npmrc keys: `packageManagerStrict`
-- Workspace YAML keys: none
 
 When a project declares `packageManager`, aube accepts `aube` and `pnpm` package-manager names and rejects npm/yarn/bun/etc. Set to false to skip this guard.
 
@@ -1682,12 +1444,8 @@ Enforce the exact `packageManager` version from package.json.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_package_manager_strict_version`, `NPM_CONFIG_PACKAGE_MANAGER_STRICT_VERSION`
 - .npmrc keys: `packageManagerStrictVersion`
-- Workspace YAML keys: none
 
 When enabled, `packageManager: "aube@<version>"` must match the running aube version exactly. `pnpm@...` cannot be exact-version satisfied by aube and fails with a clear diagnostic.
 
@@ -1697,12 +1455,8 @@ Auto-download the specified pnpm version when mismatched.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_manage_package_manager_versions`, `NPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS`
 - .npmrc keys: `managePackageManagerVersions`
-- Workspace YAML keys: none
 
 Accepted for pnpm parity. aube does not download or re-exec other package-manager versions; when exact version enforcement is enabled, mismatches are reported instead.
 
@@ -1714,8 +1468,6 @@ Skip all lifecycle scripts in package.json.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `ignore-scripts`
 - Environment: `npm_config_ignore_scripts`, `NPM_CONFIG_IGNORE_SCRIPTS`
 - .npmrc keys: `ignore-scripts`, `ignoreScripts`
@@ -1737,9 +1489,6 @@ Maximum number of concurrent script-executing child processes.
 
 - Type: `int`
 - Default: `5`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_child_concurrency`, `NPM_CONFIG_CHILD_CONCURRENCY`
 - .npmrc keys: `child-concurrency`, `childConcurrency`
 - Workspace YAML keys: `childConcurrency`
@@ -1761,8 +1510,6 @@ Cache the results of install hooks.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `side-effects-cache`
 - Environment: `npm_config_side_effects_cache`, `NPM_CONFIG_SIDE_EFFECTS_CACHE`
 - .npmrc keys: `side-effects-cache`, `sideEffectsCache`
@@ -1787,12 +1534,8 @@ Only read from the side-effects cache; don't write.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_side_effects_cache_readonly`, `NPM_CONFIG_SIDE_EFFECTS_CACHE_READONLY`
 - .npmrc keys: `sideEffectsCacheReadonly`
-- Workspace YAML keys: none
 
 When true, aube may restore allowlisted dependency build output from the
 side-effects cache but will not write new cache entries after scripts run.
@@ -1803,12 +1546,8 @@ Drop to a non-root user when running scripts as root.
 
 - Type: `bool`
 - Default: `false (as root), true (otherwise)`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_unsafe_perm`, `NPM_CONFIG_UNSAFE_PERM`
 - .npmrc keys: `unsafePerm`
-- Workspace YAML keys: none
 
 aube exports the resolved value to lifecycle and `run` scripts as
 `npm_config_unsafe_perm`, matching the environment surface npm-style
@@ -1820,12 +1559,8 @@ Options passed to Node.js via NODE_OPTIONS.
 
 - Type: `string`
 - Default: `null`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `NODE_OPTIONS`, `npm_config_node_options`, `NPM_CONFIG_NODE_OPTIONS`
 - .npmrc keys: `nodeOptions`
-- Workspace YAML keys: none
 
 When set in `.npmrc`, aube exports the value as `NODE_OPTIONS` for
 lifecycle scripts and `aube run` scripts. An existing `NODE_OPTIONS`
@@ -1837,12 +1572,8 @@ Check dependencies before running scripts.
 
 - Type: `"install" | "warn" | "error" | "prompt" | false`
 - Default: `"install"`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_verify_deps_before_run`, `NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN`
 - .npmrc keys: `verifyDepsBeforeRun`
-- Workspace YAML keys: none
 
 Controls `run`, lifecycle shortcuts, `exec`, and implicit script commands.
 `install` preserves aube's auto-install behavior, `warn` reports stale
@@ -1855,12 +1586,8 @@ Exit with an error if dependencies have unreviewed build scripts.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_strict_dep_builds`, `NPM_CONFIG_STRICT_DEP_BUILDS`
 - .npmrc keys: `strictDepBuilds`
-- Workspace YAML keys: none
 
 aube never runs dependency lifecycle scripts unless the package is
 listed in `allowBuilds` or `--dangerously-allow-all-builds` is set.
@@ -1876,9 +1603,6 @@ Explicitly allow or disallow script execution per package.
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_allow_builds`, `NPM_CONFIG_ALLOW_BUILDS`
 - .npmrc keys: `allowBuilds`
 - Workspace YAML keys: `allowBuilds`
@@ -1900,12 +1624,9 @@ Allow all dependency build scripts automatically.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `dangerously-allow-all-builds`
 - Environment: `npm_config_dangerously_allow_all_builds`, `NPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS`
 - .npmrc keys: `dangerouslyAllowAllBuilds`
-- Workspace YAML keys: none
 
 Opt-out escape hatch for the `allowBuilds` allowlist: when set, every
 dependency's `preinstall` / `install` / `postinstall` / `prepare`
@@ -1925,12 +1646,8 @@ Node.js version aube reports when evaluating `engines` checks.
 
 - Type: `string`
 - Default: `` output of `node -v` with the leading `v` stripped ``
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_node_version`, `NPM_CONFIG_NODE_VERSION`
 - .npmrc keys: `node-version`, `nodeVersion`
-- Workspace YAML keys: none
 
 Paired with `engineStrict`. Set this in .npmrc to pin the Node version engines checks validate against, rather than probing `node --version` at install time.
 
@@ -1940,12 +1657,8 @@ Custom Node.js download mirror URLs.
 
 - Type: `object`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_node_download_mirrors`, `NPM_CONFIG_NODE_DOWNLOAD_MIRRORS`
 - .npmrc keys: `nodeDownloadMirrors`
-- Workspace YAML keys: none
 
 Accepted for pnpm config parity. aube does not download Node.js itself,
 so the parsed mirror map is preserved for config introspection but has
@@ -1959,12 +1672,8 @@ Version prefix used when installing a package.
 
 - Type: `"^" | "~" | ""`
 - Default: `"^"`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_save_prefix`, `NPM_CONFIG_SAVE_PREFIX`
 - .npmrc keys: `save-prefix`, `savePrefix`
-- Workspace YAML keys: none
 
 Resolved from `.npmrc`. `--save-exact` overrides to empty prefix.
 
@@ -1974,12 +1683,8 @@ Default dist-tag used by `aube add` without a version.
 
 - Type: `string`
 - Default: `"latest"`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_tag`, `NPM_CONFIG_TAG`
 - .npmrc keys: `tag`
-- Workspace YAML keys: none
 
 Resolved from `.npmrc`. Used by `aube add` when no version or dist-tag is specified.
 
@@ -1989,12 +1694,8 @@ Directory where globally installed packages live.
 
 - Type: `path`
 - Default: `platform-specific`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_global_dir`, `NPM_CONFIG_GLOBAL_DIR`
 - .npmrc keys: `globalDir`
-- Workspace YAML keys: none
 
 Overrides the directory where globally installed packages live. Falls back to `AUBE_HOME` / `PNPM_HOME` / platform default.
 
@@ -2004,12 +1705,8 @@ Directory where global binaries are symlinked.
 
 - Type: `path`
 - Default: `platform-specific`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_global_bin_dir`, `NPM_CONFIG_GLOBAL_BIN_DIR`
 - .npmrc keys: `globalBinDir`
-- Workspace YAML keys: none
 
 Overrides the directory where global binaries are symlinked. Independent of `globalDir`; falls back to `AUBE_HOME` / `PNPM_HOME` / platform default.
 
@@ -2019,12 +1716,8 @@ Path to an additional .npmrc file consulted for registry authentication tokens.
 
 - Type: `path`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_npmrc_auth_file`, `NPM_CONFIG_NPMRC_AUTH_FILE`
 - .npmrc keys: `npmrc-auth-file`, `npmrcAuthFile`
-- Workspace YAML keys: none
 
 Points at an extra `.npmrc`-formatted file that aube reads *after*
 the user and project `.npmrc` files when resolving registry auth.
@@ -2051,12 +1744,8 @@ Directory for aube install-state files.
 
 - Type: `path`
 - Default: `.aube/.state`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_state_dir`, `NPM_CONFIG_STATE_DIR`
 - .npmrc keys: `stateDir`
-- Workspace YAML keys: none
 
 Overrides the directory for install state tracking. Defaults to `.aube/.state` relative to the project root.
 
@@ -2066,12 +1755,8 @@ Directory for package metadata and dlx cache.
 
 - Type: `path`
 - Default: `~/.cache/aube`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_cache_dir`, `NPM_CONFIG_CACHE_DIR`
 - .npmrc keys: `cache-dir`, `cacheDir`
-- Workspace YAML keys: none
 
 Overrides the cache directory. `XDG_CACHE_HOME` is honored by the platform default (`aube_store::dirs::cache_dir`) which appends `/aube`; this setting takes a complete path.
 
@@ -2081,12 +1766,8 @@ Write all output to stderr instead of stdout.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_use_stderr`, `NPM_CONFIG_USE_STDERR`
 - .npmrc keys: `useStderr`
-- Workspace YAML keys: none
 
 Redirects stdout to stderr for the process lifetime. Resolved from `.npmrc` or the `--use-stderr` CLI flag.
 
@@ -2096,12 +1777,8 @@ Show an update notification when a newer aube is available.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_update_notifier`, `NPM_CONFIG_UPDATE_NOTIFIER`
 - .npmrc keys: `updateNotifier`
-- Workspace YAML keys: none
 
 After a successful `install`, `add`, or `update`, aube fetches
 `https://aube.en.dev/VERSION` and prints a one-line notice if the
@@ -2120,12 +1797,8 @@ Create symlinks instead of shims for `.bin` entries.
 
 - Type: `bool`
 - Default: `true (POSIX hoisted)`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_prefer_symlinked_executables`, `NPM_CONFIG_PREFER_SYMLINKED_EXECUTABLES`
 - .npmrc keys: `preferSymlinkedExecutables`
-- Workspace YAML keys: none
 
 POSIX only. Default (unset or `true`) creates a plain symlink from
 `node_modules/.bin/<name>` straight to the package's executable file —
@@ -2142,12 +1815,8 @@ Disable pnpm's automatic dependency patching database.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_ignore_compatibility_db`, `NPM_CONFIG_IGNORE_COMPATIBILITY_DB`
 - .npmrc keys: `ignoreCompatibilityDb`
-- Workspace YAML keys: none
 
 Accepted for pnpm config parity. pnpm ships a built-in compatibility
 database of auto-patches for known-broken packages; aube has no such
@@ -2160,12 +1829,9 @@ Dependency version resolution strategy.
 
 - Type: `"highest" | "time-based" | "lowest-direct"`
 - Default: `"highest"`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `resolution-mode`
 - Environment: `npm_config_resolution_mode`, `NPM_CONFIG_RESOLUTION_MODE`
 - .npmrc keys: `resolution-mode`, `resolutionMode`
-- Workspace YAML keys: none
 
 Controls how aube chooses versions during resolution. `highest` picks
 the newest satisfying version. `time-based` filters candidates through
@@ -2179,12 +1845,8 @@ Whether the configured registry returns a `time` field in metadata.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_registry_supports_time_field`, `NPM_CONFIG_REGISTRY_SUPPORTS_TIME_FIELD`
 - .npmrc keys: `registry-supports-time-field`, `registrySupportsTimeField`
-- Workspace YAML keys: none
 
 When `false` (the default, matching pnpm and npmjs.org's behavior),
 aube fetches the full (non-corgi) packument to read the `time:` map
@@ -2209,12 +1871,8 @@ Set NODE_PATH in command shims.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_extend_node_path`, `NPM_CONFIG_EXTEND_NODE_PATH`
 - .npmrc keys: `extendNodePath`
-- Workspace YAML keys: none
 
 When `true` (default), aube-generated `.bin` shims export
 `NODE_PATH="$basedir/.."` so the shimmed binary can resolve modules
@@ -2231,9 +1889,6 @@ Copy all files when deploying a workspace package.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_deploy_all_files`, `NPM_CONFIG_DEPLOY_ALL_FILES`
 - .npmrc keys: `deploy-all-files`, `deployAllFiles`
 - Workspace YAML keys: `deployAllFiles`
@@ -2254,9 +1909,6 @@ Skip symlinking workspace-root dependencies if identical across packages.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_dedupe_direct_deps`, `NPM_CONFIG_DEDUPE_DIRECT_DEPS`
 - .npmrc keys: `dedupe-direct-deps`, `dedupeDirectDeps`
 - Workspace YAML keys: `dedupeDirectDeps`
@@ -2277,12 +1929,8 @@ Fast-path check before running a full install.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_optimistic_repeat_install`, `NPM_CONFIG_OPTIMISTIC_REPEAT_INSTALL`
 - .npmrc keys: `optimisticRepeatInstall`
-- Workspace YAML keys: none
 
 When `true` (default), `aube run` / `aube exec` / `aube start` /
 `aube test` / `aube restart` consult `.aube/.state/install-state.json`
@@ -2299,12 +1947,8 @@ Scripts that must be present in every workspace project.
 
 - Type: `list<string>`
 - Default: `undefined`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_required_scripts`, `NPM_CONFIG_REQUIRED_SCRIPTS`
 - .npmrc keys: `requiredScripts`
-- Workspace YAML keys: none
 
 During install, aube verifies that the root package and every discovered
 workspace package define each required script in `package.json`.
@@ -2315,12 +1959,8 @@ Run pre/post scripts automatically when a named script is invoked.
 
 - Type: `bool`
 - Default: `true`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_enable_pre_post_scripts`, `NPM_CONFIG_ENABLE_PRE_POST_SCRIPTS`
 - .npmrc keys: `enablePrePostScripts`
-- Workspace YAML keys: none
 
 Controls whether `aube run build` also runs `prebuild` before `build`
 and `postbuild` after it when those scripts exist.
@@ -2331,12 +1971,8 @@ Shell used to invoke package scripts.
 
 - Type: `path`
 - Default: `null (uses /bin/sh on Unix, cmd on Windows)`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_script_shell`, `NPM_CONFIG_SCRIPT_SHELL`
 - .npmrc keys: `scriptShell`
-- Workspace YAML keys: none
 
 Overrides the shell executable used for lifecycle and `aube run`
 scripts. On Unix, aube invokes the configured shell with `-c`.
@@ -2347,12 +1983,8 @@ Use a JavaScript bash-like shell to run scripts cross-platform.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_shell_emulator`, `NPM_CONFIG_SHELL_EMULATOR`
 - .npmrc keys: `shellEmulator`
-- Workspace YAML keys: none
 
 Accepted for pnpm config parity. aube does not embed pnpm's JavaScript
 shell emulator, but it exports `npm_config_shell_emulator=true` for
@@ -2364,12 +1996,8 @@ How catalog references in package.json are handled by `add`.
 
 - Type: `"manual" | "strict" | "prefer"`
 - Default: `"manual"`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_catalog_mode`, `NPM_CONFIG_CATALOG_MODE`
 - .npmrc keys: `catalogMode`
-- Workspace YAML keys: none
 
 `manual` (the default) writes whatever range `aube add` resolved, even
 when the package is declared in the default catalog. `prefer` rewrites
@@ -2392,12 +2020,8 @@ Explicitly mark the environment as CI.
 
 - Type: `bool`
 - Default: `auto-detected`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `CI`, `npm_config_ci`, `NPM_CONFIG_CI`
 - .npmrc keys: `ci`
-- Workspace YAML keys: none
 
 aube detects CI via `env::var("CI").is_ok()` in two places:
 `aube-linker` (disables the global virtual store) and
@@ -2413,9 +2037,6 @@ Remove unused catalog entries during install.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `npm_config_cleanup_unused_catalogs`, `NPM_CONFIG_CLEANUP_UNUSED_CATALOGS`
 - .npmrc keys: `cleanupUnusedCatalogs`
 - Workspace YAML keys: `cleanupUnusedCatalogs`
@@ -2436,9 +2057,6 @@ Maximum concurrent package materialization/linking tasks.
 
 - Type: `int`
 - Default: `platform-specific`
-- Status: implemented
-- Added to registry: `2026-04-17`
-- CLI flags: none
 - Environment: `AUBE_LINK_CONCURRENCY`, `npm_config_link_concurrency`, `NPM_CONFIG_LINK_CONCURRENCY`
 - .npmrc keys: `link-concurrency`, `linkConcurrency`
 - Workspace YAML keys: `linkConcurrency`
@@ -2463,9 +2081,6 @@ Disable aube's project-level advisory lock.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
-- CLI flags: none
 - Environment: `AUBE_NO_LOCK`, `npm_config_aube_no_lock`, `NPM_CONFIG_AUBE_NO_LOCK`
 - .npmrc keys: `aubeNoLock`, `aube-no-lock`
 - Workspace YAML keys: `aubeNoLock`
@@ -2498,8 +2113,6 @@ Skip the auto-install staleness check in `aube run` / `aube exec`.
 
 - Type: `bool`
 - Default: `false`
-- Status: implemented
-- Added to registry: `2026-04-12`
 - CLI flags: `no-install`
 - Environment: `AUBE_NO_AUTO_INSTALL`, `npm_config_aube_no_auto_install`, `NPM_CONFIG_AUBE_NO_AUTO_INSTALL`
 - .npmrc keys: `aubeNoAutoInstall`, `aube-no-auto-install`
