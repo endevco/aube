@@ -67,6 +67,5 @@ jobs:
         run: npm install -g npm@latest
       - name: Publish @endevco/aube and platform packages
         env:
-          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: node npm/scripts/publish.mjs

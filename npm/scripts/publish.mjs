@@ -2,8 +2,8 @@
 // Build and publish the @endevco/aube npm packages for a given tag.
 //
 // For each of the 6 release targets this:
-//   1. downloads `aube-<tag>-<target>.{tar.gz,zip}` from the GitHub
-//      release (via `gh release download`),
+//   1. downloads `aube-<tag>-<target>.{tar.gz,zip}` directly from the
+//      public GitHub release asset URL (no API, no auth token),
 //   2. extracts the three binaries (aube, aubr, aubx) into a staging
 //      dir,
 //   3. generates a platform-scoped package.json and publishes it as
@@ -14,15 +14,20 @@
 //
 // Env:
 //   TAG           — release tag, with leading `v` (e.g. v1.0.0-beta.1)
+//   REPO          — owner/repo for the release assets (optional;
+//                   defaults to $GITHUB_REPOSITORY or `endevco/aube`)
 //   NPM_TAG       — npm dist-tag (optional; defaults to `next` for
 //                   pre-releases, `latest` otherwise)
 //   DRY_RUN=1     — stage + `npm pack` but don't publish
 //   SKIP_ROOT=1   — publish only the platform packages
 //   SKIP_PLATFORMS=1 — publish only the root package
 
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import { mkdirSync, readFileSync, writeFileSync, cpSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -62,11 +67,17 @@ function defaultNpmTag(version) {
     return version.includes('-') ? 'next' : 'latest';
 }
 
-function downloadArchive(tag, target, outDir) {
+async function downloadArchive(repo, tag, target, outDir) {
     const archiveName = `aube-${tag}-${target.triple}${target.ext}`;
     const archivePath = resolve(outDir, archiveName);
     mkdirSync(outDir, { recursive: true });
-    run('gh', ['release', 'download', tag, '--pattern', archiveName, '--dir', outDir, '--clobber']);
+    // Public release assets redirect from /releases/download/<tag>/<asset>
+    // to a signed CDN URL — no auth, no API, fetch follows the redirect.
+    const url = `https://github.com/${repo}/releases/download/${tag}/${archiveName}`;
+    console.log(`[publish] downloading ${url}`);
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`download ${url} failed: ${res.status} ${res.statusText}`);
+    await pipeline(Readable.fromWeb(res.body), createWriteStream(archivePath));
     return archivePath;
 }
 
@@ -89,7 +100,7 @@ function extractArchive(archivePath, target, destDir) {
     }
 }
 
-function buildPlatformPackage(tag, version, target) {
+async function buildPlatformPackage(repo, tag, version, target) {
     const pkgName = `@endevco/aube-${target.os}-${target.cpu}`;
     const stageDir = resolve(stageRoot, `${target.os}-${target.cpu}`);
     rmSync(stageDir, { recursive: true, force: true });
@@ -97,7 +108,7 @@ function buildPlatformPackage(tag, version, target) {
     mkdirSync(binDir, { recursive: true });
 
     const dlDir = resolve(stageRoot, '_downloads');
-    const archivePath = downloadArchive(tag, target, dlDir);
+    const archivePath = await downloadArchive(repo, tag, target, dlDir);
     const extractDir = resolve(stageRoot, `_extract-${target.os}-${target.cpu}`);
     rmSync(extractDir, { recursive: true, force: true });
     extractArchive(archivePath, target, extractDir);
@@ -138,20 +149,21 @@ function npmPublish(stageDir, npmTag, dryRun) {
     run('npm', args, { cwd: stageDir });
 }
 
-function main() {
+async function main() {
     const tag = assertEnv('TAG');
     const version = versionFromTag(tag);
+    const repo = process.env.REPO || process.env.GITHUB_REPOSITORY || 'endevco/aube';
     const npmTag = process.env.NPM_TAG || defaultNpmTag(version);
     const dryRun = process.env.DRY_RUN === '1';
     const skipPlatforms = process.env.SKIP_PLATFORMS === '1';
     const skipRoot = process.env.SKIP_ROOT === '1';
 
-    console.log(`[publish] tag=${tag} version=${version} npmTag=${npmTag} dryRun=${dryRun}`);
+    console.log(`[publish] repo=${repo} tag=${tag} version=${version} npmTag=${npmTag} dryRun=${dryRun}`);
 
     if (!skipPlatforms) {
         for (const target of TARGETS) {
             console.log(`\n[publish] --- ${target.os}-${target.cpu} (${target.triple}) ---`);
-            const { pkgName, stageDir } = buildPlatformPackage(tag, version, target);
+            const { pkgName, stageDir } = await buildPlatformPackage(repo, tag, version, target);
             console.log(`[publish] staged ${pkgName} at ${stageDir}`);
             npmPublish(stageDir, npmTag, dryRun);
         }
@@ -170,4 +182,7 @@ function main() {
     }
 }
 
-main();
+main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+});
