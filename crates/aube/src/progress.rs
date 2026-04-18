@@ -311,10 +311,22 @@ impl InstallProgress {
         }
     }
 
-    /// Emit the post-install summary line ("installed N packages in Xs",
-    /// in green) after the progress display has been torn down. TTY-only:
-    /// CI mode already prints a framed `✓` summary from the heartbeat's
-    /// final tick, and doubling it up would just be noise.
+    /// Emit the post-install summary line after the progress display has
+    /// been torn down. Two shapes:
+    ///
+    /// * `linked > 0` — `aube VERSION by en.dev · ✓ installed N packages
+    ///   in Xs`, TTY-only (CI mode prints its own framed `✓` summary
+    ///   from the heartbeat's final tick).
+    /// * `linked == 0 && top_level_linked == 0` — `Already up to date`
+    ///   (matches pnpm), printed in both TTY and CI modes so cache-only
+    ///   runs confirm nothing needed doing. Stays silent in reporter
+    ///   modes where `prog_ref` is `None`.
+    ///
+    /// The `top_level_linked` guard distinguishes a true no-op from the
+    /// `rm -rf node_modules && aube install` case where the global store
+    /// was warm (so `packages_linked` is 0) but every top-level symlink
+    /// had to be recreated — that's not "up to date" from the user's
+    /// perspective.
     ///
     /// **Safety:** must be called *after* [`InstallProgress::finish`]. The
     /// write goes straight to stderr without routing through
@@ -322,12 +334,38 @@ impl InstallProgress {
     /// `finish()` has synchronously stopped the render loop via
     /// `stop_clear()`. A new call site placed before `finish()` would
     /// silently race the animated display.
-    ///
-    /// A `linked` count of zero means no new packages were materialized
-    /// (cache-only run, or `--lockfile-only` short-circuit), so we stay
-    /// silent — matches how pnpm suppresses the "added" line when it's
-    /// zero.
-    pub fn print_tty_summary(&self, linked: usize, elapsed: Duration) {
+    pub fn print_install_summary(
+        &self,
+        linked: usize,
+        top_level_linked: usize,
+        total_packages: usize,
+        elapsed: Duration,
+    ) {
+        if linked == 0 && top_level_linked == 0 {
+            let word = if total_packages == 1 {
+                "package"
+            } else {
+                "packages"
+            };
+            let msg = if total_packages == 0 {
+                "Already up to date".to_string()
+            } else {
+                format!("Already up to date ({total_packages} {word})")
+            };
+            let line = match &self.mode {
+                Mode::Tty { .. } => format!(
+                    "{} {} {} {} {}",
+                    style::emagenta("aube").bold(),
+                    style::edim(env!("CARGO_PKG_VERSION")),
+                    style::edim("by en.dev"),
+                    style::edim("·"),
+                    style::egreen(msg).bold(),
+                ),
+                Mode::Ci(_) => msg,
+            };
+            let _ = writeln!(std::io::stderr(), "{line}");
+            return;
+        }
         if linked == 0 {
             return;
         }

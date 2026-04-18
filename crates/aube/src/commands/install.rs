@@ -4413,13 +4413,21 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         return Err(miette!("no packages were linked — something went wrong"));
     }
 
-    // Final green summary — TTY only. CI mode already printed its own
-    // framed `✓` line from the heartbeat's stop tick, and text /
-    // silent / ndjson modes have no progress UI at all (prog_ref is
-    // None). Emitted after every post-link lifecycle script has
-    // finished so the line lands as the very last thing on stderr.
+    // Final summary. When linking did real work this is the green
+    // `✓ installed N packages in Xs` line (TTY only; CI mode prints
+    // its own framed `✓` from the heartbeat's stop tick). When
+    // nothing needed linking we emit `Already up to date` in both TTY
+    // and CI modes so cache-only runs still confirm the no-op — text /
+    // silent / ndjson modes stay quiet because prog_ref is None. Emitted
+    // after every post-link lifecycle script has finished so the line
+    // lands as the very last thing on stderr.
     if let Some(p) = prog_ref {
-        p.print_tty_summary(stats.packages_linked, elapsed);
+        p.print_install_summary(
+            stats.packages_linked,
+            stats.top_level_linked,
+            graph_for_link.packages.len(),
+            elapsed,
+        );
     }
 
     Ok(())

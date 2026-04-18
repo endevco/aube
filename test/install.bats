@@ -17,6 +17,32 @@ teardown() {
 	assert_dir_exists node_modules/.aube
 }
 
+@test "aube install prints 'Already up to date' on a re-run no-op" {
+	# Matches pnpm's confirmation message when there's nothing to do.
+	# The first install does real work (no output assertion — content
+	# varies by cache state); the second run must be a true no-op so
+	# we get the concise "Already up to date" line.
+	_setup_basic_fixture
+	run aube install
+	assert_success
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+}
+
+@test "aube install does not print 'Already up to date' when it does real work" {
+	# Guard against regression: a fresh install (or one that had to
+	# recreate node_modules) must not claim the tree was already up
+	# to date, even when the global store is warm.
+	_setup_basic_fixture
+	run aube install
+	assert_success
+	rm -rf node_modules
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+}
+
 @test "aube install --dev installs only devDependencies" {
 	cat >package.json <<'JSON'
 {
