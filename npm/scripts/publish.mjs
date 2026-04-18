@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build and publish the @endevco/aube npm packages for a given tag.
 //
-// For each of the 6 release targets this:
+// For each of the 5 release targets this:
 //   1. downloads `aube-<tag>-<target>.{tar.gz,zip}` directly from the
 //      public GitHub release asset URL (no API, no auth token),
 //   2. extracts the three binaries (aube, aubr, aubx) into a staging
@@ -36,7 +36,6 @@ const stageRoot = resolve(npmDir, '.stage');
 
 const TARGETS = [
     { triple: 'aarch64-apple-darwin',       os: 'darwin', cpu: 'arm64', ext: '.tar.gz', exe: '' },
-    { triple: 'x86_64-apple-darwin',        os: 'darwin', cpu: 'x64',   ext: '.tar.gz', exe: '' },
     { triple: 'x86_64-unknown-linux-gnu',   os: 'linux',  cpu: 'x64',   ext: '.tar.gz', exe: '' },
     { triple: 'aarch64-unknown-linux-gnu',  os: 'linux',  cpu: 'arm64', ext: '.tar.gz', exe: '' },
     { triple: 'x86_64-pc-windows-msvc',     os: 'win32',  cpu: 'x64',   ext: '.zip',    exe: '.exe' },
