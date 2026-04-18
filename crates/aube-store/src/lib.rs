@@ -706,7 +706,12 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     hasher.update(b"\0");
     hasher.update(commit.as_bytes());
     let digest = hasher.finalize();
-    let key: String = digest.as_bytes().iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let key: String = digest
+        .as_bytes()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let commit_short = commit.get(..commit.len().min(12)).unwrap_or(commit);
     let target = std::env::temp_dir().join(format!("aube-git-{key}-{commit_short}"));
 
