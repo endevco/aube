@@ -39,9 +39,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             build-tool: cargo
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            build-tool: cargo
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             build-tool: cross
