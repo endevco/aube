@@ -49,6 +49,23 @@ cargo fmt --check              # Check formatting
 ./test/bats/bin/bats test/install.bats  # Run a single test file
 ```
 
+## Commit Messages
+
+Match the existing history: short, imperative subjects with an optional
+lowercase area prefix.
+
+- Preferred shape: `area: do the thing`
+- Use a scoped area when it adds useful context, e.g.
+  `docs(installation): add cargo install aube` or
+  `ci(release-plz): grant contents:write to upload-assets caller`.
+- Good recent examples: `cli: add aubr/aubx multicall shims for run and dlx`,
+  `publish: ship aube on npm as @endevco/aube`, and
+  `release: use cross + rustls-tls for linux targets`.
+- Do not prefix commits or PR titles with `[codex]`, agent names, or tool
+  branding.
+- Do not include PR numbers in local commit messages; GitHub may add those
+  when squash-merging.
+
 ## Architecture
 
 Cargo workspace with 9 crates under `crates/`. The binary entry point is `crates/aube/src/main.rs`.

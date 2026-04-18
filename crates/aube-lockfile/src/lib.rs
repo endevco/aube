@@ -409,6 +409,11 @@ pub struct LockedPackage {
     pub integrity: Option<String>,
     /// Dependencies of this package (name -> dep_path tail, see struct docs)
     pub dependencies: BTreeMap<String, String>,
+    /// Optional dependency edges for this package. Active optional edges are
+    /// also mirrored in `dependencies` so graph walks and the linker continue
+    /// to see them; this separate map lets platform filtering prune optional
+    /// edges without touching regular dependencies.
+    pub optional_dependencies: BTreeMap<String, String>,
     /// Peer dependency ranges as *declared* by the package (from its
     /// package.json / packument). These are the constraints; the resolved
     /// versions live in `dependencies` after the peer-context pass runs.

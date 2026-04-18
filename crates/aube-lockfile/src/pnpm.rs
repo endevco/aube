@@ -141,6 +141,12 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             {
                 local_pkg.dependencies = deps;
             }
+            if let Some(snap) = raw.snapshots.get(&canonical)
+                && let Some(opt_deps) = snap.optional_dependencies.clone()
+            {
+                local_pkg.dependencies.extend(opt_deps.clone());
+                local_pkg.optional_dependencies = opt_deps;
+            }
             if let Some(pkg_info) = raw.packages.get(&canonical)
                 && let Some(ref res) = pkg_info.resolution
             {
@@ -246,6 +252,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             .get(&dep_path)
             .and_then(|s| s.dependencies.clone())
             .unwrap_or_default();
+        let optional_dependencies = raw
+            .snapshots
+            .get(&dep_path)
+            .and_then(|s| s.optional_dependencies.clone())
+            .unwrap_or_default();
+        let mut dependencies = dependencies;
+        dependencies.extend(optional_dependencies.clone());
 
         let bundled_dependencies = raw
             .snapshots
@@ -280,6 +293,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 version,
                 integrity,
                 dependencies,
+                optional_dependencies,
                 peer_dependencies,
                 peer_dependencies_meta,
                 dep_path,
@@ -590,10 +604,17 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         snapshots.insert(
             key,
             WritableSnapshot {
-                dependencies: if pkg.dependencies.is_empty() {
+                dependencies: {
+                    let mut deps = pkg.dependencies.clone();
+                    for name in pkg.optional_dependencies.keys() {
+                        deps.remove(name);
+                    }
+                    if deps.is_empty() { None } else { Some(deps) }
+                },
+                optional_dependencies: if pkg.optional_dependencies.is_empty() {
                     None
                 } else {
-                    Some(pkg.dependencies.clone())
+                    Some(pkg.optional_dependencies.clone())
                 },
                 bundled_dependencies: if pkg.bundled_dependencies.is_empty() {
                     None
@@ -842,6 +863,8 @@ struct WritableSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     dependencies: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    optional_dependencies: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     bundled_dependencies: Option<Vec<String>>,
 }
 
@@ -943,6 +966,8 @@ struct Resolution {
 struct RawSnapshot {
     #[serde(default)]
     dependencies: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    optional_dependencies: Option<BTreeMap<String, String>>,
     #[serde(default)]
     bundled_dependencies: Option<Vec<String>>,
 }
@@ -1092,6 +1117,92 @@ mod tests {
 
         let kind_of = graph.packages.get("kind-of@3.2.2").unwrap();
         assert_eq!(kind_of.dependencies.get("is-buffer").unwrap(), "1.1.6");
+    }
+
+    #[test]
+    fn parse_snapshot_optional_dependencies_as_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      host:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+  host@1.0.0:
+    resolution: {integrity: sha512-host}
+
+  native@1.0.0:
+    resolution: {integrity: sha512-native}
+    cpu: [arm64]
+    os: [darwin]
+
+snapshots:
+  host@1.0.0:
+    optionalDependencies:
+      native: 1.0.0
+
+  native@1.0.0: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let host = graph.packages.get("host@1.0.0").unwrap();
+        assert_eq!(host.dependencies.get("native").unwrap(), "1.0.0");
+        assert_eq!(host.optional_dependencies.get("native").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn parse_local_snapshot_optional_dependencies_as_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      local-host:
+        specifier: file:./local-host
+        version: file:./local-host
+
+packages:
+  local-host@file:./local-host:
+    resolution: {directory: ./local-host, type: directory}
+
+  native@1.0.0:
+    resolution: {integrity: sha512-native}
+    cpu: [arm64]
+    os: [darwin]
+
+snapshots:
+  local-host@file:./local-host:
+    optionalDependencies:
+      native: 1.0.0
+
+  native@1.0.0: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let local = graph
+            .packages
+            .values()
+            .find(|pkg| pkg.name == "local-host")
+            .unwrap();
+        assert_eq!(local.dependencies.get("native").unwrap(), "1.0.0");
+        assert_eq!(local.optional_dependencies.get("native").unwrap(), "1.0.0");
     }
 
     #[test]

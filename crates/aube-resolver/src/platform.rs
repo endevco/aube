@@ -146,20 +146,16 @@ pub fn is_supported(
     false
 }
 
-/// Remove root-level optional dependencies that fail the platform
-/// check or appear in the ignore list from a parsed `LockfileGraph`,
-/// then garbage-collect any packages that become unreachable from the
-/// surviving importers.
+/// Remove optional dependencies that fail the platform check or appear in the
+/// ignore list from a parsed `LockfileGraph`, then garbage-collect any packages
+/// that become unreachable from the surviving importers.
 ///
 /// Used by the install-from-lockfile path, where the resolver's inline
 /// filter never runs: the lockfile carries os/cpu/libc per package so
 /// aube can re-check on every platform without reparsing packuments.
 ///
-/// Only *root* optional edges are inspected directly. Transitive
-/// optional edges are not stripped, because the lockfile does not
-/// record per-edge optionality in a form aube currently reads. Any
-/// transitive package that becomes unreachable after root-edge pruning
-/// is removed by the GC pass.
+/// Root and transitive optional edges are inspected directly. Any package that
+/// becomes unreachable after optional-edge pruning is removed by the GC pass.
 pub fn filter_graph(
     graph: &mut aube_lockfile::LockfileGraph,
     supported: &SupportedArchitectures,
@@ -183,7 +179,36 @@ pub fn filter_graph(
         });
     }
 
-    // 2. Garbage-collect unreachable packages by walking from the
+    // 2. Drop transitive optional deps by name or platform. The pnpm parser
+    // mirrors active optional edges into `dependencies`, so remove that edge
+    // whenever the optional edge is filtered.
+    let package_keys: std::collections::HashSet<String> = graph.packages.keys().cloned().collect();
+    let mismatched_packages: std::collections::HashSet<String> = graph
+        .packages
+        .iter()
+        .filter(|(_, pkg)| is_mismatched(pkg))
+        .map(|(dep_path, _)| dep_path.clone())
+        .collect();
+    for pkg in graph.packages.values_mut() {
+        let mut removed = Vec::new();
+        pkg.optional_dependencies.retain(|name, tail| {
+            let child_key = if package_keys.contains(tail) {
+                tail.clone()
+            } else {
+                format!("{name}@{tail}")
+            };
+            let keep = !ignored.contains(name) && !mismatched_packages.contains(&child_key);
+            if !keep {
+                removed.push(name.clone());
+            }
+            keep
+        });
+        for name in removed {
+            pkg.dependencies.remove(&name);
+        }
+    }
+
+    // 3. Garbage-collect unreachable packages by walking from the
     //    surviving roots.
     let mut reachable: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut stack: Vec<String> = Vec::new();
@@ -260,6 +285,74 @@ mod tests {
         };
         // A linux-only package passes regardless of host.
         assert!(is_supported(&s(&["linux"]), &[], &[], &sup));
+    }
+
+    #[test]
+    fn filter_graph_prunes_transitive_optional_platform_mismatches() {
+        let supported = SupportedArchitectures {
+            os: s(&["darwin"]),
+            cpu: s(&["arm64"]),
+            libc: vec![],
+        };
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph.importers.insert(
+            ".".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "host".to_string(),
+                dep_path: "host@1.0.0".to_string(),
+                dep_type: aube_lockfile::DepType::Production,
+                specifier: Some("1.0.0".to_string()),
+            }],
+        );
+        graph.packages.insert(
+            "host@1.0.0".to_string(),
+            aube_lockfile::LockedPackage {
+                name: "host".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "host@1.0.0".to_string(),
+                dependencies: [
+                    ("native-darwin".to_string(), "1.0.0".to_string()),
+                    ("native-linux".to_string(), "1.0.0".to_string()),
+                ]
+                .into(),
+                optional_dependencies: [
+                    ("native-darwin".to_string(), "1.0.0".to_string()),
+                    ("native-linux".to_string(), "1.0.0".to_string()),
+                ]
+                .into(),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "native-darwin@1.0.0".to_string(),
+            aube_lockfile::LockedPackage {
+                name: "native-darwin".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "native-darwin@1.0.0".to_string(),
+                os: s(&["darwin"]),
+                cpu: s(&["arm64"]),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "native-linux@1.0.0".to_string(),
+            aube_lockfile::LockedPackage {
+                name: "native-linux".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "native-linux@1.0.0".to_string(),
+                os: s(&["linux"]),
+                cpu: s(&["x64"]),
+                ..Default::default()
+            },
+        );
+
+        filter_graph(&mut graph, &supported, &Default::default());
+
+        let host = graph.packages.get("host@1.0.0").unwrap();
+        assert!(host.dependencies.contains_key("native-darwin"));
+        assert!(!host.dependencies.contains_key("native-linux"));
+        assert!(graph.packages.contains_key("native-darwin@1.0.0"));
+        assert!(!graph.packages.contains_key("native-linux@1.0.0"));
     }
 
     #[cfg(not(target_os = "linux"))]
