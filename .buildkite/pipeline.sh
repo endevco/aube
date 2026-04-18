@@ -61,7 +61,12 @@ steps:
         commands:
           - "export AUBE_BOOTSTRAP_MSRV=1; source .buildkite/bootstrap.sh"
           - "mise run test"
-          - "mise run lint"
+          # Pipe through cat to break the PTY Buildkite allocates — without it
+          # hk thinks stderr is interactive and emits ~10k spinner-frame lines
+          # that Buildkite captures as log rows after stripping the cursor
+          # escapes. Kept at the pipeline layer (not in mise.toml) so local
+          # $(mise run lint) keeps its animated UI.
+          - "mise run lint 2>&1 | cat"
           - "mise run render"
           - "mise run docs:build"
 

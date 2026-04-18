@@ -14,7 +14,12 @@
 //!   slow one shows exactly *why* it's slow (network-bound vs
 //!   linker-bound). No phase noise, no child rows, no redraws.
 //!
-//! `try_new` picks the mode: TTY on an interactive stderr, CI on a pipe.
+//! `try_new` picks the mode: TTY on an interactive stderr, CI on a pipe,
+//! or CI when `is_ci::cached()` detects a known CI environment (Buildkite,
+//! GitHub Actions, etc.) even if stderr looks like a TTY — those systems
+//! allocate a PTY so tools emit colors, but their log capturers strip
+//! cursor-control escapes and each animation frame lands as its own log
+//! line. CI mode's ~2s heartbeat is the right shape for that.
 //! It returns `None` only when clx has been forced into text mode
 //! (`--silent`, `-v`, `--reporter=append-only|ndjson`) — those modes own
 //! their own output and we stay out of the way.
@@ -99,7 +104,16 @@ impl InstallProgress {
         if clx::progress::output() == ProgressOutput::Text {
             return None;
         }
-        if std::io::stderr().is_terminal() {
+        // Prefer CI mode whenever we're in a known CI environment
+        // (`is_ci` checks `CI`, `BUILDKITE`, `GITHUB_ACTIONS`, and friends),
+        // even when stderr looks like a TTY. Most CI runners allocate a
+        // PTY so child processes emit colors, which makes
+        // `is_terminal()` return true — but the log capturer then strips
+        // cursor-control escapes and each animation frame becomes its
+        // own log line, flooding the build log with thousands of
+        // near-duplicate spinner rows. CI mode's 2s heartbeat is the
+        // right shape there.
+        if std::io::stderr().is_terminal() && !is_ci::cached() {
             Some(Self::new_tty())
         } else {
             Some(Self::new_ci())

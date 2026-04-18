@@ -206,6 +206,7 @@ dependencies = [
  "flate2",
  "glob",
  "hex",
+ "is_ci",
  "libc",
  "miette",
  "node-semver",

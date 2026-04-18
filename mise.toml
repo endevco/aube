@@ -12,13 +12,10 @@ node = "24"
 usage = "latest"
 
 [tasks.lint]
-# Pipe through cat to force non-TTY mode — Buildkite allocates a PTY,
-# which tricks hk's spinner into thinking it's interactive and floods
-# the log with thousands of progress-frame lines.
-run = "hk check --all --slow 2>&1 | cat"
+run = "hk check --all --slow"
 
 [tasks.lint-fix]
-run = "hk fix --all --slow 2>&1 | cat"
+run = "hk fix --all --slow"
 
 [tasks.build]
 run = "cargo build"

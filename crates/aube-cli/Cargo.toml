@@ -53,6 +53,7 @@ tempfile = "3"
 diffy = { workspace = true }
 libc = "0.2"
 pathdiff = "0.2"
+is_ci = "1"
 
 [dev-dependencies]
 clap-sort = "1"
