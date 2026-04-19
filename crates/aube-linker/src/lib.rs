@@ -989,26 +989,21 @@ impl Linker {
                 .map(|dep| {
                     let target_dir = nm.join(&dep.name);
 
-                    // Already in place from a previous run — don't recount.
-                    // A *broken* symlink (target no longer exists) is left
-                    // over from a stale install and must be reclaimed so we
-                    // fall through and recreate it below.
-                    if keep_or_reclaim_broken_symlink(&target_dir)? {
-                        return Ok(false);
-                    }
-
                     // `link:` direct deps point at the on-disk target with
                     // a plain symlink, bypassing `.aube/` entirely.
                     if let Some(pkg) = graph.packages.get(&dep.dep_path)
                         && let Some(LocalSource::Link(rel)) = pkg.local_source.as_ref()
                     {
                         let abs_target = project_dir.join(rel);
-                        if let Some(parent) = target_dir.parent() {
-                            xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
-                        }
                         let link_parent = target_dir.parent().unwrap_or(&nm);
                         let rel_target =
                             pathdiff::diff_paths(&abs_target, link_parent).unwrap_or(abs_target);
+                        if reconcile_top_level_link(&target_dir, &rel_target)? {
+                            return Ok(false);
+                        }
+                        if let Some(parent) = target_dir.parent() {
+                            xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                        }
                         sys::create_dir_link(&rel_target, &target_dir)
                             .map_err(|e| Error::Io(target_dir.clone(), e))?;
                         return Ok(true);
@@ -1027,12 +1022,19 @@ impl Linker {
                     // For non-scoped packages the parent is node_modules/, but for
                     // scoped packages (e.g. @scope/name) it is node_modules/@scope/,
                     // so we must compute the relative path dynamically.
-                    if let Some(parent) = target_dir.parent() {
-                        xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
-                    }
                     let link_parent = target_dir.parent().unwrap_or(&nm);
                     let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
                         .unwrap_or_else(|| source_dir.clone());
+                    // Target-aware reconcile: a version upgrade keeps the
+                    // old `node_modules/<name>` symlink but it now points
+                    // at a stale `.aube/<old-dep-path>`; we need to
+                    // rewrite it to the new `.aube/<new-dep-path>`.
+                    if reconcile_top_level_link(&target_dir, &rel_target)? {
+                        return Ok(false);
+                    }
+                    if let Some(parent) = target_dir.parent() {
+                        xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                    }
 
                     sys::create_dir_link(&rel_target, &target_dir)
                         .map_err(|e| Error::Io(target_dir.clone(), e))?;
@@ -1469,6 +1471,14 @@ impl Linker {
                                 }
                             }
                         }
+                        // If the scope is now empty (no preserved members
+                        // left), drop the tombstone directory too.
+                        if std::fs::read_dir(&scope_dir)
+                            .map(|mut d| d.next().is_none())
+                            .unwrap_or(false)
+                        {
+                            let _ = std::fs::remove_dir(&scope_dir);
+                        }
                         continue;
                     }
                     let _ = std::fs::remove_dir_all(entry.path());
@@ -1538,16 +1548,16 @@ impl Linker {
                         if !self.hoist_workspace_packages {
                             return Ok(false);
                         }
-                        if keep_or_reclaim_broken_symlink(&link_path)? {
+                        let link_parent = link_path.parent().unwrap_or(nm);
+                        let rel_target =
+                            pathdiff::diff_paths(ws_dir, link_parent).unwrap_or(ws_dir.clone());
+                        if reconcile_top_level_link(&link_path, &rel_target)? {
                             return Ok(false);
                         }
                         if let Some(parent) = link_path.parent() {
                             xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
                         }
-                        let link_parent = link_path.parent().unwrap_or(nm);
-                        let target =
-                            pathdiff::diff_paths(ws_dir, link_parent).unwrap_or(ws_dir.clone());
-                        sys::create_dir_link(&target, &link_path)
+                        sys::create_dir_link(&rel_target, &link_path)
                             .map_err(|e| Error::Io(link_path.clone(), e))?;
                         return Ok(true);
                     }
@@ -1557,15 +1567,15 @@ impl Linker {
                         && let Some(LocalSource::Link(rel)) = locked.local_source.as_ref()
                     {
                         let abs_target = root_dir.join(rel);
-                        if keep_or_reclaim_broken_symlink(&link_path)? {
+                        let link_parent = link_path.parent().unwrap_or(nm);
+                        let rel_target =
+                            pathdiff::diff_paths(&abs_target, link_parent).unwrap_or(abs_target);
+                        if reconcile_top_level_link(&link_path, &rel_target)? {
                             return Ok(false);
                         }
                         if let Some(parent) = link_path.parent() {
                             xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
                         }
-                        let link_parent = link_path.parent().unwrap_or(nm);
-                        let rel_target =
-                            pathdiff::diff_paths(&abs_target, link_parent).unwrap_or(abs_target);
                         sys::create_dir_link(&rel_target, &link_path)
                             .map_err(|e| Error::Io(link_path.clone(), e))?;
                         return Ok(true);
@@ -1580,15 +1590,15 @@ impl Linker {
                     if !source_dir.exists() {
                         return Ok(false);
                     }
-                    if keep_or_reclaim_broken_symlink(&link_path)? {
+                    let link_parent = link_path.parent().unwrap_or(nm);
+                    let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
+                        .unwrap_or_else(|| source_dir.clone());
+                    if reconcile_top_level_link(&link_path, &rel_target)? {
                         return Ok(false);
                     }
                     if let Some(parent) = link_path.parent() {
                         xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
                     }
-                    let link_parent = link_path.parent().unwrap_or(nm);
-                    let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
-                        .unwrap_or_else(|| source_dir.clone());
                     sys::create_dir_link(&rel_target, &link_path)
                         .map_err(|e| Error::Io(link_path.clone(), e))?;
                     trace!("workspace top-level: {} -> {}", dep.name, importer_path);
@@ -2155,6 +2165,38 @@ fn keep_or_reclaim_broken_symlink(path: &Path) -> Result<bool, Error> {
         Ok(()) => Ok(false),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(Error::Io(path.to_path_buf(), e)),
+    }
+}
+
+/// Reconcile a top-level `node_modules/<name>` entry against the
+/// expected symlink target. Unlike `keep_or_reclaim_broken_symlink`,
+/// this compares the link's *target*, so a version upgrade that leaves
+/// `.aube/<old-dep-path>/` resolvable on disk is correctly classified
+/// as stale instead of silently keeping the old symlink.
+///
+/// - `Ok(true)`  – existing entry is a symlink pointing at
+///   `expected_target`; caller skips creation.
+/// - `Ok(false)` – no entry exists, or a stale entry (wrong target,
+///   dangling symlink, regular directory) has been best-effort
+///   removed; caller should proceed to create the symlink.
+fn reconcile_top_level_link(link_path: &Path, expected_target: &Path) -> Result<bool, Error> {
+    match std::fs::read_link(link_path) {
+        Ok(existing) if existing == expected_target => Ok(true),
+        Ok(_) => {
+            // Wrong target — remove the stale symlink so the caller's
+            // `create_dir_link` below doesn't EEXIST.
+            let _ = std::fs::remove_dir(link_path).or_else(|_| std::fs::remove_file(link_path));
+            Ok(false)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => {
+            // `read_link` failed with EINVAL (entry exists but isn't a
+            // symlink — e.g. a regular directory left by a prior
+            // hoisted install) or another error. Best-effort reclaim
+            // so the create call lands on a clean slot.
+            let _ = std::fs::remove_dir_all(link_path).or_else(|_| std::fs::remove_file(link_path));
+            Ok(false)
+        }
     }
 }
 
@@ -2764,6 +2806,105 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&foo1).unwrap(),
             std::fs::read_to_string(&foo2).unwrap()
+        );
+    }
+
+    /// Regression: a version bump keeps the same top-level name
+    /// (`foo`) but must repoint `node_modules/foo` at the new
+    /// `.aube/foo@<new>` entry. The old `.aube/foo@<old>/` is left
+    /// on disk (no one sweeps the virtual store by name), so a
+    /// plain `path.exists()` check would see a still-resolving
+    /// stale symlink and keep it. The target-aware
+    /// `reconcile_top_level_link` compares the expected target
+    /// string and rewrites the link.
+    #[test]
+    fn test_link_all_repoints_symlink_after_version_bump() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let store = Store::at(dir.path().join("store/files"));
+
+        // Install 1: foo@1.0.0 as the root's direct dep.
+        let mut indices_v1 = BTreeMap::new();
+        let foo_v1 = store
+            .import_bytes(b"module.exports = 'foo@1';", false)
+            .unwrap();
+        let mut foo_v1_index = BTreeMap::new();
+        foo_v1_index.insert("index.js".to_string(), foo_v1);
+        indices_v1.insert("foo@1.0.0".to_string(), foo_v1_index);
+
+        let mut graph_v1 = LockfileGraph::default();
+        graph_v1.packages.insert(
+            "foo@1.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        graph_v1.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+
+        let linker = Linker::new(&store, LinkStrategy::Copy);
+        linker
+            .link_all(&project_dir, &graph_v1, &indices_v1)
+            .unwrap();
+        let foo_link = project_dir.join("node_modules/foo");
+        assert!(foo_link.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(foo_link.join("index.js")).unwrap(),
+            "module.exports = 'foo@1';"
+        );
+
+        // Install 2: foo upgraded to 2.0.0. The `.aube/foo@1.0.0/`
+        // tree stays on disk (nothing prunes the virtual store by
+        // name), so the old `node_modules/foo` symlink still
+        // resolves — a naive "does the target exist?" check would
+        // keep it.
+        let mut indices_v2 = BTreeMap::new();
+        let foo_v2 = store
+            .import_bytes(b"module.exports = 'foo@2';", false)
+            .unwrap();
+        let mut foo_v2_index = BTreeMap::new();
+        foo_v2_index.insert("index.js".to_string(), foo_v2);
+        indices_v2.insert("foo@2.0.0".to_string(), foo_v2_index);
+
+        let mut graph_v2 = LockfileGraph::default();
+        graph_v2.packages.insert(
+            "foo@2.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        graph_v2.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+        linker
+            .link_all(&project_dir, &graph_v2, &indices_v2)
+            .unwrap();
+
+        // The top-level symlink must now resolve to foo@2.0.0's
+        // bytes, not foo@1.0.0's.
+        assert_eq!(
+            std::fs::read_to_string(project_dir.join("node_modules/foo/index.js")).unwrap(),
+            "module.exports = 'foo@2';"
         );
     }
 
