@@ -205,6 +205,7 @@ pub(crate) struct Cli {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub(crate) enum LogLevel {
+    Trace,
     Debug,
     Info,
     Warn,
@@ -224,6 +225,7 @@ pub(crate) enum ReporterType {
 impl LogLevel {
     fn filter(self) -> &'static str {
         match self {
+            LogLevel::Trace => "trace",
             LogLevel::Debug => "debug",
             LogLevel::Info => "info",
             LogLevel::Warn => "warn",
@@ -973,7 +975,10 @@ fn resolve_loglevel(cli: &Cli, configured: Option<&str>) -> LogLevel {
     if let Some(level) = cli.loglevel {
         return level;
     }
-    if cli.verbose || env_is_truthy("AUBE_DEBUG") || env_is_truthy("AUBE_TRACE") {
+    if env_is_truthy("AUBE_TRACE") {
+        return LogLevel::Trace;
+    }
+    if cli.verbose || env_is_truthy("AUBE_DEBUG") {
         return LogLevel::Debug;
     }
     configured
@@ -990,6 +995,7 @@ fn env_is_truthy(name: &str) -> bool {
 
 fn parse_loglevel(raw: &str) -> Option<LogLevel> {
     match raw.trim().to_ascii_lowercase().as_str() {
+        "trace" => Some(LogLevel::Trace),
         "debug" => Some(LogLevel::Debug),
         "info" => Some(LogLevel::Info),
         "warn" | "warning" => Some(LogLevel::Warn),
@@ -1033,7 +1039,7 @@ fn init_logging(cli: &Cli, effective_level: LogLevel) {
     // than a server log line; keeping the RFC3339 prefix just pushes the
     // package name off the visible width for no gain. ndjson always
     // keeps the timestamp — its whole point is machine-parseable records.
-    let drop_timestamp = !matches!(effective_level, LogLevel::Debug);
+    let drop_timestamp = !matches!(effective_level, LogLevel::Debug | LogLevel::Trace);
     let registry = tracing_subscriber::registry().with(env_filter);
     if matches!(cli.reporter, Some(ReporterType::Ndjson)) {
         registry
@@ -1062,11 +1068,13 @@ fn init_logging(cli: &Cli, effective_level: LogLevel) {
     // with the reporter: `append-only` and `ndjson` both want line-at-a-time
     // output, and `debug`/`silent` already disabled the UI for their own
     // reasons.
-    let force_text = matches!(effective_level, LogLevel::Debug | LogLevel::Silent)
-        || matches!(
-            cli.reporter,
-            Some(ReporterType::AppendOnly) | Some(ReporterType::Ndjson)
-        );
+    let force_text = matches!(
+        effective_level,
+        LogLevel::Trace | LogLevel::Debug | LogLevel::Silent
+    ) || matches!(
+        cli.reporter,
+        Some(ReporterType::AppendOnly) | Some(ReporterType::Ndjson)
+    );
     if force_text {
         clx::progress::set_output(clx::progress::ProgressOutput::Text);
     }

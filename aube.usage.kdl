@@ -38,7 +38,7 @@ flag --include-workspace-root help="Include the workspace root in recursive work
 }
 flag --loglevel help="Set the log level. Logs at or above this level are shown" global=#true {
     arg <LEVEL> {
-        choices debug info warn error silent
+        choices trace debug info warn error silent
     }
 }
 flag --no-color help="Disable colored output" global=#true {
