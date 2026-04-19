@@ -6,11 +6,8 @@ import { data } from './benchmarks.data.ts'
 
 The numbers below are measured end-to-end against the same
 [medium-sized real-world fixture](https://github.com/endevco/aube/blob/main/benchmarks/fixture.package.json)
-— React, Vue, Express, ESLint, TypeScript, jest, postcss, and ~1400
-other packages — using [`hyperfine`](https://github.com/sharkdp/hyperfine)
-to time each scenario under identical conditions. Every package manager
-runs against its own isolated `HOME`, cache, store, and project dir, so
-the scenarios are hermetic. Lower is better.
+— ~1400 real-world packages — using [`hyperfine`](https://github.com/sharkdp/hyperfine)
+to time each scenario under identical conditions.
 
 ::: tip Methodology
 Every scenario assumes a committed lockfile is present. The only axis
