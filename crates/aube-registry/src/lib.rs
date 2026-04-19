@@ -48,7 +48,7 @@ where
 /// when the user's range doesn't select it. Drop the unparseable
 /// entries so the resolver sees the same shape npmjs would have served
 /// for a modern publish. pnpm and bun behave the same way.
-fn null_tolerant_string_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
+fn non_string_tolerant_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -101,7 +101,7 @@ pub struct Packument {
     #[serde(
         rename = "dist-tags",
         default,
-        deserialize_with = "null_tolerant_string_map"
+        deserialize_with = "non_string_tolerant_map"
     )]
     pub dist_tags: BTreeMap<String, String>,
     /// Per-version publish timestamps (ISO-8601). Populated
@@ -112,7 +112,7 @@ pub struct Packument {
     /// resolver round-trips it into the lockfile's top-level `time:`
     /// block — matching pnpm's `publishedAt` wiring — and, in
     /// time-based mode, uses it to derive the publish-date cutoff.
-    #[serde(default, deserialize_with = "null_tolerant_string_map")]
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub time: BTreeMap<String, String>,
 }
 
@@ -122,15 +122,15 @@ pub struct Packument {
 pub struct VersionMetadata {
     pub name: String,
     pub version: String,
-    #[serde(default, deserialize_with = "null_tolerant_string_map")]
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub dependencies: BTreeMap<String, String>,
-    #[serde(default, deserialize_with = "null_tolerant_string_map")]
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub dev_dependencies: BTreeMap<String, String>,
-    #[serde(default, deserialize_with = "null_tolerant_string_map")]
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub peer_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub peer_dependencies_meta: BTreeMap<String, PeerDepMeta>,
-    #[serde(default, deserialize_with = "null_tolerant_string_map")]
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub optional_dependencies: BTreeMap<String, String>,
     /// `bundledDependencies` from the packument. Either a list of dep
     /// names or `true` (meaning "bundle every `dependencies` entry").
