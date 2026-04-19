@@ -88,10 +88,23 @@ const lines = [
 ]
 
 // -- Structured JSON --------------------------------------------------------
+// bench.sh writes BENCH_VERSIONS_FILE as a "<tool>\t<semver>" TSV so
+// the docs chart can render the actual version each manager was
+// running rather than just the bare name.
+const versions = {}
+const versionsFile = process.env.BENCH_VERSIONS_FILE
+if (versionsFile && fs.existsSync(versionsFile)) {
+  for (const line of fs.readFileSync(versionsFile, 'utf8').split('\n')) {
+    const [name, version] = line.split('\t')
+    if (name && version) versions[name] = version.trim()
+  }
+}
+
 const json = {
   updated: new Date().toISOString(),
   unit: 'ms',
   managers: TOOLS,
+  versions,
   rows: [],
 }
 

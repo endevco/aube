@@ -48,6 +48,7 @@ export interface BenchData {
   updated: string
   unit: string
   managers: string[]
+  versions: Record<string, string>
   rows: BenchRow[]
 }
 
@@ -66,6 +67,7 @@ export default {
       updated: parsed.updated,
       unit: parsed.unit,
       managers: parsed.managers,
+      versions: parsed.versions ?? {},
       rows: parsed.rows.map((r) => ({
         key: r.key,
         label: r.label,

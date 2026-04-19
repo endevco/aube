@@ -109,12 +109,28 @@ register_tool "npm" "$NPM_BIN"
 register_tool "yarn" "$YARN_BIN"
 
 echo "workdir: $BENCH_DIR"
+# Capture each tool's reported --version string so generate-results.js
+# can fold it into results.json. Some tools print extra text around
+# the semver (e.g. `aube 1.0.0-beta.3 (...)`, `bun 1.3.12+...`); the
+# sed pulls out the first token that looks like a semver so the JSON
+# stays clean without the consumers having to re-parse it.
+versions_file="$BENCH_DIR/versions.tsv"
+: >"$versions_file"
 for i in "${!TOOLS[@]}"; do
 	tool="${TOOLS[$i]}"
 	bin="${TOOL_BINS[$i]}"
-	version="$($bin --version 2>/dev/null || echo 'unknown')"
+	raw="$($bin --version 2>/dev/null || echo 'unknown')"
+	version="$(printf '%s\n' "$raw" | head -n1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?' | head -n1)"
+	[ -z "$version" ] && version="$raw"
+	printf "%s\t%s\n" "$tool" "$version" >>"$versions_file"
 	printf "%-5s %s  (%s)\n" "$tool:" "$bin" "$version"
 done
+node_version="$(node --version 2>/dev/null | sed 's/^v//')"
+if [ -n "$node_version" ]; then
+	printf "%s\t%s\n" "node" "$node_version" >>"$versions_file"
+	printf "%-5s %s\n" "node:" "$node_version"
+fi
+export BENCH_VERSIONS_FILE="$versions_file"
 echo ""
 
 # Per-tool lockfile filename (the name the pm writes into the project

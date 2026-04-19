@@ -10,6 +10,7 @@ const props = defineProps<{
   rows: Row[];
   managers: string[];
   unit?: string;
+  versions?: Record<string, string>;
 }>();
 
 const COLORS: Record<string, string> = {
@@ -22,6 +23,13 @@ const COLORS: Record<string, string> = {
   bun: "#c9a36a",
   aube: "#7c3aed",
 };
+
+function legendLabel(pm: string): string {
+  const v = props.versions?.[pm];
+  return v ? `${pm} ${v}` : pm;
+}
+
+const nodeVersion = computed(() => props.versions?.node ?? "");
 
 const max = computed(() => {
   let m = 0;
@@ -58,8 +66,9 @@ function winner(row: Row): string | null {
     <div class="legend">
       <span v-for="pm in managers" :key="pm" class="legend-item">
         <span class="swatch" :style="{ background: COLORS[pm] || '#888' }"></span>
-        {{ pm }}
+        {{ legendLabel(pm) }}
       </span>
+      <span v-if="nodeVersion" class="legend-runtime">node {{ nodeVersion }}</span>
     </div>
     <div v-for="row in rows" :key="row.label" class="scenario">
       <div class="scenario-label">{{ row.label }}</div>
@@ -107,6 +116,11 @@ function winner(row: Row): string | null {
   align-items: center;
   gap: 0.4rem;
   color: var(--vp-c-text-2);
+}
+.legend-runtime {
+  color: var(--vp-c-text-3);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
 }
 .swatch {
   display: inline-block;

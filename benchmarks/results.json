@@ -8,6 +8,14 @@
     "npm",
     "yarn"
   ],
+  "versions": {
+    "aube": "1.0.0-beta.3",
+    "bun": "1.3.12",
+    "pnpm": "10.33.0",
+    "npm": "11.12.1",
+    "yarn": "1.22.22",
+    "node": "24.15.0"
+  },
   "rows": [
     {
       "key": "ci-warm",
