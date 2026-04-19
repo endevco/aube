@@ -60,12 +60,6 @@ Skip `optionalDependencies`
 
 Only audit `dependencies` and `optionalDependencies`
 
-### `--registry <URL>`
-
-Override the registry URL used for the advisory POST.
-
-Scoped registries still handle their own packument fetches on `--fix` / `--ignore-unfixable`; this flag only retargets the bulk advisory endpoint and non-scoped packument lookups.
-
 Examples:
 
   $ aube audit

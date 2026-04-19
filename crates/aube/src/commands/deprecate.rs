@@ -33,17 +33,9 @@ pub struct DeprecateArgs {
     /// One-time password from a 2FA authenticator; sent as `npm-otp`.
     #[arg(long, value_name = "CODE")]
     pub otp: Option<String>,
-
-    /// Override the registry URL for this call (takes precedence over
-    /// `.npmrc`).
-    ///
-    /// Scoped packages still honor their scoped registry unless this
-    /// flag is given.
-    #[arg(long, value_name = "URL")]
-    pub registry: Option<String>,
 }
 
-pub async fn run(args: DeprecateArgs) -> miette::Result<()> {
+pub async fn run(args: DeprecateArgs, registry_override: Option<&str>) -> miette::Result<()> {
     let (name, spec) = split_name_spec(&args.package);
     let name = name.to_string();
     let spec = spec.unwrap_or("*").to_string();
@@ -54,7 +46,7 @@ pub async fn run(args: DeprecateArgs) -> miette::Result<()> {
         &args.message,
         args.dry_run,
         args.otp.as_deref(),
-        args.registry.as_deref(),
+        registry_override,
     )
     .await
 }

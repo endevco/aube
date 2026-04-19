@@ -27,13 +27,6 @@ pub struct LoginArgs {
     #[arg(long, value_name = "TYPE", default_value = "legacy")]
     pub auth_type: String,
 
-    /// Registry URL to associate the token with.
-    ///
-    /// Defaults to the registry resolved from the current project /
-    /// user `.npmrc`.
-    #[arg(long, value_name = "URL")]
-    pub registry: Option<String>,
-
     /// Scope to bind this registry to (e.g. `@myorg`).
     ///
     /// When set, the scope->registry mapping is also written to
@@ -42,7 +35,7 @@ pub struct LoginArgs {
     pub scope: Option<String>,
 }
 
-pub async fn run(args: LoginArgs) -> miette::Result<()> {
+pub async fn run(args: LoginArgs, registry_override: Option<&str>) -> miette::Result<()> {
     if args.auth_type != "legacy" && args.auth_type != "web" {
         return Err(miette!(
             "--auth-type={} is not supported (expected `legacy` or `web`)",
@@ -56,7 +49,7 @@ pub async fn run(args: LoginArgs) -> miette::Result<()> {
         return Err(miette!("--scope must start with `@` (got `{scope}`)"));
     }
 
-    let registry = resolve_registry(args.registry.as_deref(), args.scope.as_deref())?;
+    let registry = resolve_registry(registry_override, args.scope.as_deref())?;
     let host_key = registry_host_key(&registry);
     let token = if args.auth_type == "web" {
         web_login(&registry).await?

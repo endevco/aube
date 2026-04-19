@@ -145,10 +145,8 @@ pub(crate) struct Cli {
 
     /// Override the default registry URL for this invocation.
     ///
-    /// Mirrors pnpm's `--registry=<url>` placement. Can appear before
-    /// or after subcommands; commands that already expose their own
-    /// `--registry` flag (publish, login, view, …) still win for their
-    /// own traffic.
+    /// Use this npm registry URL for package metadata, tarballs,
+    /// audit requests, dist-tags, and registry writes.
     #[arg(long, global = true, value_name = "URL")]
     registry: Option<String>,
 
@@ -618,7 +616,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             post_add_update_notify().await;
         }
         Some(Commands::ApproveBuilds(args)) => commands::approve_builds::run(args).await?,
-        Some(Commands::Audit(args)) => commands::audit::run(args).await?,
+        Some(Commands::Audit(args)) => commands::audit::run(args, cli.registry.as_deref()).await?,
         Some(Commands::Bin(args)) => commands::bin::run(args).await?,
         Some(Commands::Cache(args)) => commands::cache::run(args).await?,
         Some(Commands::CatFile(args)) => commands::cat_file::run(args).await?,
@@ -632,7 +630,9 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Deploy(args)) => {
             commands::deploy::run(args, effective_filter.clone()).await?
         }
-        Some(Commands::Deprecate(args)) => commands::deprecate::run(args).await?,
+        Some(Commands::Deprecate(args)) => {
+            commands::deprecate::run(args, cli.registry.as_deref()).await?
+        }
         Some(Commands::DistTag(args)) => commands::dist_tag::run(args).await?,
         Some(Commands::Dlx(args)) => commands::dlx::run(args).await?,
         Some(Commands::Exec(args)) => commands::exec::run(args, effective_filter.clone()).await?,
@@ -659,8 +659,10 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Licenses(args)) => commands::licenses::run(args).await?,
         Some(Commands::Link(args)) => commands::link::run(args).await?,
         Some(Commands::List(args)) => commands::list::run(args, effective_filter.clone()).await?,
-        Some(Commands::Login(args)) => commands::login::run(args).await?,
-        Some(Commands::Logout(args)) => commands::logout::run(args).await?,
+        Some(Commands::Login(args)) => commands::login::run(args, cli.registry.as_deref()).await?,
+        Some(Commands::Logout(args)) => {
+            commands::logout::run(args, cli.registry.as_deref()).await?
+        }
         Some(Commands::Outdated(args)) => {
             commands::outdated::run(args, effective_filter.clone()).await?
         }
@@ -685,7 +687,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         }
         Some(Commands::Prune(args)) => commands::prune::run(args).await?,
         Some(Commands::Publish(args)) => {
-            commands::publish::run(args, effective_filter.clone()).await?
+            commands::publish::run(args, effective_filter.clone(), cli.registry.as_deref()).await?
         }
         Some(Commands::Purge(args)) => commands::clean::run_purge(args).await?,
         Some(Commands::Rebuild(args)) => {
@@ -727,7 +729,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                     commands::outdated::run(args, nested_filter).await?
                 }
                 Some(Commands::Publish(args)) => {
-                    commands::publish::run(args, nested_filter).await?
+                    commands::publish::run(args, nested_filter, nested.registry.as_deref()).await?
                 }
                 Some(Commands::Rebuild(args)) => {
                     commands::rebuild::run(args, nested_filter).await?
@@ -844,9 +846,13 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 cli.registry.as_deref(),
             )?));
         }
-        Some(Commands::Undeprecate(args)) => commands::undeprecate::run(args).await?,
+        Some(Commands::Undeprecate(args)) => {
+            commands::undeprecate::run(args, cli.registry.as_deref()).await?
+        }
         Some(Commands::Unlink(args)) => commands::unlink::run(args).await?,
-        Some(Commands::Unpublish(args)) => commands::unpublish::run(args).await?,
+        Some(Commands::Unpublish(args)) => {
+            commands::unpublish::run(args, cli.registry.as_deref()).await?
+        }
         Some(Commands::Update(args)) => {
             commands::update::run(args, effective_filter.clone()).await?;
             post_add_update_notify().await;

@@ -28,9 +28,3 @@ Single-version unpublish works without it — matching npm, which is more permis
 One-time password for registries that require 2FA.
 
 Sent verbatim as the `npm-otp` header.
-
-### `--registry <URL>`
-
-Override the target registry URL.
-
-Defaults to the scoped registry for the package (if configured) or the default `.npmrc` registry.

@@ -351,26 +351,6 @@
             ],
             "hide": false,
             "global": false
-          },
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Override the registry URL used for the advisory POST",
-            "help_long": "Override the registry URL used for the advisory POST.\n\nScoped registries still handle their own packument fetches on `--fix` / `--ignore-unfixable`; this flag only retargets the bulk advisory endpoint and non-scoped packument lookups.",
-            "help_first_line": "Override the registry URL used for the advisory POST",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
           }
         ],
         "mounts": [],
@@ -1143,7 +1123,7 @@
         "full_cmd": [
           "deprecate"
         ],
-        "usage": "deprecate [FLAGS] <PACKAGE> <MESSAGE>",
+        "usage": "deprecate [--dry-run] [--otp <CODE>] <PACKAGE> <MESSAGE>",
         "subcommands": {},
         "args": [
           {
@@ -1194,26 +1174,6 @@
             "arg": {
               "name": "CODE",
               "usage": "<CODE>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
-          },
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Override the registry URL for this call (takes precedence over `.npmrc`)",
-            "help_long": "Override the registry URL for this call (takes precedence over `.npmrc`).\n\nScoped packages still honor their scoped registry unless this flag is given.",
-            "help_first_line": "Override the registry URL for this call (takes precedence over `.npmrc`)",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
               "required": true,
               "double_dash": "Optional",
               "hide": false
@@ -2936,7 +2896,7 @@
         "full_cmd": [
           "login"
         ],
-        "usage": "login [FLAGS]",
+        "usage": "login [--auth-type <TYPE>] [--scope <SCOPE>]",
         "subcommands": {},
         "args": [],
         "flags": [
@@ -2961,26 +2921,6 @@
             "default": [
               "legacy"
             ]
-          },
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Registry URL to associate the token with",
-            "help_long": "Registry URL to associate the token with.\n\nDefaults to the registry resolved from the current project / user `.npmrc`.",
-            "help_first_line": "Registry URL to associate the token with",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
           },
           {
             "name": "scope",
@@ -3017,30 +2957,10 @@
         "full_cmd": [
           "logout"
         ],
-        "usage": "logout [--registry <URL>] [--scope <SCOPE>]",
+        "usage": "logout [--scope <SCOPE>]",
         "subcommands": {},
         "args": [],
         "flags": [
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Registry URL to log out of",
-            "help_long": "Registry URL to log out of.\n\nDefaults to the registry resolved from the current project / user `.npmrc`.",
-            "help_first_line": "Registry URL to log out of",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
-          },
           {
             "name": "scope",
             "usage": "--scope <SCOPE>",
@@ -3621,26 +3541,6 @@
             ],
             "hide": false,
             "global": false
-          },
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Override the target registry URL",
-            "help_long": "Override the target registry URL.\n\nDefaults to the scoped registry for the package (if configured) or the default `.npmrc` registry.",
-            "help_first_line": "Override the target registry URL",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
           },
           {
             "name": "tag",
@@ -4565,7 +4465,7 @@
         "full_cmd": [
           "undeprecate"
         ],
-        "usage": "undeprecate [FLAGS] <PACKAGE>",
+        "usage": "undeprecate [--dry-run] [--otp <CODE>] <PACKAGE>",
         "subcommands": {},
         "args": [
           {
@@ -4606,25 +4506,6 @@
             "arg": {
               "name": "CODE",
               "usage": "<CODE>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
-          },
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Override the registry URL for this call (takes precedence over `.npmrc`)",
-            "help_first_line": "Override the registry URL for this call (takes precedence over `.npmrc`)",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
               "required": true,
               "double_dash": "Optional",
               "hide": false
@@ -4743,26 +4624,6 @@
             "arg": {
               "name": "CODE",
               "usage": "<CODE>",
-              "required": true,
-              "double_dash": "Optional",
-              "hide": false
-            }
-          },
-          {
-            "name": "registry",
-            "usage": "--registry <URL>",
-            "help": "Override the target registry URL",
-            "help_long": "Override the target registry URL.\n\nDefaults to the scoped registry for the package (if configured) or the default `.npmrc` registry.",
-            "help_first_line": "Override the target registry URL",
-            "short": [],
-            "long": [
-              "registry"
-            ],
-            "hide": false,
-            "global": false,
-            "arg": {
-              "name": "URL",
-              "usage": "<URL>",
               "required": true,
               "double_dash": "Optional",
               "hide": false
@@ -5524,7 +5385,7 @@
         "name": "registry",
         "usage": "--registry <URL>",
         "help": "Override the default registry URL for this invocation",
-        "help_long": "Override the default registry URL for this invocation.\n\nMirrors pnpm's `--registry=<url>` placement. Can appear before or after subcommands; commands that already expose their own `--registry` flag (publish, login, view, …) still win for their own traffic.",
+        "help_long": "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.",
         "help_first_line": "Override the default registry URL for this invocation",
         "short": [],
         "long": [

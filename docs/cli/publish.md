@@ -51,12 +51,6 @@ Generate a SLSA provenance attestation and attach it to the publish body.
 
 Requires an OIDC-capable CI environment (GitHub Actions with `id-token: write`, GitLab CI, Buildkite, or CircleCI) — aube signs via the Sigstore public-good instance (Fulcio + Rekor) and attaches the resulting bundle so registries that honor npm's provenance protocol light up the "provenance" badge on the published version.
 
-### `--registry <URL>`
-
-Override the target registry URL.
-
-Defaults to the scoped registry for the package (if configured) or the default `.npmrc` registry.
-
 ### `--tag <TAG>`
 
 Default dist-tag to publish under (default: `latest`)

@@ -50,12 +50,6 @@ pub struct UnpublishArgs {
     /// Sent verbatim as the `npm-otp` header.
     #[arg(long, value_name = "CODE")]
     pub otp: Option<String>,
-    /// Override the target registry URL.
-    ///
-    /// Defaults to the scoped registry for the package (if
-    /// configured) or the default `.npmrc` registry.
-    #[arg(long, value_name = "URL")]
-    pub registry: Option<String>,
     /// Package spec: `name`, `name@version`, or omitted to use the
     /// current project's `package.json`.
     pub spec: Option<String>,
@@ -70,7 +64,7 @@ struct Target {
     version: Option<String>,
 }
 
-pub async fn run(args: UnpublishArgs) -> miette::Result<()> {
+pub async fn run(args: UnpublishArgs, registry_override: Option<&str>) -> miette::Result<()> {
     let cwd = if args.spec.is_some() {
         crate::dirs::project_root_or_cwd()?
     } else {
@@ -87,9 +81,7 @@ pub async fn run(args: UnpublishArgs) -> miette::Result<()> {
     }
 
     let config = NpmConfig::load(&cwd);
-    let registry_url = args
-        .registry
-        .as_deref()
+    let registry_url = registry_override
         .map(normalize_registry_url_pub)
         .unwrap_or_else(|| config.registry_for(&target.name).to_string());
 

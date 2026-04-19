@@ -102,12 +102,6 @@ pub struct PublishArgs {
     /// the published version.
     #[arg(long)]
     pub provenance: bool,
-    /// Override the target registry URL.
-    ///
-    /// Defaults to the scoped registry for the package (if
-    /// configured) or the default `.npmrc` registry.
-    #[arg(long, value_name = "URL")]
-    pub registry: Option<String>,
     /// Default dist-tag to publish under (default: `latest`).
     #[arg(long, value_name = "TAG")]
     pub tag: Option<String>,
@@ -116,6 +110,7 @@ pub struct PublishArgs {
 pub async fn run(
     args: PublishArgs,
     filter: aube_workspace::selector::EffectiveFilter,
+    registry_override: Option<&str>,
 ) -> miette::Result<()> {
     let _ = args.ignore_scripts; // parity no-op: aube's publish path doesn't run lifecycle scripts yet
     let cwd = crate::dirs::project_root()?;
@@ -125,14 +120,14 @@ pub async fn run(
     }
 
     if !filter.is_empty() {
-        return run_recursive(&cwd, &args, &filter).await;
+        return run_recursive(&cwd, &args, &filter, registry_override).await;
     }
 
     // Single-package mode: config_root == pkg_dir == cwd.
     let config = super::load_npm_config(&cwd);
     let policy = super::resolve_fetch_policy(&cwd);
     let client = RegistryClient::from_config_with_policy(config.clone(), policy);
-    let outcome = publish_one(&cwd, &config, &client, &args, false).await?;
+    let outcome = publish_one(&cwd, &config, &client, &args, false, registry_override).await?;
     emit_outcome(&outcome, args.json)?;
     Ok(())
 }
@@ -232,6 +227,7 @@ async fn run_recursive(
     source_root: &Path,
     args: &PublishArgs,
     filter: &aube_workspace::selector::EffectiveFilter,
+    registry_override: Option<&str>,
 ) -> miette::Result<()> {
     let workspace_pkgs = aube_workspace::find_workspace_packages(source_root)
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
@@ -271,7 +267,7 @@ async fn run_recursive(
         // Each package carries its own display label for error attribution
         // — workspace folder names are usually more stable than package
         // names under refactors, so we lean on the path.
-        match publish_one(pkg_dir, &config, &client, args, true).await {
+        match publish_one(pkg_dir, &config, &client, args, true, registry_override).await {
             Ok(outcome) => outcomes.push(outcome),
             Err(e) => failures.push((pkg_dir.display().to_string(), e)),
         }
@@ -358,6 +354,7 @@ async fn publish_one(
     client: &RegistryClient,
     args: &PublishArgs,
     fanout: bool,
+    registry_override: Option<&str>,
 ) -> miette::Result<PublishOutcome> {
     // Read the manifest *first* so the name/version needed for the
     // existence check are available without touching the filesystem
@@ -384,9 +381,7 @@ async fn publish_one(
         })?
         .to_string();
 
-    let registry_url = args
-        .registry
-        .as_deref()
+    let registry_url = registry_override
         .map(normalize_registry_url_pub)
         .unwrap_or_else(|| config.registry_for(&name).to_string());
 

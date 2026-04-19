@@ -51,7 +51,7 @@ flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when
     long_help "Use the lockfile when fresh, re-resolve when stale.\n\nGlobal counterpart to the same `install` flag."
 }
 flag --registry help="Override the default registry URL for this invocation" global=#true {
-    long_help "Override the default registry URL for this invocation.\n\nMirrors pnpm's `--registry=<url>` placement. Can appear before or after subcommands; commands that already expose their own `--registry` flag (publish, login, view, …) still win for their own traffic."
+    long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
     arg <URL>
 }
 flag --reporter help="Output format: default, append-only, ndjson, silent" global=#true {
@@ -123,10 +123,6 @@ cmd audit help="Check installed packages against the registry advisory DB" {
     flag --json help="Emit the report as JSON (pnpm-compatible shape) instead of a table"
     flag --no-optional help="Skip `optionalDependencies`"
     flag "-P --prod --production" help="Only audit `dependencies` and `optionalDependencies`"
-    flag --registry help="Override the registry URL used for the advisory POST" {
-        long_help "Override the registry URL used for the advisory POST.\n\nScoped registries still handle their own packument fetches on `--fix` / `--ignore-unfixable`; this flag only retargets the bulk advisory endpoint and non-scoped packument lookups."
-        arg <URL>
-    }
 }
 cmd bin help="Print the path to `node_modules/.bin`" {
     after_long_help "Examples:\n\n  $ aube bin\n  /home/user/project/node_modules/.bin\n\n  $ aube bin -g\n  /home/user/.local/share/aube/global/node_modules/.bin\n\n  # Extend PATH with the project bin directory\n  $ export PATH=\"$(aube bin):$PATH\"\n"
@@ -242,10 +238,6 @@ cmd deprecate help="Mark published versions of a package as deprecated on the re
     flag --dry-run help="Don't PUT anything — print which versions would be touched and exit"
     flag --otp help="One-time password from a 2FA authenticator; sent as `npm-otp`" {
         arg <CODE>
-    }
-    flag --registry help="Override the registry URL for this call (takes precedence over `.npmrc`)" {
-        long_help "Override the registry URL for this call (takes precedence over `.npmrc`).\n\nScoped packages still honor their scoped registry unless this flag is given."
-        arg <URL>
     }
     arg <PACKAGE> help="Package spec: `name`, `name@version`, or `name@<range>`" help_long="Package spec: `name`, `name@version`, or `name@<range>`.\n\nOmitting the version deprecates every published version."
     arg <MESSAGE> help="Deprecation message shown to installers" help_long="Deprecation message shown to installers.\n\nPass an empty string to clear an existing deprecation (or use `aube undeprecate`)."
@@ -512,20 +504,12 @@ cmd login help="Store a registry auth token in the user's ~/.npmrc" {
     flag --auth-type help="Authentication flow: `legacy` (token paste; default) or `web` (OAuth flow against `{registry}/-/v1/login`)" default=legacy {
         arg <TYPE>
     }
-    flag --registry help="Registry URL to associate the token with" {
-        long_help "Registry URL to associate the token with.\n\nDefaults to the registry resolved from the current project / user `.npmrc`."
-        arg <URL>
-    }
     flag --scope help="Scope to bind this registry to (e.g. `@myorg`)" {
         long_help "Scope to bind this registry to (e.g. `@myorg`).\n\nWhen set, the scope->registry mapping is also written to `~/.npmrc`."
         arg <SCOPE>
     }
 }
 cmd logout help="Remove a registry auth token from the user's ~/.npmrc" {
-    flag --registry help="Registry URL to log out of" {
-        long_help "Registry URL to log out of.\n\nDefaults to the registry resolved from the current project / user `.npmrc`."
-        arg <URL>
-    }
     flag --scope help="Scope whose registry mapping should also be removed (e.g. `@myorg`)" {
         arg <SCOPE>
     }
@@ -604,10 +588,6 @@ cmd publish help="Publish the current package to the registry" {
     }
     flag --provenance help="Generate a SLSA provenance attestation and attach it to the publish body" {
         long_help "Generate a SLSA provenance attestation and attach it to the publish body.\n\nRequires an OIDC-capable CI environment (GitHub Actions with `id-token: write`, GitLab CI, Buildkite, or CircleCI) — aube signs via the Sigstore public-good instance (Fulcio + Rekor) and attaches the resulting bundle so registries that honor npm's provenance protocol light up the \"provenance\" badge on the published version."
-    }
-    flag --registry help="Override the target registry URL" {
-        long_help "Override the target registry URL.\n\nDefaults to the scoped registry for the package (if configured) or the default `.npmrc` registry."
-        arg <URL>
     }
     flag --tag help="Default dist-tag to publish under (default: `latest`)" {
         arg <TAG>
@@ -739,9 +719,6 @@ cmd undeprecate help="Clear an existing deprecation on the registry" {
     flag --otp help="One-time password from a 2FA authenticator; sent as `npm-otp`" {
         arg <CODE>
     }
-    flag --registry help="Override the registry URL for this call (takes precedence over `.npmrc`)" {
-        arg <URL>
-    }
     arg <PACKAGE> help="Package spec: `name`, `name@version`, or `name@<range>`" help_long="Package spec: `name`, `name@version`, or `name@<range>`.\n\nOmitting the version clears the deprecation on every published version."
 }
 cmd unlink help="Unlink a package (remove linked entries from node_modules)" {
@@ -759,10 +736,6 @@ cmd unpublish help="Remove a package (or a single version) from the registry" {
     flag --otp help="One-time password for registries that require 2FA" {
         long_help "One-time password for registries that require 2FA.\n\nSent verbatim as the `npm-otp` header."
         arg <CODE>
-    }
-    flag --registry help="Override the target registry URL" {
-        long_help "Override the target registry URL.\n\nDefaults to the scoped registry for the package (if configured) or the default `.npmrc` registry."
-        arg <URL>
     }
     arg "[SPEC]" help="Package spec: `name`, `name@version`, or omitted to use the current project's `package.json`" required=#false
 }

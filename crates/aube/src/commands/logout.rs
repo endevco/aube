@@ -10,26 +10,19 @@ use miette::miette;
 
 #[derive(Debug, Args)]
 pub struct LogoutArgs {
-    /// Registry URL to log out of.
-    ///
-    /// Defaults to the registry resolved from the current project /
-    /// user `.npmrc`.
-    #[arg(long, value_name = "URL")]
-    pub registry: Option<String>,
-
     /// Scope whose registry mapping should also be removed (e.g. `@myorg`).
     #[arg(long, value_name = "SCOPE")]
     pub scope: Option<String>,
 }
 
-pub async fn run(args: LogoutArgs) -> miette::Result<()> {
+pub async fn run(args: LogoutArgs, registry_override: Option<&str>) -> miette::Result<()> {
     if let Some(scope) = &args.scope
         && !scope.starts_with('@')
     {
         return Err(miette!("--scope must start with `@` (got `{scope}`)"));
     }
 
-    let registry = resolve_registry(args.registry.as_deref(), args.scope.as_deref())?;
+    let registry = resolve_registry(registry_override, args.scope.as_deref())?;
     let host_key = registry_host_key(&registry);
 
     let path = user_npmrc_path()?;

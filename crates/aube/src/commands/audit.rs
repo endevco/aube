@@ -95,14 +95,6 @@ pub struct AuditArgs {
         visible_alias = "production"
     )]
     pub prod: bool,
-
-    /// Override the registry URL used for the advisory POST.
-    ///
-    /// Scoped registries still handle their own packument fetches on
-    /// `--fix` / `--ignore-unfixable`; this flag only retargets the
-    /// bulk advisory endpoint and non-scoped packument lookups.
-    #[arg(long, value_name = "URL")]
-    pub registry: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
@@ -135,7 +127,7 @@ impl Severity {
     }
 }
 
-pub async fn run(args: AuditArgs) -> miette::Result<()> {
+pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Result<()> {
     let cwd = crate::dirs::project_root()?;
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
@@ -174,7 +166,7 @@ pub async fn run(args: AuditArgs) -> miette::Result<()> {
         return Ok(());
     }
 
-    let client = build_client(&cwd, args.registry.as_deref());
+    let client = build_client(&cwd, registry_override);
     let raw = match client.fetch_advisories_bulk(&pkg_versions).await {
         Ok(v) => v,
         Err(e) => {

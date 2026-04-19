@@ -108,7 +108,7 @@ Global counterpart to the same `install` flag.
 
 Override the default registry URL for this invocation.
 
-Mirrors pnpm's `--registry=<url>` placement. Can appear before or after subcommands; commands that already expose their own `--registry` flag (publish, login, view, …) still win for their own traffic.
+Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
 
 ### `--reporter <NAME>`
 
@@ -179,7 +179,7 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube create [PARAMS]…`](/cli/create.md)
 - [`aube dedupe [--check]`](/cli/dedupe.md)
 - [`aube deploy [FLAGS] <TARGET>`](/cli/deploy.md)
-- [`aube deprecate [FLAGS] <PACKAGE> <MESSAGE>`](/cli/deprecate.md)
+- [`aube deprecate [--dry-run] [--otp <CODE>] <PACKAGE> <MESSAGE>`](/cli/deprecate.md)
 - [`aube dist-tag <SUBCOMMAND>`](/cli/dist-tag.md)
 - [`aube dist-tag add <SPEC> [TAG]`](/cli/dist-tag/add.md)
 - [`aube dist-tag ls [PACKAGE]`](/cli/dist-tag/ls.md)
@@ -195,8 +195,8 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube licenses [FLAGS]`](/cli/licenses.md)
 - [`aube link [-g --global] [PACKAGE]`](/cli/link.md)
 - [`aube list [FLAGS] [PATTERN]`](/cli/list.md)
-- [`aube login [FLAGS]`](/cli/login.md)
-- [`aube logout [--registry <URL>] [--scope <SCOPE>]`](/cli/logout.md)
+- [`aube login [--auth-type <TYPE>] [--scope <SCOPE>]`](/cli/login.md)
+- [`aube logout [--scope <SCOPE>]`](/cli/logout.md)
 - [`aube outdated [FLAGS] [PATTERN]`](/cli/outdated.md)
 - [`aube pack [FLAGS]`](/cli/pack.md)
 - [`aube patch [--edit-dir <DIR>] [--ignore-existing] <PACKAGE>`](/cli/patch.md)
@@ -222,7 +222,7 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube store prune`](/cli/store/prune.md)
 - [`aube store status`](/cli/store/status.md)
 - [`aube test [--no-install] [ARGS]…`](/cli/test.md)
-- [`aube undeprecate [FLAGS] <PACKAGE>`](/cli/undeprecate.md)
+- [`aube undeprecate [--dry-run] [--otp <CODE>] <PACKAGE>`](/cli/undeprecate.md)
 - [`aube unlink [-g --global] [PACKAGE]`](/cli/unlink.md)
 - [`aube unpublish [FLAGS] [SPEC]`](/cli/unpublish.md)
 - [`aube update [FLAGS] [PACKAGES]…`](/cli/update.md)
