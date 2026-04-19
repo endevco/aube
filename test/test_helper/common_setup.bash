@@ -41,7 +41,9 @@ _common_setup() {
 
 	# Keep host shell logging preferences from overriding tests that assert
 	# aube's CLI/config loglevel behavior.
-	unset RUST_LOG
+	unset AUBE_LOG
+	unset AUBE_DEBUG
+	unset AUBE_TRACE
 
 	# Keep the update notifier (install.rs:… -> update_check.rs) from
 	# hitting aube.en.dev during BATS. Unsetting CI re-enables it by

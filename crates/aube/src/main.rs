@@ -973,12 +973,19 @@ fn resolve_loglevel(cli: &Cli, configured: Option<&str>) -> LogLevel {
     if let Some(level) = cli.loglevel {
         return level;
     }
-    if cli.verbose {
+    if cli.verbose || env_is_truthy("AUBE_DEBUG") || env_is_truthy("AUBE_TRACE") {
         return LogLevel::Debug;
     }
     configured
         .and_then(parse_loglevel)
         .unwrap_or(LogLevel::Warn)
+}
+
+fn env_is_truthy(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref().map(str::trim),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "y" | "Y")
+    )
 }
 
 fn parse_loglevel(raw: &str) -> Option<LogLevel> {
@@ -1003,13 +1010,14 @@ fn parse_color_mode(raw: &str) -> Option<ColorMode> {
 
 fn init_logging(cli: &Cli, effective_level: LogLevel) {
     let log_level = effective_level.filter();
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("AUBE_LOG")
         .unwrap_or_else(|_| format!("aube={log_level},aube_cli={log_level}").into());
 
     // ndjson swaps the fmt layer for the JSON formatter so every tracing
     // event is serialized as a single line of JSON on stderr. The filter
     // itself is the same as every other mode — `--loglevel` / `--verbose`
-    // / `RUST_LOG` pick the verbosity, ndjson just changes the encoding.
+    // / `AUBE_DEBUG` / `AUBE_LOG` pick the verbosity, ndjson just changes
+    // the encoding.
     //
     // Every mode routes writes through `progress::PausingWriter`, which
     // pauses the clx progress display and holds the terminal lock across
@@ -1019,12 +1027,12 @@ fn init_logging(cli: &Cli, effective_level: LogLevel) {
     // degrades to a plain stderr flush.
     //
     // Timestamps are dropped unless the user asked for `debug` verbosity
-    // (via `-v` / `--loglevel=debug` / `RUST_LOG`). A default-verbosity
-    // install that emits deprecated-package warnings reads more like
-    // pnpm's `WARN: mathjax-full@3.2.2 is deprecated…` than a server
-    // log line; keeping the RFC3339 prefix just pushes the package
-    // name off the visible width for no gain. ndjson always keeps the
-    // timestamp — its whole point is machine-parseable records.
+    // (via `-v` / `--loglevel=debug` / `AUBE_DEBUG=1` / `AUBE_LOG`). A
+    // default-verbosity install that emits deprecated-package warnings
+    // reads more like pnpm's `WARN: mathjax-full@3.2.2 is deprecated…`
+    // than a server log line; keeping the RFC3339 prefix just pushes the
+    // package name off the visible width for no gain. ndjson always
+    // keeps the timestamp — its whole point is machine-parseable records.
     let drop_timestamp = !matches!(effective_level, LogLevel::Debug);
     let registry = tracing_subscriber::registry().with(env_filter);
     if matches!(cli.reporter, Some(ReporterType::Ndjson)) {
