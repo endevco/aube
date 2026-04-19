@@ -18,7 +18,7 @@ pub struct FallbackArgs {
     pub args: Vec<String>,
 }
 
-pub fn run(name: &str, args: &[String]) -> miette::Result<i32> {
+pub fn run(name: &str, args: &[String], registry: Option<&str>) -> miette::Result<i32> {
     let cwd = crate::dirs::cwd()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
     let empty_ws = std::collections::BTreeMap::new();
@@ -35,6 +35,9 @@ pub fn run(name: &str, args: &[String]) -> miette::Result<i32> {
         cmd.arg(name)
             .args(args)
             .stderr(aube_scripts::child_stderr());
+        if let Some(registry) = registry {
+            cmd.arg(format!("--registry={registry}"));
+        }
         let status = cmd
             .status()
             .into_diagnostic()

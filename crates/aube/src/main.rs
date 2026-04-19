@@ -665,7 +665,11 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             commands::outdated::run(args, effective_filter.clone()).await?
         }
         Some(Commands::Owner(args)) => {
-            return Ok(Some(commands::npm_fallback::run("owner", &args.args)?));
+            return Ok(Some(commands::npm_fallback::run(
+                "owner",
+                &args.args,
+                cli.registry.as_deref(),
+            )?));
         }
         Some(Commands::Pack(args)) => commands::pack::run(args).await?,
         Some(Commands::Patch(args)) => commands::patch::run(args).await?,
@@ -673,7 +677,11 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::PatchRemove(args)) => commands::patch_remove::run(args).await?,
         Some(Commands::Peers(args)) => commands::peers::run(args).await?,
         Some(Commands::Pkg(args)) => {
-            return Ok(Some(commands::npm_fallback::run("pkg", &args.args)?));
+            return Ok(Some(commands::npm_fallback::run(
+                "pkg",
+                &args.args,
+                cli.registry.as_deref(),
+            )?));
         }
         Some(Commands::Prune(args)) => commands::prune::run(args).await?,
         Some(Commands::Publish(args)) => {
@@ -784,11 +792,19 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Run(args)) => commands::run::run(args, effective_filter.clone()).await?,
         Some(Commands::Sbom(args)) => commands::sbom::run(args).await?,
         Some(Commands::Search(args)) => {
-            return Ok(Some(commands::npm_fallback::run("search", &args.args)?));
+            return Ok(Some(commands::npm_fallback::run(
+                "search",
+                &args.args,
+                cli.registry.as_deref(),
+            )?));
         }
         Some(Commands::Set(args)) => commands::config::set(args)?,
         Some(Commands::SetScript(args)) => {
-            return Ok(Some(commands::npm_fallback::run("set-script", &args.args)?));
+            return Ok(Some(commands::npm_fallback::run(
+                "set-script",
+                &args.args,
+                cli.registry.as_deref(),
+            )?));
         }
         Some(Commands::Start(args)) => {
             commands::run::run_script(
@@ -822,7 +838,11 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             .await?;
         }
         Some(Commands::Token(args)) => {
-            return Ok(Some(commands::npm_fallback::run("token", &args.args)?));
+            return Ok(Some(commands::npm_fallback::run(
+                "token",
+                &args.args,
+                cli.registry.as_deref(),
+            )?));
         }
         Some(Commands::Undeprecate(args)) => commands::undeprecate::run(args).await?,
         Some(Commands::Unlink(args)) => commands::unlink::run(args).await?,
@@ -834,7 +854,11 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Version(args)) => commands::version::run(args).await?,
         Some(Commands::View(args)) => commands::view::run(args).await?,
         Some(Commands::Whoami(args)) => {
-            return Ok(Some(commands::npm_fallback::run("whoami", &args.args)?));
+            return Ok(Some(commands::npm_fallback::run(
+                "whoami",
+                &args.args,
+                cli.registry.as_deref(),
+            )?));
         }
         Some(Commands::Why(args)) => commands::why::run(args, effective_filter.clone()).await?,
         Some(Commands::Usage) => {
