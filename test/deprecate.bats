@@ -58,7 +58,7 @@ _deprecated_field() {
 	_require_registry
 	run aube deprecate 'is-odd@3.0.1' 'please use is-even'
 	assert_success
-	assert_output --partial 'Deprecated 1 version(s) of is-odd'
+	assert_output --partial 'Deprecated 1 version of is-odd'
 	assert_output --partial '3.0.1'
 
 	run _deprecated_field is-odd 3.0.1
@@ -72,7 +72,7 @@ _deprecated_field() {
 
 	run aube undeprecate 'is-odd@0.1.2'
 	assert_success
-	assert_output --partial 'Undeprecated 1 version(s) of is-odd'
+	assert_output --partial 'Undeprecated 1 version of is-odd'
 
 	# After undeprecate the field is either absent or the empty string,
 	# depending on what the registry does with `deprecated: ""`. Both
@@ -89,7 +89,7 @@ _deprecated_field() {
 	_require_registry
 	run aube deprecate --dry-run 'is-number@3.0.0' 'noop'
 	assert_success
-	assert_output --partial 'Would deprecate 1 version(s) of is-number'
+	assert_output --partial 'Would deprecate 1 version of is-number'
 
 	run _deprecated_field is-number 3.0.0
 	assert_output 'null'
