@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -39,12 +38,10 @@ pub struct InstallState {
     pub lockfile_hash: String,
     pub package_json_hashes: BTreeMap<String, String>,
     pub aube_version: String,
-    /// Whether this install omitted at least one dependency section (`--prod`
-    /// or `--dev`). Used so `ensure_installed` can trigger a full re-install
-    /// when a subsequent command needs deps that are not present.
-    /// Pre-existing state files without this field deserialize as `false`.
     #[serde(default, rename = "prod")]
     pub section_filtered: bool,
+    #[serde(default)]
+    pub settings_hash: String,
 }
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
@@ -96,16 +93,16 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         }
     }
 
-    // If the last install was section-filtered, part of the dependency graph
-    // is missing even though the lockfile + manifest hashes match. Auto-install
-    // the full graph to avoid silent "module not found" errors at runtime.
     if state.section_filtered {
         return Some(
             "previous install omitted dependency sections; auto-installing full graph".into(),
         );
     }
 
-    // TODO: check workspace package.json hashes
+    let current_settings_hash = hash_settings(project_dir);
+    if current_settings_hash != state.settings_hash {
+        return Some(".npmrc or workspace config has changed".into());
+    }
 
     None
 }
@@ -134,6 +131,7 @@ pub fn write_state(project_dir: &Path, section_filtered: bool) -> Result<(), std
         package_json_hashes,
         aube_version: env!("CARGO_PKG_VERSION").to_string(),
         section_filtered,
+        settings_hash: hash_settings(project_dir),
     };
 
     let state_path = state_file(project_dir);
@@ -220,10 +218,25 @@ fn read_state(path: &PathBuf) -> Option<InstallState> {
     serde_json::from_str(&content).ok()
 }
 
+fn hash_settings(project_dir: &Path) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for name in [".npmrc", "pnpm-workspace.yaml", "aube-workspace.yaml"] {
+        let path = project_dir.join(name);
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+        if let Ok(bytes) = std::fs::read(&path) {
+            hasher.update(&bytes);
+        }
+        hasher.update(b"\0");
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
 fn hash_file(path: &Path) -> String {
+    // BLAKE3 is 3–5× faster than SHA-256 on the state-check hot path.
+    // The `"blake3:"` prefix makes old `"sha256:"` state mismatch on
+    // first run after upgrade, which correctly triggers a rebuild.
     let content = std::fs::read(path).unwrap_or_default();
-    let mut hasher = Sha256::new();
-    hasher.update(&content);
-    let hash = hasher.finalize();
-    format!("sha256:{}", hex::encode(hash))
+    let hash = blake3::hash(&content);
+    format!("blake3:{}", hash.to_hex())
 }

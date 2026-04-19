@@ -1656,6 +1656,62 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         let _ = state::remove_state(&cwd);
     }
 
+    // Warm-path short-circuit: when the state file says the tree is
+    // fresh and no flag demands a full re-run, skip the resolve → fetch
+    // → link pipeline entirely and emit the same "Already up to date"
+    // line the full path would print. Mirrors the check already wired
+    // into `ensure_installed` (see `commands::mod.rs::ensure_installed`).
+    // Gated so any flag that implies real work falls through to the
+    // main pipeline.
+    // `modulesCacheMaxAge` drives the orphan sweep that runs at the
+    // end of every successful install. When users explicitly tune
+    // this setting (e.g. `modulesCacheMaxAge=1` to force sweeping on
+    // every run), the sweep is load-bearing — skipping the full
+    // pipeline would leave planted orphans in place until a dep
+    // change forced a re-install. The default (10080 min = 7 days)
+    // is effectively a no-op on a state-matched warm install (no
+    // orphans accumulate when deps are unchanged), so we keep the
+    // fast path only when the setting is at its default.
+    let warm_path_eligible = matches!(opts.mode, FrozenMode::Prefer)
+        && !opts.force
+        && !opts.lockfile_only
+        && !opts.prod
+        && !opts.dev
+        && !opts.no_optional
+        && !opts.merge_git_branch_lockfiles
+        && !opts.strict_no_lockfile
+        && !opts.dangerously_allow_all_builds
+        && opts.workspace_filter.is_empty()
+        && super::with_settings_ctx(&cwd, |ctx| {
+            aube_settings::resolved::modules_cache_max_age(ctx) == 10080
+        })
+        && state::check_needs_install(&cwd).is_none();
+
+    if warm_path_eligible {
+        // Gate on the same condition as `InstallProgress::try_new`:
+        // line-oriented reporters (`--reporter=ndjson`, `--reporter=json`)
+        // and text mode (`-v` / `--silent`) stay silent on no-op installs,
+        // matching the full-path behavior where `prog_ref` is `None` and
+        // `print_install_summary` is never called. `--silent` additionally
+        // has its `SilentStderrGuard` redirect fd 2 to /dev/null, so this
+        // check is belt-and-suspenders for `-v` and the JSON reporters.
+        if clx::progress::output() != clx::progress::ProgressOutput::Text {
+            use clx::style;
+            use std::io::Write;
+            let line = format!(
+                "{} {} {} {} {}",
+                style::emagenta("aube").bold(),
+                style::edim(env!("CARGO_PKG_VERSION")),
+                style::edim("by en.dev"),
+                style::edim("·"),
+                style::egreen("Already up to date").bold(),
+            );
+            let _ = writeln!(std::io::stderr(), "{line}");
+        }
+        let _ = start;
+        return Ok(());
+    }
+
     // 1. Read package.json
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
         .into_diagnostic()

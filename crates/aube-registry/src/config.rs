@@ -613,6 +613,20 @@ fn translate_npm_config_env(name: &str, value: &str) -> Option<(String, String)>
 /// registry of "which keys map to which setting" in `settings.toml`
 /// instead of scattering it through a hand-rolled parser.
 pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
+    // Process-wide memoization keyed by project_dir. `.npmrc` files are
+    // not expected to change mid-install, and callers on the hot path
+    // (main startup, `with_settings_ctx`, install::run) invoke this
+    // repeatedly with the same path. Same pattern as
+    // `aube_lockfile::aube_lock_filename`.
+    use std::sync::{Mutex, OnceLock};
+    type CacheMap = std::collections::HashMap<PathBuf, Vec<(String, String)>>;
+    static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(map) = cache.lock()
+        && let Some(hit) = map.get(project_dir)
+    {
+        return hit.clone();
+    }
     // Read `XDG_CONFIG_HOME` only on the public entry point so that
     // `pnpm` and `aube` agree on where `~/.config/pnpm/auth.ini`
     // resolves when the user has a non-default XDG layout. The env
@@ -635,12 +649,16 @@ pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
         .ok()
         .or_else(|| std::env::var("npm_config_userconfig").ok())
         .and_then(|raw| expand_userconfig_path(&raw, home.as_deref()));
-    load_npmrc_entries_with_home(
+    let entries = load_npmrc_entries_with_home(
         home.as_deref(),
         xdg.as_deref(),
         project_dir,
         user_rc_override.as_deref(),
-    )
+    );
+    if let Ok(mut map) = cache.lock() {
+        map.insert(project_dir.to_path_buf(), entries.clone());
+    }
+    entries
 }
 
 /// Same as [`load_npmrc_entries_with_home`] but each entry is tagged

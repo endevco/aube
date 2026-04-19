@@ -389,7 +389,32 @@ impl WorkspaceConfig {
 /// Returns an empty map if no file exists — same semantics as `load`.
 /// File-precedence rules match `load`: `aube-workspace.yaml` wins
 /// over `pnpm-workspace.yaml`.
+// Process-wide memoization for the raw workspace-yaml map. Hot-path
+// callers (`with_settings_ctx`, `aube_lock_filename`, `take_project_lock`,
+// and the install-path `load_both` caller) all hit this with the same
+// cwd. Same pattern as `aube_lockfile::aube_lock_filename`. Both
+// `load_raw` and `load_both` populate + read this cache so a later
+// `load_raw` after `load_both` doesn't re-read the file.
+type RawCacheMap =
+    std::collections::HashMap<std::path::PathBuf, BTreeMap<String, serde_yaml::Value>>;
+static RAW_CACHE: std::sync::OnceLock<std::sync::Mutex<RawCacheMap>> = std::sync::OnceLock::new();
+
+fn raw_cache_lookup(project_dir: &Path) -> Option<BTreeMap<String, serde_yaml::Value>> {
+    let cache = RAW_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    cache.lock().ok()?.get(project_dir).cloned()
+}
+
+fn raw_cache_insert(project_dir: &Path, value: BTreeMap<String, serde_yaml::Value>) {
+    let cache = RAW_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut map) = cache.lock() {
+        map.insert(project_dir.to_path_buf(), value);
+    }
+}
+
 pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value>, crate::Error> {
+    if let Some(hit) = raw_cache_lookup(project_dir) {
+        return Ok(hit);
+    }
     for name in ["aube-workspace.yaml", "pnpm-workspace.yaml"] {
         let path = project_dir.join(name);
         if path.exists() {
@@ -399,12 +424,16 @@ pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value
             // handle that explicitly so callers don't see a spurious
             // parse error on a legitimately-empty workspace file.
             if content.trim().is_empty() {
+                raw_cache_insert(project_dir, BTreeMap::new());
                 return Ok(BTreeMap::new());
             }
-            return serde_yaml::from_str(&content)
-                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()));
+            let parsed: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_str(&content)
+                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+            raw_cache_insert(project_dir, parsed.clone());
+            return Ok(parsed);
         }
     }
+    raw_cache_insert(project_dir, BTreeMap::new());
     Ok(BTreeMap::new())
 }
 
@@ -424,15 +453,20 @@ pub fn load_both(
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
             if content.trim().is_empty() {
+                raw_cache_insert(project_dir, BTreeMap::new());
                 return Ok((WorkspaceConfig::default(), BTreeMap::new()));
             }
-            let typed: WorkspaceConfig = serde_yaml::from_str(&content)
+            let value: serde_yaml::Value = serde_yaml::from_str(&content)
                 .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
-            let raw: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_str(&content)
+            let typed: WorkspaceConfig = serde_yaml::from_value(value.clone())
                 .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+            let raw: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value)
+                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+            raw_cache_insert(project_dir, raw.clone());
             return Ok((typed, raw));
         }
     }
+    raw_cache_insert(project_dir, BTreeMap::new());
     Ok((WorkspaceConfig::default(), BTreeMap::new()))
 }
 
