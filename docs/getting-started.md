@@ -41,13 +41,3 @@ install first; repeated runs skip that work.
   catalogs, workspace dependencies, and deploys.
 - [Lifecycle scripts](/package-manager/lifecycle-scripts) explains the
   dependency script allowlist model.
-
-## Why aube?
-
-- **Fast.** Parallel resolver, registry fetcher, and linker. See the
-  [benchmarks](/benchmarks).
-- **Existing lockfiles.** aube reads and writes `pnpm-lock.yaml`,
-  `package-lock.json`, `npm-shrinkwrap.json`,
-  `yarn.lock` (both v1 classic and v2+ berry), and `bun.lock` in place —
-  whichever lockfile kind your project already has stays the source of truth.
-- **Safe.** Dependency build approval follows pnpm v11's allowlist model.
