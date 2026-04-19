@@ -88,10 +88,10 @@ machines and over time:
 
 ```bash
 flock /tmp/aube-bench.lock \
-  env BENCH_HERMETIC=1 BENCH_BANDWIDTH=100mbit mise run bench
+  env BENCH_HERMETIC=1 BENCH_BANDWIDTH=500mbit mise run bench
 ```
 
-`BENCH_HERMETIC=1` removes npmjs CDN variance; `BENCH_BANDWIDTH=100mbit`
+`BENCH_HERMETIC=1` removes npmjs CDN variance; `BENCH_BANDWIDTH=500mbit`
 pins the simulated link at a "fast home broadband" baseline so two
 runs on different ISPs / CI runners produce comparable numbers. Drop
 the bandwidth cap (or raise it) for loopback-speed measurements; lower
