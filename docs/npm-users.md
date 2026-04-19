@@ -45,15 +45,4 @@ installs keep writing `aube-lock.yaml`.
 - Global installs live under aube's global package directory instead of npm's
   shared global `node_modules`.
 
-## Rollout checklist
-
-- Run `aube install`.
-- Commit the updated `package-lock.json` (or `npm-shrinkwrap.json`) so npm
-  and aube users both see the same resolved versions.
-- Update one CI job from `npm ci` or `npm install` to `aube ci` or
-  `aube install`.
-- Run the same test scripts you run after npm installs.
-- Convert to `aube-lock.yaml` later only if the team chooses to standardize on
-  aube's lockfile.
-
 Reference: [npm install](https://docs.npmjs.com/cli/v10/commands/npm-install)

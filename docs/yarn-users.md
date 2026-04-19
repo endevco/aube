@@ -62,17 +62,6 @@ can drop in against the same `yarn.lock`.
   `pnpm-workspace.yaml` when the project already has one).
 - Dependency lifecycle script approval follows the pnpm v11 allowlist model.
 
-## Rollout checklist
-
-- Run `aube install`.
-- Commit the updated `yarn.lock` so Yarn and aube users both see the same
-  resolved versions.
-- Update one CI job from `yarn install --frozen-lockfile` to `aube ci` or
-  `aube install --frozen-lockfile`.
-- Run the same test scripts you run after Yarn installs.
-- Convert to `aube-lock.yaml` later only if the team chooses to standardize on
-  aube's lockfile.
-
 References:
 [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)
 ·

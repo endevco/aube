@@ -45,15 +45,4 @@ future installs keep writing `aube-lock.yaml`.
 - Dependency lifecycle script approval follows the pnpm v11 allowlist
   model, not Bun's `trustedDependencies` list.
 
-## Rollout checklist
-
-- Run `aube install`.
-- Commit the updated `bun.lock` so Bun and aube users both see the same
-  resolved versions.
-- Update one CI job from `bun install --frozen-lockfile` to `aube ci` or
-  `aube install --frozen-lockfile`.
-- Run the same test scripts you run after Bun installs.
-- Convert to `aube-lock.yaml` later only if the team chooses to
-  standardize on aube's lockfile.
-
 Reference: [bun install](https://bun.sh/docs/cli/install)
