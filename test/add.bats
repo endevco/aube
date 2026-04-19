@@ -197,6 +197,38 @@ EOF
 	assert_file_exists node_modules/is-even/index.js
 }
 
+@test "aube add --filter updates workspace root lockfile and install layout" {
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - packages/*
+	EOF
+	cat >package.json <<-'EOF'
+		{"name": "root", "version": "0.0.0", "private": true}
+	EOF
+	mkdir -p packages/dashboard packages/api
+	cat >packages/dashboard/package.json <<-'EOF'
+		{"name": "dashboard", "version": "0.0.0", "private": true}
+	EOF
+	cat >packages/api/package.json <<-'EOF'
+		{"name": "api", "version": "0.0.0", "private": true}
+	EOF
+
+	run aube add is-odd --filter=dashboard
+	assert_success
+
+	run cat packages/dashboard/package.json
+	assert_output --partial '"is-odd": "^3.0.1"'
+	run cat packages/api/package.json
+	refute_output --partial '"is-odd"'
+
+	assert_file_exists aube-lock.yaml
+	run test -e packages/dashboard/aube-lock.yaml
+	assert_failure
+	assert_file_exists packages/dashboard/node_modules/is-odd/index.js
+	run test -e packages/api/node_modules/is-odd/index.js
+	assert_failure
+}
+
 @test "aube add -D: moves dep from dependencies to devDependencies" {
 	cat >package.json <<'EOF'
 {
