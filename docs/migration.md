@@ -15,9 +15,9 @@ without forcing every contributor or CI job to switch at the same time.
 | Existing project | Lockfile aube reads | Migration guide |
 | --- | --- | --- |
 | pnpm | `pnpm-lock.yaml` v9 | [For pnpm users](/pnpm-users) |
-| npm | `package-lock.json`, `npm-shrinkwrap.json` | [npm migration](/npm-migration) |
-| Yarn classic | `yarn.lock` v1 | [Yarn migration](/yarn-migration) |
-| Yarn berry | `yarn.lock` v2+ | [Yarn migration](/yarn-migration) |
+| npm | `package-lock.json`, `npm-shrinkwrap.json` | [For npm users](/npm-migration) |
+| Yarn classic | `yarn.lock` v1 | [For yarn users](/yarn-migration) |
+| Yarn berry | `yarn.lock` v2+ | [For yarn users](/yarn-migration) |
 | Bun | `bun.lock` | This page |
 
 Every path starts the same way:

@@ -1,4 +1,4 @@
-# npm migration
+# For npm users
 
 aube can install directly from npm lockfiles. You do not need to delete
 `package-lock.json`, remove `node_modules`, or translate dependency ranges
