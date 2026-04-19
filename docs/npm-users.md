@@ -15,9 +15,8 @@ aube reads:
 - `package-lock.json`
 - `npm-shrinkwrap.json`
 
-It updates whichever of those two files the project already has on disk (no
-surprise `aube-lock.yaml` appears alongside it) and installs packages into
-`node_modules/.aube/`.
+It updates whichever of those two files the project already has on disk and
+installs packages into `node_modules/.aube/`.
 
 ## Keep npm working during rollout
 

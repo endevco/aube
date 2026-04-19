@@ -10,9 +10,8 @@ translate dependency ranges before trying aube.
 aube install
 ```
 
-aube reads and updates Yarn v1 `yarn.lock` in place (no surprise
-`aube-lock.yaml` appears alongside it) and installs packages into
-`node_modules/.aube/`.
+aube reads and updates Yarn v1 `yarn.lock` in place and installs packages
+into `node_modules/.aube/`.
 
 Commit the updated `yarn.lock` so Yarn classic users and aube users see the
 same resolved versions. You do not need `aube import` for a normal rollout;

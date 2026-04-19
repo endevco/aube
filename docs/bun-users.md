@@ -11,8 +11,7 @@ aube install
 ```
 
 aube reads and updates the text-format `bun.lock` at `lockfileVersion: 1`
-in place (no surprise `aube-lock.yaml` appears alongside it) and installs
-packages into `node_modules/.aube/`.
+in place and installs packages into `node_modules/.aube/`.
 
 aube does not read Bun's older binary `bun.lockb` format. Projects still
 on `bun.lockb` can generate the text lockfile with a modern Bun once:
