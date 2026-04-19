@@ -17,6 +17,7 @@ log = { workspace = true }
 reflink-copy = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
+strum = { workspace = true }
 pathdiff = "0.2"
 glob = { workspace = true }
 diffy = { workspace = true }

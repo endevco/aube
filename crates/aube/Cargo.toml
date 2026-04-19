@@ -42,6 +42,7 @@ aube-workspace = { workspace = true }
 xx = { workspace = true }
 clap = { workspace = true }
 clap_usage = "2"
+strum = { workspace = true }
 clx = { workspace = true }
 console = "0.16"
 demand = "2"

@@ -97,34 +97,25 @@ pub struct AuditArgs {
     pub prod: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    clap::ValueEnum,
+    strum::Display,
+    strum::EnumString,
+)]
 #[value(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Severity {
     Low,
     Moderate,
     High,
     Critical,
-}
-
-impl Severity {
-    fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "low" => Some(Self::Low),
-            "moderate" => Some(Self::Moderate),
-            "high" => Some(Self::High),
-            "critical" => Some(Self::Critical),
-            _ => None,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Moderate => "moderate",
-            Self::High => "high",
-            Self::Critical => "critical",
-        }
-    }
 }
 
 pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Result<()> {
@@ -331,7 +322,7 @@ async fn filter_unfixable(
         let has_in_threshold = arr.iter().any(|adv| {
             adv.get("severity")
                 .and_then(|s| s.as_str())
-                .and_then(Severity::parse)
+                .and_then(|s| s.parse::<Severity>().ok())
                 .is_some_and(|s| s >= threshold)
         });
         if !has_in_threshold {
@@ -505,7 +496,7 @@ fn flatten_advisories(v: &serde_json::Value, threshold: Severity) -> Vec<Row> {
                 .get("severity")
                 .and_then(|s| s.as_str())
                 .unwrap_or("low");
-            let Some(sev) = Severity::parse(sev_str) else {
+            let Ok(sev) = sev_str.parse::<Severity>() else {
                 continue;
             };
             if sev < threshold {
@@ -556,7 +547,7 @@ fn filter_json_by_level(v: &serde_json::Value, threshold: Severity) -> serde_jso
             .filter(|adv| {
                 adv.get("severity")
                     .and_then(|s| s.as_str())
-                    .and_then(Severity::parse)
+                    .and_then(|s| s.parse::<Severity>().ok())
                     .is_some_and(|s| s >= threshold)
             })
             .cloned()
@@ -590,10 +581,7 @@ fn render_table(rows: &[Row]) {
     for row in rows {
         println!(
             "{:<sev_w$}  {:<name_w$}  {:<vul_w$}  {}",
-            row.severity.as_str(),
-            row.name,
-            row.vulnerable_versions,
-            row.title,
+            row.severity, row.name, row.vulnerable_versions, row.title,
         );
         if !row.url.is_empty() {
             println!("{:<sev_w$}  {:<name_w$}  {}", "", "", row.url);

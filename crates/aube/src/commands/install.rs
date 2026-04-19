@@ -4324,7 +4324,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         if trimmed == "pnp" {
             return Err(reject_pnp);
         }
-        aube_linker::NodeLinker::parse(&trimmed).ok_or_else(|| {
+        trimmed.parse::<aube_linker::NodeLinker>().map_err(|_| {
             miette!("unknown --node-linker value `{cli}`; expected `isolated` or `hoisted`")
         })?
     } else {

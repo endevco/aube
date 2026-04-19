@@ -28,25 +28,16 @@ pub use sys::{
 /// nested under the requiring parent. `Hoisted` is slower to
 /// materialize and uses more disk, but matches the layout a handful
 /// of legacy toolchains still expect.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// `FromStr` is case-insensitive so settings-file and CLI inputs like
+/// `Isolated` or `HOISTED` parse the same as the canonical lowercase
+/// spellings. Callers that accept user input should still `trim()`
+/// before parsing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, strum::EnumString)]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum NodeLinker {
     #[default]
     Isolated,
     Hoisted,
-}
-
-impl NodeLinker {
-    /// Parse the value of the `node-linker` setting. Returns `None`
-    /// on unknown input so the caller can surface a clear diagnostic
-    /// (or fall back to the default) instead of silently picking a
-    /// layout.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "isolated" => Some(NodeLinker::Isolated),
-            "hoisted" => Some(NodeLinker::Hoisted),
-            _ => None,
-        }
-    }
 }
 
 /// Links packages from the global store into a project's node_modules/.
