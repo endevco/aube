@@ -5471,6 +5471,7 @@
           "hide": false,
           "choices": {
             "choices": [
+              "trace",
               "debug",
               "info",
               "warn",

@@ -79,6 +79,7 @@ Set the log level. Logs at or above this level are shown
 
 **Choices:**
 
+- `trace`
 - `debug`
 - `info`
 - `warn`
