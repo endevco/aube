@@ -556,6 +556,12 @@ pub(crate) async fn run_dep_lifecycle_scripts(
         name: String,
         version: String,
         package_dir: std::path::PathBuf,
+        /// Directory containing the dep package and its sibling
+        /// symlinks — i.e. `package_dir`'s enclosing `node_modules/`.
+        /// `<dep_modules_dir>/.bin` is prepended to PATH so the
+        /// postinstall can call binaries declared in the dep's own
+        /// `dependencies`. See `link_dep_bins` for the write side.
+        dep_modules_dir: std::path::PathBuf,
         manifest: aube_manifest::PackageJson,
         cache_entry: Option<SideEffectsCacheEntry>,
     }
@@ -628,10 +634,12 @@ pub(crate) async fn run_dep_lifecycle_scripts(
             .root()
             .map(|root| SideEffectsCacheEntry::new(root, &pkg.name, &pkg.version, &package_dir))
             .transpose()?;
+        let dep_modules_dir = dep_modules_dir_for(&package_dir, &pkg.name);
         jobs.push(BuildJob {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
             package_dir,
+            dep_modules_dir,
             manifest: dep_manifest,
             cache_entry,
         });
@@ -695,6 +703,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
                 let did_run = aube_scripts::run_dep_hook(
                     &job.package_dir,
+                    &job.dep_modules_dir,
                     &project_dir,
                     &modules_dir_name,
                     &job.manifest,
@@ -3450,6 +3459,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 }
             }
         }
+        link_dep_bins(
+            &aube_dir,
+            &graph_for_link,
+            virtual_store_dir_max_length,
+            placements_ref,
+            shim_opts,
+        )?;
         tracing::debug!("phase:link_bins {:.1?}", phase_start.elapsed());
     }
 
@@ -3887,6 +3903,26 @@ fn materialized_pkg_dir(
         .join(name)
 }
 
+/// Directory holding the dep's own `node_modules/` — i.e. the dir
+/// that contains both `<name>` and its sibling symlinks. For scoped
+/// packages (`@scope/name`) `package_dir` is two levels below that
+/// `node_modules/`, so we strip the extra `@scope` hop. Used to
+/// locate the per-dep `.bin/` for transitive lifecycle-script bins.
+fn dep_modules_dir_for(package_dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    if name.starts_with('@') {
+        package_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| package_dir.to_path_buf())
+    } else {
+        package_dir
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| package_dir.to_path_buf())
+    }
+}
+
 /// Read a dep's `package.json` from its materialized directory.
 ///
 /// Earlier revisions of this file went through
@@ -4014,6 +4050,80 @@ fn link_bins(
         )?;
     }
 
+    Ok(())
+}
+
+/// Write per-dep `.bin/` directories holding shims for each package's
+/// *own* declared dependencies. Mirrors pnpm's post-link pass that
+/// populates `node_modules/.pnpm/<dep_path>/node_modules/.bin/`.
+///
+/// Without this, a dep's lifecycle script (e.g. `unrs-resolver`'s
+/// postinstall that calls `prebuild-install`) can't find transitive
+/// binaries on PATH — the project-level `node_modules/.bin` only holds
+/// shims for the root's *direct* deps. `run_dep_hook` prepends the
+/// dep-local `.bin` (via `dep_modules_dir_for`) before the
+/// project-level one so the dep's own transitive bins always win.
+///
+/// Isolated mode only. Hoisted mode materializes deps at the project
+/// root's `node_modules/` and generally relies on the single top-level
+/// `.bin`; nested transitive bins under hoisted are a known rough edge
+/// and out of scope here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn link_dep_bins(
+    aube_dir: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    virtual_store_dir_max_length: usize,
+    placements: Option<&aube_linker::HoistedPlacements>,
+    shim_opts: aube_linker::BinShimOptions,
+) -> miette::Result<()> {
+    if placements.is_some() {
+        // Hoisted — skip. See function doc.
+        return Ok(());
+    }
+    for (dep_path, pkg) in &graph.packages {
+        let pkg_dir = materialized_pkg_dir(
+            aube_dir,
+            dep_path,
+            &pkg.name,
+            virtual_store_dir_max_length,
+            placements,
+        );
+        if !pkg_dir.exists() {
+            // Filtered by optional / platform guards, or a staging
+            // hiccup. Skipping avoids blowing up the whole install on
+            // a dep that was never materialized.
+            continue;
+        }
+        if pkg.dependencies.is_empty() {
+            continue;
+        }
+        let dep_modules_dir = dep_modules_dir_for(&pkg_dir, &pkg.name);
+        let bin_dir = dep_modules_dir.join(".bin");
+        std::fs::create_dir_all(&bin_dir).into_diagnostic()?;
+
+        for (child_name, child_version) in &pkg.dependencies {
+            // Mirror the linker's self-ref guard from
+            // `materialize_into`: a package that depends on its own
+            // dep_path is a graph artefact, not a real edge.
+            let child_dep_path = format!("{child_name}@{child_version}");
+            if child_dep_path == *dep_path && child_name == &pkg.name {
+                continue;
+            }
+            // The sibling may have been filtered (optional on another
+            // platform); `link_bins_for_dep` already returns Ok when
+            // the target pkg_json is absent, so just call through.
+            link_bins_for_dep(
+                aube_dir,
+                &bin_dir,
+                graph,
+                &child_dep_path,
+                child_name,
+                virtual_store_dir_max_length,
+                placements,
+                shim_opts,
+            )?;
+        }
+    }
     Ok(())
 }
 

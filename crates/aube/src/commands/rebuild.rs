@@ -89,6 +89,24 @@ pub async fn run(
                 } else {
                     None
                 };
+            // Re-emit per-dep `.bin/` shims so a rebuild on a tree
+            // that pre-dates the transitive-bin fix still lands them
+            // on PATH for the lifecycle scripts. `link_bins_for_dep`
+            // is idempotent, so re-running on an already-wired tree
+            // is a no-op.
+            let shim_opts = aube_linker::BinShimOptions {
+                extend_node_path: aube_settings::resolved::extend_node_path(&settings_ctx),
+                prefer_symlinked_executables: aube_settings::resolved::prefer_symlinked_executables(
+                    &settings_ctx,
+                ),
+            };
+            super::install::link_dep_bins(
+                &aube_dir,
+                &graph,
+                super::resolve_virtual_store_dir_max_length(&settings_ctx),
+                hoisted_placements.as_ref(),
+                shim_opts,
+            )?;
             super::install::run_dep_lifecycle_scripts(
                 &cwd,
                 &modules_dir_name,

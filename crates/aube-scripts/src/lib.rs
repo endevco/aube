@@ -216,6 +216,13 @@ pub fn child_stderr() -> std::process::Stdio {
 /// environment (`$PATH` extended with `node_modules/.bin`, `INIT_CWD`,
 /// `npm_lifecycle_event`, `npm_package_name`, `npm_package_version`).
 ///
+/// `extra_bin_dir` is an optional directory prepended to `PATH` *before*
+/// the project-level `.bin`. Dep lifecycle scripts pass the dep's own
+/// sibling `node_modules/.bin/` so transitive binaries (e.g.
+/// `prebuild-install`, `node-gyp`) declared in the dep's
+/// `dependencies` are reachable. Root scripts pass `None` — their
+/// transitive bins are already hoisted into the project-level `.bin`.
+///
 /// Inherits stdio from the parent so the user sees script output live.
 /// Returns Err on non-zero exit so install fails fast if a lifecycle
 /// script breaks, matching pnpm.
@@ -226,17 +233,24 @@ pub async fn run_script(
     manifest: &PackageJson,
     script_name: &str,
     script_cmd: &str,
+    extra_bin_dir: Option<&Path>,
 ) -> Result<(), Error> {
-    // PATH always gets the project root's `<modules_dir>/.bin`. For
-    // root scripts `script_dir == project_root`, so this matches the
-    // old behavior; for dep scripts the dep's own `node_modules/.bin`
-    // doesn't exist inside the virtual store, so we need the real
-    // project-level one where tools like `node-gyp` live.
-    // `modules_dir_name` honors pnpm's `modulesDir` setting — defaults
-    // to `"node_modules"` at the call site, but a workspace may have
-    // configured something else.
-    let bin_dir = project_root.join(modules_dir_name).join(".bin");
-    let new_path = prepend_path(&bin_dir);
+    // PATH prepends (most-local-first): optional `extra_bin_dir` for
+    // dep-local transitive bins, then the project root's
+    // `<modules_dir>/.bin`. For root scripts `script_dir ==
+    // project_root` and `extra_bin_dir` is `None`, which matches the
+    // old behavior. `modules_dir_name` honors pnpm's `modulesDir`
+    // setting — defaults to `"node_modules"` at the call site, but a
+    // workspace may have configured something else.
+    let project_bin = project_root.join(modules_dir_name).join(".bin");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = extra_bin_dir {
+        entries.push(dir.to_path_buf());
+    }
+    entries.push(project_bin);
+    entries.extend(std::env::split_paths(&path));
+    let new_path = std::env::join_paths(entries).unwrap_or(path);
 
     let mut cmd = spawn_shell(script_cmd);
     cmd.current_dir(script_dir)
@@ -299,6 +313,7 @@ pub async fn run_root_hook(
         manifest,
         name,
         script_cmd,
+        None,
     )
     .await?;
     Ok(true)
@@ -362,6 +377,15 @@ pub fn has_dep_lifecycle_work(package_dir: &Path, manifest: &PackageJson) -> boo
 /// `node_modules/.aube/<dep_path>/node_modules/<name>`). The manifest
 /// is the dependency's own `package.json`, *not* the project root's.
 ///
+/// `dep_modules_dir` is the dep's sibling `node_modules/` — i.e.
+/// `package_dir`'s parent for unscoped packages, or `package_dir`'s
+/// grandparent for scoped (`@scope/name`). `<dep_modules_dir>/.bin`
+/// is prepended to `PATH` so the dep's postinstall can spawn tools
+/// declared in its own `dependencies` (the transitive-bin case —
+/// `prebuild-install`, `node-gyp`, `napi-postinstall`). The install
+/// driver writes shims there via `link_dep_bins`; `rebuild` mirrors
+/// the same pass.
+///
 /// For the `install` hook specifically, if the manifest leaves both
 /// `install` and `preinstall` empty but the package has a top-level
 /// `binding.gyp`, this falls back to running `node-gyp rebuild` — the
@@ -372,6 +396,7 @@ pub fn has_dep_lifecycle_work(package_dir: &Path, manifest: &PackageJson) -> boo
 /// `--ignore-scripts`. Returns `Ok(false)` if the hook wasn't defined.
 pub async fn run_dep_hook(
     package_dir: &Path,
+    dep_modules_dir: &Path,
     project_root: &Path,
     modules_dir_name: &str,
     manifest: &PackageJson,
@@ -388,6 +413,7 @@ pub async fn run_dep_hook(
             _ => return Ok(false),
         },
     };
+    let dep_bin_dir = dep_modules_dir.join(".bin");
     run_script(
         package_dir,
         project_root,
@@ -395,6 +421,7 @@ pub async fn run_dep_hook(
         manifest,
         name,
         script_cmd,
+        Some(&dep_bin_dir),
     )
     .await?;
     Ok(true)

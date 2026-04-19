@@ -270,3 +270,38 @@ JSON
 	refute_output --partial "Running preinstall"
 	refute_output --partial "Running postinstall"
 }
+
+# -- Dep lifecycle scripts can invoke transitive bins -------------------------
+
+# Regression test for the bug where a dep's postinstall couldn't spawn
+# a bin declared in the dep's own `dependencies` (e.g.
+# `unrs-resolver`'s postinstall calling `prebuild-install`). The fix
+# writes a per-dep `.bin/` at `.aube/<subdir>/node_modules/.bin/` and
+# prepends it to PATH when the dep's lifecycle scripts run.
+#
+# Fixtures: `aube-test-transitive-consumer` depends on
+# `aube-test-transitive-bin` (which ships a bin named
+# `aube-transitive-bin-probe`) and has `postinstall:
+# "aube-transitive-bin-probe"`. The probe writes
+# `aube-transitive-bin-probe.txt` into `$INIT_CWD` when it runs, so
+# the marker's presence proves the transitive bin was reachable on
+# PATH during the dep's lifecycle script.
+@test "dep postinstall can invoke a transitive-dep bin by bare name" {
+	cat >package.json <<'JSON'
+{
+  "name": "transitive-bin-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-transitive-consumer": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-transitive-consumer": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists aube-transitive-bin-probe.txt
+}
