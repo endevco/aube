@@ -256,11 +256,42 @@ fn detect_interpreter(target: &Path) -> String {
                 .and_then(|p| p.rsplit('/').next())
                 .unwrap_or("node")
         };
-        if !prog.is_empty() {
+        // `prog` is later interpolated verbatim into `.cmd` / `.ps1`
+        // / `.sh` shim templates. Any byte outside a conservative
+        // identifier class would let an attacker-published bin
+        // script (whose shebang we are parsing right here) break
+        // out of the shim's quoted strings and run arbitrary cmd
+        // commands on every shim invocation. Reject anything that
+        // is not shell-safe on every supported platform and fall
+        // through to the extension-based default.
+        if is_safe_prog(prog) {
             return prog.to_string();
         }
+        // Unsafe shebang. Log it rather than rewriting silently so
+        // the fall-through is visible in install output. Both path
+        // and prog go through Debug formatting so any terminal
+        // escape sequences smuggled in either one are printed as
+        // escaped literals rather than acted on by the terminal.
+        log::warn!("ignoring unsafe shebang interpreter in {target:?}: {prog:?}");
     }
-    // Default based on extension
+    default_interpreter_for_extension(target)
+}
+
+/// The character class `prog` is allowed to draw from. Derived from
+/// the set of tokens that appear as real npm package interpreter
+/// shebangs (`node`, `bash`, `sh`, `python3`, `python3.11`, `ruby`,
+/// `deno`, `bun`) — all ASCII alphanumerics plus `.`, `_`, `+`, `-`.
+/// Rejects `"`, `&`, `|`, `<`, `>`, `^`, `%`, NUL, whitespace, and
+/// every other cmd.exe / PowerShell / sh metacharacter.
+fn is_safe_prog(prog: &str) -> bool {
+    !prog.is_empty()
+        && prog.len() <= 64
+        && prog
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+fn default_interpreter_for_extension(target: &Path) -> String {
     match target.extension().and_then(|e| e.to_str()) {
         Some("js" | "cjs" | "mjs") | None => "node".to_string(),
         Some("cmd" | "bat") => "cmd".to_string(),
@@ -270,8 +301,25 @@ fn detect_interpreter(target: &Path) -> String {
     }
 }
 
+/// Run-time substitute for any `prog` that reaches a shim generator
+/// without passing `is_safe_prog`. Every caller in this crate goes
+/// through `detect_interpreter` and never trips this branch, but a
+/// future caller that bypasses that path would otherwise produce a
+/// shim with attacker-controlled bytes. A `log::error!` is emitted
+/// so the regression is visible in release builds too, not only in
+/// debug.
+fn safe_prog(prog: &str) -> &str {
+    if is_safe_prog(prog) {
+        prog
+    } else {
+        log::error!("refusing to splice unsafe prog {prog:?} into shim, substituting \"node\"");
+        "node"
+    }
+}
+
 #[cfg(windows)]
 fn generate_cmd_shim(prog: &str, rel_target_backslash: &str, extend_node_path: bool) -> String {
+    let prog = safe_prog(prog);
     // NODE_PATH points at the top-level `node_modules` — one level
     // up from `.bin`. `%~dp0` already ends with a backslash.
     let node_path = if extend_node_path {
@@ -293,6 +341,7 @@ fn generate_cmd_shim(prog: &str, rel_target_backslash: &str, extend_node_path: b
 
 #[cfg(windows)]
 fn generate_ps1_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bool) -> String {
+    let prog = safe_prog(prog);
     let node_path = if extend_node_path {
         "$env:NODE_PATH=\"$basedir/..\"\n"
     } else {
@@ -329,6 +378,7 @@ fn generate_ps1_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bo
 
 #[cfg(windows)]
 fn generate_sh_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bool) -> String {
+    let prog = safe_prog(prog);
     let node_path = if extend_node_path {
         "export NODE_PATH=\"$basedir/..\"\n"
     } else {
@@ -371,6 +421,7 @@ pub const POSIX_SHIM_MARKER_PREFIX: &str = "# aube-bin-shim v1 target=";
 /// the shell body.
 #[cfg(unix)]
 fn generate_posix_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bool) -> String {
+    let prog = safe_prog(prog);
     let node_path = if extend_node_path {
         "export NODE_PATH=\"$basedir/..\"\n"
     } else {
@@ -841,5 +892,212 @@ mod tests {
 
         let cmd = std::fs::read_to_string(bin_dir.join("mycli.cmd")).unwrap();
         assert!(!cmd.contains("NODE_PATH"));
+    }
+
+    // ---------------------------------------------------------------
+    // Shebang sanitization (defense against shim-injection RCE).
+    //
+    // `detect_interpreter` feeds `prog` verbatim into the cmd / ps1 /
+    // sh shim templates via `format!`. An attacker-published bin
+    // script whose shebang carries cmd.exe metacharacters would break
+    // out of the quoted path in the generated `.cmd` and execute
+    // arbitrary commands on every shim invocation. `is_safe_prog`
+    // must block every such case and fall through to the
+    // extension-based default.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn is_safe_prog_accepts_real_world_interpreters() {
+        assert!(is_safe_prog("node"));
+        assert!(is_safe_prog("bash"));
+        assert!(is_safe_prog("sh"));
+        assert!(is_safe_prog("python3"));
+        assert!(is_safe_prog("python3.11"));
+        assert!(is_safe_prog("ruby"));
+        assert!(is_safe_prog("deno"));
+        assert!(is_safe_prog("bun"));
+        assert!(is_safe_prog("node18"));
+        assert!(is_safe_prog("node-18"));
+        assert!(is_safe_prog("pwsh"));
+        assert!(is_safe_prog("c++"));
+        assert!(is_safe_prog("ocaml-ng"));
+        assert!(is_safe_prog("tsx_dev"));
+    }
+
+    #[test]
+    fn is_safe_prog_rejects_cmd_metachars() {
+        assert!(!is_safe_prog("node\"&calc&\""));
+        assert!(!is_safe_prog("node&calc"));
+        assert!(!is_safe_prog("node|evil"));
+        assert!(!is_safe_prog("node>out"));
+        assert!(!is_safe_prog("node<in"));
+        assert!(!is_safe_prog("node^x"));
+        assert!(!is_safe_prog("node%PATH%"));
+        assert!(!is_safe_prog("a b"));
+        assert!(!is_safe_prog("node;rm"));
+        assert!(!is_safe_prog("node`evil`"));
+        assert!(!is_safe_prog("node$(evil)"));
+        assert!(!is_safe_prog("node\\evil"));
+        assert!(!is_safe_prog("node/evil"));
+        assert!(!is_safe_prog("node'evil'"));
+    }
+
+    #[test]
+    fn is_safe_prog_rejects_non_ascii() {
+        // Non-ASCII Unicode identifiers are valid in some systems but
+        // never appear in legitimate shebangs and are a signal of an
+        // attack attempting to smuggle lookalike glyphs past naive
+        // string compares. Reject on principle.
+        assert!(!is_safe_prog("ｎode"));
+        assert!(!is_safe_prog("node\u{00a0}"));
+        assert!(!is_safe_prog("nöde"));
+    }
+
+    #[test]
+    fn is_safe_prog_rejects_control_chars() {
+        assert!(!is_safe_prog("node\0"));
+        assert!(!is_safe_prog("node\n"));
+        assert!(!is_safe_prog("node\r"));
+        assert!(!is_safe_prog("node\t"));
+    }
+
+    #[test]
+    fn is_safe_prog_rejects_empty_and_oversize() {
+        assert!(!is_safe_prog(""));
+        let oversize = "a".repeat(65);
+        assert!(!is_safe_prog(&oversize));
+        let at_limit = "a".repeat(64);
+        assert!(is_safe_prog(&at_limit));
+    }
+
+    #[test]
+    fn detect_interpreter_absolute_path_with_cmd_injection_falls_back() {
+        // The classic payload. Without sanitization the generated
+        // .cmd shim would contain `"%~dp0\node"&calc&".exe"` which
+        // cmd.exe parses as an `&calc&` command sequence.
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cli.js");
+        std::fs::write(&script, b"#!/usr/bin/node\"&calc&\"\nbody\n").unwrap();
+        assert_eq!(detect_interpreter(&script), "node");
+    }
+
+    #[test]
+    fn detect_interpreter_env_style_with_cmd_injection_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cli.js");
+        std::fs::write(&script, b"#!/usr/bin/env \"node&calc&\"\nbody\n").unwrap();
+        assert_eq!(detect_interpreter(&script), "node");
+    }
+
+    #[test]
+    fn detect_interpreter_env_flags_with_cmd_injection_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cli.js");
+        std::fs::write(&script, b"#!/usr/bin/env \"x&calc.exe&\"\nbody\n").unwrap();
+        assert_eq!(detect_interpreter(&script), "node");
+    }
+
+    #[test]
+    fn detect_interpreter_fallback_uses_extension() {
+        // Unsafe shebang plus a `.sh` extension falls back to `sh`,
+        // not `node`, because the extension-based default is chosen
+        // after the sanitization rejection.
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cli.sh");
+        std::fs::write(&script, b"#!/usr/bin/env \"bash&evil&\"\nbody\n").unwrap();
+        assert_eq!(detect_interpreter(&script), "sh");
+    }
+
+    #[test]
+    fn detect_interpreter_valid_dotted_version_passes() {
+        // Legitimate case: `python3.11` must still work.
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cli.py");
+        std::fs::write(&script, b"#!/usr/bin/env python3.11\n").unwrap();
+        assert_eq!(detect_interpreter(&script), "python3.11");
+    }
+
+    #[test]
+    fn detect_interpreter_long_prog_rejected_falls_back() {
+        // Anything past 64 chars falls back. No legitimate
+        // interpreter name approaches this length.
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cli.js");
+        let long = "a".repeat(128);
+        let shebang = format!("#!/usr/bin/env {long}\nbody\n");
+        std::fs::write(&script, shebang.as_bytes()).unwrap();
+        assert_eq!(detect_interpreter(&script), "node");
+    }
+
+    // ---------------------------------------------------------------
+    // Production safety net. Even if a future caller hands an unsafe
+    // string straight to a shim generator without going through
+    // `detect_interpreter`, `safe_prog` must substitute a harmless
+    // default rather than splice attacker bytes into the template.
+    // Runs in both debug and release, unlike `debug_assert!`.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn safe_prog_passes_through_valid() {
+        assert_eq!(safe_prog("node"), "node");
+        assert_eq!(safe_prog("python3.11"), "python3.11");
+    }
+
+    #[test]
+    fn safe_prog_substitutes_on_unsafe() {
+        // The core attack payload the shim templates would otherwise
+        // interpolate verbatim. `safe_prog` must never return it.
+        assert_eq!(safe_prog("node\"&calc&\""), "node");
+        assert_eq!(safe_prog(""), "node");
+        assert_eq!(safe_prog("a b"), "node");
+        assert_eq!(safe_prog("node\0"), "node");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generate_cmd_shim_never_splices_unsafe_prog() {
+        // Direct call bypassing `detect_interpreter`. The generated
+        // batch file must not contain the attacker's payload bytes.
+        let shim = generate_cmd_shim("node\"&calc&\"", "..\\pkg\\entry.js", false);
+        assert!(
+            !shim.contains("&calc&"),
+            "unsafe prog spliced into cmd shim:\n{shim}"
+        );
+        assert!(
+            !shim.contains("\"&"),
+            "stray quote-ampersand in cmd shim:\n{shim}"
+        );
+        // Substituted with the safe default.
+        assert!(shim.contains("node.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generate_ps1_shim_never_splices_unsafe_prog() {
+        let shim = generate_ps1_shim("bash&rm", "../pkg/entry.js", false);
+        assert!(
+            !shim.contains("&rm"),
+            "unsafe prog spliced into ps1 shim:\n{shim}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generate_sh_shim_never_splices_unsafe_prog() {
+        let shim = generate_sh_shim("sh;rm", "../pkg/entry.js", false);
+        assert!(
+            !shim.contains(";rm"),
+            "unsafe prog spliced into sh shim:\n{shim}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_posix_shim_never_splices_unsafe_prog() {
+        let shim = generate_posix_shim("sh;rm", "../pkg/entry.js", false);
+        assert!(
+            !shim.contains(";rm"),
+            "unsafe prog spliced into posix shim:\n{shim}"
+        );
     }
 }
