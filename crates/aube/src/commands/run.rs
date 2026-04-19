@@ -166,10 +166,16 @@ fn prompt_for_script() -> miette::Result<String> {
         let label = format!("{name}: {cmd}");
         picker = picker.option(demand::DemandOption::new(name.clone()).label(&label));
     }
-    picker
-        .run()
-        .into_diagnostic()
-        .wrap_err("failed to read script selection")
+    match picker.run() {
+        Ok(name) => Ok(name),
+        // Ctrl-C / Esc cancels the prompt — exit silently with the
+        // conventional SIGINT code rather than printing a miette error
+        // for what was a deliberate user action.
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => std::process::exit(130),
+        Err(e) => Err(e)
+            .into_diagnostic()
+            .wrap_err("failed to read script selection"),
+    }
 }
 
 /// Read `package.json` and return its `scripts` entries in the order
