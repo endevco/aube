@@ -230,8 +230,6 @@ fn same_filter(a: SourceFilter, b: SourceFilter) -> bool {
 fn render_summary(out: &mut String, settings: &[&SettingRef<'_>]) {
     writeln!(out, "## Summary").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "{} settings are listed here.", settings.len()).unwrap();
-    writeln!(out).unwrap();
     writeln!(out, "| Setting | Type | Summary |").unwrap();
     writeln!(out, "| --- | --- | --- |").unwrap();
     for setting in settings {
