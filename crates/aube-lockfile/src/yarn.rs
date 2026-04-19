@@ -560,16 +560,22 @@ fn parse_berry_str(
             continue;
         }
 
+        // Berry writes versions unquoted (`version: 1.0.0`), so
+        // YAML 1.2 core-schema resolution kicks in: three-component
+        // semver parses as a plain string, but a bare integer
+        // (`version: 5`) or two-component value (`version: 1.0`)
+        // parses as number. Coerce both back to a string rather than
+        // reporting "has no version" against a spec that obviously
+        // does.
         let version = block
             .get(serde_yaml::Value::String("version".to_string()))
-            .and_then(|v| v.as_str())
+            .and_then(yaml_scalar_as_string)
             .ok_or_else(|| {
                 Error::Parse(
                     path.to_path_buf(),
                     format!("yarn berry block '{key_str}' has no version"),
                 )
-            })?
-            .to_string();
+            })?;
 
         let resolution = block
             .get(serde_yaml::Value::String("resolution".to_string()))
@@ -840,6 +846,28 @@ fn range_has_protocol(range: &str) -> bool {
     // but yarn itself doesn't emit any and the `file:` spelling
     // handles those deps).
     !head.is_empty() && head.chars().all(|c| c.is_ascii_alphabetic() || c == '+')
+}
+
+/// Render a scalar YAML value as its source-text-equivalent string.
+///
+/// Berry emits `version: 1.0.0` unquoted. Under YAML 1.2 core-schema
+/// resolution (what `serde_yaml` 0.9 uses), that bare token parses
+/// as a string *only because* it has two dots — a bare integer
+/// (`version: 5`) comes out as `Value::Number(5)`, a two-component
+/// value (`version: 1.0`) as a float. Returning those back as
+/// strings matches what a quote-everything serializer would have
+/// produced, so rare packages with one- or two-component versions
+/// don't break parsing against a lockfile yarn itself wrote.
+///
+/// Booleans would behave the same way (`version: yes`), but no real
+/// version string collides with YAML 1.2's bool tokens (`true` /
+/// `false`), so we don't bother unfolding them.
+fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
+    match v {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// Extract a `BTreeMap<name, value>` from a sub-mapping like
@@ -1524,6 +1552,41 @@ __metadata:
         assert_eq!(graph.packages.len(), 1);
         assert!(graph.packages.contains_key("foo@1.0.0"));
         assert!(!graph.packages.contains_key("my-project@0.0.0-use.local"));
+    }
+
+    /// Berry emits `version:` unquoted, and under YAML 1.2 core-schema
+    /// resolution a bare integer (`version: 5`) comes out as a
+    /// number, not a string. Our parser must unfold those back to
+    /// strings instead of failing with "has no version" — real
+    /// packages with fewer-than-three-component versions do exist
+    /// (even if rare).
+    #[test]
+    fn test_parse_berry_unquoted_numeric_version() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"int-version@npm:5":
+  version: 5
+  resolution: "int-version@npm:5"
+  languageName: node
+  linkType: hard
+
+"two-part@npm:1.0":
+  version: 1.0
+  resolution: "two-part@npm:1.0"
+  languageName: node
+  linkType: hard
+"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let manifest = make_manifest(&[], &[]);
+        let graph = parse(tmp.path(), &manifest).unwrap();
+
+        assert!(graph.packages.contains_key("int-version@5"));
+        assert!(graph.packages.contains_key("two-part@1.0"));
+        assert_eq!(graph.packages["int-version@5"].version, "5");
+        assert_eq!(graph.packages["two-part@1.0"].version, "1.0");
     }
 
     /// Berry's `https:` tarball protocol and `git+ssh:` / `git:`
