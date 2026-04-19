@@ -105,10 +105,6 @@ install and switch Node versions:
 mise use node@22
 ```
 
-For a compact command gap list, see the
-[README compatibility notes](https://github.com/endevco/aube#commands-you-may-recognize).
-For command and flag details, see the [CLI reference](/cli/).
-
 ## Typical migration
 
 ```sh
