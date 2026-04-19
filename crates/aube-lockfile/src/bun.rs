@@ -105,11 +105,30 @@ impl BunEntry {
     }
 }
 
+/// Recognize an SRI-style integrity hash (`<algo>-<base64>`).
+///
+/// The prefix check alone isn't enough: a github entry's trailing
+/// `owner-repo-shortsha` could start with a literal `sha1`/`sha256`/etc.
+/// if that's the owner name. A real SRI hash also has a fixed base64
+/// body length for each algo, and base64 never uses `-`, so
+/// `sha1-myrepo-abc123` fails both the length and charset checks.
 fn is_integrity_hash(s: &str) -> bool {
-    matches!(
-        s.split_once('-').map(|(algo, _)| algo),
-        Some("sha512" | "sha384" | "sha256" | "sha1" | "md5")
-    )
+    let Some((algo, body)) = s.split_once('-') else {
+        return false;
+    };
+    let expected_len = match algo {
+        "sha512" => 88,
+        "sha384" => 64,
+        "sha256" => 44,
+        "sha1" => 28,
+        "md5" => 24,
+        _ => return false,
+    };
+    if body.len() != expected_len {
+        return false;
+    }
+    body.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -548,6 +567,33 @@ mod tests {
     }
 
     #[test]
+    fn test_is_integrity_hash() {
+        // Real SRI hashes at their exact base64 lengths.
+        assert!(is_integrity_hash(&format!("sha512-{}", "A".repeat(88))));
+        assert!(is_integrity_hash(&format!("sha256-{}", "A".repeat(44))));
+        assert!(is_integrity_hash(&format!("sha1-{}", "A".repeat(28))));
+        // base64 body with +, /, and = padding is still valid.
+        let mixed = format!("{}+/==", "A".repeat(84));
+        assert_eq!(mixed.len(), 88);
+        assert!(is_integrity_hash(&format!("sha512-{mixed}")));
+
+        // Github dir-id whose owner is literally a hash algo name —
+        // the extra `-` and the wrong length must disqualify it.
+        assert!(!is_integrity_hash("sha1-myrepo-abc123"));
+        assert!(!is_integrity_hash("sha256-owner-repo-deadbee"));
+        // Unknown algo prefix.
+        assert!(!is_integrity_hash("foo-bar"));
+        // Correct algo prefix but the wrong body length.
+        assert!(!is_integrity_hash("sha512-tooshort"));
+        // Right length but contains a forbidden `-` (base64 has no `-`).
+        let with_dash = format!("sha512-{}-{}", "A".repeat(43), "A".repeat(44));
+        assert_eq!(with_dash.len(), "sha512-".len() + 88);
+        assert!(!is_integrity_hash(&with_dash));
+        // No dash at all.
+        assert!(!is_integrity_hash("opaquestring"));
+    }
+
+    #[test]
     fn test_strip_jsonc_trailing_comma() {
         let input = r#"{ "a": 1, "b": 2, }"#;
         let out = strip_jsonc(input);
@@ -573,9 +619,20 @@ mod tests {
         assert_eq!(v["url"], "http://example.com/path");
     }
 
+    /// Build a placeholder SRI hash of the right shape (88-char base64
+    /// body for sha512). Tests need real SRI lengths now that
+    /// `is_integrity_hash` validates them — bogus stand-ins like
+    /// `sha512-aaa` would be rejected and integrity dropped.
+    fn fake_sri(tag: char) -> String {
+        format!("sha512-{}", tag.to_string().repeat(88))
+    }
+
     #[test]
     fn test_parse_simple() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_foo = fake_sri('a');
+        let sri_nested = fake_sri('b');
+        let sri_bar = fake_sri('c');
         let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -590,12 +647,15 @@ mod tests {
     },
   },
   "packages": {
-    "foo": ["foo@1.2.3", "", { "dependencies": { "nested": "^3.0.0" } }, "sha512-aaa"],
-    "nested": ["nested@3.1.0", "", {}, "sha512-bbb"],
-    "bar": ["bar@2.5.0", "", {}, "sha512-ccc"],
+    "foo": ["foo@1.2.3", "", { "dependencies": { "nested": "^3.0.0" } }, "SRI_FOO"],
+    "nested": ["nested@3.1.0", "", {}, "SRI_NESTED"],
+    "bar": ["bar@2.5.0", "", {}, "SRI_BAR"],
   }
-}"#;
-        std::fs::write(tmp.path(), content).unwrap();
+}"#
+        .replace("SRI_FOO", &sri_foo)
+        .replace("SRI_NESTED", &sri_nested)
+        .replace("SRI_BAR", &sri_bar);
+        std::fs::write(tmp.path(), &content).unwrap();
         let graph = parse(tmp.path()).unwrap();
 
         assert_eq!(graph.packages.len(), 3);
@@ -604,7 +664,7 @@ mod tests {
         assert!(graph.packages.contains_key("bar@2.5.0"));
 
         let foo = &graph.packages["foo@1.2.3"];
-        assert_eq!(foo.integrity.as_deref(), Some("sha512-aaa"));
+        assert_eq!(foo.integrity.as_deref(), Some(sri_foo.as_str()));
         assert_eq!(
             foo.dependencies.get("nested").map(String::as_str),
             Some("nested@3.1.0")
@@ -728,6 +788,9 @@ mod tests {
     #[test]
     fn test_write_roundtrip_multi_version() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_top = fake_sri('t');
+        let sri_foo = fake_sri('f');
+        let sri_nested = fake_sri('n');
         let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -736,12 +799,15 @@ mod tests {
     }
   },
   "packages": {
-    "bar": ["bar@2.0.0", "", {}, "sha512-top-bar"],
-    "foo": ["foo@1.0.0", "", { "dependencies": { "bar": "^1.0.0" } }, "sha512-foo"],
-    "foo/bar": ["bar@1.0.0", "", {}, "sha512-nested-bar"]
+    "bar": ["bar@2.0.0", "", {}, "SRI_TOP"],
+    "foo": ["foo@1.0.0", "", { "dependencies": { "bar": "^1.0.0" } }, "SRI_FOO"],
+    "foo/bar": ["bar@1.0.0", "", {}, "SRI_NESTED"]
   }
-}"#;
-        std::fs::write(tmp.path(), content).unwrap();
+}"#
+        .replace("SRI_TOP", &sri_top)
+        .replace("SRI_FOO", &sri_foo)
+        .replace("SRI_NESTED", &sri_nested);
+        std::fs::write(tmp.path(), &content).unwrap();
         let graph = parse(tmp.path()).unwrap();
 
         let manifest = aube_manifest::PackageJson {
@@ -765,11 +831,11 @@ mod tests {
         assert!(reparsed.packages.contains_key("foo@1.0.0"));
         assert_eq!(
             reparsed.packages["bar@2.0.0"].integrity.as_deref(),
-            Some("sha512-top-bar")
+            Some(sri_top.as_str())
         );
         assert_eq!(
             reparsed.packages["bar@1.0.0"].integrity.as_deref(),
-            Some("sha512-nested-bar")
+            Some(sri_nested.as_str())
         );
         // foo's nested bar dep still resolves to 1.0.0 (nested)
         // rather than snapping to the hoisted 2.0.0.
