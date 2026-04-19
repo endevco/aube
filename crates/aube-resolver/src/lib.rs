@@ -753,7 +753,17 @@ impl Resolver {
             tracing::debug!("minimumReleaseAge cutoff: {}", c);
         }
 
-        // Seed queue with direct deps from all importers
+        // Seed queue with direct deps from all importers.
+        //
+        // When a package is declared in more than one section
+        // (`dependencies` + `devDependencies`, etc.) we keep only the
+        // highest-priority entry — `dependencies` > `devDependencies` >
+        // `optionalDependencies` — matching pnpm, which silently drops
+        // the lower-priority duplicates on resolve. Without this the
+        // same name gets pushed into the importer's `DirectDep` list
+        // twice (once per section), and the linker's parallel step 2
+        // races to create the same `node_modules/<name>` symlink from
+        // two tasks, producing an `EEXIST` on the loser.
         for (importer_path, manifest) in manifests {
             importers.insert(importer_path.clone(), Vec::new());
 
@@ -771,6 +781,9 @@ impl Resolver {
                 });
             }
             for (name, range) in &manifest.dev_dependencies {
+                if manifest.dependencies.contains_key(name) {
+                    continue;
+                }
                 queue.push_back(ResolveTask {
                     name: name.clone(),
                     range: range.clone(),
@@ -788,6 +801,11 @@ impl Resolver {
                     tracing::debug!(
                         "ignoring optional dependency {name} (pnpm.ignoredOptionalDependencies)"
                     );
+                    continue;
+                }
+                if manifest.dependencies.contains_key(name)
+                    || manifest.dev_dependencies.contains_key(name)
+                {
                     continue;
                 }
                 queue.push_back(ResolveTask {
@@ -5142,5 +5160,44 @@ mod tests {
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].name, "@std/collections");
         assert_eq!(root[0].dep_path, "@std/collections@1.1.6");
+    }
+
+    // A package listed in both `dependencies` and `devDependencies`
+    // must appear in the resolved importer's direct-dep list exactly
+    // once, with `dep_type = Production` (matches pnpm: production
+    // wins, dev entry is silently dropped). Without dedupe the linker
+    // sees the same name twice and parallel step 2 races to create
+    // the shared `node_modules/<name>` symlink, producing EEXIST.
+    #[tokio::test]
+    async fn same_dep_in_dependencies_and_dev_dependencies_dedupes() {
+        let pmap = make_packument("p-map", &["7.0.4"], "7.0.4");
+
+        let client = Arc::new(aube_registry::client::RegistryClient::new(
+            "http://127.0.0.1:0",
+        ));
+        let mut resolver = Resolver::new(client);
+        resolver.cache.insert("p-map".to_string(), pmap);
+
+        let mut manifest = PackageJson::default();
+        manifest
+            .dependencies
+            .insert("p-map".to_string(), "7.0.4".to_string());
+        manifest
+            .dev_dependencies
+            .insert("p-map".to_string(), "7.0.4".to_string());
+
+        let graph = resolver
+            .resolve(&manifest, None)
+            .await
+            .expect("resolve failed");
+
+        let root = graph.importers.get(".").unwrap();
+        assert_eq!(
+            root.len(),
+            1,
+            "p-map must appear once in root deps, got {root:?}"
+        );
+        assert_eq!(root[0].name, "p-map");
+        assert_eq!(root[0].dep_type, DepType::Production);
     }
 }
