@@ -840,7 +840,20 @@ mod tests {
         )
         .unwrap();
 
-        let config = NpmConfig::load(dir.path());
+        // HOME + env isolation: `NpmConfig::load` would layer the
+        // developer's real `~/.npmrc` and `NPM_CONFIG_REGISTRY` env
+        // var on top of the project file, either of which can shadow
+        // the `registry=` we're asserting on.
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig {
+            registry: "https://registry.npmjs.org/".to_string(),
+            ..Default::default()
+        };
+        config.apply(load_npmrc_entries_with_home(
+            Some(home.path()),
+            None,
+            dir.path(),
+        ));
 
         assert_eq!(config.registry, "https://custom.registry.com/");
         assert_eq!(
@@ -874,7 +887,13 @@ mod tests {
         )
         .unwrap();
 
-        let config = NpmConfig::load(dir.path());
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig::default();
+        config.apply(load_npmrc_entries_with_home(
+            Some(home.path()),
+            None,
+            dir.path(),
+        ));
         let expected = base64::engine::general_purpose::STANDARD.encode("alice:s3cr3t");
         assert_eq!(
             config.basic_auth_for("https://registry.example.com/"),
@@ -924,7 +943,13 @@ mod tests {
         )
         .unwrap();
 
-        let config = NpmConfig::load(dir.path());
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig::default();
+        config.apply(load_npmrc_entries_with_home(
+            Some(home.path()),
+            None,
+            dir.path(),
+        ));
         let tls = &config
             .registry_config_for("https://registry.example.com/")
             .expect("registry config")
@@ -942,7 +967,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".npmrc"), "_authToken=global-token\n").unwrap();
 
-        let config = NpmConfig::load(dir.path());
+        // Isolate from the host's real `~/.npmrc`: a developer or CI
+        // runner with `//registry.npmjs.org/:_authToken=...` already
+        // logged in would have that URI-specific token beat our
+        // project-level `_authToken` fallback, since `auth_token_for`
+        // checks per-URI auth before dropping to `global_auth_token`.
+        // `NpmConfig::load` is the host-reading entry point we
+        // deliberately avoid here; `load_npmrc_entries_with_home` lets
+        // us pin the user home to a tempdir without mutating
+        // process-wide env vars.
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig {
+            registry: "https://registry.npmjs.org/".to_string(),
+            ..Default::default()
+        };
+        config.apply(load_npmrc_entries_with_home(
+            Some(home.path()),
+            None,
+            dir.path(),
+        ));
         // Global token used as fallback
         assert_eq!(
             config.auth_token_for("https://registry.npmjs.org/"),
@@ -953,8 +996,20 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        // No .npmrc at all
-        let config = NpmConfig::load(dir.path());
+        // No .npmrc at all. Same HOME isolation rationale as
+        // `test_config_global_auth_token` — without it this assertion
+        // flakes on any developer box whose `~/.npmrc` has ever been
+        // touched by `npm login`.
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig {
+            registry: "https://registry.npmjs.org/".to_string(),
+            ..Default::default()
+        };
+        config.apply(load_npmrc_entries_with_home(
+            Some(home.path()),
+            None,
+            dir.path(),
+        ));
         assert_eq!(config.registry, "https://registry.npmjs.org/");
         assert!(
             config
@@ -972,7 +1027,13 @@ mod tests {
         )
         .unwrap();
 
-        let config = NpmConfig::load(dir.path());
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig::default();
+        config.apply(load_npmrc_entries_with_home(
+            Some(home.path()),
+            None,
+            dir.path(),
+        ));
         assert_eq!(
             config.registry_for("@private/my-lib"),
             "https://private.registry.com/"
