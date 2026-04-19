@@ -242,7 +242,7 @@ watch(progressBarEl, (el, previousEl) => {
         <dl class="aube-stats">
           <div>
             <dt>{{ pnpmCiWarmMultiple }}x</dt>
-            <dd>faster than pnpm with a warm cache</dd>
+            <dd>faster than pnpm</dd>
           </div>
           <div>
             <dt>{{ bunCiWarmMultiple }}x</dt>
