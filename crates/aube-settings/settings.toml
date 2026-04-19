@@ -1161,8 +1161,7 @@ type = "int"
 default = "50"
 docs = """
 Warn when a tarball's end-to-end average throughput falls below this
-many KiB/s. Transfers under one second are skipped (handshake + TTFB
-dominate the average). Set to `0` to disable.
+many KiB/s. Set to `0` to disable.
 """
 sources.cli = []
 sources.env = []

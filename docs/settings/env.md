@@ -1127,8 +1127,7 @@ Warn if download speed falls below this threshold (KiB/s).
 - Environment: `npm_config_fetch_min_speed_ki_bps`, `NPM_CONFIG_FETCH_MIN_SPEED_KI_BPS`
 
 Warn when a tarball's end-to-end average throughput falls below this
-many KiB/s. Transfers under one second are skipped (handshake + TTFB
-dominate the average). Set to `0` to disable.
+many KiB/s. Set to `0` to disable.
 
 ## Peer Dependencies
 
