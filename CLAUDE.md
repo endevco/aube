@@ -100,6 +100,33 @@ nothing regenerates it. The `Why Try It` section quotes both the
 warm-CI multiples (pnpm, bun) and the cross-fixture ranges; recompute
 them from the new JSON and update the sentence to match.
 
+### Hermetic benchmark mode
+
+`BENCH_HERMETIC=1 mise run bench` routes all registry traffic through a
+local Verdaccio instance, so the cold-cache scenario measures aube's
+code path rather than npmjs CDN jitter. Implementation lives in
+[`benchmarks/hermetic.bash`](benchmarks/hermetic.bash) and
+[`benchmarks/registry/`](benchmarks/registry/). The first hermetic run
+warms a cache at `~/.cache/aube-bench/registry/` (one network fetch
+against npmjs); every subsequent run is fully offline. Blow away that
+directory to force a re-warm (e.g. after bumping packages in
+`benchmarks/fixture.package.json`).
+
+Layer `BENCH_BANDWIDTH=50mbit` (or `6mbit`, or a bare integer bytes/s)
+on top to simulate a realistic internet link. Traffic is piped through
+[`benchmarks/throttle-proxy.mjs`](benchmarks/throttle-proxy.mjs), a
+dependency-free Node token-bucket proxy that sits between the package
+managers and Verdaccio. The proxy preserves the client's `Host`
+header so Verdaccio's self-referential tarball URLs also flow back
+through it — without that, tarball fetches silently bypass the limit.
+
+**Never combine `BENCH_HERMETIC` or `BENCH_BANDWIDTH` with
+`bench:bump`.** [`benchmarks/results.json`](benchmarks/results.json) is
+the published "real internet" baseline and must not be overwritten from
+a hermetic run. The `flock /tmp/aube-bench.lock` rule still applies —
+hermetic mode starts local daemons on fixed ports (4874 for Verdaccio,
+4875 for the proxy), so two concurrent hermetic runs would collide.
+
 ## Rust Configuration
 
 - Edition: 2024

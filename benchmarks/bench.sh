@@ -17,6 +17,21 @@ set -euo pipefail
 #   WARMUP       — warmup runs before timing (default: 1)
 #   RUNS         — timed runs per benchmark (default: 10)
 #   RESULTS_JSON — override the structured JSON output path
+#
+#   BENCH_HERMETIC=1 — route all registry traffic through a local
+#                      Verdaccio instance pre-populated from npmjs. Makes
+#                      cold-cache numbers deterministic (no npmjs CDN
+#                      jitter). First hermetic run warms the cache at
+#                      ~/.cache/aube-bench/registry/; subsequent runs
+#                      are fully offline. See benchmarks/hermetic.bash.
+#   BENCH_BANDWIDTH  — optional throttle (e.g. `50mbit`, `6mbit`, bare
+#                      integer bytes/s). Only meaningful with
+#                      BENCH_HERMETIC=1; routes traffic through a tiny
+#                      Node.js token-bucket proxy in front of Verdaccio.
+#
+# Do NOT combine BENCH_HERMETIC or BENCH_BANDWIDTH with `bench:bump` —
+# results.json is the published "real internet" baseline and must not
+# be overwritten from a hermetic run.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -41,6 +56,21 @@ if [ ! -f "$AUBE_BIN" ]; then
 	echo "error: aube release binary not found at $AUBE_BIN" >&2
 	echo "Run: cargo build --release" >&2
 	exit 1
+fi
+
+# ── Optional hermetic registry ─────────────────────────────────────────────
+# BENCH_HERMETIC=1 routes all registry traffic through a local
+# Verdaccio instance (populated from npmjs on first run, offline after).
+# BENCH_BANDWIDTH=<rate> puts a throttling proxy in front so cold-cache
+# numbers reflect a simulated internet link rather than loopback disk
+# speed. See benchmarks/hermetic.bash for the lifecycle details.
+
+BENCH_REGISTRY_URL=""
+if [ "${BENCH_HERMETIC:-0}" = "1" ]; then
+	# shellcheck source=/dev/null
+	source "$SCRIPT_DIR/hermetic.bash"
+	hermetic_start
+	trap 'hermetic_stop' EXIT
 fi
 
 # ── Per-tool configuration ─────────────────────────────────────────────────
@@ -116,6 +146,18 @@ for i in "${!TOOLS[@]}"; do
 	# time, so nothing to write on disk up front.
 	if [ "$tool" = "pnpm" ]; then
 		printf "storeDir: %s\ncacheDir: %s\n" "${TOOL_STORES[$i]}" "${TOOL_CACHES[$i]}" >"$dir/pnpm-workspace.yaml"
+	fi
+
+	# Hermetic mode: drop a .npmrc into both the project dir and the
+	# isolated HOME so every PM resolves packages through the local
+	# Verdaccio (or the throttle proxy in front of it) instead of
+	# npmjs. Project-level .npmrc is honored by all five tools and
+	# wins over HOME; HOME is a belt-and-suspenders fallback for any
+	# command (like `aube add` after chdir) that might look there
+	# first.
+	if [ -n "$BENCH_REGISTRY_URL" ]; then
+		printf "registry=%s\n" "$BENCH_REGISTRY_URL" >"$dir/.npmrc"
+		printf "registry=%s\n" "$BENCH_REGISTRY_URL" >"$home/.npmrc"
 	fi
 done
 
