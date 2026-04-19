@@ -140,136 +140,156 @@ impl PackageJson {
         serde_json::from_str(&content).map_err(|e| Error::Parse(path.to_path_buf(), e))
     }
 
-    /// Extract the `pnpm.allowBuilds` object from the raw `package.json`
-    /// payload, if present. Returns a map keyed by the raw pattern
-    /// string (e.g. `"esbuild"`, `"@swc/core@1.3.0"`) with `bool`
-    /// values preserved as `bool` and any other shape captured
-    /// verbatim so the caller can warn about it.
+    /// Iterate over the `pnpm` and `aube` config objects in
+    /// `package.json`, yielding whichever are present in precedence
+    /// order (pnpm first, aube last). Callers that merge into a map
+    /// with later-wins semantics get `aube.*` overriding `pnpm.*` on
+    /// key conflict; callers that union lists get both sources
+    /// included. Aube mirrors every `pnpm.*` config key under an
+    /// `aube.*` alias so projects can declare aube-native config
+    /// without piggy-backing on the pnpm namespace.
+    fn pnpm_aube_objects(
+        &self,
+    ) -> impl Iterator<Item = &serde_json::Map<String, serde_json::Value>> {
+        ["pnpm", "aube"]
+            .into_iter()
+            .filter_map(|k| self.extra.get(k).and_then(|v| v.as_object()))
+    }
+
+    /// Extract the `pnpm.allowBuilds` / `aube.allowBuilds` object from
+    /// the raw `package.json` payload, if present. Returns a map keyed
+    /// by the raw pattern string (e.g. `"esbuild"`,
+    /// `"@swc/core@1.3.0"`) with `bool` values preserved as `bool` and
+    /// any other shape captured verbatim so the caller can warn about
+    /// it. `aube.*` wins over `pnpm.*` on key conflict.
     ///
     /// The key is held in `extra` rather than as a named field because
-    /// it's pnpm-specific and nested under a `pnpm` object.
+    /// it's nested under a `pnpm`/`aube` object.
     pub fn pnpm_allow_builds(&self) -> BTreeMap<String, AllowBuildRaw> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        let Some(map) = pnpm.get("allowBuilds").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        map.iter()
-            .map(|(k, v)| (k.clone(), AllowBuildRaw::from_json(v)))
-            .collect()
+        let mut out = BTreeMap::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(map) = ns.get("allowBuilds").and_then(|v| v.as_object()) {
+                for (k, v) in map {
+                    out.insert(k.clone(), AllowBuildRaw::from_json(v));
+                }
+            }
+        }
+        out
     }
 
-    /// Extract `pnpm.onlyBuiltDependencies` as a flat list of package
-    /// names allowed to run lifecycle scripts. This is pnpm's canonical
-    /// allowlist key (used by nearly every real-world pnpm project) and
-    /// coexists with `pnpm.allowBuilds` — both sources merge into the
-    /// same `BuildPolicy`. Non-string entries are dropped silently to
-    /// match pnpm's tolerance for malformed configs.
+    /// Extract `pnpm.onlyBuiltDependencies` / `aube.onlyBuiltDependencies`
+    /// as a flat list of package names allowed to run lifecycle
+    /// scripts. This is pnpm's canonical allowlist key (used by nearly
+    /// every real-world pnpm project) and coexists with `allowBuilds`
+    /// — all sources merge into the same `BuildPolicy`. Non-string
+    /// entries are dropped silently to match pnpm's tolerance for
+    /// malformed configs. Entries from `aube.*` are appended after
+    /// `pnpm.*`.
     pub fn pnpm_only_built_dependencies(&self) -> Vec<String> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return Vec::new();
-        };
-        let Some(arr) = pnpm.get("onlyBuiltDependencies").and_then(|v| v.as_array()) else {
-            return Vec::new();
-        };
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
+        let mut out = Vec::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(arr) = ns.get("onlyBuiltDependencies").and_then(|v| v.as_array()) {
+                out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+            }
+        }
+        out
     }
 
-    /// Extract `pnpm.neverBuiltDependencies` — pnpm's canonical denylist
-    /// for lifecycle scripts. Entries override any allowlist match in
+    /// Extract `pnpm.neverBuiltDependencies` /
+    /// `aube.neverBuiltDependencies` — the canonical denylist for
+    /// lifecycle scripts. Entries override any allowlist match in
     /// `onlyBuiltDependencies` / `allowBuilds` since explicit denies
     /// always win in `BuildPolicy::decide`.
     pub fn pnpm_never_built_dependencies(&self) -> Vec<String> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return Vec::new();
-        };
-        let Some(arr) = pnpm
-            .get("neverBuiltDependencies")
-            .and_then(|v| v.as_array())
-        else {
-            return Vec::new();
-        };
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
+        let mut out = Vec::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(arr) = ns.get("neverBuiltDependencies").and_then(|v| v.as_array()) {
+                out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+            }
+        }
+        out
     }
 
-    /// Extract `pnpm.catalog` — a default catalog defined inline in
-    /// package.json under the `pnpm` object. pnpm itself reads catalogs
-    /// only from `pnpm-workspace.yaml`, but aube also honors this
-    /// location so single-package projects can declare catalogs without
-    /// maintaining a separate workspace file.
+    /// Extract `pnpm.catalog` / `aube.catalog` — a default catalog
+    /// defined inline in package.json under the `pnpm`/`aube` object.
+    /// pnpm itself reads catalogs only from `pnpm-workspace.yaml`, but
+    /// aube also honors this location so single-package projects can
+    /// declare catalogs without maintaining a separate workspace
+    /// file. `aube.catalog` wins over `pnpm.catalog` on key conflict.
     pub fn pnpm_catalog(&self) -> BTreeMap<String, String> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        let Some(map) = pnpm.get("catalog").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        map.iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-            .collect()
+        let mut out = BTreeMap::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(map) = ns.get("catalog").and_then(|v| v.as_object()) {
+                for (k, v) in map {
+                    if let Some(s) = v.as_str() {
+                        out.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+        }
+        out
     }
 
-    /// Extract `pnpm.catalogs` — named catalogs nested under the `pnpm`
-    /// object. Pairs with [`pnpm_catalog`] for a fully-package.json-local
-    /// catalog declaration.
+    /// Extract `pnpm.catalogs` / `aube.catalogs` — named catalogs
+    /// nested under the `pnpm`/`aube` object. Pairs with
+    /// [`pnpm_catalog`] for a fully-package.json-local catalog
+    /// declaration. On catalog-name conflict, `aube.catalogs` fully
+    /// replaces `pnpm.catalogs` for that name.
     pub fn pnpm_catalogs(&self) -> BTreeMap<String, BTreeMap<String, String>> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        let Some(outer) = pnpm.get("catalogs").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        outer
-            .iter()
-            .filter_map(|(name, inner)| {
-                let inner = inner.as_object()?;
-                let entries: BTreeMap<String, String> = inner
-                    .iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect();
-                Some((name.clone(), entries))
-            })
-            .collect()
+        let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(outer) = ns.get("catalogs").and_then(|v| v.as_object()) {
+                for (name, inner) in outer {
+                    let Some(inner) = inner.as_object() else {
+                        continue;
+                    };
+                    let entries: BTreeMap<String, String> = inner
+                        .iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect();
+                    out.insert(name.clone(), entries);
+                }
+            }
+        }
+        out
     }
 
-    /// Extract `pnpm.ignoredOptionalDependencies` — a list of dep names
-    /// that should be stripped from every manifest's `optionalDependencies`
+    /// Extract `pnpm.ignoredOptionalDependencies` /
+    /// `aube.ignoredOptionalDependencies` — a list of dep names that
+    /// should be stripped from every manifest's `optionalDependencies`
     /// before resolution. Mirrors pnpm's read-package hook at
     /// `@pnpm/hooks.read-package-hook::createOptionalDependenciesRemover`.
-    /// Non-string entries are ignored.
+    /// Non-string entries are ignored. Entries from both namespaces
+    /// union into the returned set.
     pub fn pnpm_ignored_optional_dependencies(&self) -> BTreeSet<String> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return BTreeSet::new();
-        };
-        let Some(arr) = pnpm
-            .get("ignoredOptionalDependencies")
-            .and_then(|v| v.as_array())
-        else {
-            return BTreeSet::new();
-        };
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
+        let mut out = BTreeSet::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(arr) = ns
+                .get("ignoredOptionalDependencies")
+                .and_then(|v| v.as_array())
+            {
+                out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+            }
+        }
+        out
     }
 
-    /// Extract `pnpm.patchedDependencies` as a map of `name@version` ->
-    /// patch file path (relative to the project root). Empty when the
-    /// field is missing or malformed.
+    /// Extract `pnpm.patchedDependencies` / `aube.patchedDependencies`
+    /// as a map of `name@version` -> patch file path (relative to the
+    /// project root). Empty when the field is missing or malformed.
+    /// `aube.*` wins over `pnpm.*` on key conflict.
     pub fn pnpm_patched_dependencies(&self) -> BTreeMap<String, String> {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        let Some(map) = pnpm.get("patchedDependencies").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        map.iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-            .collect()
+        let mut out = BTreeMap::new();
+        for ns in self.pnpm_aube_objects() {
+            if let Some(map) = ns.get("patchedDependencies").and_then(|v| v.as_object()) {
+                for (k, v) in map {
+                    if let Some(s) = v.as_str() {
+                        out.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Return the set of dependency names marked
@@ -297,104 +317,99 @@ impl PackageJson {
             .collect()
     }
 
-    /// Return `pnpm.supportedArchitectures.{os,cpu,libc}` as three
-    /// string arrays. Missing fields become empty vecs. Used by the
-    /// resolver to widen the set of platforms considered installable
-    /// for optional dependencies — e.g. resolving a lockfile for a
-    /// different target than the host running `aube install`.
+    /// Return `{pnpm,aube}.supportedArchitectures.{os,cpu,libc}` as
+    /// three string arrays. Missing fields become empty vecs. Used by
+    /// the resolver to widen the set of platforms considered
+    /// installable for optional dependencies — e.g. resolving a
+    /// lockfile for a different target than the host running `aube
+    /// install`. Entries from `aube.*` are appended after `pnpm.*` and
+    /// deduped while preserving insertion order.
     pub fn pnpm_supported_architectures(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
-        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
-            return (Vec::new(), Vec::new(), Vec::new());
+        let mut os = Vec::new();
+        let mut cpu = Vec::new();
+        let mut libc = Vec::new();
+        let push = |dst: &mut Vec<String>, arr: &[serde_json::Value]| {
+            for v in arr {
+                if let Some(s) = v.as_str()
+                    && !dst.iter().any(|existing| existing == s)
+                {
+                    dst.push(s.to_string());
+                }
+            }
         };
-        let Some(sa) = pnpm
-            .get("supportedArchitectures")
-            .and_then(|v| v.as_object())
-        else {
-            return (Vec::new(), Vec::new(), Vec::new());
-        };
-        let read = |k: &str| -> Vec<String> {
-            sa.get(k)
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        (read("os"), read("cpu"), read("libc"))
+        for ns in self.pnpm_aube_objects() {
+            let Some(sa) = ns.get("supportedArchitectures").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            if let Some(arr) = sa.get("os").and_then(|v| v.as_array()) {
+                push(&mut os, arr);
+            }
+            if let Some(arr) = sa.get("cpu").and_then(|v| v.as_array()) {
+                push(&mut cpu, arr);
+            }
+            if let Some(arr) = sa.get("libc").and_then(|v| v.as_array()) {
+                push(&mut libc, arr);
+            }
+        }
+        (os, cpu, libc)
     }
 
     /// Collect dependency overrides from every supported source on the
-    /// root manifest, merged in pnpm's precedence order: top-level
-    /// `overrides` (npm/pnpm) wins, then `pnpm.overrides`, then yarn-style
-    /// `resolutions`. Keys round-trip as their raw selector strings:
-    /// bare name (`foo`), parent-chain (`parent>foo`), version-suffixed
-    /// (`foo@<2`, `parent@1>foo`), and yarn wildcards (`**/foo`,
-    /// `parent/foo`). Structural validation lives in
-    /// `aube_resolver::override_rule`; this layer just filters out
-    /// malformed keys and non-string values. Workspace-level overrides
-    /// from `pnpm-workspace.yaml` are merged on top of this map by the
-    /// caller.
+    /// root manifest, merged in precedence order: yarn-style
+    /// `resolutions` (lowest), then `pnpm.overrides`, then
+    /// `aube.overrides`, then top-level `overrides` (highest). Keys
+    /// round-trip as their raw selector strings: bare name (`foo`),
+    /// parent-chain (`parent>foo`), version-suffixed (`foo@<2`,
+    /// `parent@1>foo`), and yarn wildcards (`**/foo`, `parent/foo`).
+    /// Structural validation lives in `aube_resolver::override_rule`;
+    /// this layer just filters out malformed keys and non-string
+    /// values. Workspace-level overrides from `pnpm-workspace.yaml`
+    /// are merged on top of this map by the caller.
     pub fn overrides_map(&self) -> BTreeMap<String, String> {
         let mut out: BTreeMap<String, String> = BTreeMap::new();
+        let insert = |out: &mut BTreeMap<String, String>,
+                      obj: &serde_json::Map<String, serde_json::Value>| {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str()
+                    && is_valid_selector_key(k)
+                {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        };
 
         // yarn `resolutions` (lowest priority)
         if let Some(obj) = self.extra.get("resolutions").and_then(|v| v.as_object()) {
-            for (k, v) in obj {
-                if let Some(s) = v.as_str()
-                    && is_valid_selector_key(k)
-                {
-                    out.insert(k.clone(), s.to_string());
-                }
+            insert(&mut out, obj);
+        }
+
+        // `pnpm.overrides` then `aube.overrides` (later wins)
+        for ns in self.pnpm_aube_objects() {
+            if let Some(obj) = ns.get("overrides").and_then(|v| v.as_object()) {
+                insert(&mut out, obj);
             }
         }
 
-        // `pnpm.overrides`
-        if let Some(obj) = self
-            .extra
-            .get("pnpm")
-            .and_then(|v| v.as_object())
-            .and_then(|p| p.get("overrides"))
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(s) = v.as_str()
-                    && is_valid_selector_key(k)
-                {
-                    out.insert(k.clone(), s.to_string());
-                }
-            }
-        }
-
-        // Top-level `overrides` (npm / pnpm) — highest priority of the three
+        // Top-level `overrides` (npm / pnpm) — highest priority
         if let Some(obj) = self.extra.get("overrides").and_then(|v| v.as_object()) {
-            for (k, v) in obj {
-                if let Some(s) = v.as_str()
-                    && is_valid_selector_key(k)
-                {
-                    out.insert(k.clone(), s.to_string());
-                }
-            }
+            insert(&mut out, obj);
         }
 
         out
     }
 
-    /// Extract `packageExtensions` from root package.json. Supports both
-    /// top-level `packageExtensions` and `pnpm.packageExtensions`, with the
-    /// top-level value taking precedence for duplicate selectors.
+    /// Extract `packageExtensions` from root package.json. Supports
+    /// top-level `packageExtensions`, `pnpm.packageExtensions`, and
+    /// `aube.packageExtensions`. Precedence (low → high):
+    /// `pnpm.packageExtensions`, `aube.packageExtensions`, top-level
+    /// `packageExtensions` — later writes win for duplicate selectors.
     pub fn package_extensions(&self) -> BTreeMap<String, serde_json::Value> {
         let mut out = BTreeMap::new();
-        if let Some(obj) = self
-            .extra
-            .get("pnpm")
-            .and_then(|v| v.as_object())
-            .and_then(|p| p.get("packageExtensions"))
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                out.insert(k.clone(), v.clone());
+        for ns in self.pnpm_aube_objects() {
+            if let Some(obj) = ns.get("packageExtensions").and_then(|v| v.as_object()) {
+                for (k, v) in obj {
+                    out.insert(k.clone(), v.clone());
+                }
             }
         }
         if let Some(obj) = self
@@ -410,21 +425,25 @@ impl PackageJson {
     }
 
     /// Extract package deprecation mute ranges. Supports top-level
-    /// `allowedDeprecatedVersions` and `pnpm.allowedDeprecatedVersions`;
-    /// non-string values are ignored.
+    /// `allowedDeprecatedVersions`, `pnpm.allowedDeprecatedVersions`,
+    /// and `aube.allowedDeprecatedVersions`; later sources win for
+    /// duplicate keys. Non-string values are ignored.
     pub fn allowed_deprecated_versions(&self) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        if let Some(obj) = self
-            .extra
-            .get("pnpm")
-            .and_then(|v| v.as_object())
-            .and_then(|p| p.get("allowedDeprecatedVersions"))
-            .and_then(|v| v.as_object())
-        {
+        let insert = |out: &mut BTreeMap<String, String>,
+                      obj: &serde_json::Map<String, serde_json::Value>| {
             for (k, v) in obj {
                 if let Some(s) = v.as_str() {
                     out.insert(k.clone(), s.to_string());
                 }
+            }
+        };
+        for ns in self.pnpm_aube_objects() {
+            if let Some(obj) = ns
+                .get("allowedDeprecatedVersions")
+                .and_then(|v| v.as_object())
+            {
+                insert(&mut out, obj);
             }
         }
         if let Some(obj) = self
@@ -432,6 +451,46 @@ impl PackageJson {
             .get("allowedDeprecatedVersions")
             .and_then(|v| v.as_object())
         {
+            insert(&mut out, obj);
+        }
+        out
+    }
+
+    /// Extract `{pnpm,aube}.peerDependencyRules.ignoreMissing` as a
+    /// flat list of glob patterns. Non-string entries are dropped.
+    /// Mirrors pnpm's `peerDependencyRules` escape hatch — patterns
+    /// silence "missing required peer dependency" warnings when the
+    /// peer name matches. Entries from both namespaces union in the
+    /// returned list.
+    pub fn pnpm_peer_dependency_rules_ignore_missing(&self) -> Vec<String> {
+        self.pnpm_peer_dependency_rules_string_list("ignoreMissing")
+    }
+
+    /// Extract `{pnpm,aube}.peerDependencyRules.allowAny` as a flat
+    /// list of glob patterns. Peers whose name matches a pattern have
+    /// their semver check bypassed — any resolved version is accepted.
+    pub fn pnpm_peer_dependency_rules_allow_any(&self) -> Vec<String> {
+        self.pnpm_peer_dependency_rules_string_list("allowAny")
+    }
+
+    /// Extract `{pnpm,aube}.peerDependencyRules.allowedVersions` as a
+    /// map of selector -> additional semver range. Selectors are
+    /// either a bare peer name (e.g. `react`) meaning "applies to
+    /// every consumer of this peer", or `parent>peer` (e.g.
+    /// `styled-components>react`) meaning "only when declared by this
+    /// parent". Values widen the declared peer range: a peer resolving
+    /// inside *either* the declared range or this override is treated
+    /// as satisfied. Non-string entries are ignored. `aube.*` wins
+    /// over `pnpm.*` on key conflict.
+    pub fn pnpm_peer_dependency_rules_allowed_versions(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for ns in self.pnpm_aube_objects() {
+            let Some(rules) = ns.get("peerDependencyRules").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            let Some(obj) = rules.get("allowedVersions").and_then(|v| v.as_object()) else {
+                continue;
+            };
             for (k, v) in obj {
                 if let Some(s) = v.as_str() {
                     out.insert(k.clone(), s.to_string());
@@ -441,80 +500,36 @@ impl PackageJson {
         out
     }
 
-    /// Extract `pnpm.peerDependencyRules.ignoreMissing` as a flat list of
-    /// glob patterns. Non-string entries are dropped. Mirrors pnpm's
-    /// `peerDependencyRules` escape hatch — patterns silence "missing
-    /// required peer dependency" warnings when the peer name matches.
-    pub fn pnpm_peer_dependency_rules_ignore_missing(&self) -> Vec<String> {
-        self.pnpm_peer_dependency_rules_string_list("ignoreMissing")
-    }
-
-    /// Extract `pnpm.peerDependencyRules.allowAny` as a flat list of
-    /// glob patterns. Peers whose name matches a pattern have their
-    /// semver check bypassed — any resolved version is accepted.
-    pub fn pnpm_peer_dependency_rules_allow_any(&self) -> Vec<String> {
-        self.pnpm_peer_dependency_rules_string_list("allowAny")
-    }
-
-    /// Extract `pnpm.peerDependencyRules.allowedVersions` as a map of
-    /// selector -> additional semver range. Selectors are either a bare
-    /// peer name (e.g. `react`) meaning "applies to every consumer of
-    /// this peer", or `parent>peer` (e.g. `styled-components>react`)
-    /// meaning "only when declared by this parent". Values widen the
-    /// declared peer range: a peer resolving inside *either* the
-    /// declared range or this override is treated as satisfied.
-    /// Non-string entries are ignored.
-    pub fn pnpm_peer_dependency_rules_allowed_versions(&self) -> BTreeMap<String, String> {
-        let Some(rules) = self
-            .extra
-            .get("pnpm")
-            .and_then(|v| v.as_object())
-            .and_then(|p| p.get("peerDependencyRules"))
-            .and_then(|v| v.as_object())
-        else {
-            return BTreeMap::new();
-        };
-        let Some(obj) = rules.get("allowedVersions").and_then(|v| v.as_object()) else {
-            return BTreeMap::new();
-        };
-        obj.iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-            .collect()
-    }
-
     fn pnpm_peer_dependency_rules_string_list(&self, field: &str) -> Vec<String> {
-        let Some(rules) = self
-            .extra
-            .get("pnpm")
-            .and_then(|v| v.as_object())
-            .and_then(|p| p.get("peerDependencyRules"))
-            .and_then(|v| v.as_object())
-        else {
-            return Vec::new();
-        };
-        let Some(arr) = rules.get(field).and_then(|v| v.as_array()) else {
-            return Vec::new();
-        };
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
+        let mut out = Vec::new();
+        for ns in self.pnpm_aube_objects() {
+            let Some(rules) = ns.get("peerDependencyRules").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            let Some(arr) = rules.get(field).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+        }
+        out
     }
 
-    /// Extract `updateConfig.ignoreDependencies` from package.json and
-    /// `pnpm.updateConfig.ignoreDependencies`, merged with top-level
-    /// `updateConfig` taking precedence by appending last.
+    /// Extract `updateConfig.ignoreDependencies` from package.json
+    /// across all supported locations: top-level `updateConfig`,
+    /// `pnpm.updateConfig.ignoreDependencies`, and
+    /// `aube.updateConfig.ignoreDependencies`. All entries are merged
+    /// and deduped.
     pub fn update_ignore_dependencies(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if let Some(arr) = self
-            .extra
-            .get("pnpm")
-            .and_then(|v| v.as_object())
-            .and_then(|p| p.get("updateConfig"))
-            .and_then(|v| v.as_object())
-            .and_then(|u| u.get("ignoreDependencies"))
-            .and_then(|v| v.as_array())
-        {
-            out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+        for ns in self.pnpm_aube_objects() {
+            if let Some(arr) = ns
+                .get("updateConfig")
+                .and_then(|v| v.as_object())
+                .and_then(|u| u.get("ignoreDependencies"))
+                .and_then(|v| v.as_array())
+            {
+                out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+            }
         }
         if let Some(update_config) = &self.update_config {
             out.extend(update_config.ignore_dependencies.iter().cloned());
@@ -767,5 +782,188 @@ mod tests {
         assert!(p.pnpm_peer_dependency_rules_ignore_missing().is_empty());
         assert!(p.pnpm_peer_dependency_rules_allow_any().is_empty());
         assert!(p.pnpm_peer_dependency_rules_allowed_versions().is_empty());
+    }
+
+    // --- aube.* namespace parity --------------------------------------
+
+    #[test]
+    fn aube_namespace_read_when_pnpm_missing() {
+        let p = parse(
+            r#"{
+                "aube": {
+                    "onlyBuiltDependencies": ["esbuild"],
+                    "neverBuiltDependencies": ["sharp"],
+                    "ignoredOptionalDependencies": ["fsevents"],
+                    "patchedDependencies": {"lodash@4.17.21": "patches/lodash.patch"},
+                    "catalog": {"react": "^18.0.0"},
+                    "catalogs": {"legacy": {"react": "^17.0.0"}},
+                    "supportedArchitectures": {"os": ["linux", "win32"], "cpu": ["x64"]},
+                    "overrides": {"lodash": "4.17.21"},
+                    "packageExtensions": {"foo": {"dependencies": {"a": "1"}}},
+                    "allowedDeprecatedVersions": {"request": "*"},
+                    "peerDependencyRules": {
+                        "ignoreMissing": ["react-native"],
+                        "allowAny": ["@types/*"],
+                        "allowedVersions": {"react": "^18.0.0"}
+                    },
+                    "updateConfig": {"ignoreDependencies": ["typescript"]},
+                    "allowBuilds": {"esbuild": true}
+                }
+            }"#,
+        );
+        assert_eq!(p.pnpm_only_built_dependencies(), vec!["esbuild"]);
+        assert_eq!(p.pnpm_never_built_dependencies(), vec!["sharp"]);
+        assert!(p.pnpm_ignored_optional_dependencies().contains("fsevents"));
+        assert_eq!(
+            p.pnpm_patched_dependencies().get("lodash@4.17.21").unwrap(),
+            "patches/lodash.patch",
+        );
+        assert_eq!(p.pnpm_catalog().get("react").unwrap(), "^18.0.0");
+        assert_eq!(
+            p.pnpm_catalogs()
+                .get("legacy")
+                .and_then(|c| c.get("react"))
+                .unwrap(),
+            "^17.0.0",
+        );
+        let (os, cpu, libc) = p.pnpm_supported_architectures();
+        assert_eq!(os, vec!["linux", "win32"]);
+        assert_eq!(cpu, vec!["x64"]);
+        assert!(libc.is_empty());
+        assert_eq!(p.overrides_map().get("lodash").unwrap(), "4.17.21");
+        assert!(p.package_extensions().contains_key("foo"));
+        assert_eq!(p.allowed_deprecated_versions().get("request").unwrap(), "*",);
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_ignore_missing(),
+            vec!["react-native".to_string()],
+        );
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_allow_any(),
+            vec!["@types/*".to_string()],
+        );
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_allowed_versions()
+                .get("react")
+                .unwrap(),
+            "^18.0.0",
+        );
+        assert_eq!(p.update_ignore_dependencies(), vec!["typescript"]);
+        assert!(matches!(
+            p.pnpm_allow_builds().get("esbuild"),
+            Some(AllowBuildRaw::Bool(true)),
+        ));
+    }
+
+    #[test]
+    fn aube_overrides_pnpm_on_key_conflict() {
+        // For map-valued configs, `aube.*` wins on key conflict while
+        // disjoint keys from either namespace merge.
+        let p = parse(
+            r#"{
+                "pnpm": {
+                    "catalog": {"react": "^17.0.0", "lodash": "^4.0.0"},
+                    "patchedDependencies": {"foo@1": "pnpm.patch"},
+                    "allowedDeprecatedVersions": {"request": "^2.0.0"},
+                    "overrides": {"lodash": "pnpm-value"}
+                },
+                "aube": {
+                    "catalog": {"react": "^18.0.0"},
+                    "patchedDependencies": {"foo@1": "aube.patch"},
+                    "allowedDeprecatedVersions": {"request": "^3.0.0"},
+                    "overrides": {"lodash": "aube-value"}
+                }
+            }"#,
+        );
+        let catalog = p.pnpm_catalog();
+        assert_eq!(catalog.get("react").unwrap(), "^18.0.0");
+        assert_eq!(catalog.get("lodash").unwrap(), "^4.0.0");
+        assert_eq!(
+            p.pnpm_patched_dependencies().get("foo@1").unwrap(),
+            "aube.patch",
+        );
+        assert_eq!(
+            p.allowed_deprecated_versions().get("request").unwrap(),
+            "^3.0.0",
+        );
+        assert_eq!(p.overrides_map().get("lodash").unwrap(), "aube-value");
+    }
+
+    #[test]
+    fn top_level_overrides_still_beat_aube_namespace() {
+        // Top-level `overrides` is the npm-standard surface and
+        // remains the highest-priority source.
+        let p = parse(
+            r#"{
+                "pnpm": {"overrides": {"lodash": "1"}},
+                "aube": {"overrides": {"lodash": "2"}},
+                "overrides": {"lodash": "3"}
+            }"#,
+        );
+        assert_eq!(p.overrides_map().get("lodash").unwrap(), "3");
+    }
+
+    #[test]
+    fn aube_supported_architectures_merges_with_pnpm() {
+        let p = parse(
+            r#"{
+                "pnpm": {"supportedArchitectures": {"os": ["linux"], "cpu": ["x64"]}},
+                "aube": {"supportedArchitectures": {"os": ["win32"], "libc": ["glibc"]}}
+            }"#,
+        );
+        let (os, cpu, libc) = p.pnpm_supported_architectures();
+        assert_eq!(os, vec!["linux", "win32"]);
+        assert_eq!(cpu, vec!["x64"]);
+        assert_eq!(libc, vec!["glibc"]);
+    }
+
+    #[test]
+    fn aube_list_configs_union_with_pnpm() {
+        let p = parse(
+            r#"{
+                "pnpm": {
+                    "onlyBuiltDependencies": ["esbuild"],
+                    "neverBuiltDependencies": ["sharp"],
+                    "ignoredOptionalDependencies": ["fsevents"],
+                    "peerDependencyRules": {
+                        "ignoreMissing": ["react"],
+                        "allowAny": ["@types/a"]
+                    }
+                },
+                "aube": {
+                    "onlyBuiltDependencies": ["swc"],
+                    "neverBuiltDependencies": ["node-gyp"],
+                    "ignoredOptionalDependencies": ["dtrace-provider"],
+                    "peerDependencyRules": {
+                        "ignoreMissing": ["react-native"],
+                        "allowAny": ["@types/b"]
+                    }
+                }
+            }"#,
+        );
+        assert_eq!(p.pnpm_only_built_dependencies(), vec!["esbuild", "swc"]);
+        assert_eq!(p.pnpm_never_built_dependencies(), vec!["sharp", "node-gyp"]);
+        let ignored = p.pnpm_ignored_optional_dependencies();
+        assert!(ignored.contains("fsevents"));
+        assert!(ignored.contains("dtrace-provider"));
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_ignore_missing(),
+            vec!["react".to_string(), "react-native".to_string()],
+        );
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_allow_any(),
+            vec!["@types/a".to_string(), "@types/b".to_string()],
+        );
+    }
+
+    #[test]
+    fn aube_update_config_merges_with_pnpm_and_top_level() {
+        let p = parse(
+            r#"{
+                "pnpm": {"updateConfig": {"ignoreDependencies": ["a"]}},
+                "aube": {"updateConfig": {"ignoreDependencies": ["b"]}},
+                "updateConfig": {"ignoreDependencies": ["c"]}
+            }"#,
+        );
+        assert_eq!(p.update_ignore_dependencies(), vec!["a", "b", "c"]);
     }
 }

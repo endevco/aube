@@ -57,6 +57,37 @@ teardown() {
 	assert_dir_exists node_modules/.aube/is-number@7.0.0
 }
 
+@test "aube.overrides is honored" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-overrides",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" },
+		  "aube": { "overrides": { "is-number": "7.0.0" } }
+		}
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-number@7.0.0
+}
+
+@test "aube.overrides wins over pnpm.overrides on conflict" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-overrides",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" },
+		  "pnpm": { "overrides": { "is-number": "6.0.0" } },
+		  "aube": { "overrides": { "is-number": "7.0.0" } }
+		}
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-number@7.0.0
+	run test -d node_modules/.aube/is-number@6.0.0
+	assert_failure
+}
+
 @test "packageExtensions adds missing transitive dependencies" {
 	cat >package.json <<-'EOF'
 		{

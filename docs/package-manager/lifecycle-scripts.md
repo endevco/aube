@@ -37,11 +37,14 @@ allowBuilds:
   esbuild: true
 ```
 
-In `package.json` (pnpm v9 / legacy — still honored as a read source):
+In `package.json` (pnpm v9 / legacy — still honored as a read source).
+Every key under `pnpm.*` is also accepted under `aube.*`; when both are
+present for the same key, `aube.*` wins. Disjoint entries from either
+namespace merge.
 
 ```json
 {
-  "pnpm": {
+  "aube": {
     "allowBuilds": {
       "esbuild": true
     },

@@ -52,6 +52,46 @@ teardown() {
 	assert_exists node_modules/aube-test-optional-win32
 }
 
+@test "aube.supportedArchitectures widens the match set" {
+	cat >package.json <<-'JSON'
+		{
+		  "name": "supported-arch-aube-test",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  },
+		  "aube": {
+		    "supportedArchitectures": {
+		      "os": ["current", "win32"]
+		    }
+		  }
+		}
+	JSON
+	run aube install --no-frozen-lockfile
+	assert_success
+	# `aube.*` is the native namespace — full parity with `pnpm.*`.
+	assert_exists node_modules/aube-test-optional-win32
+}
+
+@test "aube.ignoredOptionalDependencies drops a named optional dep" {
+	cat >package.json <<-'JSON'
+		{
+		  "name": "ignored-optional-aube-test",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  },
+		  "aube": {
+		    "supportedArchitectures": { "os": ["current", "win32"] },
+		    "ignoredOptionalDependencies": ["aube-test-optional-win32"]
+		  }
+		}
+	JSON
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_not_exists node_modules/aube-test-optional-win32
+}
+
 @test "pnpm.ignoredOptionalDependencies drops a named optional dep" {
 	cat >package.json <<-'JSON'
 		{
