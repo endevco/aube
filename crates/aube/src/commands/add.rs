@@ -809,6 +809,7 @@ async fn run_filtered(
 
     let restore_errors = if args.no_save {
         let mut errors: Vec<miette::Report> = Vec::new();
+        let restored = snapshots.len();
         for (manifest_path, manifest_bytes) in snapshots {
             if let Err(e) = std::fs::write(&manifest_path, manifest_bytes) {
                 errors.push(
@@ -841,7 +842,12 @@ async fn run_filtered(
             );
         }
         if errors.is_empty() {
-            eprintln!("Restored package.json and lockfile (--no-save)");
+            let noun = if restored == 1 {
+                "package.json"
+            } else {
+                "package.json files"
+            };
+            eprintln!("Restored {restored} {noun} and lockfile (--no-save)");
         }
         errors
     } else {
