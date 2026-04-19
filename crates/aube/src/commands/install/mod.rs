@@ -1982,7 +1982,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             && !virtual_store_only_setting
         {
             tracing::warn!(
-                "disabling global virtual store: `{name}` is in disableGlobalVirtualStoreForPackages (packages in that list have bundler-style module resolvers that follow symlinks and walk up, which can't reach the project root when `.aube/<pkg>` symlinks into the global store). Set the list to `[]` in .npmrc to opt out."
+                "disabling global virtual store: `{name}` is in disableGlobalVirtualStoreForPackages (packages in that list have bundler-style module resolvers that follow symlinks and walk up, which can't reach the project root when `.aube/<pkg>` symlinks into the global store). To silence this warning while keeping the fallback, add `enableGlobalVirtualStore=false` to .npmrc; to opt out of the heuristic entirely, set `disableGlobalVirtualStoreForPackages=[]`."
             );
             Some(false)
         } else {
