@@ -1699,6 +1699,9 @@ impl Linker {
         let pkg_nm_parent = base_dir.join(&subdir).join("node_modules");
         let mut parents: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
         parents.insert(pkg_nm_dir.clone());
+        // Validate every key once here. The file-linking loop below
+        // walks the same immutable index, so skipping the check
+        // there is safe.
         for rel_path in index.keys() {
             validate_index_key(rel_path)?;
             let target = pkg_nm_dir.join(rel_path);
@@ -1727,7 +1730,8 @@ impl Linker {
         // the unlink syscall on every file. For a 1.4k-package install
         // that's ~45k wasted `unlink` calls on the hot path.
         for (rel_path, stored) in index {
-            validate_index_key(rel_path)?;
+            // Key already validated in the parent-collection loop
+            // above. The index is immutable between the two loops.
             let target = pkg_nm_dir.join(rel_path);
 
             self.link_file_fresh(&stored.store_path, &target)?;

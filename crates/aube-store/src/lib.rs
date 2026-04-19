@@ -460,11 +460,22 @@ impl Store {
 fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
     use std::path::Component;
 
+    // Peek past any leading `.` segments (`./package/foo.js` appears
+    // in some tar implementations' wrapper representations) so the
+    // first-component reject and the wrapper-strip both work off the
+    // same "first real" position. Running the reject before the
+    // stripping loop would otherwise let `./../file` silently
+    // consume the `..` as the wrapper.
+    let mut components = raw.components().peekable();
+    while matches!(components.peek(), Some(Component::CurDir)) {
+        components.next();
+    }
+
     // Reject absolute, drive-prefixed, or `..`-rooted paths before
-    // any wrapper-strip runs. A naive "skip the first component"
-    // would otherwise strip the `RootDir` marker and accept `/etc`
-    // as `etc`.
-    match raw.components().next() {
+    // wrapper-strip runs. A naive "skip the first component" would
+    // otherwise strip the `RootDir` marker and accept `/etc` as
+    // `etc`, or consume a leading `..` as the wrapper.
+    match components.peek() {
         Some(Component::RootDir) => {
             return Err(Error::Tar(format!(
                 "tarball entry path is absolute: {raw:?}"
@@ -483,14 +494,9 @@ fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
         _ => {}
     }
 
-    // Skip leading `.` components, then drop the first real
-    // component as the wrapper directory. npm convention is
-    // `package/`, but some packages ship the package name or
-    // another identifier. Whatever it is, drop it.
-    let mut components = raw.components().peekable();
-    while matches!(components.peek(), Some(Component::CurDir)) {
-        components.next();
-    }
+    // Drop the first real component as the wrapper directory. npm
+    // convention is `package/`, but some packages ship the package
+    // name or another identifier. Whatever it is, drop it.
     components.next();
 
     let mut out = String::new();
@@ -1707,6 +1713,18 @@ mod tests {
     #[test]
     fn normalize_tar_entry_path_rejects_parent_dir() {
         let err = normalize_tar_entry_path(Path::new("package/../etc/passwd")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_rejects_parent_dir_after_leading_cur_dir() {
+        // `./../file` must be rejected. An earlier version of the
+        // validator ran the ParentDir check against the raw first
+        // component, so the `.` passed it and the `..` was then
+        // silently consumed as the wrapper directory.
+        let err = normalize_tar_entry_path(Path::new("./../file")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+        let err = normalize_tar_entry_path(Path::new("././../etc/passwd")).unwrap_err();
         assert!(matches!(err, Error::Tar(_)));
     }
 

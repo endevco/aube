@@ -411,6 +411,9 @@ pub(crate) fn link_hoisted_importer(
         let _ = std::fs::remove_file(&pkg_dir);
         let mut parents: BTreeSet<PathBuf> = BTreeSet::new();
         parents.insert(pkg_dir.clone());
+        // Validate every key once here. The file-linking loop below
+        // walks the same immutable index, so skipping the check
+        // there is safe.
         for rel_path in index.keys() {
             crate::validate_index_key(rel_path)?;
             let target = pkg_dir.join(rel_path);
@@ -423,7 +426,8 @@ pub(crate) fn link_hoisted_importer(
         }
 
         for (rel_path, stored) in index {
-            crate::validate_index_key(rel_path)?;
+            // Key already validated in the parent-collection loop
+            // above. The index is immutable between the two loops.
             let target = pkg_dir.join(rel_path);
             linker.link_file_fresh(&stored.store_path, &target)?;
             stats.files_linked += 1;
