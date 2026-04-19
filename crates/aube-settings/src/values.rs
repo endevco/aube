@@ -844,6 +844,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_enum_accessor_reads_kebab_case_npmrc_alias() {
+        // pnpm's `.npmrc` docs use `node-linker=hoisted` (kebab-case).
+        // aube must accept it alongside the camelCase `nodeLinker` form —
+        // otherwise the setting is silently ignored for anyone copying
+        // from pnpm docs.
+        let npmrc = entries(&[("node-linker", "hoisted")]);
+        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+            std::collections::BTreeMap::new();
+        let ctx = ResolveCtx::files_only(&npmrc, &ws);
+        assert_eq!(resolved::node_linker(&ctx), resolved::NodeLinker::Hoisted);
+    }
+
+    #[test]
+    fn npmrc_accepts_kebab_alias_for_camel_only_setting() {
+        // `virtualStoreDirMaxLength` is declared in settings.toml
+        // with the single npmrc key `virtualStoreDirMaxLength`. The
+        // generator must auto-synthesize the kebab alias
+        // `virtual-store-dir-max-length` so users copying from pnpm's
+        // `.npmrc` docs get the expected behaviour.
+        let npmrc = entries(&[("virtual-store-dir-max-length", "40")]);
+        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+            std::collections::BTreeMap::new();
+        let ctx = ResolveCtx::files_only(&npmrc, &ws);
+        assert_eq!(resolved::virtual_store_dir_max_length(&ctx), Some(40));
+    }
+
+    #[test]
+    fn npmrc_accepts_camel_alias_for_kebab_only_setting() {
+        // Mirror case: `prefer-frozen-lockfile` was declared only in
+        // kebab form, so authors writing `preferFrozenLockfile` in
+        // `.npmrc` (the pnpm-workspace.yaml spelling) were silently
+        // ignored. Auto-synth fills in the camelCase alias too.
+        let npmrc = entries(&[("preferFrozenLockfile", "false")]);
+        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+            std::collections::BTreeMap::new();
+        let ctx = ResolveCtx::files_only(&npmrc, &ws);
+        assert_eq!(resolved::prefer_frozen_lockfile(&ctx), Some(false));
+    }
+
+    #[test]
     fn generated_string_accessor_reads_workspace_yaml() {
         // `storeDir` is a string setting with a workspaceYaml source.
         // Before the generator learned about `string_from_workspace_yaml`,

@@ -110,12 +110,8 @@ fn main() {
         // `AUBE_STORE_DIR`) alongside the implicit ones.
         let env_vars = merged_env_vars(name, &def.sources.env);
         writeln!(out, "        env_vars: {},", slice_lit(&env_vars)).unwrap();
-        writeln!(
-            out,
-            "        npmrc_keys: {},",
-            slice_lit(&def.sources.npmrc)
-        )
-        .unwrap();
+        let npmrc_keys = merged_npmrc_keys(&def.sources.npmrc);
+        writeln!(out, "        npmrc_keys: {},", slice_lit(&npmrc_keys)).unwrap();
         writeln!(
             out,
             "        workspace_yaml_keys: {},",
@@ -591,6 +587,85 @@ fn merged_env_vars(name: &str, declared: &[String]) -> Vec<String> {
     for implicit in [lower, upper] {
         if !out.contains(&implicit) {
             out.push(implicit);
+        }
+    }
+    out
+}
+
+/// Auto-synthesize kebab↔camelCase aliases for every `.npmrc` key.
+/// pnpm's `.npmrc` docs use kebab-case (`node-linker=hoisted`); its
+/// `pnpm-workspace.yaml` uses camelCase (`nodeLinker: hoisted`). Users
+/// paste both forms into `.npmrc` interchangeably, so each declared
+/// key gets its opposite-case sibling added here. Without this, an
+/// author who lists only `nodeLinker` would silently ignore users
+/// copying `node-linker=...` out of pnpm docs (and vice versa).
+///
+/// Skips keys that aren't plain identifiers — registry-style entries
+/// like `@scope:registry` or `//host/:_authToken` are pnpm syntax
+/// rather than config-key identifiers, so kebab/camel conversion
+/// doesn't apply.
+fn merged_npmrc_keys(declared: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(declared.len() * 2);
+    for src in declared {
+        if !out.contains(src) {
+            out.push(src.clone());
+        }
+    }
+    for src in declared {
+        if !is_case_convertible_key(src) {
+            continue;
+        }
+        for alias in [to_kebab_case(src), to_camel_case(src)] {
+            if alias != *src && !out.contains(&alias) {
+                out.push(alias);
+            }
+        }
+    }
+    out
+}
+
+fn is_case_convertible_key(key: &str) -> bool {
+    // Registry / auth keys like `@scope:registry`, `//host/:_authToken`,
+    // and bracketed patterns aren't identifier-style config keys.
+    // Leave them untouched.
+    !(key.starts_with('/') || key.starts_with('@') || key.contains(':'))
+}
+
+fn to_kebab_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c == '.' {
+            // Preserve dotted path segments; kebab each segment
+            // independently (e.g. `peerDependencyRules.ignoreMissing`
+            // → `peer-dependency-rules.ignore-missing`).
+            out.push(c);
+            prev_lower = false;
+        } else if c.is_ascii_uppercase() {
+            if prev_lower {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+            prev_lower = false;
+        } else {
+            out.push(c);
+            prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        }
+    }
+    out
+}
+
+fn to_camel_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper_next = false;
+    for c in s.chars() {
+        if c == '-' {
+            upper_next = true;
+        } else if upper_next {
+            out.push(c.to_ascii_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
         }
     }
     out
