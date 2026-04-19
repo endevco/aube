@@ -3,6 +3,21 @@
 aube should be a drop-in replacement for pnpm projects. There are only
 minor differences in behavior.
 
+## Behavior differences
+
+A handful of commands behave differently in a way that's worth knowing
+before you ship an aube-based workflow:
+
+| Command | Difference |
+| --- | --- |
+| `aube run <script>` | Checks install staleness and auto-installs before running. `pnpm run` does not. |
+| `aube test` | Auto-installs first, then runs the `test` script — equivalent to `pnpm install-test` in one command. |
+| `aube exec <bin>` | Same staleness check as `aube run`. `pnpm exec` does not install. |
+| `aube install` (new project) | Creates `aube-lock.yaml` if there's no existing lockfile. pnpm creates `pnpm-lock.yaml`. In an existing pnpm project, aube reads and writes `pnpm-lock.yaml` in place. |
+
+Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
+`publish`, `approve-builds` — matches pnpm's observable behavior.
+
 ## Command map
 
 | pnpm | aube | Notes |
@@ -61,17 +76,36 @@ projects).
 - **Build approvals.** Dependency lifecycle script approval follows pnpm
   v11's allowlist model. Use explicit policy fields in `package.json` or
   `aube-workspace.yaml` to opt in.
-- **`aube test` auto-installs.** Equivalent to `pnpm install-test`: aube
-  auto-installs before running `test`, so the two-step pnpm workflow
-  becomes one command. `aube run` and `aube exec` do the same staleness
-  check.
 - **Speed.** See the [benchmarks](/benchmarks).
+
+## Supported pnpm lockfile versions
+
+aube reads and writes `pnpm-lock.yaml` at **lockfile version 9** — the
+format shipped by pnpm v9 and later. Older pnpm lockfiles (versions 5, 6,
+7, and 8, used by pnpm 7.x and 8.x) are not supported and will cause aube
+to refuse the install.
+
+To upgrade an older pnpm lockfile, run a modern pnpm once to convert it:
+
+```sh
+npx pnpm@latest install
+```
+
+That rewrites `pnpm-lock.yaml` at v9. Commit the result, then switch to
+`aube install`.
 
 ## Out of scope
 
-Runtime-management commands like `pnpm env`, `pnpm runtime`, `pnpm setup`,
-and `pnpm self-update` are intentionally not implemented. For a compact
-gap list, see the
+aube does not manage Node.js itself. Runtime-management commands like
+`pnpm env`, `pnpm runtime`, `pnpm setup`, and `pnpm self-update` are
+intentionally not implemented — use [mise](https://mise.jdx.dev) to
+install and switch Node versions:
+
+```sh
+mise use node@22
+```
+
+For a compact command gap list, see the
 [README compatibility notes](https://github.com/endevco/aube#commands-you-may-recognize).
 For command and flag details, see the [CLI reference](/cli/).
 
