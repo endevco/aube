@@ -33,7 +33,7 @@
 
 use crate::{DepType, DirectDep, Error, LocalSource, LockedPackage, LockfileGraph};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -491,7 +491,19 @@ pub fn write(
     // the root's), so transitive deps declared only by a non-root
     // workspace still appear in the `packages` section. Skip
     // workspace-link deps for the same reason as the canonical filter.
+    //
+    // Dedupe by package name so duplicate direct deps across
+    // workspaces don't confuse `build_hoist_tree` — its root-seeding
+    // loop silently drops any queue entry whose segs already exist in
+    // `placed`, which would mean the second workspace's transitive
+    // deps never get walked. `graph.importers` is a BTreeMap, so `.`
+    // iterates first and wins conflicts. When two workspaces declare
+    // the same dep at different versions we still collapse to a
+    // single top-level entry (the first-seen version); a proper fix
+    // would emit `<workspace>/<dep>` nested entries per-workspace,
+    // which is out of scope here.
     let mut all_roots: Vec<DirectDep> = Vec::new();
+    let mut seen_names: BTreeSet<String> = BTreeSet::new();
     for deps in graph.importers.values() {
         for d in deps {
             if matches!(
@@ -501,6 +513,9 @@ pub fn write(
                     .and_then(|p| p.local_source.as_ref()),
                 Some(LocalSource::Link(_))
             ) {
+                continue;
+            }
+            if !seen_names.insert(d.name.clone()) {
                 continue;
             }
             all_roots.push(d.clone());
@@ -1063,5 +1078,110 @@ mod tests {
         );
         let ws = v["workspaces"].as_object().unwrap();
         assert!(ws.contains_key("packages/app"));
+    }
+
+    /// When the root and a non-root workspace declare the same dep
+    /// name at *different* versions, the writer must emit a
+    /// consistent top-level `packages` entry and still walk the
+    /// chosen version's transitive deps. Regression test for a
+    /// corruption in `build_hoist_tree`'s root-seeding loop: without
+    /// name-dedupe, the second version would overwrite the first in
+    /// `placed` but never get queued, so neither version's
+    /// transitive deps were walked correctly and the top-level entry
+    /// pointed at a package whose deps were never expanded.
+    #[test]
+    fn test_write_dedupes_duplicate_direct_deps_across_workspaces() {
+        use tempfile::TempDir;
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","dependencies":{"foo":"^1.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","dependencies":{"foo":"^2.0.0"}}"#,
+        )
+        .unwrap();
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "foo@1.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                dependencies: [("bar".to_string(), "bar@2.0.0".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            "foo@2.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            "bar@2.0.0".to_string(),
+            LockedPackage {
+                name: "bar".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "bar@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+        importers.insert(
+            "packages/app".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        let lock_path = project_dir.join("bun.lock");
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let reparsed = parse(&lock_path).unwrap();
+        // The root's version wins the hoisted `foo` slot (BTreeMap
+        // iteration puts `.` before `packages/app`), and `bar` — only
+        // reachable by walking root-foo's transitive deps — must be
+        // present. Before the fix, `foo@2.0.0` would overwrite
+        // `foo@1.0.0` in `placed` but never get queued, and neither
+        // version's transitive deps (including `bar`) would make it
+        // into the output.
+        let foo = reparsed.packages.get("foo@1.0.0").expect("foo@1.0.0");
+        assert_eq!(foo.version, "1.0.0");
+        assert!(
+            reparsed.packages.contains_key("bar@2.0.0"),
+            "root foo's transitive `bar` was dropped: {:?}",
+            reparsed.packages.keys().collect::<Vec<_>>()
+        );
     }
 }
