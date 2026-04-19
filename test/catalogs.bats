@@ -541,3 +541,36 @@ _setup_catalog_workspace() {
 	after="$(cat pnpm-workspace.yaml)"
 	[ "$before" = "$after" ]
 }
+
+@test "aube install: overrides value of catalog: resolves through catalog" {
+	# Regression: `"overrides": {"pkg": "catalog:"}` used to leak the
+	# raw `catalog:` string through to the registry resolver because
+	# the catalog rewrite only ran against the user's declared range,
+	# not the override target. The override must resolve the catalog
+	# indirection too.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "aube-test-override-catalog",
+		  "private": true,
+		  "dependencies": {
+		    "is-odd": "^0.1.0"
+		  },
+		  "overrides": {
+		    "is-odd": "catalog:"
+		  },
+		  "pnpm": {
+		    "catalog": {
+		      "is-odd": "3.0.1"
+		    }
+		  }
+		}
+	EOF
+
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/is-odd
+	# The declared range `^0.1.0` would pick 0.1.2; the override
+	# through the catalog must promote to 3.0.1.
+	run cat node_modules/is-odd/package.json
+	assert_output --partial '"version": "3.0.1"'
+}

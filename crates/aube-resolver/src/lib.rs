@@ -1067,16 +1067,59 @@ impl Resolver {
                         &task.name,
                         &task.range,
                         &task.ancestors,
-                    ) && task.range != override_spec
-                    {
-                        tracing::trace!(
-                            "override: {}@{} -> {}",
-                            task.name,
-                            task.range,
+                    ) {
+                        // An override may itself point at a catalog
+                        // entry (e.g. `"overrides": {"foo": "catalog:"}`).
+                        // The catalog pre-pass above already ran against
+                        // the original range, so resolve the indirection
+                        // here before assigning — otherwise `catalog:`
+                        // leaks through to the registry resolver.
+                        let effective_spec = if let Some(catalog_name) =
+                            override_spec.strip_prefix("catalog:").map(|n| {
+                                if n.is_empty() {
+                                    "default".to_string()
+                                } else {
+                                    n.to_string()
+                                }
+                            }) {
+                            match self.catalogs.get(&catalog_name) {
+                                Some(catalog) => match catalog.get(&task.name) {
+                                    Some(real_range) => {
+                                        catalog_picks
+                                            .entry(catalog_name.clone())
+                                            .or_default()
+                                            .insert(task.name.clone(), real_range.clone());
+                                        real_range.clone()
+                                    }
+                                    None => {
+                                        return Err(Error::UnknownCatalogEntry {
+                                            name: task.name.clone(),
+                                            spec: override_spec.clone(),
+                                            catalog: catalog_name,
+                                        });
+                                    }
+                                },
+                                None => {
+                                    return Err(Error::UnknownCatalog {
+                                        name: task.name.clone(),
+                                        spec: override_spec.clone(),
+                                        catalog: catalog_name,
+                                    });
+                                }
+                            }
+                        } else {
                             override_spec
-                        );
-                        task.range = override_spec;
-                        changed = true;
+                        };
+                        if task.range != effective_spec {
+                            tracing::trace!(
+                                "override: {}@{} -> {}",
+                                task.name,
+                                task.range,
+                                effective_spec
+                            );
+                            task.range = effective_spec;
+                            changed = true;
+                        }
                     }
                     if let Some(rest) = task.range.strip_prefix("npm:")
                         && let Some(at_idx) = rest.rfind('@')
