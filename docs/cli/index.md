@@ -43,6 +43,18 @@ Force colored output even when stderr is not a TTY.
 
 Overrides `NO_COLOR` / `CLICOLOR=0`. Mutually exclusive with `--no-color`.
 
+### `--disable-global-virtual-store`
+
+Force the shared global virtual store off for this invocation.
+
+Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
+
+### `--enable-global-virtual-store`
+
+Force the shared global virtual store on for this invocation.
+
+Overrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic.
+
 ### `--fail-if-no-match`
 
 Error when a workspace selector matches no packages.

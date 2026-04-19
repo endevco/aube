@@ -16,7 +16,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 
 ## Summary
 
-15 settings are listed here.
+16 settings are listed here.
 
 | Setting | Type | Summary |
 | --- | --- | --- |
@@ -24,6 +24,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`shamefullyHoist`](#setting-shamefullyhoist) | `bool` | Hoist all dependencies to the root node_modules (shortcut for publicHoistPattern=["*"]). |
 | [`nodeLinker`](#setting-nodelinker) | `"isolated" \| "hoisted" \| "pnp"` | Strategy for linking Node packages into node_modules. |
 | [`packageImportMethod`](#setting-packageimportmethod) | `"auto" \| "hardlink" \| "copy" \| "clone" \| "clone-or-copy"` | Method for importing packages from the store into node_modules. |
+| [`enableGlobalVirtualStore`](#setting-enableglobalvirtualstore) | `bool` | Use a per-user virtual store for all projects. |
 | [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | Check store file integrity before linking. |
 | [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | Perform a headless install if the lockfile already satisfies package.json. |
 | [`networkConcurrency`](#setting-networkconcurrency) | `int` | Maximum concurrent HTTP(S) requests. |
@@ -102,6 +103,38 @@ currently falls back to copy when reflink is unsupported — strict
 enforcement is planned for a future release), and `clone-or-copy`
 tries reflink first and falls back to a plain copy instead of
 hardlinking. Overridable per-invocation with `--package-import-method`.
+
+### `enableGlobalVirtualStore` {#setting-enableglobalvirtualstore}
+
+Use a per-user virtual store for all projects.
+
+- Type: `bool`
+- Default: `undefined`
+- CLI flags: `enable-global-virtual-store`, `disable-global-virtual-store`
+
+aube ships its own global virtual store under `~/.cache/aube/virtual-store/`.
+It's enabled by default outside CI and disabled under CI (see
+`aube-linker`, which checks the `CI` env var). Set
+`enableGlobalVirtualStore=false` in `.npmrc` or `pnpm-workspace.yaml`
+to force per-project materialization for a project.
+
+`aube dlx` defaults this setting to `false` for its scratch installs so
+CLIs with undeclared runtime imports can still use the hidden-hoist
+fallback inside the temporary project. Pass
+`aube dlx --enable-gvs <pkg>` when you want to force the shared virtual
+store on for a dlx invocation.
+
+The global flags are one-shot CLI sources for the same setting:
+`--disable-global-virtual-store` resolves this setting to `false`, and
+`--enable-global-virtual-store` resolves it to `true`. The enable flag
+can force the shared virtual store on even in CI or when package
+compatibility heuristics would normally disable it.
+
+Examples:
+
+- `echo 'enableGlobalVirtualStore=false' >> .npmrc`
+- `aube --disable-global-virtual-store install`
+- `aube dlx --enable-gvs create-vite`
 
 ## Store
 

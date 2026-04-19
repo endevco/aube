@@ -662,15 +662,35 @@ config-surface change.
 Use a per-user virtual store for all projects.
 
 - Type: `bool`
-- Default: `false`
-- Environment: `CI`, `npm_config_enable_global_virtual_store`, `NPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
+- Default: `undefined`
+- CLI flags: `enable-global-virtual-store`, `disable-global-virtual-store`
+- Environment: `npm_config_enable_global_virtual_store`, `NPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
 - .npmrc keys: `enableGlobalVirtualStore`
 - Workspace YAML keys: `enableGlobalVirtualStore`
 
 aube ships its own global virtual store under `~/.cache/aube/virtual-store/`.
-It's enabled by default and disabled under CI (see `aube-linker`, which
-checks the `CI` env var). pnpm gained the same feature later; we expose
-it through `CI=1` rather than a dedicated config knob.
+It's enabled by default outside CI and disabled under CI (see
+`aube-linker`, which checks the `CI` env var). Set
+`enableGlobalVirtualStore=false` in `.npmrc` or `pnpm-workspace.yaml`
+to force per-project materialization for a project.
+
+`aube dlx` defaults this setting to `false` for its scratch installs so
+CLIs with undeclared runtime imports can still use the hidden-hoist
+fallback inside the temporary project. Pass
+`aube dlx --enable-gvs <pkg>` when you want to force the shared virtual
+store on for a dlx invocation.
+
+The global flags are one-shot CLI sources for the same setting:
+`--disable-global-virtual-store` resolves this setting to `false`, and
+`--enable-global-virtual-store` resolves it to `true`. The enable flag
+can force the shared virtual store on even in CI or when package
+compatibility heuristics would normally disable it.
+
+Examples:
+
+- `echo 'enableGlobalVirtualStore=false' >> .npmrc`
+- `aube --disable-global-virtual-store install`
+- `aube dlx --enable-gvs create-vite`
 
 ### `disableGlobalVirtualStoreForPackages` {#setting-disableglobalvirtualstoreforpackages}
 
