@@ -2469,6 +2469,27 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_verify_integrity = verify_store_integrity_setting;
             let fetch_strict_pkg_content_check = strict_store_pkg_content_check_setting;
             let fetch_git_shallow_hosts = resolve_git_shallow_hosts(&settings_ctx);
+            // Host-side platform filter for the streaming fetch. The
+            // resolver widens its graph filter for aube-lock.yaml so
+            // the committed lockfile carries native optionals for every
+            // common platform, but that widening mustn't make us
+            // download every foreign-platform tarball up front — most
+            // of them will disappear when `filter_graph` trims optional
+            // edges below, and only a vanishingly rare broken-package
+            // shape (required dep with platform constraints) actually
+            // needs the fetch. A post-resolve catch-up pass picks up
+            // those stragglers from the finalized graph; here we just
+            // defer. `filter_graph` keys off the same narrow manifest
+            // set, so a deferred package that survives the trim is
+            // exactly one the catch-up must fetch.
+            let (fetch_sup_os, fetch_sup_cpu, fetch_sup_libc) =
+                manifest.pnpm_supported_architectures();
+            let fetch_supported_arch = aube_resolver::SupportedArchitectures {
+                os: fetch_sup_os,
+                cpu: fetch_sup_cpu,
+                libc: fetch_sup_libc,
+                ..Default::default()
+            };
             // Channel for pipelining GVS population into the fetch
             // stream: each imported (dep_path, index) is forwarded to a
             // materializer task that runs concurrently with the rest of
@@ -2484,18 +2505,30 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 let mut cached_count = 0usize;
 
                 while let Some(pkg) = resolved_rx.recv().await {
-                    // The fetch coordinator deliberately does NOT skip
-                    // platform-mismatched packages: `filter_graph` below
-                    // only prunes optional edges, so a required dep
-                    // with platform constraints (rare, e.g. a broken
-                    // package missing an optional-marker) stays in the
-                    // graph and still needs a store index. A fetch-time
-                    // filter would cost nothing for optionals (win) but
-                    // silently break the required case (link-time
-                    // "missing index" error). When aube-lock widening
-                    // pulls in foreign-platform natives, those tarballs
-                    // land in the CAS but never make it into
-                    // `node_modules` — over-fetch, not over-link.
+                    // Defer platform-mismatched registry packages to
+                    // the post-filter_graph catch-up pass: almost all
+                    // of them are optional natives that `filter_graph`
+                    // is about to drop, so fetching up front would just
+                    // waste bandwidth. Local `file:`/`link:` deps
+                    // always fetch here — they carry empty platform
+                    // arrays and `is_supported` treats them as
+                    // unconstrained.
+                    if pkg.local_source.is_none()
+                        && !aube_resolver::is_supported(
+                            &pkg.os,
+                            &pkg.cpu,
+                            &pkg.libc,
+                            &fetch_supported_arch,
+                        )
+                    {
+                        tracing::debug!(
+                            "deferring tarball fetch for {}@{}: platform mismatch (catch-up will cover survivors)",
+                            pkg.name,
+                            pkg.version
+                        );
+                        continue;
+                    }
+
                     // Each resolved package bumps the overall denominator by
                     // one. Cached packages are immediately credited against
                     // the numerator; missing ones get a transient child row.
@@ -2889,7 +2922,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     return Err(e);
                 }
             };
-            let (canonical_indices, cached, fetched) = fetch_result;
+            let (canonical_indices, mut cached, mut fetched) = fetch_result;
             tracing::debug!(
                 "phase:fetch {:.1?} ({fetched} packages, {cached} cached)",
                 fetch_phase_start.elapsed()
@@ -2914,7 +2947,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // `LockedPackage`. Multiple contextualized variants of the
             // same canonical package share a single set of files, so
             // cloning the PackageIndex is cheap relative to re-extraction.
-            let indices = remap_indices_to_contextualized(&canonical_indices, &graph);
+            let mut indices = remap_indices_to_contextualized(&canonical_indices, &graph);
 
             // Write the lockfile in whatever format the project was
             // already using. If no lockfile existed, create aube's
@@ -2990,6 +3023,58 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &install_supported_architectures,
                 &install_ignored_optional,
             );
+
+            // Catch-up fetch: the streaming coordinator deferred
+            // platform-mismatched registry tarballs on the assumption
+            // `filter_graph` would drop them. Anything still in
+            // `graph.packages` without a store index is a survivor
+            // (i.e. reached via a non-optional edge) and needs its
+            // tarball before the linker runs. In practice this set is
+            // usually empty: platform-constrained packages are almost
+            // always `optionalDependencies`, and `filter_graph` culls
+            // those. The rare non-empty case is a broken package that
+            // declares `os`/`cpu` without marking itself optional — we
+            // still install it with a warning, matching pnpm's
+            // `packageIsInstallable` behavior.
+            let missing_packages: BTreeMap<String, aube_lockfile::LockedPackage> = graph
+                .packages
+                .iter()
+                .filter(|(dep_path, _)| !indices.contains_key(*dep_path))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if !missing_packages.is_empty() {
+                tracing::debug!(
+                    "catch-up fetch for {} package(s) deferred by the streaming filter but kept by filter_graph",
+                    missing_packages.len()
+                );
+                let cwd_for_catchup_client = cwd.clone();
+                let catchup_network_mode = opts.network_mode;
+                let (catchup_indices, catchup_cached, catchup_fetched) = fetch_packages_with_root(
+                    &missing_packages,
+                    &store,
+                    || {
+                        std::sync::Arc::new(
+                            make_client(&cwd_for_catchup_client)
+                                .with_network_mode(catchup_network_mode),
+                        )
+                    },
+                    prog_ref,
+                    &cwd,
+                    &aube_dir,
+                    /*skip_already_linked_shortcut=*/ has_workspace,
+                    virtual_store_dir_max_length,
+                    opts.ignore_scripts,
+                    network_concurrency_setting,
+                    verify_store_integrity_setting,
+                    strict_store_pkg_content_check_setting,
+                    opts.git_prepare_depth,
+                    resolve_git_shallow_hosts(&settings_ctx),
+                )
+                .await?;
+                indices.extend(catchup_indices);
+                cached += catchup_cached;
+                fetched += catchup_fetched;
+            }
 
             (graph, indices, cached, fetched)
         }

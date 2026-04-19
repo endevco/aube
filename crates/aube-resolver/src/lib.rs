@@ -180,6 +180,16 @@ pub struct ResolvedPackage {
     /// fetchers short-circuit the tarball path and materialize from
     /// disk instead.
     pub local_source: Option<LocalSource>,
+    /// npm `os`/`cpu`/`libc` arrays straight from the packument (or
+    /// lockfile). The streaming fetch coordinator uses them to defer
+    /// tarball downloads for optional natives that won't install on
+    /// the host — a post-resolve catch-up pass after `filter_graph`
+    /// fetches anything that survived the graph trim but got deferred,
+    /// so required-platform-mismatched packages (which `filter_graph`
+    /// doesn't drop) still get their tarball before link.
+    pub os: Vec<String>,
+    pub cpu: Vec<String>,
+    pub libc: Vec<String>,
 }
 
 impl ResolvedPackage {
@@ -1338,6 +1348,14 @@ impl Resolver {
                                 // not the `npm:` rewrite.
                                 alias_of: None,
                                 local_source: Some(local.clone()),
+                                // Local `file:`/`link:` packages never
+                                // carry npm-style platform constraints
+                                // — they're whatever the user points
+                                // at, so the fetch coordinator treats
+                                // them as unconstrained (always fetch).
+                                os: Vec::new(),
+                                cpu: Vec::new(),
+                                libc: Vec::new(),
                             });
                         }
                         // Enqueue transitive deps of the local package
@@ -1547,6 +1565,9 @@ impl Resolver {
                                     // real registry name.
                                     alias_of: locked_pkg.alias_of.clone(),
                                     local_source: locked_pkg.local_source.clone(),
+                                    os: locked_pkg.os.clone(),
+                                    cpu: locked_pkg.cpu.clone(),
+                                    libc: locked_pkg.libc.clone(),
                                 });
                             }
 
@@ -1973,6 +1994,9 @@ impl Resolver {
                         tarball_url: tarball_url.clone(),
                         alias_of: task.real_name.clone(),
                         local_source: None,
+                        os: version_meta.os.clone(),
+                        cpu: version_meta.cpu.clone(),
+                        libc: version_meta.libc.clone(),
                     });
                 }
 

@@ -56,6 +56,34 @@ teardown() {
 	assert_success
 }
 
+@test "required platform-mismatched dep still gets fetched and linked" {
+	# Regression guard for the catch-up fetch pass. Streaming fetch
+	# defers platform-mismatched tarballs because filter_graph usually
+	# drops them — but filter_graph only prunes *optional* edges. A
+	# required dep that declares `os: ["win32"]` on a non-Windows host
+	# survives the graph trim, so its tarball must be fetched after the
+	# stream closes or the linker errors out with a missing store index.
+	# This fixture is declared in `dependencies` (NOT optional) so we
+	# exercise the exact code path cursor[bot] flagged. pnpm installs
+	# the same package the same way (with a warning); aube matches.
+	cat >package.json <<-'JSON'
+		{
+		  "name": "required-platform-mismatch-test",
+		  "version": "0.0.0",
+		  "dependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  }
+		}
+	JSON
+	run aube install --no-frozen-lockfile
+	assert_success
+	# The required-platform-mismatched dep must still land in
+	# node_modules: aube honors pnpm's `packageIsInstallable` semantics
+	# for required deps, and the catch-up fetch guarantees the store
+	# index is present when the linker runs.
+	assert_exists node_modules/aube-test-optional-win32/package.json
+}
+
 @test "pnpm-lock.yaml keeps pnpm's host-only default" {
 	# Aube preserves whatever lockfile format was already on disk. For
 	# pnpm-lock.yaml that means matching pnpm's default: optionals for
