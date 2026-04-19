@@ -1,5 +1,5 @@
 import { defineConfig } from "vitepress";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -181,5 +181,13 @@ gtag('config', 'G-WD1RRC0F8C');`,
       __AUBE_VERSION__: JSON.stringify(aubeVersion),
       __AUBE_RELEASED_AT__: JSON.stringify(aubeReleasedAt),
     },
+    plugins: [
+      {
+        name: "aube-version-file",
+        closeBundle() {
+          writeFileSync(resolve(configDir, "dist/VERSION"), `${aubeVersion}\n`);
+        },
+      },
+    ],
   },
 });
