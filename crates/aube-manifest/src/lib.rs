@@ -84,9 +84,19 @@ impl BundledDependencies {
 pub enum Workspaces {
     Array(Vec<String>),
     Object {
+        #[serde(default)]
         packages: Vec<String>,
         #[serde(default)]
         nohoist: Vec<String>,
+        /// Bun-style default catalog nested under `workspaces.catalog`.
+        /// Aube reads it in addition to `pnpm-workspace.yaml`'s `catalog:`
+        /// so bun projects that migrated config into package.json keep
+        /// working.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        catalog: BTreeMap<String, String>,
+        /// Bun-style named catalogs nested under `workspaces.catalogs`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        catalogs: BTreeMap<String, BTreeMap<String, String>>,
     },
 }
 
@@ -95,6 +105,26 @@ impl Workspaces {
         match self {
             Workspaces::Array(v) => v,
             Workspaces::Object { packages, .. } => packages,
+        }
+    }
+
+    /// Bun-style default catalog (`workspaces.catalog`). Empty when the
+    /// `workspaces` field is an array or the object form has no catalog.
+    pub fn catalog(&self) -> &BTreeMap<String, String> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
+        match self {
+            Workspaces::Array(_) => EMPTY.get_or_init(BTreeMap::new),
+            Workspaces::Object { catalog, .. } => catalog,
+        }
+    }
+
+    /// Bun-style named catalogs (`workspaces.catalogs`).
+    pub fn catalogs(&self) -> &BTreeMap<String, BTreeMap<String, String>> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<String, BTreeMap<String, String>>> =
+            std::sync::OnceLock::new();
+        match self {
+            Workspaces::Array(_) => EMPTY.get_or_init(BTreeMap::new),
+            Workspaces::Object { catalogs, .. } => catalogs,
         }
     }
 }
@@ -160,6 +190,46 @@ impl PackageJson {
         };
         arr.iter()
             .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    }
+
+    /// Extract `pnpm.catalog` — a default catalog defined inline in
+    /// package.json under the `pnpm` object. pnpm itself reads catalogs
+    /// only from `pnpm-workspace.yaml`, but aube also honors this
+    /// location so single-package projects can declare catalogs without
+    /// maintaining a separate workspace file.
+    pub fn pnpm_catalog(&self) -> BTreeMap<String, String> {
+        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
+            return BTreeMap::new();
+        };
+        let Some(map) = pnpm.get("catalog").and_then(|v| v.as_object()) else {
+            return BTreeMap::new();
+        };
+        map.iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect()
+    }
+
+    /// Extract `pnpm.catalogs` — named catalogs nested under the `pnpm`
+    /// object. Pairs with [`pnpm_catalog`] for a fully-package.json-local
+    /// catalog declaration.
+    pub fn pnpm_catalogs(&self) -> BTreeMap<String, BTreeMap<String, String>> {
+        let Some(pnpm) = self.extra.get("pnpm").and_then(|v| v.as_object()) else {
+            return BTreeMap::new();
+        };
+        let Some(outer) = pnpm.get("catalogs").and_then(|v| v.as_object()) else {
+            return BTreeMap::new();
+        };
+        outer
+            .iter()
+            .filter_map(|(name, inner)| {
+                let inner = inner.as_object()?;
+                let entries: BTreeMap<String, String> = inner
+                    .iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect();
+                Some((name.clone(), entries))
+            })
             .collect()
     }
 

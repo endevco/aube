@@ -1021,26 +1021,31 @@ impl Resolver {
                         n.to_string()
                     }
                 }) {
-                    match self
-                        .catalogs
-                        .get(&catalog_name)
-                        .and_then(|c| c.get(&task.name))
-                    {
-                        Some(real_range) => {
-                            tracing::trace!(
-                                "catalog: {} {} -> {}",
-                                task.name,
-                                task.range,
-                                real_range
-                            );
-                            catalog_picks
-                                .entry(catalog_name.clone())
-                                .or_default()
-                                .insert(task.name.clone(), real_range.clone());
-                            task.range = real_range.clone();
-                        }
+                    match self.catalogs.get(&catalog_name) {
+                        Some(catalog) => match catalog.get(&task.name) {
+                            Some(real_range) => {
+                                tracing::trace!(
+                                    "catalog: {} {} -> {}",
+                                    task.name,
+                                    task.range,
+                                    real_range
+                                );
+                                catalog_picks
+                                    .entry(catalog_name.clone())
+                                    .or_default()
+                                    .insert(task.name.clone(), real_range.clone());
+                                task.range = real_range.clone();
+                            }
+                            None => {
+                                return Err(Error::UnknownCatalogEntry {
+                                    name: task.name.clone(),
+                                    spec: task.range.clone(),
+                                    catalog: catalog_name,
+                                });
+                            }
+                        },
                         None => {
-                            return Err(Error::UnknownCatalogRef {
+                            return Err(Error::UnknownCatalog {
                                 name: task.name.clone(),
                                 spec: task.range.clone(),
                                 catalog: catalog_name,
@@ -4123,9 +4128,17 @@ pub enum Error {
     #[error("registry error for {0}: {1}")]
     Registry(String, String),
     #[error(
+        "{name}: catalog reference `{spec}` does not resolve — catalog `{catalog}` is not defined (add it to `catalog:` / `catalogs.{catalog}:` in pnpm-workspace.yaml, or under `workspaces.catalog` / `pnpm.catalog` in package.json)"
+    )]
+    UnknownCatalog {
+        name: String,
+        spec: String,
+        catalog: String,
+    },
+    #[error(
         "{name}: catalog reference `{spec}` does not resolve — catalog `{catalog}` has no entry for `{name}`"
     )]
-    UnknownCatalogRef {
+    UnknownCatalogEntry {
         name: String,
         spec: String,
         catalog: String,

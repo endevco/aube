@@ -2841,7 +2841,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let (ws_config_shared, raw_workspace) = aube_manifest::workspace::load_both(&cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
-    let workspace_catalogs = super::workspace_catalog_map(&ws_config_shared);
+    // Catalog discovery walks up for the workspace yaml and also pulls
+    // from package.json's `workspaces.catalog` / `pnpm.catalog`, so
+    // `aube install` run from a monorepo subpackage still sees the root
+    // workspace's catalog. See `discover_catalogs` for the precedence
+    // order.
+    let workspace_catalogs = super::discover_catalogs(&cwd)?;
     let settings_ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
         workspace_yaml: &raw_workspace,

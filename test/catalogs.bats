@@ -63,6 +63,120 @@ _setup_catalog_workspace() {
 	assert_dir_exists packages/app/node_modules/is-even
 }
 
+@test "aube install: catalog resolves when run from a subpackage" {
+	# Regression: `aube install` run from inside a monorepo subpackage
+	# used to miss the root `pnpm-workspace.yaml` entirely because the
+	# loader only peeked at the project root (the nearest package.json).
+	# Now it walks up for the workspace yaml.
+	_setup_catalog_workspace
+
+	cd packages/lib
+	run aube install
+	assert_success
+
+	# Linked inside the subpackage even though the catalog lives up
+	# one directory in `pnpm-workspace.yaml`.
+	assert_dir_exists node_modules/is-odd
+}
+
+@test "aube install: catalog: resolves from package.json workspaces.catalog" {
+	# Bun-style: catalogs live inline under `workspaces.catalog` in
+	# package.json. No pnpm-workspace.yaml needed.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "aube-test-workspaces-catalog",
+		  "version": "0.0.0",
+		  "dependencies": {
+		    "is-odd": "catalog:"
+		  },
+		  "workspaces": {
+		    "catalog": {
+		      "is-odd": "^3.0.1"
+		    }
+		  }
+		}
+	EOF
+
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/is-odd
+}
+
+@test "aube install: catalog: resolves from package.json pnpm.catalog" {
+	# pnpm-style catalogs declared inline in package.json under `pnpm`.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "aube-test-pnpm-catalog",
+		  "version": "0.0.0",
+		  "dependencies": {
+		    "is-odd": "catalog:"
+		  },
+		  "pnpm": {
+		    "catalog": {
+		      "is-odd": "^3.0.1"
+		    }
+		  }
+		}
+	EOF
+
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/is-odd
+}
+
+@test "aube install: named catalog from pnpm.catalogs" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "aube-test-pnpm-catalogs",
+		  "version": "0.0.0",
+		  "dependencies": {
+		    "is-even": "catalog:evens"
+		  },
+		  "pnpm": {
+		    "catalogs": {
+		      "evens": {
+		        "is-even": "^1.0.0"
+		      }
+		    }
+		  }
+		}
+	EOF
+
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/is-even
+}
+
+@test "aube install: workspace yaml wins over package.json catalog" {
+	# When both sources define the same entry, the workspace yaml wins
+	# (see `discover_catalogs` precedence in crates/aube/src/commands/mod.rs).
+	cat >pnpm-workspace.yaml <<-'EOF'
+		catalog:
+		  is-odd: ^3.0.1
+	EOF
+	cat >package.json <<-'EOF'
+		{
+		  "name": "aube-test-catalog-precedence",
+		  "version": "0.0.0",
+		  "dependencies": {
+		    "is-odd": "catalog:"
+		  },
+		  "pnpm": {
+		    "catalog": {
+		      "is-odd": "^0.1.0"
+		    }
+		  }
+		}
+	EOF
+
+	run aube install
+	assert_success
+	# Workspace yaml's ^3.0.1 wins, so the resolved range is 3.x.
+	run node -e 'console.log(require("is-odd/package.json").version)'
+	assert_success
+	[[ "$output" =~ ^3\. ]]
+}
+
 @test "aube install: lockfile records catalogs section" {
 	_setup_catalog_workspace
 	aube install
