@@ -253,11 +253,14 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
     // Workspace importers. bun.lock keys workspace paths as `""` for
     // the root and relative paths (`packages/app`, etc.) for each
-    // workspace package. Each importer's direct deps resolve through
-    // the nested-bun walk so a workspace that needs a different
-    // version of a transitive dep picks up its own `packages/app/foo`
-    // entry when one exists, falling back to the hoisted entry
-    // otherwise.
+    // workspace package. Each importer's direct deps resolve first
+    // to a workspace-scoped override (`packages/app/foo`) when one
+    // exists, falling back to the hoisted entry (`foo`). We don't
+    // walk intermediate ancestors like `packages/foo` the way
+    // `resolve_nested_bun` does for package-nesting — workspace path
+    // segments are directories, not package-nesting scopes, so a
+    // partial walk could wrongly match a literal npm package named
+    // `packages` that has its own nested `foo` entry.
     let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
     for (ws_path, ws_raw) in &raw.workspaces {
         let importer_path = if ws_path.is_empty() {
@@ -265,14 +268,9 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         } else {
             ws_path.clone()
         };
-        let base_key = if ws_path.is_empty() {
-            String::new()
-        } else {
-            ws_path.clone()
-        };
         let mut direct: Vec<DirectDep> = Vec::new();
         let push_dep = |name: &str, dep_type: DepType, direct: &mut Vec<DirectDep>| {
-            if let Some(target_key) = resolve_nested_bun(&base_key, name, &key_info)
+            if let Some(target_key) = resolve_workspace_dep(ws_path, name, &key_info)
                 && let Some((dname, dver)) = key_info.get(&target_key)
             {
                 direct.push(DirectDep {
@@ -358,6 +356,33 @@ fn resolve_nested_bun(
             base.clear();
         }
     }
+}
+
+/// Resolve a direct dep of a workspace importer at path `ws_path`
+/// (e.g. `""` for root, `"packages/app"` for a nested workspace) to
+/// its `key_info` key. Checks the workspace-scoped override
+/// (`<ws_path>/<dep_name>`) first, then the hoisted bare key
+/// (`<dep_name>`). Intentionally does *not* walk intermediate
+/// ancestors like `packages/<dep_name>` — those are
+/// package-nesting keys that belong to `resolve_nested_bun`, and
+/// partial matches there could spuriously resolve to a literal npm
+/// package named `packages` that happened to carry its own nested
+/// entry.
+fn resolve_workspace_dep(
+    ws_path: &str,
+    dep_name: &str,
+    key_info: &BTreeMap<String, (String, String)>,
+) -> Option<String> {
+    if !ws_path.is_empty() {
+        let ws_specific = format!("{ws_path}/{dep_name}");
+        if key_info.contains_key(&ws_specific) {
+            return Some(ws_specific);
+        }
+    }
+    if key_info.contains_key(dep_name) {
+        return Some(dep_name.to_string());
+    }
+    None
 }
 
 /// Split a bun ident like `foo@1.2.3` or `@scope/pkg@1.2.3` into `(name, version)`.
@@ -1182,6 +1207,48 @@ mod tests {
             reparsed.packages.contains_key("bar@2.0.0"),
             "root foo's transitive `bar` was dropped: {:?}",
             reparsed.packages.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// When a workspace directory path (e.g. `packages/app`) happens
+    /// to share its first segment with a literal npm package name,
+    /// the parser must not wrongly resolve a workspace dep to that
+    /// package's nested entry. Here there's an npm package literally
+    /// named `packages` with a nested `bar@9.9.9`, and the workspace
+    /// `packages/app` depends on `bar`. The workspace's `bar` must
+    /// resolve to the hoisted `bar@1.0.0`, not to `packages/bar`'s
+    /// `9.9.9`.
+    #[test]
+    fn test_parse_workspace_path_does_not_alias_npm_package() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('a');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "dependencies": { "packages": "^1.0.0" } },
+    "packages/app": {
+      "name": "app",
+      "dependencies": { "bar": "^1.0.0" }
+    }
+  },
+  "packages": {
+    "bar": ["bar@1.0.0", "", {}, "SRI"],
+    "packages": ["packages@1.0.0", "", { "dependencies": { "bar": "^9.0.0" } }, "SRI"],
+    "packages/bar": ["bar@9.9.9", "", {}, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        let app = graph
+            .importers
+            .get("packages/app")
+            .expect("packages/app importer");
+        let bar = app.iter().find(|d| d.name == "bar").expect("bar dep");
+        assert_eq!(
+            bar.dep_path, "bar@1.0.0",
+            "workspace `bar` must resolve to hoisted 1.0.0, not packages/bar@9.9.9"
         );
     }
 }
