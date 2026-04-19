@@ -639,23 +639,25 @@ Examples:
 Package names whose presence in any importer forces per-project materialization.
 
 - Type: `list<string>`
-- Default: `["next"]`
+- Default: `["next", "nuxt", "vite", "vitepress", "rollup", "webpack", "parcel"]`
 - Environment: `npm_config_disable_global_virtual_store_for_packages`, `NPM_CONFIG_DISABLE_GLOBAL_VIRTUAL_STORE_FOR_PACKAGES`
 
 aube's global virtual store makes `node_modules/.aube/<pkg>` an
-absolute symlink into `~/.cache/aube/virtual-store/`. Some tools —
-most notably Next.js's Turbopack — canonicalize every symlink under
-`node_modules/` and reject any target that resolves outside the
-project's "filesystem root", producing errors like `Symlink ... is
-invalid, it points out of the filesystem root`.
+absolute symlink into `~/.cache/aube/virtual-store/`. Tools whose
+module resolvers follow symlinks to real paths and then walk up the
+directory tree — Rollup, Vite, Webpack, Parcel, Next.js's Turbopack —
+can't reach the project's `node_modules/` from inside the global
+store and produce errors like `Rollup failed to resolve import ...`
+or `Symlink ... is invalid, it points out of the filesystem root`.
 
 When `aube install` finds one of these names in any importer's
 `dependencies`, `devDependencies`, or `optionalDependencies`, it
 forces per-project materialization for that install and prints a
-one-line warning naming the trigger. Defaults to `["next"]`; add
-other packages here as you discover them, or set the list to `[]` to
-disable the heuristic. `CI=1` already forces per-project mode, so the
-warning suppresses itself in that case.
+one-line warning naming the trigger. The default list covers the
+bundlers most commonly declared as direct devDeps; add other
+packages here as you discover them (or set the list to `[]` to
+disable the heuristic entirely). `CI=1` already forces per-project
+mode, so the warning suppresses itself in that case.
 
 ## Store
 
