@@ -31,13 +31,19 @@ where
             })
             .collect(),
         Some(other) => {
+            // Null / Array / Object are handled above, so `other` can
+            // only be a scalar here.
             return Err(serde::de::Error::custom(format!(
                 "engines: expected a map, got {}",
                 match other {
                     serde_json::Value::String(_) => "string",
                     serde_json::Value::Number(_) => "number",
                     serde_json::Value::Bool(_) => "boolean",
-                    _ => "non-object",
+                    serde_json::Value::Null
+                    | serde_json::Value::Array(_)
+                    | serde_json::Value::Object(_) => {
+                        unreachable!("handled by outer match")
+                    }
                 }
             )));
         }
