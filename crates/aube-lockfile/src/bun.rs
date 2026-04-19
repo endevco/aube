@@ -749,6 +749,7 @@ mod tests {
     #[test]
     fn test_parse_github_dep() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_dep = fake_sri('d');
         let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -758,10 +759,11 @@ mod tests {
   },
   "packages": {
     "vfs": ["vfs@github:collinstevens/vfs#0b6ea53abcdef", { "dependencies": { "dep": "^1.0.0" } }, "collinstevens-vfs-0b6ea53"],
-    "dep": ["dep@1.0.0", "", {}, "sha512-depintegrity"]
+    "dep": ["dep@1.0.0", "", {}, "SRI_DEP"]
   }
-}"#;
-        std::fs::write(tmp.path(), content).unwrap();
+}"#
+        .replace("SRI_DEP", &sri_dep);
+        std::fs::write(tmp.path(), &content).unwrap();
         let graph = parse(tmp.path()).unwrap();
 
         // The vfs package parsed with its github: version and picked up
@@ -773,8 +775,14 @@ mod tests {
             vfs.dependencies.get("dep").map(String::as_str),
             Some("dep@1.0.0")
         );
-        // No sha-*-style hash on the github entry → integrity stays None.
+        // No SRI-shaped hash on the github entry → integrity stays None.
         assert!(vfs.integrity.is_none());
+
+        // The adjacent registry dep's integrity must still round-trip —
+        // proves the type-based introspection doesn't break the normal
+        // 4-tuple path when mixed with a 3-tuple github entry.
+        let dep = &graph.packages["dep@1.0.0"];
+        assert_eq!(dep.integrity.as_deref(), Some(sri_dep.as_str()));
 
         let root = graph.importers.get(".").unwrap();
         assert!(root.iter().any(|d| d.name == "vfs"));
