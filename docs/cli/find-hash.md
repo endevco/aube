@@ -11,7 +11,7 @@ List packages whose cached index references a given file hash
 
 Hash to look up.
 
-Accepts `sha512-<base64>` (pnpm integrity format) or a raw hex SHA-512 digest.
+Accepts `sha512-<base64>` (pnpm integrity format) or a raw hex CAS digest.
 
 ## Flags
 
