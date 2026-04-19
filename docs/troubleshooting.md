@@ -31,8 +31,9 @@ it as a permanent CI default.
 
 aube reads and writes the current supported lockfile formats listed on the
 [lockfiles page](/package-manager/lockfiles). Older pnpm v5/v6 lockfiles
-should be upgraded with pnpm first. Yarn Berry/PnP projects usually need to
-move to a `node_modules` linker before using aube.
+should be upgraded with pnpm first. Yarn PnP projects need to switch to
+`nodeLinker: node-modules` before using aube — aube writes a regular
+`node_modules` tree, not `.pnp.cjs`.
 
 If a project has multiple lockfiles, keep one canonical lockfile before
 rolling aube into CI.

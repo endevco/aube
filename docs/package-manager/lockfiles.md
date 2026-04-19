@@ -12,7 +12,7 @@ aube reads *and writes* all of the following formats:
 - `pnpm-lock.yaml` v9
 - `package-lock.json`
 - `npm-shrinkwrap.json`
-- `yarn.lock` v1
+- `yarn.lock` — both v1 classic and v2+ berry
 - `bun.lock`
 
 ## Write behavior
