@@ -48,13 +48,15 @@ EOF
 	: >aube-lock.yaml
 	: >pnpm-lock.yaml
 	: >package-lock.json
+	: >bun.lock
 
 	run aube clean --lockfile
 	assert_success
-	assert_output --partial "3 lockfiles"
+	assert_output --partial "4 lockfiles"
 	assert [ ! -e aube-lock.yaml ]
 	assert [ ! -e pnpm-lock.yaml ]
 	assert [ ! -e package-lock.json ]
+	assert [ ! -e bun.lock ]
 }
 
 @test "aube clean walks workspace packages" {
