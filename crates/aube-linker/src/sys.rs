@@ -284,11 +284,20 @@ fn detect_interpreter(target: &Path) -> String {
 /// Rejects `"`, `&`, `|`, `<`, `>`, `^`, `%`, NUL, whitespace, and
 /// every other cmd.exe / PowerShell / sh metacharacter.
 fn is_safe_prog(prog: &str) -> bool {
-    !prog.is_empty()
-        && prog.len() <= 64
-        && prog
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+    if prog.is_empty() || prog.len() > 64 {
+        return false;
+    }
+    // The first character must be alphanumeric. A leading `-`, `.`,
+    // `_`, or `+` is rejected even though those characters are safe
+    // in the interior, because no real interpreter name starts with
+    // one and a leading `-` would otherwise produce a shim that
+    // looks like a CLI flag when inspected.
+    let mut chars = prog.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
 fn default_interpreter_for_extension(target: &Path) -> String {
@@ -968,6 +977,23 @@ mod tests {
         assert!(!is_safe_prog(&oversize));
         let at_limit = "a".repeat(64);
         assert!(is_safe_prog(&at_limit));
+    }
+
+    #[test]
+    fn is_safe_prog_rejects_non_alphanumeric_leading_char() {
+        // No real interpreter name starts with `-`, `.`, `_`, or
+        // `+`, and a leading `-` would make the resulting shim
+        // resemble a CLI flag. Reject these even though the same
+        // characters are fine in the interior.
+        assert!(!is_safe_prog("-node"));
+        assert!(!is_safe_prog(".node"));
+        assert!(!is_safe_prog("_node"));
+        assert!(!is_safe_prog("+node"));
+        // Interior punctuation still allowed.
+        assert!(is_safe_prog("python3.11"));
+        assert!(is_safe_prog("node-18"));
+        assert!(is_safe_prog("tsx_dev"));
+        assert!(is_safe_prog("c++"));
     }
 
     #[test]
