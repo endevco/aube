@@ -39,45 +39,73 @@ checksum = "sha256:6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f
 url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_windows_amd64.zip"
 provenance = "github-attestations"
 
-[[tools.cargo-binstall]]
-version = "1.17.6"
-backend = "aqua:cargo-bins/cargo-binstall"
-
-[tools.cargo-binstall."platforms.linux-arm64"]
-checksum = "sha256:e5f2c4b79b10370dff707b86a14e7a0ad399c5dc5853824e933432910741992c"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-aarch64-unknown-linux-musl.tgz"
-
-[tools.cargo-binstall."platforms.linux-arm64-musl"]
-checksum = "sha256:e5f2c4b79b10370dff707b86a14e7a0ad399c5dc5853824e933432910741992c"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-aarch64-unknown-linux-musl.tgz"
-
-[tools.cargo-binstall."platforms.linux-x64"]
-checksum = "sha256:f926d96e9f0822ded35c4ac2071ce190bd1311565695c49c45e295de0d685aaa"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-x86_64-unknown-linux-musl.tgz"
-
-[tools.cargo-binstall."platforms.linux-x64-musl"]
-checksum = "sha256:f926d96e9f0822ded35c4ac2071ce190bd1311565695c49c45e295de0d685aaa"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-x86_64-unknown-linux-musl.tgz"
-
-[tools.cargo-binstall."platforms.macos-arm64"]
-checksum = "sha256:101447fa30a723ca8e1a13cec11bb1350b7179331b2aa7054d27bef7a3e19021"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-aarch64-apple-darwin.zip"
-
-[tools.cargo-binstall."platforms.macos-x64"]
-checksum = "sha256:cd07fd79e2848b13b994e3f83fa5377b631625b847f0734219f2706feb518258"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-x86_64-apple-darwin.zip"
-
-[tools.cargo-binstall."platforms.windows-x64"]
-checksum = "sha256:5fcbddde2d415704d2432bbe606a5767ddaf1ef4ee2c16b7828f8be2ed1e5a5c"
-url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.17.6/cargo-binstall-x86_64-pc-windows-msvc.zip"
-
-[[tools."cargo:cargo-machete"]]
+[[tools."github:bnjbvr/cargo-machete"]]
 version = "0.9.2"
-backend = "cargo:cargo-machete"
+backend = "github:bnjbvr/cargo-machete"
 
-[[tools."cargo:cargo-msrv"]]
-version = "0.18.4"
-backend = "cargo:cargo-msrv"
+[tools."github:bnjbvr/cargo-machete"."platforms.linux-arm64"]
+checksum = "sha256:6f96c3e6026a5bdd241b6ae600c6fb86c9197c6e189a894f91371baa01fd10f5"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397130991"
+
+[tools."github:bnjbvr/cargo-machete"."platforms.linux-arm64-musl"]
+checksum = "sha256:6f96c3e6026a5bdd241b6ae600c6fb86c9197c6e189a894f91371baa01fd10f5"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397130991"
+
+[tools."github:bnjbvr/cargo-machete"."platforms.linux-x64"]
+checksum = "sha256:48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397131172"
+
+[tools."github:bnjbvr/cargo-machete"."platforms.linux-x64-musl"]
+checksum = "sha256:48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397131172"
+
+[tools."github:bnjbvr/cargo-machete"."platforms.macos-arm64"]
+checksum = "sha256:63e28fee386d82d33f2d12406c857f98e2d4697f3f7df7f71f34dff07fca0fde"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397131114"
+
+[tools."github:bnjbvr/cargo-machete"."platforms.macos-x64"]
+checksum = "sha256:3e8cb936c9b820f84d047a2b5be8b229b2be67bf2467014885376a6faffdcac3"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397131140"
+
+[tools."github:bnjbvr/cargo-machete"."platforms.windows-x64"]
+checksum = "sha256:996120ac70afe405c58fce508a476f25bb71032c6fb8013aa0123bba36429c76"
+url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397131414"
+
+[[tools."github:foresterre/cargo-msrv"]]
+version = "0.19.3"
+backend = "github:foresterre/cargo-msrv"
+
+[tools."github:foresterre/cargo-msrv"."platforms.linux-x64"]
+checksum = "sha256:6f9a0011ca8ad959d304185b9090390fd1ad87e2d764007fbb0abe043afa9ff5"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.3/cargo-msrv-x86_64-unknown-linux-gnu-v0.19.3.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/380850047"
+
+[tools."github:foresterre/cargo-msrv"."platforms.linux-x64-musl"]
+checksum = "sha256:441ddbf85c589062029ac33fcfcfc33ddd4e87f04984d91b16ea4ae02e4d779d"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.3/cargo-msrv-x86_64-unknown-linux-musl-v0.19.3.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/380849992"
+
+[tools."github:foresterre/cargo-msrv"."platforms.macos-arm64"]
+checksum = "sha256:bf42f653b5a7c426972f728b38a3756529a105b6598c2fdc89bc25ac056726f1"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.3/cargo-msrv-aarch64-apple-darwin-v0.19.3.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/380850630"
+
+[tools."github:foresterre/cargo-msrv"."platforms.macos-x64"]
+checksum = "sha256:2427399177872d74b822b46a2f52817bfab5fb1ff6d8e5e6faaafc82a66f2351"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.3/cargo-msrv-x86_64-apple-darwin-v0.19.3.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/380858063"
+
+[tools."github:foresterre/cargo-msrv"."platforms.windows-x64"]
+checksum = "sha256:e437443331865218763d44089680f4d36547353e8c3c8b394c24859203e6cd05"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.3/cargo-msrv-x86_64-pc-windows-msvc-v0.19.3.zip"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/380851496"
 
 [[tools.hk]]
 version = "1.42.0"
