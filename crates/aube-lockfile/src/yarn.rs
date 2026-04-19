@@ -85,10 +85,34 @@ pub fn is_berry(content: &str) -> bool {
 /// errors (including "file doesn't exist") so callers that branch on
 /// the result can fall through to the classic path or skip the file
 /// entirely without an extra error branch.
+///
+/// Reads only a 4 KiB prefix rather than the full file. Berry's
+/// `__metadata:` header always appears in the first couple of lines
+/// (yarn emits the two-line comment banner then the mapping
+/// directly), so scanning more than that wastes I/O — `parse_one`
+/// calls `yarn::parse` immediately after, which reads the file
+/// fully, so keeping the detect cheap avoids doubling the cost for
+/// monorepo-scale lockfiles.
+///
+/// Byte-level scan: `__metadata:` is pure ASCII so matching raw
+/// bytes is safe even if the 4 KiB window happens to cut a
+/// multi-byte UTF-8 sequence mid-character (a non-concern for yarn's
+/// own output, but cheap insurance against future format tweaks).
 pub fn is_berry_path(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .map(|s| is_berry(&s))
-        .unwrap_or(false)
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 4096];
+    let n = f.read(&mut buf).unwrap_or(0);
+    let needle = b"__metadata:";
+    // Must appear at the start of a line: either the file head or
+    // directly after a newline. A preceding `#` comment line is fine
+    // because the newline before `__metadata` is what matters.
+    buf[..n]
+        .windows(needle.len())
+        .enumerate()
+        .any(|(i, w)| w == needle && (i == 0 || buf[i - 1] == b'\n'))
 }
 
 /// Parse a yarn classic (v1) lockfile's pre-read contents.
@@ -872,14 +896,17 @@ fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
 
 /// Extract a `BTreeMap<name, value>` from a sub-mapping like
 /// `dependencies:` or `peerDependencies:`. Missing section or
-/// non-mapping values return empty.
+/// non-mapping values return empty. Values go through
+/// `yaml_scalar_as_string` for the same reason `version` does — a
+/// bare `dep: 5` would otherwise silently drop the edge instead of
+/// recording `"5"` as the range.
 fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, String> {
     block
         .get(serde_yaml::Value::String(key.to_string()))
         .and_then(|v| v.as_mapping())
         .map(|m| {
             m.iter()
-                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), yaml_scalar_as_string(v)?)))
                 .collect()
         })
         .unwrap_or_default()
@@ -1587,6 +1614,39 @@ __metadata:
         assert!(graph.packages.contains_key("two-part@1.0"));
         assert_eq!(graph.packages["int-version@5"].version, "5");
         assert_eq!(graph.packages["two-part@1.0"].version, "1.0");
+    }
+
+    /// Same numeric-scalar hazard applies to dependency values:
+    /// `peerDependencies: { foo: 5 }` writes a YAML number, and
+    /// `as_str()` would silently drop the edge. The fix routes dep
+    /// values through `yaml_scalar_as_string`; this test exercises
+    /// that path end-to-end so a future regression would show up as
+    /// a missing peer edge rather than a parse error.
+    #[test]
+    fn test_parse_berry_numeric_dep_value() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"foo@npm:^1.0.0":
+  version: 1.0.0
+  resolution: "foo@npm:1.0.0"
+  peerDependencies:
+    numeric-peer: 5
+  languageName: node
+  linkType: hard
+"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let manifest = make_manifest(&[], &[]);
+        let graph = parse(tmp.path(), &manifest).unwrap();
+        let foo = &graph.packages["foo@1.0.0"];
+        assert_eq!(
+            foo.peer_dependencies
+                .get("numeric-peer")
+                .map(String::as_str),
+            Some("5")
+        );
     }
 
     /// Berry's `https:` tarball protocol and `git+ssh:` / `git:`
