@@ -1067,7 +1067,21 @@ pub fn write_berry(
             out.push('\n');
         }
         out.push_str("  languageName: node\n");
-        out.push_str("  linkType: hard\n\n");
+        // `linkType: soft` means "just symlink, don't materialize into
+        // the virtual store" — what berry uses for `link:` (and
+        // `workspace:`) entries. `hard` is the default for registry
+        // packages and everything that does get materialized. Picking
+        // `hard` for a `link:` block would send yarn's own linker
+        // down the tarball-import path the next time it reads our
+        // output, which breaks `link:` projects that round-trip
+        // through aube.
+        let link_type = match &pkg.local_source {
+            Some(LocalSource::Link(_)) => "soft",
+            _ => "hard",
+        };
+        out.push_str("  linkType: ");
+        out.push_str(link_type);
+        out.push_str("\n\n");
     }
 
     std::fs::write(path, out).map_err(|e| Error::Io(path.to_path_buf(), e))?;
@@ -1625,5 +1639,65 @@ __metadata:
         let root = reparsed.importers.get(".").unwrap();
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].dep_path, "foo@1.2.3");
+    }
+
+    /// `link:` deps are pure symlinks in berry's model, which means
+    /// the block must carry `linkType: soft` — writing `hard` makes
+    /// yarn's own linker try to copy/hardlink the target into the
+    /// virtual store on the next install. Registry packages (no
+    /// `local_source`) stay `hard`, the default.
+    #[test]
+    fn test_write_berry_link_type_soft_for_link_deps() {
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "linked-pkg@1.0.0".to_string(),
+            LockedPackage {
+                name: "linked-pkg".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "linked-pkg@1.0.0".to_string(),
+                local_source: Some(LocalSource::Link(PathBuf::from("./vendor/linked-pkg"))),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            "regular-pkg@2.0.0".to_string(),
+            LockedPackage {
+                name: "regular-pkg".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "regular-pkg@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        let graph = LockfileGraph {
+            importers: {
+                let mut m = BTreeMap::new();
+                m.insert(".".to_string(), vec![]);
+                m
+            },
+            packages,
+            ..Default::default()
+        };
+        let manifest = make_manifest(&[], &[]);
+
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write_berry(out.path(), &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(out.path()).unwrap();
+
+        // The `link:` block gets `soft`; the registry block stays `hard`.
+        // Block order is sorted by canonical key, so `linked-pkg`
+        // comes before `regular-pkg` and each block's `linkType`
+        // appears after its `languageName` line.
+        let linked_idx = written.find("linked-pkg@").unwrap();
+        let regular_idx = written.find("regular-pkg@").unwrap();
+        let linked_block = &written[linked_idx..regular_idx];
+        let regular_block = &written[regular_idx..];
+        assert!(
+            linked_block.contains("linkType: soft"),
+            "link: block should be soft-linked:\n{linked_block}"
+        );
+        assert!(
+            regular_block.contains("linkType: hard"),
+            "registry block should be hard-linked:\n{regular_block}"
+        );
     }
 }
