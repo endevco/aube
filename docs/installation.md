@@ -33,8 +33,11 @@ npm install -g @endevco/aube
 npx @endevco/aube --version
 ```
 
-Because the install happens via `preinstall`, this does not work with
-`--ignore-scripts` or in offline/air-gapped caches. Prefer mise or
+The `preinstall` script drops the platform-appropriate native binary
+into place. If you install with `--ignore-scripts`, that step is
+skipped and every `aube` invocation goes through a node shim instead
+— which defeats the whole point of having a fast, native CLI. It also
+won't work in offline/air-gapped caches. Prefer mise or
 `cargo install` for those environments.
 
 ## Ubuntu (PPA)
@@ -45,8 +48,8 @@ Aube publishes signed `.deb` packages to the Launchpad PPA
 [`ppa:jdxcode/aube`](https://launchpad.net/~jdxcode/+archive/ubuntu/aube):
 
 ```sh
+sudo apt install -y software-properties-common   # if add-apt-repository isn't already available
 sudo add-apt-repository -y ppa:jdxcode/aube
-sudo apt update
 sudo apt install aube
 ```
 
