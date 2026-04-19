@@ -2469,28 +2469,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_verify_integrity = verify_store_integrity_setting;
             let fetch_strict_pkg_content_check = strict_store_pkg_content_check_setting;
             let fetch_git_shallow_hosts = resolve_git_shallow_hosts(&settings_ctx);
-            // Host-side platform filter for the streaming fetch. The
-            // resolver widens its graph filter for aube-lock.yaml so the
-            // committed lockfile carries native optionals for every
-            // common platform, but that widening must NOT make us
-            // download foreign-platform tarballs — after resolve the
-            // `filter_graph` pass trims the graph back to the host and
-            // the linker never looks at those packages. Matches the
-            // same narrow set the post-resolve `filter_graph` call
-            // below runs against, so a package we skip here is exactly
-            // a package the linker would have dropped anyway.
-            let (fetch_sup_os, fetch_sup_cpu, fetch_sup_libc) =
-                manifest.pnpm_supported_architectures();
-            let fetch_supported_arch = aube_resolver::SupportedArchitectures {
-                os: fetch_sup_os,
-                cpu: fetch_sup_cpu,
-                libc: fetch_sup_libc,
-                ..Default::default()
-            };
-            let fetch_ignored_optional: std::collections::BTreeSet<String> = manifest
-                .pnpm_ignored_optional_dependencies()
-                .into_iter()
-                .collect();
             // Channel for pipelining GVS population into the fetch
             // stream: each imported (dep_path, index) is forwarded to a
             // materializer task that runs concurrently with the rest of
@@ -2506,34 +2484,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 let mut cached_count = 0usize;
 
                 while let Some(pkg) = resolved_rx.recv().await {
-                    // Skip tarball downloads for packages the linker
-                    // will throw away at filter_graph time. Registry
-                    // packages carrying platform constraints that don't
-                    // match the host fall into this bucket whenever the
-                    // resolver was widened for aube-lock.yaml; local
-                    // `file:`/`link:` deps carry empty os/cpu/libc so
-                    // they always pass. A name in `ignoredOptionalDependencies`
-                    // is likewise never linked. Skipping here keeps the
-                    // progress totals honest (no `inc_total` bump) and
-                    // avoids materializing tarballs the linker will
-                    // never look at.
-                    if pkg.local_source.is_none()
-                        && (fetch_ignored_optional.contains(&pkg.name)
-                            || !aube_resolver::is_supported(
-                                &pkg.os,
-                                &pkg.cpu,
-                                &pkg.libc,
-                                &fetch_supported_arch,
-                            ))
-                    {
-                        tracing::debug!(
-                            "skipping tarball fetch for {}@{}: platform/ignored — filter_graph will drop it before link",
-                            pkg.name,
-                            pkg.version
-                        );
-                        continue;
-                    }
-
+                    // The fetch coordinator deliberately does NOT skip
+                    // platform-mismatched packages: `filter_graph` below
+                    // only prunes optional edges, so a required dep
+                    // with platform constraints (rare, e.g. a broken
+                    // package missing an optional-marker) stays in the
+                    // graph and still needs a store index. A fetch-time
+                    // filter would cost nothing for optionals (win) but
+                    // silently break the required case (link-time
+                    // "missing index" error). When aube-lock widening
+                    // pulls in foreign-platform natives, those tarballs
+                    // land in the CAS but never make it into
+                    // `node_modules` — over-fetch, not over-link.
                     // Each resolved package bumps the overall denominator by
                     // one. Cached packages are immediately credited against
                     // the numerator; missing ones get a transient child row.
