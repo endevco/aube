@@ -1765,7 +1765,7 @@ Directory for aube install-state files.
 - Environment: `npm_config_state_dir`, `NPM_CONFIG_STATE_DIR`
 - .npmrc keys: `stateDir`
 
-Overrides the directory that holds the `.aube-state` install-state file. Defaults to `node_modules` relative to the project root, so the state file lives at `node_modules/.aube-state` and `rm -rf node_modules` naturally invalidates it.
+Overrides the directory that holds the `.aube-state` install-state file. Defaults to the resolved `modulesDir` (usually `node_modules`), so the state file lives at `<modulesDir>/.aube-state` and `rm -rf <modulesDir>` naturally invalidates it.
 
 ### `cacheDir` {#setting-cachedir}
 

@@ -7,10 +7,12 @@ const DEFAULT_STATE_DIR: &str = "node_modules";
 const STATE_FILE_NAME: &str = ".aube-state";
 
 /// Resolve the state directory for `project_dir`. Checks the `stateDir`
-/// setting in `.npmrc` / env / workspace yaml; falls back to
-/// `<project_dir>/node_modules`.
+/// setting in `.npmrc` / env / workspace yaml; falls back to the
+/// resolved `modulesDir` so the state file lives alongside the install
+/// tree (and a `modulesDir` override doesn't accidentally create a
+/// phantom `node_modules/` for the state file alone).
 fn state_dir(project_dir: &Path) -> PathBuf {
-    let default = || project_dir.join(DEFAULT_STATE_DIR);
+    let default = || crate::commands::project_modules_dir(project_dir);
     crate::commands::with_settings_ctx(project_dir, |ctx| {
         let raw = aube_settings::resolved::state_dir(ctx);
         if raw == DEFAULT_STATE_DIR {
@@ -48,13 +50,13 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         None => return Some("install state not found".into()),
     };
 
-    // In the default config the state file lives inside `node_modules` so
-    // `rm -rf node_modules` wipes it. But `stateDir` can point elsewhere,
-    // in which case the state survives a manual `node_modules` nuke and
+    // In the default config the state file lives inside `modulesDir` so
+    // `rm -rf <modules>` wipes it. But `stateDir` can point elsewhere,
+    // in which case the state survives a manual modules-dir nuke and
     // the hashes below would falsely report "up to date". Guard against
-    // that explicitly — zero-dep projects still get a `node_modules/`
+    // that explicitly — zero-dep projects still get a modules directory
     // (with `.bin/`) from install, so the directory check covers them.
-    if !project_dir.join("node_modules").exists() {
+    if !crate::commands::project_modules_dir(project_dir).exists() {
         return Some("node_modules is missing".into());
     }
 
