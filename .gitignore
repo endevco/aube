@@ -1,5 +1,4 @@
 /target
 /.cache
 /docs/.aube/
-/docs/aube-lock.yaml
 /docs/node_modules/
