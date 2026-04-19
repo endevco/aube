@@ -37,9 +37,9 @@ Same layout, quicker engine.
 
 ## Scenarios
 
-- **CI install (warm cache)** — frozen lockfile, `node_modules` wiped, store and packument cache warm. The common "CI install where the cache restored cleanly" path.
-- **CI install (cold cache)** — frozen lockfile but the store, packument cache, and `node_modules` are all wiped. Worst-case CI: every tarball is re-downloaded, extracted, and hashed into the CAS.
-- **Install + run test (already installed)** — models the developer loop after dependencies are already installed. Each timed run repeats the tool's normal "install if needed, then run tests" command. aube can skip the install work when its install-state file is fresh; other tools still revalidate their lockfile or install state before dispatching the script. The fixture's `test` script is a no-op `node -e`, so this scenario mostly measures install short-circuiting and script dispatch.
+- **CI install (warm cache, no node_modules)** — frozen lockfile, `node_modules` wiped, store and packument cache warm. The common "CI install where the cache restored cleanly" path.
+- **CI install (cold cache, no node_modules)** — frozen lockfile but the store, packument cache, and `node_modules` are all wiped. Worst-case CI: every tarball is re-downloaded, extracted, and hashed into the CAS.
+- **npm install && npm run test (already installed)** — models the developer loop after dependencies are already installed. Each timed run repeats the tool's normal "install if needed, then run tests" command. aube can skip the install work when its install-state file is fresh; other tools still revalidate their lockfile or install state before dispatching the script. The fixture's `test` script is a no-op `node -e`, so this scenario mostly measures install short-circuiting and script dispatch.
 - **Add dependency** — lockfile and store both warm, then `<pm> add is-odd` to exercise the incremental resolve path.
 
 ## Reproducing
@@ -59,3 +59,13 @@ updated JSON to refresh the chart above — the VitePress data loader at
 [`docs/benchmarks.data.ts`](https://github.com/endevco/aube/blob/main/docs/benchmarks.data.ts)
 reads it at build time, so you don't need to edit `benchmarks.md` or
 hand-write any chart data.
+
+For cross-machine reproducibility, ad-hoc runs use a hermetic local
+registry with the link throttled to a fixed 500mbit baseline — a
+"fast home broadband" speed — so two runs on different ISPs or CI
+runners produce comparable numbers:
+
+```sh
+flock /tmp/aube-bench.lock \
+  env BENCH_HERMETIC=1 BENCH_BANDWIDTH=500mbit mise run bench
+```

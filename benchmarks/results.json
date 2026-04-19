@@ -19,7 +19,7 @@
   "rows": [
     {
       "key": "ci-warm",
-      "label": "CI install (warm cache)",
+      "label": "CI install (warm cache, no node_modules)",
       "values": {
         "aube": 139,
         "bun": 416,
@@ -67,7 +67,7 @@
     },
     {
       "key": "ci-cold",
-      "label": "CI install (cold cache)",
+      "label": "CI install (cold cache, no node_modules)",
       "values": {
         "aube": 1120,
         "bun": 935,
@@ -115,7 +115,7 @@
     },
     {
       "key": "install-test",
-      "label": "Install + run test",
+      "label": "npm install && npm run test",
       "values": {
         "aube": 21,
         "bun": 42,

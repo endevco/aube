@@ -23,9 +23,9 @@ const benchDir = process.argv[2]
 const outputFile = process.argv[3]
 
 const benchmarks = [
-  ['ci-warm', 'CI install (warm cache)'],
-  ['ci-cold', 'CI install (cold cache)'],
-  ['install-test', 'Install + run test'],
+  ['ci-warm', 'CI install (warm cache, no node_modules)'],
+  ['ci-cold', 'CI install (cold cache, no node_modules)'],
+  ['install-test', 'npm install && npm run test'],
   ['add', 'Add dependency'],
 ]
 
