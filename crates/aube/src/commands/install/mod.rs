@@ -3622,10 +3622,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             placements_ref,
         )?;
         if !unreviewed.is_empty() {
+            // Cap the inline list so a napi-rs / prebuilt-variants tree
+            // (tens of per-platform binding packages) doesn't splat into
+            // one hard-to-scan line. Users who want the full list run
+            // `aube ignored-builds`.
+            const MAX_INLINE: usize = 5;
+            let list = if unreviewed.len() <= MAX_INLINE {
+                unreviewed.join(", ")
+            } else {
+                format!(
+                    "{}, and {} more",
+                    unreviewed[..MAX_INLINE].join(", "),
+                    unreviewed.len() - MAX_INLINE
+                )
+            };
             tracing::warn!(
                 "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
                 unreviewed.len(),
-                unreviewed.join(", ")
+                list
             );
         }
     }
