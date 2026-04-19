@@ -116,6 +116,15 @@ aube --version
 
 ## Shell completions
 
+Completions are powered by [`usage`](https://usage.jdx.dev), so install
+that first:
+
+```sh
+mise use -g usage
+```
+
+Then render the completion script for your shell:
+
 ```sh
 aube completion bash   > /etc/bash_completion.d/aube
 aube completion zsh    > "${fpath[1]}/_aube"
