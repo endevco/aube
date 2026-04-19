@@ -520,6 +520,30 @@ mod tests {
     }
 
     #[test]
+    fn resolves_package_manager_strict_kebab_case() {
+        // pnpm's `.npmrc` convention is kebab-case. Real-world yarn/npm
+        // projects that want to bypass the guardrail need the kebab
+        // spelling to work.
+        let e = entries(&[("package-manager-strict", "false")]);
+        assert_eq!(bool_from_npmrc("packageManagerStrict", &e), Some(false));
+    }
+
+    #[test]
+    fn resolves_package_manager_strict_camel_case() {
+        let e = entries(&[("packageManagerStrict", "false")]);
+        assert_eq!(bool_from_npmrc("packageManagerStrict", &e), Some(false));
+    }
+
+    #[test]
+    fn resolves_package_manager_strict_version_kebab_case() {
+        let e = entries(&[("package-manager-strict-version", "true")]);
+        assert_eq!(
+            bool_from_npmrc("packageManagerStrictVersion", &e),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn resolves_git_shallow_hosts_kebab_case() {
         // pnpm's `.npmrc` convention is kebab-case; settings.toml
         // must list both spellings so projects copied from a pnpm

@@ -1196,7 +1196,7 @@ fn enforce_package_manager_guardrails(settings: &StartupSettings) -> miette::Res
             Ok(())
         }
         other => Err(miette!(
-            "packageManager in {} uses unsupported package manager `{other}`. aube's packageManagerStrict guard is on by default and only accepts `aube` and `pnpm`; remove or change the `packageManager` field, or set `packageManagerStrict=false` in .npmrc to skip this guard.",
+            "packageManager in {} uses unsupported package manager `{other}`. aube's packageManagerStrict guard is on by default and only accepts `aube` and `pnpm`; remove or change the `packageManager` field, or set `package-manager-strict=false` (or `packageManagerStrict=false`) in .npmrc to skip this guard.",
             path.display()
         )),
     }
