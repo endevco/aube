@@ -354,7 +354,7 @@ impl LocalSource {
 /// so the caller can fall through to other protocol parsers.
 pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>)> {
     let (body, committish) = match spec.find('#') {
-        Some(idx) => (&spec[..idx], Some(spec[idx + 1..].to_string())),
+        Some(idx) => (&spec[..idx], normalize_git_fragment(&spec[idx + 1..])),
         None => (spec, None),
     };
     let is_bare_transport = body.starts_with("https://")
@@ -389,6 +389,43 @@ pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>)> {
         return None;
     };
     Some((url, committish))
+}
+
+/// Normalize git URL fragments used by npm-compatible lockfiles.
+///
+/// Plain git accepts `#<ref>`, while npm and Yarn Berry also write
+/// key/value fragments such as `#commit=<sha>` for pinned git deps.
+/// Downstream code passes this value directly to `git ls-remote` and
+/// `git checkout`, so strip the selector key here and keep only the
+/// actual ref name or SHA.
+pub(crate) fn normalize_git_fragment(fragment: &str) -> Option<String> {
+    if fragment.is_empty() {
+        return None;
+    }
+
+    let mut fallback: Option<&str> = None;
+    let mut preferred: Option<&str> = None;
+    for part in fragment.split('&') {
+        if part.is_empty() {
+            continue;
+        }
+        let (key, value) = part.split_once('=').unwrap_or(("", part));
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "commit" => {
+                preferred = Some(value);
+                break;
+            }
+            "tag" | "head" | "branch" | "" => {
+                fallback.get_or_insert(value);
+            }
+            _ => {}
+        }
+    }
+
+    preferred.or(fallback).map(ToString::to_string)
 }
 
 /// A single resolved package in the lockfile.
@@ -1505,6 +1542,22 @@ mod git_spec_tests {
     fn github_shorthand_expands_and_roundtrips() {
         let (url, _) = parse_git_spec("github:user/repo").unwrap();
         assert_eq!(url, "https://github.com/user/repo.git");
+    }
+
+    #[test]
+    fn commit_selector_fragment_normalizes_to_sha() {
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let (url, committish) =
+            parse_git_spec(&format!("https://host/user/repo.git#commit={sha}")).unwrap();
+        assert_eq!(url, "https://host/user/repo.git");
+        assert_eq!(committish.as_deref(), Some(sha));
+    }
+
+    #[test]
+    fn named_selector_fragment_normalizes_to_ref() {
+        let (url, committish) = parse_git_spec("git+https://host/user/repo#tag=v1.2.3").unwrap();
+        assert_eq!(url, "https://host/user/repo");
+        assert_eq!(committish.as_deref(), Some("v1.2.3"));
     }
 }
 

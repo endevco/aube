@@ -962,7 +962,8 @@ fn strip_hash_fragment(s: &str) -> &str {
 /// If the URL has a `#<commit>` suffix, return `<commit>`. Used for
 /// git-over-http berry specs that pin the resolved commit after `#`.
 fn extract_commit_hash(url: &str) -> Option<String> {
-    url.split_once('#').map(|(_, b)| b.to_string())
+    url.split_once('#')
+        .and_then(|(_, b)| crate::normalize_git_fragment(b))
 }
 
 fn strip_commit_hash(url: &str) -> String {
@@ -1674,9 +1675,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"git-pkg@https://github.com/user/repo.git#commit=abc123":
+"git-pkg@https://github.com/user/repo.git#commit=abcdef0123456789abcdef0123456789abcdef01":
   version: 2.0.0
-  resolution: "git-pkg@https://github.com/user/repo.git#commit=abc123"
+  resolution: "git-pkg@https://github.com/user/repo.git#commit=abcdef0123456789abcdef0123456789abcdef01"
   languageName: node
   linkType: hard
 
@@ -1709,7 +1710,11 @@ __metadata:
 
         // `.git` on https → git source, not tarball.
         let git = by_name["git-pkg"];
-        assert!(matches!(&git.local_source, Some(LocalSource::Git(_))));
+        let Some(LocalSource::Git(git)) = &git.local_source else {
+            panic!("expected git LocalSource");
+        };
+        assert_eq!(git.url, "https://github.com/user/repo.git");
+        assert_eq!(git.resolved, "abcdef0123456789abcdef0123456789abcdef01");
 
         // `git+ssh:` prefix → git source.
         let ssh = by_name["ssh-git-pkg"];
