@@ -13,3 +13,10 @@ test/registry/storage/** linguist-generated=true
 # otherwise embed CRLF into the binary and break the string-equality
 # check against `clap_usage::generate`'s LF output.
 aube.usage.kdl text eol=lf
+
+# Golden fixtures consumed by the byte-parity tests in
+# `crates/aube-lockfile/src/{pnpm,bun}.rs`. Windows' autocrlf would
+# otherwise rewrite these to CRLF on checkout, so `parse → write`
+# compares LF (what the writer emits) against CRLF (what's on disk)
+# and the test fails.
+crates/aube-lockfile/tests/fixtures/* text eol=lf

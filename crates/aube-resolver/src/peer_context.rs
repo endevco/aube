@@ -878,7 +878,8 @@ pub(crate) fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
                 alias_of: pkg.alias_of,
                 yarn_checksum: pkg.yarn_checksum,
                 engines: pkg.engines,
-                has_bin: pkg.has_bin,
+                bin: pkg.bin,
+                declared_dependencies: pkg.declared_dependencies,
             },
         );
     }
@@ -1277,7 +1278,8 @@ fn visit_peer_context(
             alias_of: pkg.alias_of.clone(),
             yarn_checksum: pkg.yarn_checksum.clone(),
             engines: pkg.engines.clone(),
-            has_bin: pkg.has_bin,
+            bin: pkg.bin.clone(),
+            declared_dependencies: pkg.declared_dependencies.clone(),
         },
     );
     Some(contextualized)

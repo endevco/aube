@@ -1641,7 +1641,8 @@ impl Resolver {
                                     alias_of: locked_pkg.alias_of.clone(),
                                     yarn_checksum: locked_pkg.yarn_checksum.clone(),
                                     engines: locked_pkg.engines.clone(),
-                                    has_bin: locked_pkg.has_bin,
+                                    bin: locked_pkg.bin.clone(),
+                                    declared_dependencies: locked_pkg.declared_dependencies.clone(),
                                 },
                             );
 
@@ -2118,7 +2119,32 @@ impl Resolver {
                         alias_of: task.real_name.clone(),
                         yarn_checksum: None,
                         engines: version_meta.engines.clone(),
-                        has_bin: version_meta.has_bin,
+                        // Rehydrate a string-form bin (`"bin": "cli.js"`)
+                        // into `{<package_name>: "cli.js"}` — registry
+                        // packuments leave the name off, expecting
+                        // consumers to default it to the package name.
+                        // Doing it here keeps bun's per-entry meta
+                        // byte-identical to bun's own output without
+                        // pushing the fixup into every writer.
+                        bin: {
+                            let mut m = version_meta.bin.clone();
+                            if let Some(path) = m.remove("") {
+                                m.insert(task.name.clone(), path);
+                            }
+                            m
+                        },
+                        // Declared ranges straight from the packument's
+                        // `dependencies` / `optionalDependencies`. Fed
+                        // back out by npm / yarn / bun writers so
+                        // nested package entries keep the original
+                        // specifiers instead of collapsing to pins.
+                        declared_dependencies: {
+                            let mut m = version_meta.dependencies.clone();
+                            for (k, v) in &version_meta.optional_dependencies {
+                                m.insert(k.clone(), v.clone());
+                            }
+                            m
+                        },
                     },
                 );
 
@@ -3227,7 +3253,7 @@ mod tests {
             cpu: vec![],
             libc: vec![],
             engines: BTreeMap::new(),
-            has_bin: false,
+            bin: BTreeMap::new(),
             has_install_script: false,
             deprecated: None,
         }

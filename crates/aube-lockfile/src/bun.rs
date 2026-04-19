@@ -138,6 +138,13 @@ struct RawBunMeta {
     dependencies: BTreeMap<String, String>,
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
+    /// `bin:` map — bun records executables by name on each package's
+    /// meta block (`{ "bin": { "semver": "bin/semver.js" } }`). Round-
+    /// tripping it is what keeps `aube install --no-frozen-lockfile`
+    /// from silently dropping the `bin:` line and drifting against
+    /// bun's own output.
+    #[serde(default)]
+    bin: BTreeMap<String, String>,
 }
 
 /// Parse a bun.lock file into a LockfileGraph.
@@ -203,6 +210,17 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         {
             deps.insert(n.clone(), String::new());
         }
+        // Preserve bun's per-entry meta ranges (`"^4.1.0"`) so re-emit
+        // doesn't collapse them to the resolved pin.
+        let mut declared: BTreeMap<String, String> = BTreeMap::new();
+        for (k, v) in entry
+            .meta
+            .dependencies
+            .iter()
+            .chain(entry.meta.optional_dependencies.iter())
+        {
+            declared.insert(k.clone(), v.clone());
+        }
 
         packages.insert(
             dep_path.clone(),
@@ -212,6 +230,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 integrity: entry.integrity.clone().filter(|s| !s.is_empty()),
                 dependencies: deps,
                 dep_path,
+                declared_dependencies: declared,
+                bin: entry.meta.bin.clone(),
                 ..Default::default()
             },
         );
@@ -499,21 +519,50 @@ pub fn write(
         // recognizes `@`-prefixed segments as a single unit.
         let bun_key = segs.join("/");
 
-        // Metadata object: transitive deps keyed by name → version.
-        // Filter out deps we don't have a canonical entry for (e.g.
-        // dropped optional deps).
+        // Metadata object: transitive deps keyed by name → declared
+        // range (e.g. `"^4.1.0"`). Fall back to the resolved pin when
+        // the declared range is unknown — happens for lockfiles that
+        // came through a format without declared ranges (pnpm's
+        // `snapshots:` stores pins only). Filter out deps we don't
+        // have a canonical entry for (e.g. dropped optional deps).
         let mut deps_obj = serde_json::Map::new();
         for (dep_name, dep_value) in &pkg.dependencies {
             let key = crate::npm::child_canonical_key(dep_name, dep_value);
             if !canonical.contains_key(&key) {
                 continue;
             }
-            let version = crate::npm::dep_value_as_version(dep_name, dep_value);
-            deps_obj.insert(dep_name.clone(), Value::String(version.to_string()));
+            let rendered = pkg
+                .declared_dependencies
+                .get(dep_name)
+                .cloned()
+                .unwrap_or_else(|| {
+                    crate::npm::dep_value_as_version(dep_name, dep_value).to_string()
+                });
+            deps_obj.insert(dep_name.clone(), Value::String(rendered));
         }
         let mut meta = serde_json::Map::new();
         if !deps_obj.is_empty() {
             meta.insert("dependencies".to_string(), Value::Object(deps_obj));
+        }
+        // Preserve the full `bin:` map — bun's meta block records
+        // executables by name so `bun install --frozen-lockfile` can
+        // recreate the `.bin` shims without re-reading each tarball's
+        // manifest. pnpm collapses this to `hasBin: true`; we keep
+        // both representations on `LockedPackage.bin` so either
+        // writer can render byte-identical output.
+        //
+        // Skip empty-key entries — those are the placeholder bins
+        // pnpm's lockfile synthesizes when it knows `hasBin: true`
+        // but has no paths. Emitting them would produce a
+        // `{"bin": {"": ""}}` block bun wouldn't accept.
+        let real_bins: serde_json::Map<String, Value> = pkg
+            .bin
+            .iter()
+            .filter(|(k, _)| !k.is_empty())
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
+        if !real_bins.is_empty() {
+            meta.insert("bin".to_string(), Value::Object(real_bins));
         }
 
         let ident = format!("{}@{}", pkg.name, pkg.version);
@@ -950,17 +999,26 @@ mod tests {
         );
     }
 
-    /// Structural checks against a real `bun install`-generated lockfile.
-    /// A full byte-parity test is gated on two data-model changes we're
-    /// deferring (preserving declared dependency ranges, preserving the
-    /// full `bin` map), so this test asserts the format invariants
-    /// we *have* fixed: `configVersion` is emitted, the root workspace
-    /// carries no bogus `version`, package entries render on single
-    /// lines, trailing commas match bun's JSONC style, and `packages`
-    /// closes without a trailing comma as the last top-level field.
+    /// Byte-parity with a real `bun install`-generated lockfile — the
+    /// fixture at `tests/fixtures/bun-native.lock` was produced by
+    /// bun 1.3 against a `{ chalk, picocolors, semver }` manifest. A
+    /// parse → write round-trip must reproduce the exact bytes;
+    /// anything less means `aube install --no-frozen-lockfile` churns
+    /// someone's bun.lock in git when nothing in the graph moved.
+    /// Covers the format fixes (`configVersion`, no workspace
+    /// `version`, trailing commas, single-line package arrays) plus
+    /// the data-model fixes that ride with them (declared-range
+    /// preservation in `declared_dependencies`, `bin:` map
+    /// round-trip).
     #[test]
-    fn test_write_matches_bun_jsonc_style() {
+    fn test_write_byte_identical_to_native_bun() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bun-native.lock");
+        // Normalize line endings — Windows' `core.autocrlf=true` can
+        // rewrite the checked-out fixture to CRLF even with
+        // `.gitattributes eol=lf`; compare against LF form explicitly.
+        let original = std::fs::read_to_string(&fixture)
+            .unwrap()
+            .replace("\r\n", "\n");
         let graph = parse(&fixture).unwrap();
         let manifest = aube_manifest::PackageJson {
             name: Some("aube-lockfile-stability".to_string()),
@@ -977,34 +1035,12 @@ mod tests {
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         write(tmp.path(), &graph, &manifest).unwrap();
-        let body = std::fs::read_to_string(tmp.path()).unwrap();
+        let written = std::fs::read_to_string(tmp.path()).unwrap();
 
-        // configVersion is present and matches bun 1.2's value.
-        assert!(
-            body.contains("\"configVersion\": 1,"),
-            "missing configVersion:\n{body}"
-        );
-        // No spurious `version` on the root workspace — bun leaves it
-        // off even when package.json declares one.
-        assert!(
-            !body.contains("\"version\""),
-            "root workspace must not carry `version`:\n{body}"
-        );
-        // Trailing comma on each workspace-level dep line (jsonc style).
-        assert!(
-            body.contains("\"chalk\": \"^4.1.2\",\n"),
-            "workspace dep must end with trailing comma:\n{body}"
-        );
-        // Package entries are one line each.
-        assert!(
-            body.contains("    \"chalk\": [\"chalk@4.1.2\", \"\", { \"dependencies\": "),
-            "package entry should be on a single line:\n{body}"
-        );
-        // `packages:` closes with `  }\n}` — no trailing comma on the
-        // last top-level field.
-        assert!(
-            body.ends_with("  }\n}\n"),
-            "root object must close without trailing comma:\n{body}"
-        );
+        if written != original {
+            panic!(
+                "bun writer drifted from native bun output.\n\n--- expected ---\n{original}\n--- got ---\n{written}"
+            );
+        }
     }
 }

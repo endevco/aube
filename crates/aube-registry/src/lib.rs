@@ -153,15 +153,20 @@ pub struct VersionMetadata {
     /// packument re-fetch.
     #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub engines: BTreeMap<String, String>,
-    /// `bin:` presence — `true` when the packument carried any entry
-    /// under `bin`, either as a string (`"bin": "cli.js"`) or a map
-    /// (`"bin": {"foo": "cli.js"}`). pnpm records this as `hasBin: true`
-    /// on the package line; `false` is never written. Renamed from
-    /// `bin` in the packument because we collapse the shape to a bool
-    /// at the deserialize step — callers that need the full map can
-    /// re-fetch the tarball manifest.
-    #[serde(default, rename = "bin", deserialize_with = "bin_is_present")]
-    pub has_bin: bool,
+    /// `bin:` map from the packument, normalized to `name → path`.
+    ///
+    /// npm records `bin` in two shapes on a manifest: a string
+    /// (`"bin": "cli.js"` — implicitly named after the package) or a
+    /// map (`"bin": {"foo": "cli.js"}` — explicitly named). We
+    /// normalize to the map form at parse time so downstream callers
+    /// don't have to branch: an empty map means "no bins".
+    ///
+    /// pnpm collapses this to `hasBin: true` on its package entries;
+    /// bun preserves the full map on its per-package meta. Keeping
+    /// the map lets us feed both writers without an extra
+    /// tarball-level re-parse.
+    #[serde(default, rename = "bin", deserialize_with = "bin_map")]
+    pub bin: BTreeMap<String, String>,
     #[serde(default)]
     pub has_install_script: bool,
     /// Deprecation message from the registry, if this version is deprecated.
@@ -193,32 +198,42 @@ where
     })
 }
 
-/// pnpm's `hasBin: true` maps to "the manifest has at least one `bin`
-/// entry". The packument records `bin` as either a string
-/// (`"cli.js"`) or a map (`{name: path}`); either form with at least
-/// one character/entry is truthy. A missing `bin` field deserializes
-/// to `false`.
+/// Normalize `package.json` `bin` into a `name → path` map.
 ///
-/// The disk cache round-trips this field as a plain `bool` (we serialize
-/// through the same field name `bin`), so we *must* accept
-/// `Value::Bool(b)` and preserve its value — otherwise a warm-cache
-/// read flips `false` → `true` on the fallthrough arm and every package
-/// ends up tagged `hasBin: true` on re-emit.
+/// Two canonical shapes on the npm registry: a string
+/// (`"bin": "cli.js"` — implicitly keyed by the package name) and a
+/// map (`"bin": {"foo": "cli.js"}`). Older or odd packuments also
+/// surface `null` or an empty string; a missing `bin` field falls
+/// through to the default empty map.
 ///
-/// Other shapes (numbers, arrays) are treated as "present, assume
-/// truthy" — no real packument emits those, but a permissive default
-/// avoids parse failures on a registry that does something exotic.
-fn bin_is_present<'de, D>(de: D) -> Result<bool, D::Error>
+/// The string-form needs the package name to emit a well-formed map
+/// — which we don't have here at deserialize time. We leave the key
+/// as an empty string; every call site that cares about bin names
+/// (`aube-linker`'s bin-symlink pass, the bun writer) already has
+/// the package name in scope and can patch it up.
+fn bin_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = Option::<serde_json::Value>::deserialize(de)?;
     Ok(match value {
-        None | Some(serde_json::Value::Null) => false,
-        Some(serde_json::Value::Bool(b)) => b,
-        Some(serde_json::Value::String(s)) => !s.is_empty(),
-        Some(serde_json::Value::Object(m)) => !m.is_empty(),
-        Some(_) => true,
+        None | Some(serde_json::Value::Null) => BTreeMap::new(),
+        // The implicit-name case — keep a single empty-keyed entry so
+        // consumers can still detect presence and patch the name.
+        Some(serde_json::Value::String(s)) if s.is_empty() => BTreeMap::new(),
+        Some(serde_json::Value::String(s)) => {
+            let mut m = BTreeMap::new();
+            m.insert(String::new(), s);
+            m
+        }
+        Some(serde_json::Value::Object(m)) => m
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::String(s) => Some((k, s)),
+                _ => None,
+            })
+            .collect(),
+        Some(_) => BTreeMap::new(),
     })
 }
 
@@ -280,32 +295,36 @@ mod tests {
     }
 
     #[test]
-    fn has_bin_reads_bin_field() {
+    fn bin_normalizes_packument_shapes() {
         let missing = parse(r#"{"name":"x","version":"1.0.0"}"#);
-        assert!(!missing.has_bin, "missing bin → false");
+        assert!(missing.bin.is_empty(), "missing bin → empty map");
         let empty_string = parse(r#"{"name":"x","version":"1.0.0","bin":""}"#);
-        assert!(!empty_string.has_bin, "empty string bin → false");
+        assert!(empty_string.bin.is_empty(), "empty string bin → empty map");
         let null_bin = parse(r#"{"name":"x","version":"1.0.0","bin":null}"#);
-        assert!(!null_bin.has_bin, "null bin → false");
+        assert!(null_bin.bin.is_empty(), "null bin → empty map");
         let empty_map = parse(r#"{"name":"x","version":"1.0.0","bin":{}}"#);
-        assert!(!empty_map.has_bin, "empty map bin → false");
+        assert!(empty_map.bin.is_empty(), "empty map bin → empty map");
+        // String bin leaves the name blank — callers patch it with the
+        // package name before materializing a symlink / writing to
+        // bun.lock.
         let string_bin = parse(r#"{"name":"x","version":"1.0.0","bin":"cli.js"}"#);
-        assert!(string_bin.has_bin, "non-empty string bin → true");
-        let map_bin = parse(r#"{"name":"x","version":"1.0.0","bin":{"x":"cli.js"}}"#);
-        assert!(map_bin.has_bin, "non-empty map bin → true");
+        assert_eq!(string_bin.bin.get(""), Some(&"cli.js".to_string()));
+        let map_bin = parse(r#"{"name":"x","version":"1.0.0","bin":{"foo":"cli.js"}}"#);
+        assert_eq!(map_bin.bin.get("foo"), Some(&"cli.js".to_string()));
     }
 
-    /// Round-trip the `has_bin` field through the on-disk cache format
-    /// (serialize → parse). Regression: the disk cache stores this
-    /// field as a bool under the name `bin`; a permissive
-    /// deserializer that treated any non-string/non-object value as
-    /// "present" would flip `false` to `true` on every warm-cache
-    /// read and re-tag every package as `hasBin: true`.
+    /// Round-trip the `bin` map through the on-disk cache format
+    /// (serialize → parse). Regression: the disk cache round-trips
+    /// the field under the name `bin`, so the deserializer *must*
+    /// accept a map back (and not interpret the already-normalized
+    /// map as an implicit-name string).
     #[test]
-    fn has_bin_roundtrips_through_bool_serialization() {
+    fn bin_map_roundtrips_through_cache_serialization() {
+        let mut bin = BTreeMap::new();
+        bin.insert("semver".to_string(), "bin/semver.js".to_string());
         let v = VersionMetadata {
-            name: "x".to_string(),
-            version: "1.0.0".to_string(),
+            name: "semver".to_string(),
+            version: "7.7.4".to_string(),
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             peer_dependencies: BTreeMap::new(),
@@ -317,13 +336,17 @@ mod tests {
             cpu: Vec::new(),
             libc: Vec::new(),
             engines: BTreeMap::new(),
-            has_bin: false,
+            bin,
             has_install_script: false,
             deprecated: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         let back: VersionMetadata = serde_json::from_str(&json).unwrap();
-        assert!(!back.has_bin, "false has_bin must round-trip as false");
+        assert_eq!(
+            back.bin.get("semver"),
+            Some(&"bin/semver.js".to_string()),
+            "bin map must round-trip through cache serialization"
+        );
     }
 
     #[test]

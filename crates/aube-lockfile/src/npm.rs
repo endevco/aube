@@ -164,6 +164,18 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             // the node nested-resolution walk.
             deps.insert(dep_name.clone(), String::new());
         }
+        // Preserve the declared ranges npm writes on each nested package
+        // entry. Round-tripping these is what keeps
+        // `aube install --no-frozen-lockfile` from rewriting every
+        // `"^4.1.0"` to `"4.3.0"` on re-emit.
+        let mut declared: BTreeMap<String, String> = BTreeMap::new();
+        for (k, v) in entry
+            .dependencies
+            .iter()
+            .chain(entry.optional_dependencies.iter())
+        {
+            declared.insert(k.clone(), v.clone());
+        }
 
         // Keep the `resolved` URL for entries whose tarball URL cannot
         // be safely re-derived from the install name and version:
@@ -211,6 +223,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 dep_path,
                 alias_of,
                 tarball_url,
+                declared_dependencies: declared,
                 ..Default::default()
             },
         );
@@ -537,7 +550,19 @@ pub fn write(
             .dependencies
             .iter()
             .filter(|(n, value)| canonical.contains_key(&child_canonical_key(n, value)))
-            .map(|(n, value)| (n.as_str(), dep_value_as_version(n, value)))
+            .map(|(n, value)| {
+                // Prefer the declared range from the package's own
+                // manifest (what npm itself writes) over the resolved
+                // pin. Falls back to the pin for entries where the
+                // source lockfile didn't carry declared ranges (e.g.
+                // pnpm → npm conversion).
+                let rendered = pkg
+                    .declared_dependencies
+                    .get(n)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| dep_value_as_version(n, value));
+                (n.as_str(), rendered)
+            })
             .collect();
 
         // npm v3 flag semantics:

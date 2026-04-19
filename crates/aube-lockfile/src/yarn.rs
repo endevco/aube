@@ -162,6 +162,15 @@ fn parse_classic_str(
         // Only insert the first occurrence; dedup is fine because yarn.lock
         // already guarantees unique (name, version) entries.
         if !packages.contains_key(&dep_path) {
+            // Yarn records the declared ranges on each block's
+            // `dependencies:` subsection exactly as they appear in the
+            // package's own manifest — preserve them so re-emit keeps
+            // the original specifiers.
+            let declared: BTreeMap<String, String> = block
+                .dependencies
+                .iter()
+                .map(|(n, r)| (n.clone(), r.clone()))
+                .collect();
             packages.insert(
                 dep_path.clone(),
                 LockedPackage {
@@ -175,6 +184,7 @@ fn parse_classic_str(
                         .map(|(n, r)| (n.clone(), format!("{n}@{r}")))
                         .collect(),
                     dep_path,
+                    declared_dependencies: declared,
                     ..Default::default()
                 },
             );
@@ -420,11 +430,19 @@ pub fn write_classic(
             .or_insert(pkg);
     }
 
-    // Collect every manifest spec that points at a canonical
-    // `(name, version)`. Keyed by canonical key; values are the
-    // extra range-form spec strings to emit alongside the exact
-    // `"name@version"` one in the block header.
-    let mut extra_specs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Collect every spec that points at a canonical `(name, version)` —
+    // both root-manifest ranges *and* transitive declared ranges from
+    // every other package's `declared_dependencies`. Yarn groups all
+    // specs resolving to the same (name, version) under one block
+    // header (`is-number@^6.0.0, is-number@~6.0.1:`), and reparse of
+    // a transitive `bar "^2.0.0"` needs `bar@^2.0.0` to appear in
+    // some block's header to find the right canonical entry.
+    //
+    // Keyed by canonical key; values are the extra range-form spec
+    // strings to emit alongside the exact `"name@version"` one.
+    // Deduped per canonical so identical ranges coming from multiple
+    // consumers collapse.
+    let mut extra_specs: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     let root_importer_specs = manifest
         .dependencies
         .iter()
@@ -444,7 +462,26 @@ pub fn write_classic(
         if let Some(range) = range {
             let spec = format!("{}@{range}", dep.name);
             if spec != canonical_key {
-                extra_specs.entry(canonical_key).or_default().push(spec);
+                extra_specs.entry(canonical_key).or_default().insert(spec);
+            }
+        }
+    }
+    // Harvest transitive declared ranges. Each package's
+    // `declared_dependencies[name] = range` is the range its own
+    // manifest uses; the canonical the range resolves to is whatever
+    // the resolver already placed under `pkg.dependencies[name]`.
+    for pkg in canonical.values() {
+        for (dep_name, range) in &pkg.declared_dependencies {
+            let Some(resolved_value) = pkg.dependencies.get(dep_name) else {
+                continue;
+            };
+            let target = crate::npm::child_canonical_key(dep_name, resolved_value);
+            if !canonical.contains_key(&target) {
+                continue;
+            }
+            let spec = format!("{dep_name}@{range}");
+            if spec != target {
+                extra_specs.entry(target).or_default().insert(spec);
             }
         }
     }
@@ -480,12 +517,11 @@ pub fn write_classic(
             out.push('\n');
         }
 
-        // `  dependencies:` block — resolved to canonical versions so
-        // yarn's transitive lookup (`<name>@<version>`) finds the
-        // right block key above. Ranges aren't preserved because we
-        // never recorded them; writing the exact version is a
-        // harmless overconstraint.
-        let nonempty_deps: BTreeMap<&str, &str> = pkg
+        // `  dependencies:` block — prefer the declared range from the
+        // package's own manifest (what yarn itself writes) over the
+        // resolved pin. Falls back to the pin when the source
+        // lockfile didn't carry declared ranges (e.g. pnpm → yarn).
+        let nonempty_deps: BTreeMap<&str, String> = pkg
             .dependencies
             .iter()
             .filter_map(|(n, v)| {
@@ -493,12 +529,17 @@ pub fn write_classic(
                 if !canonical.contains_key(&key) {
                     return None;
                 }
-                Some((n.as_str(), crate::npm::dep_value_as_version(n, v)))
+                let rendered = pkg
+                    .declared_dependencies
+                    .get(n)
+                    .cloned()
+                    .unwrap_or_else(|| crate::npm::dep_value_as_version(n, v).to_string());
+                Some((n.as_str(), rendered))
             })
             .collect();
         if !nonempty_deps.is_empty() {
             out.push_str("  dependencies:\n");
-            for (dep_name, dep_version) in nonempty_deps {
+            for (dep_name, dep_version) in &nonempty_deps {
                 out.push_str("    ");
                 out.push_str(dep_name);
                 out.push_str(" \"");
@@ -702,6 +743,14 @@ fn parse_berry_str(
         let peer_deps_meta = collect_peer_meta(block);
         let optional_deps = collect_dep_map(block, "optionalDependencies");
 
+        // Declared ranges — same source as `raw_deps` / `optional_deps`
+        // but kept as the bare range string (no `name@` prefix) so
+        // writers can slot them straight back into the output.
+        let mut declared: BTreeMap<String, String> = BTreeMap::new();
+        for (n, v) in raw_deps.iter().chain(optional_deps.iter()) {
+            declared.insert(n.clone(), v.clone());
+        }
+
         let raw_deps_specs: BTreeMap<String, String> = raw_deps
             .into_iter()
             .map(|(n, v)| (n.clone(), format!("{n}@{v}")))
@@ -730,6 +779,7 @@ fn parse_berry_str(
                     peer_dependencies_meta: peer_deps_meta,
                     dep_path: dep_path.clone(),
                     local_source,
+                    declared_dependencies: declared,
                     ..Default::default()
                 },
             );
@@ -1039,10 +1089,11 @@ pub fn write_berry(
     // `extra_specs[canonical_key]` is the set of range-form
     // specifiers (e.g. `"foo@npm:^1.0.0"`) that should appear in the
     // block header alongside the exact `foo@npm:1.2.3` one. Collecting
-    // them from the manifest keeps the header compatible with what
-    // yarn itself would produce so re-running `yarn install` against
-    // this lockfile finds each manifest range as a block key.
-    let mut extra_specs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // them keeps the header compatible with what yarn itself would
+    // produce: every spec that resolves to the same (name, version)
+    // gets folded into one block, so transitive lookups of a declared
+    // range find a matching header.
+    let mut extra_specs: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     let manifest_ranges: Vec<(String, String)> = manifest
         .dependencies
         .iter()
@@ -1051,6 +1102,13 @@ pub fn write_berry(
         .chain(manifest.peer_dependencies.iter())
         .map(|(n, r)| (n.clone(), r.clone()))
         .collect();
+    let format_berry_spec = |dep_name: &str, range: &str| {
+        if range_has_protocol(range) {
+            format!("{dep_name}@{range}")
+        } else {
+            format!("{dep_name}@npm:{range}")
+        }
+    };
     for dep in graph.importers.get(".").into_iter().flatten() {
         let canonical_key = crate::npm::canonical_key_from_dep_path(&dep.dep_path);
         if !canonical.contains_key(&canonical_key) {
@@ -1059,17 +1117,32 @@ pub fn write_berry(
         let Some((_, range)) = manifest_ranges.iter().find(|(n, _)| n == &dep.name) else {
             continue;
         };
-        let manifest_spec = if range_has_protocol(range) {
-            format!("{}@{range}", dep.name)
-        } else {
-            format!("{}@npm:{range}", dep.name)
-        };
+        let manifest_spec = format_berry_spec(&dep.name, range);
         let exact_spec = berry_exact_spec(canonical.get(&canonical_key).copied().unwrap());
         if manifest_spec != exact_spec {
             extra_specs
                 .entry(canonical_key)
                 .or_default()
-                .push(manifest_spec);
+                .insert(manifest_spec);
+        }
+    }
+    // Harvest transitive declared ranges, same shape as the classic
+    // writer. Berry specs always carry a protocol (`npm:`, `workspace:`,
+    // `patch:` …); bare ranges get the default `npm:` prefix.
+    for pkg in canonical.values() {
+        for (dep_name, range) in &pkg.declared_dependencies {
+            let Some(resolved_value) = pkg.dependencies.get(dep_name) else {
+                continue;
+            };
+            let target = crate::npm::child_canonical_key(dep_name, resolved_value);
+            let Some(target_pkg) = canonical.get(&target) else {
+                continue;
+            };
+            let manifest_spec = format_berry_spec(dep_name, range);
+            let exact_spec = berry_exact_spec(target_pkg);
+            if manifest_spec != exact_spec {
+                extra_specs.entry(target).or_default().insert(manifest_spec);
+            }
         }
     }
 
@@ -1116,11 +1189,18 @@ pub fn write_berry(
         // transitive deps collapse to the exact version of the target
         // block (the resolver produced the graph, so the key always
         // exists in `canonical`).
-        write_berry_dep_map(&mut out, "dependencies", &pkg.dependencies, &canonical);
+        write_berry_dep_map(
+            &mut out,
+            "dependencies",
+            &pkg.dependencies,
+            &pkg.declared_dependencies,
+            &canonical,
+        );
         write_berry_dep_map(
             &mut out,
             "optionalDependencies",
             &pkg.optional_dependencies,
+            &pkg.declared_dependencies,
             &canonical,
         );
         write_berry_peer_deps(&mut out, &pkg.peer_dependencies);
@@ -1168,19 +1248,38 @@ fn write_berry_dep_map(
     out: &mut String,
     section: &str,
     deps: &BTreeMap<String, String>,
+    declared: &BTreeMap<String, String>,
     canonical: &BTreeMap<String, &LockedPackage>,
 ) {
     // Only emit edges whose target survives in `canonical`; the
     // graph-level filter layer (e.g. `--prod` prune) may have dropped
     // packages that dev-only edges still reference.
+    //
+    // Prefer the declared range from the package's own manifest (what
+    // berry itself writes — `chalk: "npm:^4.1.0"`) over the resolved
+    // pin. Falls back to `npm:<version>` when the declared range is
+    // unknown (e.g. a pnpm-sourced graph being re-emitted as yarn).
     let resolved: Vec<(&str, String)> = deps
         .iter()
         .filter_map(|(n, v)| {
             let key = crate::npm::child_canonical_key(n, v);
             let target = canonical.get(&key)?;
-            let version = crate::npm::dep_value_as_version(n, v);
             let spec_body = match &target.local_source {
-                None => format!("npm:{version}"),
+                None => {
+                    let body = declared
+                        .get(n)
+                        .cloned()
+                        .unwrap_or_else(|| crate::npm::dep_value_as_version(n, v).to_string());
+                    // Declared ranges may already carry a protocol
+                    // (`npm:^4`, `workspace:*`, `patch:…`) — don't
+                    // double-prefix those. Bare ranges like `^4.1.0`
+                    // get the default `npm:` protocol.
+                    if body.contains(':') {
+                        body
+                    } else {
+                        format!("npm:{body}")
+                    }
+                }
                 Some(src) => src.specifier(),
             };
             Some((n.as_str(), spec_body))

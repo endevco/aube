@@ -286,7 +286,19 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let cpu = pkg_info.map(|p| p.cpu.clone()).unwrap_or_default();
         let libc = pkg_info.map(|p| p.libc.clone()).unwrap_or_default();
         let engines = pkg_info.map(|p| p.engines.clone()).unwrap_or_default();
-        let has_bin = pkg_info.map(|p| p.has_bin).unwrap_or(false);
+        // pnpm's lockfile only stores `hasBin: true/false` (no paths);
+        // reconstruct an opaque single-entry map on parse so
+        // `!bin.is_empty()` stays equivalent to `hasBin`, then let
+        // downstream writers fill in real paths when they have them.
+        // The map key + value are placeholders — writers that care
+        // about bin names (bun) read from richer sources.
+        let bin = if pkg_info.map(|p| p.has_bin).unwrap_or(false) {
+            let mut m = BTreeMap::new();
+            m.insert(String::new(), String::new());
+            m
+        } else {
+            BTreeMap::new()
+        };
         // Aube-specific extension (see `WritablePackageInfo::alias_of`)
         // — ordinary pnpm lockfiles never carry it, so this stays
         // `None` on pnpm-authored input and round-trips the resolver-
@@ -313,7 +325,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 alias_of,
                 yarn_checksum: None,
                 engines,
-                has_bin,
+                bin,
+                // pnpm's `snapshots:` only records resolved pins, so
+                // the parser has no declared ranges to restore. Left
+                // empty; npm / yarn / bun writers fall back to pins
+                // when re-emitting a pnpm-sourced graph into one of
+                // their formats.
+                declared_dependencies: BTreeMap::new(),
             },
         );
     }
@@ -606,7 +624,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 os: pkg.os.clone(),
                 cpu: pkg.cpu.clone(),
                 libc: pkg.libc.clone(),
-                has_bin: pkg.has_bin,
+                has_bin: !pkg.bin.is_empty(),
                 peer_dependencies: peer_deps,
                 peer_dependencies_meta: peer_meta,
                 // Preserve the alias→real-name mapping so a subsequent
@@ -1836,7 +1854,13 @@ snapshots:
     #[test]
     fn test_write_byte_identical_to_native_pnpm() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pnpm-native.yaml");
-        let original = std::fs::read_to_string(&fixture).unwrap();
+        // Windows' `core.autocrlf=true` rewrites checked-out files to
+        // CRLF even when `.gitattributes` asks for LF; normalize both
+        // sides before comparing so a misconfigured checkout gets a
+        // meaningful failure rather than a line-ending false positive.
+        let original = std::fs::read_to_string(&fixture)
+            .unwrap()
+            .replace("\r\n", "\n");
 
         let graph = parse(&fixture).unwrap();
         let manifest = PackageJson {

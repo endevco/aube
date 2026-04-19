@@ -521,12 +521,33 @@ pub struct LockedPackage {
     /// `engines: {node: '>=8'}` line pnpm writes. Empty map means
     /// "no engines declared" — the writer skips the field entirely.
     pub engines: BTreeMap<String, String>,
-    /// `hasBin:` — true when the package declares at least one
-    /// executable (`bin` field in its manifest, in either the string or
-    /// the map form). Round-tripped so pnpm-style writers emit
-    /// `hasBin: true` on the package entry; dropped silently when
-    /// false to match pnpm's "truthy-only" serialization.
-    pub has_bin: bool,
+    /// `bin:` map from the package's manifest, normalized to
+    /// `name → path`. An empty map means "no bins declared".
+    ///
+    /// pnpm-style writers derive `hasBin: true` from
+    /// `!bin.is_empty()` (they don't preserve the names/paths); bun's
+    /// format emits the full map on the package's meta block. Keeping
+    /// the map here lets both writers render byte-identical output
+    /// without an extra tarball-level re-parse.
+    pub bin: BTreeMap<String, String>,
+    /// Dependency ranges as declared in this package's own
+    /// `package.json` — keyed by dep name, values are the raw
+    /// specifiers (`"^4.1.0"`, `"~1.1.4"`, `"workspace:*"`, …).
+    ///
+    /// Distinct from [`Self::dependencies`], which stores the
+    /// *resolved* dep_path tail (`"4.3.0"`). npm / yarn / bun
+    /// lockfiles preserve the declared ranges on every nested
+    /// package entry — rewriting them to the resolved pins is the
+    /// biggest source of round-trip churn against those formats. This
+    /// map lets writers emit the declared range when available and
+    /// fall back to the resolved pin otherwise (e.g. when the source
+    /// lockfile was pnpm, whose `snapshots:` only carries pins).
+    ///
+    /// Empty means "unknown" — writers should fall back to pins.
+    /// Covers production *and* optional dependencies in one map since
+    /// a package can't declare the same name twice across those
+    /// sections.
+    pub declared_dependencies: BTreeMap<String, String>,
 }
 
 impl LockedPackage {
