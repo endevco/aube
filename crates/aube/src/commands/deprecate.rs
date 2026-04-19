@@ -152,7 +152,10 @@ pub async fn apply(
     } else {
         "Deprecated"
     };
-    eprintln!("{verb} {} version(s) of {name}:", matched.len());
+    eprintln!(
+        "{verb} {} of {name}:",
+        pluralizer::pluralize("version", matched.len() as isize, true)
+    );
     for v in &matched {
         eprintln!("  {v}");
     }

@@ -137,8 +137,8 @@ async fn add(specs: Vec<String>) -> miette::Result<()> {
     }
 
     eprintln!(
-        "Added {added} package{} to the store",
-        if added == 1 { "" } else { "s" }
+        "Added {} to the store",
+        pluralizer::pluralize("package", added as isize, true)
     );
     Ok(())
 }
@@ -244,8 +244,8 @@ fn prune() -> miette::Result<()> {
     }
 
     eprintln!(
-        "Pruned {removed_files} file{} ({:.1} MB) from the store",
-        if removed_files == 1 { "" } else { "s" },
+        "Pruned {} ({:.1} MB) from the store",
+        pluralizer::pluralize("file", removed_files as isize, true),
         removed_bytes as f64 / 1_048_576.0
     );
     Ok(())
@@ -295,8 +295,8 @@ fn status() -> miette::Result<()> {
 
     if broken.is_empty() {
         eprintln!(
-            "Store is consistent: {checked} package{} verified",
-            if checked == 1 { "" } else { "s" }
+            "Store is consistent: {} verified",
+            pluralizer::pluralize("package", checked as isize, true)
         );
         Ok(())
     } else {
@@ -307,9 +307,9 @@ fn status() -> miette::Result<()> {
             println!("corrupt: {line}");
         }
         Err(miette!(
-            "store contains {} corrupted file{}",
+            "store contains {} corrupted {}",
             broken.len(),
-            if broken.len() == 1 { "" } else { "s" }
+            pluralizer::pluralize("file", broken.len() as isize, false)
         ))
     }
 }

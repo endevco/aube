@@ -288,8 +288,8 @@ async fn run_recursive(
             .collect::<Vec<_>>()
             .join("\n");
         return Err(miette!(
-            "aube publish: {} package(s) failed:\n{joined}",
-            failures.len()
+            "aube publish: {} failed:\n{joined}",
+            pluralizer::pluralize("package", failures.len() as isize, true)
         ));
     }
     Ok(())

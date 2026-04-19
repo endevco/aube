@@ -101,10 +101,9 @@ pub async fn run(args: FetchArgs) -> miette::Result<()> {
     };
 
     eprintln!(
-        "Fetching {} of {} package{} from {}",
+        "Fetching {} of {} from {}",
         filtered.len(),
-        total_packages,
-        if total_packages == 1 { "" } else { "s" },
+        pluralizer::pluralize("package", total_packages as isize, true),
         kind.filename()
     );
 

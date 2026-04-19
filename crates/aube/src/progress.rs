@@ -47,7 +47,7 @@ const CI_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const TTY_MAX_VISIBLE_FETCH_ROWS: usize = 5;
 
 fn overflow_fetch_label(count: usize) -> String {
-    let word = if count == 1 { "package" } else { "packages" };
+    let word = pluralizer::pluralize("package", count as isize, false);
     format!("{count} more {word}…")
 }
 
@@ -349,15 +349,13 @@ impl InstallProgress {
         elapsed: Duration,
     ) {
         if linked == 0 && top_level_linked == 0 {
-            let word = if total_packages == 1 {
-                "package"
-            } else {
-                "packages"
-            };
             let msg = if total_packages == 0 {
                 "Already up to date".to_string()
             } else {
-                format!("Already up to date ({total_packages} {word})")
+                format!(
+                    "Already up to date ({})",
+                    pluralizer::pluralize("package", total_packages as isize, true)
+                )
             };
             // Same `aube VERSION by en.dev · …` shape in both TTY and
             // CI modes so the no-op line reads as part of the install
@@ -380,14 +378,14 @@ impl InstallProgress {
         if !matches!(self.mode, Mode::Tty { .. }) {
             return;
         }
-        let word = if linked == 1 { "package" } else { "packages" };
         // Single line: `aube VERSION by en.dev · ✓ installed N packages in Xs`.
         // Same `aube VERSION by en.dev` shape the progress bar drew
         // while the install was running, joined to the green
         // success line by a middle dot so the whole thing reads as
         // one continuous status.
         let msg = format!(
-            "✓ installed {linked} {word} in {}",
+            "✓ installed {} in {}",
+            pluralizer::pluralize("package", linked as isize, true),
             format_duration(elapsed)
         );
         let line = format!(

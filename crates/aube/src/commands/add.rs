@@ -1106,9 +1106,8 @@ async fn run_global_inner(
 
     if !linked.is_empty() {
         eprintln!(
-            "Linked {} bin{} into {}",
-            linked.len(),
-            if linked.len() == 1 { "" } else { "s" },
+            "Linked {} into {}",
+            pluralizer::pluralize("bin", linked.len() as isize, true),
             layout.bin_dir.display()
         );
     }

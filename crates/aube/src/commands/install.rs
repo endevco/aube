@@ -2224,9 +2224,8 @@ fn maybe_cleanup_unused_catalogs(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| ws_path.display().to_string());
         tracing::info!(
-            "cleanupUnusedCatalogs: pruned {} entr{} from {filename}",
-            dropped.len(),
-            if dropped.len() == 1 { "y" } else { "ies" }
+            "cleanupUnusedCatalogs: pruned {} from {filename}",
+            pluralizer::pluralize("entry", dropped.len() as isize, true)
         );
     }
     Ok(())

@@ -601,9 +601,8 @@ fn render_table(rows: &[Row]) {
     }
     println!();
     println!(
-        "{} vulnerabilit{} found",
-        rows.len(),
-        if rows.len() == 1 { "y" } else { "ies" }
+        "{} found",
+        pluralizer::pluralize("vulnerability", rows.len() as isize, true)
     );
 }
 

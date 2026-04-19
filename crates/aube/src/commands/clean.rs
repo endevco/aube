@@ -134,22 +134,16 @@ async fn run_as(invoked_as: &str, args: CleanArgs) -> miette::Result<()> {
     if removed_nm == 0 && removed_locks == 0 {
         eprintln!("Nothing to clean");
     } else {
-        let nm_word = if removed_nm == 1 {
-            "directory"
-        } else {
-            "directories"
-        };
+        let nm_word = pluralizer::pluralize("directory", removed_nm as isize, false);
         // Only mention lockfiles when we actually removed at least one
         // — "Removed 1 node_modules directory, 0 lockfiles" was just
         // noise when `--lockfile` was passed against a tree that had
         // no lockfile to begin with.
         if removed_locks > 0 {
-            let lock_word = if removed_locks == 1 {
-                "lockfile"
-            } else {
-                "lockfiles"
-            };
-            eprintln!("Removed {removed_nm} node_modules {nm_word}, {removed_locks} {lock_word}");
+            eprintln!(
+                "Removed {removed_nm} node_modules {nm_word}, {}",
+                pluralizer::pluralize("lockfile", removed_locks as isize, true)
+            );
         } else {
             eprintln!("Removed {removed_nm} node_modules {nm_word}");
         }
