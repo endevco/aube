@@ -639,25 +639,34 @@ Examples:
 Package names whose presence in any importer forces per-project materialization.
 
 - Type: `list<string>`
-- Default: `["next", "nuxt", "vite", "vitepress", "rollup", "webpack", "parcel"]`
+- Default: `["next", "nuxt", "vite", "vitepress", "parcel"]`
 - .npmrc keys: `disableGlobalVirtualStoreForPackages`, `disable-global-virtual-store-for-packages`
 
 aube's global virtual store makes `node_modules/.aube/<pkg>` an
 absolute symlink into `~/.cache/aube/virtual-store/`. Tools whose
 module resolvers follow symlinks to real paths and then walk up the
-directory tree — Rollup, Vite, Webpack, Parcel, Next.js's Turbopack —
-can't reach the project's `node_modules/` from inside the global
-store and produce errors like `Rollup failed to resolve import ...`
-or `Symlink ... is invalid, it points out of the filesystem root`.
+directory tree can't reach the project's `node_modules/` from inside
+the global store and produce errors like `Symlink ... is invalid, it
+points out of the filesystem root`.
 
 When `aube install` finds one of these names in any importer's
 `dependencies`, `devDependencies`, or `optionalDependencies`, it
 forces per-project materialization for that install and prints a
-one-line warning naming the trigger. The default list covers the
-bundlers most commonly declared as direct devDeps; add other
-packages here as you discover them (or set the list to `[]` to
-disable the heuristic entirely). `CI=1` already forces per-project
-mode, so the warning suppresses itself in that case.
+one-line warning naming the trigger.
+
+The default list — `next`, `nuxt`, `vite`, `vitepress`, `parcel` —
+covers the tools with concrete walk-up failures: Next.js's Turbopack
+canonicalizes through symlinks and walks up for app-router/monorepo
+detection, Vite/VitePress/Nuxt plugins walk up for config discovery
+(see [jdx/mise#9261](https://github.com/jdx/mise/pull/9261) for the
+VitePress case), and Parcel's resolver walks up for `.parcelrc`.
+Webpack and Rollup are *not* on the default list: plain Webpack
+resolves via the sibling symlinks aube already places inside
+`.aube/<pkg>/node_modules/`, and Rollup is rarely a direct dep (it's
+typically transitive of Vite). Add them back here if a specific
+plugin needs the fallback, or set the list to `[]` to disable the
+heuristic entirely. `CI=1` already forces per-project mode, so the
+warning suppresses itself in that case.
 
 ## Store
 

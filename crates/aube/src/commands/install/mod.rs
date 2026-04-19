@@ -1950,13 +1950,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 
     // Auto-disable the global virtual store when any importer depends
     // on a package listed in `disableGlobalVirtualStoreForPackages`
-    // (default covers Next.js, Nuxt, Vite, VitePress, Rollup, Webpack,
-    // Parcel). Those resolvers follow `node_modules/<pkg>` symlinks to
-    // real paths and then walk up the directory tree; gvs makes
-    // `.aube/<pkg>` an absolute symlink into
-    // `~/.cache/aube/virtual-store/`, so the walk escapes the project
-    // and can't reach the top-level `node_modules/` where direct deps
-    // live. The list is the extension point — add other tools as they
+    // (default: Next.js, Nuxt, Vite, VitePress, Parcel). Those
+    // resolvers follow `node_modules/<pkg>` symlinks to real paths and
+    // then walk up the directory tree looking for configs, app-router
+    // roots, or hoisted deps; gvs makes `.aube/<pkg>` an absolute
+    // symlink into `~/.cache/aube/virtual-store/`, so the walk escapes
+    // the project and can't reach the top-level `node_modules/` where
+    // direct deps live. Plain Webpack and Rollup are deliberately
+    // *not* in the default list — Webpack resolves via the sibling
+    // symlinks aube places inside `.aube/<pkg>/node_modules/`, and
+    // Rollup is rarely a direct dep. The list is the extension
+    // point — add them back (or other tools) here as their failures
     // surface. `CI=1` already forces per-project mode in `Linker::new`,
     // so we don't warn in that case (behavior wouldn't change and the
     // message would just be noise). `virtualStoreOnly` installs skip
