@@ -1126,18 +1126,9 @@ Warn if download speed falls below this threshold (KiB/s).
 - Default: `50`
 - .npmrc keys: `fetchMinSpeedKiBps`
 
-Observability threshold for *tarball* downloads. When a tarball
-finishes with an end-to-end average throughput below this many KiB/s,
-aube emits a `tracing::warn!` line with the computed speed and the
-tarball URL. Transfers that completed in one second or less are
-skipped because TCP/TLS handshake and time-to-first-byte dominate the
-"average" for fast/small responses, producing spurious warnings that
-don't reflect real network health. This matches pnpm's `elapsedSec > 1`
-gate.
-
-Set to `0` to disable the warning entirely. Unlike pnpm's eventual
-abort-on-slow-speed behavior, aube only warns — we never cut off a
-transfer in progress.
+Warn when a tarball's end-to-end average throughput falls below this
+many KiB/s. Transfers under one second are skipped (handshake + TTFB
+dominate the average). Set to `0` to disable.
 
 ## Peer Dependencies
 
