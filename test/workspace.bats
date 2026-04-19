@@ -336,6 +336,58 @@ _setup_shared_direct_dep_workspace() {
 	assert_output "function"
 }
 
+@test "aube install: bare-semver range links to workspace package (yarn/npm/bun style)" {
+	# yarn v1, npm, and bun workspaces let siblings pin each other with
+	# a plain semver range — `"@test/lib": "1.0.0"` rather than
+	# `"workspace:*"` — and link to the local workspace copy when name
+	# + version match. Repro of excalidraw's monorepo, where inner
+	# packages pin `@excalidraw/common: 0.18.0` and expect it to
+	# resolve from the workspace rather than the registry (where it
+	# does not exist).
+	mkdir -p packages/app packages/lib
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "workspaces": ["packages/*"]
+		}
+	EOF
+	cat >packages/lib/package.json <<-'EOF'
+		{
+		  "name": "@test/lib",
+		  "version": "1.0.0"
+		}
+	EOF
+	cat >packages/lib/index.js <<-'EOF'
+		module.exports = "from-workspace";
+	EOF
+	# No `workspace:` protocol — bare semver, matches lib's version.
+	cat >packages/app/package.json <<-'EOF'
+		{
+		  "name": "@test/app",
+		  "version": "1.0.0",
+		  "dependencies": { "@test/lib": "1.0.0" }
+		}
+	EOF
+
+	run aube install
+	assert_success
+
+	# The app's @test/lib entry links to the workspace copy, proving
+	# the resolver preferred the local package over a registry lookup
+	# (which would have failed since @test/lib has never been
+	# published).
+	assert_link_exists packages/app/node_modules/@test/lib
+	resolved="$(readlink -f packages/app/node_modules/@test/lib)"
+	[[ "$resolved" == *"/packages/lib" ]]
+
+	cd packages/app
+	run node -e "console.log(require('@test/lib'))"
+	assert_success
+	assert_output "from-workspace"
+}
+
 @test "aube install: dedupeDirectDeps=true keeps child symlink when versions differ" {
 	mkdir -p packages/app
 	# Root pins is-number@3.0.0, child pins is-number@6.0.0 — both are

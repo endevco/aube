@@ -691,7 +691,11 @@ impl Resolver {
     /// Resolve all dependencies for a workspace (multiple importers).
     ///
     /// `manifests` is a list of (importer_path, PackageJson) — e.g. (".", root), ("packages/app", app).
-    /// `workspace_packages` maps package name → version for workspace: protocol resolution.
+    /// `workspace_packages` maps package name → version. Used both for
+    /// explicit `workspace:` protocol resolution and for yarn/npm/bun
+    /// style linkage where a bare semver range on a workspace-package
+    /// name resolves to the local copy when its version satisfies the
+    /// range.
     pub async fn resolve_workspace(
         &mut self,
         manifests: &[(String, PackageJson)],
@@ -975,12 +979,21 @@ impl Resolver {
             ($name:expr, $range:expr) => {{
                 let r: &str = $range;
                 let n: &str = $name;
+                // A bare semver range that matches a workspace package
+                // will resolve to the workspace without ever reading
+                // the packument, so prefetching would just be a
+                // speculative 404 on e.g. an unpublished monorepo
+                // package.
+                let workspace_hit = workspace_packages
+                    .get(n)
+                    .is_some_and(|ws_v| version_satisfies(ws_v, r));
                 !r.starts_with("workspace:")
                     && !r.starts_with("catalog:")
                     && !r.starts_with("npm:")
                     && !r.starts_with("jsr:")
                     && !is_non_registry_specifier(r)
                     && !self.overrides.contains_key(n)
+                    && !workspace_hit
             }};
         }
 
@@ -1418,9 +1431,24 @@ impl Resolver {
                     continue;
                 }
 
-                // Handle workspace: protocol — resolve to workspace package version
-                if task.range.starts_with("workspace:")
-                    && let Some(ws_version) = workspace_packages.get(&task.name)
+                // Handle workspace linkage. Two cases resolve to the
+                // workspace package rather than the registry:
+                //   1. Explicit `workspace:` protocol (pnpm/yarn-berry
+                //      style). The range after the prefix is accepted
+                //      unconditionally — the user asserted this should
+                //      link.
+                //   2. Bare semver range whose name matches a workspace
+                //      package whose version satisfies the range. This
+                //      is the yarn-v1 / npm / bun default: siblings pin
+                //      each other with normal version strings and
+                //      expect the workspace to win over the registry.
+                //      A workspace is typically either unpublished or
+                //      is itself the source of truth for its name, so
+                //      preferring the local copy matches every other
+                //      mainstream pm.
+                if let Some(ws_version) = workspace_packages.get(&task.name)
+                    && (task.range.starts_with("workspace:")
+                        || version_satisfies(ws_version, &task.range))
                 {
                     let dep_path = dep_path_for(&task.name, ws_version);
                     if task.is_root
