@@ -1,0 +1,8 @@
+{
+  "lockfile_hash": "sha256:52ce8e4a92119088a0f89feed5007a6350a344f929abd2ea8abd822d84af78c8",
+  "package_json_hashes": {
+    ".": "sha256:c331136e190dc15f05ea3976da012206854ed489547e3dcbc02d3f4f9cf5f044"
+  },
+  "aube_version": "1.0.0-beta.4",
+  "prod": false
+}

@@ -10,9 +10,9 @@ before you ship an aube-based workflow:
 
 | Command | Difference |
 | --- | --- |
-| `aube run <script>` | Checks install staleness and auto-installs before running. `pnpm run` does not. |
-| `aube test` | Auto-installs first, then runs the `test` script — equivalent to `pnpm install-test` in one command. |
-| `aube exec <bin>` | Same staleness check as `aube run`. `pnpm exec` does not install. |
+| `aube run <script>` | Checks install staleness and **auto-installs** before running. `pnpm run` does not. |
+| `aube test` | **Auto-installs** first, then runs the `test` script — equivalent to `pnpm install-test` in one command. |
+| `aube exec <bin>` | **Auto-installs** on stale state before running. `pnpm exec` does not install. |
 | `aube install` (new project) | Creates `aube-lock.yaml` if there's no existing lockfile. pnpm creates `pnpm-lock.yaml`. In an existing pnpm project, aube reads and writes `pnpm-lock.yaml` in place. |
 
 Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
