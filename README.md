@@ -59,6 +59,12 @@ aube is also published on npm:
 npm install -g @endevco/aube
 ```
 
+While aube is beta, Homebrew installs come from the Endev tap:
+
+```sh
+brew install endevco/tap/aube
+```
+
 See [other install methods](https://aube.en.dev/installation).
 
 ## First Install

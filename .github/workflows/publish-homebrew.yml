@@ -1,0 +1,88 @@
+name: publish-homebrew
+
+# Homebrew/core does not accept beta releases, so releases are published
+# to the Endev tap until aube is stable enough for the main formula index.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish to Homebrew (e.g. v1.0.0-beta.4)"
+        required: true
+        type: string
+
+concurrency:
+  group: publish-homebrew
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Homebrew formula
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TAP_REPO: endevco/homebrew-tap
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "::error::no tag from release event or workflow_dispatch input"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+
+      - name: Compute source archive checksum
+        id: source
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          curl -fsSL "https://github.com/endevco/aube/archive/refs/tags/${TAG}.tar.gz" -o source.tar.gz
+          echo "sha256=$(sha256sum source.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Render formula
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          SOURCE_SHA256: ${{ steps.source.outputs.sha256 }}
+        run: |
+          mkdir -p dist
+          ./packaging/homebrew/render-formula.sh > dist/aube.rb
+
+      - name: Publish to tap
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "::error::AUBE_GH_TOKEN is required to push ${TAP_REPO}"
+            exit 1
+          fi
+
+          git clone --depth 1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${TAP_REPO}.git" tap
+          mkdir -p tap/Formula
+          cp dist/aube.rb tap/Formula/aube.rb
+
+          cd tap
+          if [ -z "$(git status --porcelain -- Formula/aube.rb)" ]; then
+            echo "Formula/aube.rb already matches aube ${VERSION}"
+            exit 0
+          fi
+
+          git config user.name "aube Release Bot"
+          git config user.email "noreply@aube.en.dev"
+          git add Formula/aube.rb
+          git commit -m "aube: update to ${VERSION}"
+          git push

@@ -23,6 +23,17 @@ cargo install aube --locked
 same dependency versions CI built against. The compiled binary lands in
 `~/.cargo/bin/aube`.
 
+## From Homebrew
+
+Homebrew/core does not accept beta releases, so aube is published from
+the Endev tap for now:
+
+```sh
+brew install endevco/tap/aube
+```
+
+The tap formula builds from source and installs shell completions.
+
 ## From npm
 
 aube is also published on npm as `@endevco/aube`:
