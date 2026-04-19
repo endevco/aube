@@ -1142,18 +1142,19 @@ fn tarball_registry_url(url: &str) -> String {
 
 /// Emit a `fetchMinSpeedKiBps` warning if the tarball downloaded slower
 /// than the configured threshold. `threshold_kibps == 0` disables the
-/// warning (pnpm convention). Skipped for trivially-small bodies (under
-/// one KiB) and zero-elapsed reads, since both produce numerically
-/// useless averages — a sub-millisecond read of a tiny tarball is not a
-/// network problem we want to alert on.
+/// warning (pnpm convention). Transfers that completed in one second
+/// or less are skipped: for small/fast responses the TCP/TLS handshake
+/// and TTFB dominate the "average" throughput, producing spurious
+/// warnings that don't reflect network health. This matches pnpm's
+/// `elapsedSec > 1` gate in its tarball fetcher.
 fn warn_slow_tarball(threshold_kibps: u64, url: &str, len: usize, elapsed: std::time::Duration) {
     if threshold_kibps == 0 {
         return;
     }
-    let elapsed_ms = elapsed.as_millis() as u64;
-    if elapsed_ms == 0 || len < 1024 {
+    if len == 0 || elapsed <= std::time::Duration::from_secs(1) {
         return;
     }
+    let elapsed_ms = elapsed.as_millis() as u64;
     // speed (KiB/s) = bytes / 1024 / seconds = bytes * 1000 / elapsed_ms / 1024
     let kibps = ((len as u64).saturating_mul(1000)) / elapsed_ms / 1024;
     if kibps < threshold_kibps {
@@ -1513,11 +1514,10 @@ mod retry_tests {
 mod slow_tarball_tests {
     //! Pure-function tests for [`warn_slow_tarball`]. The helper emits
     //! a `tracing::warn` so we can't directly assert on output here;
-    //! instead we cover the branching (threshold=0 → no-op, zero
-    //! elapsed → no-op, tiny body → no-op, slow real download → warn)
-    //! by asserting the helper doesn't panic and, where observable, by
-    //! inspecting the computed speed through a thin wrapper. The
-    //! BATS smoke test exercises the log line end-to-end.
+    //! instead we cover the branching (threshold=0 → no-op, sub-second
+    //! transfer → no-op, empty body → no-op, slow real download → warn)
+    //! by asserting the helper doesn't panic. The BATS smoke test
+    //! exercises the log line end-to-end.
     use super::warn_slow_tarball;
     use std::time::Duration;
 
@@ -1534,51 +1534,66 @@ mod slow_tarball_tests {
     }
 
     #[test]
-    fn tiny_body_skipped_to_avoid_useless_averages() {
-        // 512 bytes in 1ms computes to a speed, but sub-KiB payloads
-        // are below the measurement floor we promised in the doc
-        // comment. The helper should return without warning.
+    fn sub_second_transfer_skipped_to_avoid_handshake_noise() {
+        // Matches pnpm's `elapsedSec > 1` gate. A 2 KiB tarball
+        // completing in 500ms computes to 4 KiB/s — well below the
+        // 50 KiB/s threshold — but the "average" is dominated by TCP/
+        // TLS handshake + TTFB, not real throughput. Must not warn.
         warn_slow_tarball(
             50,
-            "https://example.com/tiny.tgz",
-            512,
-            Duration::from_millis(1),
+            "https://example.com/quick.tgz",
+            2048,
+            Duration::from_millis(500),
+        );
+    }
+
+    #[test]
+    fn exactly_one_second_skipped() {
+        // Boundary: pnpm uses `elapsedSec > 1` (strictly greater), so
+        // a transfer that took exactly one second must not warn even
+        // though its computed average is below threshold.
+        warn_slow_tarball(
+            50,
+            "https://example.com/boundary.tgz",
+            10_240,
+            Duration::from_secs(1),
         );
     }
 
     #[test]
     fn zero_elapsed_skipped_to_avoid_division_by_zero() {
         // `resp.bytes()` can plausibly complete in under a millisecond
-        // for cached/in-memory responses (wiremock is in-process). A
-        // zero-elapsed read would divide by zero if we computed naively.
+        // for cached/in-memory responses (wiremock is in-process). The
+        // sub-second gate covers this too, but we keep the test to pin
+        // the branch.
         warn_slow_tarball(50, "https://example.com/fast.tgz", 10_240, Duration::ZERO);
     }
 
     #[test]
     fn fast_download_does_not_warn() {
-        // 1 MiB in 100ms ≈ 10 MiB/s = 10_240 KiB/s, far above the
-        // 50 KiB/s default threshold. Must not warn. Assertion here is
-        // implicit: the BATS smoke test pins the log-line shape and
-        // absence; this test pins the branch.
+        // 10 MiB in 2 seconds ≈ 5_120 KiB/s, far above the 50 KiB/s
+        // default threshold. Elapsed clears the one-second gate so
+        // the math runs — and must not warn.
         warn_slow_tarball(
             50,
             "https://example.com/pkg.tgz",
-            1024 * 1024,
-            Duration::from_millis(100),
+            10 * 1024 * 1024,
+            Duration::from_secs(2),
         );
     }
 
     #[test]
     fn slow_download_triggers_warning_path() {
-        // 2 KiB in 1 second = 2 KiB/s, well below the 50 KiB/s
-        // threshold. The helper should take the warn branch; we rely
-        // on the BATS smoke test to observe the log line itself, but
-        // this call must at least not panic on arithmetic.
+        // 10 KiB in 2 seconds = 5 KiB/s, well below the 50 KiB/s
+        // threshold and past the one-second gate. The helper should
+        // take the warn branch; we rely on the BATS smoke test to
+        // observe the log line itself, but this call must at least
+        // not panic on arithmetic.
         warn_slow_tarball(
             50,
             "https://example.com/slow.tgz",
-            2048,
-            Duration::from_secs(1),
+            10_240,
+            Duration::from_secs(2),
         );
     }
 }
