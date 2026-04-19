@@ -286,6 +286,16 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let cpu = pkg_info.map(|p| p.cpu.clone()).unwrap_or_default();
         let libc = pkg_info.map(|p| p.libc.clone()).unwrap_or_default();
 
+        // An explicit `name:` in the `packages:` entry that differs
+        // from the snapshot-key-derived name means the entry was
+        // written as an npm-alias (see `WritablePackageInfo::name`).
+        // Promote that real name to `alias_of` so `registry_name()`
+        // can route fetches/store keys through the real package
+        // instead of the alias-qualified snapshot key.
+        let alias_of = pkg_info
+            .and_then(|p| p.name.clone())
+            .filter(|real| real != &name);
+
         packages.insert(
             dep_path.clone(),
             LockedPackage {
@@ -303,7 +313,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 libc,
                 bundled_dependencies,
                 tarball_url,
-                alias_of: None,
+                alias_of,
             },
         );
     }
@@ -582,6 +592,12 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         packages.insert(
             canonical,
             WritablePackageInfo {
+                // `name: <real>` is emitted only for aliased packages
+                // so the next parse can tell an alias-keyed snapshot
+                // from a genuine package that happens to be named
+                // `odd-alias`. Non-aliased entries skip the field —
+                // round-trip stays byte-identical to pnpm's output.
+                name: pkg.alias_of.clone(),
                 resolution,
                 peer_dependencies: peer_deps,
                 peer_dependencies_meta: peer_meta,
@@ -841,6 +857,20 @@ struct WritablePeerDepMeta {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WritablePackageInfo {
+    /// Populated for npm-alias entries (`"odd-alias": "npm:is-odd@..."`)
+    /// so the reader can recover the real registry name on a
+    /// subsequent parse — without it the alias-keyed snapshot looks
+    /// like a regular dep called `odd-alias`, fetches 404 against
+    /// `registry.npmjs.org/odd-alias/...`, and the round-trip breaks.
+    /// Skipped for non-aliased entries so the common case stays
+    /// byte-identical to pnpm's output.
+    ///
+    /// `name:` at this position matches pnpm's own legacy convention
+    /// for disambiguating installs whose dep_path can't uniquely
+    /// identify the package (their reader tolerates the field on
+    /// registry packages too — unknown `name:` is a no-op for them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resolution: Option<WritableResolution>,
     // pnpm v9 emits os/cpu/libc immediately after `resolution` and
@@ -929,6 +959,13 @@ struct RawCatalogEntry {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawPackageInfo {
+    /// Present when the previous writer marked this entry as an
+    /// npm-alias (see [`WritablePackageInfo::name`]). On read, a
+    /// `name:` value that doesn't match the snapshot key's name
+    /// portion means the entry is aliased and the registered real
+    /// package identity lives here.
+    #[serde(default)]
+    name: Option<String>,
     resolution: Option<Resolution>,
     peer_dependencies: Option<BTreeMap<String, String>>,
     peer_dependencies_meta: Option<BTreeMap<String, RawPeerDepMeta>>,
@@ -1628,5 +1665,142 @@ snapshots:
     fn test_parse_nonexistent_file() {
         let path = Path::new("/nonexistent/pnpm-lock.yaml");
         assert!(parse(path).is_err());
+    }
+
+    /// Regression: a [`LockedPackage`] with `alias_of = Some(real)`
+    /// must round-trip a `name: <real>` marker in the `packages:`
+    /// entry so the reader can recover the real registry identity
+    /// on a subsequent parse. Without the marker the alias-keyed
+    /// snapshot (`odd-alias@3.0.1`) parses back as a plain package
+    /// called `odd-alias`, the next install hits
+    /// `registry.npmjs.org/odd-alias/...`, and the round-trip breaks.
+    #[test]
+    fn test_npm_alias_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("aube-lock.yaml");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "odd-alias@3.0.1".to_string(),
+            LockedPackage {
+                name: "odd-alias".to_string(),
+                version: "3.0.1".to_string(),
+                integrity: Some("sha512-alias".to_string()),
+                dep_path: "odd-alias@3.0.1".to_string(),
+                alias_of: Some("is-odd".to_string()),
+                ..Default::default()
+            },
+        );
+        // Non-aliased sibling — its `packages:` entry must stay free
+        // of a `name:` field or we'd emit noise for every regular dep.
+        packages.insert(
+            "is-number@6.0.0".to_string(),
+            LockedPackage {
+                name: "is-number".to_string(),
+                version: "6.0.0".to_string(),
+                integrity: Some("sha512-num".to_string()),
+                dep_path: "is-number@6.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "odd-alias".to_string(),
+                dep_path: "odd-alias@3.0.1".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("npm:is-odd@3.0.1".to_string()),
+            }],
+        );
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+        let mut deps = BTreeMap::new();
+        deps.insert("odd-alias".to_string(), "npm:is-odd@3.0.1".to_string());
+        let manifest = PackageJson {
+            name: Some("aliased-project".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: deps,
+            dev_dependencies: BTreeMap::new(),
+            peer_dependencies: BTreeMap::new(),
+            optional_dependencies: BTreeMap::new(),
+            update_config: None,
+            scripts: BTreeMap::new(),
+            engines: BTreeMap::new(),
+            workspaces: None,
+            bundled_dependencies: None,
+            extra: BTreeMap::new(),
+        };
+
+        write(&lockfile_path, &graph, &manifest).unwrap();
+        let body = std::fs::read_to_string(&lockfile_path).unwrap();
+
+        // `name: is-odd` must appear under the alias snapshot, and
+        // must NOT be emitted for the non-aliased sibling — matching
+        // pnpm's convention of keeping `packages:` entries free of
+        // redundant `name:` fields.
+        assert!(
+            body.contains("odd-alias@3.0.1:\n    name: is-odd"),
+            "alias marker missing; got:\n{body}"
+        );
+        assert!(
+            !body.contains("is-number@6.0.0:\n    name:"),
+            "non-aliased package should skip the `name:` field; got:\n{body}"
+        );
+
+        let reparsed = parse(&lockfile_path).unwrap();
+        let pkg = reparsed
+            .packages
+            .get("odd-alias@3.0.1")
+            .expect("aliased entry must round-trip under the alias-keyed dep_path");
+        assert_eq!(pkg.name, "odd-alias");
+        assert_eq!(pkg.alias_of.as_deref(), Some("is-odd"));
+        assert_eq!(pkg.registry_name(), "is-odd");
+
+        let plain = &reparsed.packages["is-number@6.0.0"];
+        assert!(plain.alias_of.is_none());
+        assert_eq!(plain.registry_name(), "is-number");
+    }
+
+    /// Guards against a regression where the reader conflates the
+    /// snapshot key's name with a present `name:` field when both
+    /// match. That's a non-alias entry (some writer — or a
+    /// hand-edit — chose to be explicit about the name) and must
+    /// leave `alias_of` empty.
+    #[test]
+    fn test_redundant_name_field_not_treated_as_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"lockfileVersion: '9.0'
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+importers:
+  .:
+    dependencies:
+      foo:
+        specifier: ^1.0.0
+        version: 1.0.0
+packages:
+  foo@1.0.0:
+    name: foo
+    resolution:
+      integrity: sha512-abc
+snapshots:
+  foo@1.0.0: {}
+"#,
+        )
+        .unwrap();
+        let graph = parse(&lockfile_path).unwrap();
+        let pkg = &graph.packages["foo@1.0.0"];
+        assert!(
+            pkg.alias_of.is_none(),
+            "a `name:` field that matches the snapshot name is not an alias marker"
+        );
     }
 }

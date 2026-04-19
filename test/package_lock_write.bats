@@ -280,9 +280,8 @@ EOF
 # lands as a distinct top-level folder, not as the real package name.
 #
 # Covers the lockfile-driven path (default / `--frozen-lockfile`).
-# A separate fresh-resolve path through the resolver does not yet
-# preserve the alias-as-folder-name — see the TODO in
-# `aube-resolver::task.name` rewriting for `npm:` specifiers.
+# The sibling test below covers the fresh-resolve path through the
+# resolver (no lockfile).
 @test "aube install handles npm-alias in package-lock.json" {
 	cat >package.json <<'JSON'
 {
@@ -345,4 +344,59 @@ JSON
 	run grep -F 'https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz' package-lock.json
 	assert_success
 	assert [ ! -f aube-lock.yaml ]
+}
+
+# Fresh-resolve complement to the test above: no lockfile on disk,
+# only a `"<alias>": "npm:<real>@..."` in `package.json`. The
+# resolver used to rewrite `task.name` from alias to real and forget
+# the alias, so `node_modules/odd-alias/` came out as
+# `node_modules/is-odd/` and `require("odd-alias")` from user code
+# broke. Verify both the top-level layout and the generated
+# `aube-lock.yaml` preserve the alias so the second (frozen) install
+# reuses the locked entry instead of re-fetching under the alias
+# name and 404-ing.
+@test "aube install handles npm-alias on fresh resolve (no lockfile)" {
+	cat >package.json <<'JSON'
+{
+  "name": "alias-fresh-resolve",
+  "version": "1.0.0",
+  "dependencies": {
+    "odd-alias": "npm:is-odd@3.0.1"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+
+	# Alias landed as its own top-level folder, not as the real name.
+	assert_link_exists node_modules/odd-alias
+	assert_not_exists node_modules/is-odd
+
+	# The virtual store entry is keyed by alias (consistent with the
+	# npm-lockfile path). Without this, a later install reading back
+	# the lockfile has no way to rebuild the `node_modules/odd-alias`
+	# symlink.
+	assert_dir_exists node_modules/.aube/odd-alias@3.0.1
+
+	# The generated `aube-lock.yaml` must carry `name: is-odd` under
+	# the aliased snapshot. Without it, the reader can't distinguish
+	# an alias from a genuine package called `odd-alias`, and the
+	# next frozen install would hit the registry for `odd-alias` and
+	# 404.
+	assert_file_exists aube-lock.yaml
+	run grep -F "name: is-odd" aube-lock.yaml
+	assert_success
+	run grep -E "specifier: npm:is-odd@3.0.1" aube-lock.yaml
+	assert_success
+
+	# Second (frozen) install from the same lockfile must still end
+	# up with the alias folder — guards against regressing the
+	# lockfile-reuse lookup that used to search `p.name == task.name`
+	# (the real name, which never matches the alias-keyed entry).
+	rm -rf node_modules
+	run aube install
+	assert_success
+	assert_link_exists node_modules/odd-alias
+	assert_not_exists node_modules/is-odd
 }

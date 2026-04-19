@@ -317,6 +317,40 @@ struct ResolveTask {
     /// site is responsible for extending its parent's chain with the
     /// parent's own `(name, version)` frame.
     ancestors: Vec<(String, String)>,
+    /// For npm-alias tasks (`"odd-alias": "npm:is-odd@..."`): the
+    /// original alias key from the consumer's `package.json`. `None`
+    /// for non-aliased tasks.
+    ///
+    /// The `npm:` rewrite further down flips `task.name` to the real
+    /// registry name so packument/tarball fetches hit the right URL,
+    /// but the *linker* still needs to place the dep under the alias
+    /// (consumers `require("odd-alias")` by the key they wrote, not
+    /// by the underlying package name). Preserving the alias here is
+    /// what lets downstream `LockedPackage` and `DirectDep`
+    /// construction sites use `folder_name()` / `registry_name()` to
+    /// pick the right name for each job.
+    alias: Option<String>,
+}
+
+impl ResolveTask {
+    /// The name that belongs on `LockedPackage` / `DirectDep` — the
+    /// *consumer-facing* key. For aliased tasks (`task.alias =
+    /// Some("odd-alias")`) that's the alias; for plain tasks it's
+    /// just `task.name`, which already was the key the consumer used.
+    /// Registry IO (packument + tarball fetch, CAS index key) takes
+    /// `task.name` directly and leaves this helper alone — those
+    /// always want the real name, whether aliased or not.
+    fn folder_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
+
+    /// `LockedPackage.alias_of` value for this task: `Some(real)`
+    /// when aliased so `LockedPackage::registry_name()` downstream
+    /// can route fetches/store lookups through the real name,
+    /// `None` otherwise.
+    fn alias_of(&self) -> Option<String> {
+        self.alias.as_ref().map(|_| self.name.clone())
+    }
 }
 
 impl Resolver {
@@ -665,6 +699,7 @@ impl Resolver {
                     importer: importer_path.clone(),
                     original_specifier: Some(range.clone()),
                     ancestors: Vec::new(),
+                    alias: None,
                 });
             }
             for (name, range) in &manifest.dev_dependencies {
@@ -677,6 +712,7 @@ impl Resolver {
                     importer: importer_path.clone(),
                     original_specifier: Some(range.clone()),
                     ancestors: Vec::new(),
+                    alias: None,
                 });
             }
             for (name, range) in &manifest.optional_dependencies {
@@ -695,6 +731,7 @@ impl Resolver {
                     importer: importer_path.clone(),
                     original_specifier: Some(range.clone()),
                     ancestors: Vec::new(),
+                    alias: None,
                 });
             }
         }
@@ -1031,6 +1068,23 @@ impl Resolver {
                                 real_name,
                                 real_range
                             );
+                            // Stash the original key *before* rewriting —
+                            // every downstream site (LockedPackage.name,
+                            // DirectDep.name, dep_path) needs to refer to
+                            // the alias, not the real registry name, or
+                            // consumers `require("<alias>")` from
+                            // anywhere in the tree will miss. The rewrite
+                            // itself is still needed so packument and
+                            // tarball fetches hit the real URL.
+                            //
+                            // A second pass through this loop (after an
+                            // override or catalog rewrite that re-introduces
+                            // an `npm:` spec) must not overwrite the alias
+                            // with the intermediate real name — preserve
+                            // the outermost alias only.
+                            if task.alias.is_none() {
+                                task.alias = Some(task.name.clone());
+                            }
                             task.name = real_name;
                             task.range = real_range;
                             changed = true;
@@ -1230,6 +1284,7 @@ impl Resolver {
                                     importer: task.importer.clone(),
                                     original_specifier: None,
                                     ancestors: child_ancestors.clone(),
+                                    alias: None,
                                 });
                             }
                         }
@@ -1281,12 +1336,27 @@ impl Resolver {
                 // in the pipelined loop we run it up front so
                 // dedupable tasks never block on a fetch or a
                 // lockfile scan.
-                if let Some(matched_ver) = resolved_versions.get(&task.name).and_then(|versions| {
-                    versions
-                        .iter()
-                        .find(|v| version_satisfies(v, &task.range))
-                        .cloned()
-                }) {
+                //
+                // Aliased tasks bypass sibling dedupe entirely —
+                // their graph entry lives under the alias-keyed
+                // dep_path (`alias-num@7.0.0`), not the real-name
+                // one (`is-number@7.0.0`), so snapping a transitive
+                // `is-number` reference at the aliased version
+                // would produce a dangling `is-number@7.0.0` edge
+                // with no matching `LockedPackage`. The alias
+                // snapshot and its non-aliased sibling are
+                // distinct entries; let the aliased task fall
+                // through to lockfile-reuse or fresh fetch under
+                // its own alias-keyed dep_path.
+                if task.alias.is_none()
+                    && let Some(matched_ver) =
+                        resolved_versions.get(&task.name).and_then(|versions| {
+                            versions
+                                .iter()
+                                .find(|v| version_satisfies(v, &task.range))
+                                .cloned()
+                        })
+                {
                     let dep_path = dep_path_for(&task.name, &matched_ver);
                     if task.is_root
                         && let Some(deps) = importers.get_mut(&task.importer)
@@ -1322,9 +1392,19 @@ impl Resolver {
                 // loop the cache is populated incrementally and the
                 // gate was a false optimization.
                 {
+                    // Match on `folder_name` — that's what
+                    // `LockedPackage.name` holds in the alias-keyed
+                    // graph this resolver produces, so the lookup
+                    // finds the alias entry the previous install
+                    // wrote. A plain `p.name == task.name` compare
+                    // would miss every aliased lockfile entry and
+                    // fall through to a redundant fresh fetch (which
+                    // also 404s under the alias-qualified registry
+                    // URL), losing the alias round-trip entirely.
                     if let Some(locked_pkg) = existing.and_then(|g| {
                         g.packages.values().find(|p| {
-                            p.name == task.name && version_satisfies(&p.version, &task.range)
+                            p.name == task.folder_name()
+                                && version_satisfies(&p.version, &task.range)
                         })
                     }) {
                         // Drop optional deps whose platform constraints
@@ -1359,13 +1439,18 @@ impl Resolver {
                             continue;
                         }
                         let version = locked_pkg.version.clone();
-                        let dep_path = dep_path_for(&task.name, &version);
+                        // Same folder_name/alias reasoning as the
+                        // registry path below — when the existing
+                        // lockfile already captured an `npm:` alias
+                        // the task carries it, and both the graph key
+                        // and every referencing dep map need to match.
+                        let dep_path = dep_path_for(task.folder_name(), &version);
 
                         if task.is_root
                             && let Some(deps) = importers.get_mut(&task.importer)
                         {
                             deps.push(DirectDep {
-                                name: task.name.clone(),
+                                name: task.folder_name().to_string(),
                                 dep_path: dep_path.clone(),
                                 dep_type: task.dep_type,
                                 specifier: task.original_specifier.clone(),
@@ -1374,13 +1459,14 @@ impl Resolver {
                         if let Some(ref parent_dp) = task.parent
                             && let Some(parent_pkg) = resolved.get_mut(parent_dp)
                         {
+                            let folder_key = task.folder_name().to_string();
                             parent_pkg
                                 .dependencies
-                                .insert(task.name.clone(), version.clone());
+                                .insert(folder_key.clone(), version.clone());
                             if task.dep_type == DepType::Optional {
                                 parent_pkg
                                     .optional_dependencies
-                                    .insert(task.name.clone(), version.clone());
+                                    .insert(folder_key, version.clone());
                             }
                         }
                         if !visited.contains(&dep_path) {
@@ -1420,7 +1506,7 @@ impl Resolver {
                             resolved.insert(
                                 dep_path.clone(),
                                 LockedPackage {
-                                    name: task.name.clone(),
+                                    name: task.folder_name().to_string(),
                                     version: version.clone(),
                                     integrity: locked_pkg.integrity.clone(),
                                     dependencies: BTreeMap::new(),
@@ -1436,7 +1522,21 @@ impl Resolver {
                                     libc: locked_pkg.libc.clone(),
                                     bundled_dependencies: locked_pkg.bundled_dependencies.clone(),
                                     tarball_url: locked_pkg.tarball_url.clone(),
-                                    alias_of: locked_pkg.alias_of.clone(),
+                                    // Prefer the task's alias (the
+                                    // fresh view from the consumer
+                                    // re-entering the resolver) over
+                                    // whatever the lockfile recorded;
+                                    // fall back to the lockfile entry
+                                    // when the consumer didn't supply
+                                    // one (e.g., resolving the same
+                                    // package during a different run
+                                    // where this call site had nothing
+                                    // to do with an alias). Matching
+                                    // npm's alias detection, `None`
+                                    // is the non-aliased default.
+                                    alias_of: task
+                                        .alias_of()
+                                        .or_else(|| locked_pkg.alias_of.clone()),
                                 },
                             );
 
@@ -1471,6 +1571,7 @@ impl Resolver {
                                     importer: task.importer.clone(),
                                     original_specifier: None,
                                     ancestors: child_ancestors.clone(),
+                                    alias: None,
                                 });
                             }
                         }
@@ -1725,7 +1826,15 @@ impl Resolver {
                 }
 
                 let version = version_meta.version.clone();
-                let dep_path = dep_path_for(&task.name, &version);
+                // Key the graph entry by `folder_name` — the alias for
+                // aliased tasks, the real name otherwise. Consumers of
+                // `"odd-alias": "npm:is-odd@..."` refer to this dep as
+                // `odd-alias` everywhere in their tree; the linker
+                // creates `node_modules/odd-alias/` from this name,
+                // and transitive symlinks are rebuilt by concatenating
+                // `{folder_name}@{tail}`. Registry IO still uses
+                // `task.registry_name()` via `LockedPackage::registry_name()`.
+                let dep_path = dep_path_for(task.folder_name(), &version);
 
                 // Record publish time for the cutoff / `time:` block
                 // whenever the packument carries one — matches pnpm,
@@ -1740,29 +1849,38 @@ impl Resolver {
                     resolved_times.insert(dep_path.clone(), t.clone());
                 }
 
-                // Record root dep
+                // Record root dep. `DirectDep.name` is the alias the
+                // importer's `package.json` keyed this dep by
+                // (`folder_name()`), not the registry name — that's
+                // what the linker places under `node_modules/<name>/`
+                // and what any `require(...)` in user code uses.
                 if task.is_root
                     && let Some(deps) = importers.get_mut(&task.importer)
                 {
                     deps.push(DirectDep {
-                        name: task.name.clone(),
+                        name: task.folder_name().to_string(),
                         dep_path: dep_path.clone(),
                         dep_type: task.dep_type,
                         specifier: task.original_specifier.clone(),
                     });
                 }
 
-                // Wire parent
+                // Wire parent. Use the alias here for the same reason
+                // as above — the parent's `package.json` referenced
+                // this dep by its alias, so that's the key the linker
+                // uses when walking `parent.dependencies` to plant
+                // sibling symlinks.
                 if let Some(ref parent_dp) = task.parent
                     && let Some(parent_pkg) = resolved.get_mut(parent_dp)
                 {
+                    let folder_key = task.folder_name().to_string();
                     parent_pkg
                         .dependencies
-                        .insert(task.name.clone(), version.clone());
+                        .insert(folder_key.clone(), version.clone());
                     if task.dep_type == DepType::Optional {
                         parent_pkg
                             .optional_dependencies
-                            .insert(task.name.clone(), version.clone());
+                            .insert(folder_key, version.clone());
                     }
                 }
 
@@ -1795,11 +1913,19 @@ impl Resolver {
                     }
                 }
 
-                // Track this version
-                resolved_versions
-                    .entry(task.name.clone())
-                    .or_default()
-                    .push(version.clone());
+                // Track this version for sibling dedupe — but only
+                // for non-aliased tasks. An aliased task's graph
+                // entry lives at the alias-keyed dep_path, so if a
+                // later non-aliased consumer deduped against it,
+                // it'd pick up `<real>@<ver>` as a reference to a
+                // snapshot that doesn't exist (see the paired
+                // sibling-dedupe guard above).
+                if task.alias.is_none() {
+                    resolved_versions
+                        .entry(task.name.clone())
+                        .or_default()
+                        .push(version.clone());
+                }
 
                 let integrity = version_meta.dist.as_ref().and_then(|d| d.integrity.clone());
 
@@ -1855,7 +1981,10 @@ impl Resolver {
                 resolved.insert(
                     dep_path.clone(),
                     LockedPackage {
-                        name: task.name.clone(),
+                        // Alias for aliased tasks, real name otherwise.
+                        // The linker's `.aube/<dep_path>/node_modules/<name>/`
+                        // layout uses this field as the folder name.
+                        name: task.folder_name().to_string(),
                         version: version.clone(),
                         integrity,
                         dependencies: BTreeMap::new(),
@@ -1873,7 +2002,11 @@ impl Resolver {
                             v
                         },
                         tarball_url: None,
-                        alias_of: None,
+                        // `Some(real)` for aliased tasks routes
+                        // `registry_name()` / fetch URL / store
+                        // index through the registry name; `None`
+                        // means `name` is already the registry name.
+                        alias_of: task.alias_of(),
                     },
                 );
 
@@ -1922,6 +2055,7 @@ impl Resolver {
                         importer: task.importer.clone(),
                         original_specifier: None,
                         ancestors: child_ancestors.clone(),
+                        alias: None,
                     });
                 }
 
@@ -1956,6 +2090,7 @@ impl Resolver {
                         importer: task.importer.clone(),
                         original_specifier: None,
                         ancestors: child_ancestors.clone(),
+                        alias: None,
                     });
                 }
 
@@ -2043,6 +2178,7 @@ impl Resolver {
                             importer: task.importer.clone(),
                             original_specifier: None,
                             ancestors: child_ancestors.clone(),
+                            alias: None,
                         });
                     }
                 }
