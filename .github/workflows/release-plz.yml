@@ -165,6 +165,15 @@ jobs:
   # the next version bump + regenerated CHANGELOG. Merging the PR is
   # what triggers the `release-plz-release` branch above on the next
   # push.
+  #
+  # We drive the `release-plz` CLI directly (rather than using
+  # `release-plz/action`) so the bump + docs regeneration + PR open
+  # happen in a single push: `release-plz update` writes the Cargo.toml
+  # / Cargo.lock / CHANGELOG.md bumps locally, we then regenerate
+  # `aube.usage.kdl` and the CLI docs against the new version, and only
+  # then do we commit and push the whole thing. One push means CI
+  # (Buildkite, windows, autofix) never sees an intermediate tree with
+  # an out-of-date `aube.usage.kdl`.
   release-plz-pr:
     name: release-plz PR
     runs-on: ubuntu-latest
@@ -182,87 +191,124 @@ jobs:
           submodules: recursive
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
-      - name: Run release-plz
-        id: release-plz
-        uses: release-plz/action@v0.5
+      - uses: taiki-e/install-action@v2
         with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
-      # When release-plz opens or updates a release PR, regenerate the
-      # usage-spec/CLI docs to match the new version and squash.
-      # Communique-generated narrative notes are deliberately NOT run
-      # here — they only run on the real release in `enhance-release`
-      # above, so the PR keeps release-plz's raw git-cliff body.
-      # release-plz sets `prs_created=true` on both initial create and
-      # subsequent updates (it's "there are PRs this run"), so this
-      # condition fires on every run that touches the release PR.
-      - name: Update release PR
-        if: steps.release-plz.outputs.prs_created == 'true'
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
-          # Route JSON through env vars — never inline `${{ ... }}`
-          # into shell because single-quotes in the output would break
-          # out of the `echo '...'` string boundary.
-          PRS_JSON: ${{ steps.release-plz.outputs.prs }}
+          tool: release-plz
+      - name: Configure git identity
         run: |
-          # `prs` is the supported output (a JSON array); `pr` is
-          # deprecated. Take the first entry — release-plz only ever
-          # opens one release PR at a time.
-          PR_NUMBER=$(echo "$PRS_JSON" | jq -r '.[0].number')
-          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-            echo "::error::release-plz did not emit a PR number"
-            exit 1
-          fi
-
-          # actions/checkout doesn't set a git identity and we're about
-          # to create a commit below — set it now so `git commit`
-          # doesn't fail with "Please tell me who you are".
           git config user.name "release-plz[bot]"
           git config user.email "release-plz+bot@users.noreply.github.com"
+          git fetch --tags origin
 
-          gh pr checkout "$PR_NUMBER"
-
-          # Regenerate CLI usage + lint fixes so the release PR matches
-          # the new version.
-          mise run render ::: lint-fix
-
+      # Step 1: let release-plz compute the next workspace version and
+      # write Cargo.toml / Cargo.lock / CHANGELOG.md bumps into the
+      # working tree. No commit, no push yet.
+      - name: Apply version bumps
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+        run: |
+          release-plz update
+          if git diff --quiet; then
+            echo "No version bumps needed."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
           VERSION=$(cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | select(.name == "aube") | .version')
-          TAG="v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
-          # Bump release.json so the docs homepage's "Released at" line
-          # tracks the new version. `releasedAt` is set to "now" on
-          # every PR regeneration, and since release-plz re-renders the
-          # PR on every push to main, the timestamp that actually lands
-          # is from the last run before merge — within one push-to-main
-          # of the real release, which is good enough for a display
-          # string. The vitepress config blanks the field when the
-          # version here doesn't match Cargo.toml, so an out-of-date
-          # release.json on a non-release branch can't render wrong.
+      # Step 2: regenerate `aube.usage.kdl` + docs against the freshly
+      # bumped version, so the PR's initial commit already matches what
+      # the golden-file test expects. `render` depends on `build`, so
+      # cargo builds here.
+      - name: Regenerate CLI docs
+        if: steps.update.outputs.changed == 'true'
+        run: "mise run render ::: lint-fix"
+
+      # Bump release.json so the docs homepage's "Released at" line
+      # tracks the new version. `releasedAt` is set to "now" on every
+      # PR regeneration, and since this workflow re-runs on every push
+      # to main, the timestamp that actually lands is from the last run
+      # before merge — within one push-to-main of the real release,
+      # which is good enough for a display string. The vitepress config
+      # blanks the field when the version here doesn't match
+      # Cargo.toml, so an out-of-date release.json on a non-release
+      # branch can't render wrong.
+      - name: Bump release.json
+        if: steps.update.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.update.outputs.version }}
+        run: |
           RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           jq --arg v "$VERSION" --arg d "$RELEASED_AT" \
             '.version = $v | .releasedAt = $d' release.json > release.json.tmp
           mv release.json.tmp release.json
 
-          # Squash any rendered-doc changes onto the release-plz commit
-          # so the PR stays one commit. Use `-A` on the paths the
-          # `render` task writes to, so NEW files (e.g.
-          # docs/cli/<new-subcommand>.md after `docs/cli` is
-          # regenerated from scratch) are picked up — `git add -u`
-          # would silently omit them.
-          git add -A aube.usage.kdl docs CHANGELOG.md Cargo.toml Cargo.lock crates release.json
-          MERGE_BASE=$(git merge-base HEAD origin/main)
-          git reset --soft "$MERGE_BASE"
-          # The `[render-done]` subject marker is how Buildkite's
-          # pipeline filter (`.buildkite/pipeline.yml`) knows the render
-          # step has run. Without it, Buildkite skips builds on
-          # `release-plz-*` branches, so the raw commit release-plz
-          # force-pushes (which doesn't yet include the regenerated
-          # `aube.usage.kdl`) can't report a spurious golden-file
-          # failure. GitHub squashes the PR on merge using the PR title
-          # (which release-plz sets separately and never gets this
-          # marker), so the final commit on main is clean.
-          git commit -m "chore: release ${TAG} [render-done]"
-          git push --force-with-lease
+      # Step 3: reuse an existing open release-plz PR's branch name (so
+      # the PR number is preserved across runs), or mint a fresh
+      # timestamped branch. Matches release-plz's own default branch
+      # prefix of `release-plz-`.
+      - name: Find existing release-plz PR
+        if: steps.update.outputs.changed == 'true'
+        id: find_pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("release-plz-"))][0] // empty')
+          if [ -n "$EXISTING" ]; then
+            BRANCH=$(echo "$EXISTING" | jq -r .headRefName)
+            PR_NUMBER=$(echo "$EXISTING" | jq -r .number)
+          else
+            BRANCH="release-plz-$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+            PR_NUMBER=""
+          fi
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # Step 4: one commit, one push.
+      - name: Commit and push
+        if: steps.update.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ steps.find_pr.outputs.branch }}
+          TAG: ${{ steps.update.outputs.tag }}
+        run: |
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "chore: release ${TAG}"
+          git push --force-with-lease -u origin "$BRANCH"
+
+      # Step 5: open the PR if it's new, or refresh its title if an
+      # existing one is being reused. We keep the body minimal — the
+      # diff tab and CHANGELOG.md show the full picture, and
+      # communique-generated narrative notes run on the actual release
+      # in `enhance-release` above, not here.
+      - name: Create or update PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          BRANCH: ${{ steps.find_pr.outputs.branch }}
+          PR_NUMBER: ${{ steps.find_pr.outputs.pr_number }}
+          TAG: ${{ steps.update.outputs.tag }}
+        run: |
+          TITLE="chore: release ${TAG}"
+          cat > /tmp/pr_body.md <<EOF
+          ## 🤖 New release: \`${TAG}\`
+
+          This PR bumps the workspace to \`${TAG}\` and regenerates CHANGELOG entries, \`aube.usage.kdl\`, and the CLI docs.
+
+          See the diff for the full set of changes, or the per-crate \`CHANGELOG.md\` files for the release notes that will ship.
+
+          ---
+          Generated by the \`release-plz-pr\` workflow.
+          EOF
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr edit "$PR_NUMBER" --title "$TITLE" --body-file /tmp/pr_body.md
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "$TITLE" --body-file /tmp/pr_body.md
+          fi

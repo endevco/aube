@@ -1,11 +1,3 @@
 steps:
   - label: ":pipeline: upload"
     command: ".buildkite/pipeline.sh | buildkite-agent pipeline upload"
-    # Skip the build on `release-plz-*` branches until the release-plz
-    # GitHub Actions workflow has finished the render step — otherwise
-    # Buildkite races the workflow and reports a failure for the raw
-    # commit that release-plz force-pushes before `mise run render`
-    # regenerates `aube.usage.kdl`. The render step appends a
-    # `[render-done]` subject marker to its commit, so the final push to
-    # the PR branch runs CI normally.
-    if: build.branch !~ /^release-plz-/ || build.message =~ /\[render-done\]/
