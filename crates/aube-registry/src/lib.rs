@@ -7,6 +7,16 @@ use std::collections::BTreeMap;
 /// treated as "no constraint", same as the field being absent — some
 /// packuments emit it. Normalize all three shapes to a `Vec<String>`
 /// so the platform filter doesn't have to care.
+///
+/// Also tolerant of non-string elements *inside* an array: some
+/// packages (e.g. `@oxc-transform/binding-win32-x64-msvc` pre-0.17)
+/// publish `"libc": [null]` to mean "no libc constraint" on a native
+/// Windows binary. A strict `Vec<String>` would blow up the whole
+/// packument with `data did not match any variant of untagged enum
+/// StringOrSeq`, blocking resolution of any range that selects one of
+/// those versions. Drop non-string entries silently — same shape
+/// tolerance `non_string_tolerant_map` applies at the map level, and
+/// the same thing npm / pnpm / bun do in practice.
 fn string_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -15,12 +25,18 @@ where
     #[serde(untagged)]
     enum StringOrSeq {
         String(String),
-        Seq(Vec<String>),
+        Seq(Vec<serde_json::Value>),
     }
     Ok(match Option::<StringOrSeq>::deserialize(deserializer)? {
         None => Vec::new(),
         Some(StringOrSeq::String(s)) => vec![s],
-        Some(StringOrSeq::Seq(v)) => v,
+        Some(StringOrSeq::Seq(v)) => v
+            .into_iter()
+            .filter_map(|item| match item {
+                serde_json::Value::String(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
     })
 }
 
@@ -233,6 +249,27 @@ mod tests {
         assert!(v.os.is_empty());
         assert!(v.cpu.is_empty());
         assert!(v.libc.is_empty());
+    }
+
+    /// `@oxc-transform/binding-win32-x64-msvc` and similar native
+    /// Windows binaries publish `"libc": [null]` on some versions to
+    /// mean "no libc constraint". The array-of-null shape would blow
+    /// up a strict `Vec<String>` and take down every packument that
+    /// merely *lists* an affected version; tolerate it by dropping
+    /// non-string elements, same as `null` at the top level.
+    #[test]
+    fn array_with_null_element_is_filtered() {
+        let v =
+            parse(r#"{"name":"x","version":"1.0.0","os":["win32"],"cpu":["x64"],"libc":[null]}"#);
+        assert_eq!(v.os, vec!["win32"]);
+        assert_eq!(v.cpu, vec!["x64"]);
+        assert!(v.libc.is_empty());
+    }
+
+    #[test]
+    fn array_with_mixed_null_and_string_keeps_strings() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","libc":[null,"glibc",null,"musl"]}"#);
+        assert_eq!(v.libc, vec!["glibc", "musl"]);
     }
 
     #[test]
