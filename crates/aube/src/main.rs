@@ -987,9 +987,12 @@ fn resolve_loglevel(cli: &Cli, configured: Option<&str>) -> LogLevel {
 }
 
 fn env_is_truthy(name: &str) -> bool {
+    let Ok(raw) = std::env::var(name) else {
+        return false;
+    };
     matches!(
-        std::env::var(name).as_deref().map(str::trim),
-        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "y" | "Y")
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "y"
     )
 }
 
