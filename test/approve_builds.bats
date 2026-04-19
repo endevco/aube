@@ -15,6 +15,58 @@ teardown() {
 	_common_teardown
 }
 
+@test "install warns about ignored build scripts" {
+	cat >package.json <<'JSON'
+{
+  "name": "install-ignored-warn-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_output --partial "ignored build scripts"
+	assert_output --partial "aube-test-builds-marker"
+	assert_output --partial "aube approve-builds"
+}
+
+@test "install does not warn when build is allowed" {
+	cat >package.json <<'JSON'
+{
+  "name": "install-no-warn-allowed-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-builds-marker": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	refute_output --partial "ignored build scripts"
+}
+
+@test "install does not warn when --ignore-scripts is set" {
+	cat >package.json <<'JSON'
+{
+  "name": "install-no-warn-ignore-scripts-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  }
+}
+JSON
+	run aube install --ignore-scripts
+	assert_success
+	refute_output --partial "ignored build scripts"
+}
+
 @test "ignored-builds lists deps whose scripts were skipped" {
 	cat >package.json <<'JSON'
 {

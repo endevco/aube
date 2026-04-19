@@ -3605,6 +3605,31 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         );
     }
 
+    // Surface packages whose build scripts were skipped because they're
+    // not on the `allowBuilds` / `onlyBuiltDependencies` allowlist. Without
+    // this, a fresh install of a project that depends on native bindings
+    // (`better-sqlite3`, `esbuild`, napi-rs packages, etc.) looks like it
+    // succeeded but leaves those packages unbuilt — the failure only
+    // surfaces later when something tries to `require` the binding.
+    // Skipped under `--ignore-scripts`, `virtualStoreOnly`, and
+    // `strictDepBuilds=true` (the strict path already errored above).
+    if !opts.ignore_scripts && !strict_dep_builds_setting && !virtual_store_only {
+        let unreviewed = unreviewed_dep_builds(
+            &aube_dir,
+            &graph_for_link,
+            &build_policy,
+            virtual_store_dir_max_length,
+            placements_ref,
+        )?;
+        if !unreviewed.is_empty() {
+            tracing::warn!(
+                "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
+                unreviewed.len(),
+                unreviewed.join(", ")
+            );
+        }
+    }
+
     Ok(())
 }
 
