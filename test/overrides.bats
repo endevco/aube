@@ -314,8 +314,10 @@ teardown() {
 	assert_dir_exists node_modules/.aube/is-odd@3.0.1
 	run test -d node_modules/.aube/is-number@6.0.0
 	assert_failure
-	# No is-number snapshot should land in the lockfile packages block.
-	run grep -E "^ +/is-number@" aube-lock.yaml
+	# No is-number snapshot should land in the lockfile. The override
+	# value here is `-`, so the `overrides:` block won't carry an
+	# `is-number@` substring either.
+	run grep 'is-number@' aube-lock.yaml
 	assert_failure
 }
 
