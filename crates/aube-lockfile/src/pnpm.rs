@@ -10,7 +10,7 @@ use std::path::Path;
 /// Parse a pnpm-lock.yaml file into a LockfileGraph.
 pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let content = std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
-    let raw: RawPnpmLockfile = serde_yaml::from_str(&content)
+    let raw = parse_raw_lockfile(&content)
         .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
 
     // Parse importers (direct deps of each workspace package).
@@ -1034,6 +1034,75 @@ struct WritableSnapshot {
     bundled_dependencies: Option<Vec<String>>,
 }
 
+/// Parse `pnpm-lock.yaml` content, tolerating pnpm v11's multi-document
+/// layout.
+///
+/// pnpm v11 splits the lockfile into two YAML documents: a bootstrap
+/// document that tracks pnpm's own `packageManagerDependencies` /
+/// `configDependencies`, and the "real" project lockfile (with the
+/// workspace's `dependencies` / `devDependencies`, `settings`,
+/// `catalogs`, `overrides`, `patchedDependencies`, etc.). We want the
+/// second one. Heuristic: score every parseable document by
+/// project-lockfile signal (real importer deps + settings/catalogs/
+/// overrides + packages/snapshots count) and take the highest. If only
+/// one document is present (pnpm v9/v10 and older) this reduces to the
+/// previous single-document parse.
+fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Error> {
+    let mut best: Option<(u64, RawPnpmLockfile)> = None;
+    let mut last_err: Option<serde_yaml::Error> = None;
+    for doc in serde_yaml::Deserializer::from_str(content) {
+        match RawPnpmLockfile::deserialize(doc) {
+            Ok(raw) => {
+                let score = project_lockfile_score(&raw);
+                best = match best {
+                    Some((prev, _)) if prev >= score => best,
+                    _ => Some((score, raw)),
+                };
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    match (best, last_err) {
+        (Some((_, raw)), _) => Ok(raw),
+        (None, Some(e)) => Err(e),
+        // No documents at all — defer to the single-doc parser so the
+        // error surface matches what callers saw before.
+        (None, None) => serde_yaml::from_str(content),
+    }
+}
+
+/// Score for picking the "main" document out of a multi-document
+/// `pnpm-lock.yaml`. Weighted so a document with real importer
+/// dependencies beats one with only `packageManagerDependencies`
+/// (pnpm v11's bootstrap doc has the latter but no regular deps).
+fn project_lockfile_score(raw: &RawPnpmLockfile) -> u64 {
+    let importer_dep_count: usize = raw
+        .importers
+        .values()
+        .map(|i| {
+            i.dependencies.as_ref().map(|m| m.len()).unwrap_or(0)
+                + i.dev_dependencies.as_ref().map(|m| m.len()).unwrap_or(0)
+                + i.optional_dependencies
+                    .as_ref()
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+        })
+        .sum();
+    let mut score = importer_dep_count as u64 * 1000;
+    if raw.settings.is_some() {
+        score += 100;
+    }
+    if raw.catalogs.as_ref().is_some_and(|c| !c.is_empty()) {
+        score += 100;
+    }
+    if raw.overrides.as_ref().is_some_and(|o| !o.is_empty()) {
+        score += 100;
+    }
+    score += raw.packages.len() as u64;
+    score += raw.snapshots.len() as u64;
+    score
+}
+
 // -- Raw serde types for pnpm-lock.yaml v9 (deserialization) --
 
 #[derive(Debug, Deserialize)]
@@ -1960,5 +2029,69 @@ snapshots:
             }
         }
         out
+    }
+
+    #[test]
+    fn parse_multi_document_lockfile_picks_project_doc() {
+        // pnpm v11 emits two YAML documents in one file: a bootstrap
+        // doc for `packageManagerDependencies` and the real project
+        // lockfile. We want the latter.
+        let yaml = r#"---
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    packageManagerDependencies:
+      pnpm:
+        specifier: 11.0.0-rc.1
+        version: 11.0.0-rc.1
+
+packages:
+
+  'pnpm@11.0.0-rc.1':
+    resolution: {integrity: sha512-aaa}
+
+snapshots:
+
+  'pnpm@11.0.0-rc.1': {}
+
+---
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+importers:
+
+  .:
+    dependencies:
+      lodash:
+        specifier: ^4.17.0
+        version: 4.17.21
+
+packages:
+
+  'lodash@4.17.21':
+    resolution: {integrity: sha512-bbb}
+
+snapshots:
+
+  'lodash@4.17.21': {}
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let graph = parse(&path).expect("multi-doc lockfile should parse");
+        let root = graph.importers.get(".").expect("root importer");
+        let names: Vec<_> = root.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"lodash"),
+            "expected lodash from project doc, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"pnpm"),
+            "bootstrap doc's packageManagerDependencies should not leak in, got {names:?}"
+        );
     }
 }
