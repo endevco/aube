@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.4](https://github.com/endevco/aube/compare/v1.0.0-beta.3...v1.0.0-beta.4) - 2026-04-19
+
+### Other
+
+- discover root catalogs via package.json workspaces field ([#56](https://github.com/endevco/aube/pull/56))
+
 ## [1.0.0-beta.3](https://github.com/endevco/aube/compare/v1.0.0-beta.2...v1.0.0-beta.3) - 2026-04-19
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.4](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0-beta.3...aube-scripts-v1.0.0-beta.4) - 2026-04-19
+
+### Other
+
+- support name wildcards in the build allowlist ([#49](https://github.com/endevco/aube/pull/49))
+
 ## [1.0.0-beta.2](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0-beta.1...aube-scripts-v1.0.0-beta.2) - 2026-04-18
 
 ### Other
