@@ -59,7 +59,11 @@ can drop in against the same `yarn.lock`.
 - aube uses isolated symlinks instead of a hoisted flat tree by default.
 - Workspace package discovery follows `aube-workspace.yaml` (or
   `pnpm-workspace.yaml` when the project already has one).
-- Dependency lifecycle script approval follows the pnpm v11 allowlist model.
+- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
+  not run by default. Yarn runs them for every dependency; aube runs them
+  only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
+  `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
+  the pnpm v11 model.
 
 References:
 [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)
