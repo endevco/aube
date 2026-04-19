@@ -706,7 +706,16 @@ pub fn validate_pkg_content(
         .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?;
     let actual_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let actual_version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
-    if actual_name != expected_name || actual_version != expected_version {
+    // Tolerate a leading `v` on the tarball's version (e.g. "v2.0.8").
+    // Some publishers ship this shape; npm and bun normalize it on
+    // install, so aube does too rather than rejecting a package the
+    // other managers accept. The registry-side coordinate is the
+    // source of truth, so we only normalize the tarball side.
+    let actual_version_normalized = actual_version
+        .strip_prefix('v')
+        .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or(actual_version);
+    if actual_name != expected_name || actual_version_normalized != expected_version {
         // Only carry the *actual* coordinate the tarball declared.
         // Every caller wraps the error with the expected
         // `{name}@{version}: ` prefix (mirroring the Error::Integrity
@@ -1317,6 +1326,14 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("content mismatch"), "{msg}");
         assert!(msg.contains("declares lodash@9.9.9"), "{msg}");
+    }
+
+    #[test]
+    fn test_validate_pkg_content_tolerates_leading_v() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        let index = index_with_manifest(&store, "@upstash/ratelimit", "v2.0.8");
+        assert!(validate_pkg_content(&index, "@upstash/ratelimit", "2.0.8").is_ok());
     }
 
     #[test]
