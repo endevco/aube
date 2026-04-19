@@ -59,7 +59,9 @@ jobs:
           # Deb version: SemVer `-` prerelease separators collate as
           # newer than release in dpkg; `~` collates as older, which is
           # what we want. `1.0.0-beta.1` -> `1.0.0~beta.1`.
-          DEB_VERSION="${VERSION//-/~}${VERSION_SUFFIX}"
+          # Backslash-escape the tilde: bash performs tilde expansion on
+          # the replacement string in ${var//pat/rep}, even inside "...".
+          DEB_VERSION="${VERSION//-/\~}${VERSION_SUFFIX}"
 
           {
             echo "VERSION=${VERSION}"
