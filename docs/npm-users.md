@@ -32,7 +32,8 @@ installs keep writing `aube-lock.yaml`.
 
 ## Differences from npm
 
-- aube's default `node_modules` layout is isolated, not flat.
+- aube's default `node_modules` layout is
+  [isolated](/package-manager/node-modules), not flat.
 - Phantom dependencies fail because packages can only access declared
   dependencies.
 - Dependency lifecycle script approval follows the pnpm v11 allowlist model.
