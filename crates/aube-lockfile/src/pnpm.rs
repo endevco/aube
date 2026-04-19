@@ -1048,9 +1048,20 @@ struct WritableSnapshot {
 /// one document is present (pnpm v9/v10 and older) this reduces to the
 /// previous single-document parse.
 fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Error> {
+    // Hard cap on documents inspected. pnpm v11 emits exactly two;
+    // anything beyond a handful is pathological. This also guards
+    // against malformed YAML that puts
+    // `serde_yaml::Deserializer::from_str`'s iterator into an
+    // infinite-yield state — `test_parse_invalid_yaml` tripped that
+    // mode on Windows CI with an unbounded loop.
+    const MAX_DOCUMENTS: usize = 16;
+
     let mut best: Option<(u64, RawPnpmLockfile)> = None;
     let mut first_err: Option<serde_yaml::Error> = None;
-    for (idx, doc) in serde_yaml::Deserializer::from_str(content).enumerate() {
+    for (idx, doc) in serde_yaml::Deserializer::from_str(content)
+        .enumerate()
+        .take(MAX_DOCUMENTS)
+    {
         match RawPnpmLockfile::deserialize(doc) {
             Ok(raw) => {
                 let score = project_lockfile_score(&raw);
@@ -1060,17 +1071,19 @@ fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Erro
                 };
             }
             Err(e) => {
-                // Log every per-document failure so a multi-doc lockfile
-                // where every document fails surfaces all the diagnostic
-                // signal at `RUST_LOG=aube_lockfile=debug`. The returned
-                // error is the *first* failure, which tends to be the
-                // most explanatory — later docs often fail with cascading
-                // schema mismatches once the first doc has set
-                // expectations off-kilter.
+                // Log every per-document failure so a multi-doc
+                // lockfile where every document fails surfaces all the
+                // diagnostic signal at `RUST_LOG=aube_lockfile=debug`.
+                // Break on the first failure: a malformed document
+                // typically puts serde_yaml's iterator into a state
+                // where further iteration is either more garbage or an
+                // infinite loop (see `test_parse_invalid_yaml`). The
+                // returned error is the first failure, which is both
+                // most explanatory and the only one we actually
+                // observed.
                 tracing::debug!("pnpm-lock.yaml document {idx} failed to parse: {e}");
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
+                first_err = Some(e);
+                break;
             }
         }
     }
