@@ -2,9 +2,47 @@ pub mod workspace;
 
 pub use workspace::WorkspaceConfig;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+/// Deserialize `engines` tolerant to the pre-npm-2.x legacy array
+/// form, e.g. `extsprintf@1.4.1` ships `"engines": ["node >=0.6.0"]`.
+/// Modern npm ignores that shape (engine-strict only consults the map
+/// form), so normalize to an empty map rather than failing the whole
+/// manifest — a hard error there takes down every install that touches
+/// one of these ancient packages, even when the user's target engine
+/// wouldn't have matched any constraint anyway.
+///
+/// An explicit `null` is also tolerated (same as "field absent"),
+/// matching the tolerance our other dep-map parsers apply.
+fn engines_tolerant<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(de)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => BTreeMap::new(),
+        Some(serde_json::Value::Object(m)) => m
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::String(s) => Some((k, s)),
+                _ => None,
+            })
+            .collect(),
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "engines: expected a map, got {}",
+                match other {
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "boolean",
+                    _ => "non-object",
+                }
+            )));
+        }
+    })
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,8 +84,13 @@ pub struct PackageJson {
     /// `engines` field — declared runtime version constraints, e.g.
     /// `{"node": ">=18.0.0"}`. Checked against the current runtime during
     /// `aube install`; a mismatch warns by default and fails under
-    /// `engine-strict`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// `engine-strict`. See `engines_tolerant` for the legacy-shape
+    /// handling.
+    #[serde(
+        default,
+        deserialize_with = "engines_tolerant",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub engines: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<Workspaces>,
@@ -608,6 +651,46 @@ mod tests {
 
     fn parse(json: &str) -> PackageJson {
         serde_json::from_str(json).unwrap()
+    }
+
+    /// Pre-npm-2.x publishes (e.g. `extsprintf@1.4.1`, `coffee-script@1.3.3`)
+    /// ship `"engines": ["node >=0.6.0"]` as an array rather than a map.
+    /// Modern npm ignores the legacy shape; we do the same rather than
+    /// fail the whole manifest and take down every install that touches
+    /// one of these ancient packages.
+    #[test]
+    fn engines_legacy_array_form_parses_as_empty_map() {
+        let p = parse(r#"{"name":"x","engines":["node >=0.6.0"]}"#);
+        assert!(p.engines.is_empty());
+    }
+
+    #[test]
+    fn engines_null_is_treated_as_empty() {
+        let p = parse(r#"{"name":"x","engines":null}"#);
+        assert!(p.engines.is_empty());
+    }
+
+    #[test]
+    fn engines_modern_map_form_still_parses() {
+        let p = parse(r#"{"name":"x","engines":{"node":">=18.0.0","npm":">=9"}}"#);
+        assert_eq!(p.engines.get("node").unwrap(), ">=18.0.0");
+        assert_eq!(p.engines.get("npm").unwrap(), ">=9");
+    }
+
+    #[test]
+    fn engines_missing_field_is_empty() {
+        let p = parse(r#"{"name":"x"}"#);
+        assert!(p.engines.is_empty());
+    }
+
+    #[test]
+    fn engines_map_drops_non_string_values() {
+        // Stay consistent with how our dep-map parsers treat redacted
+        // / non-string entries — drop, not fail.
+        let p = parse(r#"{"name":"x","engines":{"node":">=18","weird":null,"n":42}}"#);
+        assert_eq!(p.engines.get("node").unwrap(), ">=18");
+        assert!(!p.engines.contains_key("weird"));
+        assert!(!p.engines.contains_key("n"));
     }
 
     #[test]
