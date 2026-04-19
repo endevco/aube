@@ -66,7 +66,9 @@ pub async fn run(args: FetchArgs) -> miette::Result<()> {
         && !manifest_path.exists()
         && matches!(
             kind,
-            aube_lockfile::LockfileKind::Yarn | aube_lockfile::LockfileKind::Bun
+            aube_lockfile::LockfileKind::Yarn
+                | aube_lockfile::LockfileKind::YarnBerry
+                | aube_lockfile::LockfileKind::Bun
         )
     {
         return Err(miette!(

@@ -309,6 +309,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 bundled_dependencies,
                 tarball_url,
                 alias_of,
+                yarn_checksum: None,
             },
         );
     }

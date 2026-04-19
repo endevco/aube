@@ -708,7 +708,7 @@ fn lockfile_path_for_project(project_dir: &std::path::Path) -> std::path::PathBu
         LockfileKind::Pnpm => aube_lockfile::pnpm_lock_filename(project_dir),
         LockfileKind::Npm => "package-lock.json".to_string(),
         LockfileKind::NpmShrinkwrap => "npm-shrinkwrap.json".to_string(),
-        LockfileKind::Yarn => "yarn.lock".to_string(),
+        LockfileKind::Yarn | LockfileKind::YarnBerry => "yarn.lock".to_string(),
         LockfileKind::Bun => "bun.lock".to_string(),
     };
     project_dir.join(filename)

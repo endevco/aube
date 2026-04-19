@@ -43,6 +43,21 @@ teardown() {
 	assert_success
 }
 
+@test "aube import from yarn berry (v2+) yarn.lock writes aube-lock.yaml" {
+	cp "$PROJECT_ROOT/fixtures/import-yarn-berry/package.json" .
+	cp "$PROJECT_ROOT/fixtures/import-yarn-berry/yarn.lock" .
+
+	run aube import
+	assert_success
+	assert_output --partial "Imported 4 packages from yarn.lock"
+
+	assert_file_exists aube-lock.yaml
+	run grep -c "is-odd@3.0.1" aube-lock.yaml
+	assert_success
+	run grep -c "@sindresorhus/is@5.6.0" aube-lock.yaml
+	assert_success
+}
+
 @test "aube import from npm-shrinkwrap.json writes aube-lock.yaml" {
 	cp "$PROJECT_ROOT/fixtures/import-shrinkwrap/package.json" .
 	cp "$PROJECT_ROOT/fixtures/import-shrinkwrap/npm-shrinkwrap.json" .
@@ -156,6 +171,25 @@ EOF
 	assert_output --partial "yarn.lock: 4 packages"
 
 	assert_dir_exists node_modules/is-odd
+}
+
+@test "aube install reads yarn berry yarn.lock and rewrites it as berry" {
+	cp "$PROJECT_ROOT/fixtures/import-yarn-berry/package.json" .
+	cp "$PROJECT_ROOT/fixtures/import-yarn-berry/yarn.lock" .
+
+	run aube -v install
+	assert_success
+	assert_output --partial "yarn.lock: 4 packages"
+
+	assert_dir_exists node_modules/is-odd
+	assert_dir_exists "node_modules/@sindresorhus/is"
+	assert_dir_exists node_modules/kind-of
+
+	# aube should have preserved berry format on write-back rather
+	# than silently downgrading to classic (v1).
+	run grep -c "^__metadata:" yarn.lock
+	assert_success
+	assert_file_not_exists aube-lock.yaml
 }
 
 @test "aube install reads npm-shrinkwrap.json when no aube-lock.yaml present" {
