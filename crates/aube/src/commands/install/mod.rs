@@ -1944,7 +1944,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 tracing::debug!("  {name}@{version} ({rel_path})");
             }
 
-            manifests.push((rel_path, pkg_manifest));
+            // `pnpm-workspace.yaml: packages: ["."]` expands to the
+            // root itself; push would produce a duplicate importer
+            // entry (`""` alongside `"."`) since `"."` is seeded at
+            // the top of `manifests`. The resolver would then emit
+            // two `graph.importers` entries mapping to the same
+            // directory, and the linker would race to create the same
+            // top-level symlinks twice. Collapse it here.
+            if !rel_path.is_empty() {
+                manifests.push((rel_path, pkg_manifest));
+            }
         }
     }
 
