@@ -24,6 +24,31 @@ where
     })
 }
 
+/// Deserialize a `BTreeMap<String, String>` tolerant to `null` — both at
+/// the whole-map level (`"dist-tags": null` → empty map) and at the
+/// value level (`{"latest": null}` → entry dropped).
+///
+/// Some registry proxies (notably JFrog Artifactory's npm remote) emit
+/// `null` in places where npmjs.org always emits a string: stripped /
+/// tombstoned `dist-tags` values, per-version `time` entries for
+/// deleted versions, or dep-map entries that were redacted by a
+/// mirroring filter. The strict `BTreeMap<String, String>` shape would
+/// fail these with `invalid type: null, expected a string`, blocking
+/// the whole install even though the null is semantically "not
+/// present." Drop those entries so the resolver sees the same shape it
+/// would have seen from npmjs.
+fn null_tolerant_string_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let maybe: Option<BTreeMap<String, Option<String>>> = Option::deserialize(de)?;
+    Ok(maybe
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|s| (k, s)))
+        .collect())
+}
+
 pub mod client;
 pub mod config;
 pub mod jsr;
@@ -59,7 +84,11 @@ pub struct Packument {
     pub name: String,
     #[serde(default)]
     pub versions: BTreeMap<String, VersionMetadata>,
-    #[serde(rename = "dist-tags", default)]
+    #[serde(
+        rename = "dist-tags",
+        default,
+        deserialize_with = "null_tolerant_string_map"
+    )]
     pub dist_tags: BTreeMap<String, String>,
     /// Per-version publish timestamps (ISO-8601). Populated
     /// opportunistically: npmjs.org's corgi (abbreviated) packument
@@ -69,7 +98,7 @@ pub struct Packument {
     /// resolver round-trips it into the lockfile's top-level `time:`
     /// block — matching pnpm's `publishedAt` wiring — and, in
     /// time-based mode, uses it to derive the publish-date cutoff.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_tolerant_string_map")]
     pub time: BTreeMap<String, String>,
 }
 
@@ -79,15 +108,15 @@ pub struct Packument {
 pub struct VersionMetadata {
     pub name: String,
     pub version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_tolerant_string_map")]
     pub dependencies: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_tolerant_string_map")]
     pub dev_dependencies: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_tolerant_string_map")]
     pub peer_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub peer_dependencies_meta: BTreeMap<String, PeerDepMeta>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_tolerant_string_map")]
     pub optional_dependencies: BTreeMap<String, String>,
     /// `bundledDependencies` from the packument. Either a list of dep
     /// names or `true` (meaning "bundle every `dependencies` entry").
@@ -207,5 +236,86 @@ mod tests {
 
         let v = parse(r#"{"name":"x","version":"1.0.1","deprecated":false}"#);
         assert!(v.deprecated.is_none());
+    }
+
+    /// Artifactory's npm remote proxies sometimes emit `null` entries
+    /// in dep maps where stripped/redacted deps used to be. The
+    /// resolver must not bail on that — the null dep is semantically
+    /// "not present", same shape npmjs would have served.
+    #[test]
+    fn dependency_maps_drop_null_entries() {
+        let v = parse(
+            r#"{
+                "name": "x",
+                "version": "1.0.0",
+                "dependencies": {"kept": "^1", "stripped": null},
+                "devDependencies": {"dkept": "^2", "dstripped": null},
+                "peerDependencies": {"pkept": "^3", "pstripped": null},
+                "optionalDependencies": {"okept": "^4", "ostripped": null}
+            }"#,
+        );
+        assert_eq!(v.dependencies.len(), 1);
+        assert_eq!(v.dependencies["kept"], "^1");
+        assert_eq!(v.dev_dependencies.len(), 1);
+        assert_eq!(v.peer_dependencies.len(), 1);
+        assert_eq!(v.optional_dependencies.len(), 1);
+    }
+
+    #[test]
+    fn dependency_maps_null_whole_field_is_empty() {
+        let v = parse(
+            r#"{
+                "name": "x",
+                "version": "1.0.0",
+                "dependencies": null,
+                "devDependencies": null,
+                "peerDependencies": null,
+                "optionalDependencies": null
+            }"#,
+        );
+        assert!(v.dependencies.is_empty());
+        assert!(v.dev_dependencies.is_empty());
+        assert!(v.peer_dependencies.is_empty());
+        assert!(v.optional_dependencies.is_empty());
+    }
+
+    fn parse_packument(json: &str) -> Packument {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn packument_dist_tags_drops_null_tag() {
+        let p = parse_packument(
+            r#"{
+                "name": "pkg",
+                "dist-tags": {"latest": "1.2.3", "beta": null}
+            }"#,
+        );
+        assert_eq!(p.dist_tags.len(), 1);
+        assert_eq!(p.dist_tags["latest"], "1.2.3");
+    }
+
+    #[test]
+    fn packument_dist_tags_null_whole_field_is_empty() {
+        let p = parse_packument(r#"{"name":"pkg","dist-tags":null}"#);
+        assert!(p.dist_tags.is_empty());
+    }
+
+    #[test]
+    fn packument_time_drops_null_entries() {
+        let p = parse_packument(
+            r#"{
+                "name": "pkg",
+                "time": {"1.0.0": "2024-01-01T00:00:00.000Z", "0.9.0": null}
+            }"#,
+        );
+        assert_eq!(p.time.len(), 1);
+        assert!(p.time.contains_key("1.0.0"));
+    }
+
+    #[test]
+    fn packument_time_null_whole_field_is_empty() {
+        let p = parse_packument(r#"{"name":"pkg","time":null}"#);
+        assert!(p.time.is_empty());
     }
 }
