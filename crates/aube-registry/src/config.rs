@@ -2,6 +2,44 @@ use base64::Engine as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Where a single `.npmrc`-shaped entry came from. `apply_tagged`
+/// uses this to decide whether an individual setting is trusted
+/// enough to take effect. Matches pnpm 10.27.0's fix for
+/// CVE-2025-69262. Settings that drive subprocess execution
+/// (currently `tokenHelper`) are accepted only from user scope
+/// sources. A project `.npmrc` that a hostile repo committed does
+/// not qualify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NpmrcSource {
+    /// `~/.npmrc`. The developer's personal config. Trusted.
+    User,
+    /// `~/.config/pnpm/auth.ini`. pnpm's global auth file. Trusted
+    /// (same filesystem scope as the user `.npmrc`).
+    PnpmAuth,
+    /// `<project>/.npmrc`. Committed alongside the project and
+    /// therefore attacker controlled when the project came from a
+    /// hostile clone.
+    Project,
+    /// A file pointed at by the `npmrc-auth-file` setting. The path
+    /// itself can be declared from a project `.npmrc`, so the
+    /// file's contents inherit the project trust level.
+    NpmrcAuthFile,
+    /// Environment variable. `npm_config_*` / `NPM_CONFIG_*`.
+    /// Trusted because the developer or their CI pipeline has to
+    /// set them explicitly in the shell that invoked aube.
+    Env,
+}
+
+impl NpmrcSource {
+    /// Whether a setting from this source is allowed to configure
+    /// subprocess spawning (e.g. `tokenHelper`). `Project` and
+    /// `NpmrcAuthFile` both return false since both are reachable
+    /// from a hostile repo clone.
+    fn is_trusted_for_subprocess_settings(self) -> bool {
+        matches!(self, Self::User | Self::PnpmAuth | Self::Env)
+    }
+}
+
 /// Parsed npm configuration from .npmrc files.
 ///
 /// Only holds the *registry-client specific* fields — registry URL, auth,
@@ -145,14 +183,25 @@ impl NpmConfig {
             registry: "https://registry.npmjs.org/".to_string(),
             ..Default::default()
         };
-        // `apply` processes entries in order and is last-write-wins, so
-        // feeding it the merged user-then-project list produces the
-        // same result as the prior two-pass implementation.
-        config.apply(load_npmrc_entries(project_dir));
+        // Feed tagged entries so `apply_tagged` can reject
+        // high-privilege settings sourced from untrusted locations.
+        let xdg = std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let mut tagged =
+            load_npmrc_entries_tagged_with_home(home_dir().as_deref(), xdg.as_deref(), project_dir);
         // `npm_config_*` / `NPM_CONFIG_*` env vars beat file config in
-        // npm/pnpm, and the docs promise the same for aube. Apply them
-        // after `.npmrc` so last-write-wins gives env the higher slot.
-        config.apply(npm_config_env_entries_from(env));
+        // npm/pnpm. Apply them after `.npmrc` so last-write-wins gives
+        // env the higher slot, and tag them as `Env` so
+        // subprocess-settings gating still trusts them.
+        tagged.extend(
+            npm_config_env_entries_from(env)
+                .into_iter()
+                .map(|(k, v)| (NpmrcSource::Env, k, v)),
+        );
+        config.apply_tagged(tagged);
         // Env vars fill in any proxy fields the .npmrc didn't set.
         // npm/pnpm/curl all check both the upper- and lowercase forms.
         config.apply_proxy_env();
@@ -262,8 +311,23 @@ impl NpmConfig {
         self.auth_by_uri.get(trimmed)
     }
 
+    /// Test-only compatibility shim. Production code must go through
+    /// `apply_tagged` with real source tags so the subprocess-settings
+    /// gate fires correctly. Tests that legitimately emulate a
+    /// user-scope-only environment can use this helper to avoid
+    /// rewriting every fixture.
+    #[cfg(test)]
     fn apply(&mut self, entries: Vec<(String, String)>) {
-        for (key, value) in entries {
+        self.apply_tagged(
+            entries
+                .into_iter()
+                .map(|(k, v)| (NpmrcSource::User, k, v))
+                .collect(),
+        );
+    }
+
+    fn apply_tagged(&mut self, entries: Vec<(NpmrcSource, String, String)>) {
+        for (source, key, value) in entries {
             if key == "registry" {
                 self.registry = normalize_registry_url(&value);
             } else if key == "_authToken" {
@@ -309,7 +373,29 @@ impl NpmConfig {
                         "_auth" => entry.auth = Some(value),
                         "username" => entry.username = Some(value),
                         "_password" => entry.password = Some(value),
-                        "tokenHelper" | "token-helper" => entry.token_helper = non_empty(value),
+                        "tokenHelper" | "token-helper" => {
+                            // CVE-2025-69262 (pnpm GHSA-2phv-j68v-wwqx)
+                            // class: `tokenHelper` is spawned as
+                            // `sh -c <value>` on unix or `cmd /C
+                            // <value>` on Windows at the next authed
+                            // registry request. Accept only from
+                            // trusted sources and only when the
+                            // value parses as a sanitized absolute
+                            // path to an interpreter.
+                            if !source.is_trusted_for_subprocess_settings() {
+                                tracing::warn!(
+                                    "ignoring tokenHelper for {uri}: {source:?} source is not trusted for subprocess settings (committed `.npmrc` cannot set this)"
+                                );
+                                continue;
+                            }
+                            let Some(sanitized) = sanitize_token_helper(&value) else {
+                                tracing::warn!(
+                                    "ignoring tokenHelper for {uri}: value is not a bare absolute path: {value:?}"
+                                );
+                                continue;
+                            };
+                            entry.token_helper = Some(sanitized);
+                        }
                         "ca" | "ca[]" => entry.tls.ca.push(pem_value(value)),
                         "cafile" | "caFile" => entry.tls.cafile = Some(PathBuf::from(value)),
                         "cert" => entry.tls.cert = Some(pem_value(value)),
@@ -525,6 +611,104 @@ pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
     load_npmrc_entries_with_home(home_dir().as_deref(), xdg.as_deref(), project_dir)
 }
 
+/// Same as [`load_npmrc_entries_with_home`] but each entry is tagged
+/// with the file it came from. `apply_tagged` uses the tag to refuse
+/// high-privilege settings (currently `tokenHelper`) that originated
+/// from a project-scope `.npmrc` a hostile repo can commit.
+fn load_npmrc_entries_tagged_with_home(
+    home: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+    project_dir: &Path,
+) -> Vec<(NpmrcSource, String, String)> {
+    let mut out: Vec<(NpmrcSource, String, String)> = Vec::new();
+    if let Some(home) = home {
+        let user_rc = home.join(".npmrc");
+        if user_rc.exists()
+            && let Ok(entries) = parse_npmrc(&user_rc)
+        {
+            out.extend(entries.into_iter().map(|(k, v)| (NpmrcSource::User, k, v)));
+        }
+        let auth_ini = pnpm_global_auth_ini_path(home, xdg_config_home);
+        if auth_ini.exists()
+            && let Ok(entries) = parse_npmrc(&auth_ini)
+        {
+            out.extend(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (NpmrcSource::PnpmAuth, k, v)),
+            );
+        }
+    }
+    let project_rc = project_dir.join(".npmrc");
+    if project_rc.exists()
+        && let Ok(entries) = parse_npmrc(&project_rc)
+    {
+        out.extend(
+            entries
+                .into_iter()
+                .map(|(k, v)| (NpmrcSource::Project, k, v)),
+        );
+    }
+    // Resolve `npmrc-auth-file` by borrowing the tagged entries we
+    // already parsed. No clone, the iterator just drops the tag.
+    if let Some(auth_path) = resolve_npmrc_auth_file(
+        home,
+        project_dir,
+        out.iter().map(|(_, k, v)| (k.as_str(), v.as_str())),
+    ) && auth_path.exists()
+        && let Ok(entries) = parse_npmrc(&auth_path)
+    {
+        out.extend(
+            entries
+                .into_iter()
+                .map(|(k, v)| (NpmrcSource::NpmrcAuthFile, k, v)),
+        );
+    }
+    out
+}
+
+/// Validate a `tokenHelper` value against the same contract pnpm
+/// 10.27.0 introduced for CVE-2025-69262. The value must be a bare
+/// absolute path to an executable, with no shell metacharacters,
+/// no whitespace-separated arguments, no environment substitution
+/// markers. `run_token_helper` spawns the path directly without a
+/// shell wrapper, so a post-fix attacker who somehow gets a value
+/// past this sanitizer still cannot smuggle a shell pipeline, only
+/// a file name that has to exist on disk as an executable.
+fn sanitize_token_helper(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Absolute on unix starts with `/`. Absolute on Windows starts
+    // with a drive letter (`C:\`, `C:/`) or a UNC prefix (`\\`). The
+    // `\\` form also covers `\\?\` and `\\.\`.
+    let is_unix_absolute = trimmed.starts_with('/');
+    let is_windows_absolute = trimmed.starts_with("\\\\")
+        || trimmed.as_bytes().get(1).is_some_and(|&b| b == b':')
+            && trimmed
+                .as_bytes()
+                .first()
+                .is_some_and(|&b| b.is_ascii_alphabetic())
+            && matches!(trimmed.as_bytes().get(2), Some(b'/' | b'\\'));
+    if !(is_unix_absolute || is_windows_absolute) {
+        return None;
+    }
+    // Reject any shell metacharacter or whitespace. A legitimate
+    // helper is a single executable path. Arguments go into the
+    // binary's own config, not the tokenHelper value.
+    if trimmed.chars().any(|c| {
+        c.is_ascii_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | '`' | '$' | '&' | '|' | ';' | '<' | '>' | '(' | ')' | '*' | '?' | '\0'
+            )
+    }) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// Same as [`load_npmrc_entries`] but with an injectable user-home
 /// directory and XDG config-home override. Used by tests that need to
 /// isolate from the developer's real `~/.npmrc` and pnpm config dir
@@ -566,8 +750,11 @@ fn load_npmrc_entries_with_home(
     // auth tokens. Load it last so anything declared there wins —
     // users who put auth tokens in this file expect them to take
     // precedence over whatever happens to be in `~/.npmrc`.
-    if let Some(auth_path) = resolve_npmrc_auth_file(home, project_dir, &out)
-        && auth_path.exists()
+    if let Some(auth_path) = resolve_npmrc_auth_file(
+        home,
+        project_dir,
+        out.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    ) && auth_path.exists()
         && let Ok(entries) = parse_npmrc(&auth_path)
     {
         out.extend(entries);
@@ -579,16 +766,18 @@ fn load_npmrc_entries_with_home(
 /// `npmrcAuthFile` / `npmrc-auth-file` key and resolve it to an
 /// absolute path. `~` expands against `home`; relative paths resolve
 /// against the project root, matching the storeDir convention.
-fn resolve_npmrc_auth_file(
+fn resolve_npmrc_auth_file<'a, I>(
     home: Option<&Path>,
     project_dir: &Path,
-    entries: &[(String, String)],
-) -> Option<PathBuf> {
+    entries: I,
+) -> Option<PathBuf>
+where
+    I: DoubleEndedIterator<Item = (&'a str, &'a str)>,
+{
     let raw = entries
-        .iter()
         .rev()
-        .find(|(k, _)| matches!(k.as_str(), "npmrcAuthFile" | "npmrc-auth-file"))
-        .map(|(_, v)| v.as_str())?;
+        .find(|(k, _)| matches!(*k, "npmrcAuthFile" | "npmrc-auth-file"))
+        .map(|(_, v)| v)?;
     let expanded = if let Some(rest) = raw.strip_prefix("~/") {
         home.map(|h| h.join(rest))?
     } else if raw == "~" {
@@ -750,17 +939,23 @@ fn env_any(names: &[&str]) -> Option<String> {
 }
 
 pub(crate) fn run_token_helper(command: &str) -> Option<String> {
-    let output = if cfg!(windows) {
-        std::process::Command::new("cmd")
-            .args(["/C", command])
-            .output()
-            .ok()?
-    } else {
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output()
-            .ok()?
+    // Spawn the helper directly rather than through `sh -c` / `cmd /C`.
+    // The value is already sanitized by `sanitize_token_helper` at
+    // config-load time (must be a bare absolute path with no shell
+    // metacharacters), so any new path that ever reaches this sink
+    // still cannot be reinterpreted as a shell pipeline. Removing
+    // the shell wrapper closes the sink even if sanitization is
+    // bypassed in the future.
+    let output = match std::process::Command::new(command).output() {
+        Ok(o) => o,
+        Err(e) => {
+            // Log the spawn failure so a user with a broken
+            // tokenHelper path (missing binary, wrong permissions)
+            // gets a clear hint instead of a mysterious 401 from
+            // the registry.
+            tracing::warn!("tokenHelper {command:?} could not be spawned: {e}");
+            return None;
+        }
     };
     if !output.status.success() {
         tracing::warn!("tokenHelper {command:?} exited with {}", output.status);
@@ -915,33 +1110,195 @@ mod tests {
     }
 
     #[test]
-    fn token_helper_resolves_external_command_stdout() {
-        let dir = tempfile::tempdir().unwrap();
+    fn token_helper_from_project_npmrc_is_refused_kebab_case() {
+        // Same regression as `token_helper_from_project_npmrc_is_refused`
+        // but using the `token-helper` kebab-case alias that
+        // `apply_tagged` also accepts. Confirms the gate fires for
+        // both spellings, not just the camelCase key.
+        let project = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join(".npmrc"),
-            "//registry.example.com/:tokenHelper=printf helper-token\n",
+            project.path().join(".npmrc"),
+            "//registry.example.com/:token-helper=/tmp/evil.sh\n",
         )
         .unwrap();
 
         let home = tempfile::tempdir().unwrap();
         let mut config = NpmConfig::default();
-        config.apply(load_npmrc_entries_with_home(
+        config.apply_tagged(load_npmrc_entries_tagged_with_home(
             Some(home.path()),
             None,
-            dir.path(),
+            project.path(),
         ));
         assert_eq!(
             config.token_helper_for("https://registry.example.com/"),
-            Some("printf helper-token"),
+            None,
+            "project-scope token-helper (kebab-case) must be refused"
+        );
+    }
+
+    #[test]
+    fn token_helper_from_project_npmrc_is_refused() {
+        // Regression for the CVE-2025-69262 class: a project-scope
+        // `.npmrc` that a hostile repo can commit used to be able
+        // to set `tokenHelper`, which aube then spawned via
+        // `sh -c <value>` at the next authed registry request.
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".npmrc"),
+            "//registry.example.com/:tokenHelper=/tmp/evil.sh\n",
+        )
+        .unwrap();
+
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig::default();
+        config.apply_tagged(load_npmrc_entries_tagged_with_home(
+            Some(home.path()),
+            None,
+            project.path(),
+        ));
+        assert_eq!(
+            config.token_helper_for("https://registry.example.com/"),
+            None,
+            "project-scope tokenHelper must be refused"
+        );
+    }
+
+    #[test]
+    fn token_helper_from_user_npmrc_is_accepted() {
+        // The user's own `~/.npmrc` is the only file trusted to
+        // configure subprocess execution. A valid bare absolute
+        // path passes the sanitizer and reaches `token_helper_for`.
+        let home = tempfile::tempdir().unwrap();
+        let helper_path = if cfg!(windows) {
+            "C:\\opt\\aube\\helper.exe"
+        } else {
+            "/opt/aube/helper"
+        };
+        std::fs::write(
+            home.path().join(".npmrc"),
+            format!("//registry.example.com/:tokenHelper={helper_path}\n"),
+        )
+        .unwrap();
+
+        let project = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig::default();
+        config.apply_tagged(load_npmrc_entries_tagged_with_home(
+            Some(home.path()),
+            None,
+            project.path(),
+        ));
+        assert_eq!(
+            config.token_helper_for("https://registry.example.com/"),
+            Some(helper_path)
+        );
+    }
+
+    #[test]
+    fn token_helper_from_npmrc_auth_file_is_refused() {
+        // `npmrc-auth-file` lets a user point aube at a sidecar
+        // `.npmrc` for auth. The path itself can be set from a
+        // project `.npmrc`, so the file's contents inherit the
+        // project trust level and must not be allowed to set
+        // `tokenHelper` either.
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let auth = project.path().join("auth.rc");
+        std::fs::write(&auth, "//registry.example.com/:tokenHelper=/tmp/evil.sh\n").unwrap();
+        std::fs::write(
+            project.path().join(".npmrc"),
+            format!(
+                "npmrc-auth-file={}\n",
+                auth.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+
+        let mut config = NpmConfig::default();
+        config.apply_tagged(load_npmrc_entries_tagged_with_home(
+            Some(home.path()),
+            None,
+            project.path(),
+        ));
+        assert_eq!(
+            config.token_helper_for("https://registry.example.com/"),
+            None,
+            "tokenHelper from an auth file reachable via project `.npmrc` must be refused"
+        );
+    }
+
+    #[test]
+    fn sanitize_token_helper_accepts_absolute_path() {
+        assert_eq!(
+            sanitize_token_helper("/usr/local/bin/aws-npm-helper"),
+            Some("/usr/local/bin/aws-npm-helper".to_string())
         );
         assert_eq!(
-            run_token_helper(
-                config
-                    .token_helper_for("https://registry.example.com/")
-                    .unwrap()
-            ),
-            Some("helper-token".to_string())
+            sanitize_token_helper("C:\\Program.Files\\auth.exe"),
+            Some("C:\\Program.Files\\auth.exe".to_string())
         );
+        assert_eq!(
+            sanitize_token_helper("C:/tools/auth.exe"),
+            Some("C:/tools/auth.exe".to_string())
+        );
+        // UNC paths are absolute on Windows.
+        assert_eq!(
+            sanitize_token_helper("\\\\server\\share\\auth.exe"),
+            Some("\\\\server\\share\\auth.exe".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_token_helper_rejects_relative_path() {
+        assert!(sanitize_token_helper("aws-helper").is_none());
+        assert!(sanitize_token_helper("./aws-helper").is_none());
+        assert!(sanitize_token_helper("bin/aws-helper").is_none());
+    }
+
+    #[test]
+    fn sanitize_token_helper_rejects_shell_metacharacters() {
+        // `sh -c` / `cmd /C` would otherwise reinterpret any of
+        // these as a pipeline separator or substitution marker.
+        for v in [
+            "/bin/helper;rm",
+            "/bin/helper|rm",
+            "/bin/helper&rm",
+            "/bin/helper`rm`",
+            "/bin/helper$(rm)",
+            "/bin/helper>log",
+            "/bin/helper<log",
+            "/bin/helper*glob",
+            "/bin/helper?glob",
+            "/bin/helper\"evil",
+            "/bin/helper'evil",
+        ] {
+            assert!(sanitize_token_helper(v).is_none(), "should reject {v:?}");
+        }
+    }
+
+    #[test]
+    fn sanitize_token_helper_rejects_whitespace() {
+        // Arguments must not be smuggled into the value. pnpm's
+        // tokenHelper contract is a path to an executable, so any
+        // extra tokens have to go in a wrapper script.
+        assert!(sanitize_token_helper("/bin/helper --flag").is_none());
+        assert!(sanitize_token_helper("/bin/helper\targ").is_none());
+        assert!(sanitize_token_helper("/bin/helper\nevil").is_none());
+    }
+
+    #[test]
+    fn sanitize_token_helper_rejects_empty_and_nul() {
+        assert!(sanitize_token_helper("").is_none());
+        assert!(sanitize_token_helper("   ").is_none());
+        assert!(sanitize_token_helper("/bin/helper\0evil").is_none());
+    }
+
+    #[test]
+    fn sanitize_token_helper_rejects_env_substitution_markers() {
+        // `${VAR}` and `$VAR` both fail because `$` is in the
+        // metacharacter rejection set. This matches pnpm 10.27.0
+        // throwing on env-var tokens in the value.
+        assert!(sanitize_token_helper("/bin/helper-${EVIL}").is_none());
+        assert!(sanitize_token_helper("/bin/$EVIL").is_none());
     }
 
     #[test]
