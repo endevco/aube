@@ -12,14 +12,22 @@
 // response path. A symmetrical throttle would add complexity without
 // changing the measurement meaningfully.
 //
+// A single process-wide token bucket is shared across every in-flight
+// response. Package managers routinely open 10–50+ concurrent
+// connections to download tarballs; a per-connection bucket would
+// silently multiply the effective rate by the concurrency count and
+// make cross-PM comparisons meaningless. One bucket = one pipe.
+//
 // Zero deps — uses node:http and node:stream. Node 24 is already a
 // tools dependency of this repo.
 //
 // Usage:
 //   node throttle-proxy.mjs --port 4875 --upstream http://127.0.0.1:4874 --rate 50mbit
 //
-// --rate accepts: `<n>mbit`, `<n>kbit`, `<n>bit`, `<n>mb`, `<n>kb`,
-// `<n>b`, or a bare integer (bytes/s).
+// --rate units:
+//   <n>bit, <n>kbit, <n>mbit, <n>gbit   — bits/sec
+//   <n>b,   <n>kb,   <n>mb,   <n>gb     — bytes/sec (SI kilo = 1000)
+//   <n>                                  — bare integer, bytes/sec
 
 import { createServer, request as httpRequest } from 'node:http';
 import { Transform } from 'node:stream';
@@ -35,8 +43,7 @@ function parseArgs(argv) {
 	return out;
 }
 
-// Returns bytes/sec. Accepts "50mbit", "6mbit", "50kbit", "100kb",
-// "6mb", or a bare integer (treated as bytes/s).
+// Returns bytes/sec.
 function parseRate(raw) {
 	if (!raw) throw new Error('missing --rate');
 	const m = String(raw).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([a-z]*)$/);
@@ -47,6 +54,14 @@ function parseRate(raw) {
 		case '':
 			return Math.floor(n); // bare integer = bytes/s
 		case 'b':
+			return Math.floor(n); // bytes/s
+		case 'kb':
+			return Math.floor(n * 1000);
+		case 'mb':
+			return Math.floor(n * 1_000_000);
+		case 'gb':
+			return Math.floor(n * 1_000_000_000);
+		case 'bit':
 			return Math.floor(n / 8); // bits/s → bytes/s
 		case 'kbit':
 			return Math.floor((n * 1000) / 8);
@@ -54,24 +69,21 @@ function parseRate(raw) {
 			return Math.floor((n * 1_000_000) / 8);
 		case 'gbit':
 			return Math.floor((n * 1_000_000_000) / 8);
-		case 'kb':
-			return Math.floor(n * 1000);
-		case 'mb':
-			return Math.floor(n * 1_000_000);
-		case 'gb':
-			return Math.floor(n * 1_000_000_000);
 		default:
 			throw new Error(`unknown rate unit: ${unit}`);
 	}
 }
 
-// Token-bucket Transform. Bucket refills every REFILL_MS. We chunk the
-// incoming stream so backpressure is honored even for large tarball
-// responses. The slice math never splits below 1 byte, so a stalled
-// bucket just waits rather than busy-looping.
+// Token-bucket shared across every response. Refills to `capacity`
+// (not "adds up to") every REFILL_MS so idle periods can't be banked
+// into bursts — we want a ceiling, not a credit.
+//
+// REFILL_MS trades off fidelity against timer overhead. 100ms gives
+// ~10x smoothing over a 1-second average and is imperceptible for
+// bench timing, which runs in hundreds of ms minimum.
 const REFILL_MS = 100;
 
-function createThrottle(bytesPerSec) {
+function createSharedBucket(bytesPerSec) {
 	const capacity = Math.max(1, Math.floor(bytesPerSec / (1000 / REFILL_MS)));
 	let tokens = capacity;
 	const waiters = [];
@@ -83,27 +95,37 @@ function createThrottle(bytesPerSec) {
 	}, REFILL_MS);
 	timer.unref();
 
-	function take(n) {
-		return new Promise((resolve) => {
-			const tryTake = () => {
-				if (tokens <= 0) {
-					waiters.push(tryTake);
-					return;
-				}
-				const take = Math.min(n, tokens);
-				tokens -= take;
-				resolve(take);
-			};
-			tryTake();
-		});
-	}
+	return {
+		take(n) {
+			return new Promise((resolve) => {
+				const tryTake = () => {
+					if (tokens <= 0) {
+						waiters.push(tryTake);
+						return;
+					}
+					const grant = Math.min(n, tokens);
+					tokens -= grant;
+					resolve(grant);
+				};
+				tryTake();
+			});
+		},
+		shutdown() {
+			clearInterval(timer);
+		},
+	};
+}
 
+// Per-response Transform that draws from the shared bucket. Chunks
+// the incoming stream so backpressure is honored even for large
+// tarball responses.
+function createThrottleStream(bucket) {
 	return new Transform({
 		async transform(chunk, _enc, cb) {
 			try {
 				let offset = 0;
 				while (offset < chunk.length) {
-					const grant = await take(chunk.length - offset);
+					const grant = await bucket.take(chunk.length - offset);
 					this.push(chunk.subarray(offset, offset + grant));
 					offset += grant;
 				}
@@ -111,10 +133,6 @@ function createThrottle(bytesPerSec) {
 			} catch (err) {
 				cb(err);
 			}
-		},
-		flush(cb) {
-			clearInterval(timer);
-			cb();
 		},
 	});
 }
@@ -129,6 +147,7 @@ function main() {
 	}
 	const upstream = new URL(upstreamRaw);
 	const bytesPerSec = parseRate(args.rate);
+	const bucket = createSharedBucket(bytesPerSec);
 
 	const server = createServer((clientReq, clientRes) => {
 		// Build the upstream request. Preserve method, path, and all
@@ -157,7 +176,7 @@ function main() {
 			},
 			(upstreamRes) => {
 				clientRes.writeHead(upstreamRes.statusCode, upstreamRes.headers);
-				upstreamRes.pipe(createThrottle(bytesPerSec)).pipe(clientRes);
+				upstreamRes.pipe(createThrottleStream(bucket)).pipe(clientRes);
 			},
 		);
 
@@ -183,11 +202,12 @@ function main() {
 	});
 
 	server.listen(port, '127.0.0.1', () => {
-		const rateLabel = `${bytesPerSec} B/s (${(bytesPerSec * 8 / 1_000_000).toFixed(1)} Mbit/s)`;
-		console.log(`throttle-proxy listening on 127.0.0.1:${port} → ${upstream.origin} @ ${rateLabel}`);
+		const rateLabel = `${bytesPerSec} B/s (${((bytesPerSec * 8) / 1_000_000).toFixed(1)} Mbit/s)`;
+		console.log(`throttle-proxy listening on 127.0.0.1:${port} → ${upstream.origin} @ ${rateLabel} (shared bucket)`);
 	});
 
 	const shutdown = () => {
+		bucket.shutdown();
 		server.close(() => process.exit(0));
 		setTimeout(() => process.exit(0), 2000).unref();
 	};

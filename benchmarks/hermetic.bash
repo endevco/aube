@@ -144,7 +144,18 @@ _hermetic_warm() {
 
 	local warm_dir
 	warm_dir=$(mktemp -d "${TMPDIR:-/tmp}/aube-bench-warm.XXXXXX")
-	cp "$HERMETIC_DIR/fixture.package.json" "$warm_dir/package.json"
+	# Extra packages pulled alongside the fixture so every bench
+	# scenario can resolve offline. `is-odd` is the subject of the
+	# Benchmark 4 "add" scenario in bench.sh — without it, each
+	# `<pm> add is-odd` would 404 against the no-uplink Verdaccio and
+	# silently time the error path.
+	node -e '
+		const fs = require("fs");
+		const base = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+		base.dependencies = base.dependencies || {};
+		base.dependencies["is-odd"] = "^3.0.1";
+		fs.writeFileSync(process.argv[2], JSON.stringify(base, null, 2));
+	' "$HERMETIC_DIR/fixture.package.json" "$warm_dir/package.json"
 
 	# Hit the registry directly with npm. --ignore-scripts and
 	# --legacy-peer-deps match how the benchmark's own populate step
