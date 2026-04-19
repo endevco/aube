@@ -1049,8 +1049,8 @@ struct WritableSnapshot {
 /// previous single-document parse.
 fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Error> {
     let mut best: Option<(u64, RawPnpmLockfile)> = None;
-    let mut last_err: Option<serde_yaml::Error> = None;
-    for doc in serde_yaml::Deserializer::from_str(content) {
+    let mut first_err: Option<serde_yaml::Error> = None;
+    for (idx, doc) in serde_yaml::Deserializer::from_str(content).enumerate() {
         match RawPnpmLockfile::deserialize(doc) {
             Ok(raw) => {
                 let score = project_lockfile_score(&raw);
@@ -1059,10 +1059,22 @@ fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Erro
                     _ => Some((score, raw)),
                 };
             }
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                // Log every per-document failure so a multi-doc lockfile
+                // where every document fails surfaces all the diagnostic
+                // signal at `RUST_LOG=aube_lockfile=debug`. The returned
+                // error is the *first* failure, which tends to be the
+                // most explanatory — later docs often fail with cascading
+                // schema mismatches once the first doc has set
+                // expectations off-kilter.
+                tracing::debug!("pnpm-lock.yaml document {idx} failed to parse: {e}");
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
         }
     }
-    match (best, last_err) {
+    match (best, first_err) {
         (Some((_, raw)), _) => Ok(raw),
         (None, Some(e)) => Err(e),
         // No documents at all — defer to the single-doc parser so the
