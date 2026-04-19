@@ -154,10 +154,10 @@ If a project already uses `pnpm-workspace.yaml`, aube can read and write it. New
 | `pnpm-lock.yaml` v9 | yes | yes |
 | `package-lock.json` v2/v3 | yes | yes |
 | `npm-shrinkwrap.json` | yes | yes |
-| `yarn.lock` v1 | yes | yes |
+| `yarn.lock` (v1 classic + v2+ berry) | yes | yes |
 | `bun.lock` | yes | yes |
 
-aube is not compatible with every historical lockfile shape. Older pnpm v5/v6 lockfiles should be upgraded with pnpm before switching, and Yarn Berry/PnP projects may need to stay on Yarn or migrate first.
+aube is not compatible with every historical lockfile shape. Older pnpm v5/v6 lockfiles should be upgraded with pnpm before switching. Yarn PnP projects need to move to a `node_modules` linker first — aube writes `node_modules`, not `.pnp.cjs`.
 
 When more than one lockfile exists, prefer keeping one canonical lockfile for the project so teammates and CI do not fight over dependency state.
 

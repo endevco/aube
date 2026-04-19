@@ -1517,6 +1517,7 @@ impl Resolver {
                                     bundled_dependencies: locked_pkg.bundled_dependencies.clone(),
                                     tarball_url: locked_pkg.tarball_url.clone(),
                                     alias_of: locked_pkg.alias_of.clone(),
+                                    yarn_checksum: locked_pkg.yarn_checksum.clone(),
                                 },
                             );
 
@@ -1979,6 +1980,7 @@ impl Resolver {
                         // registry, matching how the npm-lockfile
                         // reader populates this field.
                         alias_of: task.real_name.clone(),
+                        yarn_checksum: None,
                     },
                 );
 
@@ -3121,6 +3123,7 @@ fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
                 bundled_dependencies: pkg.bundled_dependencies,
                 tarball_url: pkg.tarball_url,
                 alias_of: pkg.alias_of,
+                yarn_checksum: pkg.yarn_checksum,
             },
         );
     }
@@ -3517,6 +3520,7 @@ fn visit_peer_context(
             bundled_dependencies: pkg.bundled_dependencies.clone(),
             tarball_url: pkg.tarball_url.clone(),
             alias_of: pkg.alias_of.clone(),
+            yarn_checksum: pkg.yarn_checksum.clone(),
         },
     );
     Some(contextualized)

@@ -3491,7 +3491,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let source_label = match kind {
                 aube_lockfile::LockfileKind::Aube => "Lockfile",
                 aube_lockfile::LockfileKind::Pnpm => "pnpm-lock.yaml",
-                aube_lockfile::LockfileKind::Yarn => "yarn.lock",
+                aube_lockfile::LockfileKind::Yarn | aube_lockfile::LockfileKind::YarnBerry => {
+                    "yarn.lock"
+                }
                 aube_lockfile::LockfileKind::Npm => "package-lock.json",
                 aube_lockfile::LockfileKind::NpmShrinkwrap => "npm-shrinkwrap.json",
                 aube_lockfile::LockfileKind::Bun => "bun.lock",

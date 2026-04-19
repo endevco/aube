@@ -1,10 +1,10 @@
 # Migrating projects
 
 aube can install directly from the lockfiles your project already has. That is
-the migration path: bring aube into an existing pnpm, npm, Yarn classic, or Bun
-project and run one command. You do not need to delete the old lockfile, throw
-away `node_modules`, or manually translate dependency metadata before trying
-aube.
+the migration path: bring aube into an existing pnpm, npm, Yarn (classic or
+berry), or Bun project and run one command. You do not need to delete the old
+lockfile, throw away `node_modules`, or manually translate dependency metadata
+before trying aube.
 
 This is one of aube's main compatibility guarantees. aube reads the existing
 lockfile and writes updates back to the same file, so teams can test aube
@@ -17,6 +17,7 @@ without forcing every contributor or CI job to switch at the same time.
 | pnpm | `pnpm-lock.yaml` v9 | [For pnpm users](/pnpm-users) |
 | npm | `package-lock.json`, `npm-shrinkwrap.json` | [npm migration](/npm-migration) |
 | Yarn classic | `yarn.lock` v1 | [Yarn migration](/yarn-migration) |
+| Yarn berry | `yarn.lock` v2+ | [Yarn migration](/yarn-migration) |
 | Bun | `bun.lock` | This page |
 
 Every path starts the same way:

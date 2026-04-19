@@ -468,6 +468,17 @@ pub struct LockedPackage {
     /// `registry_name()` returns the right name for registry IO; every
     /// call site that talks to the registry or the CAS uses that helper.
     pub alias_of: Option<String>,
+    /// Yarn berry's `checksum:` field, preserved verbatim when parsing a
+    /// yarn 2+ lockfile (e.g. `"10c0/<blake2b-hex>"`). The format is
+    /// yarn-specific — it uses a yarn-chosen hash family prefixed with
+    /// the `cacheKey` that produced it — and doesn't share a hash
+    /// algorithm with `integrity` (sha-512). When re-emitting a yarn
+    /// berry lockfile we write this field back as-is; packages that
+    /// didn't come through a berry parse (e.g. freshly-resolved entries
+    /// in a new install) leave this `None` and the writer omits the
+    /// `checksum:` field, which berry tolerates at the default
+    /// `checksumBehavior: throw` when the cache is fresh.
+    pub yarn_checksum: Option<String>,
 }
 
 impl LockedPackage {
@@ -500,7 +511,15 @@ pub enum LockfileKind {
     /// project lockfile, aube reads and writes it in place.
     Pnpm,
     Npm,
+    /// `yarn.lock` v1 (classic yarn). Line-based text format with
+    /// 2-space indented fields.
     Yarn,
+    /// `yarn.lock` v2+ (yarn berry). YAML format with `__metadata:`
+    /// header, `resolution:` / `checksum:` fields, and
+    /// `languageName` / `linkType`. Same filename as `Yarn`; detection
+    /// peeks at the content for the `__metadata:` marker to pick
+    /// between the two.
+    YarnBerry,
     NpmShrinkwrap,
     Bun,
 }
@@ -511,7 +530,7 @@ impl LockfileKind {
             LockfileKind::Aube => "aube-lock.yaml",
             LockfileKind::Pnpm => "pnpm-lock.yaml",
             LockfileKind::Npm => "package-lock.json",
-            LockfileKind::Yarn => "yarn.lock",
+            LockfileKind::Yarn | LockfileKind::YarnBerry => "yarn.lock",
             LockfileKind::NpmShrinkwrap => "npm-shrinkwrap.json",
             LockfileKind::Bun => "bun.lock",
         }
@@ -1075,14 +1094,15 @@ pub fn write_lockfile_as(
         LockfileKind::Pnpm => pnpm_lock_filename(project_dir),
         LockfileKind::Npm => "package-lock.json".to_string(),
         LockfileKind::NpmShrinkwrap => "npm-shrinkwrap.json".to_string(),
-        LockfileKind::Yarn => "yarn.lock".to_string(),
+        LockfileKind::Yarn | LockfileKind::YarnBerry => "yarn.lock".to_string(),
         LockfileKind::Bun => "bun.lock".to_string(),
     };
     let path = project_dir.join(&filename);
     match kind {
         LockfileKind::Aube | LockfileKind::Pnpm => pnpm::write(&path, graph, manifest)?,
         LockfileKind::Npm | LockfileKind::NpmShrinkwrap => npm::write(&path, graph, manifest)?,
-        LockfileKind::Yarn => yarn::write(&path, graph, manifest)?,
+        LockfileKind::Yarn => yarn::write_classic(&path, graph, manifest)?,
+        LockfileKind::YarnBerry => yarn::write_berry(&path, graph, manifest)?,
         LockfileKind::Bun => bun::write(&path, graph, manifest)?,
     }
     Ok(path)
@@ -1099,7 +1119,7 @@ pub fn write_lockfile_as(
 pub fn detect_existing_lockfile_kind(project_dir: &Path) -> Option<LockfileKind> {
     for (path, kind) in lockfile_candidates(project_dir, /*include_aube=*/ true) {
         if path.exists() {
-            return Some(kind);
+            return Some(refine_yarn_kind(&path, kind));
         }
     }
     None
@@ -1218,6 +1238,7 @@ pub fn parse_lockfile_with_kind(
         if !path.exists() {
             continue;
         }
+        let kind = refine_yarn_kind(&path, kind);
         let graph = parse_one(&path, kind, manifest)?;
         return Ok((graph, kind));
     }
@@ -1239,6 +1260,7 @@ pub fn parse_for_import(
         if !path.exists() {
             continue;
         }
+        let kind = refine_yarn_kind(&path, kind);
         let graph = parse_one(&path, kind, manifest)?;
         return Ok((graph, kind));
     }
@@ -1307,9 +1329,30 @@ fn parse_one(
         // module. Keeping the variant distinct lets detection/import
         // treat the two differently even though the bytes are the same.
         LockfileKind::Aube | LockfileKind::Pnpm => pnpm::parse(path),
-        LockfileKind::Yarn => yarn::parse(path, manifest),
+        // yarn.rs::parse peeks the file for `__metadata:` and
+        // dispatches between classic (v1) and berry (v2+) internally,
+        // so we can hand both kinds to the same entry point. The
+        // caller keeps the kind label it resolved from
+        // `refine_yarn_kind` for downstream write-back.
+        LockfileKind::Yarn | LockfileKind::YarnBerry => yarn::parse(path, manifest),
         LockfileKind::Npm | LockfileKind::NpmShrinkwrap => npm::parse(path),
         LockfileKind::Bun => bun::parse(path),
+    }
+}
+
+/// Replace `LockfileKind::Yarn` with `LockfileKind::YarnBerry` when
+/// the yarn.lock at `path` is actually a yarn 2+ lockfile. Other
+/// kinds pass through unchanged.
+///
+/// `lockfile_candidates` only knows filenames, not content, so the
+/// yarn entry is always tagged `Yarn`. Callers that need the precise
+/// variant (install write-back, import conversions, drift logging)
+/// funnel through this helper after confirming the candidate exists.
+fn refine_yarn_kind(path: &Path, kind: LockfileKind) -> LockfileKind {
+    if kind == LockfileKind::Yarn && yarn::is_berry_path(path) {
+        LockfileKind::YarnBerry
+    } else {
+        kind
     }
 }
 
