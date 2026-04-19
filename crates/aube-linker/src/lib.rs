@@ -1722,11 +1722,33 @@ impl Linker {
     /// Shared `shamefully_hoist` implementation. For every non-local
     /// package in the graph, create a symlink at `nm/<pkg.name>`
     /// pointing at the matching `.aube/<dep_path>/node_modules/<pkg.name>`
-    /// entry. Names already claimed by a prior pass (direct deps,
-    /// workspace packages, link: deps) are preserved — first-write-wins.
-    /// Iteration order is BTreeMap-stable so the tiebreaker is
-    /// deterministic across runs. `trace_label` distinguishes the
-    /// `link_all` vs `link_workspace` callers in `-v` output.
+    /// entry.
+    ///
+    /// Two separate "first-write-wins" protections apply:
+    ///
+    /// - **Direct deps always win over hoisted transitives.** Names
+    ///   that appear in `graph.root_deps()` were placed (or
+    ///   deliberately skipped) by Step 2 and must never be overwritten
+    ///   by a hoist pass — that would silently swap `node_modules/foo`
+    ///   from the version the user pinned to whatever transitive
+    ///   happened to sort first.
+    /// - **Within the hoist pass, BTree iteration order is the
+    ///   tiebreaker across versions.** The `claimed` set records
+    ///   names we already hoisted this call so a later iteration with
+    ///   the same name (different `dep_path`) doesn't clobber the
+    ///   first winner.
+    ///
+    /// For everything else the caller gets a *target-aware* reconcile:
+    /// an existing symlink at `nm/<name>` that points at the version
+    /// this iteration wants is kept; one pointing at a stale
+    /// `.aube/<old-dep-path>/` (leftover from a prior install whose
+    /// hoisted version has since changed) is replaced. The old
+    /// plain-`exists?` check here kept stale entries because the
+    /// surrounding linker used to wipe `nm` unconditionally — now that
+    /// we sweep surgically, hoist has to cope with partial priors.
+    ///
+    /// `trace_label` distinguishes the `link_all` vs `link_workspace`
+    /// callers in `-v` output.
     fn hoist_remaining_into(
         &self,
         nm: &Path,
@@ -1736,6 +1758,17 @@ impl Linker {
         trace_label: &str,
         select: &dyn Fn(&str) -> bool,
     ) -> Result<(), Error> {
+        // Root direct-dep names. Populated from the importer map
+        // rather than an opaque "touched by Step 2" signal so a direct
+        // dep that *failed* to place (missing `source_dir.exists()`,
+        // workspace toggle, etc.) still reserves its slot — pnpm
+        // doesn't hoist over a direct dep even when the direct dep
+        // couldn't be installed.
+        let direct_dep_names: std::collections::HashSet<&str> =
+            graph.root_deps().iter().map(|d| d.name.as_str()).collect();
+
+        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         for (dep_path, pkg) in &graph.packages {
             if pkg.local_source.is_some() {
                 continue;
@@ -1743,8 +1776,14 @@ impl Linker {
             if !select(&pkg.name) {
                 continue;
             }
-            let target_dir = nm.join(&pkg.name);
-            if keep_or_reclaim_broken_symlink(&target_dir)? {
+            // Direct deps always win over hoisting.
+            if direct_dep_names.contains(pkg.name.as_str()) {
+                continue;
+            }
+            // First-writer-wins within the hoist pass: if an earlier
+            // iteration already hoisted this name, later iterations
+            // with the same name don't overwrite it.
+            if !claimed.insert(pkg.name.clone()) {
                 continue;
             }
             let source_dir = aube_dir
@@ -1752,14 +1791,25 @@ impl Linker {
                 .join("node_modules")
                 .join(&pkg.name);
             if !source_dir.exists() {
+                // Don't remove `name` from `claimed` — another
+                // iteration for the same name would also find its
+                // `source_dir` missing (the `.aube` populate phase
+                // runs before hoist for every package), and leaving
+                // the name claimed preserves the existing symlink
+                // (whatever it points at) instead of repeatedly
+                // probing for a materialization that isn't coming.
+                continue;
+            }
+            let target_dir = nm.join(&pkg.name);
+            let link_parent = target_dir.parent().unwrap_or(nm);
+            let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
+                .unwrap_or_else(|| source_dir.clone());
+            if reconcile_top_level_link(&target_dir, &rel_target)? {
                 continue;
             }
             if let Some(parent) = target_dir.parent() {
                 xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
             }
-            let link_parent = target_dir.parent().unwrap_or(nm);
-            let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
-                .unwrap_or_else(|| source_dir.clone());
             sys::create_dir_link(&rel_target, &target_dir)
                 .map_err(|e| Error::Io(target_dir.clone(), e))?;
             trace!("{trace_label}: {}", pkg.name);
@@ -2152,27 +2202,11 @@ fn validate_index_key(key: &str) -> Result<(), Error> {
 /// pair to identify "something is at `path` but its target is gone",
 /// and use the same `remove_dir().or_else(remove_file())` fallback
 /// used elsewhere in this file to unlink both shapes.
-fn keep_or_reclaim_broken_symlink(path: &Path) -> Result<bool, Error> {
-    if path.symlink_metadata().is_err() {
-        return Ok(false);
-    }
-    // `Path::exists` follows symlinks/junctions, so a dangling link
-    // returns false here even though `symlink_metadata` succeeded.
-    if path.exists() {
-        return Ok(true);
-    }
-    match std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path)) {
-        Ok(()) => Ok(false),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(Error::Io(path.to_path_buf(), e)),
-    }
-}
-
 /// Reconcile a top-level `node_modules/<name>` entry against the
-/// expected symlink target. Unlike `keep_or_reclaim_broken_symlink`,
-/// this compares the link's *target*, so a version upgrade that leaves
-/// `.aube/<old-dep-path>/` resolvable on disk is correctly classified
-/// as stale instead of silently keeping the old symlink.
+/// expected symlink target. Compares the link's *target* — a version
+/// upgrade that leaves `.aube/<old-dep-path>/` resolvable on disk is
+/// correctly classified as stale instead of silently keeping the old
+/// symlink.
 ///
 /// - `Ok(true)`  – existing entry is a symlink pointing at
 ///   `expected_target`; caller skips creation.
@@ -2905,6 +2939,141 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(project_dir.join("node_modules/foo/index.js")).unwrap(),
             "module.exports = 'foo@2';"
+        );
+    }
+
+    /// Regression: `shamefully_hoist` hoists transitive deps to the
+    /// top-level `node_modules/<name>`. When the hoisted version
+    /// changes between installs (transitive bump), the previous
+    /// implementation kept the stale symlink because
+    /// `keep_or_reclaim_broken_symlink` only checked "does target
+    /// resolve?" and the old `.aube/<old-dep-path>/` was still on
+    /// disk. `reconcile_top_level_link` + the explicit
+    /// direct-dep/claimed tracking in `hoist_remaining_into` together
+    /// fix this.
+    #[test]
+    fn test_shamefully_hoist_repoints_after_transitive_version_bump() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let store = Store::at(dir.path().join("store/files"));
+
+        // Install 1: root → bar@1.0.0 → foo@1.0.0 (transitive).
+        let foo_v1 = store
+            .import_bytes(b"module.exports = 'foo@1';", false)
+            .unwrap();
+        let mut foo_v1_idx = BTreeMap::new();
+        foo_v1_idx.insert("index.js".to_string(), foo_v1);
+        let bar_v1 = store
+            .import_bytes(b"module.exports = 'bar@1';", false)
+            .unwrap();
+        let mut bar_v1_idx = BTreeMap::new();
+        bar_v1_idx.insert("index.js".to_string(), bar_v1);
+        let mut indices_v1 = BTreeMap::new();
+        indices_v1.insert("foo@1.0.0".to_string(), foo_v1_idx);
+        indices_v1.insert("bar@1.0.0".to_string(), bar_v1_idx);
+
+        let mut graph_v1 = LockfileGraph::default();
+        let mut bar_deps_v1 = BTreeMap::new();
+        bar_deps_v1.insert("foo".to_string(), "1.0.0".to_string());
+        graph_v1.packages.insert(
+            "bar@1.0.0".to_string(),
+            LockedPackage {
+                name: "bar".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "bar@1.0.0".to_string(),
+                dependencies: bar_deps_v1,
+                ..Default::default()
+            },
+        );
+        graph_v1.packages.insert(
+            "foo@1.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        graph_v1.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "bar".to_string(),
+                dep_path: "bar@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+
+        let linker = Linker::new(&store, LinkStrategy::Copy).with_shamefully_hoist(true);
+        linker
+            .link_all(&project_dir, &graph_v1, &indices_v1)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project_dir.join("node_modules/foo/index.js")).unwrap(),
+            "module.exports = 'foo@1';",
+            "install 1 should hoist foo@1.0.0"
+        );
+
+        // Install 2: bar@1.0.0 → foo@2.0.0 (transitive bump). The
+        // stale `.aube/foo@1.0.0/` tree is still on disk (nothing
+        // sweeps the virtual store by name), so the old hoisted
+        // symlink would still resolve — the old `exists?` check
+        // would silently keep it.
+        let foo_v2 = store
+            .import_bytes(b"module.exports = 'foo@2';", false)
+            .unwrap();
+        let mut foo_v2_idx = BTreeMap::new();
+        foo_v2_idx.insert("index.js".to_string(), foo_v2);
+        let mut indices_v2 = BTreeMap::new();
+        // Reuse bar's materialized index from v1.
+        let bar_v1_for_v2 = store
+            .import_bytes(b"module.exports = 'bar@1';", false)
+            .unwrap();
+        let mut bar_v1_idx_v2 = BTreeMap::new();
+        bar_v1_idx_v2.insert("index.js".to_string(), bar_v1_for_v2);
+        indices_v2.insert("bar@1.0.0".to_string(), bar_v1_idx_v2);
+        indices_v2.insert("foo@2.0.0".to_string(), foo_v2_idx);
+
+        let mut graph_v2 = LockfileGraph::default();
+        let mut bar_deps_v2 = BTreeMap::new();
+        bar_deps_v2.insert("foo".to_string(), "2.0.0".to_string());
+        graph_v2.packages.insert(
+            "bar@1.0.0".to_string(),
+            LockedPackage {
+                name: "bar".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "bar@1.0.0".to_string(),
+                dependencies: bar_deps_v2,
+                ..Default::default()
+            },
+        );
+        graph_v2.packages.insert(
+            "foo@2.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        graph_v2.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "bar".to_string(),
+                dep_path: "bar@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+
+        linker
+            .link_all(&project_dir, &graph_v2, &indices_v2)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project_dir.join("node_modules/foo/index.js")).unwrap(),
+            "module.exports = 'foo@2';",
+            "install 2 should repoint the hoisted symlink to foo@2.0.0"
         );
     }
 
