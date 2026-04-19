@@ -94,7 +94,11 @@ fi
 # RPM Version field disallows `-`. Convert SemVer prerelease separators
 # to `~` so `1.0.0-beta.1` becomes `1.0.0~beta.1`, which rpm collates
 # as older than `1.0.0` (correct pre-release ordering).
-RPM_VERSION="${VERSION//-/~}"
+# Backslash-escape the tilde: bash performs tilde expansion on the
+# replacement string in ${var//pat/rep}, even inside "...", so an
+# unescaped `~` turns into $HOME and corrupts the Version field (e.g.
+# `1.0.0-beta.4` -> `1.0.0/github/homebeta.4` on GitHub Actions).
+RPM_VERSION="${VERSION//-/\~}"
 # Tarball name keeps the original SemVer string so GitHub's /archive URL
 # matches Source0 exactly.
 TARBALL_VERSION="${VERSION}"

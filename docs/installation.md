@@ -39,6 +39,8 @@ Because the install happens via `preinstall`, this does not work with
 
 ## Ubuntu (PPA)
 
+**Supported:** Ubuntu 26.04 (resolute).
+
 Aube publishes signed `.deb` packages to the Launchpad PPA
 [`ppa:jdxcode/aube`](https://launchpad.net/~jdxcode/+archive/ubuntu/aube):
 
@@ -48,18 +50,32 @@ sudo apt update
 sudo apt install aube
 ```
 
-This installs `aube`, plus `aubr` and `aubx` symlinks (the multicall
-shims for `aube run` and `aube dlx`) into `/usr/bin`. Future upgrades
-go through `apt`:
+Future upgrades go through `apt`:
 
 ```sh
 sudo apt update && sudo apt install --only-upgrade aube
 ```
 
-Currently the PPA only builds for **Ubuntu 26.04 (resolute)**. On
-older releases, `add-apt-repository` will succeed but `apt update`
-returns a 404 because no `Release` file is published for that series —
-use mise, `cargo install`, or the npm package instead.
+## Fedora / RHEL (COPR)
+
+**Supported:** Fedora 42, Fedora 43, Fedora Rawhide, EPEL 9, EPEL 10
+(RHEL / Rocky / Alma 9 and 10), both `x86_64` and `aarch64`.
+
+Aube publishes RPMs to the COPR project
+[`jdxcode/aube`](https://copr.fedorainfracloud.org/coprs/jdxcode/aube/):
+
+```sh
+sudo dnf copr enable jdxcode/aube
+sudo dnf install aube
+```
+
+The `dnf copr` subcommand ships with `dnf-plugins-core` — install that
+first on EPEL and anywhere else the plugin isn't already pulled in.
+Future upgrades go through the package manager:
+
+```sh
+sudo dnf upgrade aube
+```
 
 ## From source
 
