@@ -2129,7 +2129,19 @@ impl Resolver {
                         bin: {
                             let mut m = version_meta.bin.clone();
                             if let Some(path) = m.remove("") {
-                                m.insert(task.name.clone(), path);
+                                // String-form `bin` in a packument
+                                // (`"bin": "cli.js"`) is implicitly
+                                // named after the real registry
+                                // package — not the alias. For an
+                                // aliased dep (`"h3-v2": "npm:h3@…"`)
+                                // the bun writer must emit the bin
+                                // under `h3`, not `h3-v2`, or the
+                                // map drifts against bun's own
+                                // output (and the shim install path
+                                // creates the wrong binary name).
+                                let bin_name =
+                                    task.real_name.as_deref().unwrap_or(&task.name).to_string();
+                                m.insert(bin_name, path);
                             }
                             m
                         },
