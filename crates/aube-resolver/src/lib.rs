@@ -5200,4 +5200,74 @@ mod tests {
         assert_eq!(root[0].name, "p-map");
         assert_eq!(root[0].dep_type, DepType::Production);
     }
+
+    // `dependencies` also wins over `optionalDependencies` when the
+    // same name appears in both — same race hazard, same fix.
+    #[tokio::test]
+    async fn same_dep_in_dependencies_and_optional_dependencies_dedupes() {
+        let pmap = make_packument("p-map", &["7.0.4"], "7.0.4");
+
+        let client = Arc::new(aube_registry::client::RegistryClient::new(
+            "http://127.0.0.1:0",
+        ));
+        let mut resolver = Resolver::new(client);
+        resolver.cache.insert("p-map".to_string(), pmap);
+
+        let mut manifest = PackageJson::default();
+        manifest
+            .dependencies
+            .insert("p-map".to_string(), "7.0.4".to_string());
+        manifest
+            .optional_dependencies
+            .insert("p-map".to_string(), "7.0.4".to_string());
+
+        let graph = resolver
+            .resolve(&manifest, None)
+            .await
+            .expect("resolve failed");
+
+        let root = graph.importers.get(".").unwrap();
+        assert_eq!(
+            root.len(),
+            1,
+            "p-map must appear once in root deps, got {root:?}"
+        );
+        assert_eq!(root[0].name, "p-map");
+        assert_eq!(root[0].dep_type, DepType::Production);
+    }
+
+    // With no `dependencies` entry, `devDependencies` wins over
+    // `optionalDependencies`. Covers the remaining overlap branch.
+    #[tokio::test]
+    async fn same_dep_in_dev_and_optional_dependencies_dedupes() {
+        let pmap = make_packument("p-map", &["7.0.4"], "7.0.4");
+
+        let client = Arc::new(aube_registry::client::RegistryClient::new(
+            "http://127.0.0.1:0",
+        ));
+        let mut resolver = Resolver::new(client);
+        resolver.cache.insert("p-map".to_string(), pmap);
+
+        let mut manifest = PackageJson::default();
+        manifest
+            .dev_dependencies
+            .insert("p-map".to_string(), "7.0.4".to_string());
+        manifest
+            .optional_dependencies
+            .insert("p-map".to_string(), "7.0.4".to_string());
+
+        let graph = resolver
+            .resolve(&manifest, None)
+            .await
+            .expect("resolve failed");
+
+        let root = graph.importers.get(".").unwrap();
+        assert_eq!(
+            root.len(),
+            1,
+            "p-map must appear once in root deps, got {root:?}"
+        );
+        assert_eq!(root[0].name, "p-map");
+        assert_eq!(root[0].dep_type, DepType::Dev);
+    }
 }
