@@ -1950,16 +1950,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 
     // Auto-disable the global virtual store when any importer depends
     // on a package listed in `disableGlobalVirtualStoreForPackages`
-    // (default `["next"]`). Turbopack canonicalizes every
-    // `node_modules/<pkg>` symlink and rejects targets outside the
-    // project dir; gvs makes `.aube/<pkg>` an absolute symlink into
-    // `~/.cache/aube/virtual-store/`, which trips that check. The
-    // list is the extension point — add other tools as they surface.
-    // `CI=1` already forces per-project mode in `Linker::new`, so we
-    // don't warn in that case (behavior wouldn't change and the
+    // (default covers Next.js, Nuxt, Vite, VitePress, Rollup, Webpack,
+    // Parcel). Those resolvers follow `node_modules/<pkg>` symlinks to
+    // real paths and then walk up the directory tree; gvs makes
+    // `.aube/<pkg>` an absolute symlink into
+    // `~/.cache/aube/virtual-store/`, so the walk escapes the project
+    // and can't reach the top-level `node_modules/` where direct deps
+    // live. The list is the extension point — add other tools as they
+    // surface. `CI=1` already forces per-project mode in `Linker::new`,
+    // so we don't warn in that case (behavior wouldn't change and the
     // message would just be noise). `virtualStoreOnly` installs skip
-    // the final top-level symlink pass, so Turbopack never sees the
-    // gvs path — suppress the warning there too.
+    // the final top-level symlink pass, so the incompatible resolver
+    // never sees the gvs path — suppress the warning there too.
     let gvs_triggers =
         aube_settings::resolved::disable_global_virtual_store_for_packages(&settings_ctx);
     let explicit_global_virtual_store =
@@ -1980,7 +1982,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             && !virtual_store_only_setting
         {
             tracing::warn!(
-                "disabling global virtual store: `{name}` is in disableGlobalVirtualStoreForPackages (packages in that list are known to be incompatible with gvs-linked node_modules, e.g. Next.js's Turbopack rejects symlinks that escape the project root). Set the list to `[]` in .npmrc to opt out."
+                "disabling global virtual store: `{name}` is in disableGlobalVirtualStoreForPackages (packages in that list have bundler-style module resolvers that follow symlinks and walk up, which can't reach the project root when `.aube/<pkg>` symlinks into the global store). Set the list to `[]` in .npmrc to opt out."
             );
             Some(false)
         } else {
