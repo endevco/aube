@@ -211,6 +211,15 @@ fn sort_entries(entries: Vec<String>, exact: &mut HashSet<String>, wildcards: &m
 /// matches every package in the scope. Called only for patterns known
 /// to contain at least one `*`; a pattern with no `*` is routed to the
 /// exact-match set instead.
+///
+/// The algorithm is greedy-leftmost for the middle segments with the
+/// prefix anchored on the left and the suffix anchored on the right.
+/// That works for plain `*` globs (no `?`, no character classes): if
+/// any valid assignment of middle positions exists, the leftmost
+/// valid assignment is one of them, and greedy finds it. A fixed
+/// right anchor is what makes this safe — `ends_with(last)` is
+/// independent of greedy choices, and everything between the last
+/// greedy hit and the suffix anchor is a free `*`.
 fn matches_wildcard(name: &str, pattern: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     // `split` on a pattern with N wildcards yields N+1 parts, so the
@@ -224,7 +233,14 @@ fn matches_wildcard(name: &str, pattern: &str) -> bool {
     };
     let (last, middle) = match rest.split_last() {
         Some(pair) => pair,
-        None => return true,
+        // `rest` is never empty here — the caller guarantees the
+        // pattern contains at least one `*`, so `parts.len() >= 2`.
+        // Fail closed rather than silently allow if that invariant
+        // ever drifts: a default-allow here would be a security bypass.
+        None => {
+            debug_assert!(false, "matches_wildcard called with no-wildcard pattern");
+            return false;
+        }
     };
 
     let mut remaining = after_prefix;
@@ -577,6 +593,38 @@ mod tests {
 
         // Adjacent wildcards collapse to a single match, same as glob.
         assert!(matches_wildcard("anything", "**"));
+    }
+
+    #[test]
+    fn matches_wildcard_multi_segment_greedy_is_correct() {
+        // Three+ wildcards exercise the greedy-leftmost middle-segment
+        // scan with a fixed-right suffix anchor. Each case either has a
+        // valid assignment (should match) or none (should not), and
+        // greedy-leftmost finds it whenever one exists — the fixed
+        // right anchor prevents greedy from eating characters the
+        // suffix needs.
+        assert!(matches_wildcard("abca", "*a*bc*a"));
+        assert!(matches_wildcard("xabcaYa", "*a*bc*a"));
+        assert!(matches_wildcard("abcaXa", "*a*bc*a"));
+        assert!(matches_wildcard("ababab", "*ab*ab*"));
+        assert!(matches_wildcard("abcd", "a*b*c*d"));
+        assert!(matches_wildcard("a1b2c3d", "a*b*c*d"));
+
+        // Needs two non-overlapping occurrences of the middle / last
+        // anchors but the input only provides enough characters for
+        // one, so no assignment exists.
+        assert!(!matches_wildcard("aab", "*ab*ab"));
+        assert!(!matches_wildcard("abab", "*abc*abc"));
+
+        // Four wildcards still obey the same rules.
+        assert!(matches_wildcard(
+            "@acme/core-loader-plugin",
+            "@acme/*-*-plugin"
+        ));
+        assert!(!matches_wildcard(
+            "@acme/core-plugin-extra",
+            "@acme/*-*-plugin"
+        ));
     }
 
     #[test]
