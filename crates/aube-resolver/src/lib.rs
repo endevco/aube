@@ -1090,6 +1090,21 @@ impl Resolver {
                         &task.range,
                         &task.ancestors,
                     ) {
+                        // pnpm's removal marker: an override value of
+                        // `"-"` drops the dep edge entirely. Skip before
+                        // catalog/alias rewrites so `-` never reaches
+                        // the registry resolver. The dropped edge never
+                        // gets written to the parent's `.dependencies`
+                        // map (that write happens downstream) and, for
+                        // direct deps, never gets pushed into the
+                        // importer's direct-dep list.
+                        if override_spec == "-" {
+                            tracing::trace!("override: {}@{} -> dropped", task.name, task.range,);
+                            if task.is_root {
+                                note_root_done!();
+                            }
+                            continue 'outer;
+                        }
                         // An override may itself point at a catalog
                         // entry (e.g. `"overrides": {"foo": "catalog:"}`).
                         // The catalog pre-pass above already ran against

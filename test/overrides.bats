@@ -297,6 +297,65 @@ teardown() {
 	assert_dir_exists node_modules/.aube/is-number@6.0.0
 }
 
+@test "override value \"-\" removes a transitive dep entirely" {
+	# pnpm's removal marker: `"-"` drops the dep edge from the graph.
+	# is-odd@3.0.1 normally pulls is-number@^6.0.0 — removing it means
+	# no version of is-number should land in the virtual store.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-overrides",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" },
+		  "pnpm": { "overrides": { "is-number": "-" } }
+		}
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-odd@3.0.1
+	run test -d node_modules/.aube/is-number@6.0.0
+	assert_failure
+	# No is-number snapshot should land in the lockfile packages block.
+	run grep -E "^ +/is-number@" aube-lock.yaml
+	assert_failure
+}
+
+@test "parent>child \"-\" selector removes only the matching edge" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-overrides",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" },
+		  "overrides": { "is-odd>is-number": "-" }
+		}
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-odd@3.0.1
+	run test -d node_modules/.aube/is-number@6.0.0
+	assert_failure
+}
+
+@test "override value \"-\" removes a direct dep" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-overrides",
+		  "version": "1.0.0",
+		  "dependencies": {
+		    "is-odd": "3.0.1",
+		    "is-number": "6.0.0"
+		  },
+		  "overrides": { "is-number": "-" }
+		}
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-odd@3.0.1
+	run test -d node_modules/.aube/is-number@6.0.0
+	assert_failure
+	run test -L node_modules/is-number
+	assert_failure
+}
+
 @test "changing overrides re-resolves the lockfile on next install" {
 	# First install with no override.
 	cat >package.json <<-'EOF'
