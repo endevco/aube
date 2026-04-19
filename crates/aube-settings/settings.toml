@@ -1408,7 +1408,7 @@ default = "true"
 docs = "When a project declares `packageManager`, aube accepts `aube` and `pnpm` package-manager names and rejects npm/yarn/bun/etc. Set to false to skip this guard."
 sources.cli = []
 sources.env = []
-sources.npmrc = ["packageManagerStrict"]
+sources.npmrc = ["package-manager-strict", "packageManagerStrict"]
 examples = []
 
 [packageManagerStrictVersion]
@@ -1418,7 +1418,7 @@ default = "false"
 docs = "When enabled, `packageManager: \"aube@<version>\"` must match the running aube version exactly. `pnpm@...` cannot be exact-version satisfied by aube and fails with a clear diagnostic."
 sources.cli = []
 sources.env = []
-sources.npmrc = ["packageManagerStrictVersion"]
+sources.npmrc = ["package-manager-strict-version", "packageManagerStrictVersion"]
 examples = []
 
 [managePackageManagerVersions]

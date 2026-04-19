@@ -1452,7 +1452,7 @@ Enforce the `packageManager` field in package.json.
 - Type: `bool`
 - Default: `true`
 - Environment: `npm_config_package_manager_strict`, `NPM_CONFIG_PACKAGE_MANAGER_STRICT`
-- .npmrc keys: `packageManagerStrict`
+- .npmrc keys: `package-manager-strict`, `packageManagerStrict`
 
 When a project declares `packageManager`, aube accepts `aube` and `pnpm` package-manager names and rejects npm/yarn/bun/etc. Set to false to skip this guard.
 
@@ -1463,7 +1463,7 @@ Enforce the exact `packageManager` version from package.json.
 - Type: `bool`
 - Default: `false`
 - Environment: `npm_config_package_manager_strict_version`, `NPM_CONFIG_PACKAGE_MANAGER_STRICT_VERSION`
-- .npmrc keys: `packageManagerStrictVersion`
+- .npmrc keys: `package-manager-strict-version`, `packageManagerStrictVersion`
 
 When enabled, `packageManager: "aube@<version>"` must match the running aube version exactly. `pnpm@...` cannot be exact-version satisfied by aube and fails with a clear diagnostic.
 
