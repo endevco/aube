@@ -33,20 +33,10 @@ Reproduce locally with `mise run bench`.
 
 ## Why it's faster
 
-aube borrows pnpm's on-disk model — a global content-addressable store
-plus an isolated symlink layout in `node_modules` — so it does the same
-small amount of I/O work that makes pnpm fast: each package version is
-fetched, extracted, and hashed once per machine, then reflinked or
-hardlinked into every project that needs it.
-
-The difference is that aube's install pipeline (resolver, registry
-client, lockfile I/O, CAS, linker) is written in a compiled,
-natively-threaded language instead of JavaScript. That removes the
-interpreter and GC overhead from the hot path, lets the resolver and
-linker fan out across cores without worker-thread bookkeeping, and
-turns tarball extraction + hashing into a tight parallel loop rather
-than an event-loop pipeline. The layout is the same; the engine
-underneath it is just quicker.
+aube uses the same on-disk model as pnpm — a global content-addressable
+store plus an isolated symlink layout — but the install pipeline is
+written in a faster, natively-threaded language instead of JavaScript.
+Same layout, quicker engine.
 
 ## Scenarios
 
