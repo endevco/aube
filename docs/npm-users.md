@@ -34,9 +34,12 @@ installs keep writing `aube-lock.yaml`.
 
 - aube's default `node_modules` layout is
   [isolated](/package-manager/node-modules), not flat.
-- Phantom dependencies fail because packages can only access declared
-  dependencies.
-- Dependency lifecycle script approval follows the pnpm v11 allowlist model.
+- Only declared direct dependencies appear at the project top level.
+- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
+  not run by default. npm runs them for every dependency; aube runs them
+  only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
+  `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
+  the pnpm v11 model.
 - Global installs live under aube's global package directory instead of npm's
   shared global `node_modules`.
 
