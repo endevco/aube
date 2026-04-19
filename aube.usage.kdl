@@ -167,7 +167,7 @@ cmd ci help="Clean install: delete node_modules, then install with frozen lockfi
 }
 cmd clean help="Remove `node_modules` across every workspace project" {
     long_help "Remove `node_modules` across every workspace project.\n\n`--lockfile` / `-l` also deletes lockfiles. A `clean` script in the root `package.json` overrides the built-in."
-    flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`)"
+    flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)"
 }
 cmd completion help="Generate shell completions (bash, zsh, fish)" {
     arg <SHELL> help="The shell to generate completions for (bash, zsh, fish)"
@@ -601,7 +601,7 @@ cmd publish help="Publish the current package to the registry" {
 }
 cmd purge help="Alias for `clean` — remove `node_modules` across every workspace project" {
     long_help "Alias for `clean` — remove `node_modules` across every workspace project.\n\nA `purge` script in the root `package.json` overrides the built-in."
-    flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`)"
+    flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)"
 }
 cmd rebuild help="Re-run root lifecycle scripts and allowlisted dependency builds" {
     alias rb

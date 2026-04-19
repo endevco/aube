@@ -32,6 +32,16 @@ fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
         _ => return args,
     };
     args[0] = OsString::from("aube");
+    // `--version` / `-V` belong to the top-level `aube` command; `run` and
+    // `dlx` don't accept them, and for `dlx` the bare word would be parsed
+    // as a package name and trigger a registry lookup. Short-circuit to
+    // `aube --version` so the shims report the binary's version.
+    if matches!(
+        args.get(1).and_then(|s| s.to_str()),
+        Some("--version") | Some("-V")
+    ) {
+        return args;
+    }
     args.insert(1, OsString::from(subcommand));
     args
 }
@@ -1457,6 +1467,28 @@ mod multicall_tests {
         // parses as the `run` subcommand with no positional — same as
         // the user typing `aube run` directly.
         assert_eq!(rewrite_multicall_argv(os(&["aubr"])), os(&["aube", "run"]));
+    }
+
+    #[test]
+    fn version_flag_short_circuits_to_top_level() {
+        // `aubr --version` / `aubx --version` should print the aube
+        // version, not trip the `run` / `dlx` parsers.
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubr", "--version"])),
+            os(&["aube", "--version"])
+        );
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubx", "--version"])),
+            os(&["aube", "--version"])
+        );
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubr", "-V"])),
+            os(&["aube", "-V"])
+        );
+        assert_eq!(
+            rewrite_multicall_argv(os(&["aubx.exe", "-V"])),
+            os(&["aube", "-V"])
+        );
     }
 }
 

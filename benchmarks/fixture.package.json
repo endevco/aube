@@ -94,6 +94,6 @@
     "jest-environment-jsdom": "^29.7.0"
   },
   "scripts": {
-    "test": "node -e \"console.log('ok')\""
+    "test": ":"
   }
 }

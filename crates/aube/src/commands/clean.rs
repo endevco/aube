@@ -9,8 +9,9 @@
 //!   `pnpm-workspace.yaml`) and delete each project's `node_modules/`.
 //! - With `--lockfile` / `-l`, also remove the root lockfiles:
 //!   `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`,
-//!   `npm-shrinkwrap.json`, and `yarn.lock`. Workspace children don't
-//!   carry their own lockfile so the flag only touches the root.
+//!   `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`. Workspace
+//!   children don't carry their own lockfile so the flag only touches
+//!   the root.
 //!
 //! Unlike `aube ci`, `clean` never reinstalls — it's a pure "wipe the
 //! tree" command.
@@ -22,7 +23,7 @@ use miette::{Context, IntoDiagnostic};
 pub struct CleanArgs {
     /// Also remove lockfiles at the workspace root
     /// (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`,
-    /// `npm-shrinkwrap.json`, `yarn.lock`).
+    /// `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`).
     #[arg(short = 'l', long)]
     pub lockfile: bool,
 }
@@ -35,6 +36,7 @@ const LOCKFILE_NAMES: &[&str] = &[
     "package-lock.json",
     "npm-shrinkwrap.json",
     "yarn.lock",
+    "bun.lock",
 ];
 
 pub async fn run(args: CleanArgs) -> miette::Result<()> {

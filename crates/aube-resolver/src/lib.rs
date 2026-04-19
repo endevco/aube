@@ -2401,6 +2401,10 @@ impl Resolver {
             times: resolved_times,
             skipped_optional_dependencies,
             catalogs: resolved_catalogs,
+            // Resolver output is format-agnostic; the bun writer layer
+            // defaults `configVersion` to 1 when emitting a fresh
+            // lockfile.
+            bun_config_version: None,
         };
 
         // Second pass: hoist every auto-installed peer to its importer's
@@ -4930,6 +4934,7 @@ mod tests {
             times: BTreeMap::new(),
             skipped_optional_dependencies: BTreeMap::new(),
             catalogs: BTreeMap::new(),
+            bun_config_version: None,
         };
 
         let mut manifest = PackageJson::default();
@@ -4998,6 +5003,7 @@ mod tests {
             times: BTreeMap::new(),
             skipped_optional_dependencies: BTreeMap::new(),
             catalogs: BTreeMap::new(),
+            bun_config_version: None,
         };
 
         let mut manifest = PackageJson::default();

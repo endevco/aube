@@ -67,6 +67,14 @@ pub struct LockfileGraph {
     /// for it. Round-tripped through the lockfile so drift detection
     /// can fire when a catalog spec changes without re-resolving.
     pub catalogs: BTreeMap<String, BTreeMap<String, CatalogEntry>>,
+    /// bun's top-level `configVersion` — a second format counter bun
+    /// added alongside `lockfileVersion` to track its own config-
+    /// schema changes. Only the bun parser/writer ever touches this;
+    /// other formats leave it `None`. Round-tripping the parsed
+    /// value keeps the writer from silently downgrading the field
+    /// (e.g. from `2` back to `1`) when bun bumps it in a future
+    /// release.
+    pub bun_config_version: Option<u32>,
 }
 
 /// One entry in a lockfile catalog: the workspace-declared range and the
@@ -718,6 +726,7 @@ impl LockfileGraph {
             times: self.times.clone(),
             skipped_optional_dependencies: self.skipped_optional_dependencies.clone(),
             catalogs: self.catalogs.clone(),
+            bun_config_version: self.bun_config_version,
         }
     }
 
@@ -773,6 +782,7 @@ impl LockfileGraph {
             times: self.times.clone(),
             skipped_optional_dependencies,
             catalogs: self.catalogs.clone(),
+            bun_config_version: self.bun_config_version,
         })
     }
 

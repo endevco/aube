@@ -519,6 +519,7 @@ pub(crate) fn dedupe_peer_variants(graph: LockfileGraph) -> LockfileGraph {
         times,
         skipped_optional_dependencies,
         catalogs,
+        bun_config_version,
     } = graph;
 
     let mut new_packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
@@ -560,6 +561,7 @@ pub(crate) fn dedupe_peer_variants(graph: LockfileGraph) -> LockfileGraph {
         times,
         skipped_optional_dependencies,
         catalogs,
+        bun_config_version,
     }
 }
 
@@ -689,6 +691,7 @@ fn apply_peer_contexts_once(
         times: canonical.times,
         skipped_optional_dependencies: canonical.skipped_optional_dependencies,
         catalogs: canonical.catalogs,
+        bun_config_version: canonical.bun_config_version,
     }
 }
 
@@ -916,6 +919,7 @@ pub(crate) fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
         times: graph.times,
         skipped_optional_dependencies: graph.skipped_optional_dependencies,
         catalogs: graph.catalogs,
+        bun_config_version: graph.bun_config_version,
     }
 }
 

@@ -385,6 +385,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         times,
         skipped_optional_dependencies,
         catalogs,
+        bun_config_version: None,
     })
 }
 
@@ -1893,25 +1894,62 @@ snapshots:
     // Minimal line diff for the byte-parity test failure message. We don't
     // pull in a diff crate just for this — the lockfile is small enough
     // that a line-by-line comparison is readable.
+    /// Line-aligned diff with a bounded lookahead so a single
+    /// insertion doesn't flag every following line as "modified".
+    /// When sides diverge at `(i, j)`, scan up to `LOOKAHEAD` steps in
+    /// both directions for the nearest `al[ii] == bl[jj]` and emit the
+    /// skipped-over ranges as `- …` / `+ …` runs; that keeps the
+    /// failure output readable for the ≤100-line fixtures this test
+    /// exercises without pulling in a full LCS dependency.
     fn similar_diff(a: &str, b: &str) -> String {
+        const LOOKAHEAD: usize = 8;
         let al: Vec<&str> = a.lines().collect();
         let bl: Vec<&str> = b.lines().collect();
         let mut out = String::new();
-        let max = al.len().max(bl.len());
-        for i in 0..max {
-            match (al.get(i), bl.get(i)) {
-                (Some(x), Some(y)) if x == y => {}
-                (Some(x), Some(y)) => {
-                    out.push_str(&format!(
-                        "  line {}: expected {x:?}\n           got      {y:?}\n",
-                        i + 1
-                    ));
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < al.len() || j < bl.len() {
+            if i < al.len() && j < bl.len() && al[i] == bl[j] {
+                i += 1;
+                j += 1;
+                continue;
+            }
+            // Find the nearest resync point within the lookahead
+            // window. `k` is the combined distance from `(i, j)`;
+            // smaller `k` wins, matching how a developer eyeballs
+            // the diff.
+            let mut sync: Option<(usize, usize)> = None;
+            'outer: for k in 1..=LOOKAHEAD {
+                for dx in 0..=k {
+                    let dy = k - dx;
+                    let ii = i + dx;
+                    let jj = j + dy;
+                    if ii < al.len() && jj < bl.len() && al[ii] == bl[jj] {
+                        sync = Some((ii, jj));
+                        break 'outer;
+                    }
                 }
-                (Some(x), None) => {
-                    out.push_str(&format!("  line {}: missing (expected {x:?})\n", i + 1))
+            }
+            match sync {
+                Some((ii, jj)) => {
+                    for line in &al[i..ii] {
+                        out.push_str(&format!("  - {line:?}\n"));
+                    }
+                    for line in &bl[j..jj] {
+                        out.push_str(&format!("  + {line:?}\n"));
+                    }
+                    i = ii;
+                    j = jj;
                 }
-                (None, Some(y)) => out.push_str(&format!("  line {}: extra    ({y:?})\n", i + 1)),
-                (None, None) => {}
+                None => {
+                    // No sync in the window — dump the rest and stop.
+                    for line in &al[i..] {
+                        out.push_str(&format!("  - {line:?}\n"));
+                    }
+                    for line in &bl[j..] {
+                        out.push_str(&format!("  + {line:?}\n"));
+                    }
+                    break;
+                }
             }
         }
         out
