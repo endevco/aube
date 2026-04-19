@@ -104,16 +104,3 @@ install and switch Node versions:
 ```sh
 mise use node@22
 ```
-
-## Typical migration
-
-```sh
-aube install
-aube test
-git add pnpm-lock.yaml
-```
-
-Keep committing `pnpm-lock.yaml` (now updated by aube) while pnpm is still
-part of the workflow. Use `aube import` only if the team intentionally wants
-to convert the project onto `aube-lock.yaml`; after import succeeds, remove
-`pnpm-lock.yaml` so future installs keep writing the aube lockfile.
