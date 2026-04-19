@@ -485,10 +485,6 @@ body {
   cursor: pointer;
 }
 
-.aube-doc-warning {
-  margin-top: 0 !important;
-}
-
 .aube-actions {
   align-items: flex-start;
   display: flex;
