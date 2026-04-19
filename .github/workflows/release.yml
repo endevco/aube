@@ -62,9 +62,6 @@ jobs:
         with:
           p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
           p12-password: ${{ secrets.CERTIFICATES_P12_PASS }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-${{ matrix.target }}
       # taiki-e/upload-rust-binary-action builds via cargo/cross, packages
       # the named bins into a single `<archive>.{tar.gz,zip}`, and uploads
       # it onto the existing release for `tag`. Multi-bin mode requires an
