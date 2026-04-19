@@ -163,7 +163,7 @@ _make_env_probe_project() {
 	echo "stateDir=$custom_state" >>"$HOME/.npmrc"
 	run aube install
 	assert_success
-	assert_file_exists "$custom_state/install-state.json"
+	assert_file_exists "$custom_state/.aube-state"
 }
 
 # --- cacheDir from .npmrc ---

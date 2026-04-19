@@ -361,8 +361,8 @@ cmd install help="Install all dependencies" {
     flag --fix-lockfile help="Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version" {
         long_help "Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version.\n\nUnchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved."
     }
-    flag --force help="Force reinstall: bypass the `.aube/.state/install-state.json` freshness check and re-resolve the lockfile even when nothing has drifted" {
-        long_help "Force reinstall: bypass the `.aube/.state/install-state.json` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`."
+    flag --force help="Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted" {
+        long_help "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`."
     }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"

@@ -3,16 +3,12 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_STATE_DIR: &str = ".aube/.state";
-const STATE_FILE_NAME: &str = "install-state.json";
-const LEGACY_STATE_FILES: &[&str] = &[
-    "node_modules/.aube-state",
-    "node_modules/.aube/.state/install-state.json",
-];
+const DEFAULT_STATE_DIR: &str = "node_modules";
+const STATE_FILE_NAME: &str = ".aube-state";
 
 /// Resolve the state directory for `project_dir`. Checks the `stateDir`
 /// setting in `.npmrc` / env / workspace yaml; falls back to
-/// `<project_dir>/.aube/.state`.
+/// `<project_dir>/node_modules`.
 fn state_dir(project_dir: &Path) -> PathBuf {
     let default = || project_dir.join(DEFAULT_STATE_DIR);
     crate::commands::with_settings_ctx(project_dir, |ctx| {
@@ -46,22 +42,11 @@ pub struct InstallState {
 pub fn check_needs_install(project_dir: &Path) -> Option<String> {
     let state_path = state_file(project_dir);
 
-    // No state file = never installed
+    // No state file = never installed (or `rm -rf node_modules` wiped it).
     let state = match read_state(&state_path) {
         Some(s) => s,
         None => return Some("node_modules not found or never installed by aube".into()),
     };
-
-    // The state file lives outside `node_modules`, so a user who runs
-    // `rm -rf node_modules` leaves the state behind. Verify the tree is
-    // still on disk — otherwise the lockfile+manifest hashes match but
-    // the packages are gone, and `aube run` would execute the script
-    // against a missing tree. Zero-dep projects still get a
-    // `node_modules/` (with `.bin/`) from install, so checking for the
-    // directory itself covers both cases.
-    if !project_dir.join("node_modules").exists() {
-        return Some("node_modules is missing".into());
-    }
 
     // Check lockfile hash. Honor `gitBranchLockfile` so a branch-specific
     // lockfile is the freshness anchor when present, but fall back to the
@@ -132,7 +117,6 @@ pub fn write_state(project_dir: &Path, section_filtered: bool) -> Result<(), std
     if let Some(parent) = state_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    cleanup_legacy_state(project_dir);
     let json = serde_json::to_string_pretty(&state)?;
     std::fs::write(state_path, json)?;
 
@@ -141,32 +125,11 @@ pub fn write_state(project_dir: &Path, section_filtered: bool) -> Result<(), std
 
 /// Remove the install state file. Missing state is not an error.
 pub fn remove_state(project_dir: &Path) -> Result<(), std::io::Error> {
-    remove_state_file(&state_file(project_dir))?;
-    for legacy in LEGACY_STATE_FILES {
-        remove_state_file(&project_dir.join(legacy))?;
-    }
-    cleanup_empty_legacy_state_dirs(project_dir);
-    Ok(())
-}
-
-fn cleanup_legacy_state(project_dir: &Path) {
-    for legacy in LEGACY_STATE_FILES {
-        let _ = std::fs::remove_file(project_dir.join(legacy));
-    }
-    cleanup_empty_legacy_state_dirs(project_dir);
-}
-
-fn remove_state_file(path: &Path) -> Result<(), std::io::Error> {
-    match std::fs::remove_file(path) {
+    match std::fs::remove_file(state_file(project_dir)) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
-}
-
-fn cleanup_empty_legacy_state_dirs(project_dir: &Path) {
-    let _ = std::fs::remove_dir(project_dir.join("node_modules/.aube/.state"));
-    let _ = std::fs::remove_dir(project_dir.join("node_modules/.aube"));
 }
 
 /// Pick the lockfile path that an install in `project_dir` will actually

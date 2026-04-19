@@ -120,7 +120,7 @@ pub struct InstallArgs {
     /// in) get re-resolved.
     #[arg(long, conflicts_with_all = ["frozen_lockfile", "no_frozen_lockfile", "prefer_frozen_lockfile"])]
     pub fix_lockfile: bool,
-    /// Force reinstall: bypass the `.aube/.state/install-state.json` freshness check
+    /// Force reinstall: bypass the `node_modules/.aube-state` freshness check
     /// and re-resolve the lockfile even when nothing has drifted.
     ///
     /// Mirrors pnpm's `install --force`.
@@ -431,7 +431,7 @@ pub struct InstallOptions {
     /// default (`CI=1`, no explicit flag) leaves this `false` so a
     /// fresh checkout still resolves and writes a lockfile.
     pub strict_no_lockfile: bool,
-    /// `--force`: re-resolve and relink even when `.aube/.state/install-state.json` says the
+    /// `--force`: re-resolve and relink even when `node_modules/.aube-state` says the
     /// tree is up to date. Mirrors pnpm's `install --force`.
     pub force: bool,
     /// Parsed CLI flag bag forwarded into

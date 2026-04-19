@@ -1761,11 +1761,11 @@ Examples:
 Directory for aube install-state files.
 
 - Type: `path`
-- Default: `.aube/.state`
+- Default: `node_modules`
 - Environment: `npm_config_state_dir`, `NPM_CONFIG_STATE_DIR`
 - .npmrc keys: `stateDir`
 
-Overrides the directory for install state tracking. Defaults to `.aube/.state` relative to the project root.
+Overrides the directory that holds the `.aube-state` install-state file. Defaults to `node_modules` relative to the project root, so the state file lives at `node_modules/.aube-state` and `rm -rf node_modules` naturally invalidates it.
 
 ### `cacheDir` {#setting-cachedir}
 
@@ -1951,7 +1951,7 @@ Fast-path check before running a full install.
 - .npmrc keys: `optimisticRepeatInstall`
 
 When `true` (default), `aube run` / `aube exec` / `aube start` /
-`aube test` / `aube restart` consult `.aube/.state/install-state.json`
+`aube test` / `aube restart` consult `node_modules/.aube-state`
 and skip the auto-install if the recorded lockfile + root `package.json`
 hashes match the current files. Set `false` to force every auto-install
 check to run the full install pipeline — useful when the state file
@@ -2136,7 +2136,7 @@ Skip the auto-install staleness check in `aube run` / `aube exec`.
 - .npmrc keys: `aubeNoAutoInstall`, `aube-no-auto-install`
 - Workspace YAML keys: `aubeNoAutoInstall`
 
-`aube run <script>` normally checks `.aube/.state/install-state.json` and auto-installs
+`aube run <script>` normally checks `node_modules/.aube-state` and auto-installs
 before running if package.json or the lockfile has drifted. Setting
 this to a truthy value skips that check — the same effect as passing
 `--no-install` on every invocation. Useful in long-lived dev shells

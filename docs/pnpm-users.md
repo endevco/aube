@@ -32,7 +32,7 @@ implement, see [pnpm Compatibility](/pnpm-compatibility).
 | Default lockfile (new projects) | `pnpm-lock.yaml` | `aube-lock.yaml` |
 | Virtual store | `node_modules/.pnpm/` | `node_modules/.aube/` |
 | Global content-addressable store | `~/.pnpm-store/` | `~/.aube-store/v1/files/` |
-| Install state | pnpm-owned metadata | `.aube/.state/install-state.json` |
+| Install state | `node_modules/.modules.yaml` | `node_modules/.aube-state` |
 | Workspace manifest | `pnpm-workspace.yaml` | `aube-workspace.yaml` |
 
 aube reads pnpm v11 YAML files for compatibility. The aube-owned files use

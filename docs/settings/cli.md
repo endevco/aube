@@ -318,7 +318,7 @@ Skip the auto-install staleness check in `aube run` / `aube exec`.
 - Default: `false`
 - CLI flags: `no-install`
 
-`aube run <script>` normally checks `.aube/.state/install-state.json` and auto-installs
+`aube run <script>` normally checks `node_modules/.aube-state` and auto-installs
 before running if package.json or the lockfile has drifted. Setting
 this to a truthy value skips that check — the same effect as passing
 `--no-install` on every invocation. Useful in long-lived dev shells

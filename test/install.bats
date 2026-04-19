@@ -207,18 +207,13 @@ JSON
 	assert_success
 }
 
-@test "aube install writes state under .aube" {
+@test "aube install writes state at node_modules/.aube-state" {
 	_setup_basic_fixture
-	mkdir -p node_modules/.aube/.state
-	echo stale >node_modules/.aube-state
-	echo stale >node_modules/.aube/.state/install-state.json
 
 	run aube install
 	assert_success
-	assert_file_exists .aube/.state/install-state.json
-	assert_not_exists node_modules/.aube-state
-	assert_not_exists node_modules/.aube/.state/install-state.json
-	run cat .aube/.state/install-state.json
+	assert_file_exists node_modules/.aube-state
+	run cat node_modules/.aube-state
 	assert_output --partial "lockfile_hash"
 	assert_output --partial "package_json_hashes"
 }

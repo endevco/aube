@@ -88,7 +88,7 @@ fn install_on_manifest_without_deps_creates_state_file() {
     sbx.cmd().arg("install").assert().success();
 
     assert!(
-        sbx.project.join(".aube/.state/install-state.json").exists(),
+        sbx.project.join("node_modules/.aube-state").exists(),
         "expected aube to drop a state file after install"
     );
 }
