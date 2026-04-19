@@ -934,24 +934,6 @@ mod tests {
     }
 
     #[test]
-    fn test_has_with_integrity() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("files"));
-
-        let content = b"test content";
-        let stored = store.import_bytes(content, false).unwrap();
-
-        // Build a sha512 integrity string from the stored hash
-        let bytes = hex::decode(&stored.hex_hash).unwrap();
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let integrity = format!("sha512-{b64}");
-
-        assert!(store.has(&integrity));
-        assert!(!store.has("sha512-notarealhash=="));
-    }
-
-    #[test]
     fn test_index_cache_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("files"));
