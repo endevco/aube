@@ -556,6 +556,16 @@ pub struct LockedPackage {
     /// a package can't declare the same name twice across those
     /// sections.
     pub declared_dependencies: BTreeMap<String, String>,
+    /// Package's `license` field, collapsed to the simple string
+    /// form. Round-tripped so npm's lockfile keeps its per-entry
+    /// `"license": "MIT"` line; pnpm / yarn / bun don't record
+    /// licenses and leave this `None` on parse.
+    pub license: Option<String>,
+    /// Package's funding URL, extracted from whatever shape the
+    /// manifest's `funding:` field took (string / object / array).
+    /// Round-tripped so npm's lockfile keeps its per-entry
+    /// `"funding": {"url": "…"}` block.
+    pub funding_url: Option<String>,
 }
 
 impl LockedPackage {
@@ -784,6 +794,46 @@ impl LockfileGraph {
             catalogs: self.catalogs.clone(),
             bun_config_version: self.bun_config_version,
         })
+    }
+
+    /// Overlay per-package metadata fields from `prior` onto `self`
+    /// for every `(name, version)` that survives in both graphs.
+    /// Carries forward only fields the abbreviated packument (npm
+    /// corgi) doesn't ship — `license`, `funding_url`, and the
+    /// bun-format `configVersion` — so a fresh re-resolve against
+    /// the same spec set doesn't lose them.
+    ///
+    /// Keyed by canonical `name@version`, so a peer-context rewrite
+    /// between the old and new graph still lines up. `self`'s own
+    /// values win when set (fresh registry data is authoritative);
+    /// `prior`'s fill in only the `None` / empty slots. Safe to call
+    /// on any pair of graphs — parsing the old lockfile is the
+    /// caller's concern.
+    pub fn overlay_metadata_from(&mut self, prior: &LockfileGraph) {
+        // Build a canonical `name@version → prior pkg` lookup once so
+        // repeated peer-context variants in `self.packages` all hit
+        // the same prior entry.
+        let mut prior_index: BTreeMap<String, &LockedPackage> = BTreeMap::new();
+        for pkg in prior.packages.values() {
+            prior_index
+                .entry(format!("{}@{}", pkg.name, pkg.version))
+                .or_insert(pkg);
+        }
+        for pkg in self.packages.values_mut() {
+            let key = format!("{}@{}", pkg.name, pkg.version);
+            let Some(prior_pkg) = prior_index.get(&key) else {
+                continue;
+            };
+            if pkg.license.is_none() && prior_pkg.license.is_some() {
+                pkg.license = prior_pkg.license.clone();
+            }
+            if pkg.funding_url.is_none() && prior_pkg.funding_url.is_some() {
+                pkg.funding_url = prior_pkg.funding_url.clone();
+            }
+        }
+        if self.bun_config_version.is_none() {
+            self.bun_config_version = prior.bun_config_version;
+        }
     }
 
     /// Compare this lockfile's root importer against a single manifest.

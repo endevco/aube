@@ -68,6 +68,28 @@ struct RawNpmPackage {
     peer_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     peer_dependencies_meta: BTreeMap<String, RawNpmPeerDepMeta>,
+    /// Captured verbatim for round-trip. npm writes these on every
+    /// package entry; dropping them on re-emit is one of the
+    /// remaining sources of `aube install --no-frozen-lockfile`
+    /// churn against native npm output.
+    #[serde(default)]
+    engines: BTreeMap<String, String>,
+    #[serde(default)]
+    bin: BTreeMap<String, String>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    funding: Option<RawNpmFunding>,
+}
+
+/// npm's `funding:` block on a package entry. npm normalizes the
+/// registry's string/object/array shapes to a `{url: …}` object by
+/// the time it reaches the lockfile, so we only need to handle that
+/// form on read. Write-time we emit the same single-key shape.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawNpmFunding {
+    #[serde(default)]
+    url: Option<String>,
 }
 
 /// `peerDependenciesMeta` value — only `optional` is meaningful to
@@ -177,18 +199,17 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             declared.insert(k.clone(), v.clone());
         }
 
-        // Keep the `resolved` URL for entries whose tarball URL cannot
-        // be safely re-derived from the install name and version:
-        // npm aliases and JSR's npm-compatible packages.
-        let tarball_url = if alias_of.is_some() || install_name.starts_with("@jsr/") {
-            entry
-                .resolved
-                .as_ref()
-                .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
-                .cloned()
-        } else {
-            None
-        };
+        // Keep the `resolved` URL on every registry package so the
+        // npm writer can emit `resolved:` on every entry verbatim
+        // (what npm itself writes), not just the aliased /
+        // JSR-specific cases where the URL is strictly unrecoverable
+        // from name+version. Dropping it was the single largest
+        // source of churn against npm's own output.
+        let tarball_url = entry
+            .resolved
+            .as_ref()
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+            .cloned();
 
         // Peer fields are copied verbatim from the lockfile entry.
         // Downstream (`aube-resolver::apply_peer_contexts`) reads
@@ -224,6 +245,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 alias_of,
                 tarball_url,
                 declared_dependencies: declared,
+                engines: entry.engines.clone(),
+                bin: entry.bin.clone(),
+                license: entry.license.clone(),
+                funding_url: entry.funding.as_ref().and_then(|f| f.url.clone()),
                 ..Default::default()
             },
         );
@@ -389,6 +414,14 @@ struct WriteNpmLockfile<'a> {
     packages: BTreeMap<String, WriteNpmPackage<'a>>,
 }
 
+// Field order mirrors npm's own package-lock.json output, so a
+// parse → write round-trip diffs cleanly against what `npm install`
+// would produce: `name`, `version`, `resolved`, `integrity`,
+// `license`, then the dep sections, then `bin`, `engines`, `funding`,
+// then the dev/optional flags. Don't reorder — the JSON is
+// serialized as a `BTreeMap`-like structure but serde preserves
+// struct field order for us, which is what npm readers (and git
+// diffs) expect.
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct WriteNpmPackage<'a> {
@@ -400,6 +433,8 @@ struct WriteNpmPackage<'a> {
     resolved: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     integrity: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    license: Option<&'a str>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     dependencies: BTreeMap<&'a str, &'a str>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -416,6 +451,12 @@ struct WriteNpmPackage<'a> {
     /// meaningful; other fields npm may add elsewhere aren't modeled.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     peer_dependencies_meta: BTreeMap<&'a str, WriteNpmPeerDepMeta>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    bin: BTreeMap<&'a str, &'a str>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    engines: BTreeMap<&'a str, &'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    funding: Option<WriteNpmFunding<'a>>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     dev: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -428,6 +469,15 @@ struct WriteNpmPackage<'a> {
     /// the optional chain (or vice versa with `--omit=optional`).
     #[serde(rename = "devOptional", skip_serializing_if = "std::ops::Not::not")]
     dev_optional: bool,
+}
+
+/// npm emits `funding: {"url": "…"}` verbatim, one key, on every
+/// package entry that declared funding. We only carry the URL on
+/// `LockedPackage`, so this wrapper slots it back into the expected
+/// shape on write.
+#[derive(Debug, Serialize, Default)]
+struct WriteNpmFunding<'a> {
+    url: &'a str,
 }
 
 /// Serialized form of a `peerDependenciesMeta` entry. Mirrors the
@@ -585,15 +635,15 @@ pub fn write(
 
         // Aliased deps (`"h3-v2": "npm:h3@..."` in package.json)
         // round-trip as `node_modules/h3-v2` with an explicit
-        // `name: "h3"` and the captured `resolved:` URL. JSR packages
-        // also need `resolved:` because npm.jsr.io tarball paths are
-        // opaque rather than name-derived.
+        // `name: "h3"`, and every registry package gets a
+        // `resolved:` line — what npm itself writes. JSR packages
+        // are just the degenerate case where the URL can't be
+        // reconstructed from name+version alone. The URL is
+        // populated on the LockedPackage by the resolver (from the
+        // packument's `dist.tarball`) or carried through from a
+        // prior parse of the same npm lockfile.
         let alias_name = pkg.alias_of.as_deref();
-        let resolved = if alias_name.is_some() || pkg.registry_name().starts_with("@jsr/") {
-            pkg.tarball_url.clone()
-        } else {
-            None
-        };
+        let resolved = pkg.tarball_url.clone();
 
         // Round-trip `peerDependencies` so a subsequent read of the
         // rewritten lockfile still feeds the peer-context pass. Values
@@ -630,9 +680,25 @@ pub fn write(
                 version: Some(pkg.version.as_str()),
                 resolved,
                 integrity: pkg.integrity.as_deref(),
+                license: pkg.license.as_deref(),
                 dependencies: deps,
                 peer_dependencies: peer_deps,
                 peer_dependencies_meta: peer_deps_meta,
+                bin: pkg
+                    .bin
+                    .iter()
+                    .filter(|(k, _)| !k.is_empty())
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect(),
+                engines: pkg
+                    .engines
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect(),
+                funding: pkg
+                    .funding_url
+                    .as_deref()
+                    .map(|url| WriteNpmFunding { url }),
                 dev,
                 optional,
                 dev_optional,
@@ -1776,5 +1842,47 @@ mod tests {
             Some(true),
             "peerDependenciesMeta.optional must survive write → parse round-trip"
         );
+    }
+
+    /// Byte-parity with a real `npm install`-generated lockfile. The
+    /// fixture at `tests/fixtures/npm-native.json` was produced by
+    /// `npm install` (v11) against a `{ chalk, picocolors, semver }`
+    /// manifest. A parse → write round-trip must reproduce the exact
+    /// bytes. Covers `resolved:` on every entry, `license:` /
+    /// `engines:` / `bin:` / `funding:` field preservation, and the
+    /// sibling declared-range preservation that rides on
+    /// `declared_dependencies`.
+    #[test]
+    fn test_write_byte_identical_to_native_npm() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/npm-native.json");
+        // Same LF normalization as the pnpm / bun byte-parity tests —
+        // Windows' `core.autocrlf=true` rewrites the checked-out
+        // fixture to CRLF even with `.gitattributes eol=lf`.
+        let original = std::fs::read_to_string(&fixture)
+            .unwrap()
+            .replace("\r\n", "\n");
+        let graph = parse(&fixture).unwrap();
+        let manifest = aube_manifest::PackageJson {
+            name: Some("aube-lockfile-stability".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [
+                ("chalk".to_string(), "^4.1.2".to_string()),
+                ("picocolors".to_string(), "^1.1.1".to_string()),
+                ("semver".to_string(), "^7.6.3".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        write(tmp.path(), &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(tmp.path()).unwrap();
+
+        if written != original {
+            panic!(
+                "npm writer drifted from native npm output.\n\n--- expected ---\n{original}\n--- got ---\n{written}"
+            );
+        }
     }
 }

@@ -883,6 +883,8 @@ pub(crate) fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
                 engines: pkg.engines,
                 bin: pkg.bin,
                 declared_dependencies: pkg.declared_dependencies,
+                license: pkg.license,
+                funding_url: pkg.funding_url,
             },
         );
     }
@@ -1284,6 +1286,8 @@ fn visit_peer_context(
             engines: pkg.engines.clone(),
             bin: pkg.bin.clone(),
             declared_dependencies: pkg.declared_dependencies.clone(),
+            license: pkg.license.clone(),
+            funding_url: pkg.funding_url.clone(),
         },
     );
     Some(contextualized)

@@ -332,6 +332,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 // when re-emitting a pnpm-sourced graph into one of
                 // their formats.
                 declared_dependencies: BTreeMap::new(),
+                // pnpm's format doesn't carry per-package license or
+                // funding metadata, so a pnpm → npm conversion
+                // degrades to empty rather than re-fetching each
+                // packument. npm writers skip these fields when
+                // `None`.
+                license: None,
+                funding_url: None,
             },
         );
     }

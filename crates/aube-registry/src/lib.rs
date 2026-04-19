@@ -153,6 +153,23 @@ pub struct VersionMetadata {
     /// packument re-fetch.
     #[serde(default, deserialize_with = "non_string_tolerant_map")]
     pub engines: BTreeMap<String, String>,
+    /// `license:` field from the package manifest. npm's lockfile
+    /// keeps this per-package; other formats don't. Stored as
+    /// `Option<String>` because packuments can emit a bare string
+    /// (`"MIT"`), an SPDX object, or nothing at all — we only keep
+    /// the simple case for lockfile round-trip. Non-string shapes
+    /// degrade to `None` rather than failing to parse the packument.
+    #[serde(default, deserialize_with = "license_string")]
+    pub license: Option<String>,
+    /// `funding:` URL extracted from the manifest's `funding` field.
+    /// The field is documented as a string *or* an object with a
+    /// `url:` key *or* an array of either — npm's lockfile
+    /// normalizes to `{url: …}`, so we only keep the URL and let
+    /// the writer emit the wrapping object. Serde `rename` because
+    /// `rename_all = "camelCase"` would otherwise look for
+    /// `fundingUrl` in the JSON.
+    #[serde(default, rename = "funding", deserialize_with = "funding_url")]
+    pub funding_url: Option<String>,
     /// `bin:` map from the packument, normalized to `name → path`.
     ///
     /// npm records `bin` in two shapes on a manifest: a string
@@ -194,6 +211,57 @@ where
     let value = Option::<serde_json::Value>::deserialize(de)?;
     Ok(match value {
         Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
+        _ => None,
+    })
+}
+
+/// Accept the packument's `license:` field in any of its documented
+/// shapes (string, `{type, url}` object, or missing) and collapse to
+/// the simple string form npm emits in its lockfile. Non-string
+/// shapes degrade to `None`; we don't try to normalize SPDX
+/// expressions or license-file references here.
+fn license_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(de)?;
+    Ok(match value {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
+        Some(serde_json::Value::Object(m)) => m
+            .get("type")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        _ => None,
+    })
+}
+
+/// Extract the first `url:` out of a packument's `funding:` field.
+/// The field may be a URL string, a `{url: …}` object, or an array
+/// of either — npm's lockfile normalizes to `{"url": "…"}` on each
+/// package entry, so we only need the URL itself. Missing / empty
+/// / non-url-bearing shapes degrade to `None`.
+fn funding_url<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(de)?;
+    Ok(match value {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
+        Some(serde_json::Value::Object(m)) => m
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        Some(serde_json::Value::Array(arr)) => arr.iter().find_map(|v| match v {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Object(m) => m
+                .get("url")
+                .and_then(|u| u.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            _ => None,
+        }),
         _ => None,
     })
 }
@@ -336,6 +404,8 @@ mod tests {
             cpu: Vec::new(),
             libc: Vec::new(),
             engines: BTreeMap::new(),
+            license: None,
+            funding_url: None,
             bin,
             has_install_script: false,
             deprecated: None,

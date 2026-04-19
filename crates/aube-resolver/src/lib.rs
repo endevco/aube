@@ -1643,6 +1643,8 @@ impl Resolver {
                                     engines: locked_pkg.engines.clone(),
                                     bin: locked_pkg.bin.clone(),
                                     declared_dependencies: locked_pkg.declared_dependencies.clone(),
+                                    license: locked_pkg.license.clone(),
+                                    funding_url: locked_pkg.funding_url.clone(),
                                 },
                             );
 
@@ -2023,11 +2025,17 @@ impl Resolver {
 
                 let registry_name = task.registry_name();
                 let integrity = version_meta.dist.as_ref().and_then(|d| d.integrity.clone());
-                let tarball_url = version_meta.dist.as_ref().and_then(|d| {
-                    registry_name
-                        .starts_with("@jsr/")
-                        .then(|| d.tarball.clone())
-                });
+                // Always stash the registry tarball URL on the locked
+                // package. pnpm / yarn writers gate emission on
+                // `lockfile_include_tarball_url` (so the pnpm
+                // round-trip stays byte-identical for projects that
+                // opted out); the npm writer emits `resolved:` on
+                // every package entry unconditionally, which is what
+                // npm itself writes. Carrying the URL on every
+                // LockedPackage lets both policies work without a
+                // second packument fetch at write time.
+                let tarball_url = version_meta.dist.as_ref().map(|d| d.tarball.clone());
+                let _ = registry_name;
 
                 // Stream this resolved package for early tarball fetching.
                 // `alias_of` mirrors what the LockedPackage below
@@ -2157,6 +2165,8 @@ impl Resolver {
                             }
                             m
                         },
+                        license: version_meta.license.clone(),
+                        funding_url: version_meta.funding_url.clone(),
                     },
                 );
 
@@ -3269,6 +3279,8 @@ mod tests {
             cpu: vec![],
             libc: vec![],
             engines: BTreeMap::new(),
+            license: None,
+            funding_url: None,
             bin: BTreeMap::new(),
             has_install_script: false,
             deprecated: None,

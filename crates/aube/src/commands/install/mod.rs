@@ -2714,6 +2714,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     .await
                     .wrap_err("pnpmfile afterAllResolved hook failed")?;
             }
+            // Overlay per-package metadata the resolver can't recover
+            // from abbreviated (corgi) packuments — `license`,
+            // `funding_url`, bun's `configVersion` — from the
+            // existing lockfile when one was on disk. Without this,
+            // `aube install --no-frozen-lockfile` drops those fields
+            // on every re-resolve even though the resolved versions
+            // didn't change, which churns the lockfile diff against
+            // formats (npm, bun) that preserve them.
+            if let Ok(prior) = aube_lockfile::parse_lockfile(&cwd, &manifest) {
+                graph.overlay_metadata_from(&prior);
+            }
             tracing::debug!("Resolved {} packages", graph.packages.len());
             if let Some(p) = prog_ref {
                 p.set_phase("fetching");
