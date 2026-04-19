@@ -30,6 +30,14 @@ pub struct GlobalVirtualStoreFlags {
 }
 
 impl GlobalVirtualStoreFlags {
+    /// Serialize the two global flags into CLI bag entries for the
+    /// `enableGlobalVirtualStore` setting. The bag's *value* is what the
+    /// bool setting should resolve to — `bool_from_cli` reads the raw
+    /// string as-is without inverting on flag name. Both
+    /// `enable-global-virtual-store` and `disable-global-virtual-store`
+    /// appear in `settings.toml`'s `sources.cli` for the same setting,
+    /// so pushing either key with the appropriate value resolves it:
+    /// `--enable-...` ⇒ `true`, `--disable-...` ⇒ `false`.
     pub fn to_cli_flag_bag(self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         if self.enable {

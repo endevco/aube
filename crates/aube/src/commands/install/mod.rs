@@ -3882,20 +3882,3 @@ fn create_bin_link(
     aube_linker::create_bin_shim(bin_dir, name, target, shim_opts).into_diagnostic()?;
     Ok(())
 }
-
-#[cfg(test)]
-mod frozen_mode_tests {
-    use super::*;
-
-    #[test]
-    fn workspace_yaml_value_resolves_dotted_paths() {
-        let raw: BTreeMap<String, serde_yaml::Value> =
-            serde_yaml::from_str("outer:\n  inner:\n    key: value\n").unwrap();
-
-        assert_eq!(
-            aube_settings::workspace_yaml_value(&raw, "outer.inner.key").and_then(|v| v.as_str()),
-            Some("value")
-        );
-        assert!(aube_settings::workspace_yaml_value(&raw, "outer.missing.key").is_none());
-    }
-}

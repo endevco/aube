@@ -498,12 +498,25 @@ pub fn parse_bool(s: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn entries(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn workspace_yaml_value_resolves_dotted_paths() {
+        let raw: BTreeMap<String, serde_yaml::Value> =
+            serde_yaml::from_str("outer:\n  inner:\n    key: value\n").unwrap();
+
+        assert_eq!(
+            workspace_yaml_value(&raw, "outer.inner.key").and_then(|v| v.as_str()),
+            Some("value")
+        );
+        assert!(workspace_yaml_value(&raw, "outer.missing.key").is_none());
     }
 
     #[test]
