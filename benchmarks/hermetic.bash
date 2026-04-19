@@ -125,10 +125,18 @@ _hermetic_stop_verdaccio() {
 # via the `.warmed` sentinel. Running the warm step requires network;
 # subsequent benchmark runs are fully offline.
 #
-# We use `npm install` rather than aube so warming is bootstrap-safe —
-# this script has to work even when `cargo build --release` hasn't
-# finished yet (some CI flows warm the cache before building aube to
-# parallelize).
+# Warming runs one install per PM (aube, bun, pnpm, npm, yarn) so the
+# cache is the *union* of every tool's resolution set — each resolver
+# picks its preferred versions independently (e.g. aube may pick
+# `get-intrinsic@1.3.1` which drags in `async-function` / `async-
+# generator-function` while pnpm picks an earlier version without
+# those deps). A single-PM warm leaves 404-holes the no-uplink bench
+# then falls into. Individual tool failures during warm are logged and
+# tolerated; the later per-tool populate in bench.sh is authoritative
+# about what each tool actually needs.
+#
+# aube is skipped when `$AUBE_BIN` isn't built yet, so warming is still
+# bootstrap-safe for CI flows that warm before compiling aube.
 _hermetic_warm() {
 	if [ -f "$HERMETIC_WARMED_SENTINEL" ]; then
 		return 0
@@ -142,8 +150,8 @@ _hermetic_warm() {
 		return 1
 	fi
 
-	local warm_dir
-	warm_dir=$(mktemp -d "${TMPDIR:-/tmp}/aube-bench-warm.XXXXXX")
+	local warm_root
+	warm_root=$(mktemp -d "${TMPDIR:-/tmp}/aube-bench-warm.XXXXXX")
 	# Extra packages pulled alongside the fixture so every bench
 	# scenario can resolve offline. `is-odd` is the subject of the
 	# Benchmark 4 "add" scenario in bench.sh — without it, each
@@ -155,23 +163,48 @@ _hermetic_warm() {
 		base.dependencies = base.dependencies || {};
 		base.dependencies["is-odd"] = "^3.0.1";
 		fs.writeFileSync(process.argv[2], JSON.stringify(base, null, 2));
-	' "$HERMETIC_DIR/fixture.package.json" "$warm_dir/package.json"
+	' "$HERMETIC_DIR/fixture.package.json" "$warm_root/base-package.json"
 
-	# Hit the registry directly with npm. --ignore-scripts and
-	# --legacy-peer-deps match how the benchmark's own populate step
-	# treats the fixture.
-	if ! (cd "$warm_dir" && HOME="$warm_dir/home" \
-		npm_config_cache="$warm_dir/cache" \
-		npm_config_registry="http://127.0.0.1:$BENCH_VERDACCIO_PORT" \
-		npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps >"$warm_dir/npm.log" 2>&1); then
-		echo "ERROR: warm step failed. Last lines of npm log:" >&2
-		tail -40 "$warm_dir/npm.log" >&2 || true
-		_hermetic_stop_verdaccio
-		rm -rf "$warm_dir"
-		return 1
-	fi
+	local reg="http://127.0.0.1:$BENCH_VERDACCIO_PORT"
+	_warm_one() {
+		local pm=$1 bin=$2
+		shift 2
+		if [ -z "$bin" ] || { [ ! -x "$bin" ] && ! command -v "$bin" >/dev/null 2>&1; }; then
+			echo "  skip $pm (not available)" >&2
+			return 0
+		fi
+		echo "  warming with $pm ..." >&2
+		local pm_dir="$warm_root/$pm"
+		mkdir -p "$pm_dir/home"
+		cp "$warm_root/base-package.json" "$pm_dir/package.json"
+		# Pin registry via both `.npmrc` (project + home) and
+		# `npm_config_registry` — aube reads `.npmrc` and does not
+		# honor the env var, while yarn/npm honor either. Without the
+		# `.npmrc` files aube's warm install silently hits npmjs
+		# directly and leaves holes in the Verdaccio cache.
+		printf 'registry=%s\n' "$reg" >"$pm_dir/.npmrc"
+		printf 'registry=%s\n' "$reg" >"$pm_dir/home/.npmrc"
+		if ! (cd "$pm_dir" && HOME="$pm_dir/home" \
+			npm_config_registry="$reg" \
+			YARN_CACHE_FOLDER="$pm_dir/home/.yarn" \
+			BUN_INSTALL="$pm_dir/home/.bun" \
+			"$@" >"$pm_dir/warm.log" 2>&1); then
+			echo "  WARN: warm with $pm failed (continuing — see $pm_dir/warm.log)" >&2
+			return 0
+		fi
+	}
 
-	rm -rf "$warm_dir"
+	# Per-tool install invocations mirror bench.sh's populate step so
+	# the warmed cache contains exactly the tarballs each tool will
+	# later ask for.
+	_warm_one aube "${AUBE_BIN:-}" "${AUBE_BIN:-aube}" install --ignore-scripts
+	_warm_one bun "$(command -v bun || echo)" bun install --ignore-scripts --no-summary
+	_warm_one pnpm "$(command -v pnpm || echo)" pnpm install --ignore-scripts --no-frozen-lockfile
+	_warm_one npm "$(command -v npm || echo)" npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps
+	_warm_one yarn "$(command -v yarn || echo)" yarn install --ignore-scripts --ignore-engines --no-progress
+
+	unset -f _warm_one
+	rm -rf "$warm_root"
 	_hermetic_stop_verdaccio
 	: >"$HERMETIC_WARMED_SENTINEL"
 	echo "Hermetic registry cache warmed." >&2
