@@ -36,12 +36,22 @@ pub fn find_workspace_packages(project_dir: &Path) -> Result<Vec<PathBuf>, Error
         return Ok(vec![]);
     }
 
+    // Overlapping patterns are valid and common — a project may list
+    // both `packages/*` and a specific `packages/slack` entry, or mix
+    // a glob with an explicit nested path (`packages/sdk/js`). Dedupe
+    // so downstream consumers (linker importer iteration, bin wiring,
+    // filter matching) see each workspace package exactly once;
+    // otherwise `link_workspace` tries to symlink the same top-level
+    // dep twice and blows up with EEXIST.
+    let mut seen = std::collections::HashSet::new();
     let mut packages = Vec::new();
     for pattern in &patterns {
         let full_pattern = project_dir.join(pattern).join("package.json");
         if let Ok(entries) = glob::glob(full_pattern.to_str().unwrap_or_default()) {
             for entry in entries.flatten() {
-                if let Some(parent) = entry.parent() {
+                if let Some(parent) = entry.parent()
+                    && seen.insert(parent.to_path_buf())
+                {
                     packages.push(parent.to_path_buf());
                 }
             }
@@ -184,5 +194,41 @@ mod tests {
         write(&dir.path().join("package.json"), r#"{"name":"solo"}"#);
         let found = find_workspace_packages(dir.path()).unwrap();
         assert!(found.is_empty());
+    }
+
+    /// Real projects (opencode, for one) list both a glob and an
+    /// explicit nested path that the glob already matches. Without
+    /// dedup, `link_workspace` later symlinks the same workspace dep
+    /// twice into a downstream importer's `node_modules` and fails
+    /// with EEXIST on the second write.
+    #[test]
+    fn overlapping_patterns_dedupe_matched_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*","packages/slack","packages/sdk/js"]}"#,
+        );
+        write(&dir.path().join("packages/slack/package.json"), "{}");
+        write(&dir.path().join("packages/sdk/js/package.json"), "{}");
+        write(&dir.path().join("packages/other/package.json"), "{}");
+
+        let found = find_workspace_packages(dir.path()).unwrap();
+        // slack is matched by both `packages/*` and the explicit
+        // `packages/slack`; must appear exactly once.
+        let slack_count = found
+            .iter()
+            .filter(|p| p.ends_with("packages/slack"))
+            .count();
+        assert_eq!(slack_count, 1, "slack appeared {slack_count} times");
+        // Nested-path entries (`packages/sdk/js`) that a simple
+        // `packages/*` glob would NOT match still show up via the
+        // explicit pattern.
+        assert_eq!(
+            names(found),
+            ["js", "other", "slack"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
     }
 }
