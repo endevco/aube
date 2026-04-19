@@ -46,5 +46,4 @@ with `aube-lock.yaml`.
 
 - [CLI Reference](/cli/) is generated from the command parser.
 - [Settings Reference](/settings/) is generated from `settings.toml`.
-- [pnpm Compatibility](/pnpm-compatibility) is the high-level parity matrix.
 - [Benchmarks](/benchmarks) explains the performance measurements.

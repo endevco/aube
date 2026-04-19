@@ -129,14 +129,6 @@ gtag('config', 'G-WD1RRC0F8C');`,
         ],
       },
       {
-        text: "Compatibility",
-        items: [
-          { text: "pnpm Compatibility", link: "/pnpm-compatibility" },
-          { text: "For npm users", link: "/npm-users" },
-          { text: "For yarn users", link: "/yarn-users" },
-        ],
-      },
-      {
         text: "Performance",
         items: [
           { text: "Benchmarks", link: "/benchmarks" },
