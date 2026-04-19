@@ -29,7 +29,7 @@ const benchmarks = [
   ['add', 'Add dependency'],
 ]
 
-const TOOLS = (process.env.BENCH_TOOLS || 'aube,pnpm')
+const TOOLS = (process.env.BENCH_TOOLS || 'aube,aube-nogvs,pnpm')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)

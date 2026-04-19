@@ -102,7 +102,13 @@ register_tool() {
 
 # Order matters for the console output; keep aube first so the
 # headline comparison is prominent and the rest follow alphabetically.
+# `aube-nogvs` is the same binary invoked with `--disable-gvs`, i.e.
+# the fallback path aube takes for webpack/vite/next-family projects
+# that trip the `disableGlobalVirtualStoreForPackages` heuristic. It
+# shares the aube lockfile format, so populating / restoring the
+# lockfile works the same as for the primary aube entry.
 register_tool "aube" "$AUBE_BIN"
+register_tool "aube-nogvs" "$AUBE_BIN"
 register_tool "bun" "$BUN_BIN"
 register_tool "pnpm" "$PNPM_BIN"
 register_tool "npm" "$NPM_BIN"
@@ -139,7 +145,7 @@ echo ""
 # scenarios.
 lockfile_name_for() {
 	case "$1" in
-	aube) echo "aube-lock.yaml" ;;
+	aube | aube-nogvs) echo "aube-lock.yaml" ;;
 	bun) echo "bun.lock" ;;
 	npm) echo "package-lock.json" ;;
 	pnpm) echo "pnpm-lock.yaml" ;;
@@ -209,6 +215,9 @@ for i in "${!TOOLS[@]}"; do
 	case "$tool" in
 	aube)
 		cd "$dir" && HOME="$home" XDG_CACHE_HOME="$cache" "$bin" install
+		;;
+	aube-nogvs)
+		cd "$dir" && HOME="$home" XDG_CACHE_HOME="$cache" "$bin" install --disable-gvs
 		;;
 	npm)
 		# `--legacy-peer-deps` is the only way npm tolerates the
@@ -294,6 +303,7 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 
 # Scenario 1: CI install, warm cache (frozen lockfile, warm store+cache) ----
 CMDS["ci-warm:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["ci-warm:aube-nogvs"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} install --frozen-lockfile --disable-gvs >/dev/null 2>&1"
 CMDS["ci-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["ci-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
@@ -301,6 +311,7 @@ CMDS["ci-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin
 
 # Scenario 2: add a dependency (warm store+cache, existing lockfile) --------
 CMDS["add:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} add is-odd >/dev/null 2>&1"
+CMDS["add:aube-nogvs"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} add is-odd --disable-gvs >/dev/null 2>&1"
 CMDS["add:bun"]="cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
 CMDS["add:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
 CMDS["add:pnpm"]="cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
@@ -308,6 +319,7 @@ CMDS["add:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} ad
 
 # Scenario 3: CI install, cold cache (frozen lockfile, empty store+cache) --
 CMDS["ci-cold:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["ci-cold:aube-nogvs"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} install --frozen-lockfile --disable-gvs >/dev/null 2>&1"
 CMDS["ci-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["ci-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
@@ -320,6 +332,7 @@ CMDS["ci-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin
 # need an explicit chain. The fixture's `test` script is the POSIX shell
 # no-op `:`, so this measures install + script dispatch, not test-runtime work.
 CMDS["install-test:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} test >/dev/null 2>&1"
+CMDS["install-test:aube-nogvs"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} test --disable-gvs >/dev/null 2>&1"
 CMDS["install-test:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1 && HOME={home} BUN_INSTALL={home}/.bun {bin} run test >/dev/null 2>&1"
 # `npm install-test` (the `install` variant, not `ci`) is the right
 # command for the "already installed" semantics this scenario uses —

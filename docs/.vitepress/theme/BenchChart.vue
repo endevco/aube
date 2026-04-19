@@ -22,11 +22,28 @@ const COLORS: Record<string, string> = {
   // actually readable.
   bun: "#c9a36a",
   aube: "#7c3aed",
+  // aube-nogvs is the same binary with the global virtual store
+  // disabled (the fallback path for webpack/vite/next-family apps).
+  // A lighter violet marks it as a variant of aube without stealing
+  // the primary's visual weight.
+  "aube-nogvs": "#a78bfa",
 };
+
+// `aube-nogvs` is the registered tool name (short, hyphenated so it
+// survives shell `case` and filename joins); display it as "aube (no
+// gvs)" in the chart so readers don't have to decode the suffix.
+const DISPLAY_NAMES: Record<string, string> = {
+  "aube-nogvs": "aube (no gvs)",
+};
+
+function displayName(pm: string): string {
+  return DISPLAY_NAMES[pm] ?? pm;
+}
 
 function legendLabel(pm: string): string {
   const v = props.versions?.[pm];
-  return v ? `${pm} ${v}` : pm;
+  const name = displayName(pm);
+  return v ? `${name} ${v}` : name;
 }
 
 const nodeVersion = computed(() => props.versions?.node ?? "");
@@ -75,7 +92,7 @@ function winner(row: Row): string | null {
       <div class="bars">
         <template v-for="pm in managers" :key="pm">
           <div class="bar-row">
-            <div class="bar-name">{{ pm }}</div>
+            <div class="bar-name">{{ displayName(pm) }}</div>
             <div class="bar-track">
               <div
                 v-if="row.values[pm] != null"
@@ -143,7 +160,9 @@ function winner(row: Row): string | null {
 }
 .bar-row {
   display: grid;
-  grid-template-columns: 52px 1fr 64px;
+  /* 92px accommodates the widest display name, "aube (no gvs)", at
+     the default 14px font; narrower tools still left-align cleanly. */
+  grid-template-columns: 92px 1fr 64px;
   align-items: center;
   gap: 0.5rem;
 }

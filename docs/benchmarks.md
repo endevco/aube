@@ -19,6 +19,19 @@ fixture, scripts, and raw hyperfine output live at
 Reproduce locally with `mise run bench`.
 :::
 
+::: tip Two aube rows
+The chart shows **aube** and **aube (no gvs)** side by side. They run
+the same binary and the same command — the second row just adds
+`--disable-gvs`, i.e. the fallback aube picks automatically when the
+project declares a bundler in
+[`disableGlobalVirtualStoreForPackages`](/package-manager/configuration#disableglobalvirtualstoreforpackages)
+(webpack, vite, next, nuxt, rollup, parcel, vitepress). gvs-on is the
+fast path most projects hit; gvs-off is what webpack-family apps see,
+where aube materializes files per-project instead of symlinking into
+the global store. Comparing both to pnpm/bun/npm/yarn makes the
+trade-off explicit rather than hiding it in a footnote.
+:::
+
 <BenchChart
   :managers="data.managers"
   :rows="data.rows"
