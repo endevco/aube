@@ -59,7 +59,7 @@ projects).
 
 ## What's different
 
-- **aube-owned directories.** Installs go into `node_modules/.aube/` and
+- **Separate install locations.** Installs go into `node_modules/.aube/` and
   `~/.aube-store/` instead of pnpm's `.pnpm/` and `~/.pnpm-store/`. If a
   project already has a pnpm-built `node_modules`, aube installs alongside
   — the two virtual stores live side by side.

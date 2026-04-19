@@ -25,9 +25,19 @@ aube run build
 aube test
 ```
 
-aube checks install freshness before running scripts. If `package.json` or the
-lockfile changed, `aube test`, `aube run build`, and `aube exec vitest`
-install first; repeated runs skip that work.
+::: tip Just run the script — aube handles install
+`aube run test`, `aube test`, and `aube exec vitest` all check install
+freshness before running. If `package.json` or the lockfile changed,
+aube installs first; otherwise it skips straight to the script. You
+rarely need a separate `aube install` step in day-to-day work.
+:::
+
+::: tip Shortcut binaries: `aubr` and `aubx`
+`aubr` is shorthand for `aube run`, and `aubx` is shorthand for
+`aube dlx`. They ship alongside `aube` in every release, so you can
+write `aubr build` instead of `aube run build`, or `aubx cowsay hi`
+instead of `aube dlx cowsay hi`.
+:::
 
 ## Learn the package-manager flow
 
