@@ -1905,8 +1905,13 @@ impl Resolver {
                     .or_default()
                     .push(version.clone());
 
+                let registry_name = task.registry_name();
                 let integrity = version_meta.dist.as_ref().and_then(|d| d.integrity.clone());
-                let tarball_url = version_meta.dist.as_ref().map(|d| d.tarball.clone());
+                let tarball_url = version_meta.dist.as_ref().and_then(|d| {
+                    registry_name
+                        .starts_with("@jsr/")
+                        .then(|| d.tarball.clone())
+                });
 
                 // Stream this resolved package for early tarball fetching.
                 // `alias_of` mirrors what the LockedPackage below
@@ -6338,6 +6343,12 @@ mod tests {
         assert_eq!(pkg.version, "1.1.6");
         assert_eq!(pkg.alias_of.as_deref(), Some("@jsr/std__collections"));
         assert_eq!(pkg.registry_name(), "@jsr/std__collections");
+        assert!(
+            pkg.tarball_url
+                .as_deref()
+                .is_some_and(|url| url.contains("@jsr/std__collections")),
+            "JSR resolver output must preserve dist.tarball"
+        );
         assert!(!graph.packages.contains_key("@jsr/std__collections@1.1.6"));
 
         let root = graph.importers.get(".").unwrap();

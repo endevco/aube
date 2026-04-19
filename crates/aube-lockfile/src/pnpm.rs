@@ -528,6 +528,11 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         // a lockfile written on Windows must resolve identically on
         // Unix and vice versa. `Path::display()` honors the host
         // separator, so it would leak `\` into the YAML.
+        let is_jsr_registry_pkg = pkg.registry_name().starts_with("@jsr/");
+        debug_assert!(
+            !is_jsr_registry_pkg || pkg.tarball_url.is_some(),
+            "JSR packages must preserve dist.tarball for cold lockfile installs"
+        );
         let resolution = match pkg.local_source.as_ref() {
             Some(local @ LocalSource::Directory(_)) => Some(WritableResolution {
                 integrity: None,
@@ -575,9 +580,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 // reconstructed from package name + version, so the
                 // URL must be preserved for cold installs from the
                 // lockfile.
-                tarball: if graph.settings.lockfile_include_tarball_url
-                    || pkg.registry_name().starts_with("@jsr/")
-                {
+                tarball: if graph.settings.lockfile_include_tarball_url || is_jsr_registry_pkg {
                     pkg.tarball_url.clone()
                 } else {
                     None
