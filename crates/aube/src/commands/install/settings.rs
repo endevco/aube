@@ -1,0 +1,830 @@
+use super::super::{packument_cache_dir, packument_full_cache_dir};
+use super::{InstallOptions, version_from_dep_path};
+use miette::miette;
+use std::collections::BTreeMap;
+
+/// Accept pnpm's documented aliases (`highest`, `time-based`, `time`,
+/// `lowest-direct`) and map them to our enum. Unknown values fall back
+/// to `None` so the caller's `.npmrc` / default path still runs.
+fn parse_resolution_mode(s: &str) -> Option<aube_resolver::ResolutionMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "highest" => Some(aube_resolver::ResolutionMode::Highest),
+        // pnpm treats `lowest-direct` and `time-based` as distinct
+        // modes; aube folds them into `TimeBased` and skips the cutoff
+        // filter when there's no publish time to compare against, so
+        // `lowest-direct` behavior emerges naturally from `TimeBased`
+        // with `time:` absent. Close enough for the first pass.
+        "time-based" | "time" | "lowest-direct" => Some(aube_resolver::ResolutionMode::TimeBased),
+        _ => None,
+    }
+}
+
+/// Resolve the effective `ResolutionMode` from the settings chain
+/// (CLI > env > `.npmrc` > `aube-workspace.yaml` > default). The `.cli`
+/// source carries `--resolution-mode` via `to_cli_flag_bag`, so every
+/// caller feeds the same ctx and gets the same answer.
+fn resolve_resolution_mode(ctx: &aube_settings::ResolveCtx<'_>) -> aube_resolver::ResolutionMode {
+    // Legacy alias: pnpm's CLI / `.npmrc` / env accept the shorthand
+    // `time` for `time-based`. The generator-side `from_str_normalized`
+    // only knows the canonical variants declared in `settings.toml`,
+    // so walk the same sources one more time for the untyped string
+    // and feed it through `parse_resolution_mode`. Retire this once
+    // the generator grows per-setting variant aliases.
+    let raw = aube_settings::values::string_from_cli("resolutionMode", ctx.cli)
+        .or_else(|| aube_settings::values::string_from_env("resolutionMode", ctx.env))
+        .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.npmrc))
+        .or_else(|| {
+            aube_settings::values::string_from_workspace_yaml("resolutionMode", ctx.workspace_yaml)
+        });
+    if let Some(raw) = raw
+        && let Some(m) = parse_resolution_mode(&raw)
+    {
+        return m;
+    }
+    map_resolution_mode(aube_settings::resolved::resolution_mode(ctx))
+}
+
+/// Translate the settings-side `ResolutionMode` enum into the
+/// resolver's runtime enum. pnpm treats `lowest-direct` and
+/// `time-based` as distinct modes, but aube folds them into
+/// `TimeBased` and lets the `time:` cutoff filter handle the
+/// difference — when publish times are missing the `lowest-direct`
+/// behavior emerges naturally. Close enough for the first pass.
+fn map_resolution_mode(
+    m: aube_settings::resolved::ResolutionMode,
+) -> aube_resolver::ResolutionMode {
+    match m {
+        aube_settings::resolved::ResolutionMode::Highest => aube_resolver::ResolutionMode::Highest,
+        aube_settings::resolved::ResolutionMode::TimeBased
+        | aube_settings::resolved::ResolutionMode::LowestDirect => {
+            aube_resolver::ResolutionMode::TimeBased
+        }
+    }
+}
+
+/// Resolve the effective `minimumReleaseAge` configuration from a
+/// pre-built resolve context. Every lookup goes through the
+/// build-time-generated typed accessors in `aube_settings::resolved`
+/// — `.npmrc` first, then `pnpm-workspace.yaml`. CLI override
+/// (currently always `None`, no flag yet) wins over both.
+fn resolve_minimum_release_age(
+    ctx: &aube_settings::ResolveCtx<'_>,
+    cli_minutes: Option<u64>,
+) -> Option<aube_resolver::MinimumReleaseAge> {
+    let minutes = cli_minutes.unwrap_or_else(|| aube_settings::resolved::minimum_release_age(ctx));
+    if minutes == 0 {
+        return None;
+    }
+    let exclude: std::collections::HashSet<String> =
+        aube_settings::resolved::minimum_release_age_exclude(ctx)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    let strict = aube_settings::resolved::minimum_release_age_strict(ctx);
+    Some(aube_resolver::MinimumReleaseAge {
+        minutes,
+        exclude,
+        strict,
+    })
+}
+
+/// Resolve the effective `autoInstallPeers` setting from a
+/// pre-built resolve context. Delegates to the build-time-generated
+/// accessor in `aube_settings::resolved`, which walks `.npmrc` and
+/// then `pnpm-workspace.yaml` using the source aliases declared in
+/// `settings.toml`.
+///
+/// Takes the context by reference instead of re-reading the files
+/// so the caller can share one read of `pnpm-workspace.yaml` across
+/// this resolve, the drift check, and the build-policy load.
+pub(super) fn resolve_auto_install_peers(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::auto_install_peers(ctx)
+}
+
+/// Resolve `excludeLinksFromLockfile` from `.npmrc` / workspace yaml.
+/// Controls only lockfile serialization — the resolver still builds
+/// the same graph regardless.
+pub(super) fn resolve_exclude_links_from_lockfile(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::exclude_links_from_lockfile(ctx)
+}
+
+/// Scan `manifests` for any `trigger` name that appears in an
+/// importer's `dependencies`, `devDependencies`, or
+/// `optionalDependencies`, and return the first match. Used to power
+/// `disableGlobalVirtualStoreForPackages` — some tools (Next.js's
+/// Turbopack is the canonical example) canonicalize every
+/// `node_modules/<pkg>` symlink and reject targets that escape the
+/// project's filesystem root, which aube's global virtual store
+/// produces by default. When a manifest declares one of those
+/// packages, the install driver falls back to per-project
+/// materialization. `peerDependencies` intentionally doesn't count —
+/// a library that declares `next` as a peer isn't itself a Next.js
+/// app.
+pub(super) fn find_gvs_incompatible_trigger<'a>(
+    manifests: &[(String, aube_manifest::PackageJson)],
+    triggers: &'a [String],
+) -> Option<&'a str> {
+    for (_, m) in manifests {
+        for name in triggers {
+            if m.dependencies.contains_key(name)
+                || m.dev_dependencies.contains_key(name)
+                || m.optional_dependencies.contains_key(name)
+            {
+                return Some(name.as_str());
+            }
+        }
+    }
+    None
+}
+
+/// Honor `cleanupUnusedCatalogs` by pruning declared-but-unreferenced
+/// catalog entries from the workspace yaml. No-op when the setting is
+/// off, when there is no workspace yaml file on disk, or when every
+/// declared entry was referenced by an importer.
+pub(super) fn maybe_cleanup_unused_catalogs(
+    cwd: &std::path::Path,
+    ctx: &aube_settings::ResolveCtx<'_>,
+    declared: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    used: &std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, aube_lockfile::CatalogEntry>,
+    >,
+) -> miette::Result<()> {
+    if !aube_settings::resolved::cleanup_unused_catalogs(ctx) {
+        return Ok(());
+    }
+    if declared.is_empty() {
+        return Ok(());
+    }
+    let Some(ws_path) = super::super::catalogs::workspace_yaml_path(cwd) else {
+        return Ok(());
+    };
+    let dropped = super::super::catalogs::prune_unused_catalog_entries(&ws_path, declared, used)?;
+    if !dropped.is_empty() {
+        let filename = ws_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ws_path.display().to_string());
+        tracing::info!(
+            "cleanupUnusedCatalogs: pruned {} from {filename}",
+            pluralizer::pluralize("entry", dropped.len() as isize, true)
+        );
+    }
+    Ok(())
+}
+
+/// Resolve `networkConcurrency` from cli / env / `.npmrc` /
+/// workspace yaml. Returns `None` on miss so the caller can fall
+/// back to its own hardcoded default (different sites intentionally
+/// ship different defaults).
+pub(super) fn resolve_network_concurrency(ctx: &aube_settings::ResolveCtx<'_>) -> Option<usize> {
+    aube_settings::resolved::network_concurrency(ctx).and_then(|n| {
+        if n == 0 {
+            tracing::warn!("ignoring network-concurrency=0 (must be >= 1)");
+            None
+        } else {
+            Some(n as usize)
+        }
+    })
+}
+
+pub(super) fn resolve_link_concurrency(ctx: &aube_settings::ResolveCtx<'_>) -> Option<usize> {
+    aube_settings::resolved::link_concurrency(ctx).and_then(|n| {
+        if n == 0 {
+            tracing::warn!("ignoring link-concurrency=0 (must be >= 1)");
+            None
+        } else {
+            Some(n as usize)
+        }
+    })
+}
+
+pub(super) fn default_lockfile_network_concurrency() -> usize {
+    if cfg!(target_os = "macos") { 24 } else { 128 }
+}
+
+pub(super) fn default_streaming_network_concurrency() -> usize {
+    if cfg!(target_os = "macos") { 24 } else { 64 }
+}
+
+/// Resolve `verifyStoreIntegrity` from cli / env / `.npmrc` /
+/// workspace yaml. Defaults to `true` (pnpm parity) so the tarball
+/// SHA-512 is checked against the lockfile integrity at import time.
+pub(super) fn resolve_verify_store_integrity(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::verify_store_integrity(ctx)
+}
+
+/// Resolve `strictStorePkgContentCheck` from `.npmrc`. Defaults to
+/// `true` (pnpm parity): after each registry tarball lands in the CAS
+/// we read its `package.json` and verify the embedded `name`/`version`
+/// match the resolver's expectation, defending against a registry
+/// substituting a tarball under one (name, version) but containing a
+/// different package on disk.
+pub(super) fn resolve_strict_store_pkg_content_check(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::strict_store_pkg_content_check(ctx)
+}
+
+/// Resolve `useRunningStoreServer` from `.npmrc`. aube has no
+/// store-daemon, so this is accept-and-warn: a `true` value triggers a
+/// single one-line warning at install start so a `.npmrc` ported from
+/// a pnpm store-server setup keeps working unchanged. Returning the
+/// raw value lets the caller decide whether to emit the warning.
+pub(super) fn resolve_use_running_store_server(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::use_running_store_server(ctx)
+}
+
+/// Resolve `symlink` from cli / env / `.npmrc`. aube's isolated layout
+/// is defined by the symlink graph under `node_modules/.aube/`, so the
+/// only supported value is the default `true`. This is accept-and-warn:
+/// `false` is read without failing the install (so a `.npmrc` ported
+/// from a hard-copy pnpm setup keeps loading) but triggers a single
+/// one-line warning at install start. Returning the raw value lets the
+/// caller decide whether to emit the warning.
+pub(super) fn resolve_symlink(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::symlink(ctx)
+}
+
+/// Resolve the `git-shallow-hosts` list from cli / env / `.npmrc` /
+/// workspace yaml. Falls back to pnpm's built-in default list when no
+/// configuration sets it — the accessor's own default already reflects
+/// that, so the call site never has to duplicate the list.
+pub(super) fn resolve_git_shallow_hosts(ctx: &aube_settings::ResolveCtx<'_>) -> Vec<String> {
+    aube_settings::resolved::git_shallow_hosts(ctx)
+}
+
+/// Resolve `sideEffectsCache` from cli / env / `.npmrc` / workspace
+/// yaml.
+pub(super) fn resolve_side_effects_cache(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::side_effects_cache(ctx)
+}
+
+pub(super) fn resolve_side_effects_cache_readonly(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::side_effects_cache_readonly(ctx)
+}
+
+/// Resolve `strictPeerDependencies` from `.npmrc` / workspace yaml.
+/// When true, any peer the resolver couldn't satisfy (missing or
+/// out-of-range) fails the install instead of only printing a warning.
+pub(super) fn resolve_strict_peer_dependencies(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::strict_peer_dependencies(ctx)
+}
+
+/// Resolved `peersSuffixMaxLength` — cap on lockfile peer-ID suffix byte
+/// length before the resolver hashes it with SHA-256. Returns `usize` for
+/// direct comparison against `String::len()` inside the resolver. A cast
+/// from `u64` on 32-bit platforms saturates safely: pnpm's default is 1000
+/// and no sane value comes close to `usize::MAX`.
+pub(super) fn resolve_peers_suffix_max_length(ctx: &aube_settings::ResolveCtx<'_>) -> usize {
+    let raw = aube_settings::resolved::peers_suffix_max_length(ctx);
+    usize::try_from(raw).unwrap_or(usize::MAX)
+}
+
+/// Resolve `dedupePeerDependents` from `.npmrc` / workspace yaml.
+/// When true (pnpm's default), peer-context post-pass collapses
+/// peer-equivalent subtree variants into one canonical dep_path.
+pub(super) fn resolve_dedupe_peer_dependents(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::dedupe_peer_dependents(ctx)
+}
+
+/// Resolve `dedupePeers` from `.npmrc` / workspace yaml. When true,
+/// lockfile peer suffixes drop the peer name and emit just the version
+/// — `(18.2.0)` instead of `(react@18.2.0)`.
+pub(super) fn resolve_dedupe_peers(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::dedupe_peers(ctx)
+}
+
+/// Resolve `resolvePeersFromWorkspaceRoot` from `.npmrc` / workspace
+/// yaml. When true (pnpm's default), unresolved peers fall back to
+/// the root importer's direct deps before the graph-wide scan.
+pub(super) fn resolve_peers_from_workspace_root(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::resolve_peers_from_workspace_root(ctx)
+}
+
+/// Resolve `registrySupportsTimeField` from `.npmrc` / workspace
+/// yaml. When true, aube keeps the abbreviated-packument fetch on
+/// the hot path under `resolutionMode=time-based` and
+/// `minimumReleaseAge`, trusting the registry to embed `time` in
+/// corgi responses. Default false (pnpm's and npmjs.org's behavior).
+fn resolve_registry_supports_time_field(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::registry_supports_time_field(ctx)
+}
+
+fn resolve_dependency_policy(
+    manifest: &aube_manifest::PackageJson,
+    ctx: &aube_settings::ResolveCtx<'_>,
+) -> aube_resolver::DependencyPolicy {
+    let mut policy = aube_resolver::DependencyPolicy::default();
+
+    let mut package_extensions = manifest.package_extensions();
+    merge_json_object_setting(ctx, "packageExtensions", &mut package_extensions);
+    policy.package_extensions = parse_package_extensions(package_extensions);
+
+    let mut allowed_deprecated = manifest.allowed_deprecated_versions();
+    merge_string_map_setting(ctx, "allowedDeprecatedVersions", &mut allowed_deprecated);
+    policy.allowed_deprecated_versions = allowed_deprecated;
+
+    policy.trust_policy = match aube_settings::resolved::trust_policy(ctx) {
+        aube_settings::resolved::TrustPolicy::NoDowngrade => {
+            aube_resolver::TrustPolicy::NoDowngrade
+        }
+        aube_settings::resolved::TrustPolicy::Off => aube_resolver::TrustPolicy::Off,
+    };
+    policy.trust_policy_exclude = aube_settings::resolved::trust_policy_exclude(ctx)
+        .into_iter()
+        .collect();
+    policy.trust_policy_ignore_after = aube_settings::resolved::trust_policy_ignore_after(ctx);
+    policy.block_exotic_subdeps = aube_settings::resolved::block_exotic_subdeps(ctx);
+
+    policy
+}
+
+fn merge_json_object_setting(
+    ctx: &aube_settings::ResolveCtx<'_>,
+    setting: &str,
+    out: &mut BTreeMap<String, serde_json::Value>,
+) {
+    if let Some(value) = object_setting_from_workspace_yaml(setting, ctx.workspace_yaml) {
+        out.extend(value);
+    }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.npmrc) {
+        out.extend(value);
+    }
+    if let Some(value) = object_setting_from_env(setting, ctx.env) {
+        out.extend(value);
+    }
+}
+
+fn merge_string_map_setting(
+    ctx: &aube_settings::ResolveCtx<'_>,
+    setting: &str,
+    out: &mut BTreeMap<String, String>,
+) {
+    if let Some(value) = object_setting_from_workspace_yaml(setting, ctx.workspace_yaml) {
+        out.extend(json_string_map(value));
+    }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.npmrc) {
+        out.extend(json_string_map(value));
+    }
+    if let Some(value) = object_setting_from_env(setting, ctx.env) {
+        out.extend(json_string_map(value));
+    }
+}
+
+fn object_setting_from_npmrc(
+    setting: &str,
+    entries: &[(String, String)],
+) -> Option<BTreeMap<String, serde_json::Value>> {
+    let meta = aube_settings::find(setting)?;
+    for (key, raw) in entries.iter().rev() {
+        if meta.npmrc_keys.contains(&key.as_str()) {
+            return parse_json_object(raw);
+        }
+    }
+    None
+}
+
+fn object_setting_from_env(
+    setting: &str,
+    env: &[(String, String)],
+) -> Option<BTreeMap<String, serde_json::Value>> {
+    let meta = aube_settings::find(setting)?;
+    for (key, raw) in env.iter().rev() {
+        if meta.env_vars.contains(&key.as_str()) {
+            return parse_json_object(raw);
+        }
+    }
+    None
+}
+
+fn object_setting_from_workspace_yaml(
+    setting: &str,
+    raw: &BTreeMap<String, serde_yaml::Value>,
+) -> Option<BTreeMap<String, serde_json::Value>> {
+    let meta = aube_settings::find(setting)?;
+    for key in meta.workspace_yaml_keys {
+        let Some(value) = aube_settings::workspace_yaml_value(raw, key) else {
+            continue;
+        };
+        if let Ok(serde_json::Value::Object(obj)) = serde_json::to_value(value) {
+            return Some(obj.into_iter().collect());
+        }
+    }
+    None
+}
+
+fn parse_json_object(raw: &str) -> Option<BTreeMap<String, serde_json::Value>> {
+    let serde_json::Value::Object(obj) = serde_json::from_str(raw).ok()? else {
+        return None;
+    };
+    Some(obj.into_iter().collect())
+}
+
+fn json_string_map(map: BTreeMap<String, serde_json::Value>) -> BTreeMap<String, String> {
+    map.into_iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+        .collect()
+}
+
+fn parse_package_extensions(
+    raw: BTreeMap<String, serde_json::Value>,
+) -> Vec<aube_resolver::PackageExtension> {
+    raw.into_iter()
+        .filter_map(|(selector, value)| {
+            let obj = value.as_object()?;
+            Some(aube_resolver::PackageExtension {
+                selector,
+                dependencies: read_json_string_map(obj.get("dependencies")),
+                optional_dependencies: read_json_string_map(obj.get("optionalDependencies")),
+                peer_dependencies: read_json_string_map(obj.get("peerDependencies")),
+                peer_dependencies_meta: read_peer_dependencies_meta(
+                    obj.get("peerDependenciesMeta"),
+                ),
+            })
+        })
+        .collect()
+}
+
+fn read_json_string_map(value: Option<&serde_json::Value>) -> BTreeMap<String, String> {
+    value
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_peer_dependencies_meta(
+    value: Option<&serde_json::Value>,
+) -> BTreeMap<String, aube_registry::PeerDepMeta> {
+    value
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .map(|(name, meta)| {
+                    let optional = meta
+                        .as_object()
+                        .and_then(|m| m.get("optional"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    (name.clone(), aube_registry::PeerDepMeta { optional })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Apply the install-time resolver configuration that's shared between
+/// the streaming main path and the `--lockfile-only` short-circuit.
+/// Both paths must produce identical lockfiles, so any new resolver
+/// option should land here rather than only in one branch.
+pub(super) struct ResolverConfigInputs<'a> {
+    pub(super) settings_ctx: &'a aube_settings::ResolveCtx<'a>,
+    pub(super) workspace_catalogs:
+        &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub(super) opts: &'a InstallOptions,
+}
+
+pub(super) fn configure_resolver(
+    resolver: aube_resolver::Resolver,
+    cwd: &std::path::Path,
+    manifest: &aube_manifest::PackageJson,
+    inputs: ResolverConfigInputs<'_>,
+    read_package_hook: Option<Box<dyn aube_resolver::ReadPackageHook>>,
+) -> aube_resolver::Resolver {
+    let ResolverConfigInputs {
+        settings_ctx,
+        workspace_catalogs,
+        opts,
+    } = inputs;
+    let auto_install_peers = resolve_auto_install_peers(settings_ctx);
+    let exclude_links_from_lockfile = resolve_exclude_links_from_lockfile(settings_ctx);
+    let peers_suffix_max_length = resolve_peers_suffix_max_length(settings_ctx);
+    let dedupe_peer_dependents = resolve_dedupe_peer_dependents(settings_ctx);
+    let dedupe_peers = resolve_dedupe_peers(settings_ctx);
+    let resolve_peers_from_workspace_root_opt = resolve_peers_from_workspace_root(settings_ctx);
+    let registry_supports_time_field = resolve_registry_supports_time_field(settings_ctx);
+    let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
+    let supported_architectures = aube_resolver::SupportedArchitectures {
+        os: sup_os,
+        cpu: sup_cpu,
+        libc: sup_libc,
+    };
+    let effective_overrides = manifest.overrides_map();
+    let mut effective_overrides = effective_overrides;
+    merge_string_map_setting(settings_ctx, "overrides", &mut effective_overrides);
+    if !effective_overrides.is_empty() {
+        tracing::debug!("applying {} overrides", effective_overrides.len());
+    }
+    let dependency_policy = resolve_dependency_policy(manifest, settings_ctx);
+    if !dependency_policy.package_extensions.is_empty() {
+        tracing::debug!(
+            "applying {} packageExtensions",
+            dependency_policy.package_extensions.len()
+        );
+    }
+    let ignored_optional = manifest.pnpm_ignored_optional_dependencies();
+    if !ignored_optional.is_empty() {
+        tracing::debug!(
+            "ignoring {} optional dependencies (pnpm.ignoredOptionalDependencies)",
+            ignored_optional.len()
+        );
+    }
+    let resolution_mode = resolve_resolution_mode(settings_ctx);
+    let minimum_release_age =
+        resolve_minimum_release_age(settings_ctx, opts.minimum_release_age_override);
+    if let Some(ref mra) = minimum_release_age {
+        tracing::debug!(
+            "minimumReleaseAge: {} min, {} excluded, strict={}",
+            mra.minutes,
+            mra.exclude.len(),
+            mra.strict
+        );
+    }
+    let git_shallow_hosts = resolve_git_shallow_hosts(settings_ctx);
+    let mut resolver = resolver
+        .with_packument_cache(packument_cache_dir())
+        .with_packument_full_cache(packument_full_cache_dir())
+        .with_auto_install_peers(auto_install_peers)
+        .with_peers_suffix_max_length(peers_suffix_max_length)
+        .with_exclude_links_from_lockfile(exclude_links_from_lockfile)
+        .with_dedupe_peer_dependents(dedupe_peer_dependents)
+        .with_dedupe_peers(dedupe_peers)
+        .with_resolve_peers_from_workspace_root(resolve_peers_from_workspace_root_opt)
+        .with_registry_supports_time_field(registry_supports_time_field)
+        .with_supported_architectures(supported_architectures)
+        .with_overrides(effective_overrides)
+        .with_ignored_optional_dependencies(ignored_optional)
+        .with_resolution_mode(resolution_mode)
+        .with_minimum_release_age(minimum_release_age)
+        .with_catalogs(workspace_catalogs.clone())
+        .with_project_root(cwd.to_path_buf())
+        .with_dependency_policy(dependency_policy)
+        .with_git_shallow_hosts(git_shallow_hosts);
+    if let Some(hook) = read_package_hook {
+        resolver = resolver.with_read_package_hook(hook);
+    }
+    resolver
+}
+
+/// Emit pnpm-style warnings for every declared required peer dep whose
+/// resolved version doesn't satisfy the declared range, or that isn't
+/// in the tree at all. When `strict` is true (pnpm's
+/// `strict-peer-dependencies`), returns an `Err` after printing the
+/// same lines so the install fails. Peers that match one of the
+/// `PeerDependencyRules` escape hatches (`ignoreMissing`, `allowAny`,
+/// `allowedVersions`) are filtered out before either warn or error —
+/// same as pnpm.
+pub(super) fn warn_unmet_peers(
+    graph: &aube_lockfile::LockfileGraph,
+    strict: bool,
+    rules: &PeerDependencyRules,
+) -> miette::Result<()> {
+    let unmet: Vec<_> = aube_resolver::detect_unmet_peers(graph)
+        .into_iter()
+        .filter(|u| !rules.silences(u))
+        .collect();
+    if unmet.is_empty() {
+        return Ok(());
+    }
+    let header = if strict {
+        "error: Issues with peer dependencies found"
+    } else {
+        "warn: Issues with peer dependencies found"
+    };
+    let prefix = if strict { "error:" } else { "warn:" };
+    eprintln!("{header}");
+    for u in &unmet {
+        match &u.found {
+            Some(found) => eprintln!(
+                "{prefix}   {}@{}: expected peer {}@{}, found {}",
+                u.from_name,
+                version_from_dep_path(&u.from_dep_path, &u.from_name),
+                u.peer_name,
+                u.declared,
+                found,
+            ),
+            None => eprintln!(
+                "{prefix}   {}@{}: missing required peer {}@{}",
+                u.from_name,
+                version_from_dep_path(&u.from_dep_path, &u.from_name),
+                u.peer_name,
+                u.declared,
+            ),
+        }
+    }
+    if strict {
+        return Err(miette!(
+            "{} unmet peer dependenc{} (strict-peer-dependencies is enabled)",
+            unmet.len(),
+            if unmet.len() == 1 { "y" } else { "ies" }
+        ));
+    }
+    Ok(())
+}
+
+/// Resolved `pnpm.peerDependencyRules` — the three escape hatches pnpm
+/// exposes for quieting or widening peer-dependency checks.
+///
+/// Sources, merged in precedence order (later sources overwrite):
+/// 1. `pnpm.peerDependencyRules` in the root `package.json`
+/// 2. `peerDependencyRules` in `pnpm-workspace.yaml`
+/// 3. `peerDependencyRules.{ignoreMissing,allowAny,allowedVersions}` in
+///    `.npmrc`
+/// 4. env (`npm_config_peer_dependency_rules_*` aliases)
+///
+/// Glob patterns are compiled once at resolve time — malformed patterns
+/// are dropped with a warning rather than failing the install, matching
+/// pnpm's tolerance for config typos.
+#[derive(Debug, Default)]
+pub(crate) struct PeerDependencyRules {
+    ignore_missing: Vec<glob::Pattern>,
+    allow_any: Vec<glob::Pattern>,
+    /// Keys are pnpm selectors: either a bare peer name (`react`) or a
+    /// scoped `parent>peer` pair (`styled-components>react`). Values are
+    /// additional semver ranges; a peer resolving inside *either* the
+    /// declared range or this override is treated as satisfied.
+    allowed_versions: BTreeMap<String, String>,
+}
+
+impl PeerDependencyRules {
+    pub(crate) fn resolve(
+        manifest: &aube_manifest::PackageJson,
+        ctx: &aube_settings::ResolveCtx<'_>,
+    ) -> Self {
+        // Lists: package.json is the base, overridden wholesale if any
+        // higher-precedence source (cli/env/npmrc/workspaceYaml) sets
+        // a value. Matches pnpm's "most specific file wins" semantics
+        // for list-shaped config — we never concatenate across
+        // sources.
+        let ignore_missing_raw = aube_settings::resolved::peer_dependency_rules_ignore_missing(ctx)
+            .unwrap_or_else(|| manifest.pnpm_peer_dependency_rules_ignore_missing());
+        let allow_any_raw = aube_settings::resolved::peer_dependency_rules_allow_any(ctx)
+            .unwrap_or_else(|| manifest.pnpm_peer_dependency_rules_allow_any());
+
+        // Map: package.json is the base, then workspaceYaml / npmrc /
+        // env merge on top (later sources win per-key). Same shape the
+        // `overrides` and `allowedDeprecatedVersions` settings use.
+        let mut allowed_versions = manifest.pnpm_peer_dependency_rules_allowed_versions();
+        merge_string_map_setting(
+            ctx,
+            "peerDependencyRules.allowedVersions",
+            &mut allowed_versions,
+        );
+
+        Self {
+            ignore_missing: compile_peer_patterns("ignoreMissing", &ignore_missing_raw),
+            allow_any: compile_peer_patterns("allowAny", &allow_any_raw),
+            allowed_versions,
+        }
+    }
+
+    /// True when an `UnmetPeer` should be suppressed from warn/error
+    /// output because one of the three rules covers it.
+    pub(crate) fn silences(&self, u: &aube_resolver::UnmetPeer) -> bool {
+        if u.found.is_none() && self.ignore_missing.iter().any(|p| p.matches(&u.peer_name)) {
+            return true;
+        }
+        if self.allow_any.iter().any(|p| p.matches(&u.peer_name)) {
+            return true;
+        }
+        if let Some(found) = u.found.as_deref()
+            && self.allowed_versions_permit(&u.from_name, &u.peer_name, found)
+        {
+            return true;
+        }
+        false
+    }
+
+    fn allowed_versions_permit(&self, parent: &str, peer: &str, found: &str) -> bool {
+        let scoped_key = format!("{parent}>{peer}");
+        let candidates = [
+            self.allowed_versions.get(&scoped_key),
+            self.allowed_versions.get(peer),
+        ];
+        let Ok(found_v) = node_semver::Version::parse(found) else {
+            return false;
+        };
+        candidates
+            .into_iter()
+            .flatten()
+            .any(|range| matches_range(range, &found_v))
+    }
+}
+
+fn matches_range(range: &str, found: &node_semver::Version) -> bool {
+    match node_semver::Range::parse(range) {
+        Ok(r) => r.satisfies(found),
+        Err(_) => false,
+    }
+}
+
+fn compile_peer_patterns(field: &str, raw: &[String]) -> Vec<glob::Pattern> {
+    raw.iter()
+        .filter_map(|p| match glob::Pattern::new(p) {
+            Ok(pat) => Some(pat),
+            Err(err) => {
+                tracing::warn!("ignoring invalid peerDependencyRules.{field} pattern {p:?}: {err}");
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod peer_dependency_rules_tests {
+    use super::*;
+
+    fn unmet(
+        parent: &str,
+        peer: &str,
+        declared: &str,
+        found: Option<&str>,
+    ) -> aube_resolver::UnmetPeer {
+        aube_resolver::UnmetPeer {
+            from_dep_path: format!("{parent}@0.0.0"),
+            from_name: parent.to_string(),
+            peer_name: peer.to_string(),
+            declared: declared.to_string(),
+            found: found.map(String::from),
+        }
+    }
+
+    fn rules(
+        ignore_missing: &[&str],
+        allow_any: &[&str],
+        allowed_versions: &[(&str, &str)],
+    ) -> PeerDependencyRules {
+        PeerDependencyRules {
+            ignore_missing: ignore_missing
+                .iter()
+                .map(|p| glob::Pattern::new(p).unwrap())
+                .collect(),
+            allow_any: allow_any
+                .iter()
+                .map(|p| glob::Pattern::new(p).unwrap())
+                .collect(),
+            allowed_versions: allowed_versions
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn ignore_missing_silences_only_missing_matches() {
+        let r = rules(&["react*"], &[], &[]);
+        assert!(r.silences(&unmet("parent", "react", "^18.0.0", None)));
+        assert!(r.silences(&unmet("parent", "react-dom", "^18.0.0", None)));
+        // present-but-wrong-version is NOT silenced by ignore_missing.
+        assert!(!r.silences(&unmet("parent", "react", "^18.0.0", Some("19.0.0"))));
+        // Non-matching name is not silenced.
+        assert!(!r.silences(&unmet("parent", "vue", "^3.0.0", None)));
+    }
+
+    #[test]
+    fn allow_any_silences_both_missing_and_wrong_version() {
+        let r = rules(&[], &["react"], &[]);
+        assert!(r.silences(&unmet("parent", "react", "^18.0.0", None)));
+        assert!(r.silences(&unmet("parent", "react", "^18.0.0", Some("19.0.0"))));
+        assert!(!r.silences(&unmet("parent", "vue", "^3.0.0", Some("2.0.0"))));
+    }
+
+    #[test]
+    fn allowed_versions_bare_key_widens_range_regardless_of_parent() {
+        let r = rules(&[], &[], &[("react", "^19.0.0")]);
+        assert!(r.silences(&unmet(
+            "styled-components",
+            "react",
+            "^18.0.0",
+            Some("19.0.0")
+        )));
+        assert!(r.silences(&unmet("other-lib", "react", "^18.0.0", Some("19.5.0"))));
+        // Found outside both the declared range AND the override — still fires.
+        assert!(!r.silences(&unmet("lib", "react", "^18.0.0", Some("20.0.0"))));
+        // Missing peers are not silenced by allowed_versions.
+        assert!(!r.silences(&unmet("lib", "react", "^18.0.0", None)));
+    }
+
+    #[test]
+    fn allowed_versions_scoped_key_only_matches_named_parent() {
+        let r = rules(&[], &[], &[("styled-components>react", "^19.0.0")]);
+        assert!(r.silences(&unmet(
+            "styled-components",
+            "react",
+            "^18.0.0",
+            Some("19.0.0")
+        )));
+        // Different parent — not silenced.
+        assert!(!r.silences(&unmet("other-lib", "react", "^18.0.0", Some("19.0.0"))));
+    }
+
+    #[test]
+    fn invalid_override_range_does_not_silence() {
+        // A malformed range in allowedVersions falls through to "no
+        // match" rather than panicking or silencing everything.
+        let r = rules(&[], &[], &[("react", "not-a-range")]);
+        assert!(!r.silences(&unmet("parent", "react", "^18.0.0", Some("19.0.0"))));
+    }
+}
