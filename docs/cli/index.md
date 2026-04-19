@@ -104,6 +104,12 @@ Use the lockfile when fresh, re-resolve when stale.
 
 Global counterpart to the same `install` flag.
 
+### `--registry <URL>`
+
+Override the default registry URL for this invocation.
+
+Mirrors pnpm's `--registry=<url>` placement. Can appear before or after subcommands; commands that already expose their own `--registry` flag (publish, login, view, …) still win for their own traffic.
+
 ### `--reporter <NAME>`
 
 Output format: default, append-only, ndjson, silent.
@@ -148,14 +154,6 @@ Run from the workspace root regardless of the current package
 Automatically answer yes to prompts.
 
 Parsed for pnpm compatibility; aube does not currently prompt on these paths.
-
-## Flags
-
-### `--registry <URL>`
-
-Override the default registry URL for this invocation.
-
-Mirrors pnpm's top-level `--registry=<url>`. Must appear before the subcommand, e.g. `aube --registry=https://… install`; commands that already expose a subcommand-level `--registry` (publish, login, view, …) still win for their own traffic.
 
 ## Subcommands
 

@@ -5524,14 +5524,14 @@
         "name": "registry",
         "usage": "--registry <URL>",
         "help": "Override the default registry URL for this invocation",
-        "help_long": "Override the default registry URL for this invocation.\n\nMirrors pnpm's top-level `--registry=<url>`. Must appear before the subcommand, e.g. `aube --registry=https://… install`; commands that already expose a subcommand-level `--registry` (publish, login, view, …) still win for their own traffic.",
+        "help_long": "Override the default registry URL for this invocation.\n\nMirrors pnpm's `--registry=<url>` placement. Can appear before or after subcommands; commands that already expose their own `--registry` flag (publish, login, view, …) still win for their own traffic.",
         "help_first_line": "Override the default registry URL for this invocation",
         "short": [],
         "long": [
           "registry"
         ],
         "hide": false,
-        "global": false,
+        "global": true,
         "arg": {
           "name": "URL",
           "usage": "<URL>",
