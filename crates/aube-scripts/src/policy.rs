@@ -19,9 +19,14 @@
 //! allowlist you're asserting a specific build has been audited, so
 //! range matching would defeat the point.
 //!
-//! Name patterns with `*` are not yet supported — pnpm's `@pnpm/config.matcher`
-//! handles them but they're rare in practice and we can add them later
-//! if users ask.
+//! Name patterns may also contain `*` wildcards, mirroring pnpm's
+//! `@pnpm/config.matcher`. `@babel/*` matches every package under the
+//! `@babel` scope, `*-loader` matches any name ending in `-loader`,
+//! and a bare `*` matches every package. `*` is the only supported
+//! metacharacter and always matches a possibly-empty run of any
+//! characters. Wildcards must stand alone — combining them with a
+//! version spec (`@babel/*@1.0.0`) is rejected, since a wildcard
+//! name can't be used to assert "this exact build was audited."
 
 use aube_manifest::AllowBuildRaw;
 use std::collections::{BTreeMap, HashSet};
@@ -46,6 +51,12 @@ pub struct BuildPolicy {
     /// `name@version` strings (match that specific version).
     allowed: HashSet<String>,
     denied: HashSet<String>,
+    /// Bare-name patterns containing `*` wildcards. Checked with a
+    /// linear scan after the exact-match sets; wildcard rules are rare
+    /// enough that the linear pass is cheaper than building an
+    /// automaton.
+    allowed_wildcards: Vec<String>,
+    denied_wildcards: Vec<String>,
 }
 
 impl BuildPolicy {
@@ -83,6 +94,8 @@ impl BuildPolicy {
         }
         let mut allowed = HashSet::new();
         let mut denied = HashSet::new();
+        let mut allowed_wildcards = Vec::new();
+        let mut denied_wildcards = Vec::new();
         let mut warnings = Vec::new();
 
         for (pattern, value) in allow_builds {
@@ -98,12 +111,12 @@ impl BuildPolicy {
             };
             match expand_spec(pattern) {
                 Ok(expanded) => {
-                    let target = if bool_value {
-                        &mut allowed
+                    let (exact, wild) = if bool_value {
+                        (&mut allowed, &mut allowed_wildcards)
                     } else {
-                        &mut denied
+                        (&mut denied, &mut denied_wildcards)
                     };
-                    target.extend(expanded);
+                    sort_entries(expanded, exact, wild);
                 }
                 Err(e) => warnings.push(e),
             }
@@ -116,13 +129,13 @@ impl BuildPolicy {
         // format.
         for pattern in only_built {
             match expand_spec(pattern) {
-                Ok(expanded) => allowed.extend(expanded),
+                Ok(expanded) => sort_entries(expanded, &mut allowed, &mut allowed_wildcards),
                 Err(e) => warnings.push(e),
             }
         }
         for pattern in never_built {
             match expand_spec(pattern) {
-                Ok(expanded) => denied.extend(expanded),
+                Ok(expanded) => sort_entries(expanded, &mut denied, &mut denied_wildcards),
                 Err(e) => warnings.push(e),
             }
         }
@@ -132,6 +145,8 @@ impl BuildPolicy {
                 allow_all: false,
                 allowed,
                 denied,
+                allowed_wildcards,
+                denied_wildcards,
             },
             warnings,
         )
@@ -144,10 +159,24 @@ impl BuildPolicy {
         if self.denied.contains(name) || self.denied.contains(&with_version) {
             return AllowDecision::Deny;
         }
+        if self
+            .denied_wildcards
+            .iter()
+            .any(|p| matches_wildcard(name, p))
+        {
+            return AllowDecision::Deny;
+        }
         if self.allow_all {
             return AllowDecision::Allow;
         }
         if self.allowed.contains(name) || self.allowed.contains(&with_version) {
+            return AllowDecision::Allow;
+        }
+        if self
+            .allowed_wildcards
+            .iter()
+            .any(|p| matches_wildcard(name, p))
+        {
             return AllowDecision::Allow;
         }
         AllowDecision::Unspecified
@@ -157,8 +186,55 @@ impl BuildPolicy {
     /// allow-all mode. Lets callers cheaply skip the whole dep-script
     /// phase when nothing could possibly run.
     pub fn has_any_allow_rule(&self) -> bool {
-        self.allow_all || !self.allowed.is_empty()
+        self.allow_all || !self.allowed.is_empty() || !self.allowed_wildcards.is_empty()
     }
+}
+
+/// Split one entry list from `expand_spec` across the exact-match set
+/// and the wildcard list. Wildcards are identified by a literal `*` in
+/// the string; since `expand_spec` rejects `wildcard@version`, a `*`
+/// can only appear in a bare name.
+fn sort_entries(entries: Vec<String>, exact: &mut HashSet<String>, wildcards: &mut Vec<String>) {
+    for entry in entries {
+        if entry.contains('*') {
+            if !wildcards.iter().any(|p| p == &entry) {
+                wildcards.push(entry);
+            }
+        } else {
+            exact.insert(entry);
+        }
+    }
+}
+
+/// Match `name` against a `*`-wildcard pattern. `*` matches any
+/// (possibly-empty) run of characters — including `/`, so `@babel/*`
+/// matches every package in the scope. Called only for patterns known
+/// to contain at least one `*`; a pattern with no `*` is routed to the
+/// exact-match set instead.
+fn matches_wildcard(name: &str, pattern: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    // `split` on a pattern with N wildcards yields N+1 parts, so the
+    // two-element case is the minimum we see here.
+    let (first, rest) = match parts.split_first() {
+        Some(pair) => pair,
+        None => return false,
+    };
+    let Some(after_prefix) = name.strip_prefix(first) else {
+        return false;
+    };
+    let (last, middle) = match rest.split_last() {
+        Some(pair) => pair,
+        None => return true,
+    };
+
+    let mut remaining = after_prefix;
+    for mid in middle {
+        match remaining.find(mid) {
+            Some(idx) => remaining = &remaining[idx + mid.len()..],
+            None => return false,
+        }
+    }
+    remaining.len() >= last.len() && remaining.ends_with(last)
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -396,6 +472,111 @@ mod tests {
             ("esbuild", "0.19.0")
         );
         assert_eq!(split_name_and_versions("esbuild"), ("esbuild", ""));
+    }
+
+    #[test]
+    fn wildcard_scope_allows_every_scope_member() {
+        let p = policy(&[("@babel/*", true)]);
+        assert_eq!(p.decide("@babel/core", "7.0.0"), AllowDecision::Allow);
+        assert_eq!(
+            p.decide("@babel/preset-env", "7.22.0"),
+            AllowDecision::Allow
+        );
+        assert_eq!(p.decide("@swc/core", "1.3.0"), AllowDecision::Unspecified);
+        assert_eq!(
+            p.decide("babel-loader", "9.0.0"),
+            AllowDecision::Unspecified
+        );
+        assert!(p.has_any_allow_rule());
+    }
+
+    #[test]
+    fn wildcard_suffix_matches_any_prefix() {
+        let p = policy(&[("*-loader", true)]);
+        assert_eq!(p.decide("css-loader", "6.0.0"), AllowDecision::Allow);
+        assert_eq!(p.decide("babel-loader", "9.0.0"), AllowDecision::Allow);
+        assert_eq!(
+            p.decide("loader-utils", "3.0.0"),
+            AllowDecision::Unspecified
+        );
+    }
+
+    #[test]
+    fn bare_star_matches_everything_and_is_distinct_from_allow_all() {
+        // `*` in the allowlist behaves like "allow every package" but
+        // is still a normal allow rule — deny entries still override
+        // it, unlike `dangerouslyAllowAllBuilds` which short-circuits.
+        let map: BTreeMap<String, AllowBuildRaw> = [
+            ("*".to_string(), AllowBuildRaw::Bool(true)),
+            ("sketchy-pkg".to_string(), AllowBuildRaw::Bool(false)),
+        ]
+        .into_iter()
+        .collect();
+        let (p, errs) = BuildPolicy::from_config(&map, &[], &[], false);
+        assert!(errs.is_empty());
+        assert_eq!(p.decide("esbuild", "0.19.0"), AllowDecision::Allow);
+        assert_eq!(p.decide("sketchy-pkg", "1.0.0"), AllowDecision::Deny);
+    }
+
+    #[test]
+    fn denied_wildcard_blocks_allowed_exact() {
+        let map: BTreeMap<String, AllowBuildRaw> = [
+            ("@babel/core".to_string(), AllowBuildRaw::Bool(true)),
+            ("@babel/*".to_string(), AllowBuildRaw::Bool(false)),
+        ]
+        .into_iter()
+        .collect();
+        let (p, errs) = BuildPolicy::from_config(&map, &[], &[], false);
+        assert!(errs.is_empty());
+        assert_eq!(p.decide("@babel/core", "7.0.0"), AllowDecision::Deny);
+        assert_eq!(p.decide("@babel/traverse", "7.0.0"), AllowDecision::Deny);
+    }
+
+    #[test]
+    fn wildcard_with_version_is_rejected() {
+        let map: BTreeMap<String, AllowBuildRaw> =
+            [("@babel/*@7.0.0".to_string(), AllowBuildRaw::Bool(true))]
+                .into_iter()
+                .collect();
+        let (p, errs) = BuildPolicy::from_config(&map, &[], &[], false);
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(errs[0], BuildPolicyError::WildcardWithVersion(_)));
+        // The rejected entry should not leak through as either an
+        // exact or a wildcard allow.
+        assert_eq!(p.decide("@babel/core", "7.0.0"), AllowDecision::Unspecified);
+    }
+
+    #[test]
+    fn wildcards_flow_through_flat_lists_too() {
+        let only_built = vec!["@types/*".to_string()];
+        let never_built = vec!["*-internal".to_string()];
+        let (p, errs) =
+            BuildPolicy::from_config(&BTreeMap::new(), &only_built, &never_built, false);
+        assert!(errs.is_empty());
+        assert_eq!(p.decide("@types/node", "20.0.0"), AllowDecision::Allow);
+        assert_eq!(p.decide("@types/react", "18.0.0"), AllowDecision::Allow);
+        assert_eq!(p.decide("acme-internal", "1.0.0"), AllowDecision::Deny);
+    }
+
+    #[test]
+    fn matches_wildcard_handles_all_positions() {
+        assert!(matches_wildcard("@babel/core", "@babel/*"));
+        assert!(matches_wildcard("@babel/", "@babel/*"));
+        assert!(!matches_wildcard("@babe/core", "@babel/*"));
+
+        assert!(matches_wildcard("css-loader", "*-loader"));
+        assert!(matches_wildcard("-loader", "*-loader"));
+        assert!(!matches_wildcard("loader-x", "*-loader"));
+
+        assert!(matches_wildcard("foobar", "foo*bar"));
+        assert!(matches_wildcard("foo-x-bar", "foo*bar"));
+        assert!(!matches_wildcard("foobaz", "foo*bar"));
+
+        assert!(matches_wildcard("@x/anything", "*"));
+        assert!(matches_wildcard("", "*"));
+
+        // Adjacent wildcards collapse to a single match, same as glob.
+        assert!(matches_wildcard("anything", "**"));
     }
 
     #[test]

@@ -169,6 +169,51 @@ YAML
 	assert_file_exists aube-builds-marker.txt
 }
 
+@test "pnpm.allowBuilds honors a name wildcard" {
+	# `*-marker` is a wildcard pattern that should match our fixture
+	# `aube-test-builds-marker` without naming it explicitly — pnpm's
+	# `@pnpm/config.matcher` supports the same syntax, so this is a
+	# drop-in compatible allowlist form for scopes / suffixes.
+	cat >package.json <<'JSON'
+{
+  "name": "allow-builds-wildcard-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "*-marker": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+}
+
+@test "pnpm.allowBuilds wildcard deny beats wildcard allow" {
+	cat >package.json <<'JSON'
+{
+  "name": "allow-builds-wildcard-deny-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-*": true,
+      "*-marker": false
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_not_exists aube-builds-marker.txt
+}
+
 @test "--ignore-scripts suppresses allowed dep scripts" {
 	cat >package.json <<'JSON'
 {
