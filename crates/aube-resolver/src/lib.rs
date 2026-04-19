@@ -1174,6 +1174,27 @@ impl Resolver {
                                 effective_spec
                             );
                             task.range = effective_spec;
+                            // If the override replaced the spec with a
+                            // bare range (not itself an `npm:` / `jsr:`
+                            // alias), it's targeting `task.name` —
+                            // implicitly undoing any prior alias
+                            // rewrite. Without this, an override that
+                            // fires after a catalog-aliased entry
+                            // (e.g. catalog `js-yaml:
+                            // npm:@zkochan/js-yaml@0.0.11`, override
+                            // `js-yaml@<3.14.2: ^3.14.2`) would keep
+                            // `task.real_name = @zkochan/js-yaml` and
+                            // try to fetch `^3.14.2` from a packument
+                            // that only carries `0.0.x`. If the
+                            // override's value is itself an alias, the
+                            // alias pass below picks up the new target
+                            // on the next loop iteration.
+                            if task.real_name.is_some()
+                                && !task.range.starts_with("npm:")
+                                && !task.range.starts_with("jsr:")
+                            {
+                                task.real_name = None;
+                            }
                             changed = true;
                         }
                     }
@@ -5229,6 +5250,64 @@ mod tests {
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].name, "odd-alias");
         assert_eq!(root[0].dep_path, "odd-alias@3.0.1");
+    }
+
+    // Catalog-aliased dep + selector override targeting the original
+    // (alias) name with a bare-range replacement. Reproduces the
+    // pnpm/pnpm `js-yaml: npm:@zkochan/js-yaml@0.0.11` + `js-yaml@<3.14.2:
+    // ^3.14.2` shape: the catalog rewrites js-yaml to the @zkochan
+    // package, then the override fires by user-facing name and
+    // replaces the range with `^3.14.2`. Without clearing
+    // `task.real_name` in the override path, the resolver kept fetching
+    // `@zkochan/js-yaml`'s packument and bailed with "no version of
+    // js-yaml matches range ^3.14.2".
+    #[tokio::test]
+    async fn override_with_bare_range_undoes_prior_catalog_alias() {
+        let real_js_yaml = make_packument("js-yaml", &["3.14.2"], "3.14.2");
+        let aliased = make_packument("@zkochan/js-yaml", &["0.0.11"], "0.0.11");
+
+        let client = Arc::new(aube_registry::client::RegistryClient::new(
+            "http://127.0.0.1:0",
+        ));
+        let mut catalogs: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        catalogs.entry("default".to_string()).or_default().insert(
+            "js-yaml".to_string(),
+            "npm:@zkochan/js-yaml@0.0.11".to_string(),
+        );
+        let mut overrides: BTreeMap<String, String> = BTreeMap::new();
+        overrides.insert("js-yaml@<3.14.2".to_string(), "^3.14.2".to_string());
+
+        let mut resolver = Resolver::new(client)
+            .with_catalogs(catalogs)
+            .with_overrides(overrides);
+        resolver.cache.insert("js-yaml".to_string(), real_js_yaml);
+        resolver
+            .cache
+            .insert("@zkochan/js-yaml".to_string(), aliased);
+
+        let mut manifest = PackageJson::default();
+        manifest
+            .dependencies
+            .insert("js-yaml".to_string(), "catalog:".to_string());
+
+        let graph = resolver
+            .resolve(&manifest, None)
+            .await
+            .expect("override should redirect back to real js-yaml");
+
+        let pkg = graph
+            .packages
+            .get("js-yaml@3.14.2")
+            .expect("override target must resolve to real js-yaml@3.14.2");
+        assert_eq!(pkg.name, "js-yaml");
+        assert_eq!(pkg.version, "3.14.2");
+        assert!(
+            pkg.alias_of.is_none(),
+            "bare-range override must clear the prior npm: alias, got alias_of={:?}",
+            pkg.alias_of,
+        );
+        assert!(!graph.packages.contains_key("js-yaml@0.0.11"));
+        assert!(!graph.packages.contains_key("@zkochan/js-yaml@0.0.11"));
     }
 
     #[tokio::test]
