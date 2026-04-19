@@ -32,6 +32,20 @@ struct CachedFullPackument {
 /// the network entirely.
 const PACKUMENT_TTL_SECS: u64 = 300;
 
+/// Accept header for packument requests. `vnd.npm.install-v1+json` is the
+/// abbreviated (corgi) format npmjs emits for installs; the `application/json`
+/// fallback covers registries (Verdaccio, older Artifactory, private mirrors)
+/// whose proxy layer normalizes Accept and would otherwise return 406 on the
+/// corgi-only form. `*/*` keeps us compatible with anything that strips the
+/// fancy media types entirely. Same shape npm-cli / pnpm send.
+const PACKUMENT_ACCEPT: &str =
+    "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
+
+/// Accept header for the full (non-corgi) packument route used by `aube view`
+/// and mutating commands. Adds `*/*` as a fallback for the same reason as
+/// `PACKUMENT_ACCEPT` — some proxies won't serve JSON unless it's in the list.
+const PACKUMENT_FULL_ACCEPT: &str = "application/json; q=1.0, */*";
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -121,6 +135,21 @@ impl RegistryClient {
     /// Get the registry URL for a given package name (respects scoped registries).
     fn registry_url_for(&self, name: &str) -> &str {
         self.config.registry_for(name)
+    }
+
+    /// Build `{registry}/{encoded_name}` — the packument route. Scoped
+    /// packages have their `/` encoded as `%2F` so intermediate proxies
+    /// that route on path segments (Artifactory's npm remote is the
+    /// known offender) don't reject the request with 406. npm-cli and
+    /// pnpm encode the same way.
+    fn packument_url(&self, name: &str) -> (String, &str) {
+        let registry_url = self.registry_url_for(name);
+        let url = format!(
+            "{}/{}",
+            registry_url.trim_end_matches('/'),
+            encoded_name(name),
+        );
+        (url, registry_url)
     }
 
     /// Build a GET request with auth headers for the given registry URL.
@@ -378,8 +407,7 @@ impl RegistryClient {
             return Err(Error::Offline(format!("packument for {name}")));
         }
 
-        let registry_url = self.registry_url_for(name);
-        let url = format!("{}/{name}", registry_url.trim_end_matches('/'));
+        let (url, registry_url) = self.packument_url(name);
 
         // Rebuild the conditional request on each retry. Held in a
         // closure so the revalidation headers are consistent across
@@ -388,7 +416,9 @@ impl RegistryClient {
         let cached_ref = cached.as_ref();
         let resp = self
             .send_metadata_with_retry(&format!("packument {name}"), || {
-                let mut req = self.authed_get(&url, registry_url);
+                let mut req = self
+                    .authed_get(&url, registry_url)
+                    .header("Accept", PACKUMENT_FULL_ACCEPT);
                 if let Some(c) = cached_ref {
                     if let Some(ref etag) = c.etag {
                         req = req.header("If-None-Match", etag);
@@ -492,8 +522,7 @@ impl RegistryClient {
         if self.network_mode == NetworkMode::Offline {
             return Err(Error::Offline(format!("packument for {name}")));
         }
-        let registry_url = self.registry_url_for(name);
-        let url = format!("{}/{name}", registry_url.trim_end_matches('/'));
+        let (url, registry_url) = self.packument_url(name);
 
         let resp = self
             .send_metadata_with_retry(&format!("packument {name}"), || {
@@ -501,7 +530,7 @@ impl RegistryClient {
                 if force_full_packument() {
                     req
                 } else {
-                    req.header("Accept", "application/vnd.npm.install-v1+json")
+                    req.header("Accept", PACKUMENT_ACCEPT)
                 }
             })
             .await?;
@@ -545,8 +574,7 @@ impl RegistryClient {
             return Err(Error::Offline(format!("packument for {name}")));
         }
 
-        let registry_url = self.registry_url_for(name);
-        let url = format!("{}/{name}", registry_url.trim_end_matches('/'));
+        let (url, registry_url) = self.packument_url(name);
 
         // Normally we ask for the abbreviated (corgi) response so we
         // get a smaller payload. See `force_full_packument()` for why
@@ -562,7 +590,7 @@ impl RegistryClient {
             .send_metadata_with_retry(&format!("packument {name}"), || {
                 let mut req = self.authed_get(&url, registry_url);
                 if !force_full_packument() {
-                    req = req.header("Accept", "application/vnd.npm.install-v1+json");
+                    req = req.header("Accept", PACKUMENT_ACCEPT);
                 }
                 if let Some(c) = cached_ref {
                     if let Some(ref etag) = c.etag {
@@ -704,12 +732,11 @@ impl RegistryClient {
     /// on the registry — a stale cached document would roll back other
     /// publishers' changes on the subsequent PUT.
     pub async fn fetch_packument_json_fresh(&self, name: &str) -> Result<serde_json::Value, Error> {
-        let registry_url = self.registry_url_for(name);
-        let url = format!("{}/{name}", registry_url.trim_end_matches('/'));
+        let (url, registry_url) = self.packument_url(name);
         let resp = self
             .send_metadata_with_retry(&format!("packument {name}"), || {
                 self.authed_get(&url, registry_url)
-                    .header("Accept", "application/json")
+                    .header("Accept", PACKUMENT_FULL_ACCEPT)
             })
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -732,8 +759,7 @@ impl RegistryClient {
         body: &serde_json::Value,
         otp: Option<&str>,
     ) -> Result<serde_json::Value, Error> {
-        let registry_url = self.registry_url_for(name);
-        let url = format!("{}/{name}", registry_url.trim_end_matches('/'));
+        let (url, registry_url) = self.packument_url(name);
 
         let mut req = self.authed(
             self.http_for(registry_url)
@@ -1437,6 +1463,49 @@ mod retry_tests {
             .await
             .expect("warn-threshold is advisory — request must still succeed");
         assert_eq!(packument.name, "demo");
+    }
+
+    #[tokio::test]
+    async fn scoped_packument_request_is_url_encoded() {
+        // Artifactory's npm remote rejects the literal `@scope/pkg`
+        // path form with 406 and only accepts `@scope%2Fpkg`. The
+        // corgi Accept header must include `application/json` and
+        // `*/*` fallbacks for the same reason. wiremock normalizes
+        // `%2F` to `/` in its path matcher, so match on any GET and
+        // assert the raw request line instead.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "@scope/pkg",
+                "versions": {},
+                "dist-tags": {},
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_with(&server, FetchPolicy::default());
+        let packument = client
+            .fetch_packument("@scope/pkg")
+            .await
+            .expect("scoped packument fetch must succeed");
+        assert_eq!(packument.name, "@scope/pkg");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let raw = requests[0].url.as_str();
+        assert!(
+            raw.contains("/@scope%2Fpkg"),
+            "expected %2F-encoded scope separator, got {raw}"
+        );
+        let accept = requests[0]
+            .headers
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(
+            accept, "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*",
+            "corgi Accept header must include JSON and */* fallbacks",
+        );
     }
 }
 
