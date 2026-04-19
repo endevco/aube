@@ -111,7 +111,7 @@ jobs:
       # hk invokes cargo-msrv and cargo-machete; neither ships in the
       # default toolchain. Install prebuilt binaries rather than
       # `cargo install`-ing from source on every run.
-      - uses: taiki-e/install-action@f24a9cd65bd7c9e8e3b064b2c0008a9a53e59dfa # v2
+      - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2
         with:
           tool: cargo-msrv,cargo-machete
       - run: mise run test
