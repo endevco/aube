@@ -462,40 +462,32 @@ pub fn write(
     let roots = graph.importers.get(".").cloned().unwrap_or_default();
     let tree = crate::npm::build_hoist_tree(&canonical, &roots);
 
-    // Root workspace entry (`""` in bun.lock): mirror the manifest's
-    // direct-dep sections so `bun install --frozen-lockfile` can
-    // match against package.json without our having to carry bun's
-    // own specifier fields through the graph.
-    let mut root_obj = serde_json::Map::new();
+    // Root workspace entry (`""` in bun.lock). Field order mirrors
+    // bun's output (`name`, then dep sections). `version` is
+    // intentionally *not* written — bun leaves the workspace-root
+    // version field off even when package.json declares one, so
+    // emitting it here produces a gratuitous diff on every round-trip.
+    let mut root_pairs: Vec<(&'static str, Value)> = Vec::new();
     if let Some(name) = &manifest.name {
-        root_obj.insert("name".to_string(), json!(name));
-    }
-    if let Some(version) = &manifest.version {
-        root_obj.insert("version".to_string(), json!(version));
+        root_pairs.push(("name", json!(name)));
     }
     if !manifest.dependencies.is_empty() {
-        root_obj.insert("dependencies".to_string(), json!(manifest.dependencies));
+        root_pairs.push(("dependencies", json!(manifest.dependencies)));
     }
     if !manifest.dev_dependencies.is_empty() {
-        root_obj.insert(
-            "devDependencies".to_string(),
-            json!(manifest.dev_dependencies),
-        );
+        root_pairs.push(("devDependencies", json!(manifest.dev_dependencies)));
     }
     if !manifest.optional_dependencies.is_empty() {
-        root_obj.insert(
-            "optionalDependencies".to_string(),
+        root_pairs.push((
+            "optionalDependencies",
             json!(manifest.optional_dependencies),
-        );
+        ));
     }
     if !manifest.peer_dependencies.is_empty() {
-        root_obj.insert(
-            "peerDependencies".to_string(),
-            json!(manifest.peer_dependencies),
-        );
+        root_pairs.push(("peerDependencies", json!(manifest.peer_dependencies)));
     }
 
-    let mut packages_obj = serde_json::Map::new();
+    let mut package_entries: Vec<(String, Value)> = Vec::new();
     for (segs, canonical_key) in &tree {
         let Some(pkg) = canonical.get(canonical_key).copied() else {
             continue;
@@ -532,22 +524,124 @@ pub fn write(
             Value::Object(meta),
             Value::String(integrity),
         ]);
-        packages_obj.insert(bun_key, entry);
+        package_entries.push((bun_key, entry));
     }
 
-    let mut root_workspace = serde_json::Map::new();
-    root_workspace.insert("".to_string(), Value::Object(root_obj));
-
-    let mut doc = serde_json::Map::new();
-    doc.insert("lockfileVersion".to_string(), json!(1));
-    doc.insert("workspaces".to_string(), Value::Object(root_workspace));
-    doc.insert("packages".to_string(), Value::Object(packages_obj));
-
-    let mut body = serde_json::to_string_pretty(&Value::Object(doc))
-        .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
-    body.push('\n');
+    let body = format_bun_lockfile(&root_pairs, &package_entries);
     std::fs::write(path, body).map_err(|e| Error::Io(path.to_path_buf(), e))?;
     Ok(())
+}
+
+/// Hand-written JSONC emitter matching bun 1.2's `bun.lock` style.
+///
+/// bun's output has an idiosyncratic shape — nested object fields use
+/// trailing commas (standard JSONC) except `packages:` itself (the
+/// last top-level field, where bun omits the trailing comma and leaves
+/// the closing brace bare) — and every `packages:` entry is serialized
+/// as a single-line array with a blank separator above. serde_json's
+/// `to_string_pretty` can't express any of that, so we build the
+/// output by hand.
+///
+/// `root_pairs` is the ordered `workspaces[""]` key/value list; values
+/// are emitted inline via `serde_json::to_string`. `package_entries`
+/// are the `packages:` map in BTreeMap order — each is rendered as a
+/// single-line `[ident, "", {meta}, integrity]` array.
+fn format_bun_lockfile(
+    root_pairs: &[(&'static str, serde_json::Value)],
+    package_entries: &[(String, serde_json::Value)],
+) -> String {
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\n");
+    out.push_str("  \"lockfileVersion\": 1,\n");
+    out.push_str("  \"configVersion\": 1,\n");
+
+    // Workspaces block. One importer (`""`) for now — workspace
+    // projects beyond the root are a TODO tracked in the bun writer.
+    out.push_str("  \"workspaces\": {\n");
+    out.push_str("    \"\": {\n");
+    for (k, v) in root_pairs.iter() {
+        let key_str = serde_json::to_string(k).unwrap();
+        // bun emits a trailing comma after every workspace-level field,
+        // including the last one — `},` closes the `""` block.
+        match v {
+            serde_json::Value::Object(map) if !map.is_empty() => {
+                // Multi-line block — bun expands workspace dep maps
+                // even when small.
+                out.push_str(&format!("      {key_str}: {{\n"));
+                for (dk, dv) in map {
+                    out.push_str(&format!(
+                        "        {}: {},\n",
+                        serde_json::to_string(dk).unwrap(),
+                        inline_json(dv, 0)
+                    ));
+                }
+                out.push_str("      },\n");
+            }
+            _ => {
+                out.push_str(&format!("      {key_str}: {},\n", inline_json(v, 0)));
+            }
+        }
+    }
+    out.push_str("    },\n");
+    out.push_str("  },\n");
+
+    // Packages block. Each entry is its own line; bun separates
+    // entries with a blank line (an empty line between every
+    // consecutive pair). `packages:` is bun's last top-level field and
+    // gets no trailing comma on its closing brace.
+    out.push_str("  \"packages\": {\n");
+    for (i, (key, entry)) in package_entries.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "    {}: {},\n",
+            serde_json::to_string(key).unwrap(),
+            inline_json(entry, 0)
+        ));
+    }
+    out.push_str("  }\n");
+    out.push_str("}\n");
+    out
+}
+
+/// Serialize a JSON value inline in bun's spaced style — objects as
+/// `{ "k": v, "k2": v2 }` (with a trailing space before `}` and a
+/// trailing comma before the close), arrays as `["a", "b"]` (no
+/// trailing comma). Recurses into nested objects/arrays.
+///
+/// `base_indent` is reserved for a future multi-line fallback when an
+/// object gets too wide; bun in 1.2 keeps even the larger metadata
+/// objects on one line, so we currently ignore it.
+fn inline_json(value: &serde_json::Value, _base_indent: usize) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(_) => serde_json::to_string(value).unwrap(),
+        Value::Array(arr) => {
+            let parts: Vec<String> = arr.iter().map(|v| inline_json(v, 0)).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Object(map) => {
+            if map.is_empty() {
+                return "{}".to_string();
+            }
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "{}: {}",
+                        serde_json::to_string(k).unwrap(),
+                        inline_json(v, 0)
+                    )
+                })
+                .collect();
+            // bun writes `{ k: v, k2: v2 }` — spaces inside, no trailing comma.
+            format!("{{ {} }}", parts.join(", "))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -853,6 +947,64 @@ mod tests {
                 .get("bar")
                 .map(String::as_str),
             Some("bar@1.0.0")
+        );
+    }
+
+    /// Structural checks against a real `bun install`-generated lockfile.
+    /// A full byte-parity test is gated on two data-model changes we're
+    /// deferring (preserving declared dependency ranges, preserving the
+    /// full `bin` map), so this test asserts the format invariants
+    /// we *have* fixed: `configVersion` is emitted, the root workspace
+    /// carries no bogus `version`, package entries render on single
+    /// lines, trailing commas match bun's JSONC style, and `packages`
+    /// closes without a trailing comma as the last top-level field.
+    #[test]
+    fn test_write_matches_bun_jsonc_style() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bun-native.lock");
+        let graph = parse(&fixture).unwrap();
+        let manifest = aube_manifest::PackageJson {
+            name: Some("aube-lockfile-stability".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [
+                ("chalk".to_string(), "^4.1.2".to_string()),
+                ("picocolors".to_string(), "^1.1.1".to_string()),
+                ("semver".to_string(), "^7.6.3".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        write(tmp.path(), &graph, &manifest).unwrap();
+        let body = std::fs::read_to_string(tmp.path()).unwrap();
+
+        // configVersion is present and matches bun 1.2's value.
+        assert!(
+            body.contains("\"configVersion\": 1,"),
+            "missing configVersion:\n{body}"
+        );
+        // No spurious `version` on the root workspace — bun leaves it
+        // off even when package.json declares one.
+        assert!(
+            !body.contains("\"version\""),
+            "root workspace must not carry `version`:\n{body}"
+        );
+        // Trailing comma on each workspace-level dep line (jsonc style).
+        assert!(
+            body.contains("\"chalk\": \"^4.1.2\",\n"),
+            "workspace dep must end with trailing comma:\n{body}"
+        );
+        // Package entries are one line each.
+        assert!(
+            body.contains("    \"chalk\": [\"chalk@4.1.2\", \"\", { \"dependencies\": "),
+            "package entry should be on a single line:\n{body}"
+        );
+        // `packages:` closes with `  }\n}` — no trailing comma on the
+        // last top-level field.
+        assert!(
+            body.ends_with("  }\n}\n"),
+            "root object must close without trailing comma:\n{body}"
         );
     }
 }

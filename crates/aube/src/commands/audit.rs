@@ -621,6 +621,8 @@ mod tests {
                     os: Vec::new(),
                     cpu: Vec::new(),
                     libc: Vec::new(),
+                    engines: BTreeMap::new(),
+                    has_bin: false,
                     has_install_script: false,
                     deprecated: None,
                 },

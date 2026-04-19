@@ -147,6 +147,21 @@ pub struct VersionMetadata {
     pub cpu: Vec<String>,
     #[serde(default, deserialize_with = "string_or_seq")]
     pub libc: Vec<String>,
+    /// `engines:` from the package manifest (e.g. `{node: ">=8"}`).
+    /// Round-tripped into the lockfile so pnpm-compatible output can
+    /// emit `engines: {node: '>=8'}` on package entries without a
+    /// packument re-fetch.
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    pub engines: BTreeMap<String, String>,
+    /// `bin:` presence — `true` when the packument carried any entry
+    /// under `bin`, either as a string (`"bin": "cli.js"`) or a map
+    /// (`"bin": {"foo": "cli.js"}`). pnpm records this as `hasBin: true`
+    /// on the package line; `false` is never written. Renamed from
+    /// `bin` in the packument because we collapse the shape to a bool
+    /// at the deserialize step — callers that need the full map can
+    /// re-fetch the tarball manifest.
+    #[serde(default, rename = "bin", deserialize_with = "bin_is_present")]
+    pub has_bin: bool,
     #[serde(default)]
     pub has_install_script: bool,
     /// Deprecation message from the registry, if this version is deprecated.
@@ -175,6 +190,35 @@ where
     Ok(match value {
         Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
         _ => None,
+    })
+}
+
+/// pnpm's `hasBin: true` maps to "the manifest has at least one `bin`
+/// entry". The packument records `bin` as either a string
+/// (`"cli.js"`) or a map (`{name: path}`); either form with at least
+/// one character/entry is truthy. A missing `bin` field deserializes
+/// to `false`.
+///
+/// The disk cache round-trips this field as a plain `bool` (we serialize
+/// through the same field name `bin`), so we *must* accept
+/// `Value::Bool(b)` and preserve its value — otherwise a warm-cache
+/// read flips `false` → `true` on the fallthrough arm and every package
+/// ends up tagged `hasBin: true` on re-emit.
+///
+/// Other shapes (numbers, arrays) are treated as "present, assume
+/// truthy" — no real packument emits those, but a permissive default
+/// avoids parse failures on a registry that does something exotic.
+fn bin_is_present<'de, D>(de: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(de)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => b,
+        Some(serde_json::Value::String(s)) => !s.is_empty(),
+        Some(serde_json::Value::Object(m)) => !m.is_empty(),
+        Some(_) => true,
     })
 }
 
@@ -233,6 +277,53 @@ mod tests {
         assert!(v.os.is_empty());
         assert!(v.cpu.is_empty());
         assert!(v.libc.is_empty());
+    }
+
+    #[test]
+    fn has_bin_reads_bin_field() {
+        let missing = parse(r#"{"name":"x","version":"1.0.0"}"#);
+        assert!(!missing.has_bin, "missing bin → false");
+        let empty_string = parse(r#"{"name":"x","version":"1.0.0","bin":""}"#);
+        assert!(!empty_string.has_bin, "empty string bin → false");
+        let null_bin = parse(r#"{"name":"x","version":"1.0.0","bin":null}"#);
+        assert!(!null_bin.has_bin, "null bin → false");
+        let empty_map = parse(r#"{"name":"x","version":"1.0.0","bin":{}}"#);
+        assert!(!empty_map.has_bin, "empty map bin → false");
+        let string_bin = parse(r#"{"name":"x","version":"1.0.0","bin":"cli.js"}"#);
+        assert!(string_bin.has_bin, "non-empty string bin → true");
+        let map_bin = parse(r#"{"name":"x","version":"1.0.0","bin":{"x":"cli.js"}}"#);
+        assert!(map_bin.has_bin, "non-empty map bin → true");
+    }
+
+    /// Round-trip the `has_bin` field through the on-disk cache format
+    /// (serialize → parse). Regression: the disk cache stores this
+    /// field as a bool under the name `bin`; a permissive
+    /// deserializer that treated any non-string/non-object value as
+    /// "present" would flip `false` to `true` on every warm-cache
+    /// read and re-tag every package as `hasBin: true`.
+    #[test]
+    fn has_bin_roundtrips_through_bool_serialization() {
+        let v = VersionMetadata {
+            name: "x".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            peer_dependencies: BTreeMap::new(),
+            peer_dependencies_meta: BTreeMap::new(),
+            optional_dependencies: BTreeMap::new(),
+            bundled_dependencies: None,
+            dist: None,
+            os: Vec::new(),
+            cpu: Vec::new(),
+            libc: Vec::new(),
+            engines: BTreeMap::new(),
+            has_bin: false,
+            has_install_script: false,
+            deprecated: None,
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        let back: VersionMetadata = serde_json::from_str(&json).unwrap();
+        assert!(!back.has_bin, "false has_bin must round-trip as false");
     }
 
     #[test]

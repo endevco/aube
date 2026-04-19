@@ -485,6 +485,17 @@ impl Resolver {
         self
     }
 
+    /// Whether the resolver should round-trip registry `time:` entries
+    /// into the output graph. pnpm only writes `time:` to its lockfile
+    /// when one of `resolution-mode=time-based` / `minimumReleaseAge`
+    /// is active — otherwise the field is dead weight and, worse, shows
+    /// up as churn in a pnpm ↔ aube diff. Gate the insertion at the
+    /// two `resolved_times.insert` call sites on this predicate so
+    /// Highest-mode installs never populate the map.
+    fn should_record_times(&self) -> bool {
+        self.resolution_mode == ResolutionMode::TimeBased || self.minimum_release_age.is_some()
+    }
+
     /// Override the default `auto-install-peers=true` behavior. pnpm reads
     /// this from `.npmrc` or `pnpm-workspace.yaml`; aube's install command
     /// plumbs the resolved value through here before running resolution.
@@ -1576,7 +1587,8 @@ impl Resolver {
                             // existing `time:` entry even when this
                             // install reuses the locked version without
                             // re-fetching a packument.
-                            if let Some(g) = existing
+                            if self.should_record_times()
+                                && let Some(g) = existing
                                 && let Some(t) = g.times.get(&dep_path)
                             {
                                 resolved_times.insert(dep_path.clone(), t.clone());
@@ -1628,6 +1640,8 @@ impl Resolver {
                                     tarball_url: locked_pkg.tarball_url.clone(),
                                     alias_of: locked_pkg.alias_of.clone(),
                                     yarn_checksum: locked_pkg.yarn_checksum.clone(),
+                                    engines: locked_pkg.engines.clone(),
+                                    has_bin: locked_pkg.has_bin,
                                 },
                             );
 
@@ -1939,7 +1953,9 @@ impl Resolver {
                 // (v5.15.1+) and full-packument fetches do include it,
                 // and then we round-trip it into the lockfile just like
                 // pnpm does.
-                if let Some(t) = picked_publish_time.as_ref() {
+                if self.should_record_times()
+                    && let Some(t) = picked_publish_time.as_ref()
+                {
                     resolved_times.insert(dep_path.clone(), t.clone());
                 }
 
@@ -2101,6 +2117,8 @@ impl Resolver {
                         // reader populates this field.
                         alias_of: task.real_name.clone(),
                         yarn_checksum: None,
+                        engines: version_meta.engines.clone(),
+                        has_bin: version_meta.has_bin,
                     },
                 );
 
@@ -3208,6 +3226,8 @@ mod tests {
             os: vec![],
             cpu: vec![],
             libc: vec![],
+            engines: BTreeMap::new(),
+            has_bin: false,
             has_install_script: false,
             deprecated: None,
         }

@@ -516,6 +516,17 @@ pub struct LockedPackage {
     /// `checksum:` field, which berry tolerates at the default
     /// `checksumBehavior: throw` when the cache is fresh.
     pub yarn_checksum: Option<String>,
+    /// `engines:` from the package's manifest, round-tripped through
+    /// the lockfile so pnpm-style writers can emit the same flow-form
+    /// `engines: {node: '>=8'}` line pnpm writes. Empty map means
+    /// "no engines declared" — the writer skips the field entirely.
+    pub engines: BTreeMap<String, String>,
+    /// `hasBin:` — true when the package declares at least one
+    /// executable (`bin` field in its manifest, in either the string or
+    /// the map form). Round-tripped so pnpm-style writers emit
+    /// `hasBin: true` on the package entry; dropped silently when
+    /// false to match pnpm's "truthy-only" serialization.
+    pub has_bin: bool,
 }
 
 impl LockedPackage {
