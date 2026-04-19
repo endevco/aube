@@ -67,15 +67,14 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: build-${{ matrix.os }}
+          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || format('build-{0}', matrix.os) }}
+          save-if: ${{ matrix.os != 'ubuntu-latest' }}
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
       - run: mise run build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -94,16 +93,10 @@ jobs:
     if: needs.preflight.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
-        with:
-          # MSRV toolchain gets installed alongside stable so hk's
-          # cargo-msrv step can verify without a cold toolchain fetch.
-          toolchain: stable
-          components: rustfmt, clippy
-      - name: Install MSRV toolchain
-        run: rustup toolchain install 1.93.0 --profile minimal
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: test-linux
@@ -125,12 +118,10 @@ jobs:
     if: needs.preflight.outputs.should_run == 'true'
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: test-macos
