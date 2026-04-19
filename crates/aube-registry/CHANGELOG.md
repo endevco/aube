@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-registry-v1.0.0-beta.6...aube-registry-v1.0.0-beta.7) - 2026-04-19
+
+### Other
+
+- byte-identical pnpm-lock.yaml / bun.lock on re-emit ([#107](https://github.com/endevco/aube/pull/107))
+- registry + install: tolerate napi-rs packuments and warn on ignored builds ([#113](https://github.com/endevco/aube/pull/113))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-registry-v1.0.0-beta.5...aube-registry-v1.0.0-beta.6) - 2026-04-19
 
 ### Other

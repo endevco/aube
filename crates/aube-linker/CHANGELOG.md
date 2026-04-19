@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.6...aube-linker-v1.0.0-beta.7) - 2026-04-19
+
+### Other
+
+- make workspace warm installs incremental ([#110](https://github.com/endevco/aube/pull/110))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.5...aube-linker-v1.0.0-beta.6) - 2026-04-19
 
 ### Other

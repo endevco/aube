@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-manifest-v1.0.0-beta.6...aube-manifest-v1.0.0-beta.7) - 2026-04-19
+
+### Other
+
+- tolerate legacy-array engines field ([#120](https://github.com/endevco/aube/pull/120))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-manifest-v1.0.0-beta.5...aube-manifest-v1.0.0-beta.6) - 2026-04-19
 
 ### Other

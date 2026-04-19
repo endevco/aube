@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.6...aube-lockfile-v1.0.0-beta.7) - 2026-04-19
+
+### Other
+
+- pnpm compat: multi-document lockfile + override over npm-alias ([#116](https://github.com/endevco/aube/pull/116))
+- *(pnpm)* normalize empty-string root importer key ([#121](https://github.com/endevco/aube/pull/121))
+- byte-identical pnpm-lock.yaml / bun.lock on re-emit ([#107](https://github.com/endevco/aube/pull/107))
+- classify bare http(s) URLs as tarballs ([#114](https://github.com/endevco/aube/pull/114))
+- *(bun)* emit and parse non-root workspaces ([#104](https://github.com/endevco/aube/pull/104))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.5...aube-lockfile-v1.0.0-beta.6) - 2026-04-19
 
 ### Other

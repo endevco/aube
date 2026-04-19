@@ -5546,7 +5546,7 @@
   "config": {
     "props": {}
   },
-  "version": "1.0.0-beta.6",
+  "version": "1.0.0-beta.7",
   "usage": "Usage: aube [OPTIONS] [COMMAND]",
   "complete": {},
   "about": "A fast Node.js package manager"

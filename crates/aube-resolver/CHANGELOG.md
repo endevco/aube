@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.6...aube-resolver-v1.0.0-beta.7) - 2026-04-19
+
+### Other
+
+- pnpm compat: multi-document lockfile + override over npm-alias ([#116](https://github.com/endevco/aube/pull/116))
+- link bare-semver deps to workspace packages (yarn/npm/bun style) ([#118](https://github.com/endevco/aube/pull/118))
+- byte-identical pnpm-lock.yaml / bun.lock on re-emit ([#107](https://github.com/endevco/aube/pull/107))
+- classify bare http(s) URLs as tarballs ([#114](https://github.com/endevco/aube/pull/114))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.5...aube-resolver-v1.0.0-beta.6) - 2026-04-19
 
 ### Other

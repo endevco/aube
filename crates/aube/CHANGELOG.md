@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7](https://github.com/endevco/aube/compare/v1.0.0-beta.6...v1.0.0-beta.7) - 2026-04-19
+
+### Other
+
+- write per-dep .bin for transitive lifecycle-script bins ([#122](https://github.com/endevco/aube/pull/122))
+- make workspace warm installs incremental ([#110](https://github.com/endevco/aube/pull/110))
+- byte-identical pnpm-lock.yaml / bun.lock on re-emit ([#107](https://github.com/endevco/aube/pull/107))
+- drop webpack and rollup from gvs auto-disable defaults ([#117](https://github.com/endevco/aube/pull/117))
+- registry + install: tolerate napi-rs packuments and warn on ignored builds ([#113](https://github.com/endevco/aube/pull/113))
+- include bun.lock in --lockfile removal set ([#105](https://github.com/endevco/aube/pull/105))
+- fix --version / -V on aubr and aubx multicall shims ([#106](https://github.com/endevco/aube/pull/106))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/v1.0.0-beta.5...v1.0.0-beta.6) - 2026-04-19
 
 ### Other
