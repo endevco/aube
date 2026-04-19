@@ -616,15 +616,23 @@ fn parse_berry_str(
             "link" => Some(LocalSource::Link(PathBuf::from(strip_hash_fragment(
                 res_body,
             )))),
-            _ if res_body.starts_with("https://") || res_body.starts_with("http://") => {
-                // Tarball or git over http. Yarn represents git deps as
-                // `<name>@<url>` where the protocol-head slice is the
-                // URL scheme; parsing above placed the URL into
-                // `res_protocol:res_body`, so glue them back together.
+            // Plain HTTP(S) tarball or git-over-HTTPS: berry records
+            // the full URL in the spec, which `parse_berry_spec` split
+            // into `res_protocol = "https"` and `res_body =
+            // "//host/path..."`. Glue them back together with
+            // `<protocol>:<body>` to get the original URL, then let
+            // `classify_remote` pick tarball vs git based on `.git`
+            // in the URL.
+            "http" | "https" => {
                 let url = format!("{res_protocol}:{res_body}");
                 classify_remote(&url, block)
             }
-            _ if res_protocol == "git" || res_body.starts_with("git@") => {
+            // Git via a non-HTTP transport. Covers `git:`, `ssh:`, and
+            // the compound `git+ssh:` / `git+https:` / `git+file:`
+            // variants berry emits for git deps whose commit is pinned
+            // after `#`. Rejoin `<protocol>:<body>` into the full URL
+            // the linker will hand to `git clone`.
+            p if p == "git" || p == "ssh" || p.starts_with("git+") || p.starts_with("ssh+") => {
                 let url = format!("{res_protocol}:{res_body}");
                 Some(LocalSource::Git(GitSource {
                     url: strip_commit_hash(&url),
@@ -1487,6 +1495,73 @@ __metadata:
         assert_eq!(graph.packages.len(), 1);
         assert!(graph.packages.contains_key("foo@1.0.0"));
         assert!(!graph.packages.contains_key("my-project@0.0.0-use.local"));
+    }
+
+    /// Berry's `https:` tarball protocol and `git+ssh:` / `git:`
+    /// transports both survive parsing with a populated
+    /// `LocalSource`, rather than falling through to the "unknown
+    /// protocol" skip path.
+    ///
+    /// The hazard this guards against: `parse_berry_spec` splits
+    /// `"foo@https://host/path"` into `res_protocol = "https"` /
+    /// `res_body = "//host/path"` — the body never starts with
+    /// `https://`, so a URL-body check would always miss. Parsing the
+    /// file and verifying the package lands in the graph with the
+    /// right `LocalSource` catches any future regression of the
+    /// dispatch match arms.
+    #[test]
+    fn test_parse_berry_http_and_git_protocols() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"tarball-pkg@https://example.com/pkg-1.0.0.tgz":
+  version: 1.0.0
+  resolution: "tarball-pkg@https://example.com/pkg-1.0.0.tgz"
+  languageName: node
+  linkType: hard
+
+"git-pkg@https://github.com/user/repo.git#commit=abc123":
+  version: 2.0.0
+  resolution: "git-pkg@https://github.com/user/repo.git#commit=abc123"
+  languageName: node
+  linkType: hard
+
+"ssh-git-pkg@git+ssh://git@github.com/user/other.git#deadbeef":
+  version: 3.0.0
+  resolution: "ssh-git-pkg@git+ssh://git@github.com/user/other.git#deadbeef"
+  languageName: node
+  linkType: hard
+"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let manifest = make_manifest(&[], &[]);
+        let graph = parse(tmp.path(), &manifest).unwrap();
+
+        // All three packages should be present — none silently
+        // skipped as "unrecognized protocol". The `.values()` scan
+        // below asserts the `LocalSource` shape for each.
+        assert_eq!(graph.packages.len(), 3);
+        let by_name: BTreeMap<&str, &LockedPackage> = graph
+            .packages
+            .values()
+            .map(|p| (p.name.as_str(), p))
+            .collect();
+
+        // `.tgz` on https → remote tarball.
+        let tar = by_name["tarball-pkg"];
+        assert!(matches!(
+            &tar.local_source,
+            Some(LocalSource::RemoteTarball(_))
+        ));
+
+        // `.git` on https → git source, not tarball.
+        let git = by_name["git-pkg"];
+        assert!(matches!(&git.local_source, Some(LocalSource::Git(_))));
+
+        // `git+ssh:` prefix → git source.
+        let ssh = by_name["ssh-git-pkg"];
+        assert!(matches!(&ssh.local_source, Some(LocalSource::Git(_))));
     }
 
     /// Round-trip: parse berry → write berry → parse berry should
