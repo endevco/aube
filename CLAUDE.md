@@ -82,15 +82,27 @@ Any time we run a benchmark, serialize it with `flock` against a
 static lock path in a tmp directory so concurrent benchmark runs (on
 the same box, across worktrees, agents, terminals) can't fight each
 other for disk/CPU and skew the numbers. Use
-`/tmp/aube-bench.lock` as the canonical path and wrap the actual
-benchmark invocation, e.g.:
+`/tmp/aube-bench.lock` as the canonical path, and default to hermetic
+mode at a fixed bandwidth so ad-hoc runs are comparable across
+machines and over time:
 
 ```bash
-flock /tmp/aube-bench.lock mise run bench
+flock /tmp/aube-bench.lock \
+  env BENCH_HERMETIC=1 BENCH_BANDWIDTH=100mbit mise run bench
 ```
 
+`BENCH_HERMETIC=1` removes npmjs CDN variance; `BENCH_BANDWIDTH=100mbit`
+pins the simulated link at a "fast home broadband" baseline so two
+runs on different ISPs / CI runners produce comparable numbers. Drop
+the bandwidth cap (or raise it) for loopback-speed measurements; lower
+it (e.g. `6mbit`) to see how each PM scales under a constrained link.
+See the Hermetic benchmark mode section below for the full mechanics.
+
 This applies to manual benchmark commands (hyperfine one-shots, ad-hoc
-`aube install` timing loops, etc.) too.
+`aube install` timing loops, etc.) too. **The one exception is
+`mise run bench:bump`** — never pass `BENCH_HERMETIC` / `BENCH_BANDWIDTH`
+there, because `results.json` is the published "real internet"
+baseline.
 
 When `mise run bench:bump` rewrites [`benchmarks/results.json`](benchmarks/results.json),
 refresh the hardcoded ratios in [`README.md`](README.md) in the same
