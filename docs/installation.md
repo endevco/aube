@@ -37,6 +37,30 @@ Because the install happens via `preinstall`, this does not work with
 `--ignore-scripts` or in offline/air-gapped caches. Prefer mise or
 `cargo install` for those environments.
 
+## Ubuntu (PPA)
+
+Aube publishes signed `.deb` packages to the Launchpad PPA
+[`ppa:jdxcode/aube`](https://launchpad.net/~jdxcode/+archive/ubuntu/aube):
+
+```sh
+sudo add-apt-repository -y ppa:jdxcode/aube
+sudo apt update
+sudo apt install aube
+```
+
+This installs `aube`, plus `aubr` and `aubx` symlinks (the multicall
+shims for `aube run` and `aube dlx`) into `/usr/bin`. Future upgrades
+go through `apt`:
+
+```sh
+sudo apt update && sudo apt install --only-upgrade aube
+```
+
+Currently the PPA only builds for **Ubuntu 26.04 (resolute)**. On
+older releases, `add-apt-repository` will succeed but `apt update`
+returns a 404 because no `Release` file is published for that series —
+use mise, `cargo install`, or the npm package instead.
+
 ## From source
 
 If you want to build the current checkout yourself, use the standard source
