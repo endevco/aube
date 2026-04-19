@@ -3,6 +3,7 @@ use super::{install, make_client, packument_cache_dir};
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, Args)]
 pub struct AddArgs {
@@ -280,35 +281,6 @@ pub async fn run(
         }
     }
 
-    // Resolve settings (savePrefix, tag, catalogMode) from .npmrc /
-    // workspace yaml. `catalog_mode` decides whether a newly-added dep
-    // that already lives in the default workspace catalog gets rewritten
-    // to `catalog:` (see `commands::catalogs::decide_add_rewrite`).
-    let (default_tag, default_prefix, catalog_mode) = super::with_settings_ctx(&cwd, |ctx| {
-        let tag = aube_settings::resolved::tag(ctx);
-        let prefix = if save_exact {
-            String::new()
-        } else {
-            let raw = aube_settings::resolved::save_prefix(ctx);
-            // Validate: only ^, ~, or empty are valid prefixes.
-            match raw.as_str() {
-                "^" | "~" | "" => raw,
-                _ => {
-                    tracing::warn!("ignoring invalid save-prefix={raw:?}, falling back to ^");
-                    "^".to_string()
-                }
-            }
-        };
-        let catalog_mode = aube_settings::resolved::catalog_mode(ctx);
-        (tag, prefix, catalog_mode)
-    });
-    // Load the workspace catalog map up front — the resolver needs it
-    // later, but `catalogMode` consults the default catalog while we
-    // build the specifier below. Pass the same map to the resolver to
-    // avoid re-reading the workspace file.
-    let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
-    let default_catalog = workspace_catalogs.get("default");
-
     let _lock = super::take_project_lock(&cwd)?;
     let manifest_path = cwd.join("package.json");
 
@@ -348,240 +320,18 @@ pub async fn run(
     } else {
         None
     };
-    let mut manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-        .into_diagnostic()
-        .wrap_err("failed to read package.json")?;
-
-    // 2. Parse all specs and fetch packuments concurrently
-    let client = std::sync::Arc::new(make_client(&cwd));
-
-    let parsed: Vec<_> = packages
-        .iter()
-        .map(|s| {
-            let mut spec = parse_pkg_spec(s)?;
-            // Replace the implicit default tag with the configured one
-            // so that `aube add lodash` respects `tag=next` in .npmrc.
-            // Only applies when the user didn't write an explicit version
-            // or tag — `aube add lodash@latest` always means `latest`.
-            if !spec.has_explicit_range && default_tag != "latest" {
-                spec.range = default_tag.clone();
-            }
-            Ok::<_, miette::Report>(spec)
-        })
-        .collect::<miette::Result<Vec<_>>>()?;
-
-    let mut handles = Vec::new();
-    for spec in &parsed {
-        let client = client.clone();
-        let name = spec.name.clone();
-        let handle = tokio::spawn(async move {
-            let packument = client
-                .fetch_packument(&name)
-                .await
-                .map_err(|e| miette!("failed to fetch {name}: {e}"))?;
-            Ok::<_, miette::Report>((name, packument))
-        });
-        handles.push(handle);
-    }
-
-    let mut packuments = BTreeMap::new();
-    for handle in handles {
-        let (name, packument) = handle.await.into_diagnostic()??;
-        packuments.insert(name, packument);
-    }
-
-    // 3. Resolve each package and update manifest
-    for (spec, orig) in parsed.iter().zip(packages.iter()) {
-        let packument = packuments.get(&spec.name).unwrap();
-        let pkg_name_for_manifest = spec.alias.as_deref().unwrap_or(&spec.name);
-
-        eprintln!("Resolving {}@{}...", spec.name, spec.range);
-
-        // Resolve "latest" and other dist-tags to a version range
-        let effective_range = if let Some(tagged_version) = packument.dist_tags.get(&spec.range) {
-            tagged_version.clone()
-        } else {
-            spec.range.clone()
-        };
-
-        // Find highest matching version. Reused below when a
-        // `catalogMode` rewrite redirects resolution to the catalog's
-        // range — the display version should match what will actually
-        // get installed, not what the user's original range resolved
-        // to, so we call this twice when the rewrite fires.
-        let highest_satisfying = |range_str: &str| -> Option<String> {
-            let range = node_semver::Range::parse(range_str).ok()?;
-            let mut versions: Vec<&String> = packument.versions.keys().collect();
-            versions.sort_by(|a, b| {
-                let va = node_semver::Version::parse(a);
-                let vb = node_semver::Version::parse(b);
-                match (va, vb) {
-                    (Ok(va), Ok(vb)) => vb.cmp(&va),
-                    _ => std::cmp::Ordering::Equal,
-                }
-            });
-            versions
-                .into_iter()
-                .find(|v| node_semver::Version::parse(v).is_ok_and(|p| p.satisfies(&range)))
-                .cloned()
-        };
-        let resolved_version = highest_satisfying(&effective_range)
-            .ok_or_else(|| miette!("no version of {} matches {effective_range}", spec.name))?;
-
-        // Build the specifier for package.json.
-        // Dist-tags (including "latest") are written as ^version — this matches pnpm's behavior
-        // where the lockfile records the resolved version, not the tag name.
-        // `--save-exact` drops the `^` so the manifest pins the resolved version.
-        //
-        // The `npm:` protocol must survive every branch: either the user wrote
-        // an alias (`foo@npm:real@range`), which produced `spec.alias`, or they
-        // used the bare form (`npm:real@range`), which leaves `alias` empty but
-        // keeps the prefix on `orig`. Both cases round-trip back as `npm:...`.
-        // `jsr:` is handled separately below, because the manifest form omits
-        // the name when the alias equals the JSR name (matching pnpm).
-        let is_jsr = spec.jsr_name.is_some();
-        let needs_npm_prefix = !is_jsr && (spec.alias.is_some() || orig.starts_with("npm:"));
-        let prefix = &default_prefix;
-        let pin_to_resolved = spec.range == default_tag
-            || packument.dist_tags.contains_key(&spec.range)
-            || save_exact;
-        // Dist-tags and `--save-exact` both resolve to a concrete version
-        // with the configured prefix (empty when `--save-exact`). Non-dist-tag
-        // explicit ranges (e.g. `lodash@^4`) are preserved as-is.
-        let manual_specifier = if let Some(jsr_name) = spec.jsr_name.as_deref() {
-            // jsr:<range> when the manifest key matches the JSR name (the
-            // default when the user didn't supply an alias); otherwise we
-            // embed the JSR name so the resolver can rebuild the npm-compat
-            // name on its next read.
-            let effective_range = if pin_to_resolved {
-                format!("{prefix}{resolved_version}")
-            } else {
-                spec.range.clone()
-            };
-            let alias_matches_jsr_name =
-                spec.alias.as_deref() == Some(jsr_name) || spec.alias.is_none();
-            if alias_matches_jsr_name {
-                format!("jsr:{effective_range}")
-            } else {
-                format!("jsr:{jsr_name}@{effective_range}")
-            }
-        } else if pin_to_resolved {
-            if needs_npm_prefix {
-                format!("npm:{}@{prefix}{resolved_version}", spec.name)
-            } else {
-                format!("{prefix}{resolved_version}")
-            }
-        } else if needs_npm_prefix {
-            // Preserve npm: protocol for aliases and bare-prefix specs.
-            format!("npm:{}@{}", spec.name, spec.range)
-        } else {
-            spec.range.clone()
-        };
-        // Apply `catalogMode`. Only the default catalog participates —
-        // named catalogs still require the user to write `catalog:<name>`
-        // explicitly. `npm:`/alias specs can't be re-expressed as a
-        // catalog reference, so they opt out regardless of mode.
-        let (specifier, display_version) = match decide_add_rewrite(
-            catalog_mode,
-            default_catalog,
-            &spec.name,
-            &spec.range,
-            spec.has_explicit_range,
-            &resolved_version,
-            needs_npm_prefix || is_jsr,
-        ) {
-            CatalogRewrite::Manual => (manual_specifier, resolved_version.clone()),
-            CatalogRewrite::UseDefaultCatalog => {
-                // The install will resolve against the catalog's range,
-                // not the user's original spec — so the printed version
-                // should reflect what actually lands in `node_modules`.
-                // `strict` + bare `aube add <pkg>` is the case this
-                // matters most for: the user never gave a range, so
-                // `resolved_version` comes from `latest` and can easily
-                // disagree with what the catalog entry picks. Fall back
-                // to `resolved_version` only when the catalog range
-                // can't resolve a version from the packument (shouldn't
-                // happen in practice, but we'd rather print something
-                // than fail the command on a display edge case).
-                let cat_range = default_catalog
-                    .and_then(|c| c.get(&spec.name))
-                    .cloned()
-                    .unwrap_or_default();
-                let catalog_version = highest_satisfying(&cat_range).unwrap_or_else(|| {
-                    tracing::debug!(
-                        "catalog range {cat_range:?} for {} did not match any packument version; \
-                         falling back to user-resolved version for display",
-                        spec.name
-                    );
-                    resolved_version.clone()
-                });
-                ("catalog:".to_string(), catalog_version)
-            }
-            CatalogRewrite::StrictMismatch {
-                pkg,
-                catalog_range,
-                user_range,
-            } => {
-                return Err(miette!(
-                    "catalogMode=strict: {pkg}@{user_range} does not match the \
-                     default catalog entry `{catalog_range}`. Update the catalog \
-                     or rerun with the catalog range."
-                ));
-            }
-        };
-
-        eprintln!("  + {pkg_name_for_manifest}@{display_version} (specifier: {specifier})");
-
-        // Remove from all dep sections first to avoid duplicates across
-        // sections. `--save-peer` intentionally does NOT clear the peer
-        // section (see below) — we may end up writing to both peer and
-        // dev simultaneously, which is pnpm's `--save-peer` behavior.
-        manifest.dependencies.remove(pkg_name_for_manifest);
-        manifest.optional_dependencies.remove(pkg_name_for_manifest);
-        if !save_peer {
-            manifest.peer_dependencies.remove(pkg_name_for_manifest);
-        }
-        if !(save_peer && save_dev) {
-            manifest.dev_dependencies.remove(pkg_name_for_manifest);
-        }
-
-        // Add to the appropriate section. When `--save-peer` is paired
-        // with `--save-dev`, pnpm writes to BOTH peerDependencies and
-        // devDependencies — the peer entry declares what downstream
-        // consumers need, and the dev entry makes the local project
-        // actually install it for tests and tooling.
-        let dep_name = pkg_name_for_manifest.to_string();
-        if save_peer {
-            manifest
-                .peer_dependencies
-                .insert(dep_name.clone(), specifier.clone());
-            if save_dev {
-                manifest.dev_dependencies.insert(dep_name, specifier);
-            }
-        } else if save_dev {
-            manifest.dev_dependencies.insert(dep_name, specifier);
-        } else if save_optional {
-            manifest.optional_dependencies.insert(dep_name, specifier);
-        } else {
-            manifest.dependencies.insert(dep_name, specifier);
-        }
-    }
-
-    // 3. Write the updated package.json. Under `--no-save` we still
-    // write the mutated manifest to disk for the duration of the
-    // resolver + install pipeline (both re-read from disk), then
-    // restore the original bytes from the snapshot in step 6 before
-    // returning — so neither the manifest nor the lockfile shows up in
-    // `git status` after the call returns.
-    let json = serde_json::to_string_pretty(&manifest)
-        .into_diagnostic()
-        .wrap_err("failed to serialize package.json")?;
-    std::fs::write(&manifest_path, format!("{json}\n"))
-        .into_diagnostic()
-        .wrap_err("failed to write package.json")?;
-    if !no_save {
-        eprintln!("Updated package.json");
-    }
+    let (manifest, workspace_catalogs) = update_manifest_for_add(
+        &cwd,
+        packages,
+        AddManifestOptions {
+            save_dev,
+            save_exact,
+            save_optional,
+            save_peer,
+        },
+        !no_save,
+    )
+    .await?;
 
     // 4 + 5. Resolve, write the lockfile, and run install. We collect
     // the entire pipeline into a single `Result` so the restore step
@@ -591,7 +341,7 @@ pub async fn run(
     // written lockfile) on disk, breaking the `--no-save` promise.
     let pipeline_result: miette::Result<()> = async {
         let existing = aube_lockfile::parse_lockfile(&cwd, &manifest).ok();
-        let mut resolver = aube_resolver::Resolver::new(client)
+        let mut resolver = aube_resolver::Resolver::new(std::sync::Arc::new(make_client(&cwd)))
             .with_packument_cache(packument_cache_dir())
             .with_catalogs(workspace_catalogs);
         let graph = resolver
@@ -691,6 +441,295 @@ struct NoSaveSnapshot {
     lockfile_bytes: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Copy)]
+struct AddManifestOptions {
+    save_dev: bool,
+    save_exact: bool,
+    save_optional: bool,
+    save_peer: bool,
+}
+
+impl AddManifestOptions {
+    fn from_args(args: &AddArgs) -> Self {
+        Self {
+            save_dev: args.save_dev,
+            save_exact: args.save_exact,
+            save_optional: args.save_optional,
+            save_peer: args.save_peer,
+        }
+    }
+}
+
+async fn update_manifest_for_add(
+    cwd: &Path,
+    packages: &[String],
+    opts: AddManifestOptions,
+    print_updated: bool,
+) -> miette::Result<(aube_manifest::PackageJson, super::CatalogMap)> {
+    // Resolve settings (savePrefix, tag, catalogMode) from .npmrc /
+    // workspace yaml. `catalog_mode` decides whether a newly-added dep
+    // that already lives in the default workspace catalog gets rewritten
+    // to `catalog:` (see `commands::catalogs::decide_add_rewrite`).
+    let (default_tag, default_prefix, catalog_mode) = super::with_settings_ctx(cwd, |ctx| {
+        let tag = aube_settings::resolved::tag(ctx);
+        let prefix = if opts.save_exact {
+            String::new()
+        } else {
+            let raw = aube_settings::resolved::save_prefix(ctx);
+            // Validate: only ^, ~, or empty are valid prefixes.
+            match raw.as_str() {
+                "^" | "~" | "" => raw,
+                _ => {
+                    tracing::warn!("ignoring invalid save-prefix={raw:?}, falling back to ^");
+                    "^".to_string()
+                }
+            }
+        };
+        let catalog_mode = aube_settings::resolved::catalog_mode(ctx);
+        (tag, prefix, catalog_mode)
+    });
+    // Load the workspace catalog map up front — the resolver needs it
+    // later, but `catalogMode` consults the default catalog while we
+    // build the specifier below. Pass the same map to the resolver to
+    // avoid re-reading the workspace file.
+    let workspace_catalogs = super::load_workspace_catalogs(cwd)?;
+    let default_catalog = workspace_catalogs.get("default");
+    let manifest_path = cwd.join("package.json");
+    let mut manifest = aube_manifest::PackageJson::from_path(&manifest_path)
+        .into_diagnostic()
+        .wrap_err("failed to read package.json")?;
+
+    // Parse all specs and fetch packuments concurrently.
+    let client = std::sync::Arc::new(make_client(cwd));
+    let parsed: Vec<_> = packages
+        .iter()
+        .map(|s| {
+            let mut spec = parse_pkg_spec(s)?;
+            // Replace the implicit default tag with the configured one
+            // so that `aube add lodash` respects `tag=next` in .npmrc.
+            // Only applies when the user didn't write an explicit version
+            // or tag — `aube add lodash@latest` always means `latest`.
+            if !spec.has_explicit_range && default_tag != "latest" {
+                spec.range = default_tag.clone();
+            }
+            Ok::<_, miette::Report>(spec)
+        })
+        .collect::<miette::Result<Vec<_>>>()?;
+
+    let mut handles = Vec::new();
+    for spec in &parsed {
+        let client = client.clone();
+        let name = spec.name.clone();
+        let handle = tokio::spawn(async move {
+            let packument = client
+                .fetch_packument(&name)
+                .await
+                .map_err(|e| miette!("failed to fetch {name}: {e}"))?;
+            Ok::<_, miette::Report>((name, packument))
+        });
+        handles.push(handle);
+    }
+
+    let mut packuments = BTreeMap::new();
+    for handle in handles {
+        let (name, packument) = handle.await.into_diagnostic()??;
+        packuments.insert(name, packument);
+    }
+
+    // Resolve each package and update manifest.
+    for (spec, orig) in parsed.iter().zip(packages.iter()) {
+        let packument = packuments.get(&spec.name).unwrap();
+        let pkg_name_for_manifest = spec.alias.as_deref().unwrap_or(&spec.name);
+
+        eprintln!("Resolving {}@{}...", spec.name, spec.range);
+
+        // Resolve "latest" and other dist-tags to a version range.
+        let effective_range = if let Some(tagged_version) = packument.dist_tags.get(&spec.range) {
+            tagged_version.clone()
+        } else {
+            spec.range.clone()
+        };
+
+        // Find highest matching version. Reused below when a
+        // `catalogMode` rewrite redirects resolution to the catalog's
+        // range — the display version should match what will actually
+        // get installed, not what the user's original range resolved
+        // to, so we call this twice when the rewrite fires.
+        let highest_satisfying = |range_str: &str| -> Option<String> {
+            let range = node_semver::Range::parse(range_str).ok()?;
+            let mut versions: Vec<&String> = packument.versions.keys().collect();
+            versions.sort_by(|a, b| {
+                let va = node_semver::Version::parse(a);
+                let vb = node_semver::Version::parse(b);
+                match (va, vb) {
+                    (Ok(va), Ok(vb)) => vb.cmp(&va),
+                    _ => std::cmp::Ordering::Equal,
+                }
+            });
+            versions
+                .into_iter()
+                .find(|v| node_semver::Version::parse(v).is_ok_and(|p| p.satisfies(&range)))
+                .cloned()
+        };
+        let resolved_version = highest_satisfying(&effective_range)
+            .ok_or_else(|| miette!("no version of {} matches {effective_range}", spec.name))?;
+
+        // Build the specifier for package.json.
+        // Dist-tags (including "latest") are written as ^version — this matches pnpm's behavior
+        // where the lockfile records the resolved version, not the tag name.
+        // `--save-exact` drops the `^` so the manifest pins the resolved version.
+        //
+        // The `npm:` protocol must survive every branch: either the user wrote
+        // an alias (`foo@npm:real@range`), which produced `spec.alias`, or they
+        // used the bare form (`npm:real@range`), which leaves `alias` empty but
+        // keeps the prefix on `orig`. Both cases round-trip back as `npm:...`.
+        // `jsr:` is handled separately below, because the manifest form omits
+        // the name when the alias equals the JSR name (matching pnpm).
+        let is_jsr = spec.jsr_name.is_some();
+        let needs_npm_prefix = !is_jsr && (spec.alias.is_some() || orig.starts_with("npm:"));
+        let prefix = &default_prefix;
+        let pin_to_resolved = spec.range == default_tag
+            || packument.dist_tags.contains_key(&spec.range)
+            || opts.save_exact;
+        // Dist-tags and `--save-exact` both resolve to a concrete version
+        // with the configured prefix (empty when `--save-exact`). Non-dist-tag
+        // explicit ranges (e.g. `lodash@^4`) are preserved as-is.
+        let manual_specifier = if let Some(jsr_name) = spec.jsr_name.as_deref() {
+            // jsr:<range> when the manifest key matches the JSR name (the
+            // default when the user didn't supply an alias); otherwise we
+            // embed the JSR name so the resolver can rebuild the npm-compat
+            // name on its next read.
+            let effective_range = if pin_to_resolved {
+                format!("{prefix}{resolved_version}")
+            } else {
+                spec.range.clone()
+            };
+            let alias_matches_jsr_name =
+                spec.alias.as_deref() == Some(jsr_name) || spec.alias.is_none();
+            if alias_matches_jsr_name {
+                format!("jsr:{effective_range}")
+            } else {
+                format!("jsr:{jsr_name}@{effective_range}")
+            }
+        } else if pin_to_resolved {
+            if needs_npm_prefix {
+                format!("npm:{}@{prefix}{resolved_version}", spec.name)
+            } else {
+                format!("{prefix}{resolved_version}")
+            }
+        } else if needs_npm_prefix {
+            // Preserve npm: protocol for aliases and bare-prefix specs.
+            format!("npm:{}@{}", spec.name, spec.range)
+        } else {
+            spec.range.clone()
+        };
+        // Apply `catalogMode`. Only the default catalog participates —
+        // named catalogs still require the user to write `catalog:<name>`
+        // explicitly. `npm:`/alias specs can't be re-expressed as a
+        // catalog reference, so they opt out regardless of mode.
+        let (specifier, display_version) = match decide_add_rewrite(
+            catalog_mode,
+            default_catalog,
+            &spec.name,
+            &spec.range,
+            spec.has_explicit_range,
+            &resolved_version,
+            needs_npm_prefix || is_jsr,
+        ) {
+            CatalogRewrite::Manual => (manual_specifier, resolved_version.clone()),
+            CatalogRewrite::UseDefaultCatalog => {
+                // The install will resolve against the catalog's range,
+                // not the user's original spec — so the printed version
+                // should reflect what actually lands in `node_modules`.
+                // `strict` + bare `aube add <pkg>` is the case this
+                // matters most for: the user never gave a range, so
+                // `resolved_version` comes from `latest` and can easily
+                // disagree with what the catalog entry picks. Fall back
+                // to `resolved_version` only when the catalog range
+                // can't resolve a version from the packument (shouldn't
+                // happen in practice, but we'd rather print something
+                // than fail the command on a display edge case).
+                let cat_range = default_catalog
+                    .and_then(|c| c.get(&spec.name))
+                    .cloned()
+                    .unwrap_or_default();
+                let catalog_version = highest_satisfying(&cat_range).unwrap_or_else(|| {
+                    tracing::debug!(
+                        "catalog range {cat_range:?} for {} did not match any packument version; \
+                         falling back to user-resolved version for display",
+                        spec.name
+                    );
+                    resolved_version.clone()
+                });
+                ("catalog:".to_string(), catalog_version)
+            }
+            CatalogRewrite::StrictMismatch {
+                pkg,
+                catalog_range,
+                user_range,
+            } => {
+                return Err(miette!(
+                    "catalogMode=strict: {pkg}@{user_range} does not match the \
+                     default catalog entry `{catalog_range}`. Update the catalog \
+                     or rerun with the catalog range."
+                ));
+            }
+        };
+
+        eprintln!("  + {pkg_name_for_manifest}@{display_version} (specifier: {specifier})");
+
+        // Remove from all dep sections first to avoid duplicates across
+        // sections. `--save-peer` intentionally does NOT clear the peer
+        // section (see below) — we may end up writing to both peer and
+        // dev simultaneously, which is pnpm's `--save-peer` behavior.
+        manifest.dependencies.remove(pkg_name_for_manifest);
+        manifest.optional_dependencies.remove(pkg_name_for_manifest);
+        if !opts.save_peer {
+            manifest.peer_dependencies.remove(pkg_name_for_manifest);
+        }
+        if !(opts.save_peer && opts.save_dev) {
+            manifest.dev_dependencies.remove(pkg_name_for_manifest);
+        }
+
+        // Add to the appropriate section. When `--save-peer` is paired
+        // with `--save-dev`, pnpm writes to BOTH peerDependencies and
+        // devDependencies — the peer entry declares what downstream
+        // consumers need, and the dev entry makes the local project
+        // actually install it for tests and tooling.
+        let dep_name = pkg_name_for_manifest.to_string();
+        if opts.save_peer {
+            manifest
+                .peer_dependencies
+                .insert(dep_name.clone(), specifier.clone());
+            if opts.save_dev {
+                manifest.dev_dependencies.insert(dep_name, specifier);
+            }
+        } else if opts.save_dev {
+            manifest.dev_dependencies.insert(dep_name, specifier);
+        } else if opts.save_optional {
+            manifest.optional_dependencies.insert(dep_name, specifier);
+        } else {
+            manifest.dependencies.insert(dep_name, specifier);
+        }
+    }
+
+    // Write the updated package.json. Under `--no-save` callers still
+    // write the mutated manifest to disk for the duration of the
+    // resolver + install pipeline (both re-read from disk), then
+    // restore the original bytes from their snapshot before returning.
+    let json = serde_json::to_string_pretty(&manifest)
+        .into_diagnostic()
+        .wrap_err("failed to serialize package.json")?;
+    std::fs::write(&manifest_path, format!("{json}\n"))
+        .into_diagnostic()
+        .wrap_err("failed to write package.json")?;
+    if print_updated {
+        eprintln!("Updated package.json");
+    }
+
+    Ok((manifest, workspace_catalogs))
+}
+
 /// Resolve the on-disk lockfile path that a normal `add` would write
 /// to in `project_dir`. Mirrors the `LockfileKind` -> filename mapping
 /// inside `aube_lockfile::write_lockfile_as` so the snapshot/restore
@@ -723,27 +762,101 @@ async fn run_filtered(
     }
     let cwd = crate::dirs::cwd()?;
     let matched = super::select_workspace_packages(&cwd, filter, "add")?;
-    let result = async {
-        for pkg in matched {
-            super::retarget_cwd(&pkg.dir)?;
-            Box::pin(run(
-                args.clone(),
-                aube_workspace::selector::EffectiveFilter::default(),
-            ))
+    let _lock = super::take_project_lock(&cwd)?;
+
+    let mut snapshots = Vec::new();
+    let lockfile_path = lockfile_path_for_project(&cwd);
+    let root_lockfile_snapshot = if args.no_save {
+        match std::fs::read(&lockfile_path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(e)
+                    .into_diagnostic()
+                    .wrap_err("failed to snapshot lockfile for --no-save");
+            }
+        }
+    } else {
+        None
+    };
+
+    let result: miette::Result<()> = async {
+        for pkg in &matched {
+            let manifest_path = pkg.dir.join("package.json");
+            if args.no_save {
+                let manifest_bytes = std::fs::read(&manifest_path)
+                    .into_diagnostic()
+                    .wrap_err("failed to snapshot package.json for --no-save")?;
+                snapshots.push((manifest_path.clone(), manifest_bytes));
+            }
+            update_manifest_for_add(
+                &pkg.dir,
+                &args.packages,
+                AddManifestOptions::from_args(&args),
+                !args.no_save,
+            )
             .await?;
         }
+
+        let mut install_opts = install::InstallOptions::with_mode(super::chained_frozen_mode(
+            install::FrozenMode::Prefer,
+        ));
+        install_opts.workspace_filter = filter.clone();
+        install::run(install_opts).await?;
         Ok(())
     }
     .await;
-    let restore_result = super::retarget_cwd(&cwd)
-        .wrap_err_with(|| format!("failed to restore cwd to {}", cwd.display()));
-    match result {
-        Ok(()) => restore_result,
-        Err(err) => {
-            let _ = restore_result;
-            Err(err)
+
+    let restore_errors = if args.no_save {
+        let mut errors: Vec<miette::Report> = Vec::new();
+        let restored = snapshots.len();
+        for (manifest_path, manifest_bytes) in snapshots {
+            if let Err(e) = std::fs::write(&manifest_path, manifest_bytes) {
+                errors.push(
+                    Result::<(), _>::Err(e)
+                        .into_diagnostic()
+                        .wrap_err_with(|| {
+                            format!(
+                                "failed to restore original package.json after --no-save at {}",
+                                manifest_path.display()
+                            )
+                        })
+                        .unwrap_err(),
+                );
+            }
         }
+        let lockfile_restore = match &root_lockfile_snapshot {
+            Some(bytes) => std::fs::write(&lockfile_path, bytes),
+            None => match std::fs::remove_file(&lockfile_path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            },
+        };
+        if let Err(e) = lockfile_restore {
+            errors.push(
+                Result::<(), _>::Err(e)
+                    .into_diagnostic()
+                    .wrap_err("failed to restore original lockfile after --no-save")
+                    .unwrap_err(),
+            );
+        }
+        if errors.is_empty() {
+            eprintln!(
+                "Restored {} and lockfile (--no-save)",
+                pluralizer::pluralize("package.json file", restored as isize, true)
+            );
+        }
+        errors
+    } else {
+        Vec::new()
+    };
+
+    result?;
+    if let Some(first) = restore_errors.into_iter().next() {
+        return Err(first);
     }
+    Ok(())
 }
 
 /// `aube add -g <pkg>...` — install into an isolated global install dir

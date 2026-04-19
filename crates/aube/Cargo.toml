@@ -72,6 +72,7 @@ diffy = { workspace = true }
 libc = "0.2"
 pathdiff = "0.2"
 is_ci = "1"
+pluralizer = "0.5.0"
 
 [dev-dependencies]
 clap-sort = "1"
