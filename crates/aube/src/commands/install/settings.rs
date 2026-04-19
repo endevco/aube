@@ -484,14 +484,17 @@ pub(super) struct ResolverConfigInputs<'a> {
     pub(super) workspace_catalogs:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub(super) opts: &'a InstallOptions,
-    /// Lockfile format aube will write on the way out — `None` means no
-    /// lockfile exists yet and we'll default to `aube-lock.yaml`. Drives
+    /// Lockfile format aube will write on the way out, or `None` when
+    /// `lockfile=false` and no lockfile will be written at all. Drives
     /// whether the resolver widens its platform filter to cover every
-    /// common OS/CPU/libc combination (aube-lock.yaml is meant to be a
-    /// cross-platform, committed artifact) or keeps the pnpm-style
-    /// host-only default for foreign formats (pnpm-lock.yaml, yarn.lock,
-    /// package-lock.json, bun.lock) so aube doesn't quietly diverge from
-    /// what the other PM would have written.
+    /// common OS/CPU/libc combination: aube-lock.yaml is meant to be a
+    /// cross-platform committed artifact, so `Some(Aube)` opts in to
+    /// the wide default. Foreign formats (`Some(Pnpm | Npm | …)`) keep
+    /// pnpm's host-only default so aube doesn't silently bake more
+    /// packages into them than the native tool would have written, and
+    /// `None` skips widening entirely — nothing consumes the extra
+    /// resolutions. Callers compute this as
+    /// `lockfile_enabled.then(|| source_kind_before.unwrap_or(Aube))`.
     pub(super) target_lockfile_kind: Option<aube_lockfile::LockfileKind>,
 }
 
@@ -529,10 +532,7 @@ pub(super) fn configure_resolver(
     // packages than the native tool would have produced.
     let manifest_set_supported_arch =
         !(sup_os.is_empty() && sup_cpu.is_empty() && sup_libc.is_empty());
-    let writes_aube_lock = matches!(
-        target_lockfile_kind,
-        None | Some(aube_lockfile::LockfileKind::Aube)
-    );
+    let writes_aube_lock = target_lockfile_kind == Some(aube_lockfile::LockfileKind::Aube);
     let supported_architectures = if !manifest_set_supported_arch && writes_aube_lock {
         aube_resolver::SupportedArchitectures::aube_lock_default()
     } else {

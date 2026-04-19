@@ -2097,7 +2097,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 settings_ctx: &settings_ctx,
                 workspace_catalogs: &workspace_catalogs,
                 opts: &opts,
-                target_lockfile_kind: source_kind_before,
+                // `lockfile=false` collapses to `None` so the resolver
+                // doesn't waste a fetch widening a lockfile that will
+                // never be written. With lockfiles enabled, a missing
+                // `source_kind_before` means "we'll create the default
+                // aube-lock.yaml", so the aube-native wide default
+                // applies.
+                target_lockfile_kind: lockfile_enabled
+                    .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
             },
             read_package_hook,
         );
@@ -2433,7 +2440,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     settings_ctx: &settings_ctx,
                     workspace_catalogs: &workspace_catalogs,
                     opts: &opts,
-                    target_lockfile_kind: source_kind_before,
+                    // Same disambiguation as the `--lockfile-only` path:
+                    // `None` only when no lockfile will be written, so
+                    // widening to every common platform doesn't happen
+                    // just to be discarded.
+                    target_lockfile_kind: lockfile_enabled
+                        .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
                 },
                 read_package_hook,
             );
