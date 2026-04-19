@@ -50,8 +50,8 @@ flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to
 flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale" global=#true {
     long_help "Use the lockfile when fresh, re-resolve when stale.\n\nGlobal counterpart to the same `install` flag."
 }
-flag --registry help="Override the default registry URL for this invocation" {
-    long_help "Override the default registry URL for this invocation.\n\nMirrors pnpm's top-level `--registry=<url>`. Must appear before the subcommand, e.g. `aube --registry=https://… install`; commands that already expose a subcommand-level `--registry` (publish, login, view, …) still win for their own traffic."
+flag --registry help="Override the default registry URL for this invocation" global=#true {
+    long_help "Override the default registry URL for this invocation.\n\nMirrors pnpm's `--registry=<url>` placement. Can appear before or after subcommands; commands that already expose their own `--registry` flag (publish, login, view, …) still win for their own traffic."
     arg <URL>
 }
 flag --reporter help="Output format: default, append-only, ndjson, silent" global=#true {

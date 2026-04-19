@@ -145,11 +145,11 @@ pub(crate) struct Cli {
 
     /// Override the default registry URL for this invocation.
     ///
-    /// Mirrors pnpm's top-level `--registry=<url>`. Must appear before
-    /// the subcommand, e.g. `aube --registry=https://… install`;
-    /// commands that already expose a subcommand-level `--registry`
-    /// (publish, login, view, …) still win for their own traffic.
-    #[arg(long, value_name = "URL")]
+    /// Mirrors pnpm's `--registry=<url>` placement. Can appear before
+    /// or after subcommands; commands that already expose their own
+    /// `--registry` flag (publish, login, view, …) still win for their
+    /// own traffic.
+    #[arg(long, global = true, value_name = "URL")]
     registry: Option<String>,
 
     /// Output format: default, append-only, ndjson, silent.
@@ -1301,6 +1301,23 @@ mod cli_spec_tests {
                  Regenerate with: cargo build && ./target/debug/aube usage > aube.usage.kdl"
             );
         }
+    }
+
+    #[test]
+    fn install_accepts_subcommand_registry_flag() {
+        let cli = Cli::try_parse_from([
+            "aube",
+            "install",
+            "--registry",
+            "https://registry.example.com/",
+        ])
+        .expect("install --registry should parse");
+
+        assert_eq!(
+            cli.registry.as_deref(),
+            Some("https://registry.example.com/")
+        );
+        assert!(matches!(cli.command, Some(Commands::Install(_))));
     }
 }
 
