@@ -79,6 +79,66 @@ _setup_catalog_workspace() {
 	assert_dir_exists node_modules/is-odd
 }
 
+@test "aube install: bun-style root workspaces.catalog resolves from a subpackage" {
+	# Regression: bun / npm / yarn workspaces don't ship a
+	# `pnpm-workspace.yaml`; the workspace root is identified by a
+	# `workspaces` field in `package.json`. `aube install` from a
+	# subpackage used to miss that root entirely (catalog discovery only
+	# walked up looking for the yaml), so a `catalog:` ref defined in
+	# the root's `workspaces.catalog` failed with `UnknownCatalog`.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "private": true,
+		  "workspaces": {
+		    "packages": ["packages/*"],
+		    "catalog": { "is-odd": "^3.0.1" }
+		  }
+		}
+	EOF
+	mkdir -p packages/lib
+	cat >packages/lib/package.json <<-'EOF'
+		{
+		  "name": "@test/lib",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "catalog:" }
+		}
+	EOF
+
+	cd packages/lib
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/is-odd
+}
+
+@test "aube install: root pnpm.catalog (no yaml) resolves from a subpackage" {
+	# Same shape as the bun-style regression above, but the root carries
+	# a plain string-array `workspaces` field plus a `pnpm.catalog`
+	# block — common when migrating from npm / yarn to pnpm-style
+	# catalogs without adopting `pnpm-workspace.yaml`.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "private": true,
+		  "workspaces": ["packages/*"],
+		  "pnpm": { "catalog": { "is-odd": "^3.0.1" } }
+		}
+	EOF
+	mkdir -p packages/lib
+	cat >packages/lib/package.json <<-'EOF'
+		{
+		  "name": "@test/lib",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "catalog:" }
+		}
+	EOF
+
+	cd packages/lib
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/is-odd
+}
+
 @test "aube install: catalog: resolves from package.json workspaces.catalog" {
 	# Bun-style: catalogs live inline under `workspaces.catalog` in
 	# package.json. No pnpm-workspace.yaml needed.

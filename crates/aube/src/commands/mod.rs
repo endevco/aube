@@ -605,6 +605,27 @@ fn merge_manifest_catalogs(out: &mut CatalogMap, manifest: &aube_manifest::Packa
     merge_catalog_source(out, &manifest.pnpm_catalog(), &manifest.pnpm_catalogs());
 }
 
+/// Walk upward from `start` looking for the nearest ancestor whose
+/// `package.json` declares a `workspaces` field. bun / npm / yarn mark
+/// the workspace root that way (no separate `pnpm-workspace.yaml`), so
+/// when `aube install` runs from a subpackage of one of those projects
+/// this is the only handle we have on the workspace root.
+///
+/// `start` itself is included in the walk; the closest ancestor wins
+/// (nested workspaces aren't a thing in any of pnpm / bun / npm /
+/// yarn).
+fn find_workspaces_field_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    start.ancestors().find_map(|dir| {
+        let pkg = dir.join("package.json");
+        if !pkg.is_file() {
+            return None;
+        }
+        let manifest = aube_manifest::PackageJson::from_path(&pkg).ok()?;
+        manifest.workspaces.as_ref()?;
+        Some(dir.to_path_buf())
+    })
+}
+
 /// Discover catalog entries from every supported source and merge them
 /// into a single map for the resolver.
 ///
@@ -614,13 +635,16 @@ fn merge_manifest_catalogs(out: &mut CatalogMap, manifest: &aube_manifest::Packa
 ///    `package.json` (bun style).
 /// 2. `pnpm.catalog` / `pnpm.catalogs` in the project-root `package.json`.
 /// 3. Same two fields from the workspace-root `package.json` when it's
-///    a different file (monorepo subpackage installs).
+///    a different file (monorepo subpackage installs). The workspace
+///    root is the nearest ancestor with either a `pnpm-workspace.yaml` /
+///    `aube-workspace.yaml` or a `package.json` carrying a `workspaces`
+///    field — bun / npm / yarn projects use the latter and have no yaml.
 /// 4. `catalog:` / `catalogs:` in the nearest `pnpm-workspace.yaml` /
 ///    `aube-workspace.yaml` walking up from `project_root`.
 ///
-/// Walking up for the workspace yaml matters for monorepos where
-/// `aube install` runs from a subpackage — without this, the loader
-/// only looks in `project_root` and misses the root workspace file.
+/// Walking up matters for monorepos where `aube install` runs from a
+/// subpackage — without it, the loader only looks at `project_root`
+/// and misses the root workspace's catalogs entirely.
 ///
 /// Every command that builds a `Resolver` threads this map through
 /// `Resolver::with_catalogs`; otherwise the resolver hard-fails any
@@ -638,9 +662,15 @@ pub(crate) fn discover_catalogs(project_root: &std::path::Path) -> miette::Resul
     }
 
     // (3): workspace-root package.json catalogs, if the workspace root
-    // sits above the project root.
+    // sits above the project root. We resolve the workspace root from
+    // either marker — yaml first (pnpm convention), then `workspaces`
+    // field (bun / npm / yarn convention) — so a subpackage install in
+    // a non-pnpm monorepo still picks up the root catalog.
     let workspace_yaml_dir = crate::dirs::find_workspace_root(project_root);
-    if let Some(dir) = &workspace_yaml_dir
+    let workspace_root_dir = workspace_yaml_dir
+        .clone()
+        .or_else(|| find_workspaces_field_root(project_root));
+    if let Some(dir) = &workspace_root_dir
         && dir != project_root
         && let Ok(m) = aube_manifest::PackageJson::from_path(&dir.join("package.json"))
     {
