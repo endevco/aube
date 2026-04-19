@@ -17,7 +17,7 @@ Existing projects keep their lockfile format. aube reads and writes
 - [Installation](/installation) shows the recommended mise install path,
   source builds, and shell completions.
 - For existing projects, see the [pnpm](/pnpm-users), [npm](/npm-users),
-  or [yarn](/yarn-users) guide.
+  [yarn](/yarn-users), or [bun](/bun-users) guide.
 - [Install dependencies](/package-manager/install) covers the normal install
   path, CI mode, production installs, offline installs, and lockfile modes.
 - [Manage dependencies](/package-manager/dependencies) covers `add`, `remove`,
