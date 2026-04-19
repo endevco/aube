@@ -842,12 +842,10 @@ async fn run_filtered(
             );
         }
         if errors.is_empty() {
-            let noun = if restored == 1 {
-                "package.json"
-            } else {
-                "package.json files"
-            };
-            eprintln!("Restored {restored} {noun} and lockfile (--no-save)");
+            eprintln!(
+                "Restored {} and lockfile (--no-save)",
+                pluralizer::pluralize("package.json file", restored as isize, true)
+            );
         }
         errors
     } else {
