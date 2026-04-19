@@ -16,7 +16,7 @@ before you ship an aube-based workflow:
 | `aube install` (new project) | Creates `aube-lock.yaml` if there's no existing lockfile. pnpm creates `pnpm-lock.yaml`. In an existing pnpm project, aube reads and writes `pnpm-lock.yaml` in place. |
 
 Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
-`publish`, `approve-builds` — matches pnpm's observable behavior.
+`publish`, `approve-builds` — matches pnpm's behavior.
 
 ## Command map
 
