@@ -4320,8 +4320,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         miette!("node-linker=pnp is not supported by aube; use `isolated` (default) or `hoisted`");
     let node_linker_cli = aube_settings::values::string_from_cli("nodeLinker", settings_ctx.cli);
     let node_linker = if let Some(cli) = node_linker_cli.as_deref() {
-        let trimmed = cli.trim().to_ascii_lowercase();
-        if trimmed == "pnp" {
+        let trimmed = cli.trim();
+        if trimmed.eq_ignore_ascii_case("pnp") {
             return Err(reject_pnp);
         }
         trimmed.parse::<aube_linker::NodeLinker>().map_err(|_| {
