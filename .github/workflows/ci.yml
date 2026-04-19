@@ -4,11 +4,6 @@ name: ci
 # integration shards. This workflow is the canonical CI entry point;
 # .buildkite/ is left in place but is expected to be disabled at the
 # GitHub-App level so it doesn't double-run or consume vCPU minutes.
-#
-# Gate jobs on the `preflight` step so release-plz-* branches wait for
-# the [render-done] marker the same way the Buildkite pipeline did —
-# otherwise CI would race release-plz's own render workflow and fail
-# on the raw force-pushed commit.
 
 on:
   workflow_dispatch:
@@ -26,41 +21,12 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  # Release-plz gate. release-plz force-pushes a raw commit into its PR
-  # branch, and its render workflow then amends the subject with the
-  # `[render-done]` marker. Running CI on the pre-amend push would just
-  # race that workflow and report a spurious failure, so we skip unless
-  # either (a) we're not on a release-plz branch, or (b) the HEAD commit
-  # already has the marker.
-  preflight:
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      should_run: ${{ steps.gate.outputs.should_run }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - id: gate
-        name: Check release-plz render-done gate
-        run: |
-          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          msg=$(git log -1 --format=%B)
-          if [[ "$branch" == release-plz-* ]] && [[ "$msg" != *'[render-done]'* ]]; then
-            echo "release-plz branch without [render-done] marker — skipping CI"
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
-
   # Build debug artifacts for every OS that runs BATS or needs a binary
   # downstream. Linux + macOS use mise so tool pins and env parity with
   # `mise run build` are guaranteed. Windows ships no BATS run (BATS is
   # bash-only, junction-links kick in on NTFS) so its build + test live
   # in the dedicated `windows` job below.
   build:
-    needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -89,8 +55,6 @@ jobs:
   # lint failures don't block the BATS jobs from starting against a
   # known-good binary.
   test-linux:
-    needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -114,8 +78,6 @@ jobs:
   # macOS build+test mirror. Upload the binary so the macos BATS shards
   # can consume it via download-artifact rather than rebuilding.
   test-macos:
-    needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -136,8 +98,7 @@ jobs:
   # retry handles the rare BATS flake (process teardown racing npm
   # cache writes, etc.); the Buildkite side has the same retry:1.
   bats:
-    needs: [preflight, build]
-    if: needs.preflight.outputs.should_run == 'true'
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -178,8 +139,7 @@ jobs:
   # Serial BATS jobs — tests tagged `serial` that can't run under
   # parallel (e.g. stateful store-lock tests, global env mutation).
   bats-serial:
-    needs: [preflight, build]
-    if: needs.preflight.outputs.should_run == 'true'
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -215,8 +175,6 @@ jobs:
   # cargo test suite to catch platform regressions. Developer Mode is
   # not required on GitHub-hosted windows-latest runners.
   windows:
-    needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -227,13 +185,11 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace
 
-  # Aggregator that required-status-checks can target. If any job failed
-  # (not just skipped due to the preflight gate) this step exits non-zero
-  # so the PR is blocked. Lets the branch-protection rule depend on one
-  # name instead of ten.
+  # Aggregator that required-status-checks can target. If any upstream job
+  # failed, was cancelled, or was skipped, this step exits non-zero so the PR is
+  # blocked. Lets the branch-protection rule depend on one name instead of ten.
   final:
     needs:
-      - preflight
       - build
       - test-linux
       - test-macos
@@ -245,28 +201,27 @@ jobs:
     if: always()
     steps:
       - name: Gate on upstream job results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          fail=0
-          for pair in \
-            "preflight:${{ needs.preflight.result }}" \
-            "build:${{ needs.build.result }}" \
-            "test-linux:${{ needs.test-linux.result }}" \
-            "test-macos:${{ needs.test-macos.result }}" \
-            "bats:${{ needs.bats.result }}" \
-            "bats-serial:${{ needs.bats-serial.result }}" \
-            "windows:${{ needs.windows.result }}"; do
-            name="${pair%%:*}"
-            result="${pair#*:}"
-            case "$result" in
-              success|skipped)
-                echo "::notice::$name: $result" ;;
-              *)
-                echo "::error::$name: $result"
-                fail=1 ;;
-            esac
-          done
-          if [ "$fail" -ne 0 ]; then
-            echo "One or more upstream jobs failed."
-            exit 1
-          fi
-          echo "All CI jobs completed successfully."
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = False
+          for name, data in sorted(needs.items()):
+              result = data.get("result", "unknown")
+              if result == "success":
+                  print(f"::notice::{name}: {result}")
+              else:
+                  print(f"::error::{name}: {result}")
+                  failed = True
+
+          if failed:
+              print("One or more upstream jobs did not complete successfully.")
+              sys.exit(1)
+
+          print("All CI jobs completed successfully.")
+          PY
