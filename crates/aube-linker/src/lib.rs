@@ -1700,6 +1700,7 @@ impl Linker {
         let mut parents: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
         parents.insert(pkg_nm_dir.clone());
         for rel_path in index.keys() {
+            validate_index_key(rel_path)?;
             let target = pkg_nm_dir.join(rel_path);
             if let Some(parent) = target.parent() {
                 parents.insert(parent.to_path_buf());
@@ -1726,6 +1727,7 @@ impl Linker {
         // the unlink syscall on every file. For a 1.4k-package install
         // that's ~45k wasted `unlink` calls on the hot path.
         for (rel_path, stored) in index {
+            validate_index_key(rel_path)?;
             let target = pkg_nm_dir.join(rel_path);
 
             self.link_file_fresh(&stored.store_path, &target)?;
@@ -1868,6 +1870,47 @@ pub enum Error {
         "internal: missing package index for {0} — caller skipped `load_index` but the package wasn't already materialized"
     )]
     MissingPackageIndex(String),
+    #[error("refusing to materialize unsafe index key: {0:?}")]
+    UnsafeIndexKey(String),
+}
+
+/// Defence in depth for the tarball path-traversal class. The
+/// primary guard lives in `aube_store::import_tarball`, which
+/// refuses malformed entries before they enter the `PackageIndex`.
+/// This helper is the last check before `base.join(key)` is
+/// written through the linker, so an index loaded from a cache
+/// file that predates the store-side validation (or a bug that
+/// lets a traversing key slip past it) still cannot produce a
+/// file outside the package root.
+fn validate_index_key(key: &str) -> Result<(), Error> {
+    if key.is_empty()
+        || key.starts_with('/')
+        || key.starts_with('\\')
+        || key.contains('\0')
+        || key.contains('\\')
+    {
+        return Err(Error::UnsafeIndexKey(key.to_string()));
+    }
+    // Reject any `..` component or Windows drive prefix like `C:`
+    // that would make `Path::join` escape the base.
+    for component in std::path::Path::new(key).components() {
+        match component {
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(Error::UnsafeIndexKey(key.to_string()));
+            }
+            std::path::Component::Normal(os) => {
+                if let Some(s) = os.to_str()
+                    && s.contains(':')
+                {
+                    return Err(Error::UnsafeIndexKey(key.to_string()));
+                }
+            }
+            std::path::Component::CurDir => {}
+        }
+    }
+    Ok(())
 }
 
 /// Decide whether an existing `node_modules/<name>` entry can be left
@@ -2509,5 +2552,72 @@ mod tests {
             std::fs::read_to_string(&foo1).unwrap(),
             std::fs::read_to_string(&foo2).unwrap()
         );
+    }
+
+    // ---------------------------------------------------------------
+    // `validate_index_key` rejects every shape of index key that
+    // would make `base.join(key)` escape `base`. Primary defence is
+    // in `aube-store::import_tarball`; this is the last-chance guard
+    // before the linker actually writes to disk.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn validate_index_key_accepts_normal_keys() {
+        validate_index_key("index.js").unwrap();
+        validate_index_key("lib/sub/a.js").unwrap();
+        validate_index_key("package.json").unwrap();
+        validate_index_key("a/b/c/d/e/f.js").unwrap();
+    }
+
+    #[test]
+    fn validate_index_key_rejects_empty() {
+        assert!(matches!(
+            validate_index_key(""),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+    }
+
+    #[test]
+    fn validate_index_key_rejects_leading_slash() {
+        assert!(matches!(
+            validate_index_key("/etc/passwd"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+        assert!(matches!(
+            validate_index_key("\\evil"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+    }
+
+    #[test]
+    fn validate_index_key_rejects_parent_dir() {
+        assert!(matches!(
+            validate_index_key("../../etc/passwd"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+        assert!(matches!(
+            validate_index_key("lib/../../../etc"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+    }
+
+    #[test]
+    fn validate_index_key_rejects_nul_and_backslash() {
+        assert!(matches!(
+            validate_index_key("lib\0evil"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+        assert!(matches!(
+            validate_index_key("lib\\..\\etc"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
+    }
+
+    #[test]
+    fn validate_index_key_rejects_windows_drive() {
+        assert!(matches!(
+            validate_index_key("C:Windows"),
+            Err(Error::UnsafeIndexKey(_))
+        ));
     }
 }

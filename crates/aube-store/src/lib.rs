@@ -374,8 +374,24 @@ impl Store {
 
             let mut entry = entry.map_err(|e| Error::Tar(e.to_string()))?;
 
-            if entry.header().entry_type().is_dir() {
+            // Directories don't carry content, skip them. Every other
+            // non-regular entry type (symlink, hardlink, character
+            // device, block device, fifo) is rejected. Real npm
+            // packages ship files and directories only. Symlink and
+            // hardlink entries are the load-bearing primitive of the
+            // node-tar CVE-2021-37701 class and have no legitimate
+            // use here.
+            let entry_type = entry.header().entry_type();
+            if entry_type.is_dir() {
                 continue;
+            }
+            if !matches!(
+                entry_type,
+                tar::EntryType::Regular | tar::EntryType::Continuous
+            ) {
+                return Err(Error::Tar(format!(
+                    "tarball entry type {entry_type:?} is not allowed"
+                )));
             }
 
             // Reject oversized entries up front on the declared size
@@ -396,23 +412,10 @@ impl Store {
                 .path()
                 .map_err(|e| Error::Tar(e.to_string()))?
                 .to_path_buf();
-            // Strip the first path component. npm convention is `package/`, but
-            // some packages publish tarballs with the package name (or other names)
-            // as the top-level directory. The first component is always the
-            // wrapper and should be stripped regardless of its name.
-            let rel_path = {
-                let mut components = raw_path.components();
-                components.next(); // skip the wrapper directory
-                let stripped: PathBuf = components.collect();
-                let s = if stripped.as_os_str().is_empty() {
-                    raw_path.to_string_lossy().to_string()
-                } else {
-                    stripped.to_string_lossy().to_string()
-                };
-                // Package indices are keyed with `/` separators on every
-                // platform so the lockfile and linker see identical keys
-                // regardless of where the tarball was extracted.
-                s.replace('\\', "/")
+            let Some(rel_path) = normalize_tar_entry_path(&raw_path)? else {
+                // Entry was the wrapper directory itself with no
+                // interior path after stripping. Nothing to store.
+                continue;
             };
 
             // Clamp the upfront allocation to a sane ceiling so a
@@ -434,6 +437,111 @@ impl Store {
         }
 
         Ok(index)
+    }
+}
+
+/// Strip the wrapper directory from `raw` and return a safe POSIX-style
+/// index key, or refuse the entry outright.
+///
+/// Rejects every shape that would let a crafted tarball place the
+/// eventual `pkg_dir.join(key)` file outside the package root:
+/// `..` anywhere in the remaining path, absolute paths, Windows
+/// drive prefixes, backslash separators smuggled inside a single
+/// component, NUL bytes, and `:` (which `Path::components` surfaces
+/// as `Normal("C:evil")` on unix where it wouldn't parse as a
+/// drive prefix). Non-UTF-8 paths are also rejected because the
+/// stored index is a JSON map keyed by string.
+///
+/// `Ok(None)` means the entry stripped down to the wrapper itself
+/// and should be skipped by the caller.
+///
+/// Matches the class of defences node-tar added for CVE-2021-32804,
+/// CVE-2021-37713, and what pnpm added for CVE-2024-27298.
+fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
+    use std::path::Component;
+
+    // Reject absolute, drive-prefixed, or `..`-rooted paths before
+    // any wrapper-strip runs. A naive "skip the first component"
+    // would otherwise strip the `RootDir` marker and accept `/etc`
+    // as `etc`.
+    match raw.components().next() {
+        Some(Component::RootDir) => {
+            return Err(Error::Tar(format!(
+                "tarball entry path is absolute: {raw:?}"
+            )));
+        }
+        Some(Component::Prefix(_)) => {
+            return Err(Error::Tar(format!(
+                "tarball entry path has a Windows drive prefix: {raw:?}"
+            )));
+        }
+        Some(Component::ParentDir) => {
+            return Err(Error::Tar(format!(
+                "tarball entry path escapes package root via `..`: {raw:?}"
+            )));
+        }
+        _ => {}
+    }
+
+    // Skip leading `.` components, then drop the first real
+    // component as the wrapper directory. npm convention is
+    // `package/`, but some packages ship the package name or
+    // another identifier. Whatever it is, drop it.
+    let mut components = raw.components().peekable();
+    while matches!(components.peek(), Some(Component::CurDir)) {
+        components.next();
+    }
+    components.next();
+
+    let mut out = String::new();
+    for comp in components {
+        match comp {
+            Component::Normal(os) => {
+                let s = os.to_str().ok_or_else(|| {
+                    Error::Tar(format!(
+                        "tarball entry path contains non-UTF-8 bytes: {raw:?}"
+                    ))
+                })?;
+                if s.is_empty()
+                    || s.contains('\0')
+                    || s.contains('\\')
+                    || s.contains('/')
+                    || s.contains(':')
+                {
+                    return Err(Error::Tar(format!(
+                        "tarball entry path contains a malformed component: {raw:?}"
+                    )));
+                }
+                if !out.is_empty() {
+                    out.push('/');
+                }
+                out.push_str(s);
+            }
+            Component::ParentDir => {
+                return Err(Error::Tar(format!(
+                    "tarball entry path escapes package root via `..`: {raw:?}"
+                )));
+            }
+            Component::RootDir => {
+                return Err(Error::Tar(format!(
+                    "tarball entry path is absolute: {raw:?}"
+                )));
+            }
+            Component::Prefix(_) => {
+                return Err(Error::Tar(format!(
+                    "tarball entry path has a Windows drive prefix: {raw:?}"
+                )));
+            }
+            // `.` components are harmless and appear in some tar
+            // implementations' wrapper representations.
+            Component::CurDir => {}
+        }
+    }
+
+    if out.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(out))
     }
 }
 
@@ -1525,6 +1633,196 @@ mod tests {
             other => panic!("expected Error::Tar, got {other:?}"),
         };
         assert!(msg.contains("entry cap"), "unexpected error: {msg}");
+    }
+
+    // ---------------------------------------------------------------
+    // Path traversal / zip-slip defences.
+    //
+    // A malicious tarball can try to write files outside the package
+    // directory at install time by crafting entry paths with `..`,
+    // absolute roots, Windows drive prefixes, or smuggled separators
+    // inside a single component. `normalize_tar_entry_path` must
+    // refuse every such shape before the key enters the
+    // `PackageIndex`, and `import_tarball` must refuse symlink /
+    // hardlink / device / fifo entries regardless of their path.
+    // ---------------------------------------------------------------
+
+    fn build_raw_named_tarball(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        // The `tar` crate's `Builder::append` refuses to write `..`
+        // paths and other malformed shapes, which is precisely what
+        // this test suite needs to construct. Write the header
+        // `name` field raw to bypass the safety check — a real
+        // attacker uploading a `.tgz` to a registry has no such
+        // guard.
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut ar = tar::Builder::new(gz);
+        for (path, data) in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_path("placeholder").unwrap();
+            let name = &mut h.as_old_mut().name;
+            name.fill(0);
+            let bytes = path.as_bytes();
+            assert!(bytes.len() < 100, "path too long for ustar name field");
+            name[..bytes.len()].copy_from_slice(bytes);
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            ar.append(&h, *data).unwrap();
+        }
+        ar.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_accepts_plain_keys() {
+        assert_eq!(
+            normalize_tar_entry_path(Path::new("package/index.js")).unwrap(),
+            Some("index.js".to_string())
+        );
+        assert_eq!(
+            normalize_tar_entry_path(Path::new("package/lib/util/a.js")).unwrap(),
+            Some("lib/util/a.js".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_skips_wrapper_only_entry() {
+        assert_eq!(
+            normalize_tar_entry_path(Path::new("package")).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_tar_entry_path(Path::new("package/")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_collapses_cur_dir() {
+        assert_eq!(
+            normalize_tar_entry_path(Path::new("package/./foo.js")).unwrap(),
+            Some("foo.js".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_rejects_parent_dir() {
+        let err = normalize_tar_entry_path(Path::new("package/../etc/passwd")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_rejects_absolute_path() {
+        let err = normalize_tar_entry_path(Path::new("/etc/passwd")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_rejects_smuggled_backslash() {
+        // On unix `Path::components` leaves `a\b` as one Normal
+        // component with a literal backslash inside. Reject.
+        let err = normalize_tar_entry_path(Path::new("package/a\\..\\etc")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_rejects_colon_smuggle() {
+        // On unix `C:evil` parses as `Normal("C:evil")`, not a
+        // Prefix. Reject defensively.
+        let err = normalize_tar_entry_path(Path::new("package/C:evil")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn normalize_tar_entry_path_rejects_nul() {
+        let err = normalize_tar_entry_path(Path::new("package/a\0b")).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn test_import_tarball_rejects_parent_dir_escape() {
+        // End-to-end: the crafted tarball that the prior zip-slip
+        // reproducer used. `import_tarball` must refuse it and
+        // produce no `PackageIndex` entries.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let tarball = build_raw_named_tarball(&[
+            ("package/package.json", b"{}"),
+            ("package/../../../etc/cron.d/evil", b"* * * * * root id\n"),
+        ]);
+        let err = store.import_tarball(&tarball).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn test_import_tarball_rejects_absolute_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let tarball = build_raw_named_tarball(&[
+            ("package/package.json", b"{}"),
+            ("/etc/passwd", b"root:x:0:0\n"),
+        ]);
+        let err = store.import_tarball(&tarball).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn test_import_tarball_rejects_symlink_entry() {
+        // Symlink entries let a malicious package place the eventual
+        // `pkg_dir.join(key)` file through a symlink that points
+        // outside the package root. Refuse the entire class.
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut ar = tar::Builder::new(gz);
+        let mut h = tar::Header::new_gnu();
+        h.set_path("package/sneaky").unwrap();
+        h.set_size(0);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Symlink);
+        h.set_link_name("/etc/passwd").unwrap();
+        h.set_cksum();
+        ar.append(&h, &[][..]).unwrap();
+        let tarball = ar.into_inner().unwrap().finish().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let err = store.import_tarball(&tarball).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn test_import_tarball_rejects_hardlink_entry() {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut ar = tar::Builder::new(gz);
+        let mut h = tar::Header::new_gnu();
+        h.set_path("package/clobber").unwrap();
+        h.set_size(0);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Link);
+        h.set_link_name("../../../../home/victim/.ssh/authorized_keys")
+            .unwrap();
+        h.set_cksum();
+        ar.append(&h, &[][..]).unwrap();
+        let tarball = ar.into_inner().unwrap().finish().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let err = store.import_tarball(&tarball).unwrap_err();
+        assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn test_import_tarball_still_accepts_normal_nested_paths() {
+        // Regression guard: the validator must not refuse legitimate
+        // deep paths that top-1000 packages actually ship.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let tarball = build_tarball("package/lib/sub/a.js", b"// hi");
+        let index = store.import_tarball(&tarball).unwrap();
+        assert!(index.contains_key("lib/sub/a.js"));
     }
 
     #[test]

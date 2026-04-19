@@ -412,6 +412,7 @@ pub(crate) fn link_hoisted_importer(
         let mut parents: BTreeSet<PathBuf> = BTreeSet::new();
         parents.insert(pkg_dir.clone());
         for rel_path in index.keys() {
+            crate::validate_index_key(rel_path)?;
             let target = pkg_dir.join(rel_path);
             if let Some(parent) = target.parent() {
                 parents.insert(parent.to_path_buf());
@@ -422,6 +423,7 @@ pub(crate) fn link_hoisted_importer(
         }
 
         for (rel_path, stored) in index {
+            crate::validate_index_key(rel_path)?;
             let target = pkg_dir.join(rel_path);
             linker.link_file_fresh(&stored.store_path, &target)?;
             stats.files_linked += 1;
