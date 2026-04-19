@@ -24,28 +24,42 @@ where
     })
 }
 
-/// Deserialize a `BTreeMap<String, String>` tolerant to `null` — both at
-/// the whole-map level (`"dist-tags": null` → empty map) and at the
-/// value level (`{"latest": null}` → entry dropped).
+/// Deserialize a `BTreeMap<String, String>` tolerant to any non-string
+/// value — both at the whole-map level (`"dist-tags": null` → empty
+/// map) and at the value level (`{"latest": null}` or
+/// `{"vows": {"version": "0.6.4", ...}}` → entry dropped).
 ///
-/// Some registry proxies (notably JFrog Artifactory's npm remote) emit
-/// `null` in places where npmjs.org always emits a string: stripped /
-/// tombstoned `dist-tags` values, per-version `time` entries for
-/// deleted versions, or dep-map entries that were redacted by a
-/// mirroring filter. The strict `BTreeMap<String, String>` shape would
-/// fail these with `invalid type: null, expected a string`, blocking
-/// the whole install even though the null is semantically "not
-/// present." Drop those entries so the resolver sees the same shape it
-/// would have seen from npmjs.
+/// Two real-world sources of non-string values:
+///
+/// 1. Registry proxies (notably JFrog Artifactory's npm remote) emit
+///    `null` in places where npmjs.org always emits a string: stripped
+///    / tombstoned `dist-tags` values, per-version `time` entries for
+///    deleted versions, or dep-map entries that were redacted by a
+///    mirroring filter.
+/// 2. Ancient publishes — some packages from the 2012–2013 era
+///    (`deep-diff@0.1.0`, for example) have `devDependencies` entries
+///    shaped like `{"version": "0.6.4", "dependencies": {...}}`
+///    instead of a plain version string, because an old npm client
+///    serialized a resolved tree into the manifest.
+///
+/// A strict `BTreeMap<String, String>` shape would fail these with
+/// `invalid type: ..., expected a string`, blocking an install of any
+/// package whose packument merely *lists* an affected version — even
+/// when the user's range doesn't select it. Drop the unparseable
+/// entries so the resolver sees the same shape npmjs would have served
+/// for a modern publish. pnpm and bun behave the same way.
 fn null_tolerant_string_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let maybe: Option<BTreeMap<String, Option<String>>> = Option::deserialize(de)?;
+    let maybe: Option<BTreeMap<String, serde_json::Value>> = Option::deserialize(de)?;
     Ok(maybe
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(k, v)| v.map(|s| (k, s)))
+        .filter_map(|(k, v)| match v {
+            serde_json::Value::String(s) => Some((k, s)),
+            _ => None,
+        })
         .collect())
 }
 
@@ -259,6 +273,29 @@ mod tests {
         assert_eq!(v.dev_dependencies.len(), 1);
         assert_eq!(v.peer_dependencies.len(), 1);
         assert_eq!(v.optional_dependencies.len(), 1);
+    }
+
+    /// Ancient publishes (e.g. `deep-diff@0.1.0`, published 2013) have
+    /// dep-map entries where the value is an object
+    /// (`{"version": "0.6.4", "dependencies": {...}}`) rather than a
+    /// version string. That shape would fail a strict string-valued
+    /// map — drop those entries, same as null ones, so the packument
+    /// still parses and unaffected versions stay resolvable.
+    #[test]
+    fn dependency_maps_drop_object_valued_entries() {
+        let v = parse(
+            r#"{
+                "name": "deep-diff",
+                "version": "0.1.0",
+                "devDependencies": {
+                    "vows": {"version": "0.6.4", "dependencies": {"diff": {"version": "1.0.4"}}},
+                    "extend": {"version": "1.1.1"},
+                    "lodash": "0.9.2"
+                }
+            }"#,
+        );
+        assert_eq!(v.dev_dependencies.len(), 1);
+        assert_eq!(v.dev_dependencies["lodash"], "0.9.2");
     }
 
     #[test]
