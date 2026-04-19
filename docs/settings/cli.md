@@ -16,8 +16,6 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 
 ## Summary
 
-16 settings are listed here.
-
 | Setting | Type | Summary |
 | --- | --- | --- |
 | [`publicHoistPattern`](#setting-publichoistpattern) | `list<string>` | Packages to hoist directly to the root node_modules. |

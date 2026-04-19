@@ -16,8 +16,6 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 
 ## Summary
 
-50 settings are listed here.
-
 | Setting | Type | Summary |
 | --- | --- | --- |
 | [`overrides`](#setting-overrides) | `object` | Instruct aube to override any dependency in the dependency graph, including peer dependencies. |
