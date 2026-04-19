@@ -824,18 +824,22 @@ fn berry_spec_candidates(name: &str, range: &str) -> Vec<String> {
 
 /// True when a manifest range carries a berry protocol prefix like
 /// `npm:...`, `workspace:...`, `file:...`, `link:...`, `portal:...`,
-/// `patch:...`, `exec:...`, `git:...`, `http:`, `https:`. Used to
-/// decide whether to prepend `npm:` when building the spec candidate.
+/// `patch:...`, `exec:...`, `git:...`, `git+ssh:...`, `http:`,
+/// `https:`. Used to decide whether to prepend `npm:` when building
+/// the spec candidate.
 fn range_has_protocol(range: &str) -> bool {
     let Some(colon) = range.find(':') else {
         return false;
     };
     let head = &range[..colon];
-    // A protocol prefix is all-alpha: `npm`, `workspace`, `file`,
-    // `link`, `portal`, `patch`, `exec`, `git`, `http`, `https`.
-    // Empty or non-alpha means the `:` was something else (a Windows
-    // drive letter in a path, say).
-    !head.is_empty() && head.chars().all(|c| c.is_ascii_alphabetic())
+    // Yarn berry's protocol heads are alphabetic with optional `+`
+    // separators for compound transports (`git+ssh`, `git+https`,
+    // `git+file`). Digits and other punctuation are not valid
+    // protocol chars, which also rules out Windows drive letters
+    // (single-letter heads are technically still valid protocols,
+    // but yarn itself doesn't emit any and the `file:` spelling
+    // handles those deps).
+    !head.is_empty() && head.chars().all(|c| c.is_ascii_alphabetic() || c == '+')
 }
 
 /// Extract a `BTreeMap<name, value>` from a sub-mapping like
@@ -1032,18 +1036,23 @@ pub fn write_berry(
                 }
             }
         }
+        // Header and `resolution:` both carry spec strings that may
+        // contain `:`, `/`, `@`, `#`, or — for `patch:` / file-path
+        // sources — backslashes and quotes. Route both through
+        // `quote_yaml_scalar` so escaping matches the rest of the
+        // writer. For the multi-spec header we quote the joined
+        // `", "`-separated list as one string, same as berry.
         let header_inner = header_specs.join(", ");
-        out.push('"');
-        out.push_str(&header_inner);
-        out.push_str("\":\n");
+        out.push_str(&quote_yaml_scalar(&header_inner));
+        out.push_str(":\n");
 
         // Scalar fields: version, resolution.
         out.push_str("  version: ");
         out.push_str(&quote_yaml_scalar(&pkg.version));
         out.push('\n');
-        out.push_str("  resolution: \"");
-        out.push_str(&exact_spec);
-        out.push_str("\"\n");
+        out.push_str("  resolution: ");
+        out.push_str(&quote_yaml_scalar(&exact_spec));
+        out.push('\n');
 
         // Dependencies / peerDependencies / peerDependenciesMeta /
         // optionalDependencies: nested YAML mappings with
@@ -1394,6 +1403,12 @@ bar@^2.0.0:
         assert!(range_has_protocol("workspace:*"));
         assert!(range_has_protocol("file:./pkgs/foo"));
         assert!(range_has_protocol("patch:react@^18.0.0#./mypatch.patch"));
+        // Compound transports: berry emits these for git-over-ssh /
+        // git-over-https, and the writer must not re-prefix them with
+        // `npm:` when building header specs from the manifest range.
+        assert!(range_has_protocol("git+ssh://git@github.com/u/r.git"));
+        assert!(range_has_protocol("git+https://github.com/u/r.git"));
+        assert!(range_has_protocol("git+file:./vendored.git"));
         // Bare semver ranges never have a protocol.
         assert!(!range_has_protocol("^1.0.0"));
         assert!(!range_has_protocol("1.2.3"));
@@ -1699,5 +1714,53 @@ __metadata:
             regular_block.contains("linkType: hard"),
             "registry block should be hard-linked:\n{regular_block}"
         );
+    }
+
+    /// Header and `resolution:` both carry spec strings that may
+    /// contain backslashes (Windows-style `file:` paths) or embedded
+    /// quotes (patched-package descriptors). The writer must route
+    /// them through `quote_yaml_scalar` so the emitted YAML is
+    /// well-formed. We can't easily drive backslashes into the model
+    /// from a parsed berry file (berry itself doesn't emit them on
+    /// macOS/Linux), so we construct a package with a `file:` source
+    /// that contains a backslash directly and assert the output
+    /// escapes it and round-trips through `serde_yaml::from_str`.
+    #[test]
+    fn test_write_berry_escapes_resolution_and_header() {
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "weird-pkg@1.0.0".to_string(),
+            LockedPackage {
+                name: "weird-pkg".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "weird-pkg@1.0.0".to_string(),
+                // A file: source whose path has a backslash. The
+                // header and resolution both become
+                // `weird-pkg@file:./a\b/c`; without escaping, the
+                // raw backslash in the YAML string would be a
+                // malformed escape.
+                local_source: Some(LocalSource::Directory(PathBuf::from("./a\\b/c"))),
+                ..Default::default()
+            },
+        );
+        let graph = LockfileGraph {
+            importers: {
+                let mut m = BTreeMap::new();
+                m.insert(".".to_string(), vec![]);
+                m
+            },
+            packages,
+            ..Default::default()
+        };
+        let manifest = make_manifest(&[], &[]);
+
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write_berry(out.path(), &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(out.path()).unwrap();
+
+        // The emitted file must parse as YAML — any missing escape
+        // blows up here instead of corrupting a real install.
+        let _doc: serde_yaml::Value = serde_yaml::from_str(&written)
+            .unwrap_or_else(|e| panic!("berry writer produced malformed YAML: {e}\n{written}"));
     }
 }
