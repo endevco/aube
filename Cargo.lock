@@ -381,6 +381,7 @@ version = "1.0.0-beta.5"
 dependencies = [
  "aube-manifest",
  "glob",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

@@ -13,3 +13,6 @@ include = ["src/**/*.rs"]
 aube-manifest = { workspace = true }
 glob = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
