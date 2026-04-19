@@ -346,3 +346,75 @@ JSON
 	assert_success
 	assert [ ! -f aube-lock.yaml ]
 }
+
+# npm lockfiles record peer deps on each package entry but emit a flat,
+# pre-hoisted tree — Node's upward `node_modules/` walk finds peers at
+# runtime. aube's isolated virtual store layout can't walk upward like
+# that; it needs peer deps wired as explicit siblings in the peering
+# package's `.aube/<dep_path>/node_modules/`. Without running the
+# resolver's `apply_peer_contexts` pass over the parsed npm graph,
+# every peer-dependent package (e.g. `@tanstack/devtools-vite` peering
+# on `vite`) installs without its peer sibling and dies at runtime
+# with `Cannot find package 'vite'`.
+@test "aube install wires peer dep siblings from package-lock.json" {
+	# Synthetic setup: declare a peer in the lockfile (using existing
+	# offline fixtures is-odd + is-number — is-odd doesn't actually
+	# peer on is-number, but the install path doesn't care; what we
+	# care about is that the peer pass sees the declaration and
+	# produces a contextualized sibling symlink).
+	cat >package.json <<'JSON'
+{
+  "name": "peer-sibling-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "is-odd": "3.0.1",
+    "is-number": "6.0.0"
+  }
+}
+JSON
+
+	cat >package-lock.json <<'JSON'
+{
+  "name": "peer-sibling-test",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "peer-sibling-test",
+      "version": "1.0.0",
+      "dependencies": { "is-odd": "3.0.1", "is-number": "6.0.0" }
+    },
+    "node_modules/is-odd": {
+      "version": "3.0.1",
+      "resolved": "https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz",
+      "integrity": "sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==",
+      "peerDependencies": { "is-number": "^6.0.0" }
+    },
+    "node_modules/is-number": {
+      "version": "6.0.0",
+      "resolved": "https://registry.npmjs.org/is-number/-/is-number-6.0.0.tgz",
+      "integrity": "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg=="
+    }
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+
+	# is-odd should now live at a peer-contextualized `.aube/` path.
+	# Use a glob because the context suffix gets hashed into the
+	# directory name and we don't want to hardcode the exact hash.
+	# `.aube/<entry>` is a symlink into the global virtual store, so
+	# `find` needs `-L` to follow it (`-type d` alone wouldn't match).
+	is_odd_dir="$(find -L node_modules/.aube -maxdepth 1 -type d -name 'is-odd@3.0.1*' 2>/dev/null | head -1)"
+	assert [ -n "$is_odd_dir" ]
+
+	# The peer must be wired as a sibling inside is-odd's
+	# `node_modules/`. Without the peer pass the directory only
+	# contains `is-odd/` and Node's require("is-number") from is-odd
+	# fails under the isolated layout.
+	assert [ -e "$is_odd_dir/node_modules/is-number" ]
+	assert [ -e "$is_odd_dir/node_modules/is-odd" ]
+}

@@ -2231,15 +2231,24 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
     unmet
 }
 
-/// Walk every resolved package's declared peer deps and hoist any peer
-/// that isn't already a direct dep of the importer up to the importer's
-/// `dependencies` list. This is what pnpm's `auto-install-peers=true`
-/// produces in its v9 lockfile: if you depend on a package whose
-/// `peerDependencies` declares `react`, and you don't list `react` in
-/// your own `package.json`, pnpm adds it to your importer's dependencies
-/// with the declared peer range as the specifier, and the linker creates
-/// a top-level `node_modules/react` symlink you can import from your own
-/// code.
+/// Promote unmet peers to importer direct deps.
+///
+/// Walks every resolved package's declared peer deps and hoists any
+/// peer that isn't already a direct dep of the importer up to the
+/// importer's `dependencies` list — what pnpm's
+/// `auto-install-peers=true` produces in its v9 lockfile. If you
+/// depend on a package whose `peerDependencies` declares `react` and
+/// you don't list `react` yourself, pnpm (and now aube) adds it to
+/// your importer's dependencies with the declared peer range as the
+/// specifier, and the linker creates a top-level
+/// `node_modules/react` symlink you can import from your own code.
+///
+/// Public so lockfile-driven installs that need to re-derive peer
+/// wiring (npm/yarn/bun formats, which don't record peer contexts)
+/// can run this before [`apply_peer_contexts`] to match fresh-resolve
+/// behavior. Idempotent in the npm case: npm v7+ already hoists
+/// auto-installed peers into root's `dependencies`, so they arrive
+/// pre-`satisfied` and no additions are emitted.
 ///
 /// Algorithm:
 ///   1. For each importer, collect the set of names already in its
@@ -2257,7 +2266,7 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
 ///
 /// Leaves everything else about the graph untouched — no packages are
 /// added or removed, only importer entries grow.
-fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
+pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
     let importer_paths: Vec<String> = graph.importers.keys().cloned().collect();
     for importer_path in importer_paths {
         let Some(direct_deps) = graph.importers.get(&importer_path) else {
@@ -2428,24 +2437,26 @@ fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
 /// `resolve-peers-from-workspace-root`, `peers-suffix-max-length`)
 /// through the `Resolver`'s `with_*` setters.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PeerContextOptions {
+pub struct PeerContextOptions {
     /// When true, run the cross-subtree peer-variant collapse pass
     /// after every iteration of the fixed-point loop. Matches pnpm's
     /// default.
-    pub(crate) dedupe_peer_dependents: bool,
+    pub dedupe_peer_dependents: bool,
     /// When true, emit suffixes as `(version)` instead of
     /// `(name@version)`. Affects both the package key, the reference
     /// tails stored in `dependencies`, and the cycle-break form of
     /// `contains_canonical_back_ref`.
-    pub(crate) dedupe_peers: bool,
+    pub dedupe_peers: bool,
     /// When true, unresolved peers can be satisfied by a dep declared
     /// at the root importer (`"."`) even if no ancestor scope carries
-    /// the peer. Runs between own-deps and graph-wide scan in
-    /// [`visit_peer_context`].
-    pub(crate) resolve_from_workspace_root: bool,
+    /// the peer. Runs between own-deps and graph-wide scan in the
+    /// peer-context visitor — see `visit_peer_context` in this
+    /// module for the owning implementation (intentionally crate-
+    /// private; the public API here is the option flag itself).
+    pub resolve_from_workspace_root: bool,
     /// Byte cap on the peer-ID suffix after which the entire suffix
     /// is hashed to `_<10-char-sha256-hex>`. pnpm's default is 1000.
-    pub(crate) peers_suffix_max_length: usize,
+    pub peers_suffix_max_length: usize,
 }
 
 impl Default for PeerContextOptions {
@@ -2459,7 +2470,26 @@ impl Default for PeerContextOptions {
     }
 }
 
-fn apply_peer_contexts(canonical: LockfileGraph, options: &PeerContextOptions) -> LockfileGraph {
+/// Compute peer-context suffixes over an already-resolved graph.
+///
+/// Takes a *canonical* graph — one `LockedPackage` per `(name,
+/// version)` with `peer_dependencies` populated — and produces a
+/// *contextualized* graph whose keys and transitive references carry
+/// `(peer@ver)` suffixes when packages resolve peers differently in
+/// different subtrees. Drives the sibling-symlink wiring in
+/// `aube-linker` for peers, so every fetch/materialize site sees a
+/// per-context identity for any package whose peers disambiguate.
+///
+/// Public so lockfile-driven installs can run the pass over graphs
+/// parsed from npm/yarn/bun lockfiles (which emit canonical form —
+/// no peer suffixes — and would otherwise leave peer-dependent
+/// packages without their peers as `.aube/<pkg>/node_modules/<peer>`
+/// siblings). Fresh resolves call it internally from
+/// `Resolver::resolve`.
+pub fn apply_peer_contexts(
+    canonical: LockfileGraph,
+    options: &PeerContextOptions,
+) -> LockfileGraph {
     const MAX_ITERATIONS: usize = 16;
     let mut current = canonical;
     let mut previous_keys: Option<std::collections::BTreeSet<String>> = None;
