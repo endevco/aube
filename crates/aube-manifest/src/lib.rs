@@ -39,11 +39,7 @@ where
                     serde_json::Value::String(_) => "string",
                     serde_json::Value::Number(_) => "number",
                     serde_json::Value::Bool(_) => "boolean",
-                    serde_json::Value::Null
-                    | serde_json::Value::Array(_)
-                    | serde_json::Value::Object(_) => {
-                        unreachable!("handled by outer match")
-                    }
+                    _ => unreachable!("engines: unexpected value variant"),
                 }
             )));
         }
