@@ -205,8 +205,11 @@ body {
   font-size: 12px;
   gap: 10px;
   letter-spacing: 0;
-  margin-bottom: 28px;
   padding: 7px 12px;
+  position: absolute;
+  right: 32px;
+  top: 32px;
+  z-index: 1;
 }
 
 .aube-release span:first-child {
@@ -217,14 +220,15 @@ body {
   width: 6px;
 }
 
-.aube-release-version {
+.aube-release .aube-release-version {
   color: inherit;
+  font-weight: inherit;
   text-decoration: none;
   transition: color 120ms ease;
 }
 
-.aube-release-version:hover,
-.aube-release-version:focus-visible {
+.aube-release .aube-release-version:hover,
+.aube-release .aube-release-version:focus-visible {
   color: var(--aube-accent);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -1186,6 +1190,11 @@ body {
 @media (max-width: 960px) {
   .aube-home {
     padding: 54px 20px 80px;
+  }
+
+  .aube-release {
+    margin-bottom: 28px;
+    position: static;
   }
 
   .aube-hero {

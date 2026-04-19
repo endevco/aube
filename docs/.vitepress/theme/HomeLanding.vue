@@ -203,20 +203,20 @@ watch(progressBarEl, (el, previousEl) => {
 <template>
   <main class="aube-home">
     <div class="aube-hero-glow" aria-hidden="true"></div>
+    <div class="aube-release">
+      <span></span>
+      <span>
+        <a
+          class="aube-release-version"
+          :href="releaseNotesUrl"
+          target="_blank"
+          rel="noreferrer"
+        >v{{ aubeVersion }}</a>
+        · {{ releasePhrase }}
+      </span>
+    </div>
     <section class="aube-hero" aria-labelledby="aube-hero-title">
       <div class="aube-hero-copy">
-        <div class="aube-release">
-          <span></span>
-          <span>
-            <a
-              class="aube-release-version"
-              :href="releaseNotesUrl"
-              target="_blank"
-              rel="noreferrer"
-            >v{{ aubeVersion }}</a>
-            · {{ releasePhrase }}
-          </span>
-        </div>
         <p class="aube-pronunciation">aube /ob/ - pronounced "ohb"</p>
         <h1 id="aube-hero-title">A new dawn <em>for node installs.</em></h1>
         <p class="aube-lede">
