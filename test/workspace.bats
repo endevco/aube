@@ -388,6 +388,77 @@ _setup_shared_direct_dep_workspace() {
 	assert_output "from-workspace"
 }
 
+@test "aube install: caret range on workspace-package name links to local copy" {
+	# Range form (not exact pin): workspace at 1.2.3 satisfies `^1.0.0`
+	# in the consumer, so the short-circuit must still fire. Exercises
+	# the non-trivial `version_satisfies` path — an exact-match test
+	# alone wouldn't catch a regression in range parsing.
+	mkdir -p packages/app packages/lib
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "workspaces": ["packages/*"]
+		}
+	EOF
+	cat >packages/lib/package.json <<-'EOF'
+		{ "name": "@test/lib", "version": "1.2.3" }
+	EOF
+	cat >packages/app/package.json <<-'EOF'
+		{
+		  "name": "@test/app",
+		  "version": "1.0.0",
+		  "dependencies": { "@test/lib": "^1.0.0" }
+		}
+	EOF
+
+	run aube install
+	assert_success
+
+	assert_link_exists packages/app/node_modules/@test/lib
+	resolved="$(readlink -f packages/app/node_modules/@test/lib)"
+	[[ "$resolved" == *"/packages/lib" ]]
+}
+
+@test "aube install: workspace-name miss falls through to registry, not stolen" {
+	# Workspace has @test/lib@1.0.0 but the consumer pins `^2.0.0`.
+	# The short-circuit must NOT hijack the name just because it
+	# matches a workspace package — version has to satisfy too.
+	# Expected behavior: resolver falls through to the registry and
+	# surfaces a registry-shaped error (the fixture registry does not
+	# serve @test/lib). Guards against a regression where a workspace
+	# miss silently links the wrong version.
+	mkdir -p packages/app packages/lib
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "workspaces": ["packages/*"]
+		}
+	EOF
+	cat >packages/lib/package.json <<-'EOF'
+		{ "name": "@test/lib", "version": "1.0.0" }
+	EOF
+	cat >packages/app/package.json <<-'EOF'
+		{
+		  "name": "@test/app",
+		  "version": "1.0.0",
+		  "dependencies": { "@test/lib": "^2.0.0" }
+		}
+	EOF
+
+	run aube install
+	assert_failure
+	# The error must be a registry error (we went past the workspace
+	# branch), not a silent success that linked the wrong version.
+	assert_output --partial "registry error for @test/lib"
+	# And no symlink was created.
+	run test -e packages/app/node_modules/@test/lib
+	assert_failure
+}
+
 @test "aube install: dedupeDirectDeps=true keeps child symlink when versions differ" {
 	mkdir -p packages/app
 	# Root pins is-number@3.0.0, child pins is-number@6.0.0 — both are
