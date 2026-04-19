@@ -317,9 +317,8 @@ CMDS["ci-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin
 # Each tool does "install then run the `test` script" via its own idiomatic
 # command. aube has no install-test alias because `aube test` auto-installs
 # before running the script; pnpm and npm ship `install-test`; bun and yarn
-# need an explicit chain. The fixture's `test` script is a trivial
-# `node -e "console.log('ok')"` so this measures install + script dispatch,
-# not test-runtime work.
+# need an explicit chain. The fixture's `test` script is the POSIX shell
+# no-op `:`, so this measures install + script dispatch, not test-runtime work.
 CMDS["install-test:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} test >/dev/null 2>&1"
 CMDS["install-test:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1 && HOME={home} BUN_INSTALL={home}/.bun {bin} run test >/dev/null 2>&1"
 # `npm install-test` (the `install` variant, not `ci`) is the right
