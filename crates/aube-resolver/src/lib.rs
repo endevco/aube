@@ -152,6 +152,12 @@ pub struct ResolvedPackage {
     pub name: String,
     pub version: String,
     pub integrity: Option<String>,
+    /// Exact tarball URL reported by the packument's `dist.tarball`
+    /// field, or preserved from an existing lockfile. Most npm
+    /// packages can re-derive this from name + version, but JSR's
+    /// npm-compatible registry uses opaque tarball paths, so fetchers
+    /// must prefer this when it is available.
+    pub tarball_url: Option<String>,
     /// Real registry name when this package is an npm-alias
     /// (`"h3-v2": "npm:h3@..."`). `name` is the alias (`h3-v2` — the
     /// folder in `node_modules/`), `alias_of` is what the streaming
@@ -1104,12 +1110,13 @@ impl Resolver {
                     }
                     // `jsr:<range>` and `jsr:<@scope/name>[@<range>]` both
                     // land here. JSR's npm-compat endpoint serves every
-                    // package under `@jsr/<scope>__<name>`, so we rewrite
-                    // the task to that name and let the rest of the
-                    // resolver treat it as an ordinary scoped dep — the
-                    // `@jsr` scope registry is auto-registered in
-                    // `NpmConfig::load` so the fetch targets
-                    // <https://npm.jsr.io> without any `.npmrc` setup.
+                    // package under `@jsr/<scope>__<name>`, but the
+                    // user-facing dependency name stays the JSR name (or
+                    // explicit alias) from package.json. Keep `task.name`
+                    // unchanged for dep_path/importer/link identity and
+                    // stash the npm-compat name in `real_name`, matching
+                    // the npm-alias path above. Only registry IO should
+                    // see `@jsr/...`.
                     if let Some(rest) = task.range.strip_prefix("jsr:") {
                         let (jsr_name_raw, jsr_range) = if let Some(body) = rest.strip_prefix('@') {
                             match body.rfind('@') {
@@ -1129,14 +1136,16 @@ impl Resolver {
                         };
                         match aube_registry::jsr::jsr_to_npm_name(&jsr_name_raw) {
                             Some(npm_name) => {
-                                if npm_name != task.name || jsr_range != task.range {
+                                if task.real_name.as_deref() != Some(npm_name.as_str())
+                                    || jsr_range != task.range
+                                {
                                     tracing::trace!(
                                         "jsr: {} -> {}@{}",
                                         task.name,
                                         npm_name,
                                         jsr_range,
                                     );
-                                    task.name = npm_name;
+                                    task.real_name = Some(npm_name);
                                     task.range = jsr_range;
                                     changed = true;
                                 }
@@ -1277,6 +1286,7 @@ impl Resolver {
                                 name: linked_name.clone(),
                                 version: real_version.clone(),
                                 integrity: None,
+                                tarball_url: None,
                                 // local_source deps aren't aliased —
                                 // `file:`/`link:` specifiers go
                                 // through the local-source branch,
@@ -1482,6 +1492,7 @@ impl Resolver {
                                     name: task.name.clone(),
                                     version: version.clone(),
                                     integrity: locked_pkg.integrity.clone(),
+                                    tarball_url: locked_pkg.tarball_url.clone(),
                                     // Carry the alias identity
                                     // through the reuse path — the
                                     // existing `locked_pkg` already
@@ -1895,6 +1906,7 @@ impl Resolver {
                     .push(version.clone());
 
                 let integrity = version_meta.dist.as_ref().and_then(|d| d.integrity.clone());
+                let tarball_url = version_meta.dist.as_ref().map(|d| d.tarball.clone());
 
                 // Stream this resolved package for early tarball fetching.
                 // `alias_of` mirrors what the LockedPackage below
@@ -1908,6 +1920,7 @@ impl Resolver {
                         name: task.name.clone(),
                         version: version.clone(),
                         integrity: integrity.clone(),
+                        tarball_url: tarball_url.clone(),
                         alias_of: task.real_name.clone(),
                         local_source: None,
                     });
@@ -1971,7 +1984,7 @@ impl Resolver {
                             v.sort();
                             v
                         },
-                        tarball_url: None,
+                        tarball_url,
                         // `name` is the alias for npm-aliased tasks
                         // (`"h3-v2": "npm:h3@..."` → name = "h3-v2"),
                         // so stash the real registry name here. The
@@ -6293,5 +6306,43 @@ mod tests {
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].name, "odd-alias");
         assert_eq!(root[0].dep_path, "odd-alias@3.0.1");
+    }
+
+    #[tokio::test]
+    async fn fresh_resolve_preserves_jsr_name_as_folder_name() {
+        let jsr_collections = make_packument("@jsr/std__collections", &["1.1.6"], "1.1.6");
+
+        let client = Arc::new(aube_registry::client::RegistryClient::new(
+            "http://127.0.0.1:0",
+        ));
+        let mut resolver = Resolver::new(client);
+        resolver
+            .cache
+            .insert("@jsr/std__collections".to_string(), jsr_collections);
+
+        let mut manifest = PackageJson::default();
+        manifest
+            .dependencies
+            .insert("@std/collections".to_string(), "jsr:^1.1.6".to_string());
+
+        let graph = resolver
+            .resolve(&manifest, None)
+            .await
+            .expect("jsr resolve failed");
+
+        let pkg = graph
+            .packages
+            .get("@std/collections@1.1.6")
+            .expect("jsr package must be keyed by the user-facing dep_path");
+        assert_eq!(pkg.name, "@std/collections");
+        assert_eq!(pkg.version, "1.1.6");
+        assert_eq!(pkg.alias_of.as_deref(), Some("@jsr/std__collections"));
+        assert_eq!(pkg.registry_name(), "@jsr/std__collections");
+        assert!(!graph.packages.contains_key("@jsr/std__collections@1.1.6"));
+
+        let root = graph.importers.get(".").unwrap();
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "@std/collections");
+        assert_eq!(root[0].dep_path, "@std/collections@1.1.6");
     }
 }

@@ -3710,7 +3710,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     handles.push(tokio::spawn(async move {
                         let _row = row;
                         let permit = sem.acquire().await.unwrap();
-                        let url = client.tarball_url(&pkg_registry_name, &pkg.version);
+                        let url = pkg
+                            .tarball_url
+                            .clone()
+                            .unwrap_or_else(|| client.tarball_url(&pkg_registry_name, &pkg.version));
                         tracing::trace!("Fetching {}@{}", pkg.name, pkg.version);
 
                         let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {

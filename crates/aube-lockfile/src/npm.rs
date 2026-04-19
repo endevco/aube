@@ -165,12 +165,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             deps.insert(dep_name.clone(), String::new());
         }
 
-        // Keep the `resolved` URL for aliased entries so the fetcher
-        // doesn't try to re-derive it from the alias-qualified name.
-        // For non-aliased entries the stock name-based derivation is
-        // what other paths already expect, so leave `tarball_url`
-        // unset and let the default code path handle it.
-        let tarball_url = if alias_of.is_some() {
+        // Keep the `resolved` URL for entries whose tarball URL cannot
+        // be safely re-derived from the install name and version:
+        // npm aliases and JSR's npm-compatible packages.
+        let tarball_url = if alias_of.is_some() || install_name.starts_with("@jsr/") {
             entry
                 .resolved
                 .as_ref()
@@ -560,14 +558,13 @@ pub fn write(
         let dev = is_dev && !dev_optional;
         let optional = is_opt && !dev_optional;
 
-        // Aliased deps (`"h3-v2": "npm:h3@..."` in package.json) round-trip
-        // as `node_modules/h3-v2` with an explicit `name: "h3"` and the
-        // captured `resolved:` URL. Without both fields npm (and aube's
-        // own reader on a subsequent install) has no way to recover
-        // the real package identity from an alias-qualified install
-        // path.
+        // Aliased deps (`"h3-v2": "npm:h3@..."` in package.json)
+        // round-trip as `node_modules/h3-v2` with an explicit
+        // `name: "h3"` and the captured `resolved:` URL. JSR packages
+        // also need `resolved:` because npm.jsr.io tarball paths are
+        // opaque rather than name-derived.
         let alias_name = pkg.alias_of.as_deref();
-        let resolved = if alias_name.is_some() {
+        let resolved = if alias_name.is_some() || pkg.registry_name().starts_with("@jsr/") {
             pkg.tarball_url.clone()
         } else {
             None

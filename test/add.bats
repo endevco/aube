@@ -145,9 +145,23 @@ EOF
 	# with only the range (matches pnpm behavior when alias == JSR name).
 	assert_output --partial '"@std/collections": "jsr:^1.0.0"'
 
-	# The install materializes under the npm-compat name, which is what
-	# the resolver actually fetched from the registry.
-	assert_dir_exists node_modules/.aube/@jsr+std__collections@1.0.0
+	# The install materializes under the JSR-style name while registry IO
+	# still uses the npm-compat name recorded below.
+	assert_dir_exists node_modules/.aube/@std+collections@1.0.0
+	assert_file_exists node_modules/@std/collections/index.js
+
+	# JSR's real npm-compatible registry uses opaque dist.tarball paths,
+	# so the lockfile must preserve the packument URL for cold installs.
+	run grep "jsr-tarball-1.0.0.tgz" aube-lock.yaml
+	assert_success
+	run grep "aliasOf: '@jsr/std__collections'" aube-lock.yaml
+	assert_success
+
+	rm -rf node_modules "$HOME/.aube-store"
+	run aube install --frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/@std+collections@1.0.0
+	assert_file_exists node_modules/@std/collections/index.js
 }
 
 @test "aube add jsr: rejects non-scoped specs up front" {
