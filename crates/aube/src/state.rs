@@ -64,7 +64,11 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
     // that explicitly — zero-dep projects still get a modules directory
     // (with `.bin/`) from install, so the directory check covers them.
     if !modules_dir.exists() {
-        return Some("node_modules is missing".into());
+        let name = modules_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("node_modules");
+        return Some(format!("{name} is missing"));
     }
 
     // Check lockfile hash. Honor `gitBranchLockfile` so a branch-specific
