@@ -1949,9 +1949,9 @@
           {
             "name": "force",
             "usage": "--force",
-            "help": "Force reinstall: bypass the `.aube/.state/install-state.json` freshness check and re-resolve the lockfile even when nothing has drifted",
-            "help_long": "Force reinstall: bypass the `.aube/.state/install-state.json` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`.",
-            "help_first_line": "Force reinstall: bypass the `.aube/.state/install-state.json` freshness check and re-resolve the lockfile even when nothing has drifted",
+            "help": "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted",
+            "help_long": "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`.",
+            "help_first_line": "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted",
             "short": [],
             "long": [
               "force"

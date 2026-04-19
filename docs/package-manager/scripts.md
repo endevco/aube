@@ -13,7 +13,7 @@ aube stop
 aube restart
 ```
 
-Before running a script, aube checks `.aube/.state/install-state.json`. If the
+Before running a script, aube checks `node_modules/.aube-state`. If the
 manifest or lockfile changed, aube installs first. Use `--no-install` when you
 want to skip that check.
 

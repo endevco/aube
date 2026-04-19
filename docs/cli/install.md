@@ -29,7 +29,7 @@ Unchanged specs keep their existing version and integrity hash; only drifted ent
 
 ### `--force`
 
-Force reinstall: bypass the `.aube/.state/install-state.json` freshness check and re-resolve the lockfile even when nothing has drifted.
+Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.
 
 Mirrors pnpm's `install --force`.
 

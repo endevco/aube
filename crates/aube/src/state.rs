@@ -3,30 +3,35 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_STATE_DIR: &str = ".aube/.state";
-const STATE_FILE_NAME: &str = "install-state.json";
-const LEGACY_STATE_FILES: &[&str] = &[
-    "node_modules/.aube-state",
-    "node_modules/.aube/.state/install-state.json",
-];
+const DEFAULT_STATE_DIR: &str = "node_modules";
+const STATE_FILE_NAME: &str = ".aube-state";
 
-/// Resolve the state directory for `project_dir`. Checks the `stateDir`
-/// setting in `.npmrc` / env / workspace yaml; falls back to
-/// `<project_dir>/.aube/.state`.
-fn state_dir(project_dir: &Path) -> PathBuf {
-    let default = || project_dir.join(DEFAULT_STATE_DIR);
+/// Resolve the modules dir and state file path for `project_dir` in a
+/// single settings-context load. `check_needs_install` and `write_state`
+/// both need both values, and this is on the hot path for every
+/// `aube run` / `exec` / `test` / `start` / `restart`.
+///
+/// The default `stateDir` falls back to the resolved `modulesDir` so the
+/// state file lives alongside the install tree — otherwise a
+/// `modulesDir` override would create a phantom `node_modules/`
+/// directory just to hold the state file.
+fn resolve_paths(project_dir: &Path) -> (PathBuf, PathBuf) {
     crate::commands::with_settings_ctx(project_dir, |ctx| {
-        let raw = aube_settings::resolved::state_dir(ctx);
-        if raw == DEFAULT_STATE_DIR {
-            default()
+        let modules_dir = project_dir.join(aube_settings::resolved::modules_dir(ctx));
+        let raw_state = aube_settings::resolved::state_dir(ctx);
+        let state_dir = if raw_state == DEFAULT_STATE_DIR {
+            modules_dir.clone()
         } else {
-            crate::commands::expand_setting_path(&raw, project_dir).unwrap_or_else(default)
-        }
+            crate::commands::expand_setting_path(&raw_state, project_dir)
+                .unwrap_or_else(|| modules_dir.clone())
+        };
+        let state_file = state_dir.join(STATE_FILE_NAME);
+        (modules_dir, state_file)
     })
 }
 
 fn state_file(project_dir: &Path) -> PathBuf {
-    state_dir(project_dir).join(STATE_FILE_NAME)
+    resolve_paths(project_dir).1
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,23 +49,26 @@ pub struct InstallState {
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
 pub fn check_needs_install(project_dir: &Path) -> Option<String> {
-    let state_path = state_file(project_dir);
+    let (modules_dir, state_path) = resolve_paths(project_dir);
 
-    // No state file = never installed
+    // No state file = never installed (or `rm -rf <modulesDir>` wiped it).
     let state = match read_state(&state_path) {
         Some(s) => s,
-        None => return Some("node_modules not found or never installed by aube".into()),
+        None => return Some("install state not found".into()),
     };
 
-    // The state file lives outside `node_modules`, so a user who runs
-    // `rm -rf node_modules` leaves the state behind. Verify the tree is
-    // still on disk — otherwise the lockfile+manifest hashes match but
-    // the packages are gone, and `aube run` would execute the script
-    // against a missing tree. Zero-dep projects still get a
-    // `node_modules/` (with `.bin/`) from install, so checking for the
-    // directory itself covers both cases.
-    if !project_dir.join("node_modules").exists() {
-        return Some("node_modules is missing".into());
+    // In the default config the state file lives inside `modulesDir` so
+    // `rm -rf <modules>` wipes it. But `stateDir` can point elsewhere,
+    // in which case the state survives a manual modules-dir nuke and
+    // the hashes below would falsely report "up to date". Guard against
+    // that explicitly — zero-dep projects still get a modules directory
+    // (with `.bin/`) from install, so the directory check covers them.
+    if !modules_dir.exists() {
+        let name = modules_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("node_modules");
+        return Some(format!("{name} is missing"));
     }
 
     // Check lockfile hash. Honor `gitBranchLockfile` so a branch-specific
@@ -132,7 +140,6 @@ pub fn write_state(project_dir: &Path, section_filtered: bool) -> Result<(), std
     if let Some(parent) = state_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    cleanup_legacy_state(project_dir);
     let json = serde_json::to_string_pretty(&state)?;
     std::fs::write(state_path, json)?;
 
@@ -141,32 +148,11 @@ pub fn write_state(project_dir: &Path, section_filtered: bool) -> Result<(), std
 
 /// Remove the install state file. Missing state is not an error.
 pub fn remove_state(project_dir: &Path) -> Result<(), std::io::Error> {
-    remove_state_file(&state_file(project_dir))?;
-    for legacy in LEGACY_STATE_FILES {
-        remove_state_file(&project_dir.join(legacy))?;
-    }
-    cleanup_empty_legacy_state_dirs(project_dir);
-    Ok(())
-}
-
-fn cleanup_legacy_state(project_dir: &Path) {
-    for legacy in LEGACY_STATE_FILES {
-        let _ = std::fs::remove_file(project_dir.join(legacy));
-    }
-    cleanup_empty_legacy_state_dirs(project_dir);
-}
-
-fn remove_state_file(path: &Path) -> Result<(), std::io::Error> {
-    match std::fs::remove_file(path) {
+    match std::fs::remove_file(state_file(project_dir)) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
-}
-
-fn cleanup_empty_legacy_state_dirs(project_dir: &Path) {
-    let _ = std::fs::remove_dir(project_dir.join("node_modules/.aube/.state"));
-    let _ = std::fs::remove_dir(project_dir.join("node_modules/.aube"));
 }
 
 /// Pick the lockfile path that an install in `project_dir` will actually
