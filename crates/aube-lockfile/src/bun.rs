@@ -43,7 +43,7 @@ struct RawBunLockfile {
     #[serde(default)]
     workspaces: BTreeMap<String, RawBunWorkspace>,
     #[serde(default)]
-    packages: BTreeMap<String, RawBunPackageEntry>,
+    packages: BTreeMap<String, Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,24 +57,60 @@ struct RawBunWorkspace {
     optional_dependencies: BTreeMap<String, String>,
 }
 
-/// Each package entry is a JSON array; we use a named struct for the parts we care about.
-/// bun's tuple shape: `[ident, resolved, metadata, integrity]`. We ignore
-/// the resolved URL (field 1) since aube fetches from the configured registry.
-#[derive(Debug, Deserialize)]
-struct RawBunPackageEntry(
-    /// `name@version`
-    String,
-    /// Resolved URL — ignored
-    #[serde(default)]
-    #[allow(dead_code)]
-    serde::de::IgnoredAny,
-    /// Metadata object with optional dependencies
-    #[serde(default)]
-    RawBunMeta,
-    /// Integrity hash (optional — missing for workspace/link packages)
-    #[serde(default)]
-    Option<String>,
-);
+/// Decoded view of one bun.lock package entry.
+///
+/// bun uses different tuple shapes depending on where the package came
+/// from:
+///   - Registry: `[ident, resolved_url, { meta }, "sha512-..."]`
+///   - Git / github: `[ident, { meta }, "owner-repo-commit"]`
+///   - Workspace / link / file: `[ident]` or `[ident, { meta }]`
+///
+/// We introspect by element type rather than position: the metadata
+/// object is the sole `Object` in the array, and an integrity hash is
+/// recognized by its `sha…-` prefix.
+#[derive(Debug, Default)]
+struct BunEntry {
+    ident: String,
+    meta: RawBunMeta,
+    integrity: Option<String>,
+}
+
+impl BunEntry {
+    fn from_array(key: &str, arr: &[serde_json::Value]) -> Result<Self, String> {
+        let ident = arr
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("package '{key}' has no ident string at position 0"))?
+            .to_string();
+
+        let mut meta = RawBunMeta::default();
+        let mut integrity: Option<String> = None;
+        for el in arr.iter().skip(1) {
+            match el {
+                serde_json::Value::Object(_) => {
+                    meta = serde_json::from_value(el.clone()).unwrap_or_default();
+                }
+                serde_json::Value::String(s) if is_integrity_hash(s) => {
+                    integrity = Some(s.clone());
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Self {
+            ident,
+            meta,
+            integrity,
+        })
+    }
+}
+
+fn is_integrity_hash(s: &str) -> bool {
+    matches!(
+        s.split_once('-').map(|(algo, _)| algo),
+        Some("sha512" | "sha384" | "sha256" | "sha1" | "md5")
+    )
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,17 +140,29 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         ));
     }
 
+    // Decode each raw array into a typed BunEntry so later passes don't
+    // have to think about bun's per-source-type tuple layouts.
+    let mut entries: BTreeMap<String, BunEntry> = BTreeMap::new();
+    for (key, value) in &raw.packages {
+        let entry =
+            BunEntry::from_array(key, value).map_err(|e| Error::Parse(path.to_path_buf(), e))?;
+        entries.insert(key.clone(), entry);
+    }
+
     // First pass: parse (name, version) for each entry. bun.lock keys look
     // like the package name ("foo") for the hoisted version, or a nested
     // path ("parent/foo") when multiple versions exist.
     let mut key_info: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
 
-    for (key, entry) in &raw.packages {
-        let Some((name, version)) = split_ident(&entry.0) else {
+    for (key, entry) in &entries {
+        let Some((name, version)) = split_ident(&entry.ident) else {
             return Err(Error::Parse(
                 path.to_path_buf(),
-                format!("could not parse ident '{}' for package '{}'", entry.0, key),
+                format!(
+                    "could not parse ident '{}' for package '{}'",
+                    entry.ident, key
+                ),
             ));
         };
         key_info.insert(key.clone(), (name.clone(), version.clone()));
@@ -129,10 +177,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // Collect transitive dep names; resolve to dep_paths in a second pass.
         let mut deps: BTreeMap<String, String> = BTreeMap::new();
         for n in entry
-            .2
+            .meta
             .dependencies
             .keys()
-            .chain(entry.2.optional_dependencies.keys())
+            .chain(entry.meta.optional_dependencies.keys())
         {
             deps.insert(n.clone(), String::new());
         }
@@ -142,7 +190,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             LockedPackage {
                 name,
                 version,
-                integrity: entry.3.clone().filter(|s| !s.is_empty()),
+                integrity: entry.integrity.clone().filter(|s| !s.is_empty()),
                 dependencies: deps,
                 dep_path,
                 ..Default::default()
@@ -154,7 +202,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // hierarchy — for an entry at key "parent/foo", dep "bar" resolves to
     // "parent/foo/bar" → "parent/bar" → "bar".
     let mut resolved_by_dep_path: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    for (key, entry) in &raw.packages {
+    for (key, entry) in &entries {
         let Some((name, version)) = key_info.get(key) else {
             continue;
         };
@@ -165,10 +213,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
         let mut resolved: BTreeMap<String, String> = BTreeMap::new();
         for dep_name in entry
-            .2
+            .meta
             .dependencies
             .keys()
-            .chain(entry.2.optional_dependencies.keys())
+            .chain(entry.meta.optional_dependencies.keys())
         {
             if let Some(target_key) = resolve_nested_bun(key, dep_name, &key_info)
                 && let Some((dname, dver)) = key_info.get(&target_key)
@@ -631,6 +679,45 @@ mod tests {
         assert!(graph.packages.contains_key("@scope/pkg@1.0.0"));
         let root = graph.importers.get(".").unwrap();
         assert_eq!(root[0].name, "@scope/pkg");
+    }
+
+    /// bun.lock uses a 3-tuple `[ident, { meta }, "owner-repo-commit"]`
+    /// for GitHub / git deps (no `resolved` slot and no integrity). A
+    /// naive positional parse would mistake the trailing commit-id
+    /// string for the metadata object — make sure we recognize the
+    /// object by type rather than position.
+    #[test]
+    fn test_parse_github_dep() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": { "vfs": "github:collinstevens/vfs#0b6ea53" }
+    }
+  },
+  "packages": {
+    "vfs": ["vfs@github:collinstevens/vfs#0b6ea53abcdef", { "dependencies": { "dep": "^1.0.0" } }, "collinstevens-vfs-0b6ea53"],
+    "dep": ["dep@1.0.0", "", {}, "sha512-depintegrity"]
+  }
+}"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        // The vfs package parsed with its github: version and picked up
+        // the transitive dep declared in the metadata slot.
+        let vfs_key = "vfs@github:collinstevens/vfs#0b6ea53abcdef";
+        assert!(graph.packages.contains_key(vfs_key));
+        let vfs = &graph.packages[vfs_key];
+        assert_eq!(
+            vfs.dependencies.get("dep").map(String::as_str),
+            Some("dep@1.0.0")
+        );
+        // No sha-*-style hash on the github entry → integrity stays None.
+        assert!(vfs.integrity.is_none());
+
+        let root = graph.importers.get(".").unwrap();
+        assert!(root.iter().any(|d| d.name == "vfs"));
     }
 
     /// Round-trip the same multi-version shape the npm writer test
