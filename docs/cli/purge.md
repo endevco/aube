@@ -11,4 +11,4 @@ A `purge` script in the root `package.json` overrides the built-in.
 
 ### `-l --lockfile`
 
-Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`)
+Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)
