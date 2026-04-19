@@ -2023,7 +2023,6 @@ impl Resolver {
                     .or_default()
                     .push(version.clone());
 
-                let registry_name = task.registry_name();
                 let integrity = version_meta.dist.as_ref().and_then(|d| d.integrity.clone());
                 // Always stash the registry tarball URL on the locked
                 // package. pnpm / yarn writers gate emission on
@@ -2035,7 +2034,6 @@ impl Resolver {
                 // LockedPackage lets both policies work without a
                 // second packument fetch at write time.
                 let tarball_url = version_meta.dist.as_ref().map(|d| d.tarball.clone());
-                let _ = registry_name;
 
                 // Stream this resolved package for early tarball fetching.
                 // `alias_of` mirrors what the LockedPackage below
