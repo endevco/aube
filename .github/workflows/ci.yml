@@ -1,0 +1,282 @@
+name: ci
+
+# Full CI matrix for aube — linux, macos, and windows build/test + BATS
+# integration shards. This workflow is the canonical CI entry point;
+# .buildkite/ is left in place but is expected to be disabled at the
+# GitHub-App level so it doesn't double-run or consume vCPU minutes.
+#
+# Gate jobs on the `preflight` step so release-plz-* branches wait for
+# the [render-done] marker the same way the Buildkite pipeline did —
+# otherwise CI would race release-plz's own render workflow and fail
+# on the raw force-pushed commit.
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: ["main"]
+    tags: ["*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # Release-plz gate. release-plz force-pushes a raw commit into its PR
+  # branch, and its render workflow then amends the subject with the
+  # `[render-done]` marker. Running CI on the pre-amend push would just
+  # race that workflow and report a spurious failure, so we skip unless
+  # either (a) we're not on a release-plz branch, or (b) the HEAD commit
+  # already has the marker.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: gate
+        name: Check release-plz render-done gate
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          msg=$(git log -1 --format=%B)
+          if [[ "$branch" == release-plz-* ]] && [[ "$msg" != *'[render-done]'* ]]; then
+            echo "release-plz branch without [render-done] marker — skipping CI"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Build debug artifacts for every OS that runs BATS or needs a binary
+  # downstream. Linux + macOS use mise so tool pins and env parity with
+  # `mise run build` are guaranteed. Windows ships no BATS run (BATS is
+  # bash-only, junction-links kick in on NTFS) so its build + test live
+  # in the dedicated `windows` job below.
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: build-${{ matrix.os }}
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - run: mise run build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: aube-${{ matrix.os }}
+          path: target/debug/aube
+          retention-days: 1
+          if-no-files-found: error
+
+  # Linux-only test + lint + render + docs:build. Matches the
+  # `linux / test` step in .buildkite/pipeline.sh. Split from `build` so
+  # lint failures don't block the BATS jobs from starting against a
+  # known-good binary.
+  test-linux:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
+        with:
+          # MSRV toolchain gets installed alongside stable so hk's
+          # cargo-msrv step can verify without a cold toolchain fetch.
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Install MSRV toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: test-linux
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      # hk invokes cargo-msrv and cargo-machete; neither ships in the
+      # default toolchain. Install prebuilt binaries rather than
+      # `cargo install`-ing from source on every run.
+      - uses: taiki-e/install-action@f24a9cd65bd7c9e8e3b064b2c0008a9a53e59dfa # v2
+        with:
+          tool: cargo-msrv,cargo-machete
+      - run: mise run test
+      - run: mise run lint
+      - run: mise run render
+      - run: mise run docs:build
+
+  # macOS build+test mirror. Upload the binary so the macos BATS shards
+  # can consume it via download-artifact rather than rebuilding.
+  test-macos:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: test-macos
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - run: mise run test
+
+  # BATS integration shards. Linux runs 4 shards (matches Buildkite),
+  # macOS runs 2 (GitHub-hosted macOS runners are slower + fewer cores).
+  # Each shard downloads the OS-matched debug binary from `build` and
+  # invokes mise-task ci:bats:nonserial with its shard index.
+  #
+  # retry handles the rare BATS flake (process teardown racing npm
+  # cache writes, etc.); the Buildkite side has the same retry:1.
+  bats:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, shard: 0, count: 4 }
+          - { os: ubuntu-latest, shard: 1, count: 4 }
+          - { os: ubuntu-latest, shard: 2, count: 4 }
+          - { os: ubuntu-latest, shard: 3, count: 4 }
+          - { os: macos-latest, shard: 0, count: 2 }
+          - { os: macos-latest, shard: 1, count: 2 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      AUBE_CI_OS: ${{ startsWith(matrix.os, 'ubuntu') && 'linux' || 'macos' }}
+      AUBE_BATS_SHARD_INDEX: ${{ matrix.shard }}
+      AUBE_BATS_SHARD_COUNT: ${{ matrix.count }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Install GNU parallel (ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y parallel
+      - name: Install GNU parallel (macos)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install parallel
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: aube-${{ matrix.os }}
+          path: target/debug
+      - run: chmod +x target/debug/aube
+      - name: Run BATS shard ${{ matrix.shard }}/${{ matrix.count }}
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
+        with:
+          timeout_minutes: 20
+          max_attempts: 2
+          command: mise run ci:bats:nonserial
+
+  # Serial BATS jobs — tests tagged `serial` that can't run under
+  # parallel (e.g. stateful store-lock tests, global env mutation).
+  bats-serial:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      AUBE_CI_OS: ${{ startsWith(matrix.os, 'ubuntu') && 'linux' || 'macos' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Install GNU parallel (ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y parallel
+      - name: Install GNU parallel (macos)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install parallel
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: aube-${{ matrix.os }}
+          path: target/debug
+      - run: chmod +x target/debug/aube
+      - name: Run serial BATS
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
+        with:
+          timeout_minutes: 20
+          max_attempts: 2
+          command: mise run ci:bats:serial
+
+  # Windows parity: build + unit tests + Rust-native e2e smoke. No BATS
+  # on Windows — BATS is bash-only and the linker uses NTFS junctions
+  # rather than real symlinks (matching pnpm), so we just exercise the
+  # cargo test suite to catch platform regressions. Developer Mode is
+  # not required on GitHub-hosted windows-latest runners.
+  windows:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: windows
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
+  # Aggregator that required-status-checks can target. If any job failed
+  # (not just skipped due to the preflight gate) this step exits non-zero
+  # so the PR is blocked. Lets the branch-protection rule depend on one
+  # name instead of ten.
+  final:
+    needs:
+      - preflight
+      - build
+      - test-linux
+      - test-macos
+      - bats
+      - bats-serial
+      - windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: always()
+    steps:
+      - name: Gate on upstream job results
+        run: |
+          fail=0
+          for pair in \
+            "preflight:${{ needs.preflight.result }}" \
+            "build:${{ needs.build.result }}" \
+            "test-linux:${{ needs.test-linux.result }}" \
+            "test-macos:${{ needs.test-macos.result }}" \
+            "bats:${{ needs.bats.result }}" \
+            "bats-serial:${{ needs.bats-serial.result }}" \
+            "windows:${{ needs.windows.result }}"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            case "$result" in
+              success|skipped)
+                echo "::notice::$name: $result" ;;
+              *)
+                echo "::error::$name: $result"
+                fail=1 ;;
+            esac
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more upstream jobs failed."
+            exit 1
+          fi
+          echo "All CI jobs completed successfully."
