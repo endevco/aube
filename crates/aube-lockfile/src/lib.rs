@@ -268,17 +268,9 @@ impl LocalSource {
     /// target that resolves to a `.tgz` / `.tar.gz` on disk is treated
     /// as a tarball, anything else as a directory.
     pub fn parse(spec: &str, project_root: &Path) -> Option<Self> {
-        // Remote tarball URL: `https://host/path/pkg.tgz` (no `git+`,
-        // no `.git` suffix, filename ends in `.tgz`/`.tar.gz`). Must
-        // come before `parse_git_spec` so a bare `https://` URL
-        // ending in `.tgz` is classified as a tarball rather than
-        // rejected by the git parser.
-        if Self::looks_like_remote_tarball_url(spec) {
-            return Some(LocalSource::RemoteTarball(RemoteTarballSource {
-                url: spec.to_string(),
-                integrity: String::new(),
-            }));
-        }
+        // Check git first so URLs like `https://host/user/repo.git`
+        // aren't swallowed by the broader bare-http tarball check
+        // below.
         if let Some((url, committish)) = parse_git_spec(spec) {
             // `resolved` is filled in by the resolver after running
             // `git ls-remote`. A lockfile round-trip that never
@@ -288,6 +280,17 @@ impl LocalSource {
                 url,
                 committish,
                 resolved: String::new(),
+            }));
+        }
+        // Any remaining bare `http(s)://` URL is a remote tarball.
+        // npm semantics treat *all* non-git HTTP URLs in a dependency
+        // value as tarball URLs, so services that serve tarballs from
+        // URLs without a `.tgz` extension (pkg.pr.new, GitHub
+        // codeload, etc.) classify correctly here.
+        if Self::looks_like_remote_tarball_url(spec) {
+            return Some(LocalSource::RemoteTarball(RemoteTarballSource {
+                url: spec.to_string(),
+                integrity: String::new(),
             }));
         }
         let (kind, rest) = if let Some(r) = spec.strip_prefix("file:") {
@@ -308,25 +311,16 @@ impl LocalSource {
         Some(LocalSource::Directory(rel))
     }
 
-    /// Heuristic for whether a path refers to an npm-style gzipped
-    /// tarball based purely on its filename. Matches `*.tgz` and
-    /// `*.tar.gz` (case-insensitive) — a bare `*.gz` is deliberately
-    /// excluded because a plain gzipped data file shouldn't be
-    /// force-fed through the tarball importer. Callers that also have
-    /// access to the file on disk should prefer a magic-byte check.
-    /// Heuristic for whether a specifier looks like a direct HTTP(S)
-    /// tarball URL: `http://` / `https://` scheme plus a path ending
-    /// in `.tgz` or `.tar.gz`. Both `#` fragments and `?` query
-    /// strings are stripped before the suffix check, so URLs with
-    /// auth tokens (`.../pkg-1.0.0.tgz?token=…`) or lockfile-style
-    /// trailing refs still classify correctly.
+    /// Whether a specifier looks like a direct HTTP(S) URL that should
+    /// be fetched as a tarball. Per npm semantics, *any* `http://` or
+    /// `https://` URL in a dependency value is a tarball URL — services
+    /// like pkg.pr.new, GitHub codeload, and private registries with
+    /// auth-token query strings serve tarballs from URLs that don't
+    /// carry a `.tgz` extension. Git URLs must already have been
+    /// ruled out by the caller (see [`parse_git_spec`]) so a
+    /// `.git`-suffixed URL doesn't get misclassified here.
     pub fn looks_like_remote_tarball_url(spec: &str) -> bool {
-        if !(spec.starts_with("https://") || spec.starts_with("http://")) {
-            return false;
-        }
-        let body = spec.split(['#', '?']).next().unwrap_or(spec);
-        let lower = body.to_ascii_lowercase();
-        lower.ends_with(".tgz") || lower.ends_with(".tar.gz")
+        spec.starts_with("https://") || spec.starts_with("http://")
     }
 
     pub fn path_looks_like_tarball(path: &Path) -> bool {
@@ -1444,13 +1438,43 @@ mod looks_like_remote_tarball_url_tests {
     }
 
     #[test]
-    fn rejects_non_tarball_urls() {
-        assert!(!LocalSource::looks_like_remote_tarball_url(
-            "https://example.com/pkg-1.0.0.zip"
+    fn matches_bare_http_url_without_tarball_suffix() {
+        // pkg.pr.new serves tarballs from URLs without a `.tgz`
+        // extension; npm treats all non-git http(s) URLs as tarball
+        // URLs, so these must classify as remote tarballs.
+        assert!(LocalSource::looks_like_remote_tarball_url(
+            "https://pkg.pr.new/lunariajs/lunaria/@lunariajs/core@904b935"
         ));
+        assert!(LocalSource::looks_like_remote_tarball_url(
+            "https://codeload.github.com/user/repo/tar.gz/main"
+        ));
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
         assert!(!LocalSource::looks_like_remote_tarball_url(
             "ftp://example.com/pkg.tgz"
         ));
+        assert!(!LocalSource::looks_like_remote_tarball_url(
+            "git://example.com/repo.git"
+        ));
+    }
+
+    #[test]
+    fn parse_classifies_bare_http_url_as_remote_tarball() {
+        use std::path::Path;
+        let parsed = LocalSource::parse(
+            "https://pkg.pr.new/lunariajs/lunaria/@lunariajs/core@904b935",
+            Path::new(""),
+        );
+        assert!(matches!(parsed, Some(LocalSource::RemoteTarball(_))));
+    }
+
+    #[test]
+    fn parse_prefers_git_over_tarball_for_dot_git_url() {
+        use std::path::Path;
+        let parsed = LocalSource::parse("https://github.com/user/repo.git", Path::new(""));
+        assert!(matches!(parsed, Some(LocalSource::Git(_))));
     }
 }
 

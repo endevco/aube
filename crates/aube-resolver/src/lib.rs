@@ -2757,14 +2757,14 @@ fn is_non_registry_specifier(s: &str) -> bool {
     if s.starts_with("link:") {
         return true;
     }
-    // Remote tarball URL (`https://host/path/pkg.tgz`). Checked
-    // before the git-spec match so a bare `https://` URL ending in
-    // `.tgz` dispatches the tarball branch rather than falling
-    // through to git.
-    if aube_lockfile::LocalSource::looks_like_remote_tarball_url(s) {
+    // Git first so `https://host/repo.git` dispatches the git branch
+    // rather than the broader bare-http tarball branch below.
+    if aube_lockfile::parse_git_spec(s).is_some() {
         return true;
     }
-    if aube_lockfile::parse_git_spec(s).is_some() {
+    // Any remaining bare `http(s)://` URL is a tarball URL, per npm
+    // semantics — the `.tgz` suffix is not required.
+    if aube_lockfile::LocalSource::looks_like_remote_tarball_url(s) {
         return true;
     }
     // `file:` is a local-path prefix only when it *isn't* also a git
