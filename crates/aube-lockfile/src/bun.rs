@@ -31,9 +31,9 @@
 //! allowed. We pre-process the content to strip those before handing it
 //! to `serde_json`.
 
-use crate::{DepType, DirectDep, Error, LockedPackage, LockfileGraph};
+use crate::{DepType, DirectDep, Error, LocalSource, LockedPackage, LockfileGraph};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -251,37 +251,51 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         }
     }
 
-    // Root importer from the "" workspace entry.
-    let root = raw
-        .workspaces
-        .get("")
-        .cloned()
-        .unwrap_or(RawBunWorkspace::default());
-
-    // Root importer: deps always map to top-level entries keyed by bare package name.
-    let mut direct: Vec<DirectDep> = Vec::new();
-    let push = |name: &str, dep_type: DepType, direct: &mut Vec<DirectDep>| {
-        if let Some((dname, dver)) = key_info.get(name) {
-            direct.push(DirectDep {
-                name: dname.clone(),
-                dep_path: format!("{dname}@{dver}"),
-                dep_type,
-                specifier: None,
-            });
+    // Workspace importers. bun.lock keys workspace paths as `""` for
+    // the root and relative paths (`packages/app`, etc.) for each
+    // workspace package. Each importer's direct deps resolve first
+    // to a workspace-scoped override (`packages/app/foo`) when one
+    // exists, falling back to the hoisted entry (`foo`). We don't
+    // walk intermediate ancestors like `packages/foo` the way
+    // `resolve_nested_bun` does for package-nesting — workspace path
+    // segments are directories, not package-nesting scopes, so a
+    // partial walk could wrongly match a literal npm package named
+    // `packages` that has its own nested `foo` entry.
+    let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
+    for (ws_path, ws_raw) in &raw.workspaces {
+        let importer_path = if ws_path.is_empty() {
+            ".".to_string()
+        } else {
+            ws_path.clone()
+        };
+        let mut direct: Vec<DirectDep> = Vec::new();
+        let push_dep = |name: &str, dep_type: DepType, direct: &mut Vec<DirectDep>| {
+            if let Some(target_key) = resolve_workspace_dep(ws_path, name, &key_info)
+                && let Some((dname, dver)) = key_info.get(&target_key)
+            {
+                direct.push(DirectDep {
+                    name: dname.clone(),
+                    dep_path: format!("{dname}@{dver}"),
+                    dep_type,
+                    specifier: None,
+                });
+            }
+        };
+        for n in ws_raw.dependencies.keys() {
+            push_dep(n, DepType::Production, &mut direct);
         }
-    };
-    for n in root.dependencies.keys() {
-        push(n, DepType::Production, &mut direct);
+        for n in ws_raw.dev_dependencies.keys() {
+            push_dep(n, DepType::Dev, &mut direct);
+        }
+        for n in ws_raw.optional_dependencies.keys() {
+            push_dep(n, DepType::Optional, &mut direct);
+        }
+        importers.insert(importer_path, direct);
     }
-    for n in root.dev_dependencies.keys() {
-        push(n, DepType::Dev, &mut direct);
-    }
-    for n in root.optional_dependencies.keys() {
-        push(n, DepType::Optional, &mut direct);
-    }
-
-    let mut importers = BTreeMap::new();
-    importers.insert(".".to_string(), direct);
+    // The `importers` map always needs a `.` entry even when the
+    // lockfile omits the `""` workspace entirely (hand-authored
+    // fixtures sometimes do).
+    importers.entry(".".to_string()).or_default();
 
     Ok(LockfileGraph {
         importers,
@@ -342,6 +356,33 @@ fn resolve_nested_bun(
             base.clear();
         }
     }
+}
+
+/// Resolve a direct dep of a workspace importer at path `ws_path`
+/// (e.g. `""` for root, `"packages/app"` for a nested workspace) to
+/// its `key_info` key. Checks the workspace-scoped override
+/// (`<ws_path>/<dep_name>`) first, then the hoisted bare key
+/// (`<dep_name>`). Intentionally does *not* walk intermediate
+/// ancestors like `packages/<dep_name>` — those are
+/// package-nesting keys that belong to `resolve_nested_bun`, and
+/// partial matches there could spuriously resolve to a literal npm
+/// package named `packages` that happened to carry its own nested
+/// entry.
+fn resolve_workspace_dep(
+    ws_path: &str,
+    dep_name: &str,
+    key_info: &BTreeMap<String, (String, String)>,
+) -> Option<String> {
+    if !ws_path.is_empty() {
+        let ws_specific = format!("{ws_path}/{dep_name}");
+        if key_info.contains_key(&ws_specific) {
+            return Some(ws_specific);
+        }
+    }
+    if key_info.contains_key(dep_name) {
+        return Some(dep_name.to_string());
+    }
+    None
 }
 
 /// Split a bun ident like `foo@1.2.3` or `@scope/pkg@1.2.3` into `(name, version)`.
@@ -437,13 +478,20 @@ fn strip_jsonc(input: &str) -> String {
 /// and each entry body is a 4-tuple array
 /// `[ident, resolved, metadata, integrity]` matching the parser.
 ///
+/// Non-root workspace importers are emitted under their relative
+/// project paths (e.g. `packages/app`) by reading each
+/// `{importer}/package.json` from disk. The `packages` section is
+/// built from the union of every importer's direct deps so workspace-
+/// only transitive deps still get keyed into the hoist tree; workspace
+/// packages themselves (identified by a `LocalSource::Link`) are
+/// filtered out because bun tracks them separately in `workspaces`.
+///
 /// Lossy areas (same family as the npm writer):
 ///   - `resolved` is written as an empty string — we don't persist
 ///     origin URLs in [`LockedPackage`]. bun reparse is unaffected
 ///     because its parser explicitly ignores field 1.
 ///   - Peer-contextualized variants collapse to a single
 ///     `name@version` entry.
-///   - Workspace importers beyond the root aren't walked.
 pub fn write(
     path: &Path,
     graph: &LockfileGraph,
@@ -451,49 +499,99 @@ pub fn write(
 ) -> Result<(), Error> {
     use serde_json::{Value, json};
 
-    // Canonicalize to one entry per (name, version).
+    // Canonicalize to one entry per (name, version). Skip workspace
+    // packages (LocalSource::Link) — bun tracks those via the
+    // `workspaces` map, not as top-level `packages` entries.
     let mut canonical: BTreeMap<String, &LockedPackage> = BTreeMap::new();
     for pkg in graph.packages.values() {
+        if matches!(pkg.local_source, Some(LocalSource::Link(_))) {
+            continue;
+        }
         canonical
             .entry(format!("{}@{}", pkg.name, pkg.version))
             .or_insert(pkg);
     }
 
-    let roots = graph.importers.get(".").cloned().unwrap_or_default();
-    let tree = crate::npm::build_hoist_tree(&canonical, &roots);
+    // Build the hoist tree from every importer's direct deps (not just
+    // the root's), so transitive deps declared only by a non-root
+    // workspace still appear in the `packages` section. Skip
+    // workspace-link deps for the same reason as the canonical filter.
+    //
+    // Dedupe by package name so duplicate direct deps across
+    // workspaces don't confuse `build_hoist_tree` — its root-seeding
+    // loop silently drops any queue entry whose segs already exist in
+    // `placed`, which would mean the second workspace's transitive
+    // deps never get walked. `graph.importers` is a BTreeMap, so `.`
+    // iterates first and wins conflicts. When two workspaces declare
+    // the same dep at different versions we still collapse to a
+    // single top-level entry (the first-seen version); a proper fix
+    // would emit `<workspace>/<dep>` nested entries per-workspace,
+    // which is out of scope here.
+    let mut all_roots: Vec<DirectDep> = Vec::new();
+    let mut seen_names: BTreeSet<String> = BTreeSet::new();
+    for deps in graph.importers.values() {
+        for d in deps {
+            if matches!(
+                graph
+                    .packages
+                    .get(&d.dep_path)
+                    .and_then(|p| p.local_source.as_ref()),
+                Some(LocalSource::Link(_))
+            ) {
+                continue;
+            }
+            if !seen_names.insert(d.name.clone()) {
+                continue;
+            }
+            all_roots.push(d.clone());
+        }
+    }
+    let tree = crate::npm::build_hoist_tree(&canonical, &all_roots);
 
-    // Root workspace entry (`""` in bun.lock): mirror the manifest's
-    // direct-dep sections so `bun install --frozen-lockfile` can
-    // match against package.json without our having to carry bun's
-    // own specifier fields through the graph.
-    let mut root_obj = serde_json::Map::new();
-    if let Some(name) = &manifest.name {
-        root_obj.insert("name".to_string(), json!(name));
+    // Non-root workspaces are read fresh from disk because the caller
+    // doesn't thread them through — the root manifest is the only one
+    // that might carry unsaved edits (from `aube add` / `remove`).
+    // Silently falling back to an empty manifest when a read fails
+    // keeps the writer best-effort: a missing workspace package.json
+    // is odd but not fatal.
+    let project_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut workspace_manifests: BTreeMap<String, aube_manifest::PackageJson> = BTreeMap::new();
+    for importer_path in graph.importers.keys() {
+        if importer_path == "." {
+            continue;
+        }
+        let pj_path = project_dir.join(importer_path).join("package.json");
+        let pj = aube_manifest::PackageJson::from_path(&pj_path).unwrap_or_default();
+        workspace_manifests.insert(importer_path.clone(), pj);
     }
-    if let Some(version) = &manifest.version {
-        root_obj.insert("version".to_string(), json!(version));
+
+    fn build_workspace_obj(pj: &aube_manifest::PackageJson) -> serde_json::Map<String, Value> {
+        let mut obj = serde_json::Map::new();
+        if let Some(name) = &pj.name {
+            obj.insert("name".to_string(), json!(name));
+        }
+        if let Some(version) = &pj.version {
+            obj.insert("version".to_string(), json!(version));
+        }
+        if !pj.dependencies.is_empty() {
+            obj.insert("dependencies".to_string(), json!(pj.dependencies));
+        }
+        if !pj.dev_dependencies.is_empty() {
+            obj.insert("devDependencies".to_string(), json!(pj.dev_dependencies));
+        }
+        if !pj.optional_dependencies.is_empty() {
+            obj.insert(
+                "optionalDependencies".to_string(),
+                json!(pj.optional_dependencies),
+            );
+        }
+        if !pj.peer_dependencies.is_empty() {
+            obj.insert("peerDependencies".to_string(), json!(pj.peer_dependencies));
+        }
+        obj
     }
-    if !manifest.dependencies.is_empty() {
-        root_obj.insert("dependencies".to_string(), json!(manifest.dependencies));
-    }
-    if !manifest.dev_dependencies.is_empty() {
-        root_obj.insert(
-            "devDependencies".to_string(),
-            json!(manifest.dev_dependencies),
-        );
-    }
-    if !manifest.optional_dependencies.is_empty() {
-        root_obj.insert(
-            "optionalDependencies".to_string(),
-            json!(manifest.optional_dependencies),
-        );
-    }
-    if !manifest.peer_dependencies.is_empty() {
-        root_obj.insert(
-            "peerDependencies".to_string(),
-            json!(manifest.peer_dependencies),
-        );
-    }
+
+    let root_obj = build_workspace_obj(manifest);
 
     let mut packages_obj = serde_json::Map::new();
     for (segs, canonical_key) in &tree {
@@ -535,12 +633,18 @@ pub fn write(
         packages_obj.insert(bun_key, entry);
     }
 
-    let mut root_workspace = serde_json::Map::new();
-    root_workspace.insert("".to_string(), Value::Object(root_obj));
+    let mut workspaces_obj = serde_json::Map::new();
+    workspaces_obj.insert("".to_string(), Value::Object(root_obj));
+    for (importer_path, pj) in &workspace_manifests {
+        workspaces_obj.insert(
+            importer_path.clone(),
+            Value::Object(build_workspace_obj(pj)),
+        );
+    }
 
     let mut doc = serde_json::Map::new();
     doc.insert("lockfileVersion".to_string(), json!(1));
-    doc.insert("workspaces".to_string(), Value::Object(root_workspace));
+    doc.insert("workspaces".to_string(), Value::Object(workspaces_obj));
     doc.insert("packages".to_string(), Value::Object(packages_obj));
 
     let mut body = serde_json::to_string_pretty(&Value::Object(doc))
@@ -853,6 +957,298 @@ mod tests {
                 .get("bar")
                 .map(String::as_str),
             Some("bar@1.0.0")
+        );
+    }
+
+    /// Hand-authored bun.lock with two workspace entries (root and
+    /// `packages/app`) round-trips through the parser with both
+    /// importers populated, and the writer regenerates both
+    /// workspace entries from the on-disk manifests.
+    #[test]
+    fn test_parse_and_write_multi_workspace() {
+        use tempfile::TempDir;
+        let sri_foo = fake_sri('a');
+        let sri_bar = fake_sri('b');
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0","dependencies":{"foo":"^1.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","version":"2.0.0","dependencies":{"bar":"^3.0.0"}}"#,
+        )
+        .unwrap();
+
+        let lock_path = project_dir.join("bun.lock");
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "root",
+      "version": "1.0.0",
+      "dependencies": { "foo": "^1.0.0" }
+    },
+    "packages/app": {
+      "name": "app",
+      "version": "2.0.0",
+      "dependencies": { "bar": "^3.0.0" }
+    }
+  },
+  "packages": {
+    "foo": ["foo@1.2.3", "", {}, "SRI_FOO"],
+    "bar": ["bar@3.1.0", "", {}, "SRI_BAR"]
+  }
+}"#
+        .replace("SRI_FOO", &sri_foo)
+        .replace("SRI_BAR", &sri_bar);
+        std::fs::write(&lock_path, content).unwrap();
+
+        let graph = parse(&lock_path).unwrap();
+
+        // Both importers are populated with their own direct deps.
+        let root = graph.importers.get(".").expect("root importer");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "foo");
+        assert_eq!(root[0].dep_path, "foo@1.2.3");
+
+        let app = graph
+            .importers
+            .get("packages/app")
+            .expect("packages/app importer");
+        assert_eq!(app.len(), 1);
+        assert_eq!(app[0].name, "bar");
+        assert_eq!(app[0].dep_path, "bar@3.1.0");
+
+        // Now write the graph back out and re-parse. The non-root
+        // workspace entry must survive the round-trip. Write into the
+        // same project dir so the writer can find
+        // `packages/app/package.json` alongside the lockfile.
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        std::fs::remove_file(&lock_path).unwrap();
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let reparsed = parse(&lock_path).unwrap();
+        assert!(reparsed.importers.contains_key("."));
+        assert!(reparsed.importers.contains_key("packages/app"));
+        let app = &reparsed.importers["packages/app"];
+        assert_eq!(app.len(), 1);
+        assert_eq!(app[0].name, "bar");
+        assert_eq!(app[0].dep_path, "bar@3.1.0");
+        // And the raw text keeps the workspace block by key.
+        let raw = std::fs::read_to_string(&lock_path).unwrap();
+        assert!(raw.contains("\"packages/app\""));
+        assert!(raw.contains("\"name\": \"app\""));
+    }
+
+    /// A workspace-link package (`my-app` in this graph) must not leak
+    /// into the bun.lock `packages` section — bun tracks workspaces
+    /// through the `workspaces` map, and a leftover `packages["my-app"]`
+    /// entry would confuse bun's own parser on round-trip.
+    #[test]
+    fn test_write_skips_workspace_link_packages() {
+        use crate::LocalSource;
+        use std::path::PathBuf;
+
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let project_dir = tmp_dir.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"my-app","version":"0.1.0"}"#,
+        )
+        .unwrap();
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "my-app@0.1.0".to_string(),
+            LockedPackage {
+                name: "my-app".to_string(),
+                version: "0.1.0".to_string(),
+                dep_path: "my-app@0.1.0".to_string(),
+                local_source: Some(LocalSource::Link(PathBuf::from("packages/app"))),
+                ..Default::default()
+            },
+        );
+        let mut importers = BTreeMap::new();
+        importers.insert(".".to_string(), vec![]);
+        importers.insert("packages/app".to_string(), vec![]);
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        let lock_path = project_dir.join("bun.lock");
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let raw = std::fs::read_to_string(&lock_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&strip_jsonc(&raw)).unwrap();
+        let pkgs = v["packages"].as_object().unwrap();
+        assert!(
+            !pkgs.contains_key("my-app"),
+            "workspace-link package leaked into `packages`: {pkgs:?}"
+        );
+        let ws = v["workspaces"].as_object().unwrap();
+        assert!(ws.contains_key("packages/app"));
+    }
+
+    /// When the root and a non-root workspace declare the same dep
+    /// name at *different* versions, the writer must emit a
+    /// consistent top-level `packages` entry and still walk the
+    /// chosen version's transitive deps. Regression test for a
+    /// corruption in `build_hoist_tree`'s root-seeding loop: without
+    /// name-dedupe, the second version would overwrite the first in
+    /// `placed` but never get queued, so neither version's
+    /// transitive deps were walked correctly and the top-level entry
+    /// pointed at a package whose deps were never expanded.
+    #[test]
+    fn test_write_dedupes_duplicate_direct_deps_across_workspaces() {
+        use tempfile::TempDir;
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","dependencies":{"foo":"^1.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","dependencies":{"foo":"^2.0.0"}}"#,
+        )
+        .unwrap();
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "foo@1.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                dependencies: [("bar".to_string(), "bar@2.0.0".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            "foo@2.0.0".to_string(),
+            LockedPackage {
+                name: "foo".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            "bar@2.0.0".to_string(),
+            LockedPackage {
+                name: "bar".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "bar@2.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+        importers.insert(
+            "packages/app".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        let lock_path = project_dir.join("bun.lock");
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let reparsed = parse(&lock_path).unwrap();
+        // The root's version wins the hoisted `foo` slot (BTreeMap
+        // iteration puts `.` before `packages/app`), and `bar` — only
+        // reachable by walking root-foo's transitive deps — must be
+        // present. Before the fix, `foo@2.0.0` would overwrite
+        // `foo@1.0.0` in `placed` but never get queued, and neither
+        // version's transitive deps (including `bar`) would make it
+        // into the output.
+        let foo = reparsed.packages.get("foo@1.0.0").expect("foo@1.0.0");
+        assert_eq!(foo.version, "1.0.0");
+        assert!(
+            reparsed.packages.contains_key("bar@2.0.0"),
+            "root foo's transitive `bar` was dropped: {:?}",
+            reparsed.packages.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// When a workspace directory path (e.g. `packages/app`) happens
+    /// to share its first segment with a literal npm package name,
+    /// the parser must not wrongly resolve a workspace dep to that
+    /// package's nested entry. Here there's an npm package literally
+    /// named `packages` with a nested `bar@9.9.9`, and the workspace
+    /// `packages/app` depends on `bar`. The workspace's `bar` must
+    /// resolve to the hoisted `bar@1.0.0`, not to `packages/bar`'s
+    /// `9.9.9`.
+    #[test]
+    fn test_parse_workspace_path_does_not_alias_npm_package() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('a');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "dependencies": { "packages": "^1.0.0" } },
+    "packages/app": {
+      "name": "app",
+      "dependencies": { "bar": "^1.0.0" }
+    }
+  },
+  "packages": {
+    "bar": ["bar@1.0.0", "", {}, "SRI"],
+    "packages": ["packages@1.0.0", "", { "dependencies": { "bar": "^9.0.0" } }, "SRI"],
+    "packages/bar": ["bar@9.9.9", "", {}, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        let app = graph
+            .importers
+            .get("packages/app")
+            .expect("packages/app importer");
+        let bar = app.iter().find(|d| d.name == "bar").expect("bar dep");
+        assert_eq!(
+            bar.dep_path, "bar@1.0.0",
+            "workspace `bar` must resolve to hoisted 1.0.0, not packages/bar@9.9.9"
         );
     }
 }
