@@ -508,16 +508,14 @@ pub fn write(
     }
     let tree = crate::npm::build_hoist_tree(&canonical, &all_roots);
 
-    // Build a workspace-manifest lookup keyed by importer path. The
-    // root (`.`) comes from the caller-provided manifest (which may
-    // carry unsaved edits from `aube add` / `remove`); non-root
-    // workspaces are read fresh from disk because the caller doesn't
-    // thread those through. Silently falling back to an empty
-    // manifest when a read fails keeps the writer best-effort — a
-    // missing workspace package.json is odd but not fatal.
+    // Non-root workspaces are read fresh from disk because the caller
+    // doesn't thread them through — the root manifest is the only one
+    // that might carry unsaved edits (from `aube add` / `remove`).
+    // Silently falling back to an empty manifest when a read fails
+    // keeps the writer best-effort: a missing workspace package.json
+    // is odd but not fatal.
     let project_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut workspace_manifests: BTreeMap<String, aube_manifest::PackageJson> = BTreeMap::new();
-    workspace_manifests.insert(".".to_string(), manifest.clone());
     for importer_path in graph.importers.keys() {
         if importer_path == "." {
             continue;
@@ -598,9 +596,6 @@ pub fn write(
     let mut workspaces_obj = serde_json::Map::new();
     workspaces_obj.insert("".to_string(), Value::Object(root_obj));
     for (importer_path, pj) in &workspace_manifests {
-        if importer_path == "." {
-            continue;
-        }
         workspaces_obj.insert(
             importer_path.clone(),
             Value::Object(build_workspace_obj(pj)),
@@ -990,17 +985,15 @@ mod tests {
         assert_eq!(app[0].dep_path, "bar@3.1.0");
 
         // Now write the graph back out and re-parse. The non-root
-        // workspace entry must survive the round-trip.
+        // workspace entry must survive the round-trip. Write into the
+        // same project dir so the writer can find
+        // `packages/app/package.json` alongside the lockfile.
         let manifest =
             aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
-        let out_path = project_dir.join("bun.lock.out");
-        // Write into the same project dir so the writer can find
-        // `packages/app/package.json` alongside the lockfile.
-        let written = project_dir.join("bun.lock");
-        std::fs::remove_file(&written).ok();
-        write(&written, &graph, &manifest).unwrap();
+        std::fs::remove_file(&lock_path).unwrap();
+        write(&lock_path, &graph, &manifest).unwrap();
 
-        let reparsed = parse(&written).unwrap();
+        let reparsed = parse(&lock_path).unwrap();
         assert!(reparsed.importers.contains_key("."));
         assert!(reparsed.importers.contains_key("packages/app"));
         let app = &reparsed.importers["packages/app"];
@@ -1008,13 +1001,9 @@ mod tests {
         assert_eq!(app[0].name, "bar");
         assert_eq!(app[0].dep_path, "bar@3.1.0");
         // And the raw text keeps the workspace block by key.
-        let raw = std::fs::read_to_string(&written).unwrap();
+        let raw = std::fs::read_to_string(&lock_path).unwrap();
         assert!(raw.contains("\"packages/app\""));
         assert!(raw.contains("\"name\": \"app\""));
-
-        // Keep `out_path` referenced so the compiler doesn't warn on
-        // an unused binding once the test body grows past it.
-        let _ = out_path;
     }
 
     /// A workspace-link package (`my-app` in this graph) must not leak
