@@ -71,6 +71,15 @@ rare case where no subsystem prefix fits.
 - Use `feat(<area>):` / `fix(<area>):` when a subsystem prefix exists —
   prefer `<area>:` directly.
 
+## User support channels
+
+Aube does not use GitHub Issues — the repo has issues disabled. All bug
+reports, questions, and feature requests go through
+[GitHub Discussions](https://github.com/endevco/aube/discussions). When
+writing docs, error messages, or any user-facing copy that points people
+somewhere to get help, link Discussions and do **not** write phrases like
+"file an issue" or "open an issue."
+
 ## Architecture
 
 Cargo workspace with 9 crates under `crates/`. The binary entry point is `crates/aube/src/main.rs`.

@@ -1,8 +1,8 @@
-# Yarn migration
+# For yarn users
 
 aube can install directly from both Yarn classic (v1) and Yarn berry (v2+)
-lockfiles. You do not need to delete `yarn.lock`, remove `node_modules`, or
-translate dependency ranges before trying aube.
+lockfiles. You do not need to delete `yarn.lock` or remove `node_modules`
+before trying aube.
 
 ## Yarn classic (v1)
 
@@ -10,9 +10,8 @@ translate dependency ranges before trying aube.
 aube install
 ```
 
-aube reads and updates Yarn v1 `yarn.lock` in place (no surprise
-`aube-lock.yaml` appears alongside it) and installs packages into
-`node_modules/.aube/`.
+aube reads and updates Yarn v1 `yarn.lock` in place and installs packages
+into `node_modules/.aube/`.
 
 Commit the updated `yarn.lock` so Yarn classic users and aube users see the
 same resolved versions. You do not need `aube import` for a normal rollout;
@@ -60,18 +59,11 @@ can drop in against the same `yarn.lock`.
 - aube uses isolated symlinks instead of a hoisted flat tree by default.
 - Workspace package discovery follows `aube-workspace.yaml` (or
   `pnpm-workspace.yaml` when the project already has one).
-- Dependency lifecycle script approval follows the pnpm v11 allowlist model.
-
-## Rollout checklist
-
-- Run `aube install`.
-- Commit the updated `yarn.lock` so Yarn and aube users both see the same
-  resolved versions.
-- Update one CI job from `yarn install --frozen-lockfile` to `aube ci` or
-  `aube install --frozen-lockfile`.
-- Run the same test scripts you run after Yarn installs.
-- Convert to `aube-lock.yaml` later only if the team chooses to standardize on
-  aube's lockfile.
+- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
+  not run by default. Yarn runs them for every dependency; aube runs them
+  only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
+  `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
+  the pnpm v11 model.
 
 References:
 [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)

@@ -51,8 +51,8 @@ The `preinstall` script drops the platform-appropriate native binary
 into place. If you install with `--ignore-scripts`, that step is
 skipped and every `aube` invocation goes through a node shim instead
 — which defeats the whole point of having a fast, native CLI. It also
-won't work in offline/air-gapped caches. Prefer mise or
-`cargo install` for those environments.
+won't work in offline/air-gapped caches. Use any other install method
+for those environments.
 :::
 
 ## Ubuntu (PPA)
@@ -115,6 +115,15 @@ aube --version
 ```
 
 ## Shell completions
+
+Completions are powered by [`usage`](https://usage.jdx.dev), so install
+that first:
+
+```sh
+mise use -g usage
+```
+
+Then render the completion script for your shell:
 
 ```sh
 aube completion bash   > /etc/bash_completion.d/aube

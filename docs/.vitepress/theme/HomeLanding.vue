@@ -283,7 +283,7 @@ watch(progressBarEl, (el, previousEl) => {
           <span class="aube-beta-mark" aria-hidden="true">!</span>
           <strong>Beta software.</strong>
           <span>
-            Aube should have <a href="/pnpm-compatibility">feature parity with pnpm</a>,
+            Aube should have <a href="/pnpm-users">feature parity with pnpm</a>,
             but it has not been tested in many projects yet. There will be bugs.
           </span>
         </div>
