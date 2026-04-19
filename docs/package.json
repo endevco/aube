@@ -5,6 +5,13 @@
     "docs:build": "npm run settings:gen && vitepress build",
     "docs:preview": "vitepress preview"
   },
+  "pnpm": {
+    "supportedArchitectures": {
+      "os": ["current", "linux"],
+      "cpu": ["current", "x64"],
+      "libc": ["current", "glibc"]
+    }
+  },
   "devDependencies": {
     "vitepress": "^1.5.0"
   }
