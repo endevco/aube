@@ -10,6 +10,14 @@ shfmt = "latest"
 actionlint = "latest"
 node = "24"
 usage = "latest"
+# cargo-binstall pulls prebuilt binaries from GitHub releases for all the
+# `cargo:*` entries below — without it, mise would fall back to
+# `cargo install` and spend minutes compiling cargo-msrv / cargo-machete
+# from source on every CI run. Declared first so mise installs it before
+# it tries to resolve the cargo-backed tools.
+cargo-binstall = "latest"
+"cargo:cargo-msrv" = "latest"
+"cargo:cargo-machete" = "latest"
 
 [tasks.lint]
 run = "hk check --all --slow"

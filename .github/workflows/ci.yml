@@ -108,12 +108,11 @@ jobs:
         with:
           shared-key: test-linux
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
-      # hk invokes cargo-msrv and cargo-machete; neither ships in the
-      # default toolchain. Install prebuilt binaries rather than
-      # `cargo install`-ing from source on every run.
-      - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2
-        with:
-          tool: cargo-msrv,cargo-machete
+      # cargo-msrv and cargo-machete (both needed by `hk check --all`)
+      # are declared in mise.toml with the `cargo:` backend. Since
+      # cargo-binstall is also declared there, mise-action fetches
+      # prebuilt binaries rather than compiling from source — no extra
+      # step needed here.
       - run: mise run test
       - run: mise run lint
       - run: mise run render
