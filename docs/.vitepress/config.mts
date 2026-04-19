@@ -167,8 +167,6 @@ gtag('config', 'G-WD1RRC0F8C');`,
 
     outline: { level: [2, 3] },
 
-    socialLinks: [{ icon: "github", link: "https://github.com/endevco/aube" }],
-
     footer: false,
 
     editLink: {

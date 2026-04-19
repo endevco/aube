@@ -41,10 +41,16 @@ jobs:
           rm -rf docs/cli && mkdir -p docs/cli
           usage g markdown -mf aube.usage.kdl --out-dir docs/cli --url-prefix /cli
           usage g json     -f aube.usage.kdl > docs/cli/commands.json
-      - name: Build docs site with aube
+      - name: Install docs dependencies with aube
         run: |
           cd docs
           ../target/release/aube install
+      - name: Build docs site with aube
+        env:
+          AUBE_UPDATE_STARS: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cd docs
           ../target/release/aube run docs:build
           touch .vitepress/dist/.nojekyll
       - name: Upload artifact

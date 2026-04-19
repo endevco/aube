@@ -101,6 +101,74 @@ body {
   width: 24px;
 }
 
+.AubeSocialLinks {
+  align-items: center;
+  border-left: 1px solid var(--vp-c-divider);
+  display: flex;
+  gap: 4px;
+  margin-left: 16px;
+  padding-left: 12px;
+}
+
+.AubeSocialLink {
+  align-items: center;
+  color: var(--vp-c-text-2);
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  position: relative;
+  text-decoration: none;
+  transition: color 0.18s ease;
+  width: 32px;
+}
+
+.AubeSocialLink:hover {
+  color: var(--vp-c-text-1);
+}
+
+.AubeSocialLink svg {
+  height: 20px;
+  width: 20px;
+}
+
+.AubeSocialLinkGitHub {
+  margin-bottom: -12px;
+  padding-bottom: 12px;
+}
+
+.AubeStarCount {
+  bottom: 0;
+  color: var(--vp-c-text-3);
+  font-family: var(--aube-mono);
+  font-size: 10px;
+  font-weight: 600;
+  left: 50%;
+  letter-spacing: 0;
+  line-height: 1;
+  position: absolute;
+  transform: translateX(-50%);
+  transition: color 0.18s ease;
+  white-space: nowrap;
+}
+
+.AubeSocialLinkGitHub:hover .AubeStarCount {
+  color: var(--vp-c-brand-1);
+}
+
+@media (max-width: 640px) {
+  .AubeSocialLinks {
+    display: none;
+  }
+}
+
+.VPNavScreen .AubeSocialLinks {
+  border-left: 0;
+  border-top: 1px solid var(--vp-c-divider);
+  display: flex;
+  margin: 16px 0 0;
+  padding: 16px 0 0;
+}
+
 .AubeEndevFooter {
   align-items: center;
   border-top: 1px solid var(--vp-c-divider);
