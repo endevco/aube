@@ -1074,7 +1074,10 @@ impl Resolver {
                         // the original range, so resolve the indirection
                         // here before assigning — otherwise `catalog:`
                         // leaks through to the registry resolver.
-                        let effective_spec = if let Some(catalog_name) =
+                        // Compute the resolved spec first; stash the
+                        // catalog pick in a local so we only record it
+                        // if the override actually moves `task.range`.
+                        let (effective_spec, pending_pick) = if let Some(catalog_name) =
                             override_spec.strip_prefix("catalog:").map(|n| {
                                 if n.is_empty() {
                                     "default".to_string()
@@ -1084,13 +1087,10 @@ impl Resolver {
                             }) {
                             match self.catalogs.get(&catalog_name) {
                                 Some(catalog) => match catalog.get(&task.name) {
-                                    Some(real_range) => {
-                                        catalog_picks
-                                            .entry(catalog_name.clone())
-                                            .or_default()
-                                            .insert(task.name.clone(), real_range.clone());
-                                        real_range.clone()
-                                    }
+                                    Some(real_range) => (
+                                        real_range.clone(),
+                                        Some((catalog_name, real_range.clone())),
+                                    ),
                                     None => {
                                         return Err(Error::UnknownCatalogEntry {
                                             name: task.name.clone(),
@@ -1108,9 +1108,15 @@ impl Resolver {
                                 }
                             }
                         } else {
-                            override_spec
+                            (override_spec, None)
                         };
                         if task.range != effective_spec {
+                            if let Some((catalog_name, real_range)) = pending_pick {
+                                catalog_picks
+                                    .entry(catalog_name)
+                                    .or_default()
+                                    .insert(task.name.clone(), real_range);
+                            }
                             tracing::trace!(
                                 "override: {}@{} -> {}",
                                 task.name,
