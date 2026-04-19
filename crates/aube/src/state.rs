@@ -6,25 +6,32 @@ use std::path::{Path, PathBuf};
 const DEFAULT_STATE_DIR: &str = "node_modules";
 const STATE_FILE_NAME: &str = ".aube-state";
 
-/// Resolve the state directory for `project_dir`. Checks the `stateDir`
-/// setting in `.npmrc` / env / workspace yaml; falls back to the
-/// resolved `modulesDir` so the state file lives alongside the install
-/// tree (and a `modulesDir` override doesn't accidentally create a
-/// phantom `node_modules/` for the state file alone).
-fn state_dir(project_dir: &Path) -> PathBuf {
-    let default = || crate::commands::project_modules_dir(project_dir);
+/// Resolve the modules dir and state file path for `project_dir` in a
+/// single settings-context load. `check_needs_install` and `write_state`
+/// both need both values, and this is on the hot path for every
+/// `aube run` / `exec` / `test` / `start` / `restart`.
+///
+/// The default `stateDir` falls back to the resolved `modulesDir` so the
+/// state file lives alongside the install tree — otherwise a
+/// `modulesDir` override would create a phantom `node_modules/`
+/// directory just to hold the state file.
+fn resolve_paths(project_dir: &Path) -> (PathBuf, PathBuf) {
     crate::commands::with_settings_ctx(project_dir, |ctx| {
-        let raw = aube_settings::resolved::state_dir(ctx);
-        if raw == DEFAULT_STATE_DIR {
-            default()
+        let modules_dir = project_dir.join(aube_settings::resolved::modules_dir(ctx));
+        let raw_state = aube_settings::resolved::state_dir(ctx);
+        let state_dir = if raw_state == DEFAULT_STATE_DIR {
+            modules_dir.clone()
         } else {
-            crate::commands::expand_setting_path(&raw, project_dir).unwrap_or_else(default)
-        }
+            crate::commands::expand_setting_path(&raw_state, project_dir)
+                .unwrap_or_else(|| modules_dir.clone())
+        };
+        let state_file = state_dir.join(STATE_FILE_NAME);
+        (modules_dir, state_file)
     })
 }
 
 fn state_file(project_dir: &Path) -> PathBuf {
-    state_dir(project_dir).join(STATE_FILE_NAME)
+    resolve_paths(project_dir).1
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,9 +49,9 @@ pub struct InstallState {
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
 pub fn check_needs_install(project_dir: &Path) -> Option<String> {
-    let state_path = state_file(project_dir);
+    let (modules_dir, state_path) = resolve_paths(project_dir);
 
-    // No state file = never installed (or `rm -rf node_modules` wiped it).
+    // No state file = never installed (or `rm -rf <modulesDir>` wiped it).
     let state = match read_state(&state_path) {
         Some(s) => s,
         None => return Some("install state not found".into()),
@@ -56,7 +63,7 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
     // the hashes below would falsely report "up to date". Guard against
     // that explicitly — zero-dep projects still get a modules directory
     // (with `.bin/`) from install, so the directory check covers them.
-    if !crate::commands::project_modules_dir(project_dir).exists() {
+    if !modules_dir.exists() {
         return Some("node_modules is missing".into());
     }
 
