@@ -19,9 +19,11 @@ latest released `aube` from crates.io:
 cargo install aube --locked
 ```
 
+::: info
 `--locked` makes cargo honor the committed `Cargo.lock` so you get the
 same dependency versions CI built against. The compiled binary lands in
 `~/.cargo/bin/aube`.
+:::
 
 ## From npm
 
@@ -33,12 +35,14 @@ npm install -g @endevco/aube
 npx @endevco/aube --version
 ```
 
+::: warning
 The `preinstall` script drops the platform-appropriate native binary
 into place. If you install with `--ignore-scripts`, that step is
 skipped and every `aube` invocation goes through a node shim instead
 — which defeats the whole point of having a fast, native CLI. It also
 won't work in offline/air-gapped caches. Prefer mise or
 `cargo install` for those environments.
+:::
 
 ## Ubuntu (PPA)
 
