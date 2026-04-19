@@ -97,6 +97,7 @@ gtag('config', 'G-WD1RRC0F8C');`,
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI Reference", link: "/cli/" },
       { text: "Settings", link: "/settings/" },
+      { text: "Releases", link: "https://github.com/endevco/aube/releases" },
     ],
 
     sidebar: [
