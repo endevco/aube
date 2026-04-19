@@ -48,6 +48,16 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         None => return Some("install state not found".into()),
     };
 
+    // In the default config the state file lives inside `node_modules` so
+    // `rm -rf node_modules` wipes it. But `stateDir` can point elsewhere,
+    // in which case the state survives a manual `node_modules` nuke and
+    // the hashes below would falsely report "up to date". Guard against
+    // that explicitly — zero-dep projects still get a `node_modules/`
+    // (with `.bin/`) from install, so the directory check covers them.
+    if !project_dir.join("node_modules").exists() {
+        return Some("node_modules is missing".into());
+    }
+
     // Check lockfile hash. Honor `gitBranchLockfile` so a branch-specific
     // lockfile is the freshness anchor when present, but fall back to the
     // base lockfile names so a freshly-enabled branch doesn't loop on
