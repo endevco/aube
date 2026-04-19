@@ -52,13 +52,18 @@ impl SupportedArchitectures {
     /// / yarn / npm outputs stay host-only (pnpm parity) so we don't
     /// silently change the shape of a non-native lockfile.
     ///
-    /// darwin-x64 is intentionally omitted: Apple Silicon is the
+    /// darwin-x64 is not in the baseline matrix: Apple Silicon is the
     /// shipping Mac platform, and several major native package
-    /// ecosystems (sharp, swc) have already dropped Intel Mac binaries.
-    /// A user still on an Intel Mac can add `"x64"` back via
-    /// `pnpm.supportedArchitectures.cpu`.
+    /// ecosystems (sharp, swc) have already dropped Intel Mac binaries,
+    /// so an Apple Silicon developer's lockfile doesn't need to bake in
+    /// Intel Mac natives for other contributors. The host's own triple
+    /// is always added to the set, though — an Intel Mac user installing
+    /// on that same machine gets darwin-x64 natives because the host
+    /// triple joins the matrix here. Exotic hosts (freebsd, ppc64, …)
+    /// get the same treatment: their native deps still install for the
+    /// user, and the wide matrix covers everyone else.
     pub fn aube_lock_default() -> Self {
-        let combos = vec![
+        let mut combos = vec![
             ("darwin".to_string(), "arm64".to_string(), String::new()),
             ("linux".to_string(), "x64".to_string(), "glibc".to_string()),
             ("linux".to_string(), "x64".to_string(), "musl".to_string()),
@@ -71,6 +76,17 @@ impl SupportedArchitectures {
             ("win32".to_string(), "x64".to_string(), String::new()),
             ("win32".to_string(), "arm64".to_string(), String::new()),
         ];
+        // Ensure the host's own triple is always included. Without this
+        // step an Intel Mac user (darwin-x64) would silently lose their
+        // own native optional deps — the cross-platform widening dropped
+        // them from the matrix, and the post-resolve `filter_graph` can't
+        // bring back packages that never entered the graph in the first
+        // place.
+        let host = host_triple();
+        let host_triple_owned = (host.0.to_string(), host.1.to_string(), host.2.to_string());
+        if !combos.contains(&host_triple_owned) {
+            combos.push(host_triple_owned);
+        }
         Self {
             os: Vec::new(),
             cpu: Vec::new(),
@@ -361,17 +377,32 @@ mod tests {
     }
 
     #[test]
-    fn aube_lock_default_excludes_darwin_x64_and_exotic_triples() {
-        // Intel Mac binaries are intentionally out of the default
-        // matrix: Apple Silicon is the shipping Mac platform, and
-        // several major native ecosystems (sharp, swc) have dropped
-        // darwin-x64 outright. Users still on Intel Macs can widen with
-        // `pnpm.supportedArchitectures.cpu: ["current", "x64"]`.
+    fn aube_lock_default_always_accepts_host_triple() {
+        // The wide matrix excludes darwin-x64 by design (see
+        // `aube_lock_default`'s doc), but the host's own triple is
+        // unconditionally added to the set. An Intel Mac or a freebsd
+        // box that runs `aube install` must still get its own native
+        // optional deps, regardless of which combinations the baseline
+        // matrix covers.
         let sup = SupportedArchitectures::aube_lock_default();
-        assert!(!is_supported(&s(&["darwin"]), &s(&["x64"]), &[], &sup));
-        // Exotic triples (freebsd, ppc64, …) aren't in the default set
-        // either — users with those targets still need to opt in.
-        assert!(!is_supported(&s(&["freebsd"]), &s(&["x64"]), &[], &sup));
+        let (os, cpu, libc) = host_triple();
+        let pkg_libc = if libc.is_empty() { vec![] } else { s(&[libc]) };
+        assert!(is_supported(&s(&[os]), &s(&[cpu]), &pkg_libc, &sup));
+    }
+
+    #[test]
+    fn aube_lock_default_rejects_exotic_non_host_triples() {
+        // Exotic triples the host isn't running as (openbsd, ppc64, …)
+        // stay out of the default set — users targeting them still need
+        // to opt in via `pnpm.supportedArchitectures`.
+        let sup = SupportedArchitectures::aube_lock_default();
+        let (os, _, _) = host_triple();
+        if os != "openbsd" {
+            assert!(!is_supported(&s(&["openbsd"]), &s(&["x64"]), &[], &sup));
+        }
+        if os != "aix" {
+            assert!(!is_supported(&s(&["aix"]), &s(&["ppc64"]), &[], &sup));
+        }
     }
 
     #[test]
