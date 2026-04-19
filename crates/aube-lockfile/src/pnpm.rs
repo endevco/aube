@@ -98,6 +98,16 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             importer_path.as_str()
         };
 
+        // Guard against a malformed lockfile that writes both `''`
+        // and `'.'` for root — `BTreeMap` iteration visits `''`
+        // first, so the real `'.'` entry would otherwise silently
+        // overwrite the normalized empty-key entry. pnpm never
+        // emits this, but skipping the second visit is cheap and
+        // makes the intent explicit.
+        if importers.contains_key(importer_path) {
+            continue;
+        }
+
         let mut deps = Vec::new();
 
         if let Some(ref d) = importer.dependencies {
@@ -1342,6 +1352,56 @@ snapshots:
             .expect("empty-string importer should normalize to `.`");
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].name, "host");
+        assert!(!graph.importers.contains_key(""));
+    }
+
+    #[test]
+    fn parse_handles_both_empty_and_dot_root_importer_keys() {
+        // Degenerate case pnpm itself never emits: a lockfile with
+        // *both* `''` and `'.'` as separate YAML keys for root. The
+        // BTreeMap visits `''` first; without the collision guard
+        // the real `'.'` entry silently overwrites the normalized
+        // empty-key entry and its deps disappear. First-key wins is
+        // arbitrary but deterministic; the important behavior is
+        // that no deps get silently dropped on the floor.
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  '':
+    dependencies:
+      from-empty:
+        specifier: 1.0.0
+        version: 1.0.0
+  '.':
+    dependencies:
+      from-dot:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+  from-empty@1.0.0:
+    resolution: {integrity: sha512-empty}
+  from-dot@1.0.0:
+    resolution: {integrity: sha512-dot}
+
+snapshots:
+  from-empty@1.0.0: {}
+  from-dot@1.0.0: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let root = graph.importers.get(".").expect("`.` importer present");
+        let names: Vec<&str> = root.iter().map(|d| d.name.as_str()).collect();
+        // The empty-key entry is visited first and wins; the `.`
+        // entry's deps are ignored (rather than silently clobbering).
+        assert_eq!(names, vec!["from-empty"]);
         assert!(!graph.importers.contains_key(""));
     }
 
