@@ -756,16 +756,9 @@ struct WritablePnpmLockfile {
     // for the no-overrides case (the field is skipped when empty).
     #[serde(skip_serializing_if = "Option::is_none")]
     overrides: Option<BTreeMap<String, String>>,
-    /// pnpm v9 emits a top-level `ignoredOptionalDependencies:` array
-    /// when the root manifest's `pnpm.ignoredOptionalDependencies` is
-    /// non-empty. Placed between `overrides:` and `time:` to match
-    /// pnpm's field order; skipped when empty so a no-ignored install
-    /// stays byte-for-byte identical to pnpm's output.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ignored_optional_dependencies: Option<Vec<String>>,
     /// pnpm v9 emits a top-level `catalogs:` map after
-    /// `ignoredOptionalDependencies:` and before `importers:` when
-    /// `pnpm-workspace.yaml` declares any referenced catalog entries.
+    /// `overrides:` and before `importers:` when `pnpm-workspace.yaml`
+    /// declares any referenced catalog entries.
     /// Skipped when empty so a no-catalogs install stays byte-identical
     /// to pnpm output.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -779,6 +772,13 @@ struct WritablePnpmLockfile {
     time: Option<BTreeMap<String, String>>,
     importers: BTreeMap<String, WritableImporter>,
     packages: BTreeMap<String, WritablePackageInfo>,
+    /// pnpm v9 emits a top-level `ignoredOptionalDependencies:` array
+    /// after `packages:` and before `snapshots:` when the root
+    /// manifest's `pnpm.ignoredOptionalDependencies` is non-empty.
+    /// Skipped when empty so a no-ignored install stays byte-for-byte
+    /// identical to pnpm's output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ignored_optional_dependencies: Option<Vec<String>>,
     snapshots: BTreeMap<String, WritableSnapshot>,
 }
 
@@ -1531,6 +1531,55 @@ snapshots:
             .expect("react catalog entry");
         assert_eq!(entry.specifier, "^18.0.0");
         assert_eq!(entry.version, "18.2.0");
+    }
+
+    #[test]
+    fn ignored_optional_dependencies_section_matches_pnpm_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+
+        let mut ignored_optional_dependencies = std::collections::BTreeSet::new();
+        ignored_optional_dependencies.insert("fsevents".to_string());
+
+        let mut default_cat = BTreeMap::new();
+        default_cat.insert(
+            "react".to_string(),
+            CatalogEntry {
+                specifier: "^18.0.0".to_string(),
+                version: "18.2.0".to_string(),
+            },
+        );
+        let mut catalogs = BTreeMap::new();
+        catalogs.insert("default".to_string(), default_cat);
+
+        let graph = LockfileGraph {
+            ignored_optional_dependencies,
+            catalogs,
+            ..Default::default()
+        };
+        let manifest = PackageJson {
+            name: Some("test".to_string()),
+            version: Some("0.0.0".to_string()),
+            ..Default::default()
+        };
+        write(&lockfile_path, &graph, &manifest).unwrap();
+
+        let yaml = std::fs::read_to_string(&lockfile_path).unwrap();
+        let catalogs = yaml.find("\ncatalogs:").expect("missing catalogs");
+        let importers = yaml.find("\nimporters:").expect("missing importers");
+        let packages = yaml.find("\npackages:").expect("missing packages");
+        let ignored = yaml
+            .find("\nignoredOptionalDependencies:")
+            .expect("missing ignoredOptionalDependencies");
+        let snapshots = yaml.find("\nsnapshots:").expect("missing snapshots");
+
+        assert!(
+            catalogs < importers
+                && importers < packages
+                && packages < ignored
+                && ignored < snapshots,
+            "unexpected pnpm section order:\n{yaml}"
+        );
     }
 
     // Build a graph with one `link:` dep and one registry dep, write it
