@@ -25,18 +25,67 @@
 /// literal `"current"` inside any array expands to the same host value
 /// so users can write `["current", "linux"]` to keep their native
 /// platform *and* also resolve optionals for Linux.
+///
+/// `explicit_combinations` sidesteps the cartesian expansion entirely —
+/// [`aube_lock_default`] uses it to emit a hand-picked matrix that
+/// drops rare combinations (darwin-x64) without shrinking the OS / CPU
+/// lists a user might inspect.
 #[derive(Debug, Clone, Default)]
 pub struct SupportedArchitectures {
     pub os: Vec<String>,
     pub cpu: Vec<String>,
     pub libc: Vec<String>,
+    /// When `Some`, `combinations()` returns these triples verbatim
+    /// instead of computing `os` × `cpu` × `libc`. Lets a preset prune
+    /// individual (os, cpu, libc) combinations the cartesian product
+    /// would otherwise include.
+    pub explicit_combinations: Option<Vec<(String, String, String)>>,
 }
 
 impl SupportedArchitectures {
+    /// Wide default used when resolving into `aube-lock.yaml` with no
+    /// user-declared `pnpm.supportedArchitectures`. Covers the common
+    /// npm OS / CPU / libc combinations so optional native deps for
+    /// every major platform land in the lockfile on a first resolve —
+    /// a project resolved on macOS installs correctly on Linux CI
+    /// without the user having to hand-edit their manifest. pnpm-lock
+    /// / yarn / npm outputs stay host-only (pnpm parity) so we don't
+    /// silently change the shape of a non-native lockfile.
+    ///
+    /// darwin-x64 is intentionally omitted: Apple Silicon is the
+    /// shipping Mac platform, and several major native package
+    /// ecosystems (sharp, swc) have already dropped Intel Mac binaries.
+    /// A user still on an Intel Mac can add `"x64"` back via
+    /// `pnpm.supportedArchitectures.cpu`.
+    pub fn aube_lock_default() -> Self {
+        let combos = vec![
+            ("darwin".to_string(), "arm64".to_string(), String::new()),
+            ("linux".to_string(), "x64".to_string(), "glibc".to_string()),
+            ("linux".to_string(), "x64".to_string(), "musl".to_string()),
+            (
+                "linux".to_string(),
+                "arm64".to_string(),
+                "glibc".to_string(),
+            ),
+            ("linux".to_string(), "arm64".to_string(), "musl".to_string()),
+            ("win32".to_string(), "x64".to_string(), String::new()),
+            ("win32".to_string(), "arm64".to_string(), String::new()),
+        ];
+        Self {
+            os: Vec::new(),
+            cpu: Vec::new(),
+            libc: Vec::new(),
+            explicit_combinations: Some(combos),
+        }
+    }
+
     /// Expand any `"current"` entries to the host triple and default
     /// empty arrays to `[host]`. The result is a non-empty list of
     /// (os, cpu, libc) combinations the caller can test against.
     fn combinations(&self) -> Vec<(String, String, String)> {
+        if let Some(ref explicit) = self.explicit_combinations {
+            return explicit.clone();
+        }
         let host = host_triple();
         let expand = |field: &[String], host_val: &str| -> Vec<String> {
             if field.is_empty() {
@@ -288,11 +337,49 @@ mod tests {
     }
 
     #[test]
+    fn aube_lock_default_accepts_every_common_native() {
+        // A first-time `aube install` run on macOS must still pull the
+        // Linux / Windows native variants into `aube-lock.yaml` so the
+        // committed lockfile installs cleanly on CI — that's the whole
+        // point of the wide default.
+        let sup = SupportedArchitectures::aube_lock_default();
+        assert!(is_supported(&s(&["darwin"]), &s(&["arm64"]), &[], &sup));
+        assert!(is_supported(
+            &s(&["linux"]),
+            &s(&["x64"]),
+            &s(&["glibc"]),
+            &sup
+        ));
+        assert!(is_supported(
+            &s(&["linux"]),
+            &s(&["arm64"]),
+            &s(&["musl"]),
+            &sup
+        ));
+        assert!(is_supported(&s(&["win32"]), &s(&["x64"]), &[], &sup));
+        assert!(is_supported(&s(&["win32"]), &s(&["arm64"]), &[], &sup));
+    }
+
+    #[test]
+    fn aube_lock_default_excludes_darwin_x64_and_exotic_triples() {
+        // Intel Mac binaries are intentionally out of the default
+        // matrix: Apple Silicon is the shipping Mac platform, and
+        // several major native ecosystems (sharp, swc) have dropped
+        // darwin-x64 outright. Users still on Intel Macs can widen with
+        // `pnpm.supportedArchitectures.cpu: ["current", "x64"]`.
+        let sup = SupportedArchitectures::aube_lock_default();
+        assert!(!is_supported(&s(&["darwin"]), &s(&["x64"]), &[], &sup));
+        // Exotic triples (freebsd, ppc64, …) aren't in the default set
+        // either — users with those targets still need to opt in.
+        assert!(!is_supported(&s(&["freebsd"]), &s(&["x64"]), &[], &sup));
+    }
+
+    #[test]
     fn filter_graph_prunes_transitive_optional_platform_mismatches() {
         let supported = SupportedArchitectures {
             os: s(&["darwin"]),
             cpu: s(&["arm64"]),
-            libc: vec![],
+            ..Default::default()
         };
         let mut graph = aube_lockfile::LockfileGraph::default();
         graph.importers.insert(

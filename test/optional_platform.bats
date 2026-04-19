@@ -30,6 +30,62 @@ teardown() {
 	assert_not_exists node_modules/aube-test-optional-win32
 }
 
+@test "aube-lock.yaml captures cross-platform optional natives by default" {
+	# When aube writes its native lockfile format it widens the resolver's
+	# platform filter so Linux / Windows / arm64 optional natives are
+	# recorded alongside the host's — a lockfile resolved on one platform
+	# must install cleanly on every other platform without the user
+	# hand-rolling `pnpm.supportedArchitectures`.
+	cat >package.json <<-'JSON'
+		{
+		  "name": "cross-platform-lockfile-test",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  }
+		}
+	JSON
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_exists aube-lock.yaml
+	# win32-only optional must still not be linked on non-win32 hosts…
+	assert_not_exists node_modules/aube-test-optional-win32
+	# …but it MUST land in the committed lockfile so a Windows CI run
+	# resolving from this file picks it up.
+	run grep -F 'aube-test-optional-win32@1.0.0' aube-lock.yaml
+	assert_success
+}
+
+@test "pnpm-lock.yaml keeps pnpm's host-only default" {
+	# Aube preserves whatever lockfile format was already on disk. For
+	# pnpm-lock.yaml that means matching pnpm's default: optionals for
+	# other platforms are NOT baked in unless the user opts in with
+	# `pnpm.supportedArchitectures`. Otherwise aube would silently
+	# diverge from what `pnpm install` would have produced in the same
+	# repo.
+	: >pnpm-lock.yaml
+	cat >package.json <<-'JSON'
+		{
+		  "name": "pnpm-lock-host-only",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  }
+		}
+	JSON
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_exists pnpm-lock.yaml
+	assert_not_exists aube-lock.yaml
+	# The manifest's `optionalDependencies:` block round-trips into the
+	# importer record regardless of platform (pnpm does the same), so
+	# don't grep for the bare name. What we actually care about is the
+	# resolved `packages:` entry — that's what a subsequent install on a
+	# matching platform would use, and what we want aube to have skipped.
+	run grep -F 'aube-test-optional-win32@1.0.0:' pnpm-lock.yaml
+	assert_failure
+}
+
 @test "pnpm.supportedArchitectures widens the match set" {
 	cat >package.json <<-'JSON'
 		{

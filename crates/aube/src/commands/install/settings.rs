@@ -484,6 +484,15 @@ pub(super) struct ResolverConfigInputs<'a> {
     pub(super) workspace_catalogs:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub(super) opts: &'a InstallOptions,
+    /// Lockfile format aube will write on the way out — `None` means no
+    /// lockfile exists yet and we'll default to `aube-lock.yaml`. Drives
+    /// whether the resolver widens its platform filter to cover every
+    /// common OS/CPU/libc combination (aube-lock.yaml is meant to be a
+    /// cross-platform, committed artifact) or keeps the pnpm-style
+    /// host-only default for foreign formats (pnpm-lock.yaml, yarn.lock,
+    /// package-lock.json, bun.lock) so aube doesn't quietly diverge from
+    /// what the other PM would have written.
+    pub(super) target_lockfile_kind: Option<aube_lockfile::LockfileKind>,
 }
 
 pub(super) fn configure_resolver(
@@ -497,6 +506,7 @@ pub(super) fn configure_resolver(
         settings_ctx,
         workspace_catalogs,
         opts,
+        target_lockfile_kind,
     } = inputs;
     let auto_install_peers = resolve_auto_install_peers(settings_ctx);
     let exclude_links_from_lockfile = resolve_exclude_links_from_lockfile(settings_ctx);
@@ -506,10 +516,32 @@ pub(super) fn configure_resolver(
     let resolve_peers_from_workspace_root_opt = resolve_peers_from_workspace_root(settings_ctx);
     let registry_supports_time_field = resolve_registry_supports_time_field(settings_ctx);
     let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
-    let supported_architectures = aube_resolver::SupportedArchitectures {
-        os: sup_os,
-        cpu: sup_cpu,
-        libc: sup_libc,
+    // aube-lock.yaml is a committed, cross-platform artifact: if the
+    // user hasn't declared `pnpm.supportedArchitectures` we widen the
+    // resolver's platform filter to cover every common OS/CPU/libc so
+    // Linux-native optionals (e.g. `@rollup/rollup-linux-x64-gnu`)
+    // land in the lockfile even when `aube install` is run on macOS.
+    // Install-time filtering (see `filter_graph` call on the lockfile
+    // branch) still runs against the unmodified manifest setting, so
+    // `node_modules` stays trimmed to the host. For foreign lockfiles
+    // (pnpm-lock.yaml, yarn.lock, package-lock.json, bun.lock) we keep
+    // pnpm's host-only default — aube shouldn't silently bake in more
+    // packages than the native tool would have produced.
+    let manifest_set_supported_arch =
+        !(sup_os.is_empty() && sup_cpu.is_empty() && sup_libc.is_empty());
+    let writes_aube_lock = matches!(
+        target_lockfile_kind,
+        None | Some(aube_lockfile::LockfileKind::Aube)
+    );
+    let supported_architectures = if !manifest_set_supported_arch && writes_aube_lock {
+        aube_resolver::SupportedArchitectures::aube_lock_default()
+    } else {
+        aube_resolver::SupportedArchitectures {
+            os: sup_os,
+            cpu: sup_cpu,
+            libc: sup_libc,
+            ..Default::default()
+        }
     };
     let effective_overrides = manifest.overrides_map();
     let mut effective_overrides = effective_overrides;

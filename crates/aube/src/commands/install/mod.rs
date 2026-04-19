@@ -2097,6 +2097,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 settings_ctx: &settings_ctx,
                 workspace_catalogs: &workspace_catalogs,
                 opts: &opts,
+                target_lockfile_kind: source_kind_before,
             },
             read_package_hook,
         );
@@ -2267,6 +2268,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 os: sup_os,
                 cpu: sup_cpu,
                 libc: sup_libc,
+                ..Default::default()
             };
             let ignored_optional_deps: std::collections::BTreeSet<String> = manifest
                 .pnpm_ignored_optional_dependencies()
@@ -2431,6 +2433,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     settings_ctx: &settings_ctx,
                     workspace_catalogs: &workspace_catalogs,
                     opts: &opts,
+                    target_lockfile_kind: source_kind_before,
                 },
                 read_package_hook,
             );
@@ -2938,6 +2941,31 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             } else {
                 tracing::debug!("lockfile=false: skipping lockfile write");
             }
+
+            // Trim the in-memory graph down to host-installable optionals
+            // before it reaches the linker. When the resolver widened its
+            // platform filter for aube-lock.yaml, the graph (and now the
+            // lockfile) carries native packages for every major platform;
+            // `node_modules` must still only get the host's. Mirrors the
+            // filter pass the lockfile-happy branch above runs against a
+            // parsed lockfile. A no-op when the manifest didn't trigger
+            // widening (graph was already host-only).
+            let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
+            let install_supported_architectures = aube_resolver::SupportedArchitectures {
+                os: sup_os,
+                cpu: sup_cpu,
+                libc: sup_libc,
+                ..Default::default()
+            };
+            let install_ignored_optional: std::collections::BTreeSet<String> = manifest
+                .pnpm_ignored_optional_dependencies()
+                .into_iter()
+                .collect();
+            aube_resolver::platform::filter_graph(
+                &mut graph,
+                &install_supported_architectures,
+                &install_ignored_optional,
+            );
 
             (graph, indices, cached, fetched)
         }
