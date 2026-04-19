@@ -2213,23 +2213,66 @@ fn validate_index_key(key: &str) -> Result<(), Error> {
 /// - `Ok(false)` – no entry exists, or a stale entry (wrong target,
 ///   dangling symlink, regular directory) has been best-effort
 ///   removed; caller should proceed to create the symlink.
+///
+/// Unix and Windows use different comparison strategies because
+/// `create_dir_link` writes the target differently on each platform:
+/// Unix preserves the relative target bytes-for-bytes as a POSIX
+/// symlink, Windows normalizes to an absolute path before calling
+/// `junction::create`. A plain `read_link == expected` check that
+/// works on Unix would miss every warm run on Windows.
 fn reconcile_top_level_link(link_path: &Path, expected_target: &Path) -> Result<bool, Error> {
-    match std::fs::read_link(link_path) {
-        Ok(existing) if existing == expected_target => Ok(true),
-        Ok(_) => {
-            // Wrong target — remove the stale symlink so the caller's
-            // `create_dir_link` below doesn't EEXIST.
-            let _ = std::fs::remove_dir(link_path).or_else(|_| std::fs::remove_file(link_path));
-            Ok(false)
+    #[cfg(windows)]
+    {
+        // NTFS junctions store normalized absolute targets
+        // (sometimes `\\?\`-prefixed), so comparing against the
+        // relative `pathdiff::diff_paths` output the callers compute
+        // would never match. Compare the canonical forms instead: if
+        // the junction resolves to the same directory
+        // `expected_target` points at, the link is fresh. Anything
+        // else (dangling, wrong target, not a reparse point) falls
+        // through to a best-effort reclaim.
+        let expected_abs = if expected_target.is_absolute() {
+            expected_target.to_path_buf()
+        } else {
+            let parent = link_path.parent().unwrap_or_else(|| Path::new(""));
+            parent.join(expected_target)
+        };
+        if let Ok(link_canon) = link_path.canonicalize()
+            && let Ok(exp_canon) = expected_abs.canonicalize()
+            && link_canon == exp_canon
+        {
+            return Ok(true);
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => {
-            // `read_link` failed with EINVAL (entry exists but isn't a
-            // symlink — e.g. a regular directory left by a prior
-            // hoisted install) or another error. Best-effort reclaim
-            // so the create call lands on a clean slot.
-            let _ = std::fs::remove_dir_all(link_path).or_else(|_| std::fs::remove_file(link_path));
-            Ok(false)
+        if link_path.symlink_metadata().is_err() {
+            return Ok(false);
+        }
+        match std::fs::remove_dir(link_path).or_else(|_| std::fs::remove_file(link_path)) {
+            Ok(()) => Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Error::Io(link_path.to_path_buf(), e)),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        match std::fs::read_link(link_path) {
+            Ok(existing) if existing == expected_target => Ok(true),
+            Ok(_) => {
+                // Wrong target — remove the stale symlink so the
+                // caller's `create_dir_link` below doesn't EEXIST.
+                let _ = std::fs::remove_dir(link_path).or_else(|_| std::fs::remove_file(link_path));
+                Ok(false)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => {
+                // `read_link` failed with EINVAL (entry exists but
+                // isn't a symlink — e.g. a regular directory left by
+                // a prior hoisted install) or another error.
+                // Best-effort reclaim so the create call lands on a
+                // clean slot.
+                let _ =
+                    std::fs::remove_dir_all(link_path).or_else(|_| std::fs::remove_file(link_path));
+                Ok(false)
+            }
         }
     }
 }
