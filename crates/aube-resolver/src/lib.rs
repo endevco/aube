@@ -609,6 +609,46 @@ impl Resolver {
         self
     }
 
+    /// Resolve a `catalog:[<name>]` specifier to its pinned range. Returns
+    /// `None` when `spec` isn't a catalog reference, or
+    /// `Some((catalog_name, real_range))` when it is. The catalog name is
+    /// normalized — the bare `catalog:` form maps to the `default` catalog.
+    /// Errors on an unknown catalog or missing entry.
+    ///
+    /// Shared between the pre-override catalog rewrite (directly-declared
+    /// `catalog:` deps) and the override handler (`"overrides":
+    /// {"pkg": "catalog:"}`), so both paths stay in lockstep.
+    fn resolve_catalog_spec(
+        &self,
+        task_name: &str,
+        spec: &str,
+    ) -> Result<Option<(String, String)>, Error> {
+        let Some(catalog_name) = spec.strip_prefix("catalog:").map(|n| {
+            if n.is_empty() {
+                "default".to_string()
+            } else {
+                n.to_string()
+            }
+        }) else {
+            return Ok(None);
+        };
+        match self.catalogs.get(&catalog_name) {
+            Some(catalog) => match catalog.get(task_name) {
+                Some(real_range) => Ok(Some((catalog_name, real_range.clone()))),
+                None => Err(Error::UnknownCatalogEntry {
+                    name: task_name.to_string(),
+                    spec: spec.to_string(),
+                    catalog: catalog_name,
+                }),
+            },
+            None => Err(Error::UnknownCatalog {
+                name: task_name.to_string(),
+                spec: spec.to_string(),
+                catalog: catalog_name,
+            }),
+        }
+    }
+
     /// Resolve all dependencies from a package.json.
     ///
     /// Uses batch-parallel BFS: each "wave" drains the queue, identifies
@@ -1020,44 +1060,15 @@ impl Resolver {
                 // `catalog:...` text stays in `original_specifier` so
                 // the lockfile importer keeps the catalog reference and
                 // drift detection works.
-                if let Some(catalog_name) = task.range.strip_prefix("catalog:").map(|n| {
-                    if n.is_empty() {
-                        "default".to_string()
-                    } else {
-                        n.to_string()
-                    }
-                }) {
-                    match self.catalogs.get(&catalog_name) {
-                        Some(catalog) => match catalog.get(&task.name) {
-                            Some(real_range) => {
-                                tracing::trace!(
-                                    "catalog: {} {} -> {}",
-                                    task.name,
-                                    task.range,
-                                    real_range
-                                );
-                                catalog_picks
-                                    .entry(catalog_name.clone())
-                                    .or_default()
-                                    .insert(task.name.clone(), real_range.clone());
-                                task.range = real_range.clone();
-                            }
-                            None => {
-                                return Err(Error::UnknownCatalogEntry {
-                                    name: task.name.clone(),
-                                    spec: task.range.clone(),
-                                    catalog: catalog_name,
-                                });
-                            }
-                        },
-                        None => {
-                            return Err(Error::UnknownCatalog {
-                                name: task.name.clone(),
-                                spec: task.range.clone(),
-                                catalog: catalog_name,
-                            });
-                        }
-                    }
+                if let Some((catalog_name, real_range)) =
+                    self.resolve_catalog_spec(&task.name, &task.range)?
+                {
+                    tracing::trace!("catalog: {} {} -> {}", task.name, task.range, real_range);
+                    catalog_picks
+                        .entry(catalog_name)
+                        .or_default()
+                        .insert(task.name.clone(), real_range.clone());
+                    task.range = real_range;
                 }
 
                 for _ in 0..2 {
@@ -1067,16 +1078,39 @@ impl Resolver {
                         &task.name,
                         &task.range,
                         &task.ancestors,
-                    ) && task.range != override_spec
-                    {
-                        tracing::trace!(
-                            "override: {}@{} -> {}",
-                            task.name,
-                            task.range,
-                            override_spec
-                        );
-                        task.range = override_spec;
-                        changed = true;
+                    ) {
+                        // An override may itself point at a catalog
+                        // entry (e.g. `"overrides": {"foo": "catalog:"}`).
+                        // The catalog pre-pass above already ran against
+                        // the original range, so resolve the indirection
+                        // here before assigning — otherwise `catalog:`
+                        // leaks through to the registry resolver.
+                        // Stash the catalog pick in a local so we only
+                        // record it if the override actually moves
+                        // `task.range`.
+                        let (effective_spec, pending_pick) =
+                            match self.resolve_catalog_spec(&task.name, &override_spec)? {
+                                Some((catalog_name, real_range)) => {
+                                    (real_range.clone(), Some((catalog_name, real_range)))
+                                }
+                                None => (override_spec, None),
+                            };
+                        if task.range != effective_spec {
+                            if let Some((catalog_name, real_range)) = pending_pick {
+                                catalog_picks
+                                    .entry(catalog_name)
+                                    .or_default()
+                                    .insert(task.name.clone(), real_range);
+                            }
+                            tracing::trace!(
+                                "override: {}@{} -> {}",
+                                task.name,
+                                task.range,
+                                effective_spec
+                            );
+                            task.range = effective_spec;
+                            changed = true;
+                        }
                     }
                     if let Some(rest) = task.range.strip_prefix("npm:")
                         && let Some(at_idx) = rest.rfind('@')
