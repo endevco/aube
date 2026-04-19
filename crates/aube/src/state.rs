@@ -45,7 +45,7 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
     // No state file = never installed (or `rm -rf node_modules` wiped it).
     let state = match read_state(&state_path) {
         Some(s) => s,
-        None => return Some("node_modules not found or never installed by aube".into()),
+        None => return Some("install state not found".into()),
     };
 
     // Check lockfile hash. Honor `gitBranchLockfile` so a branch-specific
