@@ -43,7 +43,7 @@ struct RawBunLockfile {
     #[serde(default)]
     workspaces: BTreeMap<String, RawBunWorkspace>,
     #[serde(default)]
-    packages: BTreeMap<String, RawBunPackageEntry>,
+    packages: BTreeMap<String, Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,24 +57,79 @@ struct RawBunWorkspace {
     optional_dependencies: BTreeMap<String, String>,
 }
 
-/// Each package entry is a JSON array; we use a named struct for the parts we care about.
-/// bun's tuple shape: `[ident, resolved, metadata, integrity]`. We ignore
-/// the resolved URL (field 1) since aube fetches from the configured registry.
-#[derive(Debug, Deserialize)]
-struct RawBunPackageEntry(
-    /// `name@version`
-    String,
-    /// Resolved URL — ignored
-    #[serde(default)]
-    #[allow(dead_code)]
-    serde::de::IgnoredAny,
-    /// Metadata object with optional dependencies
-    #[serde(default)]
-    RawBunMeta,
-    /// Integrity hash (optional — missing for workspace/link packages)
-    #[serde(default)]
-    Option<String>,
-);
+/// Decoded view of one bun.lock package entry.
+///
+/// bun uses different tuple shapes depending on where the package came
+/// from:
+///   - Registry: `[ident, resolved_url, { meta }, "sha512-..."]`
+///   - Git / github: `[ident, { meta }, "owner-repo-commit"]`
+///   - Workspace / link / file: `[ident]` or `[ident, { meta }]`
+///
+/// We introspect by element type rather than position: the metadata
+/// object is the sole `Object` in the array, and an integrity hash is
+/// recognized by its `sha…-` prefix.
+#[derive(Debug, Default)]
+struct BunEntry {
+    ident: String,
+    meta: RawBunMeta,
+    integrity: Option<String>,
+}
+
+impl BunEntry {
+    fn from_array(key: &str, arr: &[serde_json::Value]) -> Result<Self, String> {
+        let ident = arr
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("package '{key}' has no ident string at position 0"))?
+            .to_string();
+
+        let mut meta = RawBunMeta::default();
+        let mut integrity: Option<String> = None;
+        for el in arr.iter().skip(1) {
+            match el {
+                serde_json::Value::Object(_) => {
+                    meta = serde_json::from_value(el.clone()).unwrap_or_default();
+                }
+                serde_json::Value::String(s) if is_integrity_hash(s) => {
+                    integrity = Some(s.clone());
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Self {
+            ident,
+            meta,
+            integrity,
+        })
+    }
+}
+
+/// Recognize an SRI-style integrity hash (`<algo>-<base64>`).
+///
+/// The prefix check alone isn't enough: a github entry's trailing
+/// `owner-repo-shortsha` could start with a literal `sha1`/`sha256`/etc.
+/// if that's the owner name. A real SRI hash also has a fixed base64
+/// body length for each algo, and base64 never uses `-`, so
+/// `sha1-myrepo-abc123` fails both the length and charset checks.
+fn is_integrity_hash(s: &str) -> bool {
+    let Some((algo, body)) = s.split_once('-') else {
+        return false;
+    };
+    let expected_len = match algo {
+        "sha512" => 88,
+        "sha384" => 64,
+        "sha256" => 44,
+        "sha1" => 28,
+        "md5" => 24,
+        _ => return false,
+    };
+    if body.len() != expected_len {
+        return false;
+    }
+    body.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,17 +159,29 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         ));
     }
 
+    // Decode each raw array into a typed BunEntry so later passes don't
+    // have to think about bun's per-source-type tuple layouts.
+    let mut entries: BTreeMap<String, BunEntry> = BTreeMap::new();
+    for (key, value) in &raw.packages {
+        let entry =
+            BunEntry::from_array(key, value).map_err(|e| Error::Parse(path.to_path_buf(), e))?;
+        entries.insert(key.clone(), entry);
+    }
+
     // First pass: parse (name, version) for each entry. bun.lock keys look
     // like the package name ("foo") for the hoisted version, or a nested
     // path ("parent/foo") when multiple versions exist.
     let mut key_info: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
 
-    for (key, entry) in &raw.packages {
-        let Some((name, version)) = split_ident(&entry.0) else {
+    for (key, entry) in &entries {
+        let Some((name, version)) = split_ident(&entry.ident) else {
             return Err(Error::Parse(
                 path.to_path_buf(),
-                format!("could not parse ident '{}' for package '{}'", entry.0, key),
+                format!(
+                    "could not parse ident '{}' for package '{}'",
+                    entry.ident, key
+                ),
             ));
         };
         key_info.insert(key.clone(), (name.clone(), version.clone()));
@@ -129,10 +196,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // Collect transitive dep names; resolve to dep_paths in a second pass.
         let mut deps: BTreeMap<String, String> = BTreeMap::new();
         for n in entry
-            .2
+            .meta
             .dependencies
             .keys()
-            .chain(entry.2.optional_dependencies.keys())
+            .chain(entry.meta.optional_dependencies.keys())
         {
             deps.insert(n.clone(), String::new());
         }
@@ -142,7 +209,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             LockedPackage {
                 name,
                 version,
-                integrity: entry.3.clone().filter(|s| !s.is_empty()),
+                integrity: entry.integrity.clone().filter(|s| !s.is_empty()),
                 dependencies: deps,
                 dep_path,
                 ..Default::default()
@@ -154,7 +221,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // hierarchy — for an entry at key "parent/foo", dep "bar" resolves to
     // "parent/foo/bar" → "parent/bar" → "bar".
     let mut resolved_by_dep_path: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    for (key, entry) in &raw.packages {
+    for (key, entry) in &entries {
         let Some((name, version)) = key_info.get(key) else {
             continue;
         };
@@ -165,10 +232,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
         let mut resolved: BTreeMap<String, String> = BTreeMap::new();
         for dep_name in entry
-            .2
+            .meta
             .dependencies
             .keys()
-            .chain(entry.2.optional_dependencies.keys())
+            .chain(entry.meta.optional_dependencies.keys())
         {
             if let Some(target_key) = resolve_nested_bun(key, dep_name, &key_info)
                 && let Some((dname, dver)) = key_info.get(&target_key)
@@ -500,6 +567,33 @@ mod tests {
     }
 
     #[test]
+    fn test_is_integrity_hash() {
+        // Real SRI hashes at their exact base64 lengths.
+        assert!(is_integrity_hash(&format!("sha512-{}", "A".repeat(88))));
+        assert!(is_integrity_hash(&format!("sha256-{}", "A".repeat(44))));
+        assert!(is_integrity_hash(&format!("sha1-{}", "A".repeat(28))));
+        // base64 body with +, /, and = padding is still valid.
+        let mixed = format!("{}+/==", "A".repeat(84));
+        assert_eq!(mixed.len(), 88);
+        assert!(is_integrity_hash(&format!("sha512-{mixed}")));
+
+        // Github dir-id whose owner is literally a hash algo name —
+        // the extra `-` and the wrong length must disqualify it.
+        assert!(!is_integrity_hash("sha1-myrepo-abc123"));
+        assert!(!is_integrity_hash("sha256-owner-repo-deadbee"));
+        // Unknown algo prefix.
+        assert!(!is_integrity_hash("foo-bar"));
+        // Correct algo prefix but the wrong body length.
+        assert!(!is_integrity_hash("sha512-tooshort"));
+        // Right length but contains a forbidden `-` (base64 has no `-`).
+        let with_dash = format!("sha512-{}-{}", "A".repeat(43), "A".repeat(44));
+        assert_eq!(with_dash.len(), "sha512-".len() + 88);
+        assert!(!is_integrity_hash(&with_dash));
+        // No dash at all.
+        assert!(!is_integrity_hash("opaquestring"));
+    }
+
+    #[test]
     fn test_strip_jsonc_trailing_comma() {
         let input = r#"{ "a": 1, "b": 2, }"#;
         let out = strip_jsonc(input);
@@ -525,9 +619,20 @@ mod tests {
         assert_eq!(v["url"], "http://example.com/path");
     }
 
+    /// Build a placeholder SRI hash of the right shape (88-char base64
+    /// body for sha512). Tests need real SRI lengths now that
+    /// `is_integrity_hash` validates them — bogus stand-ins like
+    /// `sha512-aaa` would be rejected and integrity dropped.
+    fn fake_sri(tag: char) -> String {
+        format!("sha512-{}", tag.to_string().repeat(88))
+    }
+
     #[test]
     fn test_parse_simple() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_foo = fake_sri('a');
+        let sri_nested = fake_sri('b');
+        let sri_bar = fake_sri('c');
         let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -542,12 +647,15 @@ mod tests {
     },
   },
   "packages": {
-    "foo": ["foo@1.2.3", "", { "dependencies": { "nested": "^3.0.0" } }, "sha512-aaa"],
-    "nested": ["nested@3.1.0", "", {}, "sha512-bbb"],
-    "bar": ["bar@2.5.0", "", {}, "sha512-ccc"],
+    "foo": ["foo@1.2.3", "", { "dependencies": { "nested": "^3.0.0" } }, "SRI_FOO"],
+    "nested": ["nested@3.1.0", "", {}, "SRI_NESTED"],
+    "bar": ["bar@2.5.0", "", {}, "SRI_BAR"],
   }
-}"#;
-        std::fs::write(tmp.path(), content).unwrap();
+}"#
+        .replace("SRI_FOO", &sri_foo)
+        .replace("SRI_NESTED", &sri_nested)
+        .replace("SRI_BAR", &sri_bar);
+        std::fs::write(tmp.path(), &content).unwrap();
         let graph = parse(tmp.path()).unwrap();
 
         assert_eq!(graph.packages.len(), 3);
@@ -556,7 +664,7 @@ mod tests {
         assert!(graph.packages.contains_key("bar@2.5.0"));
 
         let foo = &graph.packages["foo@1.2.3"];
-        assert_eq!(foo.integrity.as_deref(), Some("sha512-aaa"));
+        assert_eq!(foo.integrity.as_deref(), Some(sri_foo.as_str()));
         assert_eq!(
             foo.dependencies.get("nested").map(String::as_str),
             Some("nested@3.1.0")
@@ -633,6 +741,53 @@ mod tests {
         assert_eq!(root[0].name, "@scope/pkg");
     }
 
+    /// bun.lock uses a 3-tuple `[ident, { meta }, "owner-repo-commit"]`
+    /// for GitHub / git deps (no `resolved` slot and no integrity). A
+    /// naive positional parse would mistake the trailing commit-id
+    /// string for the metadata object — make sure we recognize the
+    /// object by type rather than position.
+    #[test]
+    fn test_parse_github_dep() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_dep = fake_sri('d');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": { "vfs": "github:collinstevens/vfs#0b6ea53" }
+    }
+  },
+  "packages": {
+    "vfs": ["vfs@github:collinstevens/vfs#0b6ea53abcdef", { "dependencies": { "dep": "^1.0.0" } }, "collinstevens-vfs-0b6ea53"],
+    "dep": ["dep@1.0.0", "", {}, "SRI_DEP"]
+  }
+}"#
+        .replace("SRI_DEP", &sri_dep);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        // The vfs package parsed with its github: version and picked up
+        // the transitive dep declared in the metadata slot.
+        let vfs_key = "vfs@github:collinstevens/vfs#0b6ea53abcdef";
+        assert!(graph.packages.contains_key(vfs_key));
+        let vfs = &graph.packages[vfs_key];
+        assert_eq!(
+            vfs.dependencies.get("dep").map(String::as_str),
+            Some("dep@1.0.0")
+        );
+        // No SRI-shaped hash on the github entry → integrity stays None.
+        assert!(vfs.integrity.is_none());
+
+        // The adjacent registry dep's integrity must still round-trip —
+        // proves the type-based introspection doesn't break the normal
+        // 4-tuple path when mixed with a 3-tuple github entry.
+        let dep = &graph.packages["dep@1.0.0"];
+        assert_eq!(dep.integrity.as_deref(), Some(sri_dep.as_str()));
+
+        let root = graph.importers.get(".").unwrap();
+        assert!(root.iter().any(|d| d.name == "vfs"));
+    }
+
     /// Round-trip the same multi-version shape the npm writer test
     /// uses: two versions of `bar`, one hoisted, one nested under
     /// `foo`. The writer's bun-key form (`foo/bar` instead of
@@ -641,6 +796,9 @@ mod tests {
     #[test]
     fn test_write_roundtrip_multi_version() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_top = fake_sri('t');
+        let sri_foo = fake_sri('f');
+        let sri_nested = fake_sri('n');
         let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -649,12 +807,15 @@ mod tests {
     }
   },
   "packages": {
-    "bar": ["bar@2.0.0", "", {}, "sha512-top-bar"],
-    "foo": ["foo@1.0.0", "", { "dependencies": { "bar": "^1.0.0" } }, "sha512-foo"],
-    "foo/bar": ["bar@1.0.0", "", {}, "sha512-nested-bar"]
+    "bar": ["bar@2.0.0", "", {}, "SRI_TOP"],
+    "foo": ["foo@1.0.0", "", { "dependencies": { "bar": "^1.0.0" } }, "SRI_FOO"],
+    "foo/bar": ["bar@1.0.0", "", {}, "SRI_NESTED"]
   }
-}"#;
-        std::fs::write(tmp.path(), content).unwrap();
+}"#
+        .replace("SRI_TOP", &sri_top)
+        .replace("SRI_FOO", &sri_foo)
+        .replace("SRI_NESTED", &sri_nested);
+        std::fs::write(tmp.path(), &content).unwrap();
         let graph = parse(tmp.path()).unwrap();
 
         let manifest = aube_manifest::PackageJson {
@@ -678,11 +839,11 @@ mod tests {
         assert!(reparsed.packages.contains_key("foo@1.0.0"));
         assert_eq!(
             reparsed.packages["bar@2.0.0"].integrity.as_deref(),
-            Some("sha512-top-bar")
+            Some(sri_top.as_str())
         );
         assert_eq!(
             reparsed.packages["bar@1.0.0"].integrity.as_deref(),
-            Some("sha512-nested-bar")
+            Some(sri_nested.as_str())
         );
         // foo's nested bar dep still resolves to 1.0.0 (nested)
         // rather than snapping to the hoisted 2.0.0.
