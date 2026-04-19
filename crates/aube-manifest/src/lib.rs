@@ -184,12 +184,12 @@ impl PackageJson {
     /// — all sources merge into the same `BuildPolicy`. Non-string
     /// entries are dropped silently to match pnpm's tolerance for
     /// malformed configs. Entries from `aube.*` are appended after
-    /// `pnpm.*`.
+    /// `pnpm.*` and deduped while preserving insertion order.
     pub fn pnpm_only_built_dependencies(&self) -> Vec<String> {
         let mut out = Vec::new();
         for ns in self.pnpm_aube_objects() {
             if let Some(arr) = ns.get("onlyBuiltDependencies").and_then(|v| v.as_array()) {
-                out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+                push_unique_strs(&mut out, arr);
             }
         }
         out
@@ -199,12 +199,13 @@ impl PackageJson {
     /// `aube.neverBuiltDependencies` — the canonical denylist for
     /// lifecycle scripts. Entries override any allowlist match in
     /// `onlyBuiltDependencies` / `allowBuilds` since explicit denies
-    /// always win in `BuildPolicy::decide`.
+    /// always win in `BuildPolicy::decide`. Entries union across both
+    /// namespaces with insertion order preserved.
     pub fn pnpm_never_built_dependencies(&self) -> Vec<String> {
         let mut out = Vec::new();
         for ns in self.pnpm_aube_objects() {
             if let Some(arr) = ns.get("neverBuiltDependencies").and_then(|v| v.as_array()) {
-                out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+                push_unique_strs(&mut out, arr);
             }
         }
         out
@@ -233,8 +234,10 @@ impl PackageJson {
     /// Extract `pnpm.catalogs` / `aube.catalogs` — named catalogs
     /// nested under the `pnpm`/`aube` object. Pairs with
     /// [`pnpm_catalog`] for a fully-package.json-local catalog
-    /// declaration. On catalog-name conflict, `aube.catalogs` fully
-    /// replaces `pnpm.catalogs` for that name.
+    /// declaration. Named catalogs merge per-key across namespaces
+    /// (same rule as `pnpm_catalog`): `aube.catalogs.<name>.<pkg>`
+    /// wins over `pnpm.catalogs.<name>.<pkg>`, while entries declared
+    /// only on one side are preserved.
     pub fn pnpm_catalogs(&self) -> BTreeMap<String, BTreeMap<String, String>> {
         let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for ns in self.pnpm_aube_objects() {
@@ -243,11 +246,12 @@ impl PackageJson {
                     let Some(inner) = inner.as_object() else {
                         continue;
                     };
-                    let entries: BTreeMap<String, String> = inner
-                        .iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect();
-                    out.insert(name.clone(), entries);
+                    let catalog = out.entry(name.clone()).or_default();
+                    for (k, v) in inner {
+                        if let Some(s) = v.as_str() {
+                            catalog.insert(k.clone(), s.to_string());
+                        }
+                    }
                 }
             }
         }
@@ -328,27 +332,18 @@ impl PackageJson {
         let mut os = Vec::new();
         let mut cpu = Vec::new();
         let mut libc = Vec::new();
-        let push = |dst: &mut Vec<String>, arr: &[serde_json::Value]| {
-            for v in arr {
-                if let Some(s) = v.as_str()
-                    && !dst.iter().any(|existing| existing == s)
-                {
-                    dst.push(s.to_string());
-                }
-            }
-        };
         for ns in self.pnpm_aube_objects() {
             let Some(sa) = ns.get("supportedArchitectures").and_then(|v| v.as_object()) else {
                 continue;
             };
             if let Some(arr) = sa.get("os").and_then(|v| v.as_array()) {
-                push(&mut os, arr);
+                push_unique_strs(&mut os, arr);
             }
             if let Some(arr) = sa.get("cpu").and_then(|v| v.as_array()) {
-                push(&mut cpu, arr);
+                push_unique_strs(&mut cpu, arr);
             }
             if let Some(arr) = sa.get("libc").and_then(|v| v.as_array()) {
-                push(&mut libc, arr);
+                push_unique_strs(&mut libc, arr);
             }
         }
         (os, cpu, libc)
@@ -509,7 +504,7 @@ impl PackageJson {
             let Some(arr) = rules.get(field).and_then(|v| v.as_array()) else {
                 continue;
             };
-            out.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
+            push_unique_strs(&mut out, arr);
         }
         out
     }
@@ -580,6 +575,21 @@ impl AllowBuildRaw {
 /// reaches the resolver unchanged.
 fn is_valid_selector_key(k: &str) -> bool {
     !k.is_empty()
+}
+
+/// Append the string entries of `arr` to `dst`, skipping duplicates
+/// already present and dropping non-string values. Preserves the
+/// insertion order of first appearance — callers rely on this to keep
+/// `pnpm.*` entries ahead of `aube.*` entries when both namespaces
+/// contribute to the same list.
+fn push_unique_strs(dst: &mut Vec<String>, arr: &[serde_json::Value]) {
+    for v in arr {
+        if let Some(s) = v.as_str()
+            && !dst.iter().any(|existing| existing == s)
+        {
+            dst.push(s.to_string());
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -945,6 +955,74 @@ mod tests {
         let ignored = p.pnpm_ignored_optional_dependencies();
         assert!(ignored.contains("fsevents"));
         assert!(ignored.contains("dtrace-provider"));
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_ignore_missing(),
+            vec!["react".to_string(), "react-native".to_string()],
+        );
+        assert_eq!(
+            p.pnpm_peer_dependency_rules_allow_any(),
+            vec!["@types/a".to_string(), "@types/b".to_string()],
+        );
+    }
+
+    #[test]
+    fn aube_catalogs_merge_per_key_within_named_catalog() {
+        // Same semantics as `pnpm_catalog`: aube wins per-key, and
+        // entries only declared on one side are preserved instead of
+        // being dropped when the catalog name exists on both sides.
+        let p = parse(
+            r#"{
+                "pnpm": {
+                    "catalogs": {
+                        "default": {"react": "^17.0.0", "lodash": "^4.0.0"},
+                        "legacy": {"webpack": "^4.0.0"}
+                    }
+                },
+                "aube": {
+                    "catalogs": {
+                        "default": {"react": "^18.0.0", "vite": "^5.0.0"}
+                    }
+                }
+            }"#,
+        );
+        let cats = p.pnpm_catalogs();
+        let default = cats.get("default").expect("default catalog present");
+        assert_eq!(default.get("react").unwrap(), "^18.0.0");
+        assert_eq!(default.get("lodash").unwrap(), "^4.0.0");
+        assert_eq!(default.get("vite").unwrap(), "^5.0.0");
+        let legacy = cats.get("legacy").expect("legacy catalog preserved");
+        assert_eq!(legacy.get("webpack").unwrap(), "^4.0.0");
+    }
+
+    #[test]
+    fn aube_list_configs_dedupe_duplicates_across_namespaces() {
+        // Union semantics imply dedup: a name listed in both
+        // namespaces appears once, with first-seen ordering preserved.
+        let p = parse(
+            r#"{
+                "pnpm": {
+                    "onlyBuiltDependencies": ["esbuild", "sharp"],
+                    "neverBuiltDependencies": ["evil"],
+                    "peerDependencyRules": {
+                        "ignoreMissing": ["react"],
+                        "allowAny": ["@types/a"]
+                    }
+                },
+                "aube": {
+                    "onlyBuiltDependencies": ["esbuild", "swc"],
+                    "neverBuiltDependencies": ["evil", "node-gyp"],
+                    "peerDependencyRules": {
+                        "ignoreMissing": ["react", "react-native"],
+                        "allowAny": ["@types/a", "@types/b"]
+                    }
+                }
+            }"#,
+        );
+        assert_eq!(
+            p.pnpm_only_built_dependencies(),
+            vec!["esbuild", "sharp", "swc"],
+        );
+        assert_eq!(p.pnpm_never_built_dependencies(), vec!["evil", "node-gyp"]);
         assert_eq!(
             p.pnpm_peer_dependency_rules_ignore_missing(),
             vec!["react".to_string(), "react-native".to_string()],
