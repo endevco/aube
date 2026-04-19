@@ -418,6 +418,21 @@ fn changed_since(
     packages: &[IndexedPackage],
     rev: &str,
 ) -> Result<BTreeSet<usize>, SelectError> {
+    // `git diff <revspec> -- <paths>` can't accept a `--` terminator
+    // before the revspec, so a rev that begins with `-` would land as
+    // an option. Reject at the boundary as defense against the
+    // CVE-2017-1000117 class of argv injection. NUL is rejected too
+    // because it never appears in a legitimate ref.
+    if rev.starts_with('-') {
+        return Err(SelectError::GitFailed(format!(
+            "refusing to pass revspec starting with `-` to git: {rev:?}"
+        )));
+    }
+    if rev.contains('\0') {
+        return Err(SelectError::GitFailed(
+            "refusing to pass revspec containing NUL byte to git".to_string(),
+        ));
+    }
     let revspec = format!("{rev}...HEAD");
     let git_root = git_root(workspace_root)?;
     let output = Command::new("git")
@@ -663,5 +678,32 @@ mod tests {
             dir: &dir,
             workspace_root: root,
         }));
+    }
+
+    #[test]
+    fn changed_since_rejects_dash_prefixed_rev() {
+        // CVE-2017-1000117 class: a rev beginning with `-` would be
+        // interpreted by `git diff` as an option because the
+        // subcommand does not accept a `--` terminator before the
+        // revspec. Reject at the boundary before the format! call.
+        // The validation runs before `git_root`, so `workspace_root`
+        // does not need to exist for this test.
+        let err =
+            changed_since(Path::new("/nonexistent"), &[], "--upload-pack=/tmp/evil").unwrap_err();
+        let msg = match err {
+            SelectError::GitFailed(m) => m,
+            other => panic!("expected GitFailed, got {other:?}"),
+        };
+        assert!(msg.contains("refusing"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn changed_since_rejects_nul_in_rev() {
+        let err = changed_since(Path::new("/nonexistent"), &[], "main\0evil").unwrap_err();
+        let msg = match err {
+            SelectError::GitFailed(m) => m,
+            other => panic!("expected GitFailed, got {other:?}"),
+        };
+        assert!(msg.contains("refusing"), "unexpected error: {msg}");
     }
 }

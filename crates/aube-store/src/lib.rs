@@ -509,6 +509,35 @@ pub enum Error {
     Git(String),
 }
 
+/// Reject values that would be interpreted by git as an option when
+/// handed to a subcommand as a positional argument. Defense against
+/// the CVE-2017-1000117 class of argv injection.
+///
+/// Modern git releases refuse dash-prefixed URLs at the CLI layer,
+/// but this check still matters:
+///
+/// - self-hosted runners still ship older git binaries,
+/// - the same helper is reused for committish values fed to
+///   `git checkout`, where a `--` terminator can't be used because it
+///   would turn the committish into a pathspec.
+///
+/// A NUL byte is also rejected. It never appears in a legitimate url,
+/// ref, or commit, and is a recurring split point for tool pipelines
+/// downstream.
+fn validate_git_positional(value: &str, kind: &str) -> Result<(), Error> {
+    if value.starts_with('-') {
+        return Err(Error::Git(format!(
+            "refusing to pass {kind} starting with `-` to git: {value:?}"
+        )));
+    }
+    if value.contains('\0') {
+        return Err(Error::Git(format!(
+            "refusing to pass {kind} containing NUL byte to git"
+        )));
+    }
+    Ok(())
+}
+
 /// Resolve a git ref (branch name, tag, or partial commit) to a full
 /// 40-char commit SHA by shelling out to `git ls-remote`. `committish`
 /// of `None` means resolve `HEAD`. An input that already looks like a
@@ -518,6 +547,7 @@ pub enum Error {
 /// `refs/heads/<ref>`, falling back to the HEAD of the repo when the
 /// caller passes `None`.
 pub fn git_resolve_ref(url: &str, committish: Option<&str>) -> Result<String, Error> {
+    validate_git_positional(url, "git url")?;
     // Already a full commit SHA? No network round-trip needed.
     if let Some(c) = committish
         && c.len() == 40
@@ -530,9 +560,12 @@ pub fn git_resolve_ref(url: &str, committish: Option<&str>) -> Result<String, Er
     // symbolic ref resolves, and some hosts (and our bare-repo test
     // fixtures) leave HEAD dangling. Listing everything also lets us
     // fall back to `main` / `master` without a second network call.
+    //
+    // `--` terminates git's own option parsing so an attacker-supplied
+    // url that slips a leading `-` past `validate_git_positional` (we
+    // don't expect this, but defense in depth) can't land as an option.
     let out = std::process::Command::new("git")
-        .arg("ls-remote")
-        .arg(url)
+        .args(["ls-remote", "--", url])
         .output()
         .map_err(|e| Error::Git(format!("spawn git ls-remote {url}: {e}")))?;
     if !out.status.success() {
@@ -686,6 +719,8 @@ pub fn git_url_host(url: &str) -> Option<&str> {
 /// [`git_host_in_list`].
 pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathBuf, Error> {
     use std::process::Command;
+    validate_git_positional(url, "git url")?;
+    validate_git_positional(commit, "git commit")?;
     // Deterministic path keyed by url+commit so two callers in the
     // same process (resolver → installer) reuse the same checkout
     // instead of re-cloning. Two different repos that happen to
@@ -768,18 +803,25 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
 
     let do_clone = || -> Result<(), Error> {
         run_in(&scratch, &["init", "-q"])?;
-        run_in(&scratch, &["remote", "add", "origin", url])?;
+        run_in(&scratch, &["remote", "add", "--", "origin", url])?;
         // Shallow fetch by raw SHA only works when the remote allows
         // uploads of any reachable object (GitHub/GitLab/Bitbucket
         // do; many self-hosted servers don't). Fall back to a full
         // fetch on any failure. When `shallow` is false — caller
         // said the host isn't on the shallow list — skip the depth=1
         // attempt entirely to avoid a guaranteed-wasted round trip.
-        let shallow_ok =
-            shallow && run_in(&scratch, &["fetch", "--depth", "1", "-q", "origin", commit]).is_ok();
+        let shallow_ok = shallow
+            && run_in(
+                &scratch,
+                &["fetch", "--depth", "1", "-q", "--", "origin", commit],
+            )
+            .is_ok();
         if !shallow_ok {
-            run_in(&scratch, &["fetch", "-q", "origin"])?;
+            run_in(&scratch, &["fetch", "-q", "--", "origin"])?;
         }
+        // `git checkout -- <commit>` treats <commit> as a pathspec, so
+        // we cannot use the argv separator here. `validate_git_positional`
+        // at function entry already rejected a leading `-` on `commit`.
         run_in(&scratch, &["checkout", "-q", commit])?;
         Ok(())
     };
@@ -1192,5 +1234,52 @@ mod tests {
             "https://github.com/user/repo.git",
             &hosts
         ));
+    }
+
+    #[test]
+    fn test_validate_git_positional_accepts_normal_values() {
+        validate_git_positional("https://github.com/u/r.git", "git url").unwrap();
+        validate_git_positional("git@github.com:u/r.git", "git url").unwrap();
+        validate_git_positional("main", "git commit").unwrap();
+        validate_git_positional("0123456789abcdef0123456789abcdef01234567", "git commit").unwrap();
+    }
+
+    #[test]
+    fn test_validate_git_positional_rejects_dash_prefix() {
+        // CVE-2017-1000117 class: git treats a leading `-` as an
+        // option. `--upload-pack=...` is the classic payload.
+        let err = validate_git_positional("--upload-pack=/tmp/evil", "git url").unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
+        let err = validate_git_positional("-oX", "git commit").unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn test_validate_git_positional_rejects_nul() {
+        let err = validate_git_positional("normal\0tail", "git url").unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn test_git_resolve_ref_rejects_dash_prefixed_url() {
+        // Must refuse before ever spawning `git ls-remote`. Confirms
+        // the validation runs at the public entry point.
+        let err = git_resolve_ref("--upload-pack=/tmp/evil", None).unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn test_git_shallow_clone_rejects_dash_prefixed_url() {
+        let err = git_shallow_clone("--upload-pack=/tmp/evil", "main", false).unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn test_git_shallow_clone_rejects_dash_prefixed_commit() {
+        // `git checkout -- <commit>` treats <commit> as a pathspec,
+        // so the `--` separator is unavailable at that call site.
+        // The entry-point check is the only defense.
+        let err = git_shallow_clone("https://github.com/u/r.git", "-X-evil", false).unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
     }
 }
