@@ -2231,15 +2231,24 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
     unmet
 }
 
-/// Walk every resolved package's declared peer deps and hoist any peer
-/// that isn't already a direct dep of the importer up to the importer's
-/// `dependencies` list. This is what pnpm's `auto-install-peers=true`
-/// produces in its v9 lockfile: if you depend on a package whose
-/// `peerDependencies` declares `react`, and you don't list `react` in
-/// your own `package.json`, pnpm adds it to your importer's dependencies
-/// with the declared peer range as the specifier, and the linker creates
-/// a top-level `node_modules/react` symlink you can import from your own
-/// code.
+/// Promote unmet peers to importer direct deps.
+///
+/// Walks every resolved package's declared peer deps and hoists any
+/// peer that isn't already a direct dep of the importer up to the
+/// importer's `dependencies` list — what pnpm's
+/// `auto-install-peers=true` produces in its v9 lockfile. If you
+/// depend on a package whose `peerDependencies` declares `react` and
+/// you don't list `react` yourself, pnpm (and now aube) adds it to
+/// your importer's dependencies with the declared peer range as the
+/// specifier, and the linker creates a top-level
+/// `node_modules/react` symlink you can import from your own code.
+///
+/// Public so lockfile-driven installs that need to re-derive peer
+/// wiring (npm/yarn/bun formats, which don't record peer contexts)
+/// can run this before [`apply_peer_contexts`] to match fresh-resolve
+/// behavior. Idempotent in the npm case: npm v7+ already hoists
+/// auto-installed peers into root's `dependencies`, so they arrive
+/// pre-`satisfied` and no additions are emitted.
 ///
 /// Algorithm:
 ///   1. For each importer, collect the set of names already in its
@@ -2257,22 +2266,6 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
 ///
 /// Leaves everything else about the graph untouched — no packages are
 /// added or removed, only importer entries grow.
-/// Promote unmet peers to importer direct deps.
-///
-/// For each importer, walks the resolved dep closure and lifts every
-/// peer declaration that isn't already satisfied (by another direct
-/// dep or by some other resolved version in the graph) into the
-/// importer's direct-dep list, so pnpm-style top-level
-/// `node_modules/<peer>` symlinks get created and the lockfile's
-/// `importers.` section lists the peer the way pnpm's
-/// `auto-install-peers=true` mode does.
-///
-/// Public so lockfile-driven installs that need to re-derive peer
-/// wiring (npm/yarn/bun formats, which don't record peer contexts)
-/// can run this before [`apply_peer_contexts`] to match fresh-resolve
-/// behavior. Idempotent in the npm case: npm v7+ already hoists
-/// auto-installed peers into root's `dependencies`, so they arrive
-/// pre-`satisfied` and no additions are emitted.
 pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
     let importer_paths: Vec<String> = graph.importers.keys().cloned().collect();
     for importer_path in importer_paths {
@@ -2456,8 +2449,10 @@ pub struct PeerContextOptions {
     pub dedupe_peers: bool,
     /// When true, unresolved peers can be satisfied by a dep declared
     /// at the root importer (`"."`) even if no ancestor scope carries
-    /// the peer. Runs between own-deps and graph-wide scan in
-    /// [`visit_peer_context`].
+    /// the peer. Runs between own-deps and graph-wide scan in the
+    /// peer-context visitor — see `visit_peer_context` in this
+    /// module for the owning implementation (intentionally crate-
+    /// private; the public API here is the option flag itself).
     pub resolve_from_workspace_root: bool,
     /// Byte cap on the peer-ID suffix after which the entire suffix
     /// is hashed to `_<10-char-sha256-hex>`. pnpm's default is 1000.
