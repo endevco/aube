@@ -374,7 +374,11 @@ impl Store {
 
             let mut entry = entry.map_err(|e| Error::Tar(e.to_string()))?;
 
-            // Directories don't carry content, skip them. Every other
+            // Directories don't carry content, skip them. PAX global
+            // and extension headers (type `g` / `x`) carry metadata
+            // only — GitHub-generated tarballs (e.g. `imap@0.8.19`)
+            // start with one that embeds the source git blob SHA.
+            // npm/pnpm/bun tolerate these; we do too. Every other
             // non-regular entry type (symlink, hardlink, character
             // device, block device, fifo) is rejected. Real npm
             // packages ship files and directories only. Symlink and
@@ -382,7 +386,12 @@ impl Store {
             // node-tar CVE-2021-37701 class and have no legitimate
             // use here.
             let entry_type = entry.header().entry_type();
-            if entry_type.is_dir() {
+            if entry_type.is_dir()
+                || matches!(
+                    entry_type,
+                    tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+                )
+            {
                 continue;
             }
             if !matches!(
@@ -1846,6 +1855,43 @@ mod tests {
         store.ensure_shards_exist().unwrap();
         let err = store.import_tarball(&tarball).unwrap_err();
         assert!(matches!(err, Error::Tar(_)));
+    }
+
+    #[test]
+    fn test_import_tarball_skips_pax_global_header() {
+        // GitHub-generated tarballs (e.g. `imap@0.8.19`) start with a
+        // PAX global header carrying the source git blob SHA in a
+        // `comment=...` record. The entry is metadata-only and has no
+        // file content; npm/pnpm/bun skip it silently. The extractor
+        // must not reject the tarball on sight.
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut ar = tar::Builder::new(gz);
+
+        let pax_body = b"52 comment=867aa88a335a266b904e0b5d1a3b0b5d1a3b0b5d1\n";
+        let mut gh = tar::Header::new_ustar();
+        gh.set_path("pax_global_header").unwrap();
+        gh.set_size(pax_body.len() as u64);
+        gh.set_mode(0o644);
+        gh.set_entry_type(tar::EntryType::XGlobalHeader);
+        gh.set_cksum();
+        ar.append(&gh, &pax_body[..]).unwrap();
+
+        let body = b"// ok";
+        let mut fh = tar::Header::new_gnu();
+        fh.set_path("package/index.js").unwrap();
+        fh.set_size(body.len() as u64);
+        fh.set_mode(0o644);
+        fh.set_cksum();
+        ar.append(&fh, &body[..]).unwrap();
+
+        let tarball = ar.into_inner().unwrap().finish().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let index = store.import_tarball(&tarball).unwrap();
+        assert!(index.contains_key("index.js"));
+        assert!(!index.contains_key("pax_global_header"));
     }
 
     #[test]
