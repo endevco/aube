@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.3](https://github.com/endevco/aube/compare/aube-store-v1.0.0-beta.2...aube-store-v1.0.0-beta.3) - 2026-04-19
+
+### Other
+
+- swap CAS hash from SHA-512 to BLAKE3 ([#36](https://github.com/endevco/aube/pull/36))
+
 ## [1.0.0-beta.2](https://github.com/endevco/aube/compare/aube-store-v1.0.0-beta.1...aube-store-v1.0.0-beta.2) - 2026-04-18
 
 ### Other
