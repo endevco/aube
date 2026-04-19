@@ -40,7 +40,12 @@ future installs keep writing `aube-lock.yaml`.
 - aube does not manage a JavaScript runtime. Use
   [mise](https://mise.jdx.dev) (`mise use node@22`) if you need a Node
   version alongside or in place of Bun.
-- Dependency lifecycle script approval follows the pnpm v11 allowlist
-  model, not Bun's `trustedDependencies` list.
+- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`)
+  follow the pnpm v11 allowlist rather than Bun's `trustedDependencies`
+  list. aube runs them only for packages you've explicitly allowlisted
+  via `pnpm.allowBuilds`, `pnpm.onlyBuiltDependencies`, or
+  `aube approve-builds`. aube does not read `trustedDependencies`, so
+  anything you had listed there needs to be moved to one of the pnpm
+  fields before aube will run its scripts.
 
 Reference: [bun install](https://bun.sh/docs/cli/install)
