@@ -37,11 +37,10 @@ aube has the same CLI, config, and internals that pnpm v11 does.
 - Root lifecycle scripts, with dependency lifecycle scripts gated by an
   explicit allowlist.
 
-The aube-specific part is ownership: aube installs into its own
-`node_modules/.aube/` virtual store and stores package files under
-`~/.aube-store/` rather than another package manager's virtual store. Existing
-lockfiles are preserved in place; only projects with no supported lockfile yet
-start with `aube-lock.yaml`.
+aube uses its own internal directory names: `node_modules/.aube/` for the
+virtual store and `~/.aube-store/` for the global store. Existing lockfiles
+are preserved in place; only projects with no supported lockfile yet start
+with `aube-lock.yaml`.
 
 ## Reference sections
 
