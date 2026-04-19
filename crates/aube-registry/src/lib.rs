@@ -5,8 +5,12 @@ use std::collections::BTreeMap;
 /// to be either a single string (e.g. `"libc": "glibc"`) or an array
 /// of strings (e.g. `"libc": ["glibc"]`). An explicit `null` is also
 /// treated as "no constraint", same as the field being absent — some
-/// packuments emit it. Normalize all three shapes to a `Vec<String>`
-/// so the platform filter doesn't have to care.
+/// packuments emit it. Napi-rs additionally publishes `"libc": [null]`
+/// on its Windows/macOS native-binding packages (e.g.
+/// `@oxc-parser/binding-win32-x64-msvc`), meaning "no libc constraint";
+/// drop null array entries so that shape round-trips to an empty vec
+/// instead of failing the whole packument parse. Normalize all shapes
+/// to a `Vec<String>` so the platform filter doesn't have to care.
 fn string_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -15,12 +19,18 @@ where
     #[serde(untagged)]
     enum StringOrSeq {
         String(String),
-        Seq(Vec<String>),
+        Seq(Vec<serde_json::Value>),
     }
     Ok(match Option::<StringOrSeq>::deserialize(deserializer)? {
         None => Vec::new(),
         Some(StringOrSeq::String(s)) => vec![s],
-        Some(StringOrSeq::Seq(v)) => v,
+        Some(StringOrSeq::Seq(v)) => v
+            .into_iter()
+            .filter_map(|e| match e {
+                serde_json::Value::String(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
     })
 }
 
@@ -233,6 +243,31 @@ mod tests {
         assert!(v.os.is_empty());
         assert!(v.cpu.is_empty());
         assert!(v.libc.is_empty());
+    }
+
+    /// Napi-rs emits `"libc": [null]` on Windows/macOS native-binding
+    /// publishes (e.g. `@oxc-parser/binding-win32-x64-msvc`), meaning
+    /// "no libc constraint". Drop the null entry so the packument
+    /// parses — otherwise every version with that shape blocks resolve.
+    #[test]
+    fn libc_array_containing_null_drops_null() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","libc":[null]}"#);
+        assert!(v.libc.is_empty());
+    }
+
+    #[test]
+    fn os_cpu_libc_arrays_drop_non_string_entries() {
+        let v = parse(
+            r#"{
+                "name":"x","version":"1.0.0",
+                "os":["linux",null,42],
+                "cpu":["x64",null],
+                "libc":["glibc",{"x":1}]
+            }"#,
+        );
+        assert_eq!(v.os, vec!["linux"]);
+        assert_eq!(v.cpu, vec!["x64"]);
+        assert_eq!(v.libc, vec!["glibc"]);
     }
 
     #[test]
