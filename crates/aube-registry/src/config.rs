@@ -104,6 +104,15 @@ impl NpmConfig {
     /// the generic settings resolver (`aube_cli::settings_values`) can
     /// never disagree on precedence.
     pub fn load(project_dir: &Path) -> Self {
+        let env: Vec<(String, String)> = std::env::vars().collect();
+        Self::load_with_env(project_dir, &env)
+    }
+
+    /// Same as [`NpmConfig::load`] but takes a captured env snapshot
+    /// instead of reading `std::env` directly. Tests that assert on
+    /// file-only behavior pass an empty slice so `npm_config_*` vars
+    /// leaking from the developer's shell can't perturb the result.
+    pub(crate) fn load_with_env(project_dir: &Path, env: &[(String, String)]) -> Self {
         let mut config = Self {
             registry: "https://registry.npmjs.org/".to_string(),
             ..Default::default()
@@ -112,6 +121,10 @@ impl NpmConfig {
         // feeding it the merged user-then-project list produces the
         // same result as the prior two-pass implementation.
         config.apply(load_npmrc_entries(project_dir));
+        // `npm_config_*` / `NPM_CONFIG_*` env vars beat file config in
+        // npm/pnpm, and the docs promise the same for aube. Apply them
+        // after `.npmrc` so last-write-wins gives env the higher slot.
+        config.apply(npm_config_env_entries_from(env));
         // Env vars fill in any proxy fields the .npmrc didn't set.
         // npm/pnpm/curl all check both the upper- and lowercase forms.
         config.apply_proxy_env();
@@ -395,6 +408,68 @@ impl FetchPolicy {
 /// gets `u32::MAX` attempts, which is effectively "retry forever".
 fn clamp_u32(v: u64) -> u32 {
     v.min(u64::from(u32::MAX)) as u32
+}
+
+/// Synthesize `.npmrc`-style entries from a captured `npm_config_*` /
+/// `NPM_CONFIG_*` environment-variable slice so [`NpmConfig::apply`]
+/// can consume them uniformly. Only registry-client-owned keys (the
+/// default registry, scoped registries, per-URI auth, proxies, TLS
+/// knobs) are emitted — generic pnpm settings are already surfaced
+/// via `aube_settings::resolved::*`, which consults its own env-var
+/// aliases. Env entries must be applied *after* `.npmrc` entries so
+/// last-write-wins gives env the higher precedence npm/pnpm document.
+fn npm_config_env_entries_from(env: &[(String, String)]) -> Vec<(String, String)> {
+    env.iter()
+        .filter_map(|(n, v)| translate_npm_config_env(n, v))
+        .collect()
+}
+
+/// Map a single `npm_config_*` / `NPM_CONFIG_*` env var to the
+/// `.npmrc`-style `(key, value)` that [`NpmConfig::apply`] understands.
+/// Returns `None` for env vars unrelated to registry-client config —
+/// those are owned by the generic settings resolver. Pure function so
+/// tests can exercise the mapping without mutating `std::env`.
+fn translate_npm_config_env(name: &str, value: &str) -> Option<(String, String)> {
+    let suffix = name
+        .strip_prefix("npm_config_")
+        .or_else(|| name.strip_prefix("NPM_CONFIG_"))?;
+    // Per-URI auth keys (e.g. `//registry.example.com/:_authToken`)
+    // already carry `.npmrc` syntax in the env-var name. Pass them
+    // through unchanged so `apply`'s `starts_with("//")` arm picks
+    // them up and preserves the `_authToken` / `_auth` / `username`
+    // casing that the match inside it depends on.
+    if suffix.starts_with("//") {
+        return Some((suffix.to_string(), value.to_string()));
+    }
+    // Scoped-registry keys: `@myorg:REGISTRY` or `@MYORG:registry`,
+    // translated to the canonical `@myorg:registry` form. The scope
+    // segment is lowercased because npm scope names are
+    // case-insensitive on the registry side, and `apply` matches the
+    // `:registry` suffix literally.
+    if let Some(rest) = suffix.strip_prefix('@')
+        && let Some((scope, tail)) = rest.split_once(':')
+        && tail.eq_ignore_ascii_case("registry")
+    {
+        return Some((
+            format!("@{}:registry", scope.to_ascii_lowercase()),
+            value.to_string(),
+        ));
+    }
+    // Canonical single-word or `_`-separated multi-word keys. The
+    // left column is the lowercased env-suffix (POSIX-style); the
+    // right column is the `.npmrc` key `apply` matches on.
+    let npmrc_key = match suffix.to_ascii_lowercase().as_str() {
+        "registry" => "registry",
+        "https_proxy" => "https-proxy",
+        "http_proxy" => "http-proxy",
+        "proxy" => "proxy",
+        "noproxy" => "noproxy",
+        "strict_ssl" => "strict-ssl",
+        "local_address" => "local-address",
+        "maxsockets" => "maxsockets",
+        _ => return None,
+    };
+    Some((npmrc_key.to_string(), value.to_string()))
 }
 
 /// Load raw `.npmrc` key/value pairs from the same file precedence as
@@ -1499,6 +1574,140 @@ mod tests {
         let p = FetchPolicy::default();
         assert_eq!(p.warn_timeout_ms, 10_000);
         assert_eq!(p.min_speed_kibps, 50);
+    }
+
+    #[test]
+    fn translate_npm_config_env_maps_default_registry() {
+        // Both the lowercase and SCREAMING_SNAKE spellings must land
+        // on the canonical `.npmrc` key `registry`. The docs promise
+        // `NPM_CONFIG_REGISTRY aube install` works; this is the hook
+        // that makes it true.
+        assert_eq!(
+            translate_npm_config_env("NPM_CONFIG_REGISTRY", "https://r.example/"),
+            Some(("registry".to_string(), "https://r.example/".to_string()))
+        );
+        assert_eq!(
+            translate_npm_config_env("npm_config_registry", "https://r.example/"),
+            Some(("registry".to_string(), "https://r.example/".to_string()))
+        );
+        // Non-npm env vars are ignored so the entry list stays tight
+        // and `apply` isn't fed noise.
+        assert_eq!(translate_npm_config_env("HOME", "/tmp"), None);
+    }
+
+    #[test]
+    fn translate_npm_config_env_maps_proxy_and_tls_knobs() {
+        // Multi-word env suffix → hyphenated `.npmrc` key. Pins the
+        // mapping for every registry-client knob that's exposed via
+        // an env alias so future regressions show up as test
+        // failures, not silent drops.
+        let cases = [
+            ("NPM_CONFIG_HTTPS_PROXY", "http://p:8", "https-proxy"),
+            ("NPM_CONFIG_HTTP_PROXY", "http://p:9", "http-proxy"),
+            ("NPM_CONFIG_PROXY", "http://p:0", "proxy"),
+            ("NPM_CONFIG_NOPROXY", "localhost,.internal", "noproxy"),
+            ("NPM_CONFIG_STRICT_SSL", "false", "strict-ssl"),
+            ("NPM_CONFIG_LOCAL_ADDRESS", "127.0.0.1", "local-address"),
+            ("NPM_CONFIG_MAXSOCKETS", "16", "maxsockets"),
+        ];
+        for (name, value, expected_key) in cases {
+            assert_eq!(
+                translate_npm_config_env(name, value),
+                Some((expected_key.to_string(), value.to_string())),
+                "mapping failed for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn translate_npm_config_env_maps_scoped_registry() {
+        // `NPM_CONFIG_@MYORG:REGISTRY` should normalise to the
+        // lowercase canonical `@myorg:registry` key that `apply`
+        // matches via `strip_suffix(":registry")`.
+        assert_eq!(
+            translate_npm_config_env("NPM_CONFIG_@MYORG:REGISTRY", "https://r.mycorp/"),
+            Some((
+                "@myorg:registry".to_string(),
+                "https://r.mycorp/".to_string()
+            ))
+        );
+        assert_eq!(
+            translate_npm_config_env("npm_config_@myorg:registry", "https://r.mycorp/"),
+            Some((
+                "@myorg:registry".to_string(),
+                "https://r.mycorp/".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn translate_npm_config_env_passes_uri_auth_through_verbatim() {
+        // Per-URI auth keys carry `.npmrc` syntax in the env name.
+        // Passthrough preserves the `_authToken` casing that `apply`
+        // matches inside its `starts_with("//")` branch.
+        assert_eq!(
+            translate_npm_config_env(
+                "NPM_CONFIG_//registry.example.com/:_authToken",
+                "secret-token"
+            ),
+            Some((
+                "//registry.example.com/:_authToken".to_string(),
+                "secret-token".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn load_with_env_npm_config_registry_overrides_project_file() {
+        // Integration-ish: `load_with_env` stitches file config and
+        // env together. Project `.npmrc` sets one registry URL; the
+        // captured env carries `NPM_CONFIG_REGISTRY` with another.
+        // The env value must win so the code path a user exercises
+        // with `NPM_CONFIG_REGISTRY=... aube install` really does
+        // route traffic to the configured host.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".npmrc"),
+            "registry=https://file.registry.example/\n",
+        )
+        .unwrap();
+        let env = vec![(
+            "NPM_CONFIG_REGISTRY".to_string(),
+            "https://env.registry.example/".to_string(),
+        )];
+        let config = NpmConfig::load_with_env(dir.path(), &env);
+        assert_eq!(config.registry, "https://env.registry.example/");
+    }
+
+    #[test]
+    fn env_registry_overrides_project_npmrc() {
+        // End-to-end: `apply` consumes the synthesised env entry last,
+        // so a `NPM_CONFIG_REGISTRY` value beats whatever the project
+        // `.npmrc` declares. This is the behaviour the user-facing
+        // docs (`docs/package-manager/configuration.md`) guarantee.
+        //
+        // Driven through `apply` directly to avoid racing other tests
+        // on the process-wide env (edition 2024 requires `unsafe` for
+        // `set_var`, and the test harness runs cases in parallel).
+        let mut config = NpmConfig {
+            registry: "https://registry.npmjs.org/".to_string(),
+            ..Default::default()
+        };
+        config.apply(vec![(
+            "registry".to_string(),
+            "https://file.registry/".to_string(),
+        )]);
+        assert_eq!(config.registry, "https://file.registry/");
+        // Emulate the `load_npm_config_env_entries` output for
+        // `NPM_CONFIG_REGISTRY=https://env.registry/`.
+        let env = translate_npm_config_env("NPM_CONFIG_REGISTRY", "https://env.registry/")
+            .map(|e| vec![e])
+            .unwrap_or_default();
+        config.apply(env);
+        assert_eq!(
+            config.registry, "https://env.registry/",
+            "env var must override file-based registry"
+        );
     }
 
     #[test]
