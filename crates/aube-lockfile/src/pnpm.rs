@@ -86,6 +86,18 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         };
 
     for (importer_path, importer) in &raw.importers {
+        // pnpm writes the workspace root as either `'.'` (most
+        // common / current) or `''` (seen on v9 lockfiles in the
+        // wild, e.g. npmx.dev). Both mean "the repo root" — we key
+        // the graph on `.` everywhere downstream (linker, filters,
+        // stats), so normalize at parse time and keep the rest of
+        // the pipeline single-shape.
+        let importer_path = if importer_path.is_empty() {
+            "."
+        } else {
+            importer_path.as_str()
+        };
+
         let mut deps = Vec::new();
 
         if let Some(ref d) = importer.dependencies {
@@ -111,10 +123,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             for (name, info) in d {
                 map.insert(name.clone(), info.specifier.clone());
             }
-            skipped_optional_dependencies.insert(importer_path.clone(), map);
+            skipped_optional_dependencies.insert(importer_path.to_string(), map);
         }
 
-        importers.insert(importer_path.clone(), deps);
+        importers.insert(importer_path.to_string(), deps);
     }
 
     // pnpm v9 splits packages (canonical, keyed by `name@version`) from
@@ -1291,6 +1303,46 @@ mod tests {
 
         let kind_of = graph.packages.get("kind-of@3.2.2").unwrap();
         assert_eq!(kind_of.dependencies.get("is-buffer").unwrap(), "1.1.6");
+    }
+
+    #[test]
+    fn parse_normalizes_empty_root_importer_key() {
+        // Some pnpm v9 lockfiles in the wild (e.g. npmx.dev) write the
+        // root importer as `''` (empty key) rather than `'.'`. Both
+        // mean "workspace root" — we must normalize so the linker's
+        // `importers.get(".")` lookup still hits.
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  '':
+    dependencies:
+      host:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+  host@1.0.0:
+    resolution: {integrity: sha512-host}
+
+snapshots:
+  host@1.0.0: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let root = graph
+            .importers
+            .get(".")
+            .expect("empty-string importer should normalize to `.`");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "host");
+        assert!(!graph.importers.contains_key(""));
     }
 
     #[test]
