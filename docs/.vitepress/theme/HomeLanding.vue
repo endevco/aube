@@ -240,11 +240,21 @@ watch(progressBarEl, (el, previousEl) => {
           </div>
         </div>
         <dl class="aube-stats">
-          <div>
+          <div class="aube-stat-linked">
+            <a
+              class="aube-stat-link"
+              href="/benchmarks"
+              :aria-label="`See benchmarks — aube is ${pnpmCiWarmMultiple}x faster than pnpm`"
+            ></a>
             <dt>{{ pnpmCiWarmMultiple }}x</dt>
             <dd>faster than pnpm</dd>
           </div>
-          <div>
+          <div class="aube-stat-linked">
+            <a
+              class="aube-stat-link"
+              href="/benchmarks"
+              :aria-label="`See benchmarks — aube is ${bunCiWarmMultiple}x faster than bun`"
+            ></a>
             <dt>{{ bunCiWarmMultiple }}x</dt>
             <dd>faster than bun</dd>
           </div>

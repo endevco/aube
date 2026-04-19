@@ -569,6 +569,37 @@ body {
   margin: 4px 0 0;
 }
 
+.aube-stat-linked {
+  position: relative;
+}
+
+.aube-stats .aube-stat-link {
+  border-radius: 8px;
+  inset: -8px;
+  position: absolute;
+  z-index: 1;
+}
+
+.aube-stats .aube-stat-link:focus-visible {
+  outline: 2px solid var(--aube-accent);
+  outline-offset: 0;
+}
+
+.aube-stats dt,
+.aube-stats dd {
+  transition: color 120ms ease;
+}
+
+.aube-stat-linked:has(.aube-stat-link:hover) dt,
+.aube-stat-linked:has(.aube-stat-link:focus-visible) dt {
+  color: var(--aube-accent);
+}
+
+.aube-stat-linked:has(.aube-stat-link:hover) dd,
+.aube-stat-linked:has(.aube-stat-link:focus-visible) dd {
+  color: var(--aube-muted);
+}
+
 .aube-stat-tip {
   display: inline-flex;
   font-family: var(--aube-mono);
