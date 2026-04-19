@@ -397,6 +397,14 @@ struct WriteNpmPackage<'a> {
     optional_dependencies: BTreeMap<&'a str, &'a str>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     peer_dependencies: BTreeMap<&'a str, &'a str>,
+    /// Paired with `peer_dependencies` above. Required for round-trip
+    /// parity: the `optional: true` bit gates
+    /// `hoist_auto_installed_peers` and `detect_unmet_peers` — dropping
+    /// it on write-back would silently re-flag every optional peer as
+    /// required on the next install. Only the `optional` key is
+    /// meaningful; other fields npm may add elsewhere aren't modeled.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    peer_dependencies_meta: BTreeMap<&'a str, WriteNpmPeerDepMeta>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     dev: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -409,6 +417,15 @@ struct WriteNpmPackage<'a> {
     /// the optional chain (or vice versa with `--omit=optional`).
     #[serde(rename = "devOptional", skip_serializing_if = "std::ops::Not::not")]
     dev_optional: bool,
+}
+
+/// Serialized form of a `peerDependenciesMeta` entry. Mirrors the
+/// reader's `RawNpmPeerDepMeta` so writer → reader → writer round
+/// trips byte-identically for every meta variant we model today.
+#[derive(Debug, Serialize, Default)]
+struct WriteNpmPeerDepMeta {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    optional: bool,
 }
 
 /// Serialize a [`LockfileGraph`] as a `package-lock.json` v3 file.
@@ -565,6 +582,24 @@ pub fn write(
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
+        // Paired `peerDependenciesMeta` round-trip. The `optional: true`
+        // bit is what `hoist_auto_installed_peers` and
+        // `detect_unmet_peers` key off to distinguish "user opted
+        // out" from "peer missing and required" — dropping this
+        // on write-back silently re-flags every optional peer as
+        // required on the next install.
+        let peer_deps_meta: BTreeMap<&str, WriteNpmPeerDepMeta> = pkg
+            .peer_dependencies_meta
+            .iter()
+            .map(|(n, m)| {
+                (
+                    n.as_str(),
+                    WriteNpmPeerDepMeta {
+                        optional: m.optional,
+                    },
+                )
+            })
+            .collect();
 
         packages.insert(
             install_path.clone(),
@@ -575,6 +610,7 @@ pub fn write(
                 integrity: pkg.integrity.as_deref(),
                 dependencies: deps,
                 peer_dependencies: peer_deps,
+                peer_dependencies_meta: peer_deps_meta,
                 dev,
                 optional,
                 dev_optional,
@@ -1642,6 +1678,14 @@ mod tests {
         let mut graph = LockfileGraph::default();
         let mut peer_deps = BTreeMap::new();
         peer_deps.insert("vite".to_string(), "^6.0.0 || ^7.0.0 || ^8.0.0".to_string());
+        // Include an `optional: true` entry so the round-trip covers
+        // `peerDependenciesMeta` — without it, the writer's meta
+        // block isn't exercised and the round-trip would silently
+        // re-flag the peer as required on every subsequent install
+        // (see `hoist_auto_installed_peers` + `detect_unmet_peers`,
+        // which key off `optional`).
+        let mut peer_deps_meta = BTreeMap::new();
+        peer_deps_meta.insert("vite".to_string(), crate::PeerDepMeta { optional: true });
         graph.packages.insert(
             "devtools-vite@0.6.0".to_string(),
             LockedPackage {
@@ -1650,6 +1694,7 @@ mod tests {
                 integrity: Some("sha512-a".to_string()),
                 dep_path: "devtools-vite@0.6.0".to_string(),
                 peer_dependencies: peer_deps,
+                peer_dependencies_meta: peer_deps_meta,
                 ..Default::default()
             },
         );
@@ -1690,12 +1735,24 @@ mod tests {
             body.contains("\"peerDependencies\""),
             "expected peerDependencies block to round-trip; got:\n{body}"
         );
+        assert!(
+            body.contains("\"peerDependenciesMeta\""),
+            "expected peerDependenciesMeta block to round-trip; got:\n{body}"
+        );
 
         let reparsed = parse(out.path()).unwrap();
         let devtools = &reparsed.packages["devtools-vite@0.6.0"];
         assert_eq!(
             devtools.peer_dependencies.get("vite").map(String::as_str),
             Some("^6.0.0 || ^7.0.0 || ^8.0.0")
+        );
+        assert_eq!(
+            devtools
+                .peer_dependencies_meta
+                .get("vite")
+                .map(|m| m.optional),
+            Some(true),
+            "peerDependenciesMeta.optional must survive write → parse round-trip"
         );
     }
 }
