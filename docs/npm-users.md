@@ -34,7 +34,9 @@ installs keep writing `aube-lock.yaml`.
 
 - aube's default `node_modules` layout is
   [isolated](/package-manager/node-modules), not flat.
-- Only declared direct dependencies appear at the project top level.
+- Only declared direct dependencies appear at the project top level,
+  unless you opt into
+  [`nodeLinker: hoisted`](/settings/#setting-nodelinker).
 - Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
   not run by default. npm runs them for every dependency; aube runs them
   only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
