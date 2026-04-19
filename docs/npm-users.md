@@ -1,8 +1,7 @@
 # For npm users
 
 aube can install directly from npm lockfiles. You do not need to delete
-`package-lock.json`, remove `node_modules`, or translate dependency ranges
-before trying aube.
+`package-lock.json` or remove `node_modules` before trying aube.
 
 ## Start from the npm lockfile
 

@@ -1,8 +1,7 @@
 # For bun users
 
 aube can install directly from Bun lockfiles. You do not need to delete
-`bun.lock`, remove `node_modules`, or translate dependency ranges before
-trying aube.
+`bun.lock` or remove `node_modules` before trying aube.
 
 ## Start from the Bun lockfile
 

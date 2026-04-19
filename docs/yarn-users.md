@@ -1,8 +1,8 @@
 # For yarn users
 
 aube can install directly from both Yarn classic (v1) and Yarn berry (v2+)
-lockfiles. You do not need to delete `yarn.lock`, remove `node_modules`, or
-translate dependency ranges before trying aube.
+lockfiles. You do not need to delete `yarn.lock` or remove `node_modules`
+before trying aube.
 
 ## Yarn classic (v1)
 
