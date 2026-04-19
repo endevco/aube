@@ -73,6 +73,7 @@ use std::sync::{OnceLock, RwLock};
 /// `add`/`remove`/`update`/…) can pick them up without plumbing a
 /// context struct through every command signature.
 static GLOBAL_FROZEN: OnceLock<install::GlobalFrozenFlags> = OnceLock::new();
+static GLOBAL_VIRTUAL_STORE: OnceLock<install::GlobalVirtualStoreFlags> = OnceLock::new();
 
 /// Process-wide registry override from the top-level `--registry=<url>`
 /// flag. Applied in `make_client` (and any direct `NpmConfig::load`
@@ -139,6 +140,10 @@ pub(crate) fn set_global_frozen_flags(flags: install::GlobalFrozenFlags) {
     let _ = GLOBAL_FROZEN.set(flags);
 }
 
+pub(crate) fn set_global_virtual_store_flags(flags: install::GlobalVirtualStoreFlags) {
+    let _ = GLOBAL_VIRTUAL_STORE.set(flags);
+}
+
 pub(crate) fn set_global_output_flags(flags: GlobalOutputFlags) {
     let _ = GLOBAL_OUTPUT.set(flags);
 }
@@ -148,6 +153,10 @@ pub(crate) fn set_global_output_flags(flags: GlobalOutputFlags) {
 /// bypass `async_main`.
 pub(crate) fn global_frozen_flags() -> install::GlobalFrozenFlags {
     GLOBAL_FROZEN.get().copied().unwrap_or_default()
+}
+
+pub(crate) fn global_virtual_store_flags() -> install::GlobalVirtualStoreFlags {
+    GLOBAL_VIRTUAL_STORE.get().copied().unwrap_or_default()
 }
 
 pub(crate) fn global_output_flags() -> GlobalOutputFlags {

@@ -33,6 +33,35 @@ pub struct GlobalFrozenFlags {
     pub prefer_frozen: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GlobalVirtualStoreFlags {
+    pub enable: bool,
+    pub disable: bool,
+}
+
+impl GlobalVirtualStoreFlags {
+    pub fn to_cli_flag_bag(self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if self.enable {
+            out.push((
+                "enable-global-virtual-store".to_string(),
+                "true".to_string(),
+            ));
+        }
+        if self.disable {
+            out.push((
+                "disable-global-virtual-store".to_string(),
+                "false".to_string(),
+            ));
+        }
+        out
+    }
+
+    pub fn is_set(self) -> bool {
+        self.enable || self.disable
+    }
+}
+
 impl FrozenMode {
     /// Resolve the user's flag combination to a single mode.
     /// `--frozen-lockfile` and `--no-frozen-lockfile` and `--prefer-frozen-lockfile`
@@ -219,7 +248,11 @@ impl InstallArgs {
     /// flags explicitly present on the command line are emitted —
     /// unset flags stay out of the bag so they don't override
     /// lower-precedence sources with their clap-derived default.
-    pub fn to_cli_flag_bag(&self, global: GlobalFrozenFlags) -> Vec<(String, String)> {
+    pub fn to_cli_flag_bag(
+        &self,
+        global: GlobalFrozenFlags,
+        global_gvs: GlobalVirtualStoreFlags,
+    ) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
         if let Some(mode) = self.resolution_mode.as_deref() {
             out.push(("resolution-mode".to_string(), mode.to_string()));
@@ -236,6 +269,7 @@ impl InstallArgs {
         if self.shamefully_hoist {
             out.push(("shamefully-hoist".to_string(), "true".to_string()));
         }
+        out.extend(global_gvs.to_cli_flag_bag());
         if global.frozen {
             out.push(("frozen-lockfile".to_string(), "true".to_string()));
         }
@@ -3137,7 +3171,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // gvs path — suppress the warning there too.
     let gvs_triggers =
         aube_settings::resolved::disable_global_virtual_store_for_packages(&settings_ctx);
-    let use_global_virtual_store_override = {
+    let explicit_global_virtual_store =
+        aube_settings::resolved::enable_global_virtual_store(&settings_ctx);
+    let use_global_virtual_store_override = explicit_global_virtual_store.or_else(|| {
         let triggered_by = find_gvs_incompatible_trigger(&manifests, &gvs_triggers);
         // Match `Linker::new`'s exact gvs check — it keys off the `CI`
         // env var alone, not `npm_config_ci` / `NPM_CONFIG_CI`. Using a
@@ -3159,7 +3195,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         } else {
             None
         }
-    };
+    });
 
     // Remember which lockfile format the project currently uses so
     // every downstream write site (the `--lockfile-only` short-circuit

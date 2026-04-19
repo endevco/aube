@@ -75,3 +75,9 @@ teardown() {
 	assert_success
 	assert_line "7.0.0"
 }
+
+@test "aube dlx accepts the global gvs override after the subcommand" {
+	run aube dlx --enable-gvs semver 1.2.3
+	assert_success
+	assert_line "1.2.3"
+}

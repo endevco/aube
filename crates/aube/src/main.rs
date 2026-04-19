@@ -82,6 +82,30 @@ pub(crate) struct Cli {
     #[arg(long, global = true, conflicts_with = "no_color")]
     color: bool,
 
+    /// Force the shared global virtual store off for this invocation.
+    ///
+    /// Packages are materialized inside the project's virtual store
+    /// instead of symlinked from `~/.cache/aube/virtual-store/`.
+    #[arg(
+        long,
+        visible_alias = "disable-gvs",
+        global = true,
+        conflicts_with = "enable_global_virtual_store"
+    )]
+    disable_global_virtual_store: bool,
+
+    /// Force the shared global virtual store on for this invocation.
+    ///
+    /// Overrides CI's default per-project materialization and the
+    /// `disableGlobalVirtualStoreForPackages` auto-disable heuristic.
+    #[arg(
+        long,
+        visible_alias = "enable-gvs",
+        global = true,
+        conflicts_with = "disable_global_virtual_store"
+    )]
+    enable_global_virtual_store: bool,
+
     /// Error when a workspace selector matches no packages.
     ///
     /// Accepted globally; selected commands already fail on empty matches.
@@ -606,7 +630,9 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     // point (direct `install`, chained `add`/`remove`/`update`, bare
     // `aube`, auto-install via `ensure_installed`) honors them.
     let global_frozen = frozen_flags_from_cli(&cli);
+    let global_gvs = global_virtual_store_flags_from_cli(&cli);
     commands::set_global_frozen_flags(global_frozen);
+    commands::set_global_virtual_store_flags(global_gvs);
     commands::set_registry_override(cli.registry.clone());
     commands::set_global_output_flags(commands::GlobalOutputFlags {
         silent: matches!(effective_level, LogLevel::Silent),
@@ -646,6 +672,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             run_install_command(
                 args,
                 global_frozen,
+                global_gvs,
                 effective_filter.clone(),
                 cli.workspace_root,
             )
@@ -698,6 +725,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             let nested = Cli::try_parse_from(argv).into_diagnostic()?;
             let nested_filter = compute_effective_filter(&nested);
             let nested_frozen = merge_nested_frozen_flags(global_frozen, &nested);
+            let nested_gvs = merge_nested_global_virtual_store_flags(global_gvs, &nested);
             let _registry_guard = commands::scoped_registry_override(nested.registry.clone());
             match nested.command {
                 Some(Commands::Add(args)) => {
@@ -707,8 +735,14 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 Some(Commands::Deploy(args)) => commands::deploy::run(args, nested_filter).await?,
                 Some(Commands::Exec(args)) => commands::exec::run(args, nested_filter).await?,
                 Some(Commands::Install(args)) => {
-                    run_install_command(args, nested_frozen, nested_filter, nested.workspace_root)
-                        .await?;
+                    run_install_command(
+                        args,
+                        nested_frozen,
+                        nested_gvs,
+                        nested_filter,
+                        nested.workspace_root,
+                    )
+                    .await?;
                 }
                 Some(Commands::List(args)) => commands::list::run(args, nested_filter).await?,
                 Some(Commands::La(mut args)) | Some(Commands::Ll(mut args)) => {
@@ -1183,6 +1217,13 @@ fn frozen_flags_from_cli(cli: &Cli) -> commands::install::GlobalFrozenFlags {
     }
 }
 
+fn global_virtual_store_flags_from_cli(cli: &Cli) -> commands::install::GlobalVirtualStoreFlags {
+    commands::install::GlobalVirtualStoreFlags {
+        enable: cli.enable_global_virtual_store,
+        disable: cli.disable_global_virtual_store,
+    }
+}
+
 fn merge_nested_frozen_flags(
     outer: commands::install::GlobalFrozenFlags,
     nested: &Cli,
@@ -1194,9 +1235,21 @@ fn merge_nested_frozen_flags(
     }
 }
 
+fn merge_nested_global_virtual_store_flags(
+    outer: commands::install::GlobalVirtualStoreFlags,
+    nested: &Cli,
+) -> commands::install::GlobalVirtualStoreFlags {
+    if outer.is_set() {
+        outer
+    } else {
+        global_virtual_store_flags_from_cli(nested)
+    }
+}
+
 async fn run_install_command(
     args: commands::install::InstallArgs,
     global_frozen: commands::install::GlobalFrozenFlags,
+    global_gvs: commands::install::GlobalVirtualStoreFlags,
     filter: aube_workspace::selector::EffectiveFilter,
     workspace_root_already: bool,
 ) -> miette::Result<()> {
@@ -1221,7 +1274,7 @@ async fn run_install_command(
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
     let env = aube_settings::values::capture_env();
-    let cli_flags = args.to_cli_flag_bag(global_frozen);
+    let cli_flags = args.to_cli_flag_bag(global_frozen, global_gvs);
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
         workspace_yaml: &raw_ws,

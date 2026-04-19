@@ -116,6 +116,29 @@ JSON
 	[ -L node_modules/.aube/is-odd@3.0.1 ]
 }
 
+@test "--disable-global-virtual-store forces per-project materialization" {
+	_setup_basic_fixture
+
+	run aube install --disable-global-virtual-store
+	assert_success
+	[ -d node_modules/.aube/is-odd@3.0.1 ]
+	[ ! -L node_modules/.aube/is-odd@3.0.1 ]
+}
+
+@test "--enable-global-virtual-store overrides package auto-disable" {
+	_make_fake_dep next
+	mkdir -p app
+	cd app
+	cat >package.json <<'JSON'
+{"name":"app","version":"0.0.0","dependencies":{"next":"link:../fake-next","is-odd":"3.0.1"}}
+JSON
+
+	run aube install --enable-global-virtual-store
+	assert_success
+	refute_output --partial "disableGlobalVirtualStoreForPackages"
+	[ -L node_modules/.aube/is-odd@3.0.1 ]
+}
+
 @test "CI=1 suppresses the gvs-disable warning because gvs is already off" {
 	# Under CI, Linker::new already picks per-project materialization,
 	# so the warning would be noise. Detection is still correct —

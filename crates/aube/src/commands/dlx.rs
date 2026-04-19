@@ -152,7 +152,7 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // observe the user's real cwd instead of a dir that's about to vanish.
     let prev_cwd = {
         let _cwd_guard = CwdGuard::switch_to(&project_dir)?;
-        let install_result = super::install::run(InstallOptions::with_mode(FrozenMode::No)).await;
+        let install_result = super::install::run(dlx_install_options()).await;
         let prev = _cwd_guard.original.clone();
         install_result.wrap_err("dlx install failed")?;
         prev
@@ -223,6 +223,24 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn dlx_install_options() -> InstallOptions {
+    let mut opts = InstallOptions::with_mode(FrozenMode::No);
+    // `dlx` executes bins from a throwaway project and deletes that project
+    // immediately. Keeping package materialization inside the scratch tree is
+    // what lets Node walk through `node_modules/.aube/node_modules`, the
+    // hidden hoist fallback used by CLIs with undeclared runtime imports.
+    let gvs = super::global_virtual_store_flags();
+    if gvs.is_set() {
+        opts.cli_flags.extend(gvs.to_cli_flag_bag());
+    } else {
+        opts.cli_flags.push((
+            "disable-global-virtual-store".to_string(),
+            "false".to_string(),
+        ));
+    }
+    opts
 }
 
 /// RAII guard that swaps the process cwd on construction and restores it
@@ -333,6 +351,24 @@ mod tests {
         assert_eq!(bin_name_for("cowsay@1.5.0"), "cowsay");
         assert_eq!(bin_name_for("@scope/foo@2"), "foo");
         assert_eq!(bin_name_for("@scope/foo"), "foo");
+    }
+
+    #[test]
+    fn dlx_install_disables_global_virtual_store() {
+        let opts = dlx_install_options();
+        let empty_npmrc = Vec::new();
+        let empty_workspace = std::collections::BTreeMap::new();
+        let empty_env = Vec::new();
+        let ctx = aube_settings::ResolveCtx {
+            npmrc: &empty_npmrc,
+            workspace_yaml: &empty_workspace,
+            env: &empty_env,
+            cli: &opts.cli_flags,
+        };
+        assert_eq!(
+            aube_settings::resolved::enable_global_virtual_store(&ctx),
+            Some(false)
+        );
     }
 
     fn write_pkg_json(modules_dir: &std::path::Path, pkg_name: &str, pkg_json: serde_json::Value) {
