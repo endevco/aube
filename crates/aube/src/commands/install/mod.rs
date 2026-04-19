@@ -4068,7 +4068,6 @@ fn link_bins(
 /// root's `node_modules/` and generally relies on the single top-level
 /// `.bin`; nested transitive bins under hoisted are a known rough edge
 /// and out of scope here.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn link_dep_bins(
     aube_dir: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
@@ -4099,7 +4098,12 @@ pub(crate) fn link_dep_bins(
         }
         let dep_modules_dir = dep_modules_dir_for(&pkg_dir, &pkg.name);
         let bin_dir = dep_modules_dir.join(".bin");
-        std::fs::create_dir_all(&bin_dir).into_diagnostic()?;
+        // Don't `create_dir_all(&bin_dir)` here — most deps have
+        // no child that ships a `bin`, and an eager mkdir would leave
+        // empty `.bin/` directories everywhere. `create_bin_link`
+        // materializes the parent the first time a shim actually
+        // lands, so deps whose children contribute zero shims stay
+        // empty on disk.
 
         for (child_name, child_version) in &pkg.dependencies {
             // Mirror the linker's self-ref guard from
@@ -4182,6 +4186,14 @@ fn create_bin_link(
     target: &std::path::Path,
     shim_opts: aube_linker::BinShimOptions,
 ) -> miette::Result<()> {
+    // `link_dep_bins` intentionally skips the eager `create_dir_all`
+    // on per-dep `.bin/` so deps whose children contribute nothing
+    // don't leave empty dirs behind. Materialize on demand here — the
+    // first shim write is the signal that we actually need the dir.
+    // Idempotent and cheap on already-existing paths, so the other
+    // callers (root / workspace bin dirs, which still pre-create) pay
+    // at most one redundant stat per shim.
+    std::fs::create_dir_all(bin_dir).into_diagnostic()?;
     aube_linker::create_bin_shim(bin_dir, name, target, shim_opts).into_diagnostic()?;
     Ok(())
 }
