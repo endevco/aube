@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.5](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.4...aube-linker-v1.0.0-beta.5) - 2026-04-19
+
+### Other
+
+- use strum derives for Severity and NodeLinker ([#69](https://github.com/endevco/aube/pull/69))
+
 ## [1.0.0-beta.3](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.2...aube-linker-v1.0.0-beta.3) - 2026-04-19
 
 ### Other

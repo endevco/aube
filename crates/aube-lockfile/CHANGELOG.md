@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.5](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.4...aube-lockfile-v1.0.0-beta.5) - 2026-04-19
+
+### Other
+
+- normalize git selector fragments ([#62](https://github.com/endevco/aube/pull/62))
+
 ## [1.0.0-beta.3](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.2...aube-lockfile-v1.0.0-beta.3) - 2026-04-19
 
 ### Other

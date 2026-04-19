@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.5](https://github.com/endevco/aube/compare/v1.0.0-beta.4...v1.0.0-beta.5) - 2026-04-19
+
+### Other
+
+- pluralize counted nouns in CLI output ([#70](https://github.com/endevco/aube/pull/70))
+- use strum derives for Severity and NodeLinker ([#69](https://github.com/endevco/aube/pull/69))
+- keep filtered workspace installs rooted ([#67](https://github.com/endevco/aube/pull/67))
+- accept registry flag on install ([#63](https://github.com/endevco/aube/pull/63))
+- add global gvs override ([#61](https://github.com/endevco/aube/pull/61))
+
 ## [1.0.0-beta.4](https://github.com/endevco/aube/compare/v1.0.0-beta.3...v1.0.0-beta.4) - 2026-04-19
 
 ### Other

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.5](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.4...aube-settings-v1.0.0-beta.5) - 2026-04-19
+
+### Other
+
+- remove settings count sentence ([#64](https://github.com/endevco/aube/pull/64))
+- add global gvs override ([#61](https://github.com/endevco/aube/pull/61))
+
 ## [1.0.0-beta.3](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.2...aube-settings-v1.0.0-beta.3) - 2026-04-19
 
 ### Other
