@@ -84,7 +84,11 @@ impl BundledDependencies {
 pub enum Workspaces {
     Array(Vec<String>),
     Object {
-        #[serde(default)]
+        // `packages` stays required (no `#[serde(default)]`) so that a
+        // typo like `"pacakges"` fails deserialization instead of
+        // silently producing an empty vec. Bun's object form always
+        // includes `packages`, so this doesn't lock out the catalog use
+        // case.
         packages: Vec<String>,
         #[serde(default)]
         nohoist: Vec<String>,

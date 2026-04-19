@@ -90,6 +90,7 @@ _setup_catalog_workspace() {
 		    "is-odd": "catalog:"
 		  },
 		  "workspaces": {
+		    "packages": [],
 		    "catalog": {
 		      "is-odd": "^3.0.1"
 		    }
