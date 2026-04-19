@@ -93,6 +93,7 @@ const spinner = computed(() => spinners[spinnerIndex.value]);
 const aubeVersion = __AUBE_VERSION__;
 const releasedAt = __AUBE_RELEASED_AT__;
 const terminalVersion = aubeVersion.split("-")[0] || aubeVersion;
+const releaseNotesUrl = `https://github.com/endevco/aube/releases/tag/v${aubeVersion}`;
 function formatReleasePhrase() {
   if (!releasedAt) {
     releasePhrase.value = "release date pending";
@@ -206,7 +207,15 @@ watch(progressBarEl, (el, previousEl) => {
       <div class="aube-hero-copy">
         <div class="aube-release">
           <span></span>
-          <span>v{{ aubeVersion }} · {{ releasePhrase }}</span>
+          <span>
+            <a
+              class="aube-release-version"
+              :href="releaseNotesUrl"
+              target="_blank"
+              rel="noreferrer"
+            >v{{ aubeVersion }}</a>
+            · {{ releasePhrase }}
+          </span>
         </div>
         <p class="aube-pronunciation">aube /ob/ - pronounced "ohb"</p>
         <h1 id="aube-hero-title">A new dawn <em>for node installs.</em></h1>

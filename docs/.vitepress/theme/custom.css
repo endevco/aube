@@ -217,6 +217,19 @@ body {
   width: 6px;
 }
 
+.aube-release-version {
+  color: inherit;
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+.aube-release-version:hover,
+.aube-release-version:focus-visible {
+  color: var(--aube-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .aube-pronunciation {
   color: var(--aube-faint);
   font-family: var(--aube-mono);
