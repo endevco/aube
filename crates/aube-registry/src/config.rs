@@ -946,7 +946,17 @@ pub(crate) fn run_token_helper(command: &str) -> Option<String> {
     // still cannot be reinterpreted as a shell pipeline. Removing
     // the shell wrapper closes the sink even if sanitization is
     // bypassed in the future.
-    let output = std::process::Command::new(command).output().ok()?;
+    let output = match std::process::Command::new(command).output() {
+        Ok(o) => o,
+        Err(e) => {
+            // Log the spawn failure so a user with a broken
+            // tokenHelper path (missing binary, wrong permissions)
+            // gets a clear hint instead of a mysterious 401 from
+            // the registry.
+            tracing::warn!("tokenHelper {command:?} could not be spawned: {e}");
+            return None;
+        }
+    };
     if !output.status.success() {
         tracing::warn!("tokenHelper {command:?} exited with {}", output.status);
         return None;
@@ -1096,6 +1106,33 @@ mod tests {
         assert_eq!(
             config.basic_auth_for("https://registry.example.com/"),
             Some(expected),
+        );
+    }
+
+    #[test]
+    fn token_helper_from_project_npmrc_is_refused_kebab_case() {
+        // Same regression as `token_helper_from_project_npmrc_is_refused`
+        // but using the `token-helper` kebab-case alias that
+        // `apply_tagged` also accepts. Confirms the gate fires for
+        // both spellings, not just the camelCase key.
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".npmrc"),
+            "//registry.example.com/:token-helper=/tmp/evil.sh\n",
+        )
+        .unwrap();
+
+        let home = tempfile::tempdir().unwrap();
+        let mut config = NpmConfig::default();
+        config.apply_tagged(load_npmrc_entries_tagged_with_home(
+            Some(home.path()),
+            None,
+            project.path(),
+        ));
+        assert_eq!(
+            config.token_helper_for("https://registry.example.com/"),
+            None,
+            "project-scope token-helper (kebab-case) must be refused"
         );
     }
 
