@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6](https://github.com/endevco/aube/compare/v1.0.0-beta.5...v1.0.0-beta.6) - 2026-04-19
+
+### Other
+
+- widen disableGlobalVirtualStoreForPackages default list ([#101](https://github.com/endevco/aube/pull/101))
+- widen aube-lock.yaml to every common platform ([#94](https://github.com/endevco/aube/pull/94))
+- split into frozen/settings/side_effects_cache submodules ([#88](https://github.com/endevco/aube/pull/88))
+- *(progress)* split ci-mode state into own module ([#87](https://github.com/endevco/aube/pull/87))
+- move install state to node_modules/.aube-state ([#80](https://github.com/endevco/aube/pull/80))
+- Fix two aube install issues on real RN monorepos ([#82](https://github.com/endevco/aube/pull/82))
+- exit silently on ctrl-c at script picker ([#81](https://github.com/endevco/aube/pull/81))
+
 ## [1.0.0-beta.5](https://github.com/endevco/aube/compare/v1.0.0-beta.4...v1.0.0-beta.5) - 2026-04-19
 
 ### Other

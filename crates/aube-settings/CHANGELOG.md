@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.5...aube-settings-v1.0.0-beta.6) - 2026-04-19
+
+### Other
+
+- widen disableGlobalVirtualStoreForPackages default list ([#101](https://github.com/endevco/aube/pull/101))
+- auto-synthesize kebab/camel npmrc key aliases ([#99](https://github.com/endevco/aube/pull/99))
+- gate slow-tarball warning on elapsed > 1s to match pnpm ([#93](https://github.com/endevco/aube/pull/93))
+- split into frozen/settings/side_effects_cache submodules ([#88](https://github.com/endevco/aube/pull/88))
+- move install state to node_modules/.aube-state ([#80](https://github.com/endevco/aube/pull/80))
+- Fix two aube install issues on real RN monorepos ([#82](https://github.com/endevco/aube/pull/82))
+
 ## [1.0.0-beta.5](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.4...aube-settings-v1.0.0-beta.5) - 2026-04-19
 
 ### Other

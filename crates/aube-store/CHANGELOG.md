@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-store-v1.0.0-beta.5...aube-store-v1.0.0-beta.6) - 2026-04-19
+
+### Other
+
+- skip PAX global/extension tar headers ([#100](https://github.com/endevco/aube/pull/100))
+- tolerate leading `v` in tarball package.json version ([#95](https://github.com/endevco/aube/pull/95))
+- reject traversing and non-regular tar entries on import ([#85](https://github.com/endevco/aube/pull/85))
+- cap tarball decompression to prevent gzip-bomb dos ([#79](https://github.com/endevco/aube/pull/79))
+- reject dash-prefixed urls and commits passed to git ([#75](https://github.com/endevco/aube/pull/75))
+
 ## [1.0.0-beta.3](https://github.com/endevco/aube/compare/aube-store-v1.0.0-beta.2...aube-store-v1.0.0-beta.3) - 2026-04-19
 
 ### Other

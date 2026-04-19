@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.5...aube-linker-v1.0.0-beta.6) - 2026-04-19
+
+### Other
+
+- reject traversing and non-regular tar entries on import ([#85](https://github.com/endevco/aube/pull/85))
+- sanitize shebang interpreter before shim interpolation ([#84](https://github.com/endevco/aube/pull/84))
+
 ## [1.0.0-beta.5](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.4...aube-linker-v1.0.0-beta.5) - 2026-04-19
 
 ### Other

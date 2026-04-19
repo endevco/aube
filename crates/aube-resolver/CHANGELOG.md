@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.5...aube-resolver-v1.0.0-beta.6) - 2026-04-19
+
+### Other
+
+- dedupe root deps declared in multiple sections ([#102](https://github.com/endevco/aube/pull/102))
+- widen aube-lock.yaml to every common platform ([#94](https://github.com/endevco/aube/pull/94))
+- honor pnpm overrides "-" removal marker ([#98](https://github.com/endevco/aube/pull/98))
+- extract peer-context pass into its own module ([#91](https://github.com/endevco/aube/pull/91))
+- resolve catalog: indirection on override targets ([#78](https://github.com/endevco/aube/pull/78))
+
 ## [1.0.0-beta.3](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.2...aube-resolver-v1.0.0-beta.3) - 2026-04-19
 
 ### Added

@@ -3,7 +3,7 @@
 
 **Usage**: `aube [FLAGS] <SUBCOMMAND>`
 
-**Version**: 1.0.0-beta.5
+**Version**: 1.0.0-beta.6
 
 - **Usage**: `aube [FLAGS] <SUBCOMMAND>`
 

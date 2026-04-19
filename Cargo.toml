@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "1.0.0-beta.5"
+version = "1.0.0-beta.6"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
@@ -85,13 +85,13 @@ diffy = "0.4"
 # Internal crates — `version` is required so `cargo publish` can resolve
 # transitive crate dependencies via crates.io. release-plz keeps these
 # versions in sync with [workspace.package].version during release PRs.
-aube = { path = "crates/aube", version = "1.0.0-beta.5" }
-aube-settings = { path = "crates/aube-settings", version = "1.0.0-beta.5" }
-aube-resolver = { path = "crates/aube-resolver", version = "1.0.0-beta.5" }
-aube-registry = { path = "crates/aube-registry", version = "1.0.0-beta.5" }
-aube-store = { path = "crates/aube-store", version = "1.0.0-beta.5" }
-aube-linker = { path = "crates/aube-linker", version = "1.0.0-beta.5" }
-aube-lockfile = { path = "crates/aube-lockfile", version = "1.0.0-beta.5" }
-aube-manifest = { path = "crates/aube-manifest", version = "1.0.0-beta.5" }
-aube-scripts = { path = "crates/aube-scripts", version = "1.0.0-beta.5" }
-aube-workspace = { path = "crates/aube-workspace", version = "1.0.0-beta.5" }
+aube = { path = "crates/aube", version = "1.0.0-beta.6" }
+aube-settings = { path = "crates/aube-settings", version = "1.0.0-beta.6" }
+aube-resolver = { path = "crates/aube-resolver", version = "1.0.0-beta.6" }
+aube-registry = { path = "crates/aube-registry", version = "1.0.0-beta.6" }
+aube-store = { path = "crates/aube-store", version = "1.0.0-beta.6" }
+aube-linker = { path = "crates/aube-linker", version = "1.0.0-beta.6" }
+aube-lockfile = { path = "crates/aube-lockfile", version = "1.0.0-beta.6" }
+aube-manifest = { path = "crates/aube-manifest", version = "1.0.0-beta.6" }
+aube-scripts = { path = "crates/aube-scripts", version = "1.0.0-beta.6" }
+aube-workspace = { path = "crates/aube-workspace", version = "1.0.0-beta.6" }
