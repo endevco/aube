@@ -38,7 +38,7 @@ pub async fn run(args: PruneArgs) -> miette::Result<()> {
     let _lock = super::take_project_lock(&cwd)?;
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = aube_lockfile::parse_lockfile(&cwd, &manifest)

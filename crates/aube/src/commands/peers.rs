@@ -11,7 +11,7 @@
 
 use aube_lockfile::LockfileGraph;
 use clap::{Args, Subcommand};
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, miette};
 use std::collections::BTreeMap;
 
 pub const CHECK_AFTER_LONG_HELP: &str = "\
@@ -66,7 +66,7 @@ async fn check(args: PeersCheckArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root()?;
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {

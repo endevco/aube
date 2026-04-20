@@ -35,7 +35,7 @@
 use aube_lockfile::LockfileGraph;
 use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use aube_manifest::PackageJson;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, miette};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ pub(crate) fn apply_injected(
             };
 
             let src_manifest = PackageJson::from_path(&src_dir.join("package.json"))
-                .into_diagnostic()
+                .map_err(miette::Report::new)
                 .wrap_err_with(|| {
                     format!("inject: failed to read {}/package.json", src_dir.display())
                 })?;

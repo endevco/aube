@@ -132,7 +132,7 @@ async fn run_filtered(
 ) -> miette::Result<()> {
     let matched = super::select_workspace_packages(cwd, filter, "outdated")?;
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
     let graph = match aube_lockfile::parse_lockfile(cwd, &manifest) {
         Ok(g) => g,
@@ -166,7 +166,7 @@ async fn run_filtered(
 
 async fn run_one(cwd: &Path, args: OutdatedArgs, importer: Option<String>) -> miette::Result<bool> {
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = match aube_lockfile::parse_lockfile(cwd, &manifest) {

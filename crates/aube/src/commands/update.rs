@@ -86,7 +86,7 @@ pub async fn run(
     let manifest_path = cwd.join("package.json");
 
     let mut manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
     let ignored_updates = resolve_update_ignore_dependencies(&cwd, &manifest)?;
 

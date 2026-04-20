@@ -400,7 +400,7 @@ fn seed_target_lockfile(
     // header correctly; using the source workspace root manifest
     // would fill in the wrong name for the deployed package.
     let target_manifest = PackageJson::from_path(&target.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("deploy: failed to re-read rewritten target package.json")?;
 
     aube_lockfile::write_lockfile_as(target, &subset, &target_manifest, kind)
@@ -433,7 +433,7 @@ fn stage_one(
         // manifest directly to reuse `name`/`version` for the final
         // println without building a throwaway tarball.
         let manifest = PackageJson::from_path(&source_pkg_dir.join("package.json"))
-            .into_diagnostic()
+            .map_err(miette::Report::new)
             .wrap_err("failed to read package.json")?;
         let name = manifest
             .name

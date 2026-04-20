@@ -140,7 +140,7 @@ fn resolve_target(spec: Option<&str>, cwd: &std::path::Path) -> miette::Result<T
     // `npm unpublish` with no args, which unpublishes the *version*
     // named in `./package.json` rather than the whole package.
     let manifest = PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read ./package.json")?;
     let name = manifest
         .name

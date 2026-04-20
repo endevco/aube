@@ -122,7 +122,7 @@ pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Re
     let cwd = crate::dirs::project_root()?;
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
@@ -365,8 +365,8 @@ async fn write_fix_overrides(
     let content = std::fs::read_to_string(&manifest_path)
         .into_diagnostic()
         .wrap_err("failed to read package.json")?;
-    let mut root: serde_json::Value = serde_json::from_str(&content)
-        .into_diagnostic()
+    let mut root = aube_manifest::parse_json::<serde_json::Value>(&manifest_path, content)
+        .map_err(miette::Report::new)
         .wrap_err("failed to parse package.json")?;
     let obj = root
         .as_object_mut()

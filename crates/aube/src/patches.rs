@@ -6,7 +6,7 @@
 //! `{ "name@version": "patches/name@version.patch" }`. We mirror pnpm's
 //! shape exactly so the field round-trips between the two tools.
 
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{Context, IntoDiagnostic, Result, miette};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -74,8 +74,8 @@ pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
         return Ok(BTreeMap::new());
     }
     let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-        .into_diagnostic()
-        .map_err(|e| miette!("failed to read package.json: {e}"))?;
+        .map_err(miette::Report::new)
+        .wrap_err("failed to read package.json")?;
 
     let mut out = BTreeMap::new();
     for (key, rel) in manifest.pnpm_patched_dependencies() {
@@ -133,8 +133,8 @@ pub fn read_patched_dependencies(cwd: &Path) -> Result<BTreeMap<String, String>>
         return Ok(BTreeMap::new());
     }
     let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-        .into_diagnostic()
-        .map_err(|e| miette!("failed to read package.json: {e}"))?;
+        .map_err(miette::Report::new)
+        .wrap_err("failed to read package.json")?;
     Ok(manifest.pnpm_patched_dependencies())
 }
 
@@ -151,9 +151,9 @@ where
     let raw = std::fs::read_to_string(&manifest_path)
         .into_diagnostic()
         .map_err(|e| miette!("failed to read package.json: {e}"))?;
-    let mut value: serde_json::Value = serde_json::from_str(&raw)
-        .into_diagnostic()
-        .map_err(|e| miette!("failed to parse package.json: {e}"))?;
+    let mut value = aube_manifest::parse_json::<serde_json::Value>(&manifest_path, raw)
+        .map_err(miette::Report::new)
+        .wrap_err("failed to parse package.json")?;
 
     let obj = value
         .as_object_mut()

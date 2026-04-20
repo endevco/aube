@@ -496,7 +496,7 @@ async fn update_manifest_for_add(
     let default_catalog = workspace_catalogs.get("default");
     let manifest_path = cwd.join("package.json");
     let mut manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     // Parse all specs and fetch packuments concurrently.

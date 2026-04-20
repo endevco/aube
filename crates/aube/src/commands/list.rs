@@ -133,7 +133,7 @@ pub async fn run(
     // Read manifest (needed even for `list` — we print the project name/version
     // at the top, and the lockfile parser needs it for non-pnpm formats).
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     // Lockfile may be absent in a brand-new project — treat that as "nothing

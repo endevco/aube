@@ -138,7 +138,7 @@ fn unlink_global(cwd: &std::path::Path, explicit_name: Option<&str>) -> miette::
         n.to_string()
     } else {
         let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-            .into_diagnostic()
+            .map_err(miette::Report::new)
             .wrap_err("failed to read package.json")?;
         manifest
             .name

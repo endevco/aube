@@ -36,7 +36,7 @@ pub async fn run(args: FetchArgs) -> miette::Result<()> {
     let manifest_path = cwd.join("package.json");
     let manifest = if manifest_path.exists() {
         aube_manifest::PackageJson::from_path(&manifest_path)
-            .into_diagnostic()
+            .map_err(miette::Report::new)
             .wrap_err("failed to read package.json")?
     } else {
         // Minimal empty manifest so parse_lockfile_with_kind's signature is happy.

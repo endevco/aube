@@ -411,7 +411,7 @@ async fn run_script_filtered(
 
 pub(crate) fn load_manifest(cwd: &Path) -> miette::Result<PackageJson> {
     PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")
 }
 

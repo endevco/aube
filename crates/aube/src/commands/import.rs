@@ -39,7 +39,7 @@ pub async fn run(args: ImportArgs) -> miette::Result<()> {
     let _lock = crate::commands::take_project_lock(&cwd)?;
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     // Honor `gitBranchLockfile`: the destination is whichever aube

@@ -149,7 +149,7 @@ pub(crate) struct BuiltArchive {
 /// `aube publish` (hashes and uploads them).
 pub(crate) fn build_archive(project_dir: &Path) -> miette::Result<BuiltArchive> {
     let manifest = PackageJson::from_path(&project_dir.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
     let name = manifest
         .name

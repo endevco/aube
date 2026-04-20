@@ -9,7 +9,7 @@
 
 use aube_lockfile::{DepType, LockfileGraph};
 use clap::Args;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, miette};
 use std::collections::{BTreeSet, HashSet};
 
 pub const AFTER_LONG_HELP: &str = "\
@@ -79,7 +79,7 @@ pub async fn run(
     }
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
@@ -126,7 +126,7 @@ fn run_filtered(
     })?;
 
     let manifest = aube_manifest::PackageJson::from_path(&workspace_root.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = match aube_lockfile::parse_lockfile(&workspace_root, &manifest) {

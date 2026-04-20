@@ -190,7 +190,14 @@ impl PackageJson {
     pub fn from_path(path: &Path) -> Result<Self, Error> {
         let content =
             std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
-        serde_json::from_str(&content).map_err(|e| Error::Parse(path.to_path_buf(), e))
+        Self::parse(path, content)
+    }
+
+    /// Parse an in-memory `package.json` string. On failure, produces a
+    /// [`Error::Parse`] with the source content and a span so `miette`'s
+    /// `fancy` handler renders a pointer at the offending byte.
+    pub fn parse(path: &Path, content: String) -> Result<Self, Error> {
+        parse_json(path, content)
     }
 
     /// Iterate over the `pnpm` and `aube` config objects in
@@ -645,14 +652,75 @@ fn push_unique_strs(dst: &mut Vec<String>, arr: &[serde_json::Value]) {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("failed to read {0}: {1}")]
     Io(std::path::PathBuf, std::io::Error),
-    #[error("failed to parse {0}: {1}")]
-    Parse(std::path::PathBuf, serde_json::Error),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Parse(Box<ParseError>),
     #[error("failed to parse {0}: {1}")]
     YamlParse(std::path::PathBuf, String),
+}
+
+/// JSON parse failure with enough info for `miette`'s `fancy` handler to
+/// render a pointer at the offending byte. Boxed into [`Error::Parse`] so
+/// the enum's `Err` size stays small (clippy's `result_large_err`).
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("failed to parse {path}: {message}")]
+pub struct ParseError {
+    pub path: std::path::PathBuf,
+    pub message: String,
+    #[source_code]
+    pub src: miette::NamedSource<String>,
+    #[label("{message}")]
+    pub span: miette::SourceSpan,
+}
+
+/// Parse a JSON document from `content`, returning an [`Error::Parse`] on
+/// failure with the source content + span attached so miette's fancy
+/// handler can render a pointer into the offending file.
+pub fn parse_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    content: String,
+) -> Result<T, Error> {
+    match serde_json::from_str(&content) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(Error::parse(path, content, &e)),
+    }
+}
+
+impl Error {
+    /// Build an [`Error::Parse`] from the offending content + serde error,
+    /// computing the byte offset so miette can render a pointer into the
+    /// source.
+    pub fn parse(path: &Path, content: String, err: &serde_json::Error) -> Self {
+        let offset = line_col_to_byte_offset(&content, err.line(), err.column());
+        let span = miette::SourceSpan::new(offset.into(), 1);
+        Error::Parse(Box::new(ParseError {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+            src: miette::NamedSource::new(path.display().to_string(), content),
+            span,
+        }))
+    }
+}
+
+/// Convert serde_json's 1-based line/column into a byte offset into
+/// `content`. Out-of-range values clamp to the end so we never panic
+/// on a degenerate error position.
+fn line_col_to_byte_offset(content: &str, line: usize, column: usize) -> usize {
+    if line == 0 {
+        return 0;
+    }
+    let mut offset = 0usize;
+    for (i, l) in content.split_inclusive('\n').enumerate() {
+        if i + 1 == line {
+            return (offset + column.saturating_sub(1)).min(content.len());
+        }
+        offset += l.len();
+    }
+    content.len()
 }
 
 #[cfg(test)]

@@ -619,8 +619,8 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                 ));
             }
         };
-        let dep_manifest: aube_manifest::PackageJson = serde_json::from_str(&pkg_json_content)
-            .into_diagnostic()
+        let dep_manifest = aube_manifest::PackageJson::parse(&pkg_json_path, pkg_json_content)
+            .map_err(miette::Report::new)
             .wrap_err_with(|| format!("failed to parse package.json for {}", pkg.name))?;
         // `has_dep_lifecycle_work` also accounts for the implicit
         // `node-gyp rebuild` fallback: a package with a top-level
@@ -785,7 +785,7 @@ fn validate_required_scripts(
     {
         let manifest_path = pkg_dir.join("package.json");
         let pkg_manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-            .into_diagnostic()
+            .map_err(miette::Report::new)
             .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
         let label = pkg_manifest
             .name
@@ -865,8 +865,8 @@ fn unreviewed_dep_builds(
                 ));
             }
         };
-        let dep_manifest: aube_manifest::PackageJson = serde_json::from_str(&pkg_json_content)
-            .into_diagnostic()
+        let dep_manifest = aube_manifest::PackageJson::parse(&pkg_json_path, pkg_json_content)
+            .map_err(miette::Report::new)
             .wrap_err_with(|| format!("failed to parse package.json for {}", pkg.name))?;
         if aube_scripts::has_dep_lifecycle_work(&package_dir, &dep_manifest) {
             unreviewed.push(format!("{}@{}", pkg.name, pkg.version));
@@ -1714,7 +1714,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 
     // 1. Read package.json
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
 
@@ -1993,7 +1993,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         );
         for pkg_dir in &workspace_packages {
             let pkg_manifest = aube_manifest::PackageJson::from_path(&pkg_dir.join("package.json"))
-                .into_diagnostic()
+                .map_err(miette::Report::new)
                 .wrap_err_with(|| format!("failed to read {}/package.json", pkg_dir.display()))?;
 
             let rel_path = pkg_dir
@@ -4044,8 +4044,8 @@ fn read_materialized_pkg_json(
             ));
         }
     };
-    let value = serde_json::from_str(&content)
-        .into_diagnostic()
+    let value = aube_manifest::parse_json::<serde_json::Value>(&pkg_json_path, content)
+        .map_err(miette::Report::new)
         .wrap_err_with(|| format!("failed to parse package.json for {name}"))?;
     Ok(Some(value))
 }

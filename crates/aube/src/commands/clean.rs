@@ -17,7 +17,7 @@
 //! tree" command.
 
 use clap::Args;
-use miette::{Context, IntoDiagnostic};
+use miette::Context;
 
 #[derive(Debug, Args)]
 pub struct CleanArgs {
@@ -57,7 +57,7 @@ async fn run_as(invoked_as: &str, args: CleanArgs) -> miette::Result<()> {
     let root_pkg = cwd.join("package.json");
     if root_pkg.is_file() {
         let manifest = aube_manifest::PackageJson::from_path(&root_pkg)
-            .into_diagnostic()
+            .map_err(miette::Report::new)
             .wrap_err("failed to read package.json")?;
         if manifest.scripts.contains_key(invoked_as) {
             // `--lockfile` is an aube-specific flag that the user's

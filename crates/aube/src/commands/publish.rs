@@ -363,7 +363,7 @@ async fn publish_one(
     // workspace is cheap — the happy-path skip must not pay the cost
     // of a packed tarball.
     let manifest = PackageJson::from_path(&pkg_dir.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err_with(|| format!("failed to read {}/package.json", pkg_dir.display()))?;
     let name = manifest
         .name

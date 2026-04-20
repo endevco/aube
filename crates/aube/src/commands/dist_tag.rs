@@ -21,7 +21,7 @@
 
 use crate::commands::{make_client, split_name_spec};
 use clap::{Args, Subcommand};
-use miette::{IntoDiagnostic, miette};
+use miette::miette;
 
 #[derive(Debug, Args)]
 pub struct DistTagArgs {
@@ -150,7 +150,7 @@ async fn ls(package: Option<&str>) -> miette::Result<()> {
         None => {
             let manifest_path = cwd.join("package.json");
             let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-                .into_diagnostic()
+                .map_err(miette::Report::new)
                 .map_err(|e| miette!("failed to read {}: {e}", manifest_path.display()))?;
             manifest.name.ok_or_else(|| {
                 miette!(

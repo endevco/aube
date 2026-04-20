@@ -24,7 +24,7 @@ pub async fn run(args: DedupeArgs) -> miette::Result<()> {
     let _lock = super::take_project_lock(&cwd)?;
 
     let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     // Read the existing lockfile purely for the diff. We do NOT pass it to
@@ -48,7 +48,7 @@ pub async fn run(args: DedupeArgs) -> miette::Result<()> {
     if is_workspace {
         for pkg_dir in &workspace_packages {
             let pkg_manifest = aube_manifest::PackageJson::from_path(&pkg_dir.join("package.json"))
-                .into_diagnostic()
+                .map_err(miette::Report::new)
                 .wrap_err_with(|| format!("failed to read {}/package.json", pkg_dir.display()))?;
 
             let rel_path = pkg_dir

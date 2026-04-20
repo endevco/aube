@@ -89,7 +89,7 @@ impl std::cmp::PartialOrd for IgnoredEntry {
 /// callers print their own "nothing to do" message.
 pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<Vec<IgnoredEntry>> {
     let manifest = aube_manifest::PackageJson::from_path(&project_dir.join("package.json"))
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     let graph = match aube_lockfile::parse_lockfile(project_dir, &manifest) {
