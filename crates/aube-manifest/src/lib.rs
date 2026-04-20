@@ -500,6 +500,47 @@ impl PackageJson {
         out
     }
 
+    /// Look up a package name in `dependencies`, then `devDependencies`,
+    /// then `optionalDependencies`, returning the declared version range.
+    /// Mirrors the lookup order pnpm/npm use for `$name` override
+    /// references. `peerDependencies` is intentionally excluded — a peer
+    /// range isn't a dependency the root pins and reusing it as an
+    /// override target would confuse rather than help.
+    pub fn direct_dependency_range(&self, name: &str) -> Option<&str> {
+        self.dependencies
+            .get(name)
+            .or_else(|| self.dev_dependencies.get(name))
+            .or_else(|| self.optional_dependencies.get(name))
+            .map(String::as_str)
+    }
+
+    /// Resolve `$name` override values in place against this manifest's
+    /// direct dependencies, per pnpm/npm's documented sibling-reference
+    /// syntax. Entries whose `$name` target isn't declared in
+    /// `dependencies` / `devDependencies` / `optionalDependencies` are
+    /// removed from the map; their raw selector keys are returned so the
+    /// caller can surface a diagnostic. Non-`$` values pass through
+    /// unchanged.
+    pub fn resolve_override_refs(&self, overrides: &mut BTreeMap<String, String>) -> Vec<String> {
+        let mut unresolved = Vec::new();
+        overrides.retain(|key, value| {
+            let Some(name) = value.strip_prefix('$') else {
+                return true;
+            };
+            match self.direct_dependency_range(name) {
+                Some(range) => {
+                    *value = range.to_owned();
+                    true
+                }
+                None => {
+                    unresolved.push(key.clone());
+                    false
+                }
+            }
+        });
+        unresolved
+    }
+
     /// Extract `packageExtensions` from root package.json. Supports
     /// top-level `packageExtensions`, `pnpm.packageExtensions`, and
     /// `aube.packageExtensions`. Precedence (low → high):
@@ -1159,6 +1200,86 @@ mod tests {
         // so they should be silently dropped rather than panicking.
         let p = parse(r#"{"overrides": {"foo": {"bar": "1.0.0"}}}"#);
         assert!(p.overrides_map().is_empty());
+    }
+
+    #[test]
+    fn resolve_override_refs_substitutes_from_dependencies() {
+        let p = parse(
+            r#"{
+                "dependencies": {"semver": "^7.5.2"},
+                "overrides": {"semver@<7.5.2": "$semver"}
+            }"#,
+        );
+        let mut m = p.overrides_map();
+        let unresolved = p.resolve_override_refs(&mut m);
+        assert!(unresolved.is_empty());
+        assert_eq!(m.get("semver@<7.5.2").unwrap(), "^7.5.2");
+    }
+
+    #[test]
+    fn resolve_override_refs_checks_dev_and_optional() {
+        let p = parse(
+            r#"{
+                "devDependencies": {"a": "1.0.0"},
+                "optionalDependencies": {"b": "2.0.0"},
+                "overrides": {"a": "$a", "b": "$b"}
+            }"#,
+        );
+        let mut m = p.overrides_map();
+        let unresolved = p.resolve_override_refs(&mut m);
+        assert!(unresolved.is_empty());
+        assert_eq!(m.get("a").unwrap(), "1.0.0");
+        assert_eq!(m.get("b").unwrap(), "2.0.0");
+    }
+
+    #[test]
+    fn resolve_override_refs_drops_unresolved() {
+        let p = parse(
+            r#"{
+                "dependencies": {"semver": "^7.5.2"},
+                "overrides": {
+                    "semver@<7.5.2": "$semver",
+                    "cacheable-request@<10": "$cacheable-request"
+                }
+            }"#,
+        );
+        let mut m = p.overrides_map();
+        let unresolved = p.resolve_override_refs(&mut m);
+        assert_eq!(unresolved, vec!["cacheable-request@<10".to_string()]);
+        assert_eq!(m.get("semver@<7.5.2").unwrap(), "^7.5.2");
+        assert!(!m.contains_key("cacheable-request@<10"));
+    }
+
+    #[test]
+    fn resolve_override_refs_passes_non_dollar_through() {
+        let p = parse(
+            r#"{
+                "dependencies": {"foo": "1.0.0"},
+                "overrides": {"foo": "2.0.0", "bar": "3.0.0"}
+            }"#,
+        );
+        let mut m = p.overrides_map();
+        let unresolved = p.resolve_override_refs(&mut m);
+        assert!(unresolved.is_empty());
+        assert_eq!(m.get("foo").unwrap(), "2.0.0");
+        assert_eq!(m.get("bar").unwrap(), "3.0.0");
+    }
+
+    #[test]
+    fn resolve_override_refs_ignores_peer_dependencies() {
+        // npm/pnpm resolve `$name` against direct deps only. Peer
+        // dependency ranges are contracts, not pins, so they shouldn't
+        // silently flow into override values.
+        let p = parse(
+            r#"{
+                "peerDependencies": {"react": "^18"},
+                "overrides": {"react": "$react"}
+            }"#,
+        );
+        let mut m = p.overrides_map();
+        let unresolved = p.resolve_override_refs(&mut m);
+        assert_eq!(unresolved, vec!["react".to_string()]);
+        assert!(m.is_empty());
     }
 
     #[test]
