@@ -82,14 +82,91 @@ struct RawNpmPackage {
     funding: Option<RawNpmFunding>,
 }
 
-/// npm's `funding:` block on a package entry. npm normalizes the
-/// registry's string/object/array shapes to a `{url: …}` object by
-/// the time it reaches the lockfile, so we only need to handle that
-/// form on read. Write-time we emit the same single-key shape.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// npm's `funding:` block on a package entry. npm copies the field
+/// verbatim from the package's `package.json`, which means all three
+/// shapes the registry permits show up in real lockfiles:
+///
+/// 1. bare URL string: `"funding": "https://example.com/sponsor"`
+/// 2. object: `"funding": {"url": "…", "type": "github"}`
+/// 3. mixed array: `"funding": ["https://…", {"url": "…"}]`
+///
+/// Aube only carries a single `funding_url: Option<String>` on
+/// `LockedPackage`, so on read we collapse to the first URL we find;
+/// on write we always emit the single-key `{"url": …}` form (which
+/// npm itself accepts on a re-read).
+#[derive(Debug, Clone, Default)]
 struct RawNpmFunding {
-    #[serde(default)]
     url: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RawNpmFunding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct FundingVisitor;
+
+        impl<'de> Visitor<'de> for FundingVisitor {
+            type Value = RawNpmFunding;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a funding URL string, a {url: ...} object, or an array of either")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(RawNpmFunding {
+                    url: Some(v.to_owned()),
+                })
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(RawNpmFunding { url: Some(v) })
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut url: Option<String> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "url" {
+                        url = map.next_value::<Option<String>>()?;
+                    } else {
+                        // Skip unknown fields (e.g. `type`).
+                        let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(RawNpmFunding { url })
+            }
+
+            fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+            where
+                S: SeqAccess<'de>,
+            {
+                // Pick the first usable URL from the array; aube's
+                // single-URL model can't represent a list. Drain the
+                // rest so the deserializer state stays consistent.
+                let mut chosen: Option<String> = None;
+                while let Some(item) = seq.next_element::<RawNpmFunding>()? {
+                    if chosen.is_none() {
+                        chosen = item.url;
+                    }
+                }
+                Ok(RawNpmFunding { url: chosen })
+            }
+        }
+
+        deserializer.deserialize_any(FundingVisitor)
+    }
 }
 
 /// `peerDependenciesMeta` value — only `optional` is meaningful to
@@ -1884,5 +1961,94 @@ mod tests {
                 "npm writer drifted from native npm output.\n\n--- expected ---\n{original}\n--- got ---\n{written}"
             );
         }
+    }
+
+    /// npm copies `funding:` verbatim from each package's
+    /// `package.json`, so all three registry-permitted shapes (bare
+    /// string, `{url}` object, mixed array of either) appear in real
+    /// lockfiles. The pre-fix parser only accepted the object form
+    /// and would hard-fail on any project pulling in `htmlparser2`,
+    /// `@csstools/*`, etc. Aube only carries one URL per package, so
+    /// the contract is "first URL wins, no shape rejected".
+    #[test]
+    fn test_parse_funding_all_shapes() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": {
+                        "string-funding": "1.0.0",
+                        "object-funding": "1.0.0",
+                        "array-funding": "1.0.0",
+                        "mixed-array-funding": "1.0.0",
+                        "no-funding": "1.0.0"
+                    }
+                },
+                "node_modules/string-funding": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-aaa",
+                    "funding": "https://example.com/sponsor"
+                },
+                "node_modules/object-funding": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-bbb",
+                    "funding": { "type": "github", "url": "https://github.com/sponsors/foo" }
+                },
+                "node_modules/array-funding": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-ccc",
+                    "funding": [
+                        { "type": "github", "url": "https://github.com/sponsors/csstools" },
+                        { "type": "opencollective", "url": "https://opencollective.com/csstools" }
+                    ]
+                },
+                "node_modules/mixed-array-funding": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-ddd",
+                    "funding": [
+                        "https://github.com/fb55/htmlparser2?sponsor=1",
+                        { "type": "github", "url": "https://github.com/sponsors/fb55" }
+                    ]
+                },
+                "node_modules/no-funding": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-eee"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        assert_eq!(
+            graph.packages["string-funding@1.0.0"]
+                .funding_url
+                .as_deref(),
+            Some("https://example.com/sponsor"),
+        );
+        assert_eq!(
+            graph.packages["object-funding@1.0.0"]
+                .funding_url
+                .as_deref(),
+            Some("https://github.com/sponsors/foo"),
+        );
+        // Array form: aube collapses to the first URL.
+        assert_eq!(
+            graph.packages["array-funding@1.0.0"].funding_url.as_deref(),
+            Some("https://github.com/sponsors/csstools"),
+        );
+        // Mixed array (bare string + object): first element is a
+        // string, so its value is the URL.
+        assert_eq!(
+            graph.packages["mixed-array-funding@1.0.0"]
+                .funding_url
+                .as_deref(),
+            Some("https://github.com/fb55/htmlparser2?sponsor=1"),
+        );
+        assert!(graph.packages["no-funding@1.0.0"].funding_url.is_none());
     }
 }
