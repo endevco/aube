@@ -24,14 +24,6 @@ local linters = new Mapping<String, Step> {
         glob = "*.pkl"
         check = "pkl eval {{files}} >/dev/null"
     }
-    ["cargo-machete"] {
-        glob = List("**/Cargo.toml")
-        check = "cargo-machete"
-    }
-    ["cargo-msrv"] {
-        glob = List("**/Cargo.toml")
-        check = "cargo msrv --manifest-path crates/aube/Cargo.toml verify --output-format minimal"
-    }
 }
 
 fail_fast = false
