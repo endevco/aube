@@ -2004,7 +2004,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             && !virtual_store_only_setting
         {
             tracing::warn!(
-                "disabling global virtual store: `{name}` is in disableGlobalVirtualStoreForPackages (packages in that list have bundler-style module resolvers that follow symlinks and walk up, which can't reach the project root when `.aube/<pkg>` symlinks into the global store). To silence this warning while keeping the fallback, add `enableGlobalVirtualStore=false` to .npmrc; to opt out of the heuristic entirely, set `disableGlobalVirtualStoreForPackages=[]`."
+                "`{name}` isn't compatible with aube's global virtual store — \
+                 installing per-project instead. Install still succeeds; repeat \
+                 installs of this project just won't share materialized packages \
+                 across projects. Fixing this requires an upstream change in \
+                 `{name}` itself (please file it with that project, not aube). \
+                 To silence this warning, add `enableGlobalVirtualStore=false` to \
+                 .npmrc — or set `disableGlobalVirtualStoreForPackages=[]` to opt \
+                 out of this auto-detection entirely. \
+                 Details: https://aube.en.dev/package-manager/node-modules#global-virtual-store"
             );
             Some(false)
         } else {
