@@ -925,12 +925,29 @@ fn parse_npmrc(path: &Path) -> Result<Vec<(String, String)>, std::io::Error> {
 
         if let Some((key, value)) = line.split_once('=') {
             let key = key.trim().to_string();
-            let value = substitute_env(value.trim());
+            let value = substitute_env(strip_matched_quotes(value.trim()));
             entries.push((key, value));
         }
     }
 
     Ok(entries)
+}
+
+/// Strip a single layer of matched surrounding `"` or `'` from `value`.
+/// Mirrors npm's `ini` parser, which lets users quote values like
+/// `_auth="abc=="` to make the `=` padding survive editors that trim
+/// trailing chars. The token contents (including any inner `=` chars)
+/// pass through verbatim — only the outer quote pair is removed.
+fn strip_matched_quotes(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && (bytes[0] == b'"' || bytes[0] == b'\'')
+        && bytes[bytes.len() - 1] == bytes[0]
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
 }
 
 /// Substitute ${VAR} references with environment variable values.
@@ -1223,6 +1240,39 @@ mod tests {
     #[test]
     fn test_substitute_env_missing_var() {
         assert_eq!(substitute_env("${AUBE_DEFINITELY_NOT_SET}"), "");
+    }
+
+    #[test]
+    fn parse_npmrc_strips_surrounding_quotes() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".npmrc");
+        std::fs::write(
+            &rc,
+            "//artifactory.example.com/api/npm/virtual-npm/:_auth=\"token==\"\n\
+             //registry.example.com/:_authToken='single-quoted'\n\
+             registry=\"https://r.example.com/\"\n\
+             unmatched=\"only-leading\n\
+             plain=value\n",
+        )
+        .unwrap();
+
+        let entries = parse_npmrc(&rc).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                (
+                    "//artifactory.example.com/api/npm/virtual-npm/:_auth".to_string(),
+                    "token==".to_string()
+                ),
+                (
+                    "//registry.example.com/:_authToken".to_string(),
+                    "single-quoted".to_string()
+                ),
+                ("registry".to_string(), "https://r.example.com/".to_string()),
+                ("unmatched".to_string(), "\"only-leading".to_string()),
+                ("plain".to_string(), "value".to_string()),
+            ]
+        );
     }
 
     #[test]
