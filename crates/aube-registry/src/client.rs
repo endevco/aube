@@ -200,34 +200,35 @@ impl RegistryClient {
                 return Some(token.to_string());
             }
             if let Some(helper) = auth.token_helper.as_deref() {
-                return self.cached_token_helper_result(registry_url, helper);
+                return self.cached_token_helper_result(helper);
             }
         }
         None
     }
 
-    fn cached_token_helper_result(&self, registry_url: &str, helper: &str) -> Option<String> {
-        let cache_key = crate::config::registry_uri_key_pub(registry_url);
+    /// Cache key is the helper command itself, not the registry URL:
+    /// `run_token_helper` spawns the helper as a subprocess that returns
+    /// a token determined entirely by the command, with no URL input.
+    /// Keying by URL would defeat the cache for tarball fetches (each
+    /// tarball has a unique path) and re-spawn the helper hundreds of
+    /// times during a large install.
+    fn cached_token_helper_result(&self, helper: &str) -> Option<String> {
         {
             let cache = self.token_helper_cache.lock().ok()?;
-            if let Some(token) = cache.get(&cache_key) {
+            if let Some(token) = cache.get(helper) {
                 return token.clone();
             }
         }
         let token = crate::config::run_token_helper(helper);
         if let Ok(mut cache) = self.token_helper_cache.lock() {
-            cache.insert(cache_key, token.clone());
+            cache.insert(helper.to_string(), token.clone());
         }
         token
     }
 
     fn http_for(&self, registry_url: &str) -> &reqwest::Client {
         let uri_key = crate::config::registry_uri_key_pub(registry_url);
-        if let Some(client) = self.http_by_uri.get(&uri_key) {
-            return client;
-        }
-        let trimmed = uri_key.trim_end_matches('/');
-        self.http_by_uri.get(trimmed).unwrap_or(&self.http)
+        crate::config::lookup_by_uri_prefix(&self.http_by_uri, &uri_key).unwrap_or(&self.http)
     }
 
     /// Send an HTTP request with transient-failure retry. Invoked from
@@ -705,11 +706,12 @@ impl RegistryClient {
             return Err(Error::Offline(format!("tarball {url}")));
         }
         // Tarball URLs may point to any registry, try to match auth.
-        // Retries cover transient 5xx / 429 / connection errors; see
-        // [`Self::send_with_retry`].
-        let tarball_registry = tarball_registry_url(url);
+        // Pass the full tarball URL through so longest-prefix matching
+        // in `registry_config_for` can find path-scoped auth entries
+        // (e.g. `//host/artifactory/npm/`). Retries cover transient
+        // 5xx / 429 / connection errors; see [`Self::send_with_retry`].
         let resp = self
-            .send_with_retry(|| self.authed_get(url, &tarball_registry))
+            .send_with_retry(|| self.authed_get(url, url))
             .await?
             .error_for_status()?;
         let started = std::time::Instant::now();
@@ -1125,19 +1127,6 @@ fn write_cached_full_packument(path: &Path, cached: &CachedFullPackument) -> std
     }
     let json = serde_json::to_vec(cached).map_err(std::io::Error::other)?;
     std::fs::write(path, json)
-}
-
-/// Extract a registry base URL from a tarball URL for auth lookup.
-/// "https://registry.example.com/foo/-/foo-1.0.0.tgz" -> "https://registry.example.com/"
-fn tarball_registry_url(url: &str) -> String {
-    // Find the scheme + host portion
-    if let Some(scheme_end) = url.find("://") {
-        let after_scheme = &url[scheme_end + 3..];
-        if let Some(slash) = after_scheme.find('/') {
-            return format!("{}://{}/", &url[..scheme_end], &after_scheme[..slash]);
-        }
-    }
-    url.to_string()
 }
 
 /// Emit a `fetchMinSpeedKiBps` warning if the tarball downloaded slower

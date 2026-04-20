@@ -317,11 +317,7 @@ impl NpmConfig {
 
     pub fn registry_config_for(&self, registry_url: &str) -> Option<&AuthConfig> {
         let uri_key = registry_uri_key(registry_url);
-        if let Some(auth) = self.auth_by_uri.get(&uri_key) {
-            return Some(auth);
-        }
-        let trimmed = uri_key.trim_end_matches('/');
-        self.auth_by_uri.get(trimmed)
+        lookup_by_uri_prefix(&self.auth_by_uri, &uri_key)
     }
 
     /// Test-only compatibility shim. Production code must go through
@@ -380,7 +376,14 @@ impl NpmConfig {
             } else if key.starts_with("//") {
                 // URI-specific config: //registry.url/:_authToken=TOKEN
                 if let Some((uri, suffix)) = key.rsplit_once(':') {
-                    let entry = self.auth_by_uri.entry(uri.to_string()).or_default();
+                    // Normalize so `//host:443/x/` and `//host/x/` collapse
+                    // to the same key — matches what `registry_uri_key`
+                    // produces on the lookup side after stripping the
+                    // scheme's default port.
+                    let entry = self
+                        .auth_by_uri
+                        .entry(normalize_npmrc_uri_key(uri))
+                        .or_default();
                     match suffix {
                         "_authToken" => entry.auth_token = Some(value),
                         "_auth" => entry.auth = Some(value),
@@ -938,14 +941,94 @@ fn package_scope(name: &str) -> Option<&str> {
 
 /// Convert a registry URL to the URI key used in .npmrc for auth lookup.
 /// "https://registry.example.com/" -> "//registry.example.com/"
+///
+/// Strips *only the scheme's own default port* (`:443` for https, `:80`
+/// for http) so `https://host:443/x/` collapses to the same key as
+/// `https://host/x/`, matching npm's nerf-dart behavior. The unusual
+/// case of `https://host:80/` (https on the http default port) is
+/// deliberately *not* collapsed — that's a different server.
 fn registry_uri_key(url: &str) -> String {
-    if let Some(rest) = url.strip_prefix("https:") {
-        rest.to_string()
+    let (rest, default_port) = if let Some(rest) = url.strip_prefix("https:") {
+        (rest, ":443")
     } else if let Some(rest) = url.strip_prefix("http:") {
-        rest.to_string()
+        (rest, ":80")
     } else {
-        url.to_string()
+        return url.to_string();
+    };
+    strip_authority_port_suffix(rest, default_port)
+}
+
+/// Normalize an `//host[:port]/path...` key from `.npmrc` so it matches
+/// what `registry_uri_key` produces on the lookup side.
+///
+/// Ingest can't know the scheme the user intended (`.npmrc` keys are
+/// scheme-less), so we strip both `:443` and `:80` — in practice
+/// nobody writes either explicitly unless they meant the default for
+/// the corresponding scheme. The lookup side is stricter: it only
+/// strips the matching default, so an `//host:80/x/` key will still
+/// not authenticate an `https://host:80/x/` request, and vice versa.
+fn normalize_npmrc_uri_key(key: &str) -> String {
+    let stripped = strip_authority_port_suffix(key, ":443");
+    if stripped != key {
+        return stripped;
     }
+    strip_authority_port_suffix(key, ":80")
+}
+
+/// Strip a trailing `:N` from the authority of an `//host[:N]/path...`
+/// key. Returns the key unchanged when the prefix isn't `//` or the
+/// authority doesn't end with the requested port suffix.
+fn strip_authority_port_suffix(key: &str, port_suffix: &str) -> String {
+    let Some(after) = key.strip_prefix("//") else {
+        return key.to_string();
+    };
+    let (authority, path) = match after.find('/') {
+        Some(idx) => (&after[..idx], &after[idx..]),
+        None => (after, ""),
+    };
+    let Some(authority) = authority.strip_suffix(port_suffix) else {
+        return key.to_string();
+    };
+    format!("//{authority}{path}")
+}
+
+/// Look up `key` in `map`, falling back to longest-prefix matching by
+/// trimming path segments from the right. Mirrors npm/pnpm's auth
+/// resolution: a tarball at `//host/a/b/c-1.0.0.tgz` finds an auth
+/// entry registered at `//host/a/`, while `//other/` does not match a
+/// `//host/` entry. Stops before falling all the way to the bare `//`
+/// host-less prefix.
+pub(crate) fn lookup_by_uri_prefix<'a, V>(
+    map: &'a BTreeMap<String, V>,
+    key: &str,
+) -> Option<&'a V> {
+    if let Some(v) = map.get(key) {
+        return Some(v);
+    }
+    let trimmed = key.trim_end_matches('/');
+    if !trimmed.is_empty()
+        && trimmed != key
+        && let Some(v) = map.get(trimmed)
+    {
+        return Some(v);
+    }
+    let mut cursor = trimmed;
+    while let Some(idx) = cursor.rfind('/') {
+        cursor = &cursor[..idx];
+        // Stop at or before the leading "//" — anything that short is a
+        // host-less prefix that could match arbitrary registries.
+        if cursor.len() <= 2 {
+            break;
+        }
+        let with_slash = format!("{cursor}/");
+        if let Some(v) = map.get(&with_slash) {
+            return Some(v);
+        }
+        if let Some(v) = map.get(cursor) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// Public wrapper for normalize_registry_url.
@@ -1129,6 +1212,105 @@ mod tests {
         assert_eq!(
             registry_uri_key("http://localhost:4873/"),
             "//localhost:4873/"
+        );
+    }
+
+    #[test]
+    fn test_registry_uri_key_strips_default_port() {
+        // https default port collapses
+        assert_eq!(
+            registry_uri_key("https://registry.example.com:443/"),
+            "//registry.example.com/"
+        );
+        // http default port collapses
+        assert_eq!(
+            registry_uri_key("http://registry.example.com:80/artifactory/npm/"),
+            "//registry.example.com/artifactory/npm/"
+        );
+        // Non-default port is preserved
+        assert_eq!(
+            registry_uri_key("https://registry.example.com:8443/"),
+            "//registry.example.com:8443/"
+        );
+    }
+
+    #[test]
+    fn test_registry_uri_key_only_strips_matching_default_port() {
+        // https on the http default port (rare but valid) is a *different
+        // server* from https on its own default — don't collapse them.
+        assert_eq!(registry_uri_key("https://host:80/x/"), "//host:80/x/",);
+        // Symmetric case: http on https default port stays distinct.
+        assert_eq!(registry_uri_key("http://host:443/x/"), "//host:443/x/",);
+    }
+
+    #[test]
+    fn test_lookup_by_uri_prefix_longest_match() {
+        // Path-scoped auth entry. A tarball URL that lives under the
+        // same path should resolve, while an unrelated path should not.
+        let mut map: BTreeMap<String, &'static str> = BTreeMap::new();
+        map.insert("//host/artifactory/npm/".to_string(), "scoped-token");
+        map.insert("//host/".to_string(), "root-token");
+
+        // Full tarball path finds the path-scoped key.
+        assert_eq!(
+            lookup_by_uri_prefix(&map, "//host/artifactory/npm/lodash/-/lodash-4.17.21.tgz"),
+            Some(&"scoped-token"),
+        );
+        // A request outside the scope falls through to the host root.
+        assert_eq!(
+            lookup_by_uri_prefix(&map, "//host/other/pkg.tgz"),
+            Some(&"root-token"),
+        );
+        // Different host does not leak root-token.
+        assert_eq!(lookup_by_uri_prefix(&map, "//other/foo"), None);
+    }
+
+    #[test]
+    fn auth_token_resolves_for_path_scoped_registry_with_default_port() {
+        // End-to-end: `.npmrc` configures path-scoped auth under a
+        // reverse-proxy path, tarball URLs carry an explicit `:443`.
+        // Before the fix this 401'd because the lookup key
+        // `//host:443/artifactory/npm/lodash/-/lodash-4.17.21.tgz`
+        // never matched the stored `//host/artifactory/npm/` key.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".npmrc"),
+            "registry=https://registry.example.com/artifactory/npm/\n\
+             //registry.example.com/artifactory/npm/:_authToken=scoped-secret\n",
+        )
+        .unwrap();
+
+        let config = NpmConfig::load_isolated(dir.path());
+
+        assert_eq!(
+            config.auth_token_for(
+                "https://registry.example.com:443/artifactory/npm/lodash/-/lodash-4.17.21.tgz"
+            ),
+            Some("scoped-secret"),
+        );
+        assert_eq!(
+            config.auth_token_for(
+                "https://registry.example.com/artifactory/npm/lodash/-/lodash-4.17.21.tgz"
+            ),
+            Some("scoped-secret"),
+        );
+    }
+
+    #[test]
+    fn npmrc_key_with_default_port_is_normalized_on_ingest() {
+        // User wrote `:443` explicitly in `.npmrc`. Lookups that don't
+        // carry the port must still resolve.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".npmrc"),
+            "//registry.example.com:443/:_authToken=via-443\n",
+        )
+        .unwrap();
+
+        let config = NpmConfig::load_isolated(dir.path());
+        assert_eq!(
+            config.auth_token_for("https://registry.example.com/"),
+            Some("via-443"),
         );
     }
 
