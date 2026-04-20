@@ -2606,32 +2606,36 @@ fn pick_version<'a>(
     // related, not a real "no match in range".
     let mut had_satisfying_but_age_gated = false;
 
-    let mut versions: Vec<(&String, &aube_registry::VersionMetadata)> =
-        packument.versions.iter().collect();
-    versions.sort_by(|(a, _), (b, _)| {
-        let va = node_semver::Version::parse(a);
-        let vb = node_semver::Version::parse(b);
-        match (va, vb) {
-            (Ok(va), Ok(vb)) => {
-                if pick_lowest {
-                    va.cmp(&vb)
-                } else {
-                    vb.cmp(&va)
-                }
-            }
-            _ => std::cmp::Ordering::Equal,
-        }
-    });
+    let mut best: Option<(node_semver::Version, &'a aube_registry::VersionMetadata)> = None;
+    let mut fallback_lowest: Option<(node_semver::Version, &'a aube_registry::VersionMetadata)> =
+        None;
 
-    for (ver_str, meta) in &versions {
-        if let Ok(v) = node_semver::Version::parse(ver_str)
-            && v.satisfies(&range)
-        {
-            if passes_cutoff(ver_str) {
-                return PickResult::Found(meta);
+    for (ver_str, meta) in &packument.versions {
+        let Ok(v) = node_semver::Version::parse(ver_str) else {
+            continue;
+        };
+        if !v.satisfies(&range) {
+            continue;
+        }
+
+        if fallback_lowest.as_ref().is_none_or(|(cur, _)| v < *cur) {
+            fallback_lowest = Some((v.clone(), meta));
+        }
+
+        if passes_cutoff(ver_str) {
+            let replace = best.as_ref().is_none_or(|(cur, _)| {
+                if pick_lowest { v < *cur } else { v > *cur }
+            });
+            if replace {
+                best = Some((v, meta));
             }
+        } else {
             had_satisfying_but_age_gated = true;
         }
+    }
+
+    if let Some((_, meta)) = best {
+        return PickResult::Found(meta);
     }
 
     // Strict mode (or no cutoff active): give up. Distinguish age-gate
@@ -2646,25 +2650,9 @@ fn pick_version<'a>(
     }
 
     // Lenient fallback: pnpm's `pickPackageFromMetaUsingTime` ignores
-    // the cutoff and picks the *lowest* satisfying version. We have to
-    // re-sort because the primary scan above may have been
-    // highest-first.
-    let mut ascending: Vec<(&String, &aube_registry::VersionMetadata)> =
-        packument.versions.iter().collect();
-    ascending.sort_by(|(a, _), (b, _)| {
-        let va = node_semver::Version::parse(a);
-        let vb = node_semver::Version::parse(b);
-        match (va, vb) {
-            (Ok(va), Ok(vb)) => va.cmp(&vb),
-            _ => std::cmp::Ordering::Equal,
-        }
-    });
-    for (ver_str, meta) in ascending {
-        if let Ok(v) = node_semver::Version::parse(ver_str)
-            && v.satisfies(&range)
-        {
-            return PickResult::Found(meta);
-        }
+    // the cutoff and picks the *lowest* satisfying version.
+    if let Some((_, meta)) = fallback_lowest {
+        return PickResult::Found(meta);
     }
     PickResult::NoMatch
 }
