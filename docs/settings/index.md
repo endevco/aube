@@ -51,6 +51,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`disableGlobalVirtualStoreForPackages`](#setting-disableglobalvirtualstoreforpackages) | `list<string>` | Package names whose presence in any importer forces per-project materialization. |
 | [`storeDir`](#setting-storedir) | `path` | Location where packages are saved on disk (content-addressable store). |
 | [`verifyStoreIntegrity`](#setting-verifystoreintegrity) | `bool` | Check store file integrity before linking. |
+| [`strictStoreIntegrity`](#setting-strictstoreintegrity) | `bool` | Fail the install when a packument ships no dist.integrity. |
 | [`useRunningStoreServer`](#setting-userunningstoreserver) | `bool` | Only allow installs when the store server is running. |
 | [`strictStorePkgContentCheck`](#setting-strictstorepkgcontentcheck) | `bool` | Validate package names and versions in the store. |
 | [`httpsProxy`](#setting-httpsproxy) | `url` | Proxy URL for outgoing HTTPS requests. |
@@ -780,6 +781,29 @@ Examples:
 
 - `aube install --no-verify-store-integrity`
 - `echo 'verify-store-integrity=false' >> .npmrc`
+
+### `strictStoreIntegrity` {#setting-strictstoreintegrity}
+
+Fail the install when a packument ships no dist.integrity.
+
+- Type: `bool`
+- Default: `false`
+- CLI flags: `strict-store-integrity`
+- Environment: `npm_config_strict_store_integrity`, `NPM_CONFIG_STRICT_STORE_INTEGRITY`
+- .npmrc keys: `strict-store-integrity`, `strictStoreIntegrity`
+- Workspace YAML keys: `strictStoreIntegrity`
+
+Companion to `verifyStoreIntegrity`. When both are true and a packument
+comes back without a `dist.integrity` field, aube refuses to import the
+tarball rather than warning and continuing. Matches the behavior a
+security-conscious operator wants when a registry proxy or MITM has
+stripped the integrity field from an in-flight packument. Defaults to
+false for ecosystem parity with pnpm (which only warns), but is the
+recommended setting on production CI.
+
+Examples:
+
+- `echo 'strict-store-integrity=true' >> .npmrc`
 
 ### `useRunningStoreServer` {#setting-userunningstoreserver}
 
