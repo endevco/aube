@@ -200,23 +200,28 @@ impl RegistryClient {
                 return Some(token.to_string());
             }
             if let Some(helper) = auth.token_helper.as_deref() {
-                return self.cached_token_helper_result(registry_url, helper);
+                return self.cached_token_helper_result(helper);
             }
         }
         None
     }
 
-    fn cached_token_helper_result(&self, registry_url: &str, helper: &str) -> Option<String> {
-        let cache_key = crate::config::registry_uri_key_pub(registry_url);
+    /// Cache key is the helper command itself, not the registry URL:
+    /// `run_token_helper` spawns the helper as a subprocess that returns
+    /// a token determined entirely by the command, with no URL input.
+    /// Keying by URL would defeat the cache for tarball fetches (each
+    /// tarball has a unique path) and re-spawn the helper hundreds of
+    /// times during a large install.
+    fn cached_token_helper_result(&self, helper: &str) -> Option<String> {
         {
             let cache = self.token_helper_cache.lock().ok()?;
-            if let Some(token) = cache.get(&cache_key) {
+            if let Some(token) = cache.get(helper) {
                 return token.clone();
             }
         }
         let token = crate::config::run_token_helper(helper);
         if let Ok(mut cache) = self.token_helper_cache.lock() {
-            cache.insert(cache_key, token.clone());
+            cache.insert(helper.to_string(), token.clone());
         }
         token
     }
