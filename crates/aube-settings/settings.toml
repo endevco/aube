@@ -153,6 +153,26 @@ examples = []
 # them. The typed accessor would only surface the `.npmrc` spelling.
 typedAccessorUnused = true
 
+[pnpmfilePath]
+description = "Location of the pnpmfile.cjs hook file."
+type = "string"
+default = "undefined"
+docs = """
+Workspace-scoped override for the `.pnpmfile.cjs` discovery path.
+Defaults to `<project>/.pnpmfile.cjs`. Relative paths resolve against
+the workspace root; absolute paths are used as-is. A path that points
+at a missing file is a hard miss — aube emits a warning and runs with
+no pnpmfile rather than silently falling back to the default.
+"""
+sources.cli = []
+sources.env = []
+sources.npmrc = []
+sources.workspaceYaml = ["pnpmfilePath"]
+examples = []
+# Read directly off `WorkspaceConfig.pnpmfile_path` in `pnpmfile::detect`.
+# Inherently workspace-scoped, so no other sources.
+typedAccessorUnused = true
+
 [minimumReleaseAge]
 description = "Delay installation of newly published versions (minutes)."
 type = "int"

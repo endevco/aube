@@ -2158,7 +2158,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 parsed,
                 Ok((g, _))
                     if matches!(
-                        g.check_drift_workspace(&manifests, &ws_config_shared.overrides),
+                        g.check_drift_workspace(&manifests, &ws_config_shared.overrides, &ws_config_shared.ignored_optional_dependencies),
                         DriftStatus::Fresh,
                     )
                         && matches!(g.check_catalogs_drift(&workspace_catalogs), DriftStatus::Fresh)
@@ -2383,9 +2383,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                          help: run without --frozen-lockfile to update the lockfile"
                         ));
                     }
-                    if let DriftStatus::Stale { reason } =
-                        graph.check_drift_workspace(&manifests, &ws_config_shared.overrides)
-                    {
+                    if let DriftStatus::Stale { reason } = graph.check_drift_workspace(
+                        &manifests,
+                        &ws_config_shared.overrides,
+                        &ws_config_shared.ignored_optional_dependencies,
+                    ) {
                         return Err(miette!(
                             "lockfile is out of date with package.json: {reason}\n\
                          help: run without --frozen-lockfile to update the lockfile, \
@@ -2408,9 +2410,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             );
                             Err(aube_lockfile::Error::NotFound(cwd.clone()))
                         } else {
-                            match graph
-                                .check_drift_workspace(&manifests, &ws_config_shared.overrides)
-                            {
+                            match graph.check_drift_workspace(
+                                &manifests,
+                                &ws_config_shared.overrides,
+                                &ws_config_shared.ignored_optional_dependencies,
+                            ) {
                                 DriftStatus::Fresh => Ok((graph, kind)),
                                 DriftStatus::Stale { reason } => {
                                     tracing::debug!(
