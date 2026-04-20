@@ -2623,9 +2623,9 @@ fn pick_version<'a>(
         }
 
         if passes_cutoff(ver_str) {
-            let replace = best.as_ref().is_none_or(|(cur, _)| {
-                if pick_lowest { v < *cur } else { v > *cur }
-            });
+            let replace =
+                best.as_ref()
+                    .is_none_or(|(cur, _)| if pick_lowest { v < *cur } else { v > *cur });
             if replace {
                 best = Some((v, meta));
             }
