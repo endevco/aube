@@ -861,21 +861,22 @@ fn expand_userconfig_path(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
     Some(PathBuf::from(trimmed))
 }
 
-/// Find the highest-precedence `NPM_CONFIG_USERCONFIG` /
-/// `npm_config_userconfig` value in a captured env slice and expand
-/// it. npm/pnpm accept both casings, so match on either. Iterate in
-/// reverse for "last exported wins" semantics — a caller that
-/// extends the env with a downstream override sees it take effect.
+/// Find the `NPM_CONFIG_USERCONFIG` / `npm_config_userconfig` value
+/// in a captured env slice and expand it. npm/pnpm accept both
+/// casings; the SCREAMING form is canonical so it wins when both are
+/// set. Positional ordering can't be the tiebreaker — the typical
+/// caller builds the slice from `std::env::vars()`, which iterates
+/// in HashMap order — so we pick explicitly by casing instead. This
+/// keeps [`NpmConfig::load_with_env`] agreeing with the direct
+/// `std::env::var` chain in [`load_npmrc_entries`], so generic
+/// settings and auth config can't resolve to different files on the
+/// same host.
 fn userconfig_override_from_env(env: &[(String, String)], home: Option<&Path>) -> Option<PathBuf> {
-    env.iter()
-        .rev()
-        .find(|(name, _)| {
-            matches!(
-                name.as_str(),
-                "NPM_CONFIG_USERCONFIG" | "npm_config_userconfig"
-            )
-        })
-        .and_then(|(_, value)| expand_userconfig_path(value, home))
+    let raw = env
+        .iter()
+        .find(|(name, _)| name == "NPM_CONFIG_USERCONFIG")
+        .or_else(|| env.iter().find(|(name, _)| name == "npm_config_userconfig"))?;
+    expand_userconfig_path(&raw.1, home)
 }
 
 /// Parse a .npmrc file into key=value pairs.
@@ -2023,7 +2024,7 @@ mod tests {
     }
 
     #[test]
-    fn userconfig_override_from_env_accepts_both_casings() {
+    fn userconfig_override_from_env_prefers_screaming_casing() {
         // npm documents both `NPM_CONFIG_USERCONFIG` and the
         // lowercase form. We match on either so a shell that exports
         // the lowercase variant (direnv, mise, etc.) still relocates
@@ -2045,21 +2046,42 @@ mod tests {
             userconfig_override_from_env(&lower, Some(&home)),
             Some(PathBuf::from("/tmp/lower-rc"))
         );
-        // Later entries win so a caller that extends the env slice
-        // with a downstream override sees it take effect.
-        let both = vec![
+        // Both set → the SCREAMING form wins regardless of slice
+        // position. Positional ordering can't be the tiebreaker
+        // because the production caller builds the slice from
+        // `std::env::vars()`, which iterates in HashMap order.
+        // Explicit casing precedence keeps the two public entry
+        // points (`load_npmrc_entries` and `NpmConfig::load_with_env`)
+        // from resolving to different files on the same host.
+        let upper_first = vec![
             (
                 "NPM_CONFIG_USERCONFIG".to_string(),
-                "/tmp/first".to_string(),
+                "/tmp/upper".to_string(),
             ),
             (
                 "npm_config_userconfig".to_string(),
-                "/tmp/second".to_string(),
+                "/tmp/lower".to_string(),
             ),
         ];
         assert_eq!(
-            userconfig_override_from_env(&both, Some(&home)),
-            Some(PathBuf::from("/tmp/second"))
+            userconfig_override_from_env(&upper_first, Some(&home)),
+            Some(PathBuf::from("/tmp/upper")),
+        );
+        // Lowercase appearing first must not change the outcome.
+        let lower_first = vec![
+            (
+                "npm_config_userconfig".to_string(),
+                "/tmp/lower".to_string(),
+            ),
+            (
+                "NPM_CONFIG_USERCONFIG".to_string(),
+                "/tmp/upper".to_string(),
+            ),
+        ];
+        assert_eq!(
+            userconfig_override_from_env(&lower_first, Some(&home)),
+            Some(PathBuf::from("/tmp/upper")),
+            "SCREAMING form must win regardless of slice position",
         );
         // Nothing userconfig-shaped in the env → no override.
         let none_case = vec![("HOME".to_string(), "/h".to_string())];
