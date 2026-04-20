@@ -25,24 +25,28 @@ pub struct DeprecationRecord {
     pub message: Arc<str>,
 }
 
-/// Partition records into direct (listed by any importer at the
-/// resolved version) and transitive. Matching on `(name, version)`
-/// rather than name alone so a deprecated `foo@2` reached only
-/// transitively isn't misclassified as "direct" when an importer
-/// pins a non-deprecated `foo@3`. Preserves input order within each
-/// bucket.
+/// Partition records into direct (resolved to a version an importer
+/// pins) and transitive. Keying on `(name, version)` derived from
+/// each importer's `DirectDep.dep_path` → `LockedPackage` lookup
+/// (rather than on `DirectDep.name` or raw `dep_path`) keeps the
+/// classification right for npm-aliased entries and for records
+/// captured from the fresh-resolve stream, which carry the canonical
+/// pre-peer-context `dep_path` while the graph's `dep_path` keys get
+/// rewritten by the peer-context pass. A deprecated `foo@2` reached
+/// only transitively still falls on the transitive side when an
+/// importer pins a non-deprecated `foo@3`. Preserves input order
+/// within each bucket.
 pub fn classify<'a>(
     records: &'a [DeprecationRecord],
     graph: &LockfileGraph,
 ) -> (Vec<&'a DeprecationRecord>, Vec<&'a DeprecationRecord>) {
-    let mut direct_keys: BTreeSet<(&str, &str)> = BTreeSet::new();
-    for deps in graph.importers.values() {
-        for d in deps {
-            if let Some(pkg) = graph.packages.get(&d.dep_path) {
-                direct_keys.insert((d.name.as_str(), pkg.version.as_str()));
-            }
-        }
-    }
+    let direct_keys: BTreeSet<(&str, &str)> = graph
+        .importers
+        .values()
+        .flat_map(|deps| deps.iter())
+        .filter_map(|d| graph.packages.get(&d.dep_path))
+        .map(|pkg| (pkg.name.as_str(), pkg.version.as_str()))
+        .collect();
     let mut direct = Vec::new();
     let mut transitive = Vec::new();
     for r in records {
@@ -55,10 +59,18 @@ pub fn classify<'a>(
     (direct, transitive)
 }
 
-/// Drop records whose `dep_path` is no longer in the finalized graph
-/// (pruned by `filter_graph`'s platform/optional trim).
+/// Drop records whose `(name, version)` is no longer in the finalized
+/// graph (pruned by `filter_graph`'s platform/optional trim). Matches
+/// on `(name, version)` — not `dep_path` — because records captured
+/// from the fresh-resolve stream predate the resolver's peer-context
+/// pass, which rewrites `graph.packages` keys with peer suffixes.
 pub fn retain_in_graph(records: &mut Vec<DeprecationRecord>, graph: &LockfileGraph) {
-    records.retain(|r| graph.packages.contains_key(&r.dep_path));
+    let present: BTreeSet<(&str, &str)> = graph
+        .packages
+        .values()
+        .map(|p| (p.name.as_str(), p.version.as_str()))
+        .collect();
+    records.retain(|r| present.contains(&(r.name.as_str(), r.version.as_str())));
 }
 
 /// Deduplicate by `(name, version)`. The stream can emit the same canonical

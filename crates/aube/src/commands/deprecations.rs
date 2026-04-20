@@ -282,10 +282,19 @@ fn render_json(
 fn describe_direct_origin(r: &DeprecationRecord, graph: &LockfileGraph) -> Option<String> {
     // Summarize which importer(s) declare this direct dep. Typical
     // monorepo: multiple importers list the same name; show the first
-    // one plus a `(+N more)` tail when the fanout is wider.
+    // one plus a `(+N more)` tail when the fanout is wider. Match on
+    // the resolved `LockedPackage` (via `d.dep_path`) rather than
+    // `d.name == r.name` so aliased direct deps — where `DirectDep.name`
+    // differs from the record's name on some lockfile formats — still
+    // light up.
     let mut importers: Vec<(&String, &aube_lockfile::DirectDep)> = Vec::new();
     for (imp, deps) in &graph.importers {
-        if let Some(d) = deps.iter().find(|d| d.name == r.name) {
+        if let Some(d) = deps.iter().find(|d| {
+            graph
+                .packages
+                .get(&d.dep_path)
+                .is_some_and(|pkg| pkg.name == r.name && pkg.version == r.version)
+        }) {
             importers.push((imp, d));
         }
     }
