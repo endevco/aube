@@ -533,6 +533,17 @@ fn main() -> miette::Result<()> {
             std::env::set_var("CLICOLOR_FORCE", "1");
             std::env::remove_var("NO_COLOR");
         }
+    } else if is_ci::cached() {
+        // Auto + CI: most modern runners (GitHub Actions, GitLab,
+        // Buildkite, CircleCI, …) render ANSI in their log viewers, but
+        // their stderr isn't a TTY so console/clx default to plain
+        // text. Flip color on for stderr only via console's per-stream
+        // override — that's the stream the install progress heartbeat
+        // writes to. Deliberately *not* setting FORCE_COLOR /
+        // CLICOLOR_FORCE: those are process-wide and would also
+        // colorize stdout (e.g. `aube view --json > out.json` baking
+        // escapes into the file) and propagate into lifecycle scripts.
+        console::set_colors_enabled_stderr(true);
     }
 
     // `--use-stderr` / `.npmrc` `useStderr=true`: redirect stdout to stderr
@@ -996,23 +1007,13 @@ fn resolve_color_mode(cli: &Cli) -> ColorMode {
     {
         return mode;
     }
-    if let Ok(cwd) = startup_cwd(cli) {
-        let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
-        if let Some(mode) = aube_settings::values::string_from_npmrc("color", &npmrc)
-            .and_then(|raw| parse_color_mode(&raw))
-        {
-            return mode;
-        }
-    }
-    // Force color when running on a CI that renders ANSI in its log
-    // viewer (GitHub Actions, GitLab, Buildkite, CircleCI, …) — without
-    // this the install progress UI ships a plain non-TTY heartbeat
-    // because clx and miette both fall back to no-color when stderr
-    // isn't a real terminal.
-    if is_ci::cached() {
-        return ColorMode::Always;
-    }
-    ColorMode::Auto
+    let Ok(cwd) = startup_cwd(cli) else {
+        return ColorMode::Auto;
+    };
+    let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+    aube_settings::values::string_from_npmrc("color", &npmrc)
+        .and_then(|raw| parse_color_mode(&raw))
+        .unwrap_or(ColorMode::Auto)
 }
 
 fn startup_cwd(cli: &Cli) -> miette::Result<PathBuf> {
