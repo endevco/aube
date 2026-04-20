@@ -585,6 +585,36 @@
         "hidden_aliases": [],
         "examples": []
       },
+      "check": {
+        "full_cmd": [
+          "check"
+        ],
+        "usage": "check [--json]",
+        "subcommands": {},
+        "args": [],
+        "flags": [
+          {
+            "name": "json",
+            "usage": "--json",
+            "help": "Emit a JSON report instead of the human-readable list",
+            "help_first_line": "Emit a JSON report instead of the human-readable list",
+            "short": [],
+            "long": [
+              "json"
+            ],
+            "hide": false,
+            "global": false
+          }
+        ],
+        "mounts": [],
+        "hide": false,
+        "help": "Verify that every installed package can resolve its declared deps through the `node_modules/` symlink tree",
+        "name": "check",
+        "aliases": [],
+        "hidden_aliases": [],
+        "after_help_long": "Examples:\n\n  $ aube check\n  node_modules symlink tree is consistent (checked 248 packages).\n\n  # With issues\n  $ aube check\n  2 broken dependency links found:\n\n    vscode-languageserver@9.0.1\n      ✕ cannot resolve: vscode-languageserver-protocol@3.17.5\n\n    vscode-languageserver-protocol@3.17.5\n      ✕ cannot resolve: vscode-languageserver-types@3.17.5\n      ✕ cannot resolve: vscode-jsonrpc@8.2.1\n\n  # Machine-readable\n  $ aube check --json\n",
+        "examples": []
+      },
       "ci": {
         "full_cmd": [
           "ci"
@@ -1377,6 +1407,38 @@
         "name": "dlx",
         "aliases": [],
         "hidden_aliases": [],
+        "examples": []
+      },
+      "doctor": {
+        "full_cmd": [
+          "doctor"
+        ],
+        "usage": "doctor [-J --json]",
+        "subcommands": {},
+        "args": [],
+        "flags": [
+          {
+            "name": "json",
+            "usage": "-J --json",
+            "help": "Emit a machine-readable JSON report instead of the grouped text",
+            "help_first_line": "Emit a machine-readable JSON report instead of the grouped text",
+            "short": [
+              "J"
+            ],
+            "long": [
+              "json"
+            ],
+            "hide": false,
+            "global": false
+          }
+        ],
+        "mounts": [],
+        "hide": false,
+        "help": "Run broad install-health diagnostics",
+        "name": "doctor",
+        "aliases": [],
+        "hidden_aliases": [],
+        "after_help_long": "Examples:\n\n  $ aube doctor\n  version: 1.0.0-beta.4\n  node: v22.11.0\n  ...\n  No problems found\n\n  $ aube doctor --json | jq .warnings\n",
         "examples": []
       },
       "exec": {
