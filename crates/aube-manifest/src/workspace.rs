@@ -371,8 +371,7 @@ impl WorkspaceConfig {
                 if content.trim().is_empty() {
                     return Ok(Self::default());
                 }
-                return serde_yaml::from_str(&content)
-                    .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()));
+                return crate::parse_yaml(&path, content);
             }
         }
         Ok(Self::default())
@@ -427,8 +426,7 @@ pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value
                 raw_cache_insert(project_dir, BTreeMap::new());
                 return Ok(BTreeMap::new());
             }
-            let parsed: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_str(&content)
-                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+            let parsed: BTreeMap<String, serde_yaml::Value> = crate::parse_yaml(&path, content)?;
             raw_cache_insert(project_dir, parsed.clone());
             return Ok(parsed);
         }
@@ -456,12 +454,11 @@ pub fn load_both(
                 raw_cache_insert(project_dir, BTreeMap::new());
                 return Ok((WorkspaceConfig::default(), BTreeMap::new()));
             }
-            let value: serde_yaml::Value = serde_yaml::from_str(&content)
-                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+            let value: serde_yaml::Value = crate::parse_yaml(&path, content.clone())?;
             let typed: WorkspaceConfig = serde_yaml::from_value(value.clone())
-                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+                .map_err(|e| crate::Error::parse_yaml_err(&path, content.clone(), &e))?;
             let raw: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value)
-                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+                .map_err(|e| crate::Error::parse_yaml_err(&path, content, &e))?;
             raw_cache_insert(project_dir, raw.clone());
             return Ok((typed, raw));
         }
@@ -509,8 +506,7 @@ pub fn add_to_only_built_dependencies(
         if content.trim().is_empty() {
             Value::Mapping(Mapping::new())
         } else {
-            serde_yaml::from_str(&content)
-                .map_err(|e| crate::Error::YamlParse(path.clone(), e.to_string()))?
+            crate::parse_yaml(&path, content)?
         }
     } else {
         Value::Mapping(Mapping::new())

@@ -63,9 +63,7 @@ pub async fn run(args: ImportArgs) -> miette::Result<()> {
             ));
         }
         Err(e) => {
-            return Err(e)
-                .into_diagnostic()
-                .wrap_err("failed to parse source lockfile");
+            return Err(miette::Report::new(e)).wrap_err("failed to parse source lockfile");
         }
     };
 

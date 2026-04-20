@@ -42,7 +42,7 @@ pub async fn run(args: PruneArgs) -> miette::Result<()> {
         .wrap_err("failed to read package.json")?;
 
     let graph = aube_lockfile::parse_lockfile(&cwd, &manifest)
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to read lockfile — run `aube install` first")?;
 
     // Build the filtered graph via the existing BFS helper.

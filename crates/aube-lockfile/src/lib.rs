@@ -1479,7 +1479,7 @@ fn refine_yarn_kind(path: &Path, kind: LockfileKind) -> LockfileKind {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("no lockfile found in {0}")]
     NotFound(std::path::PathBuf),
@@ -1487,8 +1487,98 @@ pub enum Error {
     UnsupportedFormat(String),
     #[error("failed to read lockfile {0}: {1}")]
     Io(std::path::PathBuf, std::io::Error),
+    /// Structural/serialization lockfile errors that have no source
+    /// location — shape checks (`must be a mapping`), version guards
+    /// (`lockfileVersion N unsupported`), and `serde_yaml::to_string`
+    /// failures during write.
     #[error("failed to parse lockfile {0}: {1}")]
     Parse(std::path::PathBuf, String),
+    /// Deserialization failure with a byte offset into the source
+    /// content, so miette's `fancy` handler can draw a pointer at the
+    /// offending byte of the lockfile. Reuses `aube_manifest`'s
+    /// `ParseError` — identical shape, identical rendering — via the
+    /// same `ParseDiag` pattern `aube-workspace` uses.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ParseDiag(Box<aube_manifest::ParseError>),
+}
+
+/// Parse a JSON lockfile document, attaching a miette source span on
+/// failure so the fancy handler can point at the offending byte.
+pub fn parse_json<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    content: String,
+) -> Result<T, Error> {
+    match serde_json::from_str(&content) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(Error::parse_json_err(path, content, &e)),
+    }
+}
+
+impl Error {
+    pub fn parse_json_err(
+        path: &std::path::Path,
+        content: String,
+        err: &serde_json::Error,
+    ) -> Self {
+        Error::ParseDiag(Box::new(aube_manifest::ParseError::from_json_err(
+            path, content, err,
+        )))
+    }
+
+    pub fn parse_yaml_err(
+        path: &std::path::Path,
+        content: String,
+        err: &serde_yaml::Error,
+    ) -> Self {
+        Error::ParseDiag(Box::new(aube_manifest::ParseError::from_yaml_err(
+            path, content, err,
+        )))
+    }
+}
+
+#[cfg(test)]
+mod parse_diag_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Trailing `,` in an otherwise fine JSON lockfile — confirm the
+    /// helper attaches a `NamedSource` pointed at the lockfile path and
+    /// the span stays in bounds so miette can render a pointer.
+    #[test]
+    fn parse_json_attaches_span_for_bad_input() {
+        let path = Path::new("package-lock.json");
+        let content = r#"{"name":"x","#.to_string();
+        let Err(Error::ParseDiag(pe)) = parse_json::<serde_json::Value>(path, content.clone())
+        else {
+            panic!("parse_json must produce ParseDiag on malformed input");
+        };
+        let offset: usize = pe.span.offset();
+        let len: usize = pe.span.len();
+        assert!(offset + len <= content.len());
+        assert_eq!(pe.path, path);
+    }
+
+    /// Same story for YAML — serde_yaml reports a `Location` with a
+    /// byte index directly, so no line/col conversion is exercised
+    /// here. Both production sites (`pnpm.rs`, `yarn.rs`) call
+    /// `Error::parse_yaml_err` directly (one iterates multiple YAML
+    /// documents, the other has only borrowed content), so that's the
+    /// entry point this test locks down.
+    #[test]
+    fn parse_yaml_err_attaches_span_for_bad_input() {
+        let path = Path::new("yarn.lock");
+        let content = "packages:\n\t- pkg\n".to_string();
+        let yaml_err: serde_yaml::Error = serde_yaml::from_str::<serde_yaml::Value>(&content)
+            .expect_err("tab-indented YAML must fail");
+        let Error::ParseDiag(pe) = Error::parse_yaml_err(path, content.clone(), &yaml_err) else {
+            panic!("parse_yaml_err must produce ParseDiag");
+        };
+        let offset: usize = pe.span.offset();
+        let len: usize = pe.span.len();
+        assert!(offset + len <= content.len());
+        assert_eq!(pe.path, path);
+    }
 }
 
 #[cfg(test)]

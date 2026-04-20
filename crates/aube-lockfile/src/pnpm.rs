@@ -11,7 +11,7 @@ use std::path::Path;
 pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let content = std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
     let raw = parse_raw_lockfile(&content)
-        .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
+        .map_err(|e| Error::parse_yaml_err(path, content.clone(), &e))?;
 
     // Parse importers (direct deps of each workspace package).
     // We track synthesized LockedPackages for local (`file:` / `link:`)

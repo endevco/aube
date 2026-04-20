@@ -145,7 +145,7 @@ pub async fn run(
             return Ok(());
         }
         Err(e) => {
-            return Err(miette!(e)).wrap_err("failed to parse lockfile");
+            return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile");
         }
     };
 

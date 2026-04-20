@@ -52,7 +52,7 @@ pub async fn run(args: SbomArgs) -> miette::Result<()> {
                 "no lockfile found — run `aube install` before generating an SBOM"
             ));
         }
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     let filter = DepFilter::from_flags(args.prod, args.dev);

@@ -3252,9 +3252,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             ));
         }
         Err(e) => {
-            return Err(e)
-                .into_diagnostic()
-                .wrap_err("failed to parse lockfile");
+            return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile");
         }
     };
 
