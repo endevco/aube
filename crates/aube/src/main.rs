@@ -533,16 +533,15 @@ fn main() -> miette::Result<()> {
             std::env::set_var("CLICOLOR_FORCE", "1");
             std::env::remove_var("NO_COLOR");
         }
-    } else if is_ci::cached() {
-        // Auto + CI: most modern runners (GitHub Actions, GitLab,
-        // Buildkite, CircleCI, …) render ANSI in their log viewers, but
-        // their stderr isn't a TTY so console/clx default to plain
-        // text. Flip color on for stderr only via console's per-stream
-        // override — that's the stream the install progress heartbeat
-        // writes to. Deliberately *not* setting FORCE_COLOR /
-        // CLICOLOR_FORCE: those are process-wide and would also
-        // colorize stdout (e.g. `aube view --json > out.json` baking
-        // escapes into the file) and propagate into lifecycle scripts.
+    } else if ci_renders_ansi() {
+        // Auto + a CI runner whose log viewer renders ANSI: stderr
+        // isn't a TTY so console/clx would default to plain text. Flip
+        // color on for stderr only via console's per-stream override —
+        // that's the stream the install progress heartbeat writes to.
+        // Deliberately *not* setting FORCE_COLOR / CLICOLOR_FORCE: those
+        // are process-wide and would also colorize stdout (e.g.
+        // `aube view --json > out.json` baking escapes into the file)
+        // and propagate into lifecycle scripts.
         console::set_colors_enabled_stderr(true);
     }
 
@@ -1014,6 +1013,26 @@ fn resolve_color_mode(cli: &Cli) -> ColorMode {
     aube_settings::values::string_from_npmrc("color", &npmrc)
         .and_then(|raw| parse_color_mode(&raw))
         .unwrap_or(ColorMode::Auto)
+}
+
+/// Conservative allowlist of CI vendors whose log viewers are known to
+/// render ANSI escape sequences. We force color on stderr for these so
+/// the install progress UI keeps its styling under CI; everything not
+/// on the list (Heroku build, Netlify, AWS CodeBuild, generic `CI=true`
+/// from a script that captures stderr to a log file, …) keeps the
+/// default no-color behavior to avoid baking escapes into log artifacts.
+fn ci_renders_ansi() -> bool {
+    [
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "BUILDKITE",
+        "CIRCLECI",
+        "TRAVIS",
+        "DRONE",
+        "APPVEYOR",
+    ]
+    .iter()
+    .any(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty() && v != "false" && v != "0"))
 }
 
 fn startup_cwd(cli: &Cli) -> miette::Result<PathBuf> {
