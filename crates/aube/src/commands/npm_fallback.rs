@@ -70,6 +70,7 @@ fn child_exit_code(status: std::process::ExitStatus) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::child_exit_code;
 
     #[cfg(unix)]

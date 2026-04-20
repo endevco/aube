@@ -132,6 +132,7 @@ pub fn create_bin_shim(
     target: &Path,
     opts: BinShimOptions,
 ) -> io::Result<()> {
+    validate_bin_name(name)?;
     #[cfg(unix)]
     {
         let write_shim = matches!(opts.prefer_symlinked_executables, Some(false));
@@ -218,11 +219,89 @@ pub fn create_bin_shim(
     Ok(())
 }
 
+/// Reject bin-entry keys that would let a hostile `package.json`
+/// aim a shim outside its `.bin/` directory. npm/pnpm had the same
+/// class of bug (GHSA-p4v2-fp7g-q4rg / CVE-2024-27298). Accepts a
+/// bare filename, or exactly one scope-prefix segment `@scope/name`
+/// to match pnpm's `.bin/@scope/` layout.
+pub fn validate_bin_name(name: &str) -> io::Result<()> {
+    if name.is_empty() || name.len() > 255 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid bin name: {name:?}"),
+        ));
+    }
+    let parts: Vec<&str> = name.split('/').collect();
+    let ok = match parts.as_slice() {
+        [bare] => is_safe_bin_component(bare),
+        [scope, bare] => {
+            scope.starts_with('@')
+                && scope.len() > 1
+                && is_safe_bin_component(scope)
+                && is_safe_bin_component(bare)
+        }
+        _ => false,
+    };
+    if !ok {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid bin name: {name:?}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject relative bin target paths that escape the package root,
+/// are absolute, or carry Windows drive / UNC prefixes.
+pub fn validate_bin_target(rel: &str) -> io::Result<()> {
+    if rel.is_empty() || rel.contains('\0') || rel.contains('\\') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid bin target: {rel:?}"),
+        ));
+    }
+    let path = Path::new(rel);
+    if path.is_absolute()
+        || path.has_root()
+        || rel.starts_with('/')
+        || rel.len() >= 2 && rel.as_bytes()[1] == b':'
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("absolute bin target: {rel:?}"),
+        ));
+    }
+    for comp in path.components() {
+        match comp {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("bin target escapes package: {rel:?}"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_safe_bin_component(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && !s.contains('\0')
+        && !s.contains('\\')
+        && !s.contains('/')
+}
+
 /// Remove bin shims previously created by [`create_bin_shim`].
 ///
 /// On Unix, removes the symlink. On Windows, removes the `.cmd`,
 /// `.ps1`, and extensionless wrapper scripts.
 pub fn remove_bin_shim(bin_dir: &Path, name: &str) {
+    if validate_bin_name(name).is_err() {
+        return;
+    }
     let link_path = bin_dir.join(name);
     let _ = std::fs::remove_file(&link_path);
     #[cfg(windows)]
@@ -532,6 +611,68 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_bin_name_accepts_bare_and_scope() {
+        assert!(validate_bin_name("foo").is_ok());
+        assert!(validate_bin_name("foo-bar.js").is_ok());
+        assert!(validate_bin_name("@scope/foo").is_ok());
+    }
+
+    #[test]
+    fn validate_bin_name_rejects_traversal_and_separators() {
+        for bad in [
+            "",
+            "..",
+            ".",
+            "../../../etc/passwd",
+            "a/b/c",
+            "a\\b",
+            "foo\0",
+            "/etc/cron.d/evil",
+            "\\\\server\\share\\x",
+            "C:\\x",
+            "@scope/../x",
+            "@/foo",
+            "scope/foo",
+        ] {
+            assert!(validate_bin_name(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_bin_target_rejects_absolute_and_traversal() {
+        assert!(validate_bin_target("bin/cli.js").is_ok());
+        assert!(validate_bin_target("./cli.js").is_ok());
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../../../etc/passwd",
+            "bin/../../../etc/passwd",
+            "C:/Windows/x",
+            "bin\\cli.js",
+            "cli\0.js",
+        ] {
+            assert!(validate_bin_target(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn create_bin_shim_rejects_traversing_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join(".bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let target = dir.path().join("cli.js");
+        std::fs::write(&target, "#!/usr/bin/env node\n").unwrap();
+        let err = create_bin_shim(
+            &bin_dir,
+            "../../../evil",
+            &target,
+            BinShimOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn detect_interpreter_shebang_env_node() {

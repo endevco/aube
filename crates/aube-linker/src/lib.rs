@@ -15,7 +15,7 @@ pub mod sys;
 pub use hoisted::HoistedPlacements;
 pub use sys::{
     BinShimOptions, create_bin_shim, create_dir_link, normalize_path, parse_posix_shim_target,
-    remove_bin_shim,
+    remove_bin_shim, validate_bin_name, validate_bin_target,
 };
 
 /// Strategy for arranging packages under `node_modules/`.

@@ -4081,12 +4081,17 @@ fn link_bins_for_dep(
     {
         match bin {
             serde_json::Value::String(bin_path) => {
-                let bin_name = name.split('/').next_back().unwrap_or(name);
-                create_bin_link(bin_dir, bin_name, &pkg_dir.join(bin_path), shim_opts)?;
+                if aube_linker::validate_bin_target(bin_path).is_ok() {
+                    let bin_name = name.split('/').next_back().unwrap_or(name);
+                    create_bin_link(bin_dir, bin_name, &pkg_dir.join(bin_path), shim_opts)?;
+                }
             }
             serde_json::Value::Object(bins) => {
                 for (bin_name, path) in bins {
-                    if let Some(path_str) = path.as_str() {
+                    if let Some(path_str) = path.as_str()
+                        && aube_linker::validate_bin_name(bin_name).is_ok()
+                        && aube_linker::validate_bin_target(path_str).is_ok()
+                    {
                         create_bin_link(bin_dir, bin_name, &pkg_dir.join(path_str), shim_opts)?;
                     }
                 }
@@ -4237,12 +4242,17 @@ fn link_bundled_bins(
         };
         match bin {
             serde_json::Value::String(bin_path) => {
-                let bin_name = bundled.split('/').next_back().unwrap_or(bundled);
-                create_bin_link(bin_dir, bin_name, &bundled_dir.join(bin_path), shim_opts)?;
+                if aube_linker::validate_bin_target(bin_path).is_ok() {
+                    let bin_name = bundled.split('/').next_back().unwrap_or(bundled);
+                    create_bin_link(bin_dir, bin_name, &bundled_dir.join(bin_path), shim_opts)?;
+                }
             }
             serde_json::Value::Object(bins) => {
                 for (name, path) in bins {
-                    if let Some(path_str) = path.as_str() {
+                    if let Some(path_str) = path.as_str()
+                        && aube_linker::validate_bin_name(name).is_ok()
+                        && aube_linker::validate_bin_target(path_str).is_ok()
+                    {
                         create_bin_link(bin_dir, name, &bundled_dir.join(path_str), shim_opts)?;
                     }
                 }
