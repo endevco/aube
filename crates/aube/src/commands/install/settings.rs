@@ -264,6 +264,15 @@ pub(super) fn resolve_verify_store_integrity(ctx: &aube_settings::ResolveCtx<'_>
     aube_settings::resolved::verify_store_integrity(ctx)
 }
 
+/// Resolve `strictStoreIntegrity` from `.npmrc` / workspace yaml.
+/// Defaults to `false` so ecosystem parity with pnpm is preserved
+/// (pnpm only warns on a missing `dist.integrity`). Flipping this on
+/// promotes the warning to a hard error, which matters when a
+/// registry proxy or MITM could be stripping the integrity field.
+pub(super) fn resolve_strict_store_integrity(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::strict_store_integrity(ctx)
+}
+
 /// Resolve `strictStorePkgContentCheck` from `.npmrc`. Defaults to
 /// `true` (pnpm parity): after each registry tarball lands in the CAS
 /// we read its `package.json` and verify the embedded `name`/`version`

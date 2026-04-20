@@ -782,6 +782,45 @@ pub enum Error {
 /// A NUL byte is also rejected. It never appears in a legitimate url,
 /// ref, or commit, and is a recurring split point for tool pipelines
 /// downstream.
+/// Render a git argv tail for error messages with any embedded
+/// userinfo stripped. A raw `{args:?}` would otherwise dump the
+/// full `git+https://<token>@host/repo.git` URL right back into
+/// the error string that ships to CI logs.
+fn redact_args(args: &[&str]) -> String {
+    let mut s = String::from("[");
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push('"');
+        s.push_str(&redact_url(a));
+        s.push('"');
+    }
+    s.push(']');
+    s
+}
+
+/// Strip `user:password@` out of git URLs before we put them into
+/// error output. Private workspace deps commonly pin
+/// `git+https://<token>@host/repo.git`, and any clone failure would
+/// otherwise dump that token straight into CI log archives and issue
+/// tracker paste-dumps.
+fn redact_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let after = scheme_end + 3;
+    let tail = &url[after..];
+    let Some(at) = tail.find('@') else {
+        return url.to_string();
+    };
+    let slash = tail.find('/').unwrap_or(tail.len());
+    if at >= slash {
+        return url.to_string();
+    }
+    format!("{}***@{}", &url[..after], &tail[at + 1..])
+}
+
 fn validate_git_positional(value: &str, kind: &str) -> Result<(), Error> {
     if value.starts_with('-') {
         return Err(Error::Git(format!(
@@ -825,11 +864,13 @@ pub fn git_resolve_ref(url: &str, committish: Option<&str>) -> Result<String, Er
     let out = std::process::Command::new("git")
         .args(["ls-remote", "--", url])
         .output()
-        .map_err(|e| Error::Git(format!("spawn git ls-remote {url}: {e}")))?;
+        .map_err(|e| Error::Git(format!("spawn git ls-remote {}: {e}", redact_url(url))))?;
     if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(Error::Git(format!(
-            "git ls-remote {url} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "git ls-remote {} failed: {}",
+            redact_url(url),
+            redact_url(stderr.trim())
         )));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -876,17 +917,24 @@ pub fn git_resolve_ref(url: &str, committish: Option<&str>) -> Result<String, Er
             want.len() >= 4 && want.len() < 40 && want.chars().all(|c| c.is_ascii_hexdigit());
         if looks_hex {
             return Err(Error::Git(format!(
-                "git ls-remote {url}: `#{want}` looks like an abbreviated commit SHA — aube requires a full 40-character SHA, or a branch/tag name"
+                "git ls-remote {}: `#{want}` looks like an abbreviated commit SHA. aube requires a full 40-character SHA, or a branch/tag name",
+                redact_url(url)
             )));
         }
         Err(Error::Git(format!(
-            "git ls-remote {url}: no ref matched {want}"
+            "git ls-remote {}: no ref matched {want}",
+            redact_url(url)
         )))
     } else {
         head.or(main_branch)
             .or(master_branch)
             .or(first)
-            .ok_or_else(|| Error::Git(format!("git ls-remote {url}: no refs advertised")))
+            .ok_or_else(|| {
+                Error::Git(format!(
+                    "git ls-remote {}: no refs advertised",
+                    redact_url(url)
+                ))
+            })
     }
 }
 
@@ -1006,7 +1054,28 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
         .map(|b| format!("{b:02x}"))
         .collect();
     let commit_short = commit.get(..commit.len().min(12)).unwrap_or(commit);
-    let target = std::env::temp_dir().join(format!("aube-git-{key}-{commit_short}"));
+    // Keep git scratch out of world-writable /tmp. Predictable names
+    // under $TMPDIR are the classic symlink pre-plant vector. Attacker
+    // creates /tmp/aube-git-<k>-<c> as a symlink into $HOME/.ssh, then
+    // the remove_dir_all below walks right through it and nukes the
+    // victim's keys. 0700 on the cache root blocks the same race on a
+    // shared user dir.
+    let git_root = crate::dirs::cache_dir()
+        .map(|d| d.join("git"))
+        .unwrap_or_else(std::env::temp_dir);
+    std::fs::create_dir_all(&git_root).map_err(|e| Error::Io(git_root.clone(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&git_root, std::fs::Permissions::from_mode(0o700))
+        {
+            warn!(
+                "failed to chmod 0700 {}: {e}. Git scratch dir may be world-accessible, check filesystem permissions",
+                git_root.display()
+            );
+        }
+    }
+    let target = git_root.join(format!("aube-git-{key}-{commit_short}"));
 
     // Fast path: a previous call already finished this (url, commit)
     // pair and left a complete checkout at `target`. Verify cheaply
@@ -1035,25 +1104,28 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     //      PID-scoped scratch, and only one `rename` wins. The
     //      loser discovers `target` already has the right HEAD
     //      and reuses it.
-    let scratch = std::env::temp_dir().join(format!(
-        "aube-git-{key}-{commit_short}.tmp.{}",
-        std::process::id()
-    ));
-    if scratch.exists() {
-        let _ = std::fs::remove_dir_all(&scratch);
-    }
-    std::fs::create_dir_all(&scratch).map_err(|e| Error::Io(scratch.clone(), e))?;
+    // Random suffix from tempfile::Builder. The old <pid> suffix was
+    // guessable, so a local attacker could pre-plant a symlink at the
+    // exact scratch path before git init ever ran. CSPRNG bytes make
+    // that race unwinnable.
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("aube-git-{key}-{commit_short}."))
+        .tempdir_in(&git_root)
+        .map_err(|e| Error::Io(git_root.clone(), e))?
+        .keep();
 
     let run_in = |dir: &Path, args: &[&str]| -> Result<(), Error> {
         let out = Command::new("git")
             .args(args)
             .current_dir(dir)
             .output()
-            .map_err(|e| Error::Git(format!("spawn git {args:?}: {e}")))?;
+            .map_err(|e| Error::Git(format!("spawn git {}: {e}", redact_args(args))))?;
         if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(Error::Git(format!(
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                "git {} failed: {}",
+                redact_args(args),
+                redact_url(stderr.trim())
             )));
         }
         Ok(())

@@ -1178,6 +1178,7 @@ pub(super) async fn fetch_packages(
     };
     let network_concurrency = resolve_network_concurrency(&ctx);
     let verify_integrity = resolve_verify_store_integrity(&ctx);
+    let strict_integrity = settings::resolve_strict_store_integrity(&ctx);
     let strict_pkg_content_check = resolve_strict_store_pkg_content_check(&ctx);
     let virtual_store_dir_max_length = super::resolve_virtual_store_dir_max_length(&ctx);
     let aube_dir = super::resolve_virtual_store_dir(&ctx, &cwd);
@@ -1193,6 +1194,7 @@ pub(super) async fn fetch_packages(
         ignore_scripts,
         network_concurrency,
         verify_integrity,
+        strict_integrity,
         strict_pkg_content_check,
         git_prepare_depth,
         git_shallow_hosts,
@@ -1241,6 +1243,7 @@ pub(super) async fn fetch_packages_with_root<F>(
     ignore_scripts: bool,
     network_concurrency: Option<usize>,
     verify_integrity: bool,
+    strict_integrity: bool,
     strict_pkg_content_check: bool,
     git_prepare_depth: u32,
     git_shallow_hosts: Vec<String>,
@@ -1513,9 +1516,25 @@ where
                     let registry_name = registry_name.clone();
                     let version = version.clone();
                     move || -> miette::Result<_> {
-                        if verify_integrity && let Some(ref expected) = integrity {
-                            aube_store::verify_integrity(&bytes, expected)
-                                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+                        if verify_integrity {
+                            if let Some(ref expected) = integrity {
+                                aube_store::verify_integrity(&bytes, expected)
+                                    .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+                            } else if strict_integrity {
+                                // strict-store-integrity=true opts the
+                                // user into fail-closed. Default is off
+                                // so ecosystem parity with pnpm stays
+                                // intact. A registry proxy that strips
+                                // dist.integrity will no longer slip
+                                // past silently when strict is on.
+                                return Err(miette!(
+                                    "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes."
+                                ));
+                            } else {
+                                tracing::warn!(
+                                    "{display_name}@{version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
+                                );
+                            }
                         }
                         let import_start = std::time::Instant::now();
                         let index = store.import_tarball(&bytes).map_err(|e| {
@@ -1869,6 +1888,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let network_concurrency_setting = resolve_network_concurrency(&settings_ctx);
     let link_concurrency_setting = resolve_link_concurrency(&settings_ctx);
     let verify_store_integrity_setting = resolve_verify_store_integrity(&settings_ctx);
+    let strict_store_integrity_setting = settings::resolve_strict_store_integrity(&settings_ctx);
     let strict_store_pkg_content_check_setting =
         resolve_strict_store_pkg_content_check(&settings_ctx);
     let side_effects_cache_setting = resolve_side_effects_cache(&settings_ctx);
@@ -2510,6 +2530,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.ignore_scripts,
                 network_concurrency_setting,
                 verify_store_integrity_setting,
+                strict_store_integrity_setting,
                 strict_store_pkg_content_check_setting,
                 opts.git_prepare_depth,
                 resolve_git_shallow_hosts(&settings_ctx),
@@ -2603,6 +2624,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_network_concurrency =
                 network_concurrency_setting.unwrap_or_else(default_streaming_network_concurrency);
             let fetch_verify_integrity = verify_store_integrity_setting;
+            let fetch_strict_integrity = strict_store_integrity_setting;
             let fetch_strict_pkg_content_check = strict_store_pkg_content_check_setting;
             let fetch_git_shallow_hosts = resolve_git_shallow_hosts(&settings_ctx);
             // Host-side platform filter for the streaming fetch. The
@@ -2767,10 +2789,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let dep_path = pkg.dep_path.clone();
                         let integrity = pkg.integrity.clone();
                         let index = tokio::task::spawn_blocking(move || -> miette::Result<_> {
-                            if fetch_verify_integrity && let Some(ref expected) = integrity {
-                                aube_store::verify_integrity(&bytes, expected).map_err(|e| {
-                                    miette!("{pkg_display_name}@{pkg_version}: {e}")
-                                })?;
+                            if fetch_verify_integrity {
+                                if let Some(ref expected) = integrity {
+                                    aube_store::verify_integrity(&bytes, expected).map_err(
+                                        |e| miette!("{pkg_display_name}@{pkg_version}: {e}"),
+                                    )?;
+                                } else if fetch_strict_integrity {
+                                    return Err(miette!(
+                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes."
+                                    ));
+                                } else {
+                                    tracing::warn!(
+                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
+                                    );
+                                }
                             }
                             let index = store.import_tarball(&bytes).map_err(|e| {
                                 miette!("failed to import {pkg_display_name}@{pkg_version}: {e}")
@@ -3213,6 +3245,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     opts.ignore_scripts,
                     network_concurrency_setting,
                     verify_store_integrity_setting,
+                    strict_store_integrity_setting,
                     strict_store_pkg_content_check_setting,
                     opts.git_prepare_depth,
                     resolve_git_shallow_hosts(&settings_ctx),

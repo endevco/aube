@@ -137,6 +137,20 @@ impl NpmrcEdit {
             .wrap_err("failed to write temp npmrc")?;
         tmp.persist(path)
             .map_err(|e| miette!("failed to persist {}: {}", path.display(), e.error))?;
+        // .npmrc commonly holds _authToken values. Default umask
+        // leaves the file at 0644 after the rename, readable by every
+        // other user on a shared host. Force 0600 so only the owner
+        // can read the token back.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                tracing::warn!(
+                    "failed to chmod 0600 {}: {e}. File may be world-readable, check filesystem permissions",
+                    path.display()
+                );
+            }
+        }
         Ok(())
     }
 }

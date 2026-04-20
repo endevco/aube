@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 xx = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"

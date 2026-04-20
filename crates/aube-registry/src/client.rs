@@ -187,7 +187,13 @@ impl RegistryClient {
             req.bearer_auth(token)
         } else if let Some(auth) = self.config.basic_auth_for(registry_url) {
             req.header("Authorization", format!("Basic {auth}"))
-        } else if let Some(token) = self.config.global_auth_token.as_ref() {
+        } else if let Some(token) = self.config.global_auth_token.as_ref()
+            && same_host(&self.config.registry, registry_url)
+        {
+            // Only send the default _authToken when the request hits the
+            // default registry. Stops a malicious scoped registry or a
+            // packument with a dist.tarball pointing at attacker.example
+            // from grabbing the user's npmjs token.
             req.bearer_auth(token)
         } else {
             req
@@ -893,6 +899,25 @@ impl Default for RegistryClient {
     }
 }
 
+fn same_host(a: &str, b: &str) -> bool {
+    let Ok(a) = reqwest::Url::parse(a) else {
+        return false;
+    };
+    let Ok(b) = reqwest::Url::parse(b) else {
+        return false;
+    };
+    // Scheme comparison matters. An http://registry.example and an
+    // https://registry.example would otherwise look identical here,
+    // and a user who configured their registry over http would ship
+    // the default _authToken in cleartext. The redirect policy already
+    // blocks https to http downgrade on live requests, but only
+    // scheme parity at this gate prevents an explicitly http-
+    // configured registry from bypassing the check at request time.
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
 fn build_http_client(
     config: &NpmConfig,
     registry_config: Option<&crate::config::AuthConfig>,
@@ -920,6 +945,23 @@ fn build_http_client(
         // is a security hole on purpose: corporate registries should
         // prefer per-registry `ca` / `cafile` so validation stays on.
         .danger_accept_invalid_certs(!config.strict_ssl)
+        // Block https to http downgrades on redirect. reqwest already
+        // strips Authorization on cross-host redirects as of 0.12, so
+        // this policy only adds the scheme guard. A 302 from a good
+        // registry to `http://evil/` would otherwise leak whatever
+        // header survived into cleartext.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            if let Some(prev) = attempt.previous().last()
+                && prev.scheme() == "https"
+                && attempt.url().scheme() != "https"
+            {
+                return attempt.stop();
+            }
+            attempt.follow()
+        }))
         // Disable reqwest's built-in `system-proxy` auto-detection
         // before installing any explicit proxies. Without this, the
         // builder would silently read `HTTP(S)_PROXY` / `NO_PROXY`

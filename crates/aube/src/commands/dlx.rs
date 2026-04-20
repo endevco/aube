@@ -168,6 +168,11 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // resolves first. Otherwise we exec the bin directly so its argv
     // round-trips bit-for-bit.
     let status = if shell_mode {
+        // In shell-mode the positionals are literal shell-line fragments
+        // that the caller explicitly wants sh to interpret (pipes,
+        // redirects, subshells). Matches pnpm dlx --shell-mode and is
+        // why this call does not shell-quote like aube exec --shell-mode
+        // does. Join with space preserves that contract.
         let line = std::iter::once(command.as_str())
             .chain(bin_args.iter().map(String::as_str))
             .collect::<Vec<_>>()

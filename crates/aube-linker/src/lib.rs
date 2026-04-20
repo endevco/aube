@@ -2380,6 +2380,26 @@ fn wipe_changed_patched_entries(
 /// before writing, because the linker materializes files via reflink
 /// or hardlink — modifying the file in place would corrupt the global
 /// content-addressed store the linked file points to.
+fn is_safe_rel_component(rel: &str) -> bool {
+    if rel.is_empty() || rel.contains('\0') || rel.contains('\\') {
+        return false;
+    }
+    let p = Path::new(rel);
+    if p.is_absolute()
+        || p.has_root()
+        || rel.starts_with('/')
+        || rel.len() >= 2 && rel.as_bytes()[1] == b':'
+    {
+        return false;
+    }
+    p.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
+}
+
 fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String> {
     let sections = split_patch_sections(patch_text);
     if sections.is_empty() {
@@ -2390,6 +2410,15 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
             .rel_path
             .as_ref()
             .ok_or_else(|| "patch section missing file path".to_string())?;
+        // Refuse patch headers that escape the package directory.
+        // A hostile diff with `b/../../etc/shadow` as the target
+        // would otherwise let the patch step overwrite or delete
+        // files outside the installed package. Same rules we apply
+        // to tar entries over in aube-store (no absolute, no drive
+        // prefix, no `..`, no backslash, no NUL).
+        if !is_safe_rel_component(rel) {
+            return Err(format!("patch file path escapes package: {rel:?}"));
+        }
         let target = pkg_dir.join(rel);
         let original = if target.exists() {
             std::fs::read_to_string(&target)
