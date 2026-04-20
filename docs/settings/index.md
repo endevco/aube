@@ -177,7 +177,7 @@ Scope of deprecation warnings shown during install.
 - Type: `"none" | "direct" | "all" | "summary"`
 - Default: `"direct"`
 - CLI flags: `--deprecation-warnings`
-- Environment: `npm_config_deprecation_warnings`, `NPM_CONFIG_DEPRECATION_WARNINGS`
+- Environment: `AUBE_DEPRECATION_WARNINGS`, `npm_config_deprecation_warnings`, `NPM_CONFIG_DEPRECATION_WARNINGS`
 - .npmrc keys: `deprecationWarnings`, `deprecation-warnings`
 - Workspace YAML keys: `deprecationWarnings`
 
@@ -190,6 +190,11 @@ Controls how deprecation messages surface at the end of install:
 - `summary`: print a single count line covering direct + transitive.
 
 Run `aube deprecations` to see the full list any time after install.
+
+Examples:
+
+- `AUBE_DEPRECATION_WARNINGS=all aube install`
+- `aube install --deprecation-warnings=summary`
 
 ### `updateConfig.ignoreDependencies` {#setting-updateconfig-ignoredependencies}
 
