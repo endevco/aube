@@ -161,7 +161,15 @@ pub struct VersionMetadata {
     /// Round-tripped into the lockfile so pnpm-compatible output can
     /// emit `engines: {node: '>=8'}` on package entries without a
     /// packument re-fetch.
-    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    ///
+    /// Uses `aube_manifest::engines_tolerant` so the legacy pre-npm-2.x
+    /// array shape (e.g. `madge@0.0.1` and `html-entities@1.x` ship
+    /// `"engines": ["node >= 0.8.0"]`) doesn't blow up the whole
+    /// packument — one such version would otherwise block install of
+    /// any range that touches the packument, even when the user's
+    /// selector doesn't pick that version. Array normalizes to an
+    /// empty map, matching the manifest and lockfile parsers.
+    #[serde(default, deserialize_with = "aube_manifest::engines_tolerant")]
     pub engines: BTreeMap<String, String>,
     /// `license:` field from the package manifest. npm's lockfile
     /// keeps this per-package; other formats don't. Stored as
@@ -573,5 +581,31 @@ mod tests {
     fn packument_time_null_whole_field_is_empty() {
         let p = parse_packument(r#"{"name":"pkg","time":null}"#);
         assert!(p.time.is_empty());
+    }
+
+    /// Pre-npm-2.x publishes (e.g. `madge@0.0.1`, `html-entities@1.x`)
+    /// ship `"engines": ["node >= 0.8.0"]` as an array, and npmjs.org
+    /// serves that shape verbatim in the packument. A strict map-only
+    /// deserializer fails the whole packument parse with
+    /// `invalid type: sequence, expected a map`, blocking install of
+    /// any range that even lists an affected version. Normalize the
+    /// array to an empty map — same tolerance the manifest and
+    /// lockfile parsers already apply.
+    #[test]
+    fn engines_accepts_legacy_array_shape() {
+        let v = parse(r#"{"name":"madge","version":"0.0.1","engines":["node >= 0.8.0"]}"#);
+        assert!(v.engines.is_empty());
+    }
+
+    #[test]
+    fn engines_accepts_map_shape() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","engines":{"node":">=18"}}"#);
+        assert_eq!(v.engines.get("node"), Some(&">=18".to_string()));
+    }
+
+    #[test]
+    fn engines_null_is_empty() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","engines":null}"#);
+        assert!(v.engines.is_empty());
     }
 }
