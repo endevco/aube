@@ -334,6 +334,9 @@ enum Commands {
     CatFile(commands::cat_file::CatFileArgs),
     /// Print the cached package index JSON for `<name>@<version>`
     CatIndex(commands::cat_index::CatIndexArgs),
+    /// Verify that every installed package can resolve its declared deps through the `node_modules/` symlink tree
+    #[command(after_long_help = commands::check::AFTER_LONG_HELP)]
+    Check(commands::check::CheckArgs),
     /// Clean install: delete node_modules, then install with frozen lockfile.
     ///
     /// Use in CI to guarantee a reproducible install from the committed lockfile.
@@ -362,6 +365,9 @@ enum Commands {
     DistTag(commands::dist_tag::DistTagArgs),
     /// Fetch a package into a throwaway environment and run its binary
     Dlx(commands::dlx::DlxArgs),
+    /// Run broad install-health diagnostics
+    #[command(after_long_help = commands::doctor::AFTER_LONG_HELP)]
+    Doctor(commands::doctor::DoctorArgs),
     /// Execute a locally installed binary
     Exec(commands::exec::ExecArgs),
     /// Download lockfile dependencies into the store without linking node_modules
@@ -657,6 +663,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Cache(args)) => commands::cache::run(args).await?,
         Some(Commands::CatFile(args)) => commands::cat_file::run(args).await?,
         Some(Commands::CatIndex(args)) => commands::cat_index::run(args).await?,
+        Some(Commands::Check(args)) => commands::check::run(args).await?,
         Some(Commands::Ci(args)) => commands::ci::run(args).await?,
         Some(Commands::Clean(args)) => commands::clean::run(args).await?,
         Some(Commands::Completion(args)) => commands::completion::run(args).await?,
@@ -671,6 +678,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         }
         Some(Commands::DistTag(args)) => commands::dist_tag::run(args).await?,
         Some(Commands::Dlx(args)) => commands::dlx::run(args).await?,
+        Some(Commands::Doctor(args)) => commands::doctor::run(args).await?,
         Some(Commands::Exec(args)) => commands::exec::run(args, effective_filter.clone()).await?,
         Some(Commands::Fetch(args)) => commands::fetch::run(args).await?,
         Some(Commands::FindHash(args)) => commands::find_hash::run(args).await?,

@@ -1,0 +1,395 @@
+//! `aube doctor` — broad install-health diagnostic.
+//!
+//! Prints a grouped snapshot of aube's environment (version, directories,
+//! project layout, registries, node version) followed by any warnings and
+//! errors we can detect statically. Mirrors the shape of `mise doctor`:
+//! info sections first, then an accumulated list of warnings, then a list
+//! of errors. Exits non-zero when the error list is non-empty.
+//!
+//! Individual checks (`check_virtual_store_links`, `check_install_state`,
+//! `check_foreign_package_manager_dirs`) are kept as free functions so
+//! they can be reused from more focused commands in the future without
+//! round-tripping through the formatter.
+//!
+//! Side-effect free: reads config, package.json, `.aube-state`, and walks
+//! `node_modules/.aube/` — but never writes, never hits the network.
+
+use clap::Args;
+use miette::Context;
+use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
+
+pub const AFTER_LONG_HELP: &str = "\
+Examples:
+
+  $ aube doctor
+  version: 1.0.0-beta.4
+  node: v22.11.0
+  ...
+  No problems found
+
+  $ aube doctor --json | jq .warnings
+";
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Emit a machine-readable JSON report instead of the grouped text.
+    #[arg(long, short = 'J')]
+    pub json: bool,
+}
+
+pub async fn run(args: DoctorArgs) -> miette::Result<()> {
+    let cwd = crate::dirs::cwd()?;
+    let project_root = crate::dirs::find_project_root(&cwd);
+    let anchor = project_root.clone().unwrap_or_else(|| cwd.clone());
+
+    let report = build_report(&anchor, project_root.is_some())?;
+
+    if args.json {
+        print_json(&report);
+    } else {
+        print_human(&report);
+    }
+
+    if !report.errors.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct Report {
+    sections: Vec<Section>,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug)]
+struct Section {
+    title: &'static str,
+    items: Vec<(String, String)>,
+}
+
+impl Section {
+    fn new(title: &'static str) -> Self {
+        Self {
+            title,
+            items: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.items.push((key.into(), value.into()));
+    }
+}
+
+fn build_report(anchor: &Path, in_project: bool) -> miette::Result<Report> {
+    let mut report = Report::default();
+
+    report.sections.push(version_section());
+    report.sections.push(runtime_section(&mut report.warnings));
+    report.sections.push(dirs_section(anchor));
+
+    if in_project {
+        let project = project_section(anchor, &mut report);
+        report.sections.push(project);
+        check_install_state(anchor, &mut report);
+        check_foreign_package_manager_dirs(anchor, &mut report);
+        check_virtual_store_links(anchor, &mut report)?;
+    } else {
+        let mut s = Section::new("project");
+        s.push(
+            "status",
+            "no package.json at or above the current directory",
+        );
+        report.sections.push(s);
+    }
+
+    report.sections.push(registry_section(anchor));
+
+    Ok(report)
+}
+
+fn version_section() -> Section {
+    let mut s = Section::new("version");
+    s.push("aube", env!("CARGO_PKG_VERSION"));
+    s.push(
+        "build-profile",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
+    s.push("target", std::env::consts::OS);
+    s.push("arch", std::env::consts::ARCH);
+    s
+}
+
+fn runtime_section(warnings: &mut Vec<String>) -> Section {
+    let mut s = Section::new("runtime");
+    match crate::engines::resolve_node_version(None) {
+        Some(v) => s.push("node", format!("v{v}")),
+        None => {
+            s.push("node", "(not found)");
+            warnings.push(
+                "`node` is not available on PATH — lifecycle scripts and `aube run` will fail"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(shell) = std::env::var_os("SHELL")
+        && let Some(text) = shell.to_str()
+    {
+        s.push("shell", text);
+    }
+    s
+}
+
+fn dirs_section(anchor: &Path) -> Section {
+    let mut s = Section::new("dirs");
+    let store_root = aube_store::dirs::store_dir()
+        .map(display_path_owned)
+        .unwrap_or_else(|| "(unresolved)".into());
+    s.push("store", store_root);
+    s.push(
+        "cache",
+        display_path_owned(super::resolved_cache_dir(anchor)),
+    );
+    s.push(
+        "packument-cache",
+        display_path_owned(super::resolved_cache_dir(anchor).join("packuments-v1")),
+    );
+    s.push(
+        "virtual-store",
+        display_path_owned(super::resolve_virtual_store_dir_for_cwd(anchor)),
+    );
+    s
+}
+
+fn project_section(anchor: &Path, report: &mut Report) -> Section {
+    let mut s = Section::new("project");
+    s.push("root", display_path_owned(anchor));
+
+    match aube_manifest::PackageJson::from_path(&anchor.join("package.json")) {
+        Ok(manifest) => {
+            let label = match (&manifest.name, &manifest.version) {
+                (Some(n), Some(v)) => format!("{n}@{v}"),
+                (Some(n), None) => n.clone(),
+                _ => "(unnamed)".into(),
+            };
+            s.push("package", label);
+            if let Some(range) = manifest.engines.get("node")
+                && let Some(node) = crate::engines::resolve_node_version(None)
+            {
+                match (
+                    node_semver::Version::parse(&node),
+                    node_semver::Range::parse(range),
+                ) {
+                    (Ok(v), Ok(r)) if !v.satisfies(&r) => {
+                        report.errors.push(format!(
+                            "root package requires node {range}, but this is v{node}"
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(pm) = manifest
+                .extra
+                .get("packageManager")
+                .and_then(|v| v.as_str())
+            {
+                s.push("package-manager", pm);
+            }
+        }
+        Err(err) => {
+            report.errors.push(format!(
+                "failed to parse package.json at {}: {err}",
+                display_path_owned(anchor.join("package.json"))
+            ));
+        }
+    }
+
+    let lockfile = aube_lockfile::detect_existing_lockfile_kind(anchor);
+    s.push(
+        "lockfile",
+        lockfile
+            .map(|k| k.filename().to_string())
+            .unwrap_or_else(|| "(none — first install will create aube-lock.yaml)".to_string()),
+    );
+
+    s
+}
+
+fn registry_section(anchor: &Path) -> Section {
+    let mut s = Section::new("registry");
+    let config = super::load_npm_config(anchor);
+    s.push("default", &config.registry);
+    if !config.scoped_registries.is_empty() {
+        let scoped = config
+            .scoped_registries
+            .iter()
+            .map(|(k, v)| format!("{k} -> {v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push("scoped", scoped);
+    }
+    let client = super::make_client(anchor);
+    let auth_state = if client.has_resolved_auth_for(&config.registry) {
+        "configured"
+    } else {
+        "(none)"
+    };
+    s.push("auth", auth_state);
+    s
+}
+
+fn check_install_state(anchor: &Path, report: &mut Report) {
+    if let Some(reason) = crate::state::check_needs_install(anchor) {
+        // "install state not found" on a project that has no
+        // `node_modules/` yet is expected — it's informational, not an
+        // error. Any *other* reason (lockfile/manifest hash drift,
+        // missing modules dir on a state file that otherwise exists)
+        // is a real staleness signal.
+        let modules_dir = super::project_modules_dir(anchor);
+        if modules_dir.exists() {
+            report.warnings.push(format!(
+                "node_modules is stale: {reason}. Run `aube install`."
+            ));
+        }
+    }
+}
+
+fn check_foreign_package_manager_dirs(anchor: &Path, report: &mut Report) {
+    let modules = super::project_modules_dir(anchor);
+    if modules.join(".pnpm").is_dir() {
+        report.warnings.push(
+            "node_modules/.pnpm/ exists alongside aube's tree — this project was last installed with pnpm. aube and pnpm can co-exist, but expect both trees to drift unless you pick one."
+                .to_string(),
+        );
+    }
+}
+
+fn check_virtual_store_links(anchor: &Path, report: &mut Report) -> miette::Result<()> {
+    let links = super::check::run_report(anchor).wrap_err("failed to walk the virtual store")?;
+    if !links.issues.is_empty() {
+        report.errors.push(format!(
+            "{} broken {} in node_modules/.aube/ (run `aube check` for details)",
+            links.issues.len(),
+            if links.issues.len() == 1 {
+                "dependency link"
+            } else {
+                "dependency links"
+            }
+        ));
+    }
+    Ok(())
+}
+
+fn display_path_owned(p: impl AsRef<Path>) -> String {
+    let p = p.as_ref();
+    if let Some(home) = std::env::var_os("HOME")
+        && let Ok(rest) = p.strip_prefix(PathBuf::from(&home))
+    {
+        return format!("~/{}", rest.display());
+    }
+    p.display().to_string()
+}
+
+fn print_human(report: &Report) {
+    for section in &report.sections {
+        if section.items.is_empty() {
+            continue;
+        }
+        println!("{}:", section.title);
+        let max = section
+            .items
+            .iter()
+            .map(|(k, _)| k.len())
+            .max()
+            .unwrap_or(0);
+        for (k, v) in &section.items {
+            println!("  {:<width$}  {}", k, v, width = max);
+        }
+        println!();
+    }
+
+    if !report.warnings.is_empty() {
+        let label = if report.warnings.len() == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        println!("{} {label}:", report.warnings.len());
+        for (i, w) in report.warnings.iter().enumerate() {
+            println!("  {}. {w}", i + 1);
+        }
+        println!();
+    }
+
+    if report.errors.is_empty() {
+        println!("No problems found");
+    } else {
+        let label = if report.errors.len() == 1 {
+            "problem"
+        } else {
+            "problems"
+        };
+        println!("{} {label} found:", report.errors.len());
+        for (i, e) in report.errors.iter().enumerate() {
+            println!("  {}. {e}", i + 1);
+        }
+    }
+}
+
+fn print_json(report: &Report) {
+    let mut root = Map::new();
+    let mut sections = Map::new();
+    for section in &report.sections {
+        let mut items = Map::new();
+        for (k, v) in &section.items {
+            items.insert(k.clone(), Value::String(v.clone()));
+        }
+        sections.insert(section.title.to_string(), Value::Object(items));
+    }
+    root.insert("sections".into(), Value::Object(sections));
+    root.insert(
+        "warnings".into(),
+        Value::Array(report.warnings.iter().cloned().map(Value::String).collect()),
+    );
+    root.insert(
+        "errors".into(),
+        Value::Array(report.errors.iter().cloned().map(Value::String).collect()),
+    );
+    let out =
+        serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string());
+    println!("{out}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_runs_outside_a_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let report = build_report(tmp.path(), false).unwrap();
+        assert!(
+            !report.sections.is_empty(),
+            "expected at least version + dirs sections"
+        );
+    }
+
+    #[test]
+    fn doctor_runs_inside_a_minimal_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        std::fs::write(
+            cwd.join("package.json"),
+            r#"{"name":"demo","version":"0.1.0"}"#,
+        )
+        .unwrap();
+        let report = build_report(cwd, true).unwrap();
+        assert!(report.sections.iter().any(|s| s.title == "project"));
+    }
+}
