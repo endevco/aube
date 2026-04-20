@@ -334,57 +334,6 @@ body {
   max-width: 520px;
 }
 
-.aube-beta-note {
-  background: oklch(0.24 0.04 45 / 0.55);
-  border: 1px solid oklch(0.58 0.12 55 / 0.5);
-  border-radius: 8px;
-  box-sizing: border-box;
-  color: var(--aube-muted);
-}
-
-.aube-beta-note strong {
-  color: var(--aube-accent-2);
-  font-weight: 600;
-}
-
-.aube-beta-note {
-  display: grid;
-  gap: 4px 12px;
-  grid-template-columns: 28px minmax(0, 1fr);
-  line-height: 1.45;
-  margin: 0;
-  max-width: 560px;
-  padding: 14px 16px;
-  position: relative;
-  width: 100%;
-  z-index: 3;
-}
-
-.aube-beta-note span {
-  font-size: 14px;
-}
-
-.aube-beta-note a {
-  color: var(--aube-accent-2);
-  text-decoration-color: oklch(0.72 0.13 72 / 0.55);
-  text-underline-offset: 3px;
-}
-
-.aube-beta-mark {
-  align-items: center;
-  background: var(--aube-accent);
-  border-radius: 6px;
-  color: var(--aube-accent-ink);
-  display: inline-flex;
-  font-family: var(--aube-mono);
-  font-size: 14px !important;
-  font-weight: 700;
-  grid-row: span 2;
-  height: 28px;
-  justify-content: center;
-  width: 28px;
-}
-
 .custom-block {
   --aube-block-accent: var(--aube-muted);
   --aube-block-bg: oklch(0.24 0.018 45 / 0.55);
@@ -725,7 +674,6 @@ body {
 }
 
 .aube-stage {
-  min-height: 430px;
   min-width: 0;
   position: relative;
 }
@@ -738,17 +686,14 @@ body {
     0 1px 0 oklch(0.35 0.012 40 / 0.4) inset,
     0 40px 80px -30px oklch(0 0 0 / 0.6),
     0 0 0 1px oklch(0.28 0.012 40 / 0.4);
-  left: 0;
   overflow: hidden;
-  position: absolute;
-  right: 0;
-  top: 126px;
+  position: relative;
   z-index: 2;
 }
 
 @media (min-width: 961px) {
   .aube-terminal {
-    right: -28px;
+    margin-right: -28px;
   }
 }
 
@@ -1306,10 +1251,6 @@ body {
     font-size: 70px;
   }
 
-  .aube-stage {
-    min-height: 440px;
-  }
-
   .aube-proof {
     grid-template-columns: 1fr;
   }
@@ -1382,14 +1323,6 @@ body {
   .aube-stat-tip:hover [role="tooltip"],
   .aube-stat-tip:focus-within [role="tooltip"] {
     transform: translateY(0);
-  }
-
-  .aube-stage {
-    min-height: 500px;
-  }
-
-  .aube-terminal {
-    top: 146px;
   }
 
   .aube-clx {

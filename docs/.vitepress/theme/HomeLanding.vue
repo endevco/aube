@@ -279,14 +279,6 @@ watch(progressBarEl, (el, previousEl) => {
       </div>
 
       <div class="aube-stage" aria-label="Aube install preview">
-        <div class="aube-beta-note" role="note">
-          <span class="aube-beta-mark" aria-hidden="true">!</span>
-          <strong>Beta software.</strong>
-          <span>
-            Aube should have <a href="/pnpm-users">feature parity with pnpm</a>,
-            but it has not been tested in many projects yet. There will be bugs.
-          </span>
-        </div>
         <div class="aube-terminal" aria-label="Interactive install output">
           <div class="aube-terminal-bar">
             <span></span>
