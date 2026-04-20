@@ -17,6 +17,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | List of packages to ignore during update checks. |
 | [`supportedArchitectures`](#setting-supportedarchitectures) | `object` | Specify architectures for optional dependency installation. |
 | [`ignoredOptionalDependencies`](#setting-ignoredoptionaldependencies) | `list<string>` | Skip optional dependencies by name. |
+| [`pnpmfilePath`](#setting-pnpmfilepath) | `string` | Location of the pnpmfile.cjs hook file. |
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
@@ -236,6 +237,21 @@ Skip optional dependencies by name.
 
 Named entries are skipped even if their platform/arch matches. Distinct
 from `--no-optional`, which drops *all* optional deps at install time.
+
+### `pnpmfilePath` {#setting-pnpmfilepath}
+
+Location of the pnpmfile.cjs hook file.
+
+- Type: `string`
+- Default: `undefined`
+- Environment: `npm_config_pnpmfile_path`, `NPM_CONFIG_PNPMFILE_PATH`
+- Workspace YAML keys: `pnpmfilePath`
+
+Workspace-scoped override for the `.pnpmfile.cjs` discovery path.
+Defaults to `<project>/.pnpmfile.cjs`. Relative paths resolve against
+the workspace root; absolute paths are used as-is. A path that points
+at a missing file is a hard miss — aube emits a warning and runs with
+no pnpmfile rather than silently falling back to the default.
 
 ### `minimumReleaseAge` {#setting-minimumreleaseage}
 
