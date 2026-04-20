@@ -149,9 +149,7 @@ jobs:
         with:
           ref: refs/tags/${{ needs.release-plz-release.outputs.tag }}
           submodules: recursive
-      - uses: Swatinem/rust-cache@v2
-      - name: Install communique
-        run: cargo install communique --locked
+      - uses: jdx/mise-action@v2
       - name: Enhance GitHub release with communique
         continue-on-error: true
         env:
