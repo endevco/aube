@@ -218,6 +218,7 @@ Specify architectures for optional dependency installation.
 - Default: `undefined`
 - Environment: `npm_config_supported_architectures`, `NPM_CONFIG_SUPPORTED_ARCHITECTURES`
 - .npmrc keys: `supportedArchitectures`, `supported-architectures`
+- Workspace YAML keys: `supportedArchitectures`
 
 Override the current platform/arch/libc triple used to filter optional
 dependencies. Useful when generating a lockfile for a target platform
@@ -231,6 +232,7 @@ Skip optional dependencies by name.
 - Default: `undefined`
 - Environment: `npm_config_ignored_optional_dependencies`, `NPM_CONFIG_IGNORED_OPTIONAL_DEPENDENCIES`
 - .npmrc keys: `ignoredOptionalDependencies`, `ignored-optional-dependencies`
+- Workspace YAML keys: `ignoredOptionalDependencies`
 
 Named entries are skipped even if their platform/arch matches. Distinct
 from `--no-optional`, which drops *all* optional deps at install time.
