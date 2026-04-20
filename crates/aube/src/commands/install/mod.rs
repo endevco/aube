@@ -2288,10 +2288,35 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             "global virtual store {from} → {to}; removing {} and reinstalling from scratch",
             modules_dir_path.display()
         );
-        let _ = std::fs::remove_dir_all(&modules_dir_path);
-        if !aube_dir.starts_with(&modules_dir_path) {
-            let _ = std::fs::remove_dir_all(&aube_dir);
+        // Hard-fail the install on a wipe failure instead of swallowing
+        // the error. We've already told the user a wipe was happening,
+        // so proceeding past a half-complete removal would land on the
+        // exact stale mixed-mode tree this guard exists to prevent —
+        // worse than aborting with a clear error the user can act on
+        // (locked file on Windows, permissions, busy mount). A
+        // `NotFound` race (concurrent removal, user deleted the tree
+        // between our classification and the wipe) is benign and stays
+        // silent so the install can proceed.
+        if let Err(e) = std::fs::remove_dir_all(&modules_dir_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(miette!(
+                "global virtual store transition: failed to remove {}: {e}",
+                modules_dir_path.display()
+            ));
         }
+        if !aube_dir.starts_with(&modules_dir_path)
+            && let Err(e) = std::fs::remove_dir_all(&aube_dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(miette!(
+                "global virtual store transition: failed to remove {}: {e}",
+                aube_dir.display()
+            ));
+        }
+        // State-file removal is best-effort: a stale sidecar the next
+        // install can't read just degrades to a fresh-install verdict,
+        // which is exactly what we want here anyway.
         let _ = state::remove_state(&cwd);
     }
 
