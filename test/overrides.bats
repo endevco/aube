@@ -389,6 +389,34 @@ teardown() {
 	assert_failure
 }
 
+@test "pnpm-workspace.yaml overrides survive --frozen-lockfile" {
+	# pnpm v10 moved overrides to pnpm-workspace.yaml. The resolver has
+	# always read them, but the lockfile drift check used to compare
+	# against `package.json`'s overrides only — so the second run (with
+	# --frozen-lockfile) rejected the lockfile with "manifest removes".
+	# Regression for #174.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-ws-overrides",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" }
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages: []
+		overrides:
+		  is-number: 7.0.0
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-number@7.0.0
+
+	# Same project, --frozen-lockfile. Must NOT claim drift.
+	run aube install --frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-number@7.0.0
+}
+
 @test "changing overrides re-resolves the lockfile on next install" {
 	# First install with no override.
 	cat >package.json <<-'EOF'

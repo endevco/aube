@@ -65,20 +65,29 @@ pub fn split_patch_key(key: &str) -> Result<(String, String)> {
 }
 
 /// Read every patch declared in the project's `package.json` and
-/// return them keyed by `name@version`. Missing patch files become a
-/// hard error — that matches pnpm, which refuses to install with a
+/// `pnpm-workspace.yaml` and return them keyed by `name@version`.
+/// Workspace-yaml entries (pnpm v10+ canonical location) win over
+/// `package.json` on key conflict. Missing patch files become a hard
+/// error — that matches pnpm, which refuses to install with a
 /// declared-but-missing patch.
 pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
+    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+
     let manifest_path = cwd.join("package.json");
-    if !manifest_path.exists() {
-        return Ok(BTreeMap::new());
+    if manifest_path.exists() {
+        let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
+            .map_err(miette::Report::new)
+            .wrap_err("failed to read package.json")?;
+        entries.extend(manifest.pnpm_patched_dependencies());
     }
-    let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
+
+    let ws_config = aube_manifest::workspace::WorkspaceConfig::load(cwd)
         .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+        .wrap_err("failed to read pnpm-workspace.yaml")?;
+    entries.extend(ws_config.patched_dependencies);
 
     let mut out = BTreeMap::new();
-    for (key, rel) in manifest.pnpm_patched_dependencies() {
+    for (key, rel) in entries {
         let (name, version) = split_patch_key(&key)?;
         let path = cwd.join(&rel);
         let content = std::fs::read_to_string(&path)

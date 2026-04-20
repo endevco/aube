@@ -2157,7 +2157,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             && matches!(
                 parsed,
                 Ok((g, _))
-                    if matches!(g.check_drift_workspace(&manifests), DriftStatus::Fresh)
+                    if matches!(
+                        g.check_drift_workspace(&manifests, &ws_config_shared.overrides),
+                        DriftStatus::Fresh,
+                    )
                         && matches!(g.check_catalogs_drift(&workspace_catalogs), DriftStatus::Fresh)
             );
         if fresh {
@@ -2379,7 +2382,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                          help: run without --frozen-lockfile to update the lockfile"
                         ));
                     }
-                    if let DriftStatus::Stale { reason } = graph.check_drift_workspace(&manifests) {
+                    if let DriftStatus::Stale { reason } =
+                        graph.check_drift_workspace(&manifests, &ws_config_shared.overrides)
+                    {
                         return Err(miette!(
                             "lockfile is out of date with package.json: {reason}\n\
                          help: run without --frozen-lockfile to update the lockfile, \
@@ -2402,7 +2407,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             );
                             Err(aube_lockfile::Error::NotFound(cwd.clone()))
                         } else {
-                            match graph.check_drift_workspace(&manifests) {
+                            match graph
+                                .check_drift_workspace(&manifests, &ws_config_shared.overrides)
+                            {
                                 DriftStatus::Fresh => Ok((graph, kind)),
                                 DriftStatus::Stale { reason } => {
                                     tracing::debug!(

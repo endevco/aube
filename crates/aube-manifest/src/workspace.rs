@@ -134,6 +134,14 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub overrides: BTreeMap<String, String>,
 
+    /// `name@version` → patch-file-path map. pnpm v10 moved this out
+    /// of `package.json`'s `pnpm.patchedDependencies` so users can
+    /// document *why* a patch exists with YAML comments; aube merges
+    /// both locations, with workspace-yaml entries winning on key
+    /// conflict (same precedence as `overrides`).
+    #[serde(default, rename = "patchedDependencies")]
+    pub patched_dependencies: BTreeMap<String, String>,
+
     /// Extend package metadata during resolution.
     #[serde(default)]
     pub package_extensions: BTreeMap<String, serde_yaml::Value>,
@@ -650,6 +658,31 @@ overrides:
         let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.overrides.get("foo").unwrap(), "1.0.0");
         assert_eq!(config.overrides.get("bar").unwrap(), "npm:baz@^2");
+    }
+
+    #[test]
+    fn test_patched_dependencies() {
+        // pnpm v10 lets users declare patches in pnpm-workspace.yaml so
+        // they can annotate each patch with YAML comments explaining
+        // WHY the patch exists — something package.json's JSON syntax
+        // can't host. Parse shape matches `pnpm.patchedDependencies`.
+        let yaml = r#"
+patchedDependencies:
+  "is-positive@3.1.0": patches/is-positive@3.1.0.patch
+  "@scope/pkg@1.0.0": patches/scope-pkg.patch
+"#;
+        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config
+                .patched_dependencies
+                .get("is-positive@3.1.0")
+                .unwrap(),
+            "patches/is-positive@3.1.0.patch"
+        );
+        assert_eq!(
+            config.patched_dependencies.get("@scope/pkg@1.0.0").unwrap(),
+            "patches/scope-pkg.patch"
+        );
     }
 
     #[test]
