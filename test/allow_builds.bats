@@ -128,6 +128,43 @@ JSON
 	assert_output "ran:aube-test-builds-marker@1.0.0"
 }
 
+@test "top-level trustedDependencies (bun format) allows a dep script" {
+	cat >package.json <<'JSON'
+{
+  "name": "allow-builds-trusted-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "trustedDependencies": ["aube-test-builds-marker"]
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+	run cat aube-builds-marker.txt
+	assert_output "ran:aube-test-builds-marker@1.0.0"
+}
+
+@test "trustedDependencies is overridden by neverBuiltDependencies" {
+	cat >package.json <<'JSON'
+{
+  "name": "allow-builds-trusted-denied-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "trustedDependencies": ["aube-test-builds-marker"],
+  "pnpm": {
+    "neverBuiltDependencies": ["aube-test-builds-marker"]
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_not_exists aube-builds-marker.txt
+}
+
 @test "pnpm.neverBuiltDependencies denies a dep already on the allowlist" {
 	# Cross-format precedence: an allow in `onlyBuiltDependencies`
 	# is overridden by a deny in `neverBuiltDependencies`, matching

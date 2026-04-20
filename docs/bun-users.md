@@ -41,11 +41,13 @@ future installs keep writing `aube-lock.yaml`.
   [mise](https://mise.jdx.dev) (`mise use node@22`) if you need a Node
   version alongside or in place of Bun.
 - Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`)
-  follow the pnpm v11 allowlist rather than Bun's `trustedDependencies`
-  list. aube runs them only for packages you've explicitly allowlisted
-  via `pnpm.allowBuilds`, `pnpm.onlyBuiltDependencies`, or
-  `aube approve-builds`. aube does not read `trustedDependencies`, so
-  anything you had listed there needs to be moved to one of the pnpm
-  fields before aube will run its scripts.
+  are gated by an allowlist. aube reads Bun's top-level
+  `trustedDependencies` array in addition to pnpm's
+  `pnpm.allowBuilds` / `pnpm.onlyBuiltDependencies`, so an existing
+  Bun manifest keeps running its install scripts without edits.
+  `aube approve-builds` writes new entries into
+  `pnpm-workspace.yaml`'s `onlyBuiltDependencies`; a package in
+  `pnpm.neverBuiltDependencies` is denied even if it appears in
+  `trustedDependencies`.
 
 Reference: [bun install](https://bun.sh/docs/cli/install)

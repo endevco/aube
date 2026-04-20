@@ -463,6 +463,10 @@ pub(crate) fn build_policy_from_sources(
     }
     let mut only_built = manifest.pnpm_only_built_dependencies();
     only_built.extend(workspace.only_built_dependencies.iter().cloned());
+    // Bun's top-level `trustedDependencies` feeds the same allowlist so
+    // bun projects migrating to aube keep running their install scripts
+    // without moving the list under `pnpm.onlyBuiltDependencies` first.
+    only_built.extend(manifest.trusted_dependencies());
     let mut never_built = manifest.pnpm_never_built_dependencies();
     never_built.extend(workspace.never_built_dependencies.iter().cloned());
     aube_scripts::BuildPolicy::from_config(
