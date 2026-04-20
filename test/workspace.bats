@@ -81,7 +81,7 @@ _setup_workspace_fixture() {
 	# effect disappears — without an explicit `mkdirp(root_nm)`
 	# the workspace install fails on the first top-level symlink.
 	# Name chosen to avoid colliding with the global store that BATS
-	# rebases to $HOME/.aube-store/v1/files — setting
+	# rebases under $XDG_DATA_HOME/aube-store/v1/files — setting
 	# virtual-store-dir=.aube-store would make us wipe our own cache.
 	cat >>.npmrc <<-'EOF'
 

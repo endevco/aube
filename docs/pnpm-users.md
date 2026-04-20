@@ -42,7 +42,7 @@ Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
 | --- | --- | --- |
 | Default lockfile (new projects) | `pnpm-lock.yaml` | `aube-lock.yaml` |
 | Virtual store | `node_modules/.pnpm/` | `node_modules/.aube/` |
-| Global content-addressable store | `~/.pnpm-store/` | `~/.aube-store/v1/files/` |
+| Global content-addressable store | `~/.pnpm-store/` | `$XDG_DATA_HOME/aube-store/v1/files/` (defaulting to `~/.local/share/aube-store/v1/files/`) |
 | Install state | `node_modules/.modules.yaml` | `node_modules/.aube-state` |
 | Workspace manifest | `pnpm-workspace.yaml` | `aube-workspace.yaml` |
 
@@ -60,9 +60,10 @@ projects).
 ## What's different
 
 - **Separate install locations.** Installs go into `node_modules/.aube/` and
-  `~/.aube-store/` instead of pnpm's `.pnpm/` and `~/.pnpm-store/`. If a
-  project already has a pnpm-built `node_modules`, aube installs alongside
-  — the two virtual stores live side by side.
+  `$XDG_DATA_HOME/aube-store/` (defaulting to `~/.local/share/aube-store/`)
+  instead of pnpm's `.pnpm/` and `~/.pnpm-store/`. If a project already has
+  a pnpm-built `node_modules`, aube installs alongside — the two virtual
+  stores live side by side.
 - **Default YAML filenames for new projects.** A project with no lockfile
   yet gets `aube-lock.yaml`. If it already has `pnpm-lock.yaml` (or any
   other supported lockfile — `package-lock.json`, `npm-shrinkwrap.json`,

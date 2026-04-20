@@ -58,25 +58,26 @@ teardown() {
 	# Regression: the install fetch phase's `AlreadyLinked` fast
 	# path used to fire inside `aube fetch`, which meant if a prior
 	# `aube install` had built `node_modules/.aube/<dep>` but the
-	# global `~/.aube-store/` was then wiped (e.g. Docker layer
-	# caching, where node_modules and the store live in different
-	# cached layers), `aube fetch` would silently do nothing and
-	# leave the store empty. The caller — `fetch_packages` — now
-	# opts out of the shortcut so every package goes through
-	# `store.load_index`, which detects the missing store file and
-	# re-downloads.
+	# global aube store was then wiped (e.g. Docker layer caching,
+	# where node_modules and the store live in different cached
+	# layers), `aube fetch` would silently do nothing and leave the
+	# store empty. The caller — `fetch_packages` — now opts out of
+	# the shortcut so every package goes through `store.load_index`,
+	# which detects the missing store file and re-downloads.
 	_setup_basic_fixture
+
+	local aube_store="$XDG_DATA_HOME/aube-store"
 
 	# First install populates both node_modules and the store.
 	run aube install
 	assert_success
 	assert_dir_exists node_modules/.aube
-	# Isolated HOME means the store lives under $HOME/.aube-store.
-	assert_dir_exists "$HOME/.aube-store/v1/files"
+	# Isolated HOME + XDG_DATA_HOME means the store lives there.
+	assert_dir_exists "$aube_store/v1/files"
 
 	# Wipe the store but leave node_modules intact — the case the
 	# `AlreadyLinked` shortcut would have silently broken.
-	rm -rf "$HOME/.aube-store"
+	rm -rf "$aube_store"
 	# Also clear the per-package index cache so `load_index` is
 	# forced to fall through to a real tarball fetch when the
 	# store file is missing.
@@ -86,10 +87,10 @@ teardown() {
 	# short-circuit on the existing .aube symlinks.
 	run aube fetch
 	assert_success
-	assert_dir_exists "$HOME/.aube-store/v1/files"
+	assert_dir_exists "$aube_store/v1/files"
 
 	# Sanity check: the store should now contain at least one file.
-	run bash -c "find '$HOME/.aube-store/v1/files' -type f | head -1"
+	run bash -c "find '$aube_store/v1/files' -type f | head -1"
 	assert_success
 	refute_output ""
 }

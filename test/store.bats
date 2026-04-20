@@ -21,10 +21,28 @@ teardown() {
 @test "aube store path prints an aube-store path under HOME" {
 	run aube store path
 	assert_success
-	assert_output --partial ".aube-store"
+	assert_output --partial "aube-store"
 	# HOME is isolated to the test temp dir, so the store path must live
-	# inside it — proves path() honors $HOME and isn't hardcoded.
+	# inside it — proves path() honors $HOME / XDG_DATA_HOME and isn't
+	# hardcoded.
 	assert_output --partial "$HOME"
+}
+
+@test "aube store path defaults to XDG_DATA_HOME" {
+	# Fresh HOME with no legacy ~/.aube-store/ should resolve to the
+	# XDG data dir.
+	run aube store path
+	assert_success
+	assert_output "$XDG_DATA_HOME/aube-store/v1/files"
+}
+
+@test "aube store path reuses legacy ~/.aube-store/ when it exists" {
+	# Upgraders from pre-XDG aube must not get their populated store
+	# silently orphaned when the XDG-compliant default ships.
+	mkdir -p "$HOME/.aube-store/v1/files"
+	run aube store path
+	assert_success
+	assert_output "$HOME/.aube-store/v1/files"
 }
 
 @test "aube store path honors store-dir from .npmrc and appends v1/files" {

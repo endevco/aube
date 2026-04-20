@@ -60,5 +60,5 @@ teardown() {
 @test "aube store path" {
 	run aube store path
 	assert_success
-	assert_output --partial ".aube-store"
+	assert_output --partial "aube-store"
 }

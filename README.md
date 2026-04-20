@@ -185,7 +185,7 @@ aube ignored-builds
 
 ## Package Layout
 
-aube uses an isolated `node_modules` layout. Packages are linked through `node_modules/.aube/`, and package files are stored once in `~/.aube-store/`.
+aube uses an isolated `node_modules` layout. Packages are linked through `node_modules/.aube/`, and package files are stored once in `$XDG_DATA_HOME/aube-store/` (defaulting to `~/.local/share/aube-store/`).
 
 That means:
 

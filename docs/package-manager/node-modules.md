@@ -34,8 +34,12 @@ packages are visible at the top level.
 Package files are stored by content hash under:
 
 ```text
-~/.aube-store/v1/files/
+$XDG_DATA_HOME/aube-store/v1/files/
 ```
+
+This defaults to `~/.local/share/aube-store/v1/files/` when
+`$XDG_DATA_HOME` is unset. An existing `~/.aube-store/` from an older
+install is kept in place.
 
 aube imports files from that store into the virtual store with reflinks,
 hardlinks, or copies depending on filesystem support and
