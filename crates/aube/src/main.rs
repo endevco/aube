@@ -654,9 +654,9 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     // Snapshot the global frozen-lockfile flags so every install entry
     // point (direct `install`, chained `add`/`remove`/`update`, bare
     // `aube`, auto-install via `ensure_installed`) honors them.
-    let global_frozen = frozen_flags_from_cli(&cli);
+    let global_frozen = frozen_override_from_cli(&cli);
     let global_gvs = global_virtual_store_flags_from_cli(&cli);
-    commands::set_global_frozen_flags(global_frozen);
+    commands::set_global_frozen_override(global_frozen);
     commands::set_global_virtual_store_flags(global_gvs);
     commands::set_registry_override(cli.registry.clone());
     commands::set_global_output_flags(commands::GlobalOutputFlags {
@@ -763,7 +763,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             )?;
             let nested = Cli::try_parse_from(argv).into_diagnostic()?;
             let nested_filter = compute_effective_filter(&nested);
-            let nested_frozen = merge_nested_frozen_flags(global_frozen, &nested);
+            let nested_frozen = merge_nested_frozen_override(global_frozen, &nested);
             let nested_gvs = merge_nested_global_virtual_store_flags(global_gvs, &nested);
             let _registry_guard = commands::scoped_registry_override(nested.registry.clone());
             match nested.command {
@@ -1311,11 +1311,15 @@ fn compute_effective_filter(cli: &Cli) -> aube_workspace::selector::EffectiveFil
     }
 }
 
-fn frozen_flags_from_cli(cli: &Cli) -> commands::install::GlobalFrozenFlags {
-    commands::install::GlobalFrozenFlags {
-        frozen: cli.frozen_lockfile,
-        no_frozen: cli.no_frozen_lockfile,
-        prefer_frozen: cli.prefer_frozen_lockfile,
+fn frozen_override_from_cli(cli: &Cli) -> Option<commands::install::FrozenOverride> {
+    if cli.frozen_lockfile {
+        Some(commands::install::FrozenOverride::Frozen)
+    } else if cli.no_frozen_lockfile {
+        Some(commands::install::FrozenOverride::No)
+    } else if cli.prefer_frozen_lockfile {
+        Some(commands::install::FrozenOverride::Prefer)
+    } else {
+        None
     }
 }
 
@@ -1326,15 +1330,11 @@ fn global_virtual_store_flags_from_cli(cli: &Cli) -> commands::install::GlobalVi
     }
 }
 
-fn merge_nested_frozen_flags(
-    outer: commands::install::GlobalFrozenFlags,
+fn merge_nested_frozen_override(
+    outer: Option<commands::install::FrozenOverride>,
     nested: &Cli,
-) -> commands::install::GlobalFrozenFlags {
-    if outer.frozen || outer.no_frozen || outer.prefer_frozen {
-        outer
-    } else {
-        frozen_flags_from_cli(nested)
-    }
+) -> Option<commands::install::FrozenOverride> {
+    outer.or_else(|| frozen_override_from_cli(nested))
 }
 
 fn merge_nested_global_virtual_store_flags(
@@ -1350,7 +1350,7 @@ fn merge_nested_global_virtual_store_flags(
 
 async fn run_install_command(
     args: commands::install::InstallArgs,
-    global_frozen: commands::install::GlobalFrozenFlags,
+    global_frozen: Option<commands::install::FrozenOverride>,
     global_gvs: commands::install::GlobalVirtualStoreFlags,
     filter: aube_workspace::selector::EffectiveFilter,
     workspace_root_already: bool,

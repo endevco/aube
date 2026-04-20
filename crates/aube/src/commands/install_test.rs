@@ -34,10 +34,8 @@ pub async fn run(script_args: ScriptArgs) -> miette::Result<()> {
             env: &env,
             cli: &[],
         };
-        let mode = install::FrozenMode::from_flags(
-            false,
-            false,
-            false,
+        let mode = install::FrozenMode::from_override(
+            None,
             aube_settings::resolved::prefer_frozen_lockfile(&ctx),
         );
         install::run(install::InstallOptions::with_mode(mode)).await?;

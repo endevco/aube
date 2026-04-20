@@ -53,9 +53,7 @@ pub async fn run(args: CiArgs) -> miette::Result<()> {
     let opts = install::InstallOptions {
         project_dir: None,
         mode: install::FrozenMode::Frozen,
-        prod: false,
-        dev: false,
-        no_optional,
+        dep_selection: install::DepSelection::from_flags(false, false, no_optional),
         ignore_pnpmfile: false,
         ignore_scripts,
         lockfile_only: false,

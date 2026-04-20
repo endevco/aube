@@ -332,6 +332,7 @@ dependencies = [
  "flate2",
  "node-semver",
  "pathdiff",
+ "rustc-hash",
  "serde_json",
  "sha2 0.10.9",
  "tar",

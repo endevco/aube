@@ -19,6 +19,7 @@
 
 use crate::version_satisfies;
 use aube_lockfile::{DepType, DirectDep, LockedPackage, LockfileGraph};
+use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A peer dependency whose declared range doesn't match the version the
@@ -135,12 +136,11 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
         let Some(direct_deps) = graph.importers.get(&importer_path) else {
             continue;
         };
-        let mut satisfied: std::collections::HashSet<String> =
-            direct_deps.iter().map(|d| d.name.clone()).collect();
+        let mut satisfied: FxHashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
 
         let mut queue: std::collections::VecDeque<String> =
             direct_deps.iter().map(|d| d.dep_path.clone()).collect();
-        let mut walked: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut walked: FxHashSet<String> = FxHashSet::default();
         // Additions are gathered into a separate vec so we don't mutate
         // the importer's direct-dep list while still borrowing from it.
         let mut additions: Vec<DirectDep> = Vec::new();
@@ -655,7 +655,7 @@ fn apply_peer_contexts_once(
             // parent that records the returned tail will complete its own
             // insertion before the recursion unwinds, so by the time
             // anything reads the graph, every referenced dep_path exists.
-            let mut visiting: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut visiting: FxHashSet<String> = FxHashSet::default();
             let new_dep_path = visit_peer_context(
                 &dep.dep_path,
                 &canonical,
@@ -973,7 +973,7 @@ fn visit_peer_context(
     ancestor_scope: &BTreeMap<String, String>,
     root_scope: &BTreeMap<String, String>,
     out_packages: &mut BTreeMap<String, LockedPackage>,
-    visiting: &mut std::collections::HashSet<String>,
+    visiting: &mut FxHashSet<String>,
     options: &PeerContextOptions,
 ) -> Option<String> {
     let pkg = graph.packages.get(input_dep_path)?;
@@ -1195,7 +1195,7 @@ fn visit_peer_context(
     let peer_context_versions: BTreeMap<String, String> = peer_context.iter().cloned().collect();
 
     let mut new_dependencies: BTreeMap<String, String> = BTreeMap::new();
-    let mut visited_dep_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut visited_dep_names: FxHashSet<String> = FxHashSet::default();
 
     for (child_name, child_version_tail) in &pkg.dependencies {
         // If this child is a declared peer, its tail comes from the

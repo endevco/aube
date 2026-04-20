@@ -54,6 +54,12 @@ junction = "1"
 # Parallelism
 rayon = "1"
 
+# Non-cryptographic FxHash for internal maps keyed on already-signed
+# data (package names, dep paths, lockfile keys). Faster than the std
+# SipHash default; DoS resistance is unnecessary because the inputs
+# come from locked/signed manifests.
+rustc-hash = "2"
+
 # Encoding
 base64 = "0.22"
 

@@ -7,11 +7,13 @@ use miette::{Context, IntoDiagnostic, miette};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
+mod dep_selection;
 mod frozen;
 mod settings;
 mod side_effects_cache;
 
-pub use frozen::{FrozenMode, GlobalFrozenFlags, GlobalVirtualStoreFlags};
+pub use dep_selection::DepSelection;
+pub use frozen::{FrozenMode, FrozenOverride, GlobalVirtualStoreFlags};
 pub(crate) use settings::PeerDependencyRules;
 pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_root};
 
@@ -179,7 +181,7 @@ impl InstallArgs {
     /// lower-precedence sources with their clap-derived default.
     pub fn to_cli_flag_bag(
         &self,
-        global: GlobalFrozenFlags,
+        global: Option<FrozenOverride>,
         global_gvs: GlobalVirtualStoreFlags,
     ) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
@@ -199,14 +201,9 @@ impl InstallArgs {
             out.push(("shamefully-hoist".to_string(), "true".to_string()));
         }
         out.extend(global_gvs.to_cli_flag_bag());
-        if global.frozen {
-            out.push(("frozen-lockfile".to_string(), "true".to_string()));
-        }
-        if global.no_frozen {
-            out.push(("frozen-lockfile".to_string(), "false".to_string()));
-        }
-        if global.prefer_frozen {
-            out.push(("prefer-frozen-lockfile".to_string(), "true".to_string()));
+        if let Some(ovr) = global {
+            let (k, v) = ovr.cli_flag_bag_entry();
+            out.push((k.to_string(), v.to_string()));
         }
         if let Some(n) = self.network_concurrency {
             out.push(("network-concurrency".to_string(), n.to_string()));
@@ -238,7 +235,7 @@ impl InstallArgs {
     /// field that threads the same values into `install::run`.
     pub fn into_options(
         self,
-        global: GlobalFrozenFlags,
+        global: Option<FrozenOverride>,
         yaml_prefer_frozen: Option<bool>,
         cli_flags: Vec<(String, String)>,
         env_snapshot: Vec<(String, String)>,
@@ -246,16 +243,11 @@ impl InstallArgs {
         let force = self.force;
         let mode = if self.fix_lockfile {
             FrozenMode::Fix
-        } else if force && !(global.frozen || global.no_frozen || global.prefer_frozen) {
+        } else if force && global.is_none() {
             // `--force` without an explicit frozen mode re-resolves.
             FrozenMode::No
         } else {
-            FrozenMode::from_flags(
-                global.frozen,
-                global.no_frozen,
-                global.prefer_frozen,
-                yaml_prefer_frozen,
-            )
+            FrozenMode::from_override(global, yaml_prefer_frozen)
         };
         let network_mode = if self.offline {
             aube_registry::NetworkMode::Offline
@@ -267,13 +259,11 @@ impl InstallArgs {
         // pnpm parity: explicit `--frozen-lockfile` errors on a missing
         // lockfile (ERR_PNPM_NO_LOCKFILE), but the auto-CI default does
         // not — CI without a lockfile just does a regular resolve + write.
-        let strict_no_lockfile = global.frozen;
+        let strict_no_lockfile = matches!(global, Some(FrozenOverride::Frozen));
         InstallOptions {
             project_dir: None,
             mode,
-            prod: self.prod,
-            dev: self.dev,
-            no_optional: self.no_optional,
+            dep_selection: DepSelection::from_flags(self.prod, self.dev, self.no_optional),
             ignore_pnpmfile: self.ignore_pnpmfile,
             ignore_scripts: self.ignore_scripts,
             lockfile_only: self.lockfile_only,
@@ -299,15 +289,9 @@ pub struct InstallOptions {
     /// unset, install discovers the project from the logical command cwd.
     pub project_dir: Option<std::path::PathBuf>,
     pub mode: FrozenMode,
-    /// `--prod` / `--production` / `-P`: skip devDependencies and everything
-    /// only reachable through them.
-    pub prod: bool,
-    /// `--dev` / `-D`: install only devDependencies and everything
-    /// reachable through them.
-    pub dev: bool,
-    /// `--no-optional`: skip `optionalDependencies` and everything only
-    /// reachable through them.
-    pub no_optional: bool,
+    /// Which dep sections to keep in the materialized graph
+    /// (`--prod` / `--dev` / `--no-optional`, in any valid combo).
+    pub dep_selection: DepSelection,
     /// `--ignore-pnpmfile`: don't load or execute `.pnpmfile.cjs`
     /// hooks for this install, even if one exists in the project root.
     pub ignore_pnpmfile: bool,
@@ -387,9 +371,7 @@ impl InstallOptions {
         Self {
             project_dir: None,
             mode,
-            prod: false,
-            dev: false,
-            no_optional: false,
+            dep_selection: DepSelection::All,
             ignore_pnpmfile: false,
             ignore_scripts: false,
             lockfile_only: false,
@@ -1676,9 +1658,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let warm_path_eligible = matches!(opts.mode, FrozenMode::Prefer)
         && !opts.force
         && !opts.lockfile_only
-        && !opts.prod
-        && !opts.dev
-        && !opts.no_optional
+        && !opts.dep_selection.is_filtered()
         && !opts.merge_git_branch_lockfiles
         && !opts.strict_no_lockfile
         && !opts.dangerously_allow_all_builds
@@ -3293,39 +3273,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     only reachable through them. The filtered graph is what gets passed
     //     to the linker, so node_modules won't contain the excluded deps.
     //     The lockfile on disk is untouched.
-    let mut graph_for_link = if opts.prod || opts.dev || opts.no_optional {
+    let mut graph_for_link = if opts.dep_selection.is_filtered() {
         let before = graph.packages.len();
-        let prod = opts.prod;
-        let dev = opts.dev;
-        let no_optional = opts.no_optional;
+        let sel = opts.dep_selection;
         let filtered = graph.filter_deps(|d| {
-            if prod && d.dep_type == aube_lockfile::DepType::Dev {
+            if sel.prod_only() && d.dep_type == aube_lockfile::DepType::Dev {
                 return false;
             }
-            if dev && d.dep_type != aube_lockfile::DepType::Dev {
+            if sel.dev_only() && d.dep_type != aube_lockfile::DepType::Dev {
                 return false;
             }
-            if no_optional && d.dep_type == aube_lockfile::DepType::Optional {
+            if sel.skip_optional() && d.dep_type == aube_lockfile::DepType::Optional {
                 return false;
             }
             true
         });
         let dropped = before - filtered.packages.len();
         if dropped > 0 {
-            let label = if opts.dev && opts.no_optional {
-                "--dev --no-optional"
-            } else if opts.dev {
-                "--dev"
-            } else if opts.prod && opts.no_optional {
-                "--prod --no-optional"
-            } else if opts.prod {
-                "--prod"
-            } else if opts.no_optional {
-                "--no-optional"
-            } else {
-                unreachable!()
-            };
-            tracing::debug!("{label}: skipping {dropped} packages");
+            tracing::debug!("{}: skipping {dropped} packages", sel.label());
         }
         filtered
     } else {
@@ -3716,7 +3681,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //    exist, and writing it would lie on the next auto-install
     //    freshness check.
     if !virtual_store_only {
-        state::write_state(&cwd, opts.prod || opts.dev, &opts.cli_flags)
+        state::write_state(&cwd, opts.dep_selection.prod_or_dev_axis(), &opts.cli_flags)
             .into_diagnostic()
             .wrap_err("failed to write install state")?;
     }

@@ -57,6 +57,9 @@ pub struct DeployArgs {
     /// Install only production dependencies (default).
     ///
     /// Accepted for pnpm compatibility.
+    // Intentionally unread by the deploy code: production is the deploy
+    // default, so the `!args.dev` axis already captures it. Reach for
+    // `!args.dev`, not `args.prod`, when extending the filter.
     #[arg(short = 'P', long, visible_alias = "production")]
     pub prod: bool,
 }
@@ -229,9 +232,7 @@ pub async fn run(
         let opts = InstallOptions {
             project_dir: Some(s.target.clone()),
             mode,
-            prod: !args.dev,
-            dev: args.dev,
-            no_optional: args.no_optional,
+            dep_selection: install::DepSelection::from_flags(!args.dev, args.dev, args.no_optional),
             ignore_pnpmfile: false,
             ignore_scripts: false,
             lockfile_only: false,
