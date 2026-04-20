@@ -230,11 +230,10 @@ pub fn remove_bin_shim(bin_dir: &Path, name: &str) {
         let _ = std::fs::remove_file(bin_dir.join(format!("{name}.cmd")));
         let _ = std::fs::remove_file(bin_dir.join(format!("{name}.ps1")));
     }
-    if let Some(parent) = link_path.parent() {
-        if parent != bin_dir {
+    if let Some(parent) = link_path.parent()
+        && parent != bin_dir {
             let _ = std::fs::remove_dir(parent);
         }
-    }
 }
 
 /// Compute the relative path from `base_dir` to `target`, using
