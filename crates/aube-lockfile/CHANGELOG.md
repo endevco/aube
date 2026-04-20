@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.7...aube-lockfile-v1.0.0-beta.8) - 2026-04-20
+
+### Other
+
+- default to ~/.local/share/aube/store per XDG spec ([#129](https://github.com/endevco/aube/pull/129))
+- *(npm)* tolerate legacy array engines field ([#132](https://github.com/endevco/aube/pull/132))
+- *(npm)* accept string and array funding shapes ([#133](https://github.com/endevco/aube/pull/133))
+
 ## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.6...aube-lockfile-v1.0.0-beta.7) - 2026-04-19
 
 ### Other

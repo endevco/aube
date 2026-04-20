@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-registry-v1.0.0-beta.7...aube-registry-v1.0.0-beta.8) - 2026-04-20
+
+### Other
+
+- quiet retry warnings; settings: kebab-case gvs npmrc aliases ([#139](https://github.com/endevco/aube/pull/139))
+- tolerate legacy array engines shape in packuments ([#138](https://github.com/endevco/aube/pull/138))
+- *(auth)* longest-prefix .npmrc lookup with default-port stripping ([#131](https://github.com/endevco/aube/pull/131))
+- honor NPM_CONFIG_USERCONFIG for user-level .npmrc path ([#130](https://github.com/endevco/aube/pull/130))
+
 ## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-registry-v1.0.0-beta.6...aube-registry-v1.0.0-beta.7) - 2026-04-19
 
 ### Other

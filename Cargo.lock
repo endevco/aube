@@ -194,7 +194,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aube"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "ambient-id",
  "assert_cmd",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "aube-linker"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-lockfile",
  "aube-store",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "aube-lockfile"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-manifest",
  "aube-settings",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "aube-manifest"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "aube-registry"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-manifest",
  "aube-settings",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "aube-resolver"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-lockfile",
  "aube-manifest",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "aube-scripts"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-manifest",
  "thiserror 2.0.18",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "aube-settings"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-manifest",
  "serde",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "aube-store"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "base64",
  "blake3",
@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "aube-workspace"
-version = "1.0.0-beta.7"
+version = "1.0.0-beta.8"
 dependencies = [
  "aube-manifest",
  "glob",

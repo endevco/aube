@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8](https://github.com/endevco/aube/compare/v1.0.0-beta.7...v1.0.0-beta.8) - 2026-04-20
+
+### Other
+
+- rewrite gvs auto-disable warning in plain English ([#140](https://github.com/endevco/aube/pull/140))
+- default to ~/.local/share/aube/store per XDG spec ([#129](https://github.com/endevco/aube/pull/129))
+
 ## [1.0.0-beta.7](https://github.com/endevco/aube/compare/v1.0.0-beta.6...v1.0.0-beta.7) - 2026-04-19
 
 ### Other

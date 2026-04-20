@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.7...aube-settings-v1.0.0-beta.8) - 2026-04-20
+
+### Other
+
+- quiet retry warnings; settings: kebab-case gvs npmrc aliases ([#139](https://github.com/endevco/aube/pull/139))
+- default to ~/.local/share/aube/store per XDG spec ([#129](https://github.com/endevco/aube/pull/129))
+
 ## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.6...aube-settings-v1.0.0-beta.7) - 2026-04-19
 
 ### Other

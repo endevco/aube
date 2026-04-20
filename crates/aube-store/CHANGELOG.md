@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-store-v1.0.0-beta.7...aube-store-v1.0.0-beta.8) - 2026-04-20
+
+### Other
+
+- default to ~/.local/share/aube/store per XDG spec ([#129](https://github.com/endevco/aube/pull/129))
+
 ## [1.0.0-beta.6](https://github.com/endevco/aube/compare/aube-store-v1.0.0-beta.5...aube-store-v1.0.0-beta.6) - 2026-04-19
 
 ### Other
