@@ -1,4 +1,5 @@
 mod commands;
+mod deprecations;
 mod dirs;
 mod engines;
 mod patches;
@@ -360,6 +361,8 @@ enum Commands {
     Deploy(commands::deploy::DeployArgs),
     /// Mark published versions of a package as deprecated on the registry
     Deprecate(commands::deprecate::DeprecateArgs),
+    /// Report deprecated packages in the resolved dependency graph
+    Deprecations(commands::deprecations::DeprecationsArgs),
     /// Manage package distribution tags on the registry
     #[command(visible_alias = "dist-tags")]
     DistTag(commands::dist_tag::DistTagArgs),
@@ -686,6 +689,11 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         }
         Some(Commands::Deprecate(args)) => {
             commands::deprecate::run(args, cli.registry.as_deref()).await?
+        }
+        Some(Commands::Deprecations(args)) => {
+            if let Some(code) = commands::deprecations::run(args).await? {
+                return Ok(Some(code));
+            }
         }
         Some(Commands::DistTag(args)) => commands::dist_tag::run(args).await?,
         Some(Commands::Dlx(args)) => commands::dlx::run(args).await?,

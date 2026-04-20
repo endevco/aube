@@ -15,6 +15,7 @@ pub mod create;
 pub mod dedupe;
 pub mod deploy;
 pub mod deprecate;
+pub mod deprecations;
 pub mod dist_tag;
 pub mod dlx;
 pub mod doctor;

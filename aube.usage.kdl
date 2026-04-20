@@ -258,6 +258,11 @@ cmd deprecate help="Mark published versions of a package as deprecated on the re
     arg <PACKAGE> help="Package spec: `name`, `name@version`, or `name@<range>`" help_long="Package spec: `name`, `name@version`, or `name@<range>`.\n\nOmitting the version deprecates every published version."
     arg <MESSAGE> help="Deprecation message shown to installers" help_long="Deprecation message shown to installers.\n\nPass an empty string to clear an existing deprecation (or use `aube undeprecate`)."
 }
+cmd deprecations help="Report deprecated packages in the resolved dependency graph" {
+    flag --exit-code help="Exit with a non-zero status if any deprecations are found"
+    flag --json help="Emit JSON instead of the default text layout"
+    flag --transitive help="Include transitive dependencies as well as direct ones"
+}
 cmd dist-tag subcommand_required=#true help="Manage package distribution tags on the registry" {
     alias dist-tags
     cmd add help="Add or update a dist-tag on a package" {

@@ -2415,6 +2415,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         }
     };
 
+    // Deprecation messages from freshly-resolved packages. Only the
+    // no-lockfile branch below populates this; the lockfile-reuse branch
+    // has no packument in hand. Rendered right before the install summary
+    // once `filter_graph` has culled dropped packages.
+    let deprecations: std::sync::Arc<
+        std::sync::Mutex<Vec<crate::deprecations::DeprecationRecord>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
     let (graph, package_indices, cached_count, fetch_count) = match lockfile_result {
         Ok((mut graph, kind)) => {
             // Drop optional deps that don't match the current platform
@@ -2649,6 +2657,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // spawn below the resolver.await for the consumer side.
             let (materialize_tx, materialize_rx) =
                 tokio::sync::mpsc::unbounded_channel::<(String, aube_store::PackageIndex)>();
+            // Clone the shared deprecations accumulator into the
+            // spawned task. The install command reads it back after
+            // `filter_graph` prunes the post-resolve graph.
+            let fetch_deprecations_tx = deprecations.clone();
             let fetch_handle = tokio::spawn(async move {
                 let semaphore =
                     std::sync::Arc::new(tokio::sync::Semaphore::new(fetch_network_concurrency));
@@ -2657,6 +2669,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 let mut cached_count = 0usize;
 
                 while let Some(pkg) = resolved_rx.recv().await {
+                    if let Some(ref msg) = pkg.deprecated {
+                        fetch_deprecations_tx.lock().unwrap().push(
+                            crate::deprecations::DeprecationRecord {
+                                name: pkg.name.clone(),
+                                version: pkg.version.clone(),
+                                dep_path: pkg.dep_path.clone(),
+                                message: msg.clone(),
+                            },
+                        );
+                    }
                     // Defer platform-mismatched registry packages to
                     // the post-filter_graph catch-up pass: almost all
                     // of them are optional natives that `filter_graph`
@@ -3764,6 +3786,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             .any(|p| p.local_source.is_none())
     {
         return Err(miette!("no packages were linked — something went wrong"));
+    }
+
+    // Deprecation warnings, gated by the `deprecationWarnings` setting.
+    // Prune to packages still in the finalized graph so we don't warn
+    // on platform-mismatched optionals that `filter_graph` trimmed,
+    // then dedupe across peer-context dep_path variants.
+    {
+        let mut records = std::mem::take(&mut *deprecations.lock().unwrap());
+        crate::deprecations::retain_in_graph(&mut records, &graph_for_link);
+        let records = crate::deprecations::dedupe(records);
+        if !records.is_empty() {
+            let mode = aube_settings::resolved::deprecation_warnings(&settings_ctx);
+            crate::deprecations::render_install_warnings(&records, &graph_for_link, mode);
+        }
     }
 
     // Final summary. When linking did real work this is the green

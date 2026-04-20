@@ -76,6 +76,26 @@ sources.npmrc = ["allowedDeprecatedVersions"]
 sources.workspaceYaml = ["allowedDeprecatedVersions"]
 examples = []
 
+[deprecationWarnings]
+description = "Scope of deprecation warnings shown during install."
+type = '"none" | "direct" | "all" | "summary"'
+default = "\"direct\""
+docs = """
+Controls how deprecation messages surface at the end of install:
+- `none`: silent.
+- `direct`: print full warnings for direct dependencies only, plus a
+  one-line transitive count (default).
+- `all`: print full warnings for every deprecated package (pnpm/npm
+  parity).
+- `summary`: print a single count line covering direct + transitive.
+
+Run `aube deprecations` to see the full list any time after install.
+"""
+sources.cli = ["--deprecation-warnings"]
+sources.npmrc = ["deprecationWarnings"]
+sources.workspaceYaml = ["deprecationWarnings"]
+examples = []
+
 ["updateConfig.ignoreDependencies"]
 description = "List of packages to ignore during update checks."
 type = "list<string>"
