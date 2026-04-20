@@ -602,29 +602,19 @@ pub(super) fn configure_resolver(
 
 /// Check the resolved graph for declared required peer deps whose
 /// version doesn't satisfy the declared range, or that aren't in the
-/// tree at all. When `strict` is true (pnpm's
-/// `strict-peer-dependencies`), prints the list of unmet peers and
-/// returns an `Err` so the install fails. When `strict` is false
-/// (the default), this is silent — matching bun's default behavior.
-/// npm and yarn Classic are similarly quiet; pnpm is the outlier
-/// that warns on every mismatch. Users who need the list without
-/// failing the install can flip `strict-peer-dependencies=true`,
-/// which emits the same diagnostic and exits non-zero.
+/// tree at all. Prints the list of unmet peers and returns an `Err`
+/// so the install fails.
 ///
-/// Peers that match one of the `PeerDependencyRules` escape hatches
-/// (`ignoreMissing`, `allowAny`, `allowedVersions`) are filtered out
-/// before the strict check — same as pnpm.
+/// Only called under `strict-peer-dependencies=true`. The default
+/// install path skips this entirely — aube is silent about peer
+/// mismatches by default, matching bun/npm/yarn. Peers that match one
+/// of the `PeerDependencyRules` escape hatches (`ignoreMissing`,
+/// `allowAny`, `allowedVersions`) are filtered out before the check,
+/// same as pnpm.
 pub(super) fn check_unmet_peers(
     graph: &aube_lockfile::LockfileGraph,
-    strict: bool,
     rules: &PeerDependencyRules,
 ) -> miette::Result<()> {
-    if !strict {
-        // Silent default. Matches bun/npm/yarn; pnpm is the outlier.
-        // Skip the full peer walk too — detect_unmet_peers isn't free
-        // on a large graph and nobody's reading its output.
-        return Ok(());
-    }
     let unmet: Vec<_> = aube_resolver::detect_unmet_peers(graph)
         .into_iter()
         .filter(|u| !rules.silences(u))

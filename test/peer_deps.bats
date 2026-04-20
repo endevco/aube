@@ -296,7 +296,7 @@ JSON
 
 @test "strict-peer-dependencies fails install on unmet required peer" {
 	# With auto-install-peers off, use-sync-external-store's required
-	# react peer is unresolvable. Plain install warns but succeeds;
+	# react peer is unresolvable. Plain install is silent and succeeds;
 	# strict-peer-dependencies should flip the same condition into a
 	# hard failure with the error-level diagnostic lines.
 	cat >.npmrc <<'RC'

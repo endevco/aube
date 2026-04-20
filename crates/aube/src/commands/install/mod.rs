@@ -3216,9 +3216,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     (peerDependenciesMeta.optional) are skipped either way, and
     //     `peerDependencyRules` escape hatches filter out matches
     //     before the strict check fires.
-    let strict_peer_deps = resolve_strict_peer_dependencies(&settings_ctx);
-    let peer_rules = PeerDependencyRules::resolve(&manifest, &settings_ctx);
-    check_unmet_peers(&graph, strict_peer_deps, &peer_rules)?;
+    //
+    //     The `PeerDependencyRules::resolve` call is gated on strict
+    //     because it reads across package.json / .npmrc /
+    //     pnpm-workspace.yaml to build the three escape-hatch lists —
+    //     allocation + file-source iteration nobody consumes on the
+    //     silent default path.
+    if resolve_strict_peer_dependencies(&settings_ctx) {
+        let peer_rules = PeerDependencyRules::resolve(&manifest, &settings_ctx);
+        check_unmet_peers(&graph, &peer_rules)?;
+    }
 
     // 5b. Apply --prod / --dev / --no-optional filters. Drops the corresponding
     //     direct dep roots from every importer and prunes transitive packages

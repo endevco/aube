@@ -1255,7 +1255,7 @@ Automatically install missing peer dependencies.
 When true (the default), missing peer dependencies are auto-installed
 during resolution and hoisted into the importer. Set to `false` to
 match pnpm's opt-out behavior: peers are left alone and unmet peers
-surface as warnings.
+are silent (set `strict-peer-dependencies=true` for diagnostics).
 
 ### `dedupePeerDependents` {#setting-dedupepeerdependents}
 
