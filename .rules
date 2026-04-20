@@ -244,7 +244,7 @@ type_safety_aspirational:
     sealed_traits: private module + pub trait Sealed prevents external impls. concrete target: lock the set of lockfile format tags if they become a public trait
     phantom_data: zero-sized marker for variance / lifetimes / type tags. pairs with newtype_ids and typestate
     const_generics: compile-time bounds. already used once in install/mod.rs:filter_graph_to_importers<const N>, room for more in SmallVec sizing
-    enum_state_over_bool: collapse mutually-exclusive bool bags into enums. done: GlobalFrozenFlags -> Option<FrozenOverride>, InstallOptions::{prod,dev,no_optional} -> DepSelection. keep applying to new state (look for 3-bool-struct patterns on install/chained options)
+    enum_state_over_bool: collapse mutually-exclusive bool bags into enums. look for 3-bool-struct patterns on install/chained options where clap enforces mutual exclusion — the struct can represent invalid combos that the CLI layer never produces
   serde_forward_compat:
     - #[serde(flatten)] extra: Map<String, Value> on response structs (aube-manifest already does this on WorkspaceConfig + PackageJson)
     - Other(String) variant on upstream-parsing enums (LockfileKind, DepType, LocalSource currently lack this)
@@ -292,7 +292,7 @@ next_gen_proposals:
   intent: concrete aube-tied improvements found in deep audit. each tied to real file:line pain. adopt when the perf/ergo win justifies the churn
   top_ten[10]:
     - string_interning: lasso::ThreadedRodeo for package identifiers in aube-resolver. resolver has 505 clone/to_string calls across 5493 lines. Spur (u32) replaces String keys in visited sets, peer context, override rules, lockfile merge maps. 2-8% resolver wall-time, big RSS reduction on huge graphs
-    - fxhashmap_drop_in: rustc-hash FxBuildHasher replaces std SipHash in resolver + linker + lockfile merge. aube inputs are already signed/locked, DoS resistance is overhead. partial: aube-resolver internal maps/sets (packument cache, BFS walkers, peer context) migrated; remaining targets: aube-linker graph maps, aube-lockfile merge, public resolver API (MinimumReleaseAge.exclude, resolve_workspace.workspace_packages)
+    - fxhashmap_drop_in: rustc-hash FxBuildHasher replaces std SipHash. aube inputs are already signed/locked, DoS resistance is overhead. remaining targets: aube-linker graph maps, aube-lockfile merge, resolver public API (MinimumReleaseAge.exclude, resolve_workspace.workspace_packages)
     - saphyr_for_yaml: serde_yaml is archived (unmaintained since 2024) and allocates per-key on lookups. yarn.rs scavenges serde_yaml::Value via string-allocating .get(). migrate to saphyr (YAML 1.2, borrowed &str keys) for reads, keep serde_yaml or hand-written emitter for writes
     - memmap2_for_verify: CAS verify path and tarball read use std buffered IO. blake3::Hasher::update_mmap_rayon for multi-MB tarballs on aube store verify / find-hash. scope to verify-only commands, not the extract hot path
     - phf_static_tables: aube-settings/build.rs already codegens from settings.toml. emit phf::Map<&'static str, SettingDescriptor> instead of runtime HashMap for zero-alloc constant-time lookups, matters because aube run re-reads settings on every invocation (shell integration)
