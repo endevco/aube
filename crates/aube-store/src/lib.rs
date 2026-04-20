@@ -1069,7 +1069,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(&git_root, std::fs::Permissions::from_mode(0o700))
         {
-            tracing::warn!(
+            warn!(
                 "failed to chmod 0700 {}: {e}. Git scratch dir may be world-accessible, check filesystem permissions",
                 git_root.display()
             );
