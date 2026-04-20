@@ -584,16 +584,22 @@ mod tests {
     }
 
     /// Pre-npm-2.x publishes (e.g. `madge@0.0.1`, `html-entities@1.x`)
-    /// ship `"engines": ["node >= 0.8.0"]` as an array, and npmjs.org
-    /// serves that shape verbatim in the packument. A strict map-only
-    /// deserializer fails the whole packument parse with
-    /// `invalid type: sequence, expected a map`, blocking install of
-    /// any range that even lists an affected version. Normalize the
-    /// array to an empty map — same tolerance the manifest and
+    /// ship `"engines": ["node >= 0.8.0"]` as an array, and some old
+    /// entries (e.g. `qs`) ship a bare string. npmjs.org serves those
+    /// shapes verbatim in packuments. A strict map-only deserializer
+    /// fails the whole packument parse, blocking install of any range
+    /// that even lists an affected version. Normalize legacy non-map
+    /// forms to an empty map — same tolerance the manifest and
     /// lockfile parsers already apply.
     #[test]
     fn engines_accepts_legacy_array_shape() {
         let v = parse(r#"{"name":"madge","version":"0.0.1","engines":["node >= 0.8.0"]}"#);
+        assert!(v.engines.is_empty());
+    }
+
+    #[test]
+    fn engines_accepts_legacy_string_shape() {
+        let v = parse(r#"{"name":"qs","version":"0.6.0","engines":"node >= 0.4.0"}"#);
         assert!(v.engines.is_empty());
     }
 
