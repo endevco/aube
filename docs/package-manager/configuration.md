@@ -25,7 +25,7 @@ node-linker=isolated
 package-import-method=auto
 ```
 
-See [.npmrc settings](/settings/npmrc) for the generated reference.
+See the [settings reference](/settings/) for the full list — each entry lists its `.npmrc` key alongside the other sources.
 
 ## Workspace YAML
 
@@ -36,7 +36,7 @@ publicHoistPattern:
   - "*eslint*"
 ```
 
-See [workspace YAML settings](/settings/workspace-yaml).
+See the [settings reference](/settings/) — workspace YAML keys are listed per setting.
 
 ## Environment variables
 
@@ -47,7 +47,7 @@ NPM_CONFIG_REGISTRY=https://registry.example.test aube install
 NPM_CONFIG_NODE_LINKER=hoisted aube install
 ```
 
-See [environment settings](/settings/env).
+See the [settings reference](/settings/) — environment variables are listed per setting.
 
 ## CLI flags
 
@@ -59,7 +59,7 @@ aube install --network-concurrency=32
 aube install --resolution-mode=time-based
 ```
 
-See [CLI settings](/settings/cli).
+See the [settings reference](/settings/) — CLI flags are listed per setting.
 
 ## Inspecting config
 

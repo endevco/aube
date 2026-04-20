@@ -147,14 +147,6 @@ gtag('config', 'G-WD1RRC0F8C');`,
       {
         text: "Settings Reference",
         link: "/settings/",
-        collapsed: true,
-        items: [
-          { text: "All settings", link: "/settings/" },
-          { text: ".npmrc", link: "/settings/npmrc" },
-          { text: "Workspace YAML", link: "/settings/workspace-yaml" },
-          { text: "Environment", link: "/settings/env" },
-          { text: "CLI flags", link: "/settings/cli" },
-        ],
       },
     ],
 
