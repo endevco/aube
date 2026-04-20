@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.8...aube-linker-v1.0.0-beta.9) - 2026-04-20
+
+### Other
+
+- reject path-traversing bin names and targets ([#162](https://github.com/endevco/aube/pull/162))
+- create scoped bin shim parents ([#149](https://github.com/endevco/aube/pull/149))
+
 ## [1.0.0-beta.7](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.6...aube-linker-v1.0.0-beta.7) - 2026-04-19
 
 ### Other

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.8...aube-settings-v1.0.0-beta.9) - 2026-04-20
+
+### Other
+
+- *(settings)* collapse per-source pages into single reference ([#159](https://github.com/endevco/aube/pull/159))
+- silence peer-dep mismatches by default (bun parity) ([#158](https://github.com/endevco/aube/pull/158))
+
 ## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.7...aube-settings-v1.0.0-beta.8) - 2026-04-20
 
 ### Other

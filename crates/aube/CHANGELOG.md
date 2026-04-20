@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.9](https://github.com/endevco/aube/compare/v1.0.0-beta.8...v1.0.0-beta.9) - 2026-04-20
+
+### Other
+
+- reject path-traversing bin names and targets ([#162](https://github.com/endevco/aube/pull/162))
+- wipe node_modules when global virtual store toggles ([#160](https://github.com/endevco/aube/pull/160))
+- render package.json parse errors with miette source span ([#157](https://github.com/endevco/aube/pull/157))
+- *(config)* add --local shortcut for --location project ([#161](https://github.com/endevco/aube/pull/161))
+- silence peer-dep mismatches by default (bun parity) ([#158](https://github.com/endevco/aube/pull/158))
+- *(troubleshooting)* lead with disable-gvs as first step ([#156](https://github.com/endevco/aube/pull/156))
+- short-circuit warm path when install-state matches ([#127](https://github.com/endevco/aube/pull/127))
+- create scoped bin shim parents ([#149](https://github.com/endevco/aube/pull/149))
+- emit colored stderr under CI even when not a TTY ([#146](https://github.com/endevco/aube/pull/146))
+
 ## [1.0.0-beta.8](https://github.com/endevco/aube/compare/v1.0.0-beta.7...v1.0.0-beta.8) - 2026-04-20
 
 ### Other

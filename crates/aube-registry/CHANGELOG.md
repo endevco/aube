@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-registry-v1.0.0-beta.8...aube-registry-v1.0.0-beta.9) - 2026-04-20
+
+### Other
+
+- short-circuit warm path when install-state matches ([#127](https://github.com/endevco/aube/pull/127))
+- tolerate string engines metadata ([#150](https://github.com/endevco/aube/pull/150))
+
 ## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-registry-v1.0.0-beta.7...aube-registry-v1.0.0-beta.8) - 2026-04-20
 
 ### Other
