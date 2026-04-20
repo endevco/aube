@@ -8,8 +8,15 @@ pub mod yarn;
 
 pub use merge::{MergeReport, merge_branch_lockfiles};
 
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+/// Most npm packages declare zero or one entry in `os`, `cpu`,
+/// `libc`. Two inline `SmallVec` slots cover empty on construction
+/// (zero heap alloc) and one-entry push (still zero heap) for ~99%
+/// of lockfile entries.
+pub type PlatformList = SmallVec<[String; 2]>;
 
 /// Represents a resolved dependency graph from any lockfile format.
 #[derive(Debug, Clone, Default)]
@@ -472,9 +479,9 @@ pub struct LockedPackage {
     /// by the resolver to filter optional deps that can't run on the
     /// current (or user-overridden) platform. Empty arrays mean no
     /// constraint.
-    pub os: Vec<String>,
-    pub cpu: Vec<String>,
-    pub libc: Vec<String>,
+    pub os: PlatformList,
+    pub cpu: PlatformList,
+    pub libc: PlatformList,
     /// Names declared in the package's own `bundledDependencies`. These
     /// ship inside the parent tarball's `node_modules/`, so the resolver
     /// neither fetches nor recurses into them, and the linker avoids

@@ -598,6 +598,16 @@ fn apply_peer_contexts_once(
     let mut out_packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
     let mut new_importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
 
+    // Name-indexed view of the canonical graph, shared across
+    // every `visit_peer_context` call in this pass. Peer-resolution
+    // scan-by-name is the resolver's hottest inner loop. Without
+    // this, each peer runs `O(|graph|)` per package per fixed-point
+    // iter. Prebuilt index drops the scan to O(1) average.
+    let mut name_index: FxHashMap<&str, Vec<&LockedPackage>> = FxHashMap::default();
+    for pkg in canonical.packages.values() {
+        name_index.entry(pkg.name.as_str()).or_default().push(pkg);
+    }
+
     // Root-importer scope used by `resolve-peers-from-workspace-root`.
     // Computed once from the canonical input so it reflects the
     // contextualized state of every root dep on fixed-point iterations
@@ -661,6 +671,7 @@ fn apply_peer_contexts_once(
             let new_dep_path = visit_peer_context(
                 &dep.dep_path,
                 &canonical,
+                &name_index,
                 &importer_scope,
                 &root_scope,
                 &mut out_packages,
@@ -969,9 +980,11 @@ fn apply_dedupe_peers_to_tail(tail: &str) -> String {
     apply_dedupe_peers_to_key(tail)
 }
 
-fn visit_peer_context(
+#[allow(clippy::too_many_arguments)]
+fn visit_peer_context<'g>(
     input_dep_path: &str,
-    graph: &LockfileGraph,
+    graph: &'g LockfileGraph,
+    name_index: &FxHashMap<&'g str, Vec<&'g LockedPackage>>,
     ancestor_scope: &FxHashMap<String, String>,
     root_scope: &FxHashMap<String, String>,
     out_packages: &mut BTreeMap<String, LockedPackage>,
@@ -1079,10 +1092,10 @@ fn visit_peer_context(
         // package's canonical `version` field, not the tail, because
         // the tail may carry a peer suffix that isn't valid semver.
         let from_graph_scan = || {
-            graph
-                .packages
-                .values()
-                .filter(|p| p.name == *peer_name)
+            name_index
+                .get(peer_name.as_str())
+                .into_iter()
+                .flat_map(|bucket| bucket.iter().copied())
                 .filter(|p| version_satisfies(&p.version, declared_range))
                 .filter_map(|p| {
                     let tail = p
@@ -1211,6 +1224,7 @@ fn visit_peer_context(
         let child_new = visit_peer_context(
             &child_canonical_dep_path,
             graph,
+            name_index,
             &child_scope,
             root_scope,
             out_packages,
@@ -1240,6 +1254,7 @@ fn visit_peer_context(
         let child_new = visit_peer_context(
             &child_canonical_dep_path,
             graph,
+            name_index,
             &child_scope,
             root_scope,
             out_packages,

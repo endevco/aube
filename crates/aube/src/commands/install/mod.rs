@@ -7,6 +7,7 @@ use miette::{Context, IntoDiagnostic, miette};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
+mod delta;
 mod dep_selection;
 mod frozen;
 mod settings;
@@ -3774,9 +3775,113 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //    exist, and writing it would lie on the next auto-install
     //    freshness check.
     if !virtual_store_only {
-        state::write_state(&cwd, opts.dep_selection.prod_or_dev_axis(), &opts.cli_flags)
-            .into_diagnostic()
-            .wrap_err("failed to write install state")?;
+        // Fingerprint every package in the final graph so the next
+        // install can diff and skip unchanged entries. Missing or
+        // stale fingerprints fall back to a full install on the
+        // read side. Safe for older readers that ignore the field.
+        let package_content_hashes = delta::compute_package_hashes(&graph);
+        let package_subtree_hashes = delta::compute_subtree_hashes(&graph);
+        let graph_lthash = hex::encode(delta::lthash_of(&package_content_hashes).digest());
+        // Diff against the previous install. Logs delta counts at
+        // debug so `-v` installs surface what actually moved. A
+        // later pass feeds the plan into fetch and link as a
+        // pre-filter.
+        if let Some(prior) = state::read_state_package_content_hashes(&cwd) {
+            let plan = delta::diff(&prior, &package_content_hashes);
+            if !plan.is_empty() {
+                // Touched set built once. Doubles as a membership
+                // probe so future wiring exercises the same shape
+                // of predicate shipped in production.
+                let touched = plan.touched_set();
+                tracing::debug!(
+                    "delta: +{} ~{} -{} ({} touched vs {} total, should_touch(first-added)={})",
+                    plan.added.len(),
+                    plan.changed.len(),
+                    plan.removed.len(),
+                    touched.len(),
+                    package_content_hashes.len(),
+                    plan.added.first().is_some_and(|dp| plan.should_touch(dp)),
+                );
+            }
+            // Incremental LtHash self-check. Start from the prior
+            // accumulator, apply the observed delta, confirm the
+            // result matches a from-scratch hash of the new graph.
+            // Cheap sanity on the homomorphic add/remove ops. The
+            // future causal scheduler needs these two to stay in
+            // lockstep with the full recompute.
+            if let Some(prior_lthash_hex) = state::read_state_graph_lthash(&cwd)
+                && let Ok(prior_bytes) = hex::decode(&prior_lthash_hex)
+                && prior_bytes.len() == 32
+            {
+                let mut incr = delta::lthash_of(&prior);
+                for dp in &plan.removed {
+                    if let Some(fp) = prior.get(dp) {
+                        incr.remove(fp);
+                    }
+                }
+                for dp in &plan.added {
+                    if let Some(fp) = package_content_hashes.get(dp) {
+                        incr.add(fp);
+                    }
+                }
+                for dp in &plan.changed {
+                    if let Some(old_fp) = prior.get(dp) {
+                        incr.remove(old_fp);
+                    }
+                    if let Some(new_fp) = package_content_hashes.get(dp) {
+                        incr.add(new_fp);
+                    }
+                }
+                if hex::encode(incr.digest()) != graph_lthash {
+                    // Real bug signal, not routine noise. `debug`
+                    // hides it behind `-v` so CI would silently
+                    // ship broken homomorphic bookkeeping.
+                    tracing::warn!(
+                        "lthash: incremental/full mismatch, homomorphic invariant broken"
+                    );
+                }
+            }
+        }
+        // LtHash diagnostic. One 32-byte compare proves graph
+        // equivalence with the last install. Beats the map diff
+        // when both sides are known good.
+        if let Some(prior_lthash) = state::read_state_graph_lthash(&cwd)
+            && prior_lthash != graph_lthash
+        {
+            tracing::debug!(
+                "lthash: graph content digest changed ({}..{} -> {}..{})",
+                &prior_lthash[..8.min(prior_lthash.len())],
+                &prior_lthash[prior_lthash.len().saturating_sub(8)..],
+                &graph_lthash[..8],
+                &graph_lthash[graph_lthash.len() - 8..],
+            );
+        }
+        // Merkle subtree diagnostic. How many subtree roots moved
+        // vs how many leaves moved. Fewer roots means tighter
+        // re-link scope once the delta linker lands.
+        if let Some(prior_subtrees) = state::read_state_subtree_hashes(&cwd) {
+            let changed_subtrees = package_subtree_hashes
+                .iter()
+                .filter(|(k, v)| prior_subtrees.get(*k).is_none_or(|old| old != *v))
+                .count();
+            if changed_subtrees > 0 {
+                tracing::debug!(
+                    "merkle: {} subtree hashes changed of {}",
+                    changed_subtrees,
+                    package_subtree_hashes.len()
+                );
+            }
+        }
+        state::write_state(
+            &cwd,
+            opts.dep_selection.prod_or_dev_axis(),
+            &opts.cli_flags,
+            package_content_hashes,
+            graph_lthash,
+            package_subtree_hashes,
+        )
+        .into_diagnostic()
+        .wrap_err("failed to write install state")?;
     }
 
     // 8a. Sweep orphaned `.aube/<dep_path>` entries older than

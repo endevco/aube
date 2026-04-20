@@ -22,6 +22,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rustc-hash = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

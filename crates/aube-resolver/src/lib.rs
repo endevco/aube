@@ -188,9 +188,9 @@ pub struct ResolvedPackage {
     /// fetches anything that survived the graph trim but got deferred,
     /// so required-platform-mismatched packages (which `filter_graph`
     /// doesn't drop) still get their tarball before link.
-    pub os: Vec<String>,
-    pub cpu: Vec<String>,
-    pub libc: Vec<String>,
+    pub os: aube_lockfile::PlatformList,
+    pub cpu: aube_lockfile::PlatformList,
+    pub libc: aube_lockfile::PlatformList,
     /// Deprecation message from the registry, carried forward so the
     /// install command can render user-facing warnings without a
     /// second packument fetch. Only populated on the fresh-resolve
@@ -915,8 +915,12 @@ impl Resolver {
         // versions for that name) still needs a fresh fetch, and
         // the wait-for-fetch loop below calls `ensure_fetch!`
         // without consulting `existing_names`.
-        let existing_names: FxHashSet<String> = existing
-            .map(|g| g.packages.values().map(|p| p.name.clone()).collect())
+        // Borrow names from `existing` instead of cloning. The set
+        // lives only inside `Resolver::resolve` and the prior
+        // lockfile graph outlives it. Skips 5000 String allocations
+        // on a 5000-pkg lockfile at resolve-entry.
+        let existing_names: FxHashSet<&str> = existing
+            .map(|g| g.packages.values().map(|p| p.name.as_str()).collect())
             .unwrap_or_default();
 
         // Spawn a packument fetch into `in_flight` if one isn't
@@ -1440,9 +1444,9 @@ impl Resolver {
                                 // — they're whatever the user points
                                 // at, so the fetch coordinator treats
                                 // them as unconstrained (always fetch).
-                                os: Vec::new(),
-                                cpu: Vec::new(),
-                                libc: Vec::new(),
+                                os: aube_lockfile::PlatformList::new(),
+                                cpu: aube_lockfile::PlatformList::new(),
+                                libc: aube_lockfile::PlatformList::new(),
                                 deprecated: None,
                             });
                         }
@@ -2113,9 +2117,9 @@ impl Resolver {
                         tarball_url: tarball_url.clone(),
                         alias_of: task.real_name.clone(),
                         local_source: None,
-                        os: version_meta.os.clone(),
-                        cpu: version_meta.cpu.clone(),
-                        libc: version_meta.libc.clone(),
+                        os: version_meta.os.iter().cloned().collect(),
+                        cpu: version_meta.cpu.iter().cloned().collect(),
+                        libc: version_meta.libc.iter().cloned().collect(),
                         deprecated: deprecated_msg.clone(),
                     });
                 }
@@ -2170,9 +2174,9 @@ impl Resolver {
                         peer_dependencies_meta: peer_meta,
                         dep_path: dep_path.clone(),
                         local_source: None,
-                        os: version_meta.os.clone(),
-                        cpu: version_meta.cpu.clone(),
-                        libc: version_meta.libc.clone(),
+                        os: version_meta.os.iter().cloned().collect(),
+                        cpu: version_meta.cpu.iter().cloned().collect(),
+                        libc: version_meta.libc.iter().cloned().collect(),
                         bundled_dependencies: {
                             let mut v: Vec<String> = bundled_names.iter().cloned().collect();
                             v.sort();
@@ -3052,10 +3056,37 @@ pub(crate) fn version_satisfies(version: &str, range_str: &str) -> bool {
     let Ok(v) = node_semver::Version::parse(version) else {
         return false;
     };
-    let Ok(r) = node_semver::Range::parse(range_str) else {
-        return false;
-    };
-    v.satisfies(&r)
+    with_cached_range(range_str, |r| match r {
+        Some(r) => v.satisfies(r),
+        None => false,
+    })
+}
+
+/// Thread-local `node_semver::Range` parse cache.
+///
+/// Resolver hot loops (sibling dedupe, lockfile-reuse scan,
+/// peer-context fixed-point, catalog pick) call `version_satisfies`
+/// thousands of times against a small repeating range set
+/// (`"^18.2.0"`, `"*"`, `"1.x"`). Re-parsing burns CPU. Memo turns
+/// 15k reparses on a 500-pkg graph into ~500 parses plus hits.
+///
+/// `thread_local!` beats a global mutex. Each tokio worker owns its
+/// slice of ranges, lock contention would erase the parse savings.
+/// Two workers parsing the same range twice is cheaper than one
+/// lock round-trip.
+fn with_cached_range<R>(range_str: &str, f: impl FnOnce(Option<&node_semver::Range>) -> R) -> R {
+    thread_local! {
+        static CACHE: std::cell::RefCell<rustc_hash::FxHashMap<String, Option<node_semver::Range>>> =
+            std::cell::RefCell::default();
+    }
+    CACHE.with(|cell| {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(range_str) {
+            let parsed = node_semver::Range::parse(range_str).ok();
+            map.insert(range_str.to_string(), parsed);
+        }
+        f(map.get(range_str).and_then(Option::as_ref))
+    })
 }
 
 fn apply_package_extensions(

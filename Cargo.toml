@@ -60,6 +60,12 @@ rayon = "1"
 # come from locked/signed manifests.
 rustc-hash = "2"
 
+# Stack-allocated small vectors for lockfile fields that are empty
+# or tiny in almost every package. os/cpu/libc arrays, bundled deps.
+# Skips a heap alloc per field per package. Adds up fast across
+# thousands of LockedPackage values.
+smallvec = { version = "1", features = ["serde"] }
+
 # Encoding
 base64 = "0.22"
 

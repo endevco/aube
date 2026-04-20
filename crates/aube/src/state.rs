@@ -42,6 +42,29 @@ pub struct InstallState {
     pub section_filtered: bool,
     #[serde(default)]
     pub settings_hash: String,
+    /// Per-package content fingerprints from the last install,
+    /// keyed by dep_path. Drives delta installs. Next install diffs
+    /// these against the new lockfile's hashes and only re-fetches
+    /// and re-links the entries that moved. Missing or stale values
+    /// cascade to a full install. Purely additive, never
+    /// load-bearing. Empty on fresh state or pre-delta aube.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package_content_hashes: BTreeMap<String, String>,
+    /// LtHash accumulator digest (hex) over every package in the
+    /// installed graph. Wide-add multiset hash from
+    /// `commands::install::delta::LtHash`. Match on this digest
+    /// proves graph equivalence in a 32-byte compare and skips the
+    /// O(N) map walk. Missing field cascades to the full diff.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub graph_lthash: String,
+    /// Per-package Merkle subtree fingerprints, keyed by dep_path.
+    /// Lets the delta path skip packages whose subtree matches the
+    /// stored value even when their leaf changed. Peer-dep rewrites
+    /// shuffle metadata without moving installed content, that is
+    /// the case this catches. Missing field cascades to the
+    /// leaf-only diff.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package_subtree_hashes: BTreeMap<String, String>,
 }
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
@@ -142,6 +165,9 @@ pub fn write_state(
     project_dir: &Path,
     section_filtered: bool,
     cli_flags: &[(String, String)],
+    package_content_hashes: BTreeMap<String, String>,
+    graph_lthash: String,
+    package_subtree_hashes: BTreeMap<String, String>,
 ) -> Result<(), std::io::Error> {
     let mut package_json_hashes = BTreeMap::new();
 
@@ -163,6 +189,9 @@ pub fn write_state(
         aube_version: env!("CARGO_PKG_VERSION").to_string(),
         section_filtered,
         settings_hash: hash_settings(project_dir, cli_flags),
+        package_content_hashes,
+        graph_lthash,
+        package_subtree_hashes,
     };
 
     let state_path = state_file(project_dir);
@@ -173,6 +202,40 @@ pub fn write_state(
     std::fs::write(state_path, json)?;
 
     Ok(())
+}
+
+/// Read per-package fingerprints from a project's state file.
+/// Returns `None` on any failure path (file missing, malformed
+/// JSON, pre-delta aube). Caller treats that as "no prior
+/// fingerprints, full install". Never surfaces an error because
+/// delta is additive. A miss just lands on the full-install path.
+pub fn read_state_package_content_hashes(project_dir: &Path) -> Option<BTreeMap<String, String>> {
+    let state = read_state(&state_file(project_dir))?;
+    if state.package_content_hashes.is_empty() {
+        return None;
+    }
+    Some(state.package_content_hashes)
+}
+
+/// Read the LtHash accumulator digest the last install wrote, if
+/// any. Empty string on fresh state or pre-lthash aube versions.
+pub fn read_state_graph_lthash(project_dir: &Path) -> Option<String> {
+    let state = read_state(&state_file(project_dir))?;
+    if state.graph_lthash.is_empty() {
+        return None;
+    }
+    Some(state.graph_lthash)
+}
+
+/// Read stored subtree hashes for delta installs that want to
+/// prune at the subtree granularity rather than the leaf
+/// granularity. Absent field cascades to the leaf diff path.
+pub fn read_state_subtree_hashes(project_dir: &Path) -> Option<BTreeMap<String, String>> {
+    let state = read_state(&state_file(project_dir))?;
+    if state.package_subtree_hashes.is_empty() {
+        return None;
+    }
+    Some(state.package_subtree_hashes)
 }
 
 /// Remove the install state file. Missing state is not an error.

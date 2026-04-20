@@ -75,6 +75,15 @@ pathdiff = "0.2"
 is_ci = "1"
 ci_info = "0.14"
 pluralizer = "0.5.0"
+mimalloc = { version = "0.1", default-features = false, optional = true }
+
+[features]
+default = ["mimalloc"]
+# Swap the global allocator to mimalloc on release builds. See
+# crates/aube/src/main.rs for the gate. `--no-default-features`
+# falls back to the system allocator. Needed for Valgrind, ASAN,
+# Miri, and distros that require libc malloc.
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 clap-sort = "1"

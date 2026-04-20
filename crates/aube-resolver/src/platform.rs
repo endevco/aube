@@ -448,8 +448,8 @@ mod tests {
                 name: "native-darwin".to_string(),
                 version: "1.0.0".to_string(),
                 dep_path: "native-darwin@1.0.0".to_string(),
-                os: s(&["darwin"]),
-                cpu: s(&["arm64"]),
+                os: s(&["darwin"]).into(),
+                cpu: s(&["arm64"]).into(),
                 ..Default::default()
             },
         );
@@ -459,8 +459,8 @@ mod tests {
                 name: "native-linux".to_string(),
                 version: "1.0.0".to_string(),
                 dep_path: "native-linux@1.0.0".to_string(),
-                os: s(&["linux"]),
-                cpu: s(&["x64"]),
+                os: s(&["linux"]).into(),
+                cpu: s(&["x64"]).into(),
                 ..Default::default()
             },
         );

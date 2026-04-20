@@ -26,9 +26,10 @@
 //! gives us alphabetized keys for free.
 
 use crate::{LockedPackage, LockfileGraph};
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 /// A callback the caller provides to tell the hasher which
 /// `(name, version)` combinations are allowed to run lifecycle
@@ -143,7 +144,7 @@ pub fn compute_graph_hashes_with_patches(
 ) -> GraphHashes {
     // Pass 1: identify every dep_path whose `(name, version)` is
     // allowed to run its scripts. This is the "builds" set.
-    let mut builds: HashSet<String> = HashSet::new();
+    let mut builds: FxHashSet<String> = FxHashSet::default();
     for (dep_path, pkg) in &graph.packages {
         if allow_build(&pkg.name, &pkg.version) {
             builds.insert(dep_path.clone());
@@ -151,27 +152,27 @@ pub fn compute_graph_hashes_with_patches(
     }
 
     // Pass 2: per-package dep-graph hash (recursive, memoized).
-    let mut deps_hash_cache: HashMap<String, String> = HashMap::new();
+    let mut deps_hash_cache: FxHashMap<String, String> = FxHashMap::default();
     for dep_path in graph.packages.keys() {
         let _ = calc_deps_hash(
             graph,
             dep_path,
             &mut deps_hash_cache,
-            &mut HashSet::new(),
+            &mut FxHashSet::default(),
             patch_hash,
         );
     }
 
     // Pass 3: per-package "does the subtree transitively need engine
     // tainting?" cache.
-    let mut requires_build_cache: HashMap<String, bool> = HashMap::new();
+    let mut requires_build_cache: FxHashMap<String, bool> = FxHashMap::default();
     for dep_path in graph.packages.keys() {
         transitively_requires_build(
             graph,
             &builds,
             dep_path,
             &mut requires_build_cache,
-            &mut HashSet::new(),
+            &mut FxHashSet::default(),
         );
     }
 
@@ -207,8 +208,8 @@ pub fn compute_graph_hashes_with_patches(
 fn calc_deps_hash(
     graph: &LockfileGraph,
     dep_path: &str,
-    cache: &mut HashMap<String, String>,
-    parents: &mut HashSet<String>,
+    cache: &mut FxHashMap<String, String>,
+    parents: &mut FxHashSet<String>,
     patch_hash: PatchHashFn<'_>,
 ) -> String {
     if let Some(cached) = cache.get(dep_path) {
@@ -254,10 +255,10 @@ fn calc_deps_hash(
 /// transitive children are. Mirrors pnpm's `transitivelyRequiresBuild`.
 fn transitively_requires_build(
     graph: &LockfileGraph,
-    builds: &HashSet<String>,
+    builds: &FxHashSet<String>,
     dep_path: &str,
-    cache: &mut HashMap<String, bool>,
-    parents: &mut HashSet<String>,
+    cache: &mut FxHashMap<String, bool>,
+    parents: &mut FxHashSet<String>,
 ) -> bool {
     if let Some(&cached) = cache.get(dep_path) {
         return cached;
