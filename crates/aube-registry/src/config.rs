@@ -169,6 +169,7 @@ impl NpmConfig {
             Some(home.path()),
             None,
             project_dir,
+            None,
         ));
         config.apply_builtin_scoped_defaults();
         config
@@ -190,8 +191,20 @@ impl NpmConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
-        let mut tagged =
-            load_npmrc_entries_tagged_with_home(home_dir().as_deref(), xdg.as_deref(), project_dir);
+        let home = home_dir();
+        // `NPM_CONFIG_USERCONFIG` / `npm_config_userconfig` move the
+        // user-level `.npmrc` off the default `$HOME/.npmrc`. npm and
+        // pnpm both honor this for XDG layouts and CI secret mounts.
+        // Resolve once from the captured env slice and pass it to the
+        // loader so tests that drive `load_with_env` can exercise the
+        // same code path without mutating process-wide env.
+        let user_rc_override = userconfig_override_from_env(env, home.as_deref());
+        let mut tagged = load_npmrc_entries_tagged_with_home(
+            home.as_deref(),
+            xdg.as_deref(),
+            project_dir,
+            user_rc_override.as_deref(),
+        );
         // `npm_config_*` / `NPM_CONFIG_*` env vars beat file config in
         // npm/pnpm. Apply them after `.npmrc` so last-write-wins gives
         // env the higher slot, and tag them as `Env` so
@@ -608,7 +621,23 @@ pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from);
-    load_npmrc_entries_with_home(home_dir().as_deref(), xdg.as_deref(), project_dir)
+    let home = home_dir();
+    // `NPM_CONFIG_USERCONFIG` / `npm_config_userconfig` relocate the
+    // user-level `.npmrc` (XDG layouts, `~/.config/npm/npmrc`, etc.).
+    // Read directly rather than collecting `std::env::vars()` — we
+    // only need these two keys, and confining the env read to the
+    // public entry point keeps `_with_home` fully injectable for
+    // tests.
+    let user_rc_override = std::env::var("NPM_CONFIG_USERCONFIG")
+        .ok()
+        .or_else(|| std::env::var("npm_config_userconfig").ok())
+        .and_then(|raw| expand_userconfig_path(&raw, home.as_deref()));
+    load_npmrc_entries_with_home(
+        home.as_deref(),
+        xdg.as_deref(),
+        project_dir,
+        user_rc_override.as_deref(),
+    )
 }
 
 /// Same as [`load_npmrc_entries_with_home`] but each entry is tagged
@@ -619,15 +648,25 @@ fn load_npmrc_entries_tagged_with_home(
     home: Option<&Path>,
     xdg_config_home: Option<&Path>,
     project_dir: &Path,
+    user_rc_override: Option<&Path>,
 ) -> Vec<(NpmrcSource, String, String)> {
     let mut out: Vec<(NpmrcSource, String, String)> = Vec::new();
+    // User-level rc: explicit override (from `NPM_CONFIG_USERCONFIG`)
+    // wins over `$HOME/.npmrc`. Keeps the `User` source tag either
+    // way — the user chose the file location, so `apply_tagged`'s
+    // trust level is unchanged. The pnpm `auth.ini` is a separate
+    // file under `$HOME`/`XDG_CONFIG_HOME` and is not affected by
+    // the userconfig override.
+    let user_rc = user_rc_override
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".npmrc")));
+    if let Some(user_rc) = user_rc
+        && user_rc.exists()
+        && let Ok(entries) = parse_npmrc(&user_rc)
+    {
+        out.extend(entries.into_iter().map(|(k, v)| (NpmrcSource::User, k, v)));
+    }
     if let Some(home) = home {
-        let user_rc = home.join(".npmrc");
-        if user_rc.exists()
-            && let Ok(entries) = parse_npmrc(&user_rc)
-        {
-            out.extend(entries.into_iter().map(|(k, v)| (NpmrcSource::User, k, v)));
-        }
         let auth_ini = pnpm_global_auth_ini_path(home, xdg_config_home);
         if auth_ini.exists()
             && let Ok(entries) = parse_npmrc(&auth_ini)
@@ -717,15 +756,24 @@ fn load_npmrc_entries_with_home(
     home: Option<&Path>,
     xdg_config_home: Option<&Path>,
     project_dir: &Path,
+    user_rc_override: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    // User-level rc: explicit override (from `NPM_CONFIG_USERCONFIG`)
+    // wins over `$HOME/.npmrc`. When the override is set, the default
+    // path is skipped entirely — matching npm/pnpm, which treat the
+    // env var as "this is where the user rc lives," not "also read
+    // this file on top of the default."
+    let user_rc = user_rc_override
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".npmrc")));
+    if let Some(user_rc) = user_rc
+        && user_rc.exists()
+        && let Ok(entries) = parse_npmrc(&user_rc)
+    {
+        out.extend(entries);
+    }
     if let Some(home) = home {
-        let user_rc = home.join(".npmrc");
-        if user_rc.exists()
-            && let Ok(entries) = parse_npmrc(&user_rc)
-        {
-            out.extend(entries);
-        }
         // pnpm's global auth file: `~/.config/pnpm/auth.ini`. Same
         // `key=value` grammar as `.npmrc`, but lives under the pnpm
         // config dir so a user can keep registry credentials out of
@@ -790,6 +838,44 @@ where
     } else {
         Some(project_dir.join(expanded))
     }
+}
+
+/// Expand a raw `userconfig` / `NPM_CONFIG_USERCONFIG` value into a
+/// concrete path, applying the same tilde-expansion rules
+/// [`resolve_npmrc_auth_file`] uses so both env-var and `.npmrc`-derived
+/// path overrides behave the same way. Empty (after trim) returns
+/// `None` so callers can skip a pointless file probe. Relative paths
+/// are returned verbatim and resolve against the process cwd when
+/// later fed to `exists()` / `parse_npmrc` — matching npm's behavior.
+fn expand_userconfig_path(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return home.map(|h| h.join(rest));
+    }
+    if trimmed == "~" {
+        return home.map(PathBuf::from);
+    }
+    Some(PathBuf::from(trimmed))
+}
+
+/// Find the highest-precedence `NPM_CONFIG_USERCONFIG` /
+/// `npm_config_userconfig` value in a captured env slice and expand
+/// it. npm/pnpm accept both casings, so match on either. Iterate in
+/// reverse for "last exported wins" semantics — a caller that
+/// extends the env with a downstream override sees it take effect.
+fn userconfig_override_from_env(env: &[(String, String)], home: Option<&Path>) -> Option<PathBuf> {
+    env.iter()
+        .rev()
+        .find(|(name, _)| {
+            matches!(
+                name.as_str(),
+                "NPM_CONFIG_USERCONFIG" | "npm_config_userconfig"
+            )
+        })
+        .and_then(|(_, value)| expand_userconfig_path(value, home))
 }
 
 /// Parse a .npmrc file into key=value pairs.
@@ -1128,6 +1214,7 @@ mod tests {
             Some(home.path()),
             None,
             project.path(),
+            None,
         ));
         assert_eq!(
             config.token_helper_for("https://registry.example.com/"),
@@ -1155,6 +1242,7 @@ mod tests {
             Some(home.path()),
             None,
             project.path(),
+            None,
         ));
         assert_eq!(
             config.token_helper_for("https://registry.example.com/"),
@@ -1186,6 +1274,7 @@ mod tests {
             Some(home.path()),
             None,
             project.path(),
+            None,
         ));
         assert_eq!(
             config.token_helper_for("https://registry.example.com/"),
@@ -1218,6 +1307,7 @@ mod tests {
             Some(home.path()),
             None,
             project.path(),
+            None,
         ));
         assert_eq!(
             config.token_helper_for("https://registry.example.com/"),
@@ -1480,6 +1570,7 @@ mod tests {
             Some(home.path()),
             None,
             dir.path(),
+            None,
         ));
 
         assert_eq!(
@@ -1517,6 +1608,7 @@ mod tests {
             Some(home.path()),
             None,
             dir.path(),
+            None,
         ));
         assert!(config.strict_ssl);
     }
@@ -1538,6 +1630,7 @@ mod tests {
             Some(home.path()),
             None,
             dir.path(),
+            None,
         ));
         assert_eq!(config.https_proxy.as_deref(), Some("http://a"));
         assert_eq!(config.http_proxy.as_deref(), Some("http://b"));
@@ -1566,6 +1659,7 @@ mod tests {
             Some(home.path()),
             None,
             dir.path(),
+            None,
         ));
         assert!(config.local_address.is_none());
         assert!(config.max_sockets.is_none());
@@ -1601,7 +1695,8 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
 
         // Both keys from each file are present.
         assert!(entries.iter().any(|(k, v)| k == "foo" && v == "user-only"));
@@ -1657,7 +1752,8 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
         let mut cfg = NpmConfig::default();
         cfg.apply(entries);
         assert_eq!(
@@ -1698,6 +1794,7 @@ mod tests {
             Some(home_dir.path()),
             Some(xdg_dir.path()),
             proj_dir.path(),
+            None,
         );
         let mut cfg = NpmConfig::default();
         cfg.apply(entries);
@@ -1728,7 +1825,8 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
         let mut cfg = NpmConfig::default();
         cfg.apply(entries);
         assert_eq!(
@@ -1763,7 +1861,8 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
         let mut cfg = NpmConfig::default();
         cfg.apply(entries);
         assert_eq!(
@@ -1791,7 +1890,8 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
         assert!(
             entries
                 .iter()
@@ -1821,7 +1921,8 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
         assert!(
             entries
                 .iter()
@@ -1848,12 +1949,146 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path());
+        let entries =
+            load_npmrc_entries_with_home(Some(home_dir.path()), None, proj_dir.path(), None);
         assert!(
             entries
                 .iter()
                 .any(|(k, v)| k == "//registry.example.com/:_authToken" && v == "tilde-token"),
             "tilde expansion failed — got {entries:?}",
+        );
+    }
+
+    #[test]
+    fn userconfig_override_replaces_default_user_npmrc() {
+        // `NPM_CONFIG_USERCONFIG` moves the user rc off the default
+        // `$HOME/.npmrc` (XDG setups, CI secret mounts, etc.). When
+        // the override is set, the default path must be skipped
+        // entirely — matching npm/pnpm, which treat the env var as
+        // "this is the user rc," not "also read it on top of the
+        // default."
+        let home_dir = tempfile::tempdir().unwrap();
+        let proj_dir = tempfile::tempdir().unwrap();
+        let override_dir = tempfile::tempdir().unwrap();
+        let override_rc = override_dir.path().join("npmrc");
+
+        // Decoy at the default location — must NOT be loaded.
+        std::fs::write(
+            home_dir.path().join(".npmrc"),
+            "registry=https://decoy.example/\n",
+        )
+        .unwrap();
+        std::fs::write(&override_rc, "registry=https://override.example/\n").unwrap();
+
+        let entries = load_npmrc_entries_with_home(
+            Some(home_dir.path()),
+            None,
+            proj_dir.path(),
+            Some(&override_rc),
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|(k, v)| k == "registry" && v == "https://override.example/"),
+            "override file was not loaded — got {entries:?}",
+        );
+        assert!(
+            !entries.iter().any(|(_, v)| v == "https://decoy.example/"),
+            "default ~/.npmrc must be skipped when override is set — got {entries:?}",
+        );
+    }
+
+    #[test]
+    fn expand_userconfig_path_handles_tilde_absolute_and_empty() {
+        let home = PathBuf::from("/fake/home");
+        assert_eq!(
+            expand_userconfig_path("~/config/npm/npmrc", Some(&home)),
+            Some(PathBuf::from("/fake/home/config/npm/npmrc"))
+        );
+        assert_eq!(
+            expand_userconfig_path("~", Some(&home)),
+            Some(PathBuf::from("/fake/home"))
+        );
+        // Absolute paths pass through unchanged; tilde without a home
+        // can't resolve, so callers see `None` and skip the load.
+        assert_eq!(
+            expand_userconfig_path("/etc/npmrc", Some(&home)),
+            Some(PathBuf::from("/etc/npmrc"))
+        );
+        assert_eq!(expand_userconfig_path("~/x", None), None);
+        // Trimmed-empty values are rejected so an accidentally-empty
+        // export doesn't probe the process cwd.
+        assert_eq!(expand_userconfig_path("", Some(&home)), None);
+        assert_eq!(expand_userconfig_path("   ", Some(&home)), None);
+    }
+
+    #[test]
+    fn userconfig_override_from_env_accepts_both_casings() {
+        // npm documents both `NPM_CONFIG_USERCONFIG` and the
+        // lowercase form. We match on either so a shell that exports
+        // the lowercase variant (direnv, mise, etc.) still relocates
+        // the user rc.
+        let home = PathBuf::from("/h");
+        let upper = vec![(
+            "NPM_CONFIG_USERCONFIG".to_string(),
+            "/tmp/upper-rc".to_string(),
+        )];
+        assert_eq!(
+            userconfig_override_from_env(&upper, Some(&home)),
+            Some(PathBuf::from("/tmp/upper-rc"))
+        );
+        let lower = vec![(
+            "npm_config_userconfig".to_string(),
+            "/tmp/lower-rc".to_string(),
+        )];
+        assert_eq!(
+            userconfig_override_from_env(&lower, Some(&home)),
+            Some(PathBuf::from("/tmp/lower-rc"))
+        );
+        // Later entries win so a caller that extends the env slice
+        // with a downstream override sees it take effect.
+        let both = vec![
+            (
+                "NPM_CONFIG_USERCONFIG".to_string(),
+                "/tmp/first".to_string(),
+            ),
+            (
+                "npm_config_userconfig".to_string(),
+                "/tmp/second".to_string(),
+            ),
+        ];
+        assert_eq!(
+            userconfig_override_from_env(&both, Some(&home)),
+            Some(PathBuf::from("/tmp/second"))
+        );
+        // Nothing userconfig-shaped in the env → no override.
+        let none_case = vec![("HOME".to_string(), "/h".to_string())];
+        assert_eq!(userconfig_override_from_env(&none_case, Some(&home)), None);
+    }
+
+    #[test]
+    fn load_with_env_honors_npm_config_userconfig() {
+        // End-to-end: set `NPM_CONFIG_USERCONFIG` in the captured env
+        // slice and a token only present in the overridden file
+        // should reach `auth_token_for`. Uses a test-specific host so
+        // the developer's real `~/.npmrc` can't plausibly carry the
+        // same key and skew the assertion.
+        let proj_dir = tempfile::tempdir().unwrap();
+        let override_dir = tempfile::tempdir().unwrap();
+        let override_rc = override_dir.path().join("custom-npmrc");
+        std::fs::write(
+            &override_rc,
+            "//userconfig-test.example/:_authToken=from-userconfig-file\n",
+        )
+        .unwrap();
+        let env = vec![(
+            "NPM_CONFIG_USERCONFIG".to_string(),
+            override_rc.display().to_string(),
+        )];
+        let config = NpmConfig::load_with_env(proj_dir.path(), &env);
+        assert_eq!(
+            config.auth_token_for("https://userconfig-test.example/"),
+            Some("from-userconfig-file"),
         );
     }
 
