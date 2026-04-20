@@ -20,3 +20,5 @@ aube.usage.kdl text eol=lf
 # compares LF (what the writer emits) against CRLF (what's on disk)
 # and the test fails.
 crates/aube-lockfile/tests/fixtures/* text eol=lf
+
+licenses/pnpm-LICENSE linguist-language=LICENSE
