@@ -2,11 +2,11 @@
 
 ## Try disabling the global virtual store first
 
-If an install or build is behaving oddly, retry with the global virtual
-store off before digging further:
+If an install or build is behaving oddly, turn the global virtual
+store off for the project before digging further:
 
 ```sh
-aube install --disable-gvs
+aube config set enableGlobalVirtualStore false --location project
 ```
 
 Symptoms that usually point here:
@@ -20,12 +20,6 @@ Symptoms that usually point here:
   config file that lives at the project root
 - `ERR_INVALID_PACKAGE_TARGET` or exports-resolution failures for a
   package that resolves fine under pnpm/npm
-
-To make it stick for a project:
-
-```sh
-aube config set enableGlobalVirtualStore false --location project
-```
 
 See [Global virtual store](/package-manager/node-modules#global-virtual-store)
 for what this changes.
