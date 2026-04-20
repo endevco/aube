@@ -1685,7 +1685,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         && super::with_settings_ctx(&cwd, |ctx| {
             aube_settings::resolved::modules_cache_max_age(ctx) == 10080
         })
-        && state::check_needs_install(&cwd).is_none();
+        && state::check_needs_install_with_flags(&cwd, &opts.cli_flags).is_none();
 
     if warm_path_eligible {
         // Gate on the same condition as `InstallProgress::try_new`:
@@ -3644,7 +3644,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //    exist, and writing it would lie on the next auto-install
     //    freshness check.
     if !virtual_store_only {
-        state::write_state(&cwd, opts.prod || opts.dev)
+        state::write_state(&cwd, opts.prod || opts.dev, &opts.cli_flags)
             .into_diagnostic()
             .wrap_err("failed to write install state")?;
     }
