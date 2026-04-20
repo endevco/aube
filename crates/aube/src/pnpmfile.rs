@@ -37,9 +37,22 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 pub const PNPMFILE_NAME: &str = ".pnpmfile.cjs";
 
 /// Return the path to the project's pnpmfile if one exists.
-pub fn detect(cwd: &Path) -> Option<PathBuf> {
+///
+/// `workspace_pnpmfile_path` is the `pnpmfilePath` override from
+/// `pnpm-workspace.yaml` (pnpm v10 lets users keep the hook file
+/// outside the project root). When set, it wins over the default
+/// `cwd/.pnpmfile.cjs`; relative paths resolve against `cwd`. An
+/// override that points at a missing file is a hard miss (returns
+/// `None`) rather than silently falling back — that way a typo
+/// surfaces as "pnpmfile not loaded" instead of silently running
+/// the wrong hooks.
+pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathBuf> {
+    if let Some(rel) = workspace_pnpmfile_path {
+        let p = cwd.join(rel);
+        return p.is_file().then_some(p);
+    }
     let p = cwd.join(PNPMFILE_NAME);
-    if p.is_file() { Some(p) } else { None }
+    p.is_file().then_some(p)
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -444,4 +457,50 @@ async fn has_read_package_hook(pnpmfile: &Path) -> Result<bool> {
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to read pnpmfile at {}", pnpmfile.display()))?;
     Ok(contents.contains("readPackage"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_returns_default_when_present_and_no_override() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_NAME), "").unwrap();
+        let found = detect(dir.path(), None);
+        assert_eq!(
+            found.as_deref(),
+            Some(dir.path().join(PNPMFILE_NAME).as_path())
+        );
+    }
+
+    #[test]
+    fn detect_returns_none_when_default_missing_and_no_override() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect(dir.path(), None).is_none());
+    }
+
+    #[test]
+    fn detect_honors_workspace_pnpmfile_path_override() {
+        // pnpm v10 allows `pnpmfilePath: config/hooks.cjs` in
+        // pnpm-workspace.yaml to keep hooks outside the project root.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("config")).unwrap();
+        let custom = dir.path().join("config/hooks.cjs");
+        std::fs::write(&custom, "").unwrap();
+        // Even though .pnpmfile.cjs doesn't exist at the default
+        // location, the workspace override points at the real file.
+        let found = detect(dir.path(), Some("config/hooks.cjs"));
+        assert_eq!(found.as_deref(), Some(custom.as_path()));
+    }
+
+    #[test]
+    fn detect_workspace_override_returns_none_when_target_missing() {
+        // A typo in `pnpmfilePath` must surface as "not loaded" rather
+        // than silently falling back to `.pnpmfile.cjs` — otherwise the
+        // user thinks their hooks are running when they aren't.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_NAME), "").unwrap();
+        assert!(detect(dir.path(), Some("typo/missing.cjs")).is_none());
+    }
 }

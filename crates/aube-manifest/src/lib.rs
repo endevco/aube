@@ -740,6 +740,48 @@ fn push_unique_strs(dst: &mut Vec<String>, arr: &[serde_json::Value]) {
     }
 }
 
+/// Union of `package.json`'s `{pnpm,aube}.supportedArchitectures.*` and
+/// `pnpm-workspace.yaml`'s `supportedArchitectures.*`. pnpm v10 treats
+/// the workspace yaml as the canonical home for shared platform
+/// widening — a team generating a cross-platform lockfile on Linux CI
+/// sets it there once rather than in every importer's manifest.
+/// Insertion order: manifest first, workspace appended, duplicates
+/// dropped (same dedupe rule `pnpm_supported_architectures` already
+/// uses between the `pnpm.*` and `aube.*` namespaces).
+pub fn effective_supported_architectures(
+    manifest: &PackageJson,
+    workspace: &workspace::WorkspaceConfig,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (mut os, mut cpu, mut libc) = manifest.pnpm_supported_architectures();
+    if let Some(ws) = &workspace.supported_architectures {
+        let extend_unique = |dst: &mut Vec<String>, src: &[String]| {
+            for s in src {
+                if !dst.iter().any(|existing| existing == s) {
+                    dst.push(s.clone());
+                }
+            }
+        };
+        extend_unique(&mut os, &ws.os);
+        extend_unique(&mut cpu, &ws.cpu);
+        extend_unique(&mut libc, &ws.libc);
+    }
+    (os, cpu, libc)
+}
+
+/// Union of `package.json`'s `{pnpm,aube}.ignoredOptionalDependencies`
+/// and `pnpm-workspace.yaml`'s `ignoredOptionalDependencies`. Same
+/// layering rule as [`effective_supported_architectures`]: workspace
+/// yaml is pnpm v10's canonical location for shared settings, so the
+/// two sources union rather than override.
+pub fn effective_ignored_optional_dependencies(
+    manifest: &PackageJson,
+    workspace: &workspace::WorkspaceConfig,
+) -> BTreeSet<String> {
+    let mut out = manifest.pnpm_ignored_optional_dependencies();
+    out.extend(workspace.ignored_optional_dependencies.iter().cloned());
+    out
+}
+
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("failed to read {0}: {1}")]
@@ -1545,6 +1587,63 @@ mod tests {
             p.pnpm_peer_dependency_rules_allow_any(),
             vec!["@types/a".to_string(), "@types/b".to_string()],
         );
+    }
+
+    #[test]
+    fn effective_supported_architectures_unions_manifest_and_workspace() {
+        let p = parse(
+            r#"{
+                "pnpm": {
+                    "supportedArchitectures": {
+                        "os": ["current", "linux"],
+                        "cpu": ["x64"]
+                    }
+                }
+            }"#,
+        );
+        let ws: workspace::WorkspaceConfig = serde_yaml::from_str(
+            r#"
+supportedArchitectures:
+  os: ["win32"]
+  cpu: ["x64", "arm64"]
+  libc: ["glibc"]
+"#,
+        )
+        .unwrap();
+        let (os, cpu, libc) = effective_supported_architectures(&p, &ws);
+        // Manifest first, workspace appended, duplicates dropped.
+        assert_eq!(os, vec!["current", "linux", "win32"]);
+        assert_eq!(cpu, vec!["x64", "arm64"]);
+        assert_eq!(libc, vec!["glibc"]);
+    }
+
+    #[test]
+    fn effective_supported_architectures_works_without_either_source() {
+        let p = parse(r#"{}"#);
+        let ws = workspace::WorkspaceConfig::default();
+        let (os, cpu, libc) = effective_supported_architectures(&p, &ws);
+        assert!(os.is_empty() && cpu.is_empty() && libc.is_empty());
+    }
+
+    #[test]
+    fn effective_ignored_optional_dependencies_unions_manifest_and_workspace() {
+        let p = parse(
+            r#"{
+                "pnpm": { "ignoredOptionalDependencies": ["fsevents"] }
+            }"#,
+        );
+        let ws: workspace::WorkspaceConfig = serde_yaml::from_str(
+            r#"
+ignoredOptionalDependencies:
+  - dtrace-provider
+  - fsevents
+"#,
+        )
+        .unwrap();
+        let merged = effective_ignored_optional_dependencies(&p, &ws);
+        assert!(merged.contains("fsevents"));
+        assert!(merged.contains("dtrace-provider"));
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]

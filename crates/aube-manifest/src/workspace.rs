@@ -142,6 +142,28 @@ pub struct WorkspaceConfig {
     #[serde(default, rename = "patchedDependencies")]
     pub patched_dependencies: BTreeMap<String, String>,
 
+    /// os/cpu/libc widening set. pnpm v10 moved this alongside
+    /// `overrides` — users generating a cross-platform lockfile on
+    /// Linux CI want to widen in the workspace yaml (where the rest
+    /// of their shared config lives) rather than `package.json`.
+    /// Merged with `package.json`'s `pnpm.supportedArchitectures` /
+    /// `aube.supportedArchitectures` at install time.
+    #[serde(default, rename = "supportedArchitectures")]
+    pub supported_architectures: Option<SupportedArchitectures>,
+
+    /// Optional-dep names that should always be skipped, even when
+    /// their platform matches. Merged with `package.json`'s
+    /// `pnpm.ignoredOptionalDependencies` / `aube.*` at install time.
+    /// Distinct from `--no-optional`, which drops *all* optional deps.
+    #[serde(default, rename = "ignoredOptionalDependencies")]
+    pub ignored_optional_dependencies: Vec<String>,
+
+    /// Override for the `.pnpmfile.cjs` path. pnpm v10 lets users
+    /// point at a non-default location; aube's default is `cwd/.pnpmfile.cjs`.
+    /// Relative paths resolve against the workspace root.
+    #[serde(default, rename = "pnpmfilePath")]
+    pub pnpmfile_path: Option<String>,
+
     /// Extend package metadata during resolution.
     #[serde(default)]
     pub package_extensions: BTreeMap<String, serde_yaml::Value>,
@@ -344,6 +366,26 @@ pub struct WorkspaceConfig {
     /// Capture unknown fields for forward compatibility.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// `supportedArchitectures.{os,cpu,libc}` arrays from
+/// pnpm-workspace.yaml. Same three-axis shape pnpm uses; each entry
+/// can be a concrete token (`"linux"`) or the literal `"current"`,
+/// which the resolver expands to the host triple.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SupportedArchitectures {
+    #[serde(default)]
+    pub os: Vec<String>,
+    #[serde(default)]
+    pub cpu: Vec<String>,
+    #[serde(default)]
+    pub libc: Vec<String>,
+}
+
+impl SupportedArchitectures {
+    pub fn is_empty(&self) -> bool {
+        self.os.is_empty() && self.cpu.is_empty() && self.libc.is_empty()
+    }
 }
 
 impl WorkspaceConfig {
@@ -658,6 +700,45 @@ overrides:
         let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.overrides.get("foo").unwrap(), "1.0.0");
         assert_eq!(config.overrides.get("bar").unwrap(), "npm:baz@^2");
+    }
+
+    #[test]
+    fn test_supported_architectures() {
+        let yaml = r#"
+supportedArchitectures:
+  os: ["current", "linux"]
+  cpu: ["current", "x64"]
+  libc: ["glibc"]
+"#;
+        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let sa = config.supported_architectures.as_ref().unwrap();
+        assert_eq!(sa.os, vec!["current", "linux"]);
+        assert_eq!(sa.cpu, vec!["current", "x64"]);
+        assert_eq!(sa.libc, vec!["glibc"]);
+        assert!(!sa.is_empty());
+    }
+
+    #[test]
+    fn test_ignored_optional_dependencies() {
+        let yaml = r#"
+ignoredOptionalDependencies:
+  - fsevents
+  - dtrace-provider
+"#;
+        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.ignored_optional_dependencies,
+            vec!["fsevents", "dtrace-provider"]
+        );
+    }
+
+    #[test]
+    fn test_pnpmfile_path() {
+        let yaml = r#"
+pnpmfilePath: config/pnpmfile.cjs
+"#;
+        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.pnpmfile_path.as_deref(), Some("config/pnpmfile.cjs"));
     }
 
     #[test]

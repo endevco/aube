@@ -2176,7 +2176,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         }
         let client = std::sync::Arc::new(make_client(&cwd).with_network_mode(opts.network_mode));
         let pnpmfile_path = (!opts.ignore_pnpmfile)
-            .then(|| crate::pnpmfile::detect(&cwd))
+            .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
             .flatten();
         let read_package_host = match pnpmfile_path.as_deref() {
             Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
@@ -2192,6 +2192,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             &manifest,
             ResolverConfigInputs {
                 settings_ctx: &settings_ctx,
+                workspace_config: &ws_config_shared,
                 workspace_catalogs: &workspace_catalogs,
                 opts: &opts,
                 // `lockfile=false` collapses to `None` so the resolver
@@ -2441,17 +2442,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // start fetching tarballs. The resolver's inline filter
             // never runs on the lockfile-happy path, so this pass is
             // what makes cross-platform lockfile installs work.
-            let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
+            let (sup_os, sup_cpu, sup_libc) =
+                aube_manifest::effective_supported_architectures(&manifest, &ws_config_shared);
             let supported_architectures = aube_resolver::SupportedArchitectures {
                 os: sup_os,
                 cpu: sup_cpu,
                 libc: sup_libc,
                 ..Default::default()
             };
-            let ignored_optional_deps: std::collections::BTreeSet<String> = manifest
-                .pnpm_ignored_optional_dependencies()
-                .into_iter()
-                .collect();
+            let ignored_optional_deps = aube_manifest::effective_ignored_optional_dependencies(
+                &manifest,
+                &ws_config_shared,
+            );
             aube_resolver::platform::filter_graph(
                 &mut graph,
                 &supported_architectures,
@@ -2594,7 +2596,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // `--lockfile-only` short-circuit produces an identical lockfile.
             let (resolver, mut resolved_rx) = aube_resolver::Resolver::with_stream(client);
             let pnpmfile_path = (!opts.ignore_pnpmfile)
-                .then(|| crate::pnpmfile::detect(&cwd))
+                .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
                 .flatten();
             let read_package_host = match pnpmfile_path.as_deref() {
                 Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
@@ -2610,6 +2612,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &manifest,
                 ResolverConfigInputs {
                     settings_ctx: &settings_ctx,
+                    workspace_config: &ws_config_shared,
                     workspace_catalogs: &workspace_catalogs,
                     opts: &opts,
                     // Same disambiguation as the `--lockfile-only` path:
@@ -2656,7 +2659,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // set, so a deferred package that survives the trim is
             // exactly one the catch-up must fetch.
             let (fetch_sup_os, fetch_sup_cpu, fetch_sup_libc) =
-                manifest.pnpm_supported_architectures();
+                aube_manifest::effective_supported_architectures(&manifest, &ws_config_shared);
             let fetch_supported_arch = aube_resolver::SupportedArchitectures {
                 os: fetch_sup_os,
                 cpu: fetch_sup_cpu,
@@ -3215,17 +3218,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // filter pass the lockfile-happy branch above runs against a
             // parsed lockfile. A no-op when the manifest didn't trigger
             // widening (graph was already host-only).
-            let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
+            let (sup_os, sup_cpu, sup_libc) =
+                aube_manifest::effective_supported_architectures(&manifest, &ws_config_shared);
             let install_supported_architectures = aube_resolver::SupportedArchitectures {
                 os: sup_os,
                 cpu: sup_cpu,
                 libc: sup_libc,
                 ..Default::default()
             };
-            let install_ignored_optional: std::collections::BTreeSet<String> = manifest
-                .pnpm_ignored_optional_dependencies()
-                .into_iter()
-                .collect();
+            let install_ignored_optional = aube_manifest::effective_ignored_optional_dependencies(
+                &manifest,
+                &ws_config_shared,
+            );
             aube_resolver::platform::filter_graph(
                 &mut graph,
                 &install_supported_architectures,

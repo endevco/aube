@@ -135,6 +135,52 @@ teardown() {
 	assert_exists node_modules/aube-test-optional-win32
 }
 
+@test "pnpm-workspace.yaml supportedArchitectures widens the match set" {
+	# pnpm v10 lets users declare `supportedArchitectures` in
+	# pnpm-workspace.yaml so one shared config spans every importer.
+	cat >package.json <<-'JSON'
+		{
+		  "name": "supported-arch-ws-test",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  }
+		}
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages: []
+		supportedArchitectures:
+		  os: ["current", "win32"]
+	YAML
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_exists node_modules/aube-test-optional-win32
+}
+
+@test "pnpm-workspace.yaml ignoredOptionalDependencies drops a named optional dep" {
+	cat >package.json <<-'JSON'
+		{
+		  "name": "ignored-optional-ws-test",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  }
+		}
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages: []
+		supportedArchitectures:
+		  os: ["current", "win32"]
+		ignoredOptionalDependencies:
+		  - aube-test-optional-win32
+	YAML
+	run aube install --no-frozen-lockfile
+	assert_success
+	# ignoredOptionalDependencies from the workspace yaml wins even
+	# though the platform filter would otherwise let the dep through.
+	assert_not_exists node_modules/aube-test-optional-win32
+}
+
 @test "aube.supportedArchitectures widens the match set" {
 	cat >package.json <<-'JSON'
 		{

@@ -540,6 +540,7 @@ fn read_peer_dependencies_meta(
 /// option should land here rather than only in one branch.
 pub(super) struct ResolverConfigInputs<'a> {
     pub(super) settings_ctx: &'a aube_settings::ResolveCtx<'a>,
+    pub(super) workspace_config: &'a aube_manifest::workspace::WorkspaceConfig,
     pub(super) workspace_catalogs:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub(super) opts: &'a InstallOptions,
@@ -566,6 +567,7 @@ pub(super) fn configure_resolver(
 ) -> aube_resolver::Resolver {
     let ResolverConfigInputs {
         settings_ctx,
+        workspace_config,
         workspace_catalogs,
         opts,
         target_lockfile_kind,
@@ -577,7 +579,8 @@ pub(super) fn configure_resolver(
     let dedupe_peers = resolve_dedupe_peers(settings_ctx);
     let resolve_peers_from_workspace_root_opt = resolve_peers_from_workspace_root(settings_ctx);
     let registry_supports_time_field = resolve_registry_supports_time_field(settings_ctx);
-    let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
+    let (sup_os, sup_cpu, sup_libc) =
+        aube_manifest::effective_supported_architectures(manifest, workspace_config);
     // aube-lock.yaml and pnpm-lock.yaml are both committed,
     // cross-platform artifacts: if the user hasn't declared
     // `pnpm.supportedArchitectures` we widen the resolver's platform
@@ -630,7 +633,8 @@ pub(super) fn configure_resolver(
             dependency_policy.package_extensions.len()
         );
     }
-    let ignored_optional = manifest.pnpm_ignored_optional_dependencies();
+    let ignored_optional =
+        aube_manifest::effective_ignored_optional_dependencies(manifest, workspace_config);
     if !ignored_optional.is_empty() {
         tracing::debug!(
             "ignoring {} optional dependencies (pnpm.ignoredOptionalDependencies)",

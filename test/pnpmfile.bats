@@ -164,3 +164,37 @@ EOF
 	assert_failure
 	assert_output --partial 'boom from pnpmfile'
 }
+
+@test "pnpmfile: pnpm-workspace.yaml pnpmfilePath override loads hook from a custom location" {
+	# pnpm v10 lets `pnpmfilePath` in pnpm-workspace.yaml point at a
+	# non-default hook file. Put the hook somewhere the default
+	# resolver wouldn't find it, and prove the install still loaded
+	# it via the workspace override.
+	cat >package.json <<'EOF2'
+{
+  "name": "test-ws-pnpmfile-path",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+EOF2
+
+	cat >pnpm-workspace.yaml <<'EOF2'
+packages: []
+pnpmfilePath: hooks/custom-pnpmfile.cjs
+EOF2
+
+	mkdir -p hooks
+	cat >hooks/custom-pnpmfile.cjs <<'EOF2'
+function afterAllResolved(lockfile, context) {
+  context.log('hello from custom pnpmfile path');
+  return lockfile;
+}
+module.exports = { hooks: { afterAllResolved } };
+EOF2
+
+	run aube install
+	assert_success
+	assert_output --partial 'hello from custom pnpmfile path'
+}

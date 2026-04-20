@@ -126,7 +126,13 @@ different from the host.
 sources.cli = []
 sources.env = []
 sources.npmrc = ["supportedArchitectures"]
+sources.workspaceYaml = ["supportedArchitectures"]
 examples = []
+# Read directly off the typed `WorkspaceConfig.supported_architectures`
+# field and unioned with `{pnpm,aube}.supportedArchitectures` from
+# `package.json` via `aube_manifest::effective_supported_architectures`.
+# The typed accessor would only surface the `.npmrc` spelling.
+typedAccessorUnused = true
 
 [ignoredOptionalDependencies]
 description = "Skip optional dependencies by name."
@@ -139,11 +145,12 @@ from `--no-optional`, which drops *all* optional deps at install time.
 sources.cli = []
 sources.env = []
 sources.npmrc = ["ignoredOptionalDependencies"]
+sources.workspaceYaml = ["ignoredOptionalDependencies"]
 examples = []
-# Read as a list out of the `package.json` pnpm block and the
-# workspace config in `aube-manifest`; the resolver consumes that list
-# directly. The typed accessor would only surface the `.npmrc`
-# spelling, which nobody uses in practice.
+# Read as a list out of the `package.json` pnpm/aube block and the
+# typed `WorkspaceConfig.ignored_optional_dependencies` field;
+# `aube_manifest::effective_ignored_optional_dependencies` unions
+# them. The typed accessor would only surface the `.npmrc` spelling.
 typedAccessorUnused = true
 
 [minimumReleaseAge]
