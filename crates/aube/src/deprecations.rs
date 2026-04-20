@@ -73,16 +73,13 @@ pub fn render_install_warnings(
     graph: &LockfileGraph,
     mode: DeprecationWarnings,
 ) {
-    if matches!(mode, DeprecationWarnings::None) || records.is_empty() {
+    if records.is_empty() {
         return;
     }
     let (direct, transitive) = classify(records, graph);
-
     match mode {
         DeprecationWarnings::None => {}
-        DeprecationWarnings::Summary => {
-            write_count_line(records.len());
-        }
+        DeprecationWarnings::Summary => write_count_line(records.len()),
         DeprecationWarnings::Direct => {
             for r in &direct {
                 write_warn_line(r);
@@ -92,10 +89,7 @@ pub fn render_install_warnings(
             }
         }
         DeprecationWarnings::All => {
-            for r in &direct {
-                write_warn_line(r);
-            }
-            for r in &transitive {
+            for r in direct.iter().chain(transitive.iter()) {
                 write_warn_line(r);
             }
         }

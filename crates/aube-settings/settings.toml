@@ -92,9 +92,13 @@ Controls how deprecation messages surface at the end of install:
 Run `aube deprecations` to see the full list any time after install.
 """
 sources.cli = ["--deprecation-warnings"]
+sources.env = ["AUBE_DEPRECATION_WARNINGS"]
 sources.npmrc = ["deprecationWarnings"]
 sources.workspaceYaml = ["deprecationWarnings"]
-examples = []
+examples = [
+    "AUBE_DEPRECATION_WARNINGS=all aube install",
+    "aube install --deprecation-warnings=summary",
+]
 
 ["updateConfig.ignoreDependencies"]
 description = "List of packages to ignore during update checks."

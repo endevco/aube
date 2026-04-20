@@ -153,7 +153,7 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
     };
 
     if records.is_empty() {
-        return emit_empty(args.json, args.exit_code, false);
+        return emit_empty(args.json, args.exit_code, args.transitive);
     }
 
     if args.json {
@@ -168,11 +168,23 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
     Ok(None)
 }
 
-fn emit_empty(json: bool, exit_code: bool, _found: bool) -> miette::Result<Option<i32>> {
+fn emit_empty(
+    json: bool,
+    exit_code: bool,
+    include_transitive: bool,
+) -> miette::Result<Option<i32>> {
     if json {
         println!("[]");
-    } else {
+    } else if include_transitive {
         eprintln!("No deprecated packages.");
+    } else {
+        // Direct-only mode: be explicit that transitive deps weren't
+        // queried — the install-time summary hints at `aube deprecations`
+        // for the full view, and silently claiming "no deprecated
+        // packages" here would undermine that.
+        eprintln!(
+            "No deprecated direct dependencies. Run with --transitive to include transitive deps."
+        );
     }
     if exit_code {
         // Empty means "nothing to flag" — exit 0 even with --exit-code.
@@ -214,15 +226,15 @@ fn render_text(
             println!("  {}", r.message);
             println!();
         }
-    } else if !transitive.is_empty() {
-        let count = pluralizer::pluralize("transitive package", transitive.len() as isize, true);
-        eprintln!(
-            "{}",
-            style::edim(format!(
-                "{count} also have deprecation warnings. Run with --transitive to see them."
-            ))
-        );
+        return;
     }
+    // Direct-only mode. We didn't fetch transitive packuments, so we
+    // can't print a count — but we still want to surface that the
+    // report isn't exhaustive, mirroring the install-time hint.
+    eprintln!(
+        "{}",
+        style::edim("Transitive deps weren't checked. Run with --transitive for the full view.")
+    );
 }
 
 fn render_json(
