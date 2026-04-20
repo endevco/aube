@@ -711,7 +711,14 @@ impl Error {
     /// source.
     pub fn parse(path: &Path, content: String, err: &serde_json::Error) -> Self {
         let offset = line_col_to_byte_offset(&content, err.line(), err.column());
-        let span = miette::SourceSpan::new(offset.into(), 1);
+        // Clamp the span length so it never extends past the content
+        // end. A trailing-newline-EOF error reports a position at or
+        // past `content.len()`; a fixed length of 1 would push the
+        // range one byte past the source and miette's renderer would
+        // fail to slice it. A zero-length span at `content.len()` is
+        // what miette expects for "end-of-input" labels.
+        let len = if offset >= content.len() { 0 } else { 1 };
+        let span = miette::SourceSpan::new(offset.into(), len);
         Error::Parse(Box::new(ParseError {
             path: path.to_path_buf(),
             message: err.to_string(),
@@ -830,6 +837,30 @@ mod tests {
     fn line_col_offset_no_trailing_newline() {
         let s = "a\nbc";
         assert_eq!(line_col_to_byte_offset(s, 2, 2), 3);
+    }
+
+    /// `serde_json` reports "EOF while parsing" with a position at or
+    /// past `content.len()` (e.g. `{"name":` → column 8 on a 8-byte
+    /// buffer). The span must never extend past the end of source or
+    /// `miette`'s renderer chokes trying to slice it — clamp the span
+    /// length to 0 at EOF.
+    #[test]
+    fn parse_error_eof_span_stays_in_bounds() {
+        let path = Path::new("pkg.json");
+        let content = r#"{"name":"#.to_string();
+        let json_err: serde_json::Error = serde_json::from_str::<serde_json::Value>(&content)
+            .expect_err("truncated JSON must fail");
+        let Error::Parse(pe) = Error::parse(path, content.clone(), &json_err) else {
+            panic!("Error::parse must produce Parse variant");
+        };
+        let offset: usize = pe.span.offset();
+        let len: usize = pe.span.len();
+        assert!(
+            offset + len <= content.len(),
+            "span [{offset}, {}) exceeds content.len() {}",
+            offset + len,
+            content.len()
+        );
     }
 
     #[test]
