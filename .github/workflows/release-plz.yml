@@ -150,6 +150,8 @@ jobs:
           ref: refs/tags/${{ needs.release-plz-release.outputs.tag }}
           submodules: recursive
       - uses: jdx/mise-action@v2
+        with:
+          install_args: communique
       - name: Enhance GitHub release with communique
         continue-on-error: true
         env:
