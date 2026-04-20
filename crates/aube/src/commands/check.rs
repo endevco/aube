@@ -355,20 +355,16 @@ mod tests {
         .unwrap();
     }
 
-    fn symlink(from: &Path, to: &Path) {
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(from, to).unwrap();
-        #[cfg(windows)]
-        {
-            // Tests currently skip Windows since the suite runs on unix CI.
-            let _ = (from, to);
-            panic!("windows path exercised test");
-        }
-    }
-
     /// Build a minimal `.aube/` tree with two cells, `foo@1.0.0` and
     /// `bar@2.0.0`. `foo` declares a dep on `bar`. Caller hooks up the
     /// sibling (or deliberately omits it).
+    ///
+    /// `with_link` uses `aube_linker::create_dir_link` so the helper
+    /// works on every host the crate itself targets — a plain
+    /// `std::os::unix::fs::symlink` would silently skip Windows, and
+    /// Windows needs the junction path that `create_dir_link` already
+    /// picks for directory links. Kept close to what production
+    /// actually writes so tests exercise the same resolution behavior.
     fn minimal_tree(with_link: bool) -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().to_path_buf();
@@ -389,7 +385,7 @@ mod tests {
         write_pkg(&bar_pkg, "bar", "2.0.0", &[]);
 
         if with_link {
-            symlink(&bar_pkg, &foo_cell.join("bar"));
+            aube_linker::create_dir_link(&bar_pkg, &foo_cell.join("bar")).unwrap();
         }
 
         (tmp, cwd)
