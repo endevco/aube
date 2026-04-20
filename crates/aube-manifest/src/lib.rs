@@ -6,8 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Deserialize `engines` tolerant to the pre-npm-2.x legacy array
-/// form, e.g. `extsprintf@1.4.1` ships `"engines": ["node >=0.6.0"]`.
+/// Deserialize `engines` tolerant to legacy non-map forms, e.g.
+/// `extsprintf@1.4.1` ships `"engines": ["node >=0.6.0"]` and some
+/// old packument entries (such as `qs`) ship a bare string.
 /// Modern npm ignores that shape (engine-strict only consults the map
 /// form), so normalize to an empty map rather than failing the whole
 /// manifest — a hard error there takes down every install that touches
@@ -27,7 +28,10 @@ where
 {
     let value: Option<serde_json::Value> = Option::deserialize(de)?;
     Ok(match value {
-        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => BTreeMap::new(),
+        None
+        | Some(serde_json::Value::Null)
+        | Some(serde_json::Value::Array(_))
+        | Some(serde_json::Value::String(_)) => BTreeMap::new(),
         Some(serde_json::Value::Object(m)) => m
             .into_iter()
             .filter_map(|(k, v)| match v {
@@ -36,12 +40,11 @@ where
             })
             .collect(),
         Some(other) => {
-            // Null / Array / Object are handled above, so `other` can
-            // only be a scalar here.
+            // Null / Array / String / Object are handled above, so
+            // `other` can only be another scalar here.
             return Err(serde::de::Error::custom(format!(
                 "engines: expected a map, got {}",
                 match other {
-                    serde_json::Value::String(_) => "string",
                     serde_json::Value::Number(_) => "number",
                     serde_json::Value::Bool(_) => "boolean",
                     _ => unreachable!("engines: unexpected value variant"),
@@ -668,6 +671,15 @@ mod tests {
     #[test]
     fn engines_legacy_array_form_parses_as_empty_map() {
         let p = parse(r#"{"name":"x","engines":["node >=0.6.0"]}"#);
+        assert!(p.engines.is_empty());
+    }
+
+    /// Some old npm packument entries (e.g. `qs`) ship `engines` as a
+    /// bare string. There is no reliable key to preserve, so treat it
+    /// like the legacy array form and ignore it.
+    #[test]
+    fn engines_legacy_string_form_parses_as_empty_map() {
+        let p = parse(r#"{"name":"x","engines":"node >=0.6.0"}"#);
         assert!(p.engines.is_empty());
     }
 
