@@ -300,6 +300,24 @@ impl PackageJson {
         out
     }
 
+    /// Extract the top-level `trustedDependencies` array — Bun's
+    /// allowlist for lifecycle scripts. Treated as an additional
+    /// allow-source alongside `pnpm.onlyBuiltDependencies`, so bun
+    /// projects migrating to aube do not have to rewrite their manifest
+    /// to get scripts running. Non-string entries are dropped; a denylist
+    /// match in `neverBuiltDependencies` still wins at `decide()` time.
+    pub fn trusted_dependencies(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(arr) = self
+            .extra
+            .get("trustedDependencies")
+            .and_then(|v| v.as_array())
+        {
+            push_unique_strs(&mut out, arr);
+        }
+        out
+    }
+
     /// Extract `pnpm.catalog` / `aube.catalog` — a default catalog
     /// defined inline in package.json under the `pnpm`/`aube` object.
     /// pnpm itself reads catalogs only from `pnpm-workspace.yaml`, but
@@ -1283,6 +1301,28 @@ mod tests {
             p.pnpm_allow_builds().get("esbuild"),
             Some(AllowBuildRaw::Bool(true)),
         ));
+    }
+
+    #[test]
+    fn trusted_dependencies_reads_top_level_bun_format() {
+        let p = parse(
+            r#"{
+                "trustedDependencies": ["esbuild", "sharp", "esbuild"]
+            }"#,
+        );
+        assert_eq!(p.trusted_dependencies(), vec!["esbuild", "sharp"]);
+    }
+
+    #[test]
+    fn trusted_dependencies_absent_returns_empty() {
+        let p = parse(r#"{}"#);
+        assert!(p.trusted_dependencies().is_empty());
+    }
+
+    #[test]
+    fn trusted_dependencies_wrong_shape_returns_empty() {
+        let p = parse(r#"{"trustedDependencies": {"esbuild": true}}"#);
+        assert!(p.trusted_dependencies().is_empty());
     }
 
     #[test]

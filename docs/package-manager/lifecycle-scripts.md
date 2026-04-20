@@ -80,5 +80,8 @@ it on future installs with the same input hash.
 ## Bun comparison
 
 Bun also treats dependency scripts as a security boundary and uses an allowlist
-model through `trustedDependencies`. aube uses pnpm-compatible policy fields so
-the same manifest can stay close to pnpm's model.
+model through `trustedDependencies`. aube reads the top-level
+`trustedDependencies` array as an additional allow-source alongside
+`pnpm.onlyBuiltDependencies`, so bun projects work without rewriting the
+manifest. `pnpm.neverBuiltDependencies` still wins when both sides list the
+same package.
