@@ -4081,8 +4081,10 @@ fn link_bins_for_dep(
     {
         match bin {
             serde_json::Value::String(bin_path) => {
-                if aube_linker::validate_bin_target(bin_path).is_ok() {
-                    let bin_name = name.split('/').next_back().unwrap_or(name);
+                let bin_name = name.split('/').next_back().unwrap_or(name);
+                if aube_linker::validate_bin_name(bin_name).is_ok()
+                    && aube_linker::validate_bin_target(bin_path).is_ok()
+                {
                     create_bin_link(bin_dir, bin_name, &pkg_dir.join(bin_path), shim_opts)?;
                 }
             }
@@ -4242,8 +4244,10 @@ fn link_bundled_bins(
         };
         match bin {
             serde_json::Value::String(bin_path) => {
-                if aube_linker::validate_bin_target(bin_path).is_ok() {
-                    let bin_name = bundled.split('/').next_back().unwrap_or(bundled);
+                let bin_name = bundled.split('/').next_back().unwrap_or(bundled);
+                if aube_linker::validate_bin_name(bin_name).is_ok()
+                    && aube_linker::validate_bin_target(bin_path).is_ok()
+                {
                     create_bin_link(bin_dir, bin_name, &bundled_dir.join(bin_path), shim_opts)?;
                 }
             }
