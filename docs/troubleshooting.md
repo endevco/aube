@@ -21,8 +21,13 @@ Symptoms that usually point here:
 - `ERR_INVALID_PACKAGE_TARGET` or exports-resolution failures for a
   package that resolves fine under pnpm/npm
 
-To make it stick for a project, add `enableGlobalVirtualStore=false` to
-`.npmrc`. See [Global virtual store](/package-manager/node-modules#global-virtual-store)
+To make it stick for a project:
+
+```sh
+aube config set enableGlobalVirtualStore false --location project
+```
+
+See [Global virtual store](/package-manager/node-modules#global-virtual-store)
 for what this changes.
 
 ## A package is missing from `node_modules`
