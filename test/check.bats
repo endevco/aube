@@ -81,3 +81,10 @@ JSON
 	assert_success
 	assert_output --partial "checked 0 packages"
 }
+
+@test "aube check is a no-op outside any project (no package.json)" {
+	# Deliberately no package.json in $TEST_TEMP_DIR.
+	run aube check
+	assert_success
+	assert_output --partial "checked 0 packages"
+}

@@ -260,12 +260,38 @@ fn check_install_state(anchor: &Path, report: &mut Report) {
     }
 }
 
+/// Scan for artifacts other package managers leave behind. aube
+/// deliberately co-exists with whatever's already on disk — we never
+/// reach into `.pnpm/` / `.yarn/` — but a user running two PMs against
+/// the same project is a recipe for drift, so surface any leftovers as
+/// warnings. We cover every layout that writes a marker at a known
+/// path:
+///
+/// - `node_modules/.pnpm/`  → pnpm's isolated virtual store
+/// - `<project>/.yarn/`     → yarn berry (zero-install cache / PnP support files)
+/// - `<project>/.pnp.cjs`
+///   or `<project>/.pnp.loader.mjs` → yarn PnP (no `node_modules` at all)
+///
+/// Yarn-classic and npm leave no distinctive marker — both write plain
+/// flat `node_modules/` trees — so we can't detect them here. Users
+/// running either against an aube project will still notice at
+/// `aube install` time when the lockfile is rewritten.
 fn check_foreign_package_manager_dirs(anchor: &Path, report: &mut Report) {
     let modules = super::project_modules_dir(anchor);
     if modules.join(".pnpm").is_dir() {
         report.warnings.push(
             "node_modules/.pnpm/ exists alongside aube's tree — this project was last installed with pnpm. aube and pnpm can co-exist, but expect both trees to drift unless you pick one."
                 .to_string(),
+        );
+    }
+    if anchor.join(".yarn").is_dir() {
+        report.warnings.push(
+            ".yarn/ exists at the project root — this project was last touched with yarn (berry or the zero-install flow). Safe to delete if you've committed to aube.".to_string(),
+        );
+    }
+    if anchor.join(".pnp.cjs").is_file() || anchor.join(".pnp.loader.mjs").is_file() {
+        report.warnings.push(
+            "yarn PnP loader files (.pnp.cjs / .pnp.loader.mjs) are present — Node may still run from PnP instead of aube's node_modules/ until they're removed.".to_string(),
         );
     }
 }

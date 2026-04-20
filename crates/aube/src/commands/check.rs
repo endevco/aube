@@ -49,7 +49,13 @@ pub struct CheckArgs {
 }
 
 pub async fn run(args: CheckArgs) -> miette::Result<()> {
-    let cwd = crate::dirs::project_root()?;
+    // `project_root_or_cwd` falls back to the current directory when
+    // nothing above it has a `package.json`. `run_report` is already a
+    // no-op when `node_modules/.aube/` doesn't exist, so running
+    // outside a project produces the same friendly `checked 0 packages`
+    // output as running in a project that hasn't been installed yet —
+    // no `miette`-formatted error just for living outside a package.
+    let cwd = crate::dirs::project_root_or_cwd()?;
     let report = run_report(&cwd)?;
 
     if args.json {
@@ -79,6 +85,22 @@ pub(crate) struct BrokenLink {
     pub(crate) consumer_version: String,
     pub(crate) dep_name: String,
     pub(crate) dep_range: String,
+    pub(crate) kind: BrokenKind,
+}
+
+/// Why a dependency was flagged as unresolvable. The distinction is
+/// user-facing — a missing bundled dep points at a packaging/tarball
+/// problem, whereas a missing sibling points at a link-tree problem.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BrokenKind {
+    /// No sibling entry at `<cell>/node_modules/<dep>` and the dep is
+    /// not declared as bundled.
+    Sibling,
+    /// The consumer declares this dep via `bundledDependencies`, but
+    /// the bundled copy is missing at `<pkg>/node_modules/<dep>` (the
+    /// in-tarball location). Reported distinctly so a corrupted tarball
+    /// or import is easier to diagnose than a generic resolve failure.
+    Bundled,
 }
 
 /// Walk the virtual store under `cwd` and collect broken dependency links.
@@ -194,11 +216,22 @@ fn check_package(
 
     for (dep_name, dep_range) in &manifest.dependencies {
         if bundled.contains(dep_name) {
-            // Bundled deps ship inside the tarball at `<pkg>/node_modules/<dep>`,
-            // not as a sibling — resolve that way.
-            if pkg_dir.join("node_modules").join(dep_name).exists() {
-                continue;
+            // Bundled deps ship inside the tarball at `<pkg>/node_modules/<dep>`;
+            // they're a separate resolution path from sibling symlinks, so
+            // report a distinct error when that copy is missing instead of
+            // falling through to a generic "cannot resolve". A packaging
+            // problem (corrupted tarball, bad publish) reads very
+            // differently from a link-tree problem.
+            if !pkg_dir.join("node_modules").join(dep_name).exists() {
+                report.issues.push(BrokenLink {
+                    consumer_name: consumer_name.clone(),
+                    consumer_version: consumer_version.clone(),
+                    dep_name: dep_name.clone(),
+                    dep_range: dep_range.clone(),
+                    kind: BrokenKind::Bundled,
+                });
             }
+            continue;
         }
         let sibling = cell_nm.join(dep_name);
         if sibling.exists() {
@@ -209,6 +242,7 @@ fn check_package(
             consumer_version: consumer_version.clone(),
             dep_name: dep_name.clone(),
             dep_range: dep_range.clone(),
+            kind: BrokenKind::Sibling,
         });
     }
 
@@ -255,7 +289,15 @@ fn print_human(report: &CheckReport) {
             println!("  {name}@{version}");
         }
         for link in group {
-            println!("    ✕ cannot resolve: {}@{}", link.dep_name, link.dep_range);
+            match link.kind {
+                BrokenKind::Sibling => {
+                    println!("    ✕ cannot resolve: {}@{}", link.dep_name, link.dep_range)
+                }
+                BrokenKind::Bundled => println!(
+                    "    ✕ bundled dep missing from tarball: {}@{}",
+                    link.dep_name, link.dep_range
+                ),
+            }
         }
         println!();
     }
@@ -271,6 +313,11 @@ fn print_json(report: &CheckReport) {
         );
         obj.insert("name".into(), i.dep_name.clone().into());
         obj.insert("range".into(), i.dep_range.clone().into());
+        let kind = match i.kind {
+            BrokenKind::Sibling => "sibling",
+            BrokenKind::Bundled => "bundled",
+        };
+        obj.insert("kind".into(), kind.into());
         arr.push(serde_json::Value::Object(obj));
     }
     let mut root = serde_json::Map::new();
@@ -366,6 +413,38 @@ mod tests {
         assert_eq!(issue.consumer_name, "foo");
         assert_eq!(issue.consumer_version, "1.0.0");
         assert_eq!(issue.dep_name, "bar");
+        assert!(matches!(issue.kind, BrokenKind::Sibling));
+    }
+
+    #[test]
+    fn missing_bundled_dep_is_reported_as_bundled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        std::fs::write(cwd.join("package.json"), r#"{"name":"root"}"#).unwrap();
+
+        // foo@1.0.0 declares bar as both a regular dep and a
+        // bundled dep, but ships no bundled copy. The sibling cell
+        // is deliberately empty — this should be reported as a
+        // `bundled` kind (packaging problem), not a generic sibling
+        // miss.
+        let aube = cwd.join("node_modules").join(".aube");
+        let cell = aube.join("foo@1.0.0").join("node_modules");
+        let pkg = cell.join("foo");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{
+                "name": "foo",
+                "version": "1.0.0",
+                "dependencies": {"bar": "^1"},
+                "bundledDependencies": ["bar"]
+            }"#,
+        )
+        .unwrap();
+
+        let report = run_report(&cwd).unwrap();
+        assert_eq!(report.issues.len(), 1);
+        assert!(matches!(report.issues[0].kind, BrokenKind::Bundled));
     }
 
     #[test]
