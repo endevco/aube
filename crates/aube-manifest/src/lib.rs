@@ -734,6 +734,22 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// Parse a YAML document from `content`, returning an [`Error::Parse`] on
+/// failure with the source content + span attached. `serde_yaml` reports
+/// errors with a `Location { index, line, column }` we can feed straight
+/// into a miette span; type-mismatch errors raised after `from_str`
+/// succeeds (e.g. via `from_value`) have no location and render without
+/// a pointer but still carry the file name.
+pub fn parse_yaml<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    content: String,
+) -> Result<T, Error> {
+    match serde_yaml::from_str(&content) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(Error::parse_yaml_err(path, content, &e)),
+    }
+}
+
 impl Error {
     /// Build an [`Error::Parse`] from the offending content + serde error,
     /// computing the byte offset so miette can render a pointer into the
@@ -747,10 +763,32 @@ impl Error {
         // fail to slice it. A zero-length span at `content.len()` is
         // what miette expects for "end-of-input" labels.
         let len = if offset >= content.len() { 0 } else { 1 };
+        Error::parse_at(path, content, err.to_string(), offset, len)
+    }
+
+    /// Build an [`Error::Parse`] from a `serde_yaml::Error`.
+    /// `serde_yaml::Location::index` is already a byte offset, so no
+    /// line/col conversion is needed. Errors without a location
+    /// (notably those bubbling from `serde_yaml::from_value`) collapse
+    /// to an empty span at offset 0 — miette still renders the file
+    /// name + message, just without a pointer.
+    pub fn parse_yaml_err(path: &Path, content: String, err: &serde_yaml::Error) -> Self {
+        let (offset, len) = match err.location() {
+            Some(loc) => {
+                let idx = loc.index().min(content.len());
+                let len = if idx >= content.len() { 0 } else { 1 };
+                (idx, len)
+            }
+            None => (0, 0),
+        };
+        Error::parse_at(path, content, err.to_string(), offset, len)
+    }
+
+    fn parse_at(path: &Path, content: String, message: String, offset: usize, len: usize) -> Self {
         let span = miette::SourceSpan::new(offset.into(), len);
         Error::Parse(Box::new(ParseError {
             path: path.to_path_buf(),
-            message: err.to_string(),
+            message,
             src: miette::NamedSource::new(path.display().to_string(), content),
             span,
         }))
@@ -890,6 +928,43 @@ mod tests {
             offset + len,
             content.len()
         );
+    }
+
+    /// A malformed YAML document should surface through `parse_yaml`
+    /// as an `Error::Parse` carrying a `NamedSource` pointed at the
+    /// supplied path and a span inside the content buffer.
+    #[test]
+    fn parse_yaml_attaches_source_span() {
+        let path = Path::new("pnpm-workspace.yaml");
+        // Tab as the first indent char is a spec-level YAML error;
+        // serde_yaml reports a location for it.
+        let content = "packages:\n\t- pkg\n".to_string();
+        let res: Result<serde_yaml::Value, Error> = parse_yaml(path, content.clone());
+        let Err(Error::Parse(pe)) = res else {
+            panic!("parse_yaml must produce Parse variant on malformed input");
+        };
+        let offset: usize = pe.span.offset();
+        let len: usize = pe.span.len();
+        assert!(offset + len <= content.len());
+        assert_eq!(pe.path, path);
+    }
+
+    /// `serde_yaml::from_value` errors have no `location()`. The helper
+    /// should still produce an `Error::Parse` (with a zero-length span)
+    /// so the file name survives into miette's render.
+    #[test]
+    fn parse_yaml_err_without_location_falls_back_to_empty_span() {
+        let path = Path::new("pnpm-workspace.yaml");
+        let content = String::new();
+        let yaml_err: serde_yaml::Error =
+            serde_yaml::from_value::<BTreeMap<String, String>>(serde_yaml::Value::Bool(true))
+                .expect_err("bool cannot coerce to a map");
+        assert!(yaml_err.location().is_none());
+        let Error::Parse(pe) = Error::parse_yaml_err(path, content, &yaml_err) else {
+            panic!("parse_yaml_err must produce Parse variant");
+        };
+        assert_eq!(pe.span.offset(), 0);
+        assert_eq!(pe.span.len(), 0);
     }
 
     #[test]

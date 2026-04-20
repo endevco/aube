@@ -275,6 +275,7 @@ dependencies = [
  "aube-settings",
  "glob",
  "hex",
+ "miette",
  "node-semver",
  "serde",
  "serde_json",

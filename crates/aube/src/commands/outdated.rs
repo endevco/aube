@@ -12,7 +12,7 @@ use super::{DepFilter, make_client, packument_cache_dir};
 use aube_lockfile::{DepType, DirectDep};
 use aube_registry::Packument;
 use clap::Args;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, IntoDiagnostic};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -140,7 +140,7 @@ async fn run_filtered(
             eprintln!("No lockfile found. Run `aube install` first.");
             return Ok(());
         }
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
     let mut any_drift = false;
     for pkg in matched {
@@ -175,7 +175,7 @@ async fn run_one(cwd: &Path, args: OutdatedArgs, importer: Option<String>) -> mi
             eprintln!("No lockfile found. Run `aube install` first.");
             return Ok(false);
         }
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     run_graph(cwd, args, &graph, graph.root_deps(), importer).await

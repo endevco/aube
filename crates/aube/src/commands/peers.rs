@@ -74,7 +74,7 @@ async fn check(args: PeersCheckArgs) -> miette::Result<()> {
         Err(aube_lockfile::Error::NotFound(_)) => {
             return Err(miette!("no lockfile found\nhelp: run `aube install` first"));
         }
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     let issues = collect_issues(&graph);

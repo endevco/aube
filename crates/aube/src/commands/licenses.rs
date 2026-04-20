@@ -8,7 +8,7 @@
 use super::DepFilter;
 use aube_lockfile::LockfileGraph;
 use clap::Args;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, IntoDiagnostic};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ pub async fn run(args: LicensesArgs) -> miette::Result<()> {
             eprintln!("No lockfile found. Run `aube install` first.");
             return Ok(());
         }
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     let filter = DepFilter::from_flags(args.prod, args.dev);

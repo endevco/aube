@@ -42,7 +42,7 @@ pub async fn run(
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
         Ok(graph) => Some(graph),
         Err(aube_lockfile::Error::NotFound(_)) => None,
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     let modules_dir_name = aube_settings::resolved::modules_dir(&settings_ctx);

@@ -95,7 +95,7 @@ pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<V
     let graph = match aube_lockfile::parse_lockfile(project_dir, &manifest) {
         Ok(g) => g,
         Err(aube_lockfile::Error::NotFound(_)) => return Ok(Vec::new()),
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     let workspace = aube_manifest::WorkspaceConfig::load(project_dir)

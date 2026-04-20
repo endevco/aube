@@ -1479,7 +1479,7 @@ fn refine_yarn_kind(path: &Path, kind: LockfileKind) -> LockfileKind {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("no lockfile found in {0}")]
     NotFound(std::path::PathBuf),
@@ -1487,8 +1487,167 @@ pub enum Error {
     UnsupportedFormat(String),
     #[error("failed to read lockfile {0}: {1}")]
     Io(std::path::PathBuf, std::io::Error),
+    /// Structural/serialization lockfile errors that have no source
+    /// location — shape checks (`must be a mapping`), version guards
+    /// (`lockfileVersion N unsupported`), and `serde_yaml::to_string`
+    /// failures during write.
     #[error("failed to parse lockfile {0}: {1}")]
     Parse(std::path::PathBuf, String),
+    /// Deserialization failure with a byte offset into the source
+    /// content, so miette's `fancy` handler can draw a pointer at the
+    /// offending byte of the lockfile.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ParseDiag(Box<ParseError>),
+}
+
+/// Parse failure carrying the source content + span. Shaped identically
+/// to `aube_manifest::ParseError` so the two crates render the same way
+/// through miette's fancy handler.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to parse {path}: {message}")]
+pub struct ParseError {
+    pub path: std::path::PathBuf,
+    pub message: String,
+    pub src: miette::NamedSource<String>,
+    pub span: miette::SourceSpan,
+}
+
+impl miette::Diagnostic for ParseError {
+    fn source_code(&self) -> Option<&dyn miette::SourceCode> {
+        Some(&self.src)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(
+            miette::LabeledSpan::new_with_span(Some(self.message.clone()), self.span),
+        )))
+    }
+}
+
+/// Parse a JSON lockfile document, attaching a miette source span on
+/// failure so the fancy handler can point at the offending byte.
+pub fn parse_json<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    content: String,
+) -> Result<T, Error> {
+    match serde_json::from_str(&content) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(Error::parse_json_err(path, content, &e)),
+    }
+}
+
+/// Parse a YAML lockfile document, attaching a miette source span on
+/// failure. `serde_yaml::Error::location` gives a byte offset directly,
+/// so no line/col conversion is needed.
+pub fn parse_yaml<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    content: String,
+) -> Result<T, Error> {
+    match serde_yaml::from_str(&content) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(Error::parse_yaml_err(path, content, &e)),
+    }
+}
+
+impl Error {
+    pub fn parse_json_err(
+        path: &std::path::Path,
+        content: String,
+        err: &serde_json::Error,
+    ) -> Self {
+        let offset = line_col_to_byte_offset(&content, err.line(), err.column());
+        let len = if offset >= content.len() { 0 } else { 1 };
+        Self::parse_at(path, content, err.to_string(), offset, len)
+    }
+
+    pub fn parse_yaml_err(
+        path: &std::path::Path,
+        content: String,
+        err: &serde_yaml::Error,
+    ) -> Self {
+        let (offset, len) = match err.location() {
+            Some(loc) => {
+                let idx = loc.index().min(content.len());
+                let len = if idx >= content.len() { 0 } else { 1 };
+                (idx, len)
+            }
+            None => (0, 0),
+        };
+        Self::parse_at(path, content, err.to_string(), offset, len)
+    }
+
+    fn parse_at(
+        path: &std::path::Path,
+        content: String,
+        message: String,
+        offset: usize,
+        len: usize,
+    ) -> Self {
+        let span = miette::SourceSpan::new(offset.into(), len);
+        Error::ParseDiag(Box::new(ParseError {
+            path: path.to_path_buf(),
+            message,
+            src: miette::NamedSource::new(path.display().to_string(), content),
+            span,
+        }))
+    }
+}
+
+/// serde_json's 1-based line/column → 0-based byte offset. Clamps to
+/// `content.len()` when the reported position is at EOF so the
+/// resulting span never runs past the buffer.
+fn line_col_to_byte_offset(content: &str, line: usize, column: usize) -> usize {
+    if line == 0 {
+        return 0;
+    }
+    let mut offset = 0usize;
+    for (i, l) in content.split_inclusive('\n').enumerate() {
+        if i + 1 == line {
+            return (offset + column.saturating_sub(1)).min(content.len());
+        }
+        offset += l.len();
+    }
+    content.len()
+}
+
+#[cfg(test)]
+mod parse_diag_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Trailing `,` in an otherwise fine JSON lockfile — confirm the
+    /// helper attaches a `NamedSource` pointed at the lockfile path and
+    /// the span stays in bounds so miette can render a pointer.
+    #[test]
+    fn parse_json_attaches_span_for_bad_input() {
+        let path = Path::new("package-lock.json");
+        let content = r#"{"name":"x","#.to_string();
+        let Err(Error::ParseDiag(pe)) = parse_json::<serde_json::Value>(path, content.clone())
+        else {
+            panic!("parse_json must produce ParseDiag on malformed input");
+        };
+        let offset: usize = pe.span.offset();
+        let len: usize = pe.span.len();
+        assert!(offset + len <= content.len());
+        assert_eq!(pe.path, path);
+    }
+
+    /// Same story for YAML — serde_yaml reports a `Location` with a
+    /// byte index directly, so no line/col conversion is exercised here.
+    #[test]
+    fn parse_yaml_attaches_span_for_bad_input() {
+        let path = Path::new("yarn.lock");
+        let content = "packages:\n\t- pkg\n".to_string();
+        let Err(Error::ParseDiag(pe)) = parse_yaml::<serde_yaml::Value>(path, content.clone())
+        else {
+            panic!("parse_yaml must produce ParseDiag on malformed input");
+        };
+        let offset: usize = pe.span.offset();
+        let len: usize = pe.span.len();
+        assert!(offset + len <= content.len());
+        assert_eq!(pe.path, path);
+    }
 }
 
 #[cfg(test)]

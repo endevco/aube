@@ -163,8 +163,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
     let cleaned = strip_jsonc(&raw_content);
 
-    let raw: RawBunLockfile = serde_json::from_str(&cleaned)
-        .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
+    let raw: RawBunLockfile = crate::parse_json(path, cleaned)?;
 
     if raw.lockfile_version != 1 {
         return Err(Error::Parse(

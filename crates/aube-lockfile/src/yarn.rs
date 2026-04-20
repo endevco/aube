@@ -569,7 +569,7 @@ fn parse_berry_str(
     manifest: &aube_manifest::PackageJson,
 ) -> Result<LockfileGraph, Error> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)
-        .map_err(|e| Error::Parse(path.to_path_buf(), format!("yaml parse error: {e}")))?;
+        .map_err(|e| Error::parse_yaml_err(path, content.to_string(), &e))?;
     let map = doc.as_mapping().ok_or_else(|| {
         Error::Parse(
             path.to_path_buf(),
