@@ -25,21 +25,28 @@ pub struct DeprecationRecord {
     pub message: Arc<str>,
 }
 
-/// Partition records into direct (listed by any importer) and transitive.
-/// Preserves input order within each bucket.
+/// Partition records into direct (listed by any importer at the
+/// resolved version) and transitive. Matching on `(name, version)`
+/// rather than name alone so a deprecated `foo@2` reached only
+/// transitively isn't misclassified as "direct" when an importer
+/// pins a non-deprecated `foo@3`. Preserves input order within each
+/// bucket.
 pub fn classify<'a>(
     records: &'a [DeprecationRecord],
     graph: &LockfileGraph,
 ) -> (Vec<&'a DeprecationRecord>, Vec<&'a DeprecationRecord>) {
-    let direct_names: BTreeSet<&str> = graph
-        .importers
-        .values()
-        .flat_map(|deps| deps.iter().map(|d| d.name.as_str()))
-        .collect();
+    let mut direct_keys: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for deps in graph.importers.values() {
+        for d in deps {
+            if let Some(pkg) = graph.packages.get(&d.dep_path) {
+                direct_keys.insert((d.name.as_str(), pkg.version.as_str()));
+            }
+        }
+    }
     let mut direct = Vec::new();
     let mut transitive = Vec::new();
     for r in records {
-        if direct_names.contains(r.name.as_str()) {
+        if direct_keys.contains(&(r.name.as_str(), r.version.as_str())) {
             direct.push(r);
         } else {
             transitive.push(r);

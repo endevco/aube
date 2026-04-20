@@ -85,7 +85,7 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
     });
 
     if target_names.is_empty() {
-        return emit_empty(args.json, args.exit_code, false);
+        return emit_empty(args.json, args.exit_code, args.transitive);
     }
 
     let client = Arc::new(make_client(&cwd));
@@ -146,13 +146,17 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
     }
 
     let (direct, transitive) = classify(&records, &graph);
-    let scope_has_results = if args.transitive {
-        !records.is_empty()
+    // In direct-only mode, "nothing to report" means zero *direct*
+    // records — a deprecated transitive that happens to share a name
+    // with a fetched direct packument would otherwise render as an
+    // empty header followed by the trailing "not checked" hint, which
+    // reads as if nothing was found.
+    let scope_empty = if args.transitive {
+        records.is_empty()
     } else {
-        !direct.is_empty()
+        direct.is_empty()
     };
-
-    if records.is_empty() {
+    if scope_empty {
         return emit_empty(args.json, args.exit_code, args.transitive);
     }
 
@@ -162,7 +166,7 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
         render_text(&direct, &transitive, args.transitive, &graph);
     }
 
-    if args.exit_code && scope_has_results {
+    if args.exit_code {
         return Ok(Some(1));
     }
     Ok(None)
