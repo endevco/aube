@@ -1067,7 +1067,13 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&git_root, std::fs::Permissions::from_mode(0o700));
+        if let Err(e) = std::fs::set_permissions(&git_root, std::fs::Permissions::from_mode(0o700))
+        {
+            tracing::warn!(
+                "failed to chmod 0700 {}: {e}. Git scratch dir may be world-accessible, check filesystem permissions",
+                git_root.display()
+            );
+        }
     }
     let target = git_root.join(format!("aube-git-{key}-{commit_short}"));
 
