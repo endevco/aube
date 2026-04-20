@@ -610,9 +610,16 @@ pub(super) fn configure_resolver(
             ..Default::default()
         }
     };
-    let effective_overrides = manifest.overrides_map();
-    let mut effective_overrides = effective_overrides;
+    let mut effective_overrides = manifest.overrides_map();
     merge_string_map_setting(settings_ctx, "overrides", &mut effective_overrides);
+    let unresolved_refs = manifest.resolve_override_refs(&mut effective_overrides);
+    for key in &unresolved_refs {
+        tracing::warn!(
+            "override {key:?} uses a $ reference to a package that is not in \
+             dependencies, devDependencies, or optionalDependencies — \
+             dropping the override"
+        );
+    }
     if !effective_overrides.is_empty() {
         tracing::debug!("applying {} overrides", effective_overrides.len());
     }
