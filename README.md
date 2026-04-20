@@ -230,6 +230,16 @@ Some pnpm commands are intentionally out of scope. Runtime-management commands s
 
 Thanks to [Buildkite](https://buildkite.com) for providing CI for aube.
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=endevco%2Faube&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=endevco/aube&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=endevco/aube&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=endevco/aube&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## Contributors
 
 [![Contributors](https://contrib.rocks/image?repo=endevco/aube)](https://github.com/endevco/aube/graphs/contributors)
