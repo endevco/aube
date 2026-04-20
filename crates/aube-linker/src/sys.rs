@@ -123,8 +123,9 @@ pub struct BinShimOptions {
 ///
 ///   `extend_node_path` sets `NODE_PATH` near the top of each wrapper.
 ///
-/// The `target` path should be absolute; the generated wrappers
-/// embed a path relative to `bin_dir` so the tree stays relocatable.
+/// The `target` path should be absolute; generated wrappers embed a
+/// path relative to the wrapper's own parent directory so the tree
+/// stays relocatable even for scoped bin names under `.bin/@scope/`.
 pub fn create_bin_shim(
     bin_dir: &Path,
     name: &str,
@@ -135,13 +136,20 @@ pub fn create_bin_shim(
     {
         let write_shim = matches!(opts.prefer_symlinked_executables, Some(false));
         let link_path = bin_dir.join(name);
+        let link_parent = link_path.parent().unwrap_or(bin_dir);
+        std::fs::create_dir_all(link_parent)?;
         let _ = std::fs::remove_file(&link_path);
         if write_shim {
-            let rel = relative_bin_target(bin_dir, target);
+            let rel = relative_bin_target(link_parent, target);
+            let node_path_rel = relative_bin_target(link_parent, node_modules_dir_for_bin(bin_dir));
             let prog = detect_interpreter(target);
             std::fs::write(
                 &link_path,
-                generate_posix_shim(&prog, &rel, opts.extend_node_path),
+                generate_posix_shim(
+                    &prog,
+                    &rel,
+                    opts.extend_node_path.then_some(node_path_rel.as_str()),
+                ),
             )?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&link_path, std::fs::Permissions::from_mode(0o755))?;
@@ -155,38 +163,48 @@ pub fn create_bin_shim(
     }
     #[cfg(windows)]
     {
+        let link_path = bin_dir.join(name);
+        let link_parent = link_path.parent().unwrap_or(bin_dir);
         // Remove any stale files (previous shims or legacy symlinks).
         for ext in ["", ".cmd", ".ps1"] {
             let p = if ext.is_empty() {
-                bin_dir.join(name)
+                link_path.clone()
             } else {
                 bin_dir.join(format!("{name}{ext}"))
             };
             let _ = std::fs::remove_file(&p);
         }
+        std::fs::create_dir_all(link_parent)?;
 
-        let rel = relative_bin_target(bin_dir, target);
+        let rel = relative_bin_target(link_parent, target);
+        let node_path_rel = relative_bin_target(link_parent, node_modules_dir_for_bin(bin_dir));
         let prog = detect_interpreter(target);
 
         let rel_backslash = rel.replace('/', "\\");
         let rel_fwdslash = rel.replace('\\', "/");
+        let node_path_backslash = node_path_rel.replace('/', "\\");
+        let node_path_fwdslash = node_path_rel.replace('\\', "/");
+        let node_path_backslash = opts
+            .extend_node_path
+            .then_some(node_path_backslash.as_str());
+        let node_path_fwdslash = opts.extend_node_path.then_some(node_path_fwdslash.as_str());
 
         // .cmd (cmd.exe)
         std::fs::write(
             bin_dir.join(format!("{name}.cmd")),
-            generate_cmd_shim(&prog, &rel_backslash, opts.extend_node_path),
+            generate_cmd_shim(&prog, &rel_backslash, node_path_backslash),
         )?;
 
         // .ps1 (PowerShell)
         std::fs::write(
             bin_dir.join(format!("{name}.ps1")),
-            generate_ps1_shim(&prog, &rel_fwdslash, opts.extend_node_path),
+            generate_ps1_shim(&prog, &rel_fwdslash, node_path_fwdslash),
         )?;
 
         // extensionless (Git Bash / MSYS2)
         std::fs::write(
             bin_dir.join(name),
-            generate_sh_shim(&prog, &rel_fwdslash, opts.extend_node_path),
+            generate_sh_shim(&prog, &rel_fwdslash, node_path_fwdslash),
         )?;
     }
     #[cfg(not(any(unix, windows)))]
@@ -205,21 +223,31 @@ pub fn create_bin_shim(
 /// On Unix, removes the symlink. On Windows, removes the `.cmd`,
 /// `.ps1`, and extensionless wrapper scripts.
 pub fn remove_bin_shim(bin_dir: &Path, name: &str) {
-    let _ = std::fs::remove_file(bin_dir.join(name));
+    let link_path = bin_dir.join(name);
+    let _ = std::fs::remove_file(&link_path);
     #[cfg(windows)]
     {
         let _ = std::fs::remove_file(bin_dir.join(format!("{name}.cmd")));
         let _ = std::fs::remove_file(bin_dir.join(format!("{name}.ps1")));
     }
+    if let Some(parent) = link_path.parent() {
+        if parent != bin_dir {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
 }
 
-/// Compute the relative path from `bin_dir` to `target`, using
+/// Compute the relative path from `base_dir` to `target`, using
 /// forward slashes.
-fn relative_bin_target(bin_dir: &Path, target: &Path) -> String {
-    pathdiff::diff_paths(target, bin_dir)
+fn relative_bin_target(base_dir: &Path, target: &Path) -> String {
+    pathdiff::diff_paths(target, base_dir)
         .unwrap_or_else(|| PathBuf::from(target))
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn node_modules_dir_for_bin(bin_dir: &Path) -> &Path {
+    bin_dir.parent().unwrap_or(bin_dir)
 }
 
 /// Read the shebang line of `target` to determine the interpreter.
@@ -327,15 +355,16 @@ fn safe_prog(prog: &str) -> &str {
 }
 
 #[cfg(windows)]
-fn generate_cmd_shim(prog: &str, rel_target_backslash: &str, extend_node_path: bool) -> String {
+fn generate_cmd_shim(
+    prog: &str,
+    rel_target_backslash: &str,
+    node_path_rel_backslash: Option<&str>,
+) -> String {
     let prog = safe_prog(prog);
-    // NODE_PATH points at the top-level `node_modules` — one level
-    // up from `.bin`. `%~dp0` already ends with a backslash.
-    let node_path = if extend_node_path {
-        "@SET NODE_PATH=%~dp0..\r\n"
-    } else {
-        ""
-    };
+    // `%~dp0` already ends with a backslash.
+    let node_path = node_path_rel_backslash.map_or(String::new(), |rel| {
+        format!("@SET NODE_PATH=%~dp0{rel}\r\n")
+    });
     format!(
         "@SETLOCAL\r\n\
          {node_path}\
@@ -349,13 +378,15 @@ fn generate_cmd_shim(prog: &str, rel_target_backslash: &str, extend_node_path: b
 }
 
 #[cfg(windows)]
-fn generate_ps1_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bool) -> String {
+fn generate_ps1_shim(
+    prog: &str,
+    rel_target_fwdslash: &str,
+    node_path_rel_fwdslash: Option<&str>,
+) -> String {
     let prog = safe_prog(prog);
-    let node_path = if extend_node_path {
-        "$env:NODE_PATH=\"$basedir/..\"\n"
-    } else {
-        ""
-    };
+    let node_path = node_path_rel_fwdslash.map_or(String::new(), |rel| {
+        format!("$env:NODE_PATH=\"$basedir/{rel}\"\n")
+    });
     format!(
         "#!/usr/bin/env pwsh\n\
          $basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n\
@@ -386,13 +417,15 @@ fn generate_ps1_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bo
 }
 
 #[cfg(windows)]
-fn generate_sh_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bool) -> String {
+fn generate_sh_shim(
+    prog: &str,
+    rel_target_fwdslash: &str,
+    node_path_rel_fwdslash: Option<&str>,
+) -> String {
     let prog = safe_prog(prog);
-    let node_path = if extend_node_path {
-        "export NODE_PATH=\"$basedir/..\"\n"
-    } else {
-        ""
-    };
+    let node_path = node_path_rel_fwdslash.map_or(String::new(), |rel| {
+        format!("export NODE_PATH=\"$basedir/{rel}\"\n")
+    });
     format!(
         "#!/bin/sh\n\
          basedir=$(dirname \"$(echo \"$0\" | sed -e 's,\\\\,/,g')\")\n\
@@ -429,13 +462,15 @@ pub const POSIX_SHIM_MARKER_PREFIX: &str = "# aube-bin-shim v1 target=";
 /// `unlink_bins` can locate the embedded target without having to parse
 /// the shell body.
 #[cfg(unix)]
-fn generate_posix_shim(prog: &str, rel_target_fwdslash: &str, extend_node_path: bool) -> String {
+fn generate_posix_shim(
+    prog: &str,
+    rel_target_fwdslash: &str,
+    node_path_rel_fwdslash: Option<&str>,
+) -> String {
     let prog = safe_prog(prog);
-    let node_path = if extend_node_path {
-        "export NODE_PATH=\"$basedir/..\"\n"
-    } else {
-        ""
-    };
+    let node_path = node_path_rel_fwdslash.map_or(String::new(), |rel| {
+        format!("export NODE_PATH=\"$basedir/{rel}\"\n")
+    });
     format!(
         "#!/bin/sh\n\
          {POSIX_SHIM_MARKER_PREFIX}{rel_target_fwdslash}\n\
@@ -699,6 +734,70 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&script).unwrap().permissions().mode();
         assert_eq!(mode & 0o755, 0o755);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn create_bin_shim_creates_parent_for_scoped_bin_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let pkg_dir = dir.path().join(
+            "node_modules/.aube/config-inspector@1.4.2/node_modules/@eslint/config-inspector",
+        );
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let script = pkg_dir.join("bin.mjs");
+        std::fs::write(&script, "#!/usr/bin/env node\nconsole.log('hi');\n").unwrap();
+
+        create_bin_shim(
+            &bin_dir,
+            "@eslint/config-inspector",
+            &script,
+            BinShimOptions {
+                extend_node_path: true,
+                prefer_symlinked_executables: Some(false),
+            },
+        )
+        .unwrap();
+
+        let shim_path = bin_dir.join("@eslint/config-inspector");
+        assert!(shim_path.exists());
+        let content = std::fs::read_to_string(shim_path).unwrap();
+        let rel = parse_posix_shim_target(&content).expect("shim should carry its marker");
+        assert_eq!(
+            rel,
+            "../../.aube/config-inspector@1.4.2/node_modules/@eslint/config-inspector/bin.mjs",
+        );
+        assert!(content.contains("export NODE_PATH=\"$basedir/../..\""));
+    }
+
+    #[test]
+    fn remove_bin_shim_removes_empty_scoped_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let pkg_dir = dir.path().join("pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let script = pkg_dir.join("cli.js");
+        std::fs::write(&script, "#!/usr/bin/env node\nconsole.log('hi');\n").unwrap();
+
+        create_bin_shim(
+            &bin_dir,
+            "@scope/mycli",
+            &script,
+            BinShimOptions {
+                extend_node_path: false,
+                prefer_symlinked_executables: Some(false),
+            },
+        )
+        .unwrap();
+        assert!(bin_dir.join("@scope").exists());
+
+        remove_bin_shim(&bin_dir, "@scope/mycli");
+        assert!(!bin_dir.join("@scope/mycli").exists());
+        assert!(!bin_dir.join("@scope").exists());
     }
 
     #[cfg(unix)]
@@ -1084,7 +1183,7 @@ mod tests {
     fn generate_cmd_shim_never_splices_unsafe_prog() {
         // Direct call bypassing `detect_interpreter`. The generated
         // batch file must not contain the attacker's payload bytes.
-        let shim = generate_cmd_shim("node\"&calc&\"", "..\\pkg\\entry.js", false);
+        let shim = generate_cmd_shim("node\"&calc&\"", "..\\pkg\\entry.js", None);
         assert!(
             !shim.contains("&calc&"),
             "unsafe prog spliced into cmd shim:\n{shim}"
@@ -1100,7 +1199,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn generate_ps1_shim_never_splices_unsafe_prog() {
-        let shim = generate_ps1_shim("bash&rm", "../pkg/entry.js", false);
+        let shim = generate_ps1_shim("bash&rm", "../pkg/entry.js", None);
         assert!(
             !shim.contains("&rm"),
             "unsafe prog spliced into ps1 shim:\n{shim}"
@@ -1110,7 +1209,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn generate_sh_shim_never_splices_unsafe_prog() {
-        let shim = generate_sh_shim("sh;rm", "../pkg/entry.js", false);
+        let shim = generate_sh_shim("sh;rm", "../pkg/entry.js", None);
         assert!(
             !shim.contains(";rm"),
             "unsafe prog spliced into sh shim:\n{shim}"
@@ -1120,7 +1219,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn generate_posix_shim_never_splices_unsafe_prog() {
-        let shim = generate_posix_shim("sh;rm", "../pkg/entry.js", false);
+        let shim = generate_posix_shim("sh;rm", "../pkg/entry.js", None);
         assert!(
             !shim.contains(";rm"),
             "unsafe prog spliced into posix shim:\n{shim}"

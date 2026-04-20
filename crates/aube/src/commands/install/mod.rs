@@ -4210,7 +4210,17 @@ fn create_bin_link(
     // Idempotent and cheap on already-existing paths, so the other
     // callers (root / workspace bin dirs, which still pre-create) pay
     // at most one redundant stat per shim.
-    std::fs::create_dir_all(bin_dir).into_diagnostic()?;
-    aube_linker::create_bin_shim(bin_dir, name, target, shim_opts).into_diagnostic()?;
+    std::fs::create_dir_all(bin_dir)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to create bin directory {}", bin_dir.display()))?;
+    aube_linker::create_bin_shim(bin_dir, name, target, shim_opts)
+        .into_diagnostic()
+        .wrap_err_with(|| {
+            format!(
+                "failed to link bin `{name}` at {} -> {}",
+                bin_dir.join(name).display(),
+                target.display()
+            )
+        })?;
     Ok(())
 }
