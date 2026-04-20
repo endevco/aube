@@ -603,7 +603,7 @@ compatibility heuristics would normally disable it.
 """
 sources.cli = ["enable-global-virtual-store", "disable-global-virtual-store"]
 sources.env = []
-sources.npmrc = ["enableGlobalVirtualStore"]
+sources.npmrc = ["enableGlobalVirtualStore", "enable-global-virtual-store"]
 sources.workspaceYaml = ["enableGlobalVirtualStore"]
 examples = [
   "echo 'enableGlobalVirtualStore=false' >> .npmrc",
@@ -644,7 +644,7 @@ warning suppresses itself in that case.
 """
 sources.cli = []
 sources.env = []
-sources.npmrc = ["disableGlobalVirtualStoreForPackages"]
+sources.npmrc = ["disableGlobalVirtualStoreForPackages", "disable-global-virtual-store-for-packages"]
 sources.workspaceYaml = ["disableGlobalVirtualStoreForPackages"]
 examples = []
 
