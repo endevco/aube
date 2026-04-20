@@ -666,15 +666,30 @@ pub enum Error {
 /// JSON parse failure with enough info for `miette`'s `fancy` handler to
 /// render a pointer at the offending byte. Boxed into [`Error::Parse`] so
 /// the enum's `Err` size stays small (clippy's `result_large_err`).
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+///
+/// `Diagnostic` is implemented by hand rather than via `miette::Diagnostic`
+/// derive because `miette-derive` 7.6 expands into a destructuring that
+/// triggers `unused_assignments` under `RUSTFLAGS=-D warnings` on rustc
+/// 1.93 (our MSRV).
+#[derive(Debug, thiserror::Error)]
 #[error("failed to parse {path}: {message}")]
 pub struct ParseError {
     pub path: std::path::PathBuf,
     pub message: String,
-    #[source_code]
     pub src: miette::NamedSource<String>,
-    #[label("{message}")]
     pub span: miette::SourceSpan,
+}
+
+impl miette::Diagnostic for ParseError {
+    fn source_code(&self) -> Option<&dyn miette::SourceCode> {
+        Some(&self.src)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(
+            miette::LabeledSpan::new_with_span(Some(self.message.clone()), self.span),
+        )))
+    }
 }
 
 /// Parse a JSON document from `content`, returning an [`Error::Parse`] on
