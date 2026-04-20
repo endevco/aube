@@ -1267,6 +1267,59 @@
         "hidden_aliases": [],
         "examples": []
       },
+      "deprecations": {
+        "full_cmd": [
+          "deprecations"
+        ],
+        "usage": "deprecations [FLAGS]",
+        "subcommands": {},
+        "args": [],
+        "flags": [
+          {
+            "name": "exit-code",
+            "usage": "--exit-code",
+            "help": "Exit with a non-zero status if any deprecations are found",
+            "help_first_line": "Exit with a non-zero status if any deprecations are found",
+            "short": [],
+            "long": [
+              "exit-code"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "json",
+            "usage": "--json",
+            "help": "Emit JSON instead of the default text layout",
+            "help_first_line": "Emit JSON instead of the default text layout",
+            "short": [],
+            "long": [
+              "json"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "transitive",
+            "usage": "--transitive",
+            "help": "Include transitive dependencies as well as direct ones",
+            "help_first_line": "Include transitive dependencies as well as direct ones",
+            "short": [],
+            "long": [
+              "transitive"
+            ],
+            "hide": false,
+            "global": false
+          }
+        ],
+        "mounts": [],
+        "hide": false,
+        "help": "Report deprecated packages in the resolved dependency graph",
+        "name": "deprecations",
+        "aliases": [],
+        "hidden_aliases": [],
+        "examples": []
+      },
       "dist-tag": {
         "full_cmd": [
           "dist-tag"

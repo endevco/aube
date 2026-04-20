@@ -13,6 +13,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`overrides`](#setting-overrides) | `object` | Instruct aube to override any dependency in the dependency graph, including peer dependencies. |
 | [`packageExtensions`](#setting-packageextensions) | `object` | Extend existing package definitions with additional information. |
 | [`allowedDeprecatedVersions`](#setting-alloweddeprecatedversions) | `object` | Mute deprecation warnings for specific package versions. |
+| [`deprecationWarnings`](#setting-deprecationwarnings) | `"none" \| "direct" \| "all" \| "summary"` | Scope of deprecation warnings shown during install. |
 | [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | List of packages to ignore during update checks. |
 | [`supportedArchitectures`](#setting-supportedarchitectures) | `object` | Specify architectures for optional dependency installation. |
 | [`ignoredOptionalDependencies`](#setting-ignoredoptionaldependencies) | `list<string>` | Skip optional dependencies by name. |
@@ -169,6 +170,32 @@ Mute deprecation warnings for specific package versions.
 Maps a package name to a semver range for which the deprecation warning
 should be suppressed. Useful when a deprecated version is still pinned
 deep in the dep graph and there's no upgrade path yet.
+
+### `deprecationWarnings` {#setting-deprecationwarnings}
+
+Scope of deprecation warnings shown during install.
+
+- Type: `"none" | "direct" | "all" | "summary"`
+- Default: `"direct"`
+- CLI flags: `--deprecation-warnings`
+- Environment: `AUBE_DEPRECATION_WARNINGS`, `npm_config_deprecation_warnings`, `NPM_CONFIG_DEPRECATION_WARNINGS`
+- .npmrc keys: `deprecationWarnings`, `deprecation-warnings`
+- Workspace YAML keys: `deprecationWarnings`
+
+Controls how deprecation messages surface at the end of install:
+- `none`: silent.
+- `direct`: print full warnings for direct dependencies only, plus a
+  one-line transitive count (default).
+- `all`: print full warnings for every deprecated package (pnpm/npm
+  parity).
+- `summary`: print a single count line covering direct + transitive.
+
+Run `aube deprecations` to see the full list any time after install.
+
+Examples:
+
+- `AUBE_DEPRECATION_WARNINGS=all aube install`
+- `aube install --deprecation-warnings=summary`
 
 ### `updateConfig.ignoreDependencies` {#setting-updateconfig-ignoredependencies}
 

@@ -142,6 +142,12 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub allowed_deprecated_versions: BTreeMap<String, String>,
 
+    /// Scope of install-time deprecation warnings: `none`, `direct`,
+    /// `all`, or `summary`. Declared as a typed field so the
+    /// settings-meta parity test sees the workspaceYaml key.
+    #[serde(default)]
+    pub deprecation_warnings: Option<String>,
+
     /// Update-time policy knobs.
     #[serde(default)]
     pub update_config: Option<UpdateConfig>,

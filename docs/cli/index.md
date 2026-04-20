@@ -193,6 +193,7 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube dedupe [--check]`](/cli/dedupe.md)
 - [`aube deploy [FLAGS] <TARGET>`](/cli/deploy.md)
 - [`aube deprecate [--dry-run] [--otp <CODE>] <PACKAGE> <MESSAGE>`](/cli/deprecate.md)
+- [`aube deprecations [FLAGS]`](/cli/deprecations.md)
 - [`aube dist-tag <SUBCOMMAND>`](/cli/dist-tag.md)
 - [`aube dist-tag add <SPEC> [TAG]`](/cli/dist-tag/add.md)
 - [`aube dist-tag ls [PACKAGE]`](/cli/dist-tag/ls.md)

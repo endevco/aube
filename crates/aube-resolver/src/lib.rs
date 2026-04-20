@@ -191,6 +191,14 @@ pub struct ResolvedPackage {
     pub os: Vec<String>,
     pub cpu: Vec<String>,
     pub libc: Vec<String>,
+    /// Deprecation message from the registry, carried forward so the
+    /// install command can render user-facing warnings without a
+    /// second packument fetch. Only populated on the fresh-resolve
+    /// path; lockfile-reuse and `file:`/`link:` packages carry `None`
+    /// because the packument wasn't consulted. `allowedDeprecatedVersions`
+    /// suppression is applied upstream, so anything set here is meant
+    /// to surface to the user.
+    pub deprecated: Option<Arc<str>>,
 }
 
 impl ResolvedPackage {
@@ -1435,6 +1443,7 @@ impl Resolver {
                                 os: Vec::new(),
                                 cpu: Vec::new(),
                                 libc: Vec::new(),
+                                deprecated: None,
                             });
                         }
                         // Enqueue transitive deps of the local package
@@ -1663,6 +1672,13 @@ impl Resolver {
                                     os: locked_pkg.os.clone(),
                                     cpu: locked_pkg.cpu.clone(),
                                     libc: locked_pkg.libc.clone(),
+                                    // Lockfile reuse skips the packument
+                                    // fetch, so we have no deprecation
+                                    // message to forward here. The
+                                    // `aube deprecations` command re-queries
+                                    // packuments live for the
+                                    // after-the-fact view.
+                                    deprecated: None,
                                 });
                             }
 
@@ -2049,23 +2065,20 @@ impl Resolver {
 
                 tracing::trace!("resolved {}@{}", task.name, version);
 
-                // Warn about deprecated versions unless suppressed
-                if let Some(ref msg) = version_meta.deprecated {
-                    let suppressed = self
-                        .dependency_policy
-                        .allowed_deprecated_versions
-                        .get(&task.name)
-                        .is_some_and(|range| {
-                            node_semver::Range::parse(range).ok().is_some_and(|r| {
-                                node_semver::Version::parse(&version)
-                                    .ok()
-                                    .is_some_and(|v| r.satisfies(&v))
-                            })
-                        });
-                    if !suppressed {
-                        tracing::warn!("{}@{} is deprecated: {}", task.name, version, msg);
-                    }
-                }
+                // Forward a deprecation message to the install command,
+                // subject to `allowedDeprecatedVersions` suppression.
+                // User-facing rendering is the CLI's job — doing it here
+                // would fire per resolved version with no way for the
+                // caller to batch or filter direct-vs-transitive.
+                let deprecated_msg: Option<Arc<str>> =
+                    version_meta.deprecated.as_deref().and_then(|msg| {
+                        let suppressed = is_deprecation_allowed(
+                            &task.name,
+                            &version,
+                            &self.dependency_policy.allowed_deprecated_versions,
+                        );
+                        (!suppressed).then(|| Arc::<str>::from(msg))
+                    });
 
                 // Track this version
                 resolved_versions
@@ -2103,6 +2116,7 @@ impl Resolver {
                         os: version_meta.os.clone(),
                         cpu: version_meta.cpu.clone(),
                         libc: version_meta.libc.clone(),
+                        deprecated: deprecated_msg.clone(),
                     });
                 }
 
@@ -3090,8 +3104,14 @@ fn split_package_selector(selector: &str) -> Option<(&str, &str)> {
     (!name.is_empty() && !range.is_empty()).then_some((name, range))
 }
 
-#[cfg(test)]
-fn is_deprecation_allowed(name: &str, version: &str, allowed: &BTreeMap<String, String>) -> bool {
+/// Honor `allowedDeprecatedVersions`: does the pinned range (keyed by
+/// package name) mute the deprecation warning for this specific version?
+/// Used by the resolver's fresh-resolve path and by `aube deprecations`.
+pub fn is_deprecation_allowed(
+    name: &str,
+    version: &str,
+    allowed: &BTreeMap<String, String>,
+) -> bool {
     allowed
         .get(name)
         .is_some_and(|range| version_satisfies(version, range))
