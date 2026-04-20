@@ -56,7 +56,10 @@ pub struct DeployArgs {
     pub no_optional: bool,
     /// Install only production dependencies (default).
     ///
-    /// Accepted for pnpm compatibility.
+    /// Accepted for pnpm compatibility. Intentionally unread: production
+    /// is the deploy default, so the `!args.dev` axis already captures
+    /// it. Reach for `!args.dev`, not `args.prod`, when extending the
+    /// filter.
     #[arg(short = 'P', long, visible_alias = "production")]
     pub prod: bool,
 }
