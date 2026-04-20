@@ -301,7 +301,12 @@ impl RegistryClient {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
                     drop(resp);
-                    tracing::warn!(
+                    // Recoverable: the retry succeeds in the common
+                    // case, and the final failure propagates up as a
+                    // user-facing error. Emitting a WARN on every
+                    // transient blip turns a healthy retry loop into
+                    // install-time noise.
+                    tracing::debug!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -315,7 +320,7 @@ impl RegistryClient {
                         return Err(e);
                     }
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::warn!(
+                    tracing::debug!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
