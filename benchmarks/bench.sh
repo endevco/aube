@@ -208,7 +208,7 @@ for i in "${!TOOLS[@]}"; do
 
 	case "$tool" in
 	aube)
-		cd "$dir" && HOME="$home" XDG_CACHE_HOME="$cache" "$bin" install
+		cd "$dir" && HOME="$home" XDG_CACHE_HOME="$cache" XDG_DATA_HOME="$home/.local/share" "$bin" install
 		;;
 	npm)
 		# `--legacy-peer-deps` is the only way npm tolerates the
@@ -286,6 +286,14 @@ declare -A CMDS
 # install-mode flags that actually vary per scenario.
 BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} --ignore-scripts --no-summary"
 
+# aube reads the global store root from `$XDG_DATA_HOME/aube/store`
+# (falling back to `$HOME/.local/share/aube/store`). We must pin
+# `XDG_DATA_HOME` alongside `HOME` and `XDG_CACHE_HOME` — otherwise
+# a host that already has `XDG_DATA_HOME` set in its environment
+# would leak the benchmark's store out of the isolated `{home}`,
+# and `COLD_WIPE` wouldn't find it to clean up between iterations.
+AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
+
 # Scenario keys describe what's on disk before the run. Every scenario
 # assumes a committed lockfile is present (the intended CI workflow);
 # the only axis is cache/store warmth. Plus an "add" scenario that
@@ -293,21 +301,21 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # that measures install + script dispatch end-to-end.
 
 # Scenario 1: CI install, warm cache (frozen lockfile, warm store+cache) ----
-CMDS["ci-warm:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["ci-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["ci-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["ci-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
 # Scenario 2: add a dependency (warm store+cache, existing lockfile) --------
-CMDS["add:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} add is-odd >/dev/null 2>&1"
+CMDS["add:aube"]="cd {project} && $AUBE_ENV {bin} add is-odd >/dev/null 2>&1"
 CMDS["add:bun"]="cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
 CMDS["add:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
 CMDS["add:pnpm"]="cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
 CMDS["add:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} add is-odd --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
 
 # Scenario 3: CI install, cold cache (frozen lockfile, empty store+cache) --
-CMDS["ci-cold:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["ci-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["ci-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
@@ -319,7 +327,7 @@ CMDS["ci-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin
 # before running the script; pnpm and npm ship `install-test`; bun and yarn
 # need an explicit chain. The fixture's `test` script is the POSIX shell
 # no-op `:`, so this measures install + script dispatch, not test-runtime work.
-CMDS["install-test:aube"]="cd {project} && HOME={home} XDG_CACHE_HOME={cache} {bin} test >/dev/null 2>&1"
+CMDS["install-test:aube"]="cd {project} && $AUBE_ENV {bin} test >/dev/null 2>&1"
 CMDS["install-test:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1 && HOME={home} BUN_INSTALL={home}/.bun {bin} run test >/dev/null 2>&1"
 # `npm install-test` (the `install` variant, not `ci`) is the right
 # command for the "already installed" semantics this scenario uses —
