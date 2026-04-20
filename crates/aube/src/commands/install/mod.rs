@@ -2065,9 +2065,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                  installs of this project just won't share materialized packages \
                  across projects. Fixing this requires an upstream change in \
                  `{name}` itself (please file it with that project, not aube). \
-                 To silence this warning, add `enableGlobalVirtualStore=false` to \
-                 .npmrc — or set `disableGlobalVirtualStoreForPackages=[]` to opt \
-                 out of this auto-detection entirely. \
+                 To silence this warning, run `aube config set \
+                 enableGlobalVirtualStore false --location project` — or set \
+                 `disableGlobalVirtualStoreForPackages=[]` to opt out of this \
+                 auto-detection entirely. \
                  Details: https://aube.en.dev/package-manager/node-modules#global-virtual-store"
             );
             Some(false)
