@@ -18,9 +18,9 @@ pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_r
 use settings::{
     ResolverConfigInputs, check_unmet_peers, configure_resolver,
     default_lockfile_network_concurrency, default_streaming_network_concurrency,
-    find_gvs_incompatible_trigger, maybe_cleanup_unused_catalogs, resolve_dedupe_peer_dependents,
-    resolve_dedupe_peers, resolve_git_shallow_hosts, resolve_link_concurrency,
-    resolve_network_concurrency, resolve_peers_from_workspace_root,
+    detect_aube_dir_gvs_mode, find_gvs_incompatible_trigger, maybe_cleanup_unused_catalogs,
+    resolve_dedupe_peer_dependents, resolve_dedupe_peers, resolve_git_shallow_hosts,
+    resolve_link_concurrency, resolve_network_concurrency, resolve_peers_from_workspace_root,
     resolve_peers_suffix_max_length, resolve_side_effects_cache,
     resolve_side_effects_cache_readonly, resolve_strict_peer_dependencies,
     resolve_strict_store_pkg_content_check, resolve_symlink, resolve_use_running_store_server,
@@ -2256,6 +2256,68 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             graph.packages.len()
         );
         return Ok(());
+    }
+
+    // Global-virtual-store transition guard. The linker can't reconcile
+    // a mode switch in place — a non-gvs pass landing on a gvs tree
+    // silently re-uses stale symlinks into the shared store, and a gvs
+    // pass landing on a per-project tree fails to unlink the populated
+    // directories before creating its symlinks. When the existing
+    // `.aube/` tree's layout disagrees with the mode this install will
+    // produce, wipe `node_modules/` (and, if `virtualStoreDir` points
+    // outside it, the standalone `.aube/` tree) so the linker rebuilds
+    // from scratch. Matches pnpm's behavior modulo the prompt: pnpm
+    // asks, aube warns and proceeds. `state` goes too so an interrupted
+    // wipe can't leave a half-rebuilt tree behind a stale warm-path
+    // "up to date" verdict. Skipped in `--lockfile-only` /
+    // `enableModulesDir=false` mode (the return above already handled
+    // that case — no node_modules to reconcile).
+    let planned_gvs = use_global_virtual_store_override.unwrap_or_else(|| {
+        // Match `Linker::new`'s default: `CI` unset → gvs on. Reads the
+        // same env snapshot `find_gvs_incompatible_trigger` checked
+        // above, so the two sites can't disagree mid-install.
+        !opts.env_snapshot.iter().any(|(k, _)| k == "CI")
+    });
+    if let Some(existing_gvs) = detect_aube_dir_gvs_mode(&aube_dir)
+        && existing_gvs != planned_gvs
+    {
+        let from = if existing_gvs { "enabled" } else { "disabled" };
+        let to = if planned_gvs { "enabled" } else { "disabled" };
+        let modules_dir_path = cwd.join(&modules_dir_name);
+        tracing::warn!(
+            "global virtual store {from} → {to}; removing {} and reinstalling from scratch",
+            modules_dir_path.display()
+        );
+        // Hard-fail the install on a wipe failure instead of swallowing
+        // the error. We've already told the user a wipe was happening,
+        // so proceeding past a half-complete removal would land on the
+        // exact stale mixed-mode tree this guard exists to prevent —
+        // worse than aborting with a clear error the user can act on
+        // (locked file on Windows, permissions, busy mount). A
+        // `NotFound` race (concurrent removal, user deleted the tree
+        // between our classification and the wipe) is benign and stays
+        // silent so the install can proceed.
+        if let Err(e) = std::fs::remove_dir_all(&modules_dir_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(miette!(
+                "global virtual store transition: failed to remove {}: {e}",
+                modules_dir_path.display()
+            ));
+        }
+        if !aube_dir.starts_with(&modules_dir_path)
+            && let Err(e) = std::fs::remove_dir_all(&aube_dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(miette!(
+                "global virtual store transition: failed to remove {}: {e}",
+                aube_dir.display()
+            ));
+        }
+        // State-file removal is best-effort: a stale sidecar the next
+        // install can't read just degrades to a fresh-install verdict,
+        // which is exactly what we want here anyway.
+        let _ = state::remove_state(&cwd);
     }
 
     // 3. Parse or resolve lockfile, streaming tarball fetches during resolution
