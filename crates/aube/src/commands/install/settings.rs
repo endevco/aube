@@ -137,6 +137,56 @@ pub(super) fn find_gvs_incompatible_trigger<'a>(
     None
 }
 
+/// Classify the existing `.aube/` tree as built with the global virtual
+/// store (entries are symlinks into the shared store) or with
+/// per-project materialization (entries are real directories holding
+/// the package files). Returns `None` when the tree is missing or has
+/// no inspectable package entries — a fresh checkout or a prior
+/// `--lockfile-only` run.
+///
+/// The linker can't reconcile a mode switch in place: a non-gvs install
+/// that lands on a gvs tree silently re-uses stale symlinks into the
+/// shared store, and a gvs install that lands on a per-project tree
+/// fails to unlink the populated directories before creating its
+/// symlinks. Callers use this to detect the transition and wipe
+/// `node_modules/` before the linker runs.
+///
+/// Assumes a consistent `.aube/` tree (every entry the same type),
+/// which is what a successful install produces. A crash mid-link
+/// during a transition could leave a mixed tree; we classify from the
+/// first entry `read_dir` yields and let the next install self-heal
+/// — worst case is one extra wipe, which is identical to the cost of
+/// the transition we're already handling.
+pub(super) fn detect_aube_dir_gvs_mode(aube_dir: &std::path::Path) -> Option<bool> {
+    let entries = std::fs::read_dir(aube_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip the hidden hoist tree and sidecar dotfiles
+        // (`.modules.yaml`, etc.). Scoped packages are encoded as
+        // `@scope+name@version` on disk, so `@`-prefixed entries are
+        // real package entries and must not be skipped.
+        if name_str == "node_modules" || name_str.starts_with('.') {
+            continue;
+        }
+        // Classify via `read_link`, not `file_type().is_symlink()`.
+        // On Windows, `sys::create_dir_link` produces an NTFS junction
+        // whose `is_symlink()` is `false` and `is_dir()` is `true`,
+        // making a gvs-on entry indistinguishable from a per-project
+        // real directory via the file-type bit. `read_link` succeeds on
+        // both Unix symlinks and Windows junction reparse points, and
+        // returns `Err(InvalidInput)` on a regular directory — exactly
+        // the signal we need. Non-link IO errors just skip the entry
+        // and move on to the next candidate.
+        match std::fs::read_link(entry.path()) {
+            Ok(_) => return Some(true),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => return Some(false),
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
 /// Honor `cleanupUnusedCatalogs` by pruning declared-but-unreferenced
 /// catalog entries from the workspace yaml. No-op when the setting is
 /// off, when there is no workspace yaml file on disk, or when every
