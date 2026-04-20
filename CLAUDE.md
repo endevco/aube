@@ -82,14 +82,12 @@ somewhere to get help, link Discussions and do **not** write phrases like
 
 ### Agent-authored replies
 
-When posting a reply, comment, or any other message on behalf of a
-maintainer to a public venue (GitHub Discussions, PR reviews, issue
-comments on other repos, etc.), disclose that it was written by an
-agent. Prefix the message with a short italicized attribution line such
-as `_(Posted by Claude on @jdx's behalf.)_` so readers know they're
-talking to an AI and can calibrate accordingly. This applies to any
-agent-authored external communication — do not post anonymously as the
-maintainer.
+When posting a reply, comment, or any other message as a maintainer to
+a public venue (GitHub Discussions, PR reviews, issue comments on other
+repos, etc.), disclose that it was written by an agent. End the message
+with a short italicized attribution line on its own trailing paragraph,
+verbatim: `_Written with Claude._`. This applies to any agent-authored
+external communication — do not post without the attribution.
 
 ## Architecture
 
