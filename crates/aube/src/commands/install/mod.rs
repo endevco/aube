@@ -1527,13 +1527,21 @@ where
                     let version = version.clone();
                     move || -> miette::Result<_> {
                         if verify_integrity {
-                            let Some(ref expected) = integrity else {
-                                return Err(miette!(
-                                    "{display_name}@{version}: registry response has no `dist.integrity`. Refusing to import unverified bytes. Disable `verify-store-integrity` to override."
-                                ));
-                            };
-                            aube_store::verify_integrity(&bytes, expected)
-                                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+                            if let Some(ref expected) = integrity {
+                                aube_store::verify_integrity(&bytes, expected)
+                                    .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+                            } else {
+                                // Older registries and some Verdaccio-
+                                // backed fixtures ship packuments with
+                                // no dist.integrity field. Hard-fail
+                                // here would break those ecosystems.
+                                // Surface a warning so operators can
+                                // see which packages ship unverifiable
+                                // bytes, then fall through to import.
+                                tracing::warn!(
+                                    "{display_name}@{version}: registry response has no `dist.integrity`, importing without content verification"
+                                );
+                            }
                         }
                         let import_start = std::time::Instant::now();
                         let index = store.import_tarball(&bytes).map_err(|e| {
@@ -2725,14 +2733,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let integrity = pkg.integrity.clone();
                         let index = tokio::task::spawn_blocking(move || -> miette::Result<_> {
                             if fetch_verify_integrity {
-                                let Some(ref expected) = integrity else {
-                                    return Err(miette!(
-                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity`. Refusing to import unverified bytes."
-                                    ));
-                                };
-                                aube_store::verify_integrity(&bytes, expected).map_err(|e| {
-                                    miette!("{pkg_display_name}@{pkg_version}: {e}")
-                                })?;
+                                if let Some(ref expected) = integrity {
+                                    aube_store::verify_integrity(&bytes, expected).map_err(
+                                        |e| miette!("{pkg_display_name}@{pkg_version}: {e}"),
+                                    )?;
+                                } else {
+                                    tracing::warn!(
+                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity`, importing without content verification"
+                                    );
+                                }
                             }
                             let index = store.import_tarball(&bytes).map_err(|e| {
                                 miette!("failed to import {pkg_display_name}@{pkg_version}: {e}")

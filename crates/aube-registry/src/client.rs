@@ -906,7 +906,16 @@ fn same_host(a: &str, b: &str) -> bool {
     let Ok(b) = reqwest::Url::parse(b) else {
         return false;
     };
-    a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default()
+    // Scheme comparison matters. An http://registry.example and an
+    // https://registry.example would otherwise look identical here,
+    // and a user who configured their registry over http would ship
+    // the default _authToken in cleartext. The redirect policy already
+    // blocks https to http downgrade on live requests, but only
+    // scheme parity at this gate prevents an explicitly http-
+    // configured registry from bypassing the check at request time.
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
 }
 
 fn build_http_client(

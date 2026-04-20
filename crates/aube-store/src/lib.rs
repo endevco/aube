@@ -782,6 +782,24 @@ pub enum Error {
 /// A NUL byte is also rejected. It never appears in a legitimate url,
 /// ref, or commit, and is a recurring split point for tool pipelines
 /// downstream.
+/// Render a git argv tail for error messages with any embedded
+/// userinfo stripped. A raw `{args:?}` would otherwise dump the
+/// full `git+https://<token>@host/repo.git` URL right back into
+/// the error string that ships to CI logs.
+fn redact_args(args: &[&str]) -> String {
+    let mut s = String::from("[");
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push('"');
+        s.push_str(&redact_url(a));
+        s.push('"');
+    }
+    s.push(']');
+    s
+}
+
 /// Strip `user:password@` out of git URLs before we put them into
 /// error output. Private workspace deps commonly pin
 /// `git+https://<token>@host/repo.git`, and any clone failure would
@@ -1095,11 +1113,12 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
             .args(args)
             .current_dir(dir)
             .output()
-            .map_err(|e| Error::Git(format!("spawn git {args:?}: {e}")))?;
+            .map_err(|e| Error::Git(format!("spawn git {}: {e}", redact_args(args))))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(Error::Git(format!(
-                "git {args:?} failed: {}",
+                "git {} failed: {}",
+                redact_args(args),
                 redact_url(stderr.trim())
             )));
         }

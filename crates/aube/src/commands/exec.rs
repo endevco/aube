@@ -250,7 +250,7 @@ async fn exec_bin_status(
         .wrap_err("failed to execute binary")
 }
 
-pub(crate) fn shell_quote(value: &str) -> String {
+fn shell_quote(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
     }
