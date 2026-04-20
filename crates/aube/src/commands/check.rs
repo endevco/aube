@@ -141,10 +141,11 @@ pub(crate) fn run_report(cwd: &Path) -> miette::Result<CheckReport> {
 }
 
 /// Walk one `<cell>/node_modules/` directory. Each first-level entry is
-/// either a package directory (`foo/`) or a scope directory (`@scope/`)
-/// containing scoped packages. Entries that are symlinks to sibling
-/// deps are skipped — we only audit the manifests that actually live
-/// in this cell (i.e. are real directories).
+/// either a real package directory (`foo/`), a scope directory
+/// (`@scope/`) containing scoped packages, or a sibling-dep link that
+/// points into another cell. Links are skipped — we only audit the
+/// manifests that actually live in this cell, so each manifest is read
+/// exactly once regardless of how many cells reference it.
 fn scan_cell(cell_nm: &Path, report: &mut CheckReport) -> miette::Result<()> {
     for entry in std::fs::read_dir(cell_nm).into_diagnostic()?.flatten() {
         let name = entry.file_name();
@@ -152,7 +153,7 @@ fn scan_cell(cell_nm: &Path, report: &mut CheckReport) -> miette::Result<()> {
             continue;
         };
         let path = entry.path();
-        if path.is_symlink() {
+        if is_link_or_junction(&path) {
             continue;
         }
         if !path.is_dir() {
@@ -164,7 +165,7 @@ fn scan_cell(cell_nm: &Path, report: &mut CheckReport) -> miette::Result<()> {
             };
             for scoped in inner.flatten() {
                 let sp = scoped.path();
-                if sp.is_symlink() || !sp.is_dir() {
+                if is_link_or_junction(&sp) || !sp.is_dir() {
                     continue;
                 }
                 let Some(pkg) = scoped.file_name().to_str().map(|s| s.to_string()) else {
@@ -177,6 +178,34 @@ fn scan_cell(cell_nm: &Path, report: &mut CheckReport) -> miette::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Is this path a link (POSIX symlink) or a Windows junction / reparse
+/// point that aube's linker would write for a sibling dep? `Path::is_symlink`
+/// alone is not enough on Windows — `aube_linker::create_dir_link` creates
+/// NTFS junctions (tag `IO_REPARSE_TAG_MOUNT_POINT`), which Rust's
+/// `FileType::is_symlink` excludes because it only matches
+/// `IO_REPARSE_TAG_SYMLINK`. Without this guard, every junction-linked
+/// sibling dep on Windows would be re-walked as a package owned by the
+/// current cell and produce false broken-link reports.
+fn is_link_or_junction(path: &Path) -> bool {
+    let Ok(md) = std::fs::symlink_metadata(path) else {
+        // Treat "can't read" as "skip" so we don't recurse into a
+        // half-created or permission-restricted entry.
+        return true;
+    };
+    if md.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Inspect one package's `package.json` and check that each declared
@@ -215,6 +244,15 @@ fn check_package(
         .unwrap_or_default();
 
     for (dep_name, dep_range) in &manifest.dependencies {
+        // Entries that also appear in `optionalDependencies` are
+        // legitimately absent when the platform filter dropped them
+        // (e.g. `fsevents` on Linux). npm/pnpm treat the
+        // `optionalDependencies` entry as authoritative when the same
+        // name appears in both maps, so we mirror that here rather
+        // than flagging a dep the install intentionally skipped.
+        if manifest.optional_dependencies.contains_key(dep_name) {
+            continue;
+        }
         if bundled.contains(dep_name) {
             // Bundled deps ship inside the tarball at `<pkg>/node_modules/<dep>`;
             // they're a separate resolution path from sibling symlinks, so
@@ -415,6 +453,36 @@ mod tests {
         assert_eq!(issue.consumer_version, "1.0.0");
         assert_eq!(issue.dep_name, "bar");
         assert!(matches!(issue.kind, BrokenKind::Sibling));
+    }
+
+    #[test]
+    fn dep_also_listed_as_optional_is_not_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        std::fs::write(cwd.join("package.json"), r#"{"name":"root"}"#).unwrap();
+
+        // foo@1.0.0 declares `fsevents` in both `dependencies` and
+        // `optionalDependencies`. On a platform where the install
+        // filter dropped it, there is no sibling — this should NOT
+        // be flagged because optional-dep overlap wins.
+        let aube = cwd.join("node_modules").join(".aube");
+        let cell = aube.join("foo@1.0.0").join("node_modules");
+        let pkg = cell.join("foo");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{
+                "name": "foo",
+                "version": "1.0.0",
+                "dependencies": {"fsevents": "^2"},
+                "optionalDependencies": {"fsevents": "^2"}
+            }"#,
+        )
+        .unwrap();
+
+        let report = run_report(&cwd).unwrap();
+        assert_eq!(report.checked, 1);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
     }
 
     #[test]
