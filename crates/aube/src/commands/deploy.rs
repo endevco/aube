@@ -229,9 +229,7 @@ pub async fn run(
         let opts = InstallOptions {
             project_dir: Some(s.target.clone()),
             mode,
-            prod: !args.dev,
-            dev: args.dev,
-            no_optional: args.no_optional,
+            dep_selection: install::DepSelection::from_flags(!args.dev, args.dev, args.no_optional),
             ignore_pnpmfile: false,
             ignore_scripts: false,
             lockfile_only: false,

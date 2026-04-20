@@ -74,7 +74,7 @@ use std::sync::{OnceLock, RwLock};
 /// (`ensure_installed`, chained `install::run` calls from
 /// `add`/`remove`/`update`/…) can pick them up without plumbing a
 /// context struct through every command signature.
-static GLOBAL_FROZEN: OnceLock<install::GlobalFrozenFlags> = OnceLock::new();
+static GLOBAL_FROZEN: OnceLock<Option<install::FrozenOverride>> = OnceLock::new();
 static GLOBAL_VIRTUAL_STORE: OnceLock<install::GlobalVirtualStoreFlags> = OnceLock::new();
 
 /// Process-wide registry override from the top-level `--registry=<url>`
@@ -136,9 +136,9 @@ pub(crate) fn load_npm_config(dir: &std::path::Path) -> NpmConfig {
     config
 }
 
-/// Record the global frozen-lockfile flag snapshot. Called once per
+/// Record the global frozen-lockfile override snapshot. Called once per
 /// process from `async_main`.
-pub(crate) fn set_global_frozen_flags(flags: install::GlobalFrozenFlags) {
+pub(crate) fn set_global_frozen_override(flags: Option<install::FrozenOverride>) {
     let _ = GLOBAL_FROZEN.set(flags);
 }
 
@@ -150,10 +150,9 @@ pub(crate) fn set_global_output_flags(flags: GlobalOutputFlags) {
     let _ = GLOBAL_OUTPUT.set(flags);
 }
 
-/// Read the recorded global frozen-lockfile flag snapshot, or the
-/// default (all `false`) if none was set — e.g. in unit tests that
-/// bypass `async_main`.
-pub(crate) fn global_frozen_flags() -> install::GlobalFrozenFlags {
+/// Read the recorded global frozen-lockfile override snapshot, or
+/// `None` if none was set — e.g. in unit tests that bypass `async_main`.
+pub(crate) fn global_frozen_override() -> Option<install::FrozenOverride> {
     GLOBAL_FROZEN.get().copied().unwrap_or_default()
 }
 
@@ -202,11 +201,9 @@ pub(crate) fn retarget_cwd(path: &Path) -> miette::Result<()> {
 /// the process-wide global `--frozen-lockfile` flags and falling back
 /// to the given default when none was set on the command line.
 pub(crate) fn chained_frozen_mode(default: install::FrozenMode) -> install::FrozenMode {
-    let g = global_frozen_flags();
-    if g.frozen || g.no_frozen || g.prefer_frozen {
-        install::FrozenMode::from_flags(g.frozen, g.no_frozen, g.prefer_frozen, None)
-    } else {
-        default
+    match global_frozen_override() {
+        Some(ovr) => install::FrozenMode::from_override(Some(ovr), None),
+        None => default,
     }
 }
 
@@ -919,7 +916,7 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
     if skip_auto_install {
         return Ok(());
     }
-    let g = global_frozen_flags();
+    let g = global_frozen_override();
     let needs = if optimistic_repeat {
         crate::state::check_needs_install(&cwd)
     } else {
@@ -930,16 +927,7 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
     // `--prefer-frozen-lockfile` re-triggers the install path even
     // when the state file says the tree is fresh, so the flag is
     // honored on every command that auto-installs.
-    let forced_flag = if g.frozen {
-        Some("--frozen-lockfile")
-    } else if g.no_frozen {
-        Some("--no-frozen-lockfile")
-    } else if g.prefer_frozen {
-        Some("--prefer-frozen-lockfile")
-    } else {
-        None
-    };
-    let Some(reason) = needs.or_else(|| forced_flag.map(|f| format!("global {f} flag"))) else {
+    let Some(reason) = needs.or_else(|| g.map(|o| format!("global {} flag", o.cli_flag()))) else {
         return Ok(());
     };
     match verify_mode {
@@ -958,7 +946,7 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
     eprintln!("Auto-installing: {reason}");
     let mode = chained_frozen_mode(install::FrozenMode::Prefer);
     let mut opts = install::InstallOptions::with_mode(mode);
-    opts.strict_no_lockfile = g.frozen;
+    opts.strict_no_lockfile = matches!(g, Some(install::FrozenOverride::Frozen));
     install::run(opts).await?;
 
     Ok(())

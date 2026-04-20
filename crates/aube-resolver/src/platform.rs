@@ -247,8 +247,8 @@ pub fn filter_graph(
     // 2. Drop transitive optional deps by name or platform. The pnpm parser
     // mirrors active optional edges into `dependencies`, so remove that edge
     // whenever the optional edge is filtered.
-    let package_keys: std::collections::HashSet<String> = graph.packages.keys().cloned().collect();
-    let mismatched_packages: std::collections::HashSet<String> = graph
+    let package_keys: rustc_hash::FxHashSet<String> = graph.packages.keys().cloned().collect();
+    let mismatched_packages: rustc_hash::FxHashSet<String> = graph
         .packages
         .iter()
         .filter(|(_, pkg)| is_mismatched(pkg))
@@ -275,7 +275,7 @@ pub fn filter_graph(
 
     // 3. Garbage-collect unreachable packages by walking from the
     //    surviving roots.
-    let mut reachable: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut reachable: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
     let mut stack: Vec<String> = Vec::new();
     for deps in graph.importers.values() {
         for dep in deps {

@@ -18,6 +18,7 @@ use aube_lockfile::{DepType, DirectDep, LocalSource, LockedPackage, LockfileGrap
 use aube_manifest::PackageJson;
 use aube_registry::Packument;
 use aube_registry::client::RegistryClient;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
@@ -221,7 +222,7 @@ pub enum ResolutionMode {
 /// BFS dependency resolver.
 pub struct Resolver {
     client: Arc<RegistryClient>,
-    cache: HashMap<String, Packument>,
+    cache: FxHashMap<String, Packument>,
     /// Optional channel to stream resolved packages as they're discovered.
     resolved_tx: Option<mpsc::UnboundedSender<ResolvedPackage>>,
     /// Optional disk cache directory for packuments (with ETag revalidation).
@@ -395,7 +396,7 @@ impl Resolver {
     pub fn new(client: Arc<RegistryClient>) -> Self {
         Self {
             client,
-            cache: HashMap::new(),
+            cache: FxHashMap::default(),
             resolved_tx: None,
             packument_cache_dir: None,
             packument_full_cache_dir: None,
@@ -430,7 +431,7 @@ impl Resolver {
         (
             Self {
                 client,
-                cache: HashMap::new(),
+                cache: FxHashMap::default(),
                 resolved_tx: Some(tx),
                 packument_cache_dir: None,
                 packument_full_cache_dir: None,
@@ -718,10 +719,10 @@ impl Resolver {
         let mut packument_fetch_time = std::time::Duration::ZERO;
         let mut lockfile_reuse_count = 0u32;
         let mut resolved: BTreeMap<String, LockedPackage> = BTreeMap::new();
-        let mut resolved_versions: HashMap<String, Vec<String>> = HashMap::new();
+        let mut resolved_versions: FxHashMap<String, Vec<String>> = FxHashMap::default();
         let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
         let mut queue: VecDeque<ResolveTask> = VecDeque::new();
-        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut visited: FxHashSet<String> = FxHashSet::default();
         // Round-tripped to the lockfile's top-level `time:` block so
         // subsequent installs can reuse them for the cutoff computation.
         // Populated opportunistically from whatever packuments we fetch:
@@ -881,7 +882,7 @@ impl Resolver {
         // Names whose fetch has been spawned but not yet harvested.
         // Dedupes spawn calls when multiple tasks discover the same
         // transitive before any of them has been processed.
-        let mut in_flight_names: HashSet<String> = HashSet::new();
+        let mut in_flight_names: FxHashSet<String> = FxHashSet::default();
         // TimeBased wave-0 gate: the publish-time cutoff is derived
         // from the direct deps' resolved versions, so transitives
         // that reach the version-pick step before all directs have
@@ -906,7 +907,7 @@ impl Resolver {
         // versions for that name) still needs a fresh fetch, and
         // the wait-for-fetch loop below calls `ensure_fetch!`
         // without consulting `existing_names`.
-        let existing_names: std::collections::HashSet<String> = existing
+        let existing_names: FxHashSet<String> = existing
             .map(|g| g.packages.values().map(|p| p.name.clone()).collect())
             .unwrap_or_default();
 
@@ -1032,7 +1033,7 @@ impl Resolver {
             // derive the max to seed `published_by` for the
             // transitives we deferred.
             if cutoff_pending && direct_deps_pending == 0 {
-                let direct_dep_paths: std::collections::HashSet<&String> = importers
+                let direct_dep_paths: FxHashSet<&String> = importers
                     .values()
                     .flat_map(|deps| deps.iter().map(|d| &d.dep_path))
                     .collect();
@@ -2132,7 +2133,7 @@ impl Resolver {
                 // (from lockfile, skipping this code path) also
                 // knows to avoid the sibling symlinks — see the
                 // `.dependencies` write-through downstream.
-                let bundled_names: std::collections::HashSet<String> = version_meta
+                let bundled_names: FxHashSet<String> = version_meta
                     .bundled_dependencies
                     .as_ref()
                     .map(|b| {

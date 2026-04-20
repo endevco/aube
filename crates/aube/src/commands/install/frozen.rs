@@ -13,14 +13,37 @@ pub enum FrozenMode {
     Fix,
 }
 
-/// Global (top-level) `--frozen-lockfile` / `--no-frozen-lockfile` /
-/// `--prefer-frozen-lockfile` values threaded in from `Cli`. Mirrors
-/// pnpm's "accepted on every command" semantics.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct GlobalFrozenFlags {
-    pub frozen: bool,
-    pub no_frozen: bool,
-    pub prefer_frozen: bool,
+/// CLI override for `--frozen-lockfile` / `--no-frozen-lockfile` /
+/// `--prefer-frozen-lockfile`. These three flags are mutually
+/// exclusive (clap enforces this), so at most one state is reachable
+/// — `None` on the enclosing `Option` means none was supplied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrozenOverride {
+    Frozen,
+    No,
+    Prefer,
+}
+
+impl FrozenOverride {
+    /// The long-form flag name that produced this override, for user-facing messages.
+    pub fn cli_flag(self) -> &'static str {
+        match self {
+            Self::Frozen => "--frozen-lockfile",
+            Self::No => "--no-frozen-lockfile",
+            Self::Prefer => "--prefer-frozen-lockfile",
+        }
+    }
+
+    /// `(setting_name, "true"|"false")` entry to thread this override
+    /// into the `ResolveCtx::cli` bag. `--no-frozen-lockfile` is the
+    /// `frozen-lockfile=false` side of the same setting.
+    pub fn cli_flag_bag_entry(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Frozen => ("frozen-lockfile", "true"),
+            Self::No => ("frozen-lockfile", "false"),
+            Self::Prefer => ("prefer-frozen-lockfile", "true"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -61,29 +84,19 @@ impl GlobalVirtualStoreFlags {
 }
 
 impl FrozenMode {
-    /// Resolve the user's flag combination to a single mode.
-    /// `--frozen-lockfile` and `--no-frozen-lockfile` and `--prefer-frozen-lockfile`
-    /// are mutually exclusive (clap enforces this), so at most one is true.
-    /// If none are set, honor `preferFrozenLockfile` from the workspace
-    /// config; otherwise fall back to the env-aware default.
-    pub fn from_flags(
-        frozen: bool,
-        no_frozen: bool,
-        prefer_frozen: bool,
-        yaml_prefer_frozen: Option<bool>,
-    ) -> Self {
-        if frozen {
-            Self::Frozen
-        } else if no_frozen {
-            Self::No
-        } else if prefer_frozen {
-            Self::Prefer
-        } else {
-            match yaml_prefer_frozen {
+    /// Resolve the user's flag combination to a single mode. If no CLI
+    /// override is given, honor `preferFrozenLockfile` from the
+    /// workspace config; otherwise fall back to the env-aware default.
+    pub fn from_override(cli: Option<FrozenOverride>, yaml_prefer_frozen: Option<bool>) -> Self {
+        match cli {
+            Some(FrozenOverride::Frozen) => Self::Frozen,
+            Some(FrozenOverride::No) => Self::No,
+            Some(FrozenOverride::Prefer) => Self::Prefer,
+            None => match yaml_prefer_frozen {
                 Some(true) => Self::Prefer,
                 Some(false) => Self::No,
                 None => Self::default_for_env(),
-            }
+            },
         }
     }
 
@@ -103,19 +116,19 @@ mod tests {
 
     #[test]
     fn cli_frozen_beats_yaml() {
-        let m = FrozenMode::from_flags(true, false, false, Some(false));
+        let m = FrozenMode::from_override(Some(FrozenOverride::Frozen), Some(false));
         assert!(matches!(m, FrozenMode::Frozen));
     }
 
     #[test]
     fn yaml_prefer_true_maps_to_prefer() {
-        let m = FrozenMode::from_flags(false, false, false, Some(true));
+        let m = FrozenMode::from_override(None, Some(true));
         assert!(matches!(m, FrozenMode::Prefer));
     }
 
     #[test]
     fn yaml_prefer_false_maps_to_no() {
-        let m = FrozenMode::from_flags(false, false, false, Some(false));
+        let m = FrozenMode::from_override(None, Some(false));
         assert!(matches!(m, FrozenMode::No));
     }
 }
