@@ -43,13 +43,21 @@ pub const PNPMFILE_NAME: &str = ".pnpmfile.cjs";
 /// outside the project root). When set, it wins over the default
 /// `cwd/.pnpmfile.cjs`; relative paths resolve against `cwd`. An
 /// override that points at a missing file is a hard miss (returns
-/// `None`) rather than silently falling back — that way a typo
-/// surfaces as "pnpmfile not loaded" instead of silently running
-/// the wrong hooks.
+/// `None`) rather than silently falling back, and emits a warning —
+/// without the log the user can't tell their typo from "no pnpmfile
+/// configured at all". The missing-default case stays silent because
+/// "no .pnpmfile.cjs" is the common case, not a misconfiguration.
 pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathBuf> {
     if let Some(rel) = workspace_pnpmfile_path {
         let p = cwd.join(rel);
-        return p.is_file().then_some(p);
+        if !p.is_file() {
+            tracing::warn!(
+                "pnpmfilePath override {:?} (from pnpm-workspace.yaml) points at a missing file — hooks will not run",
+                p.display().to_string(),
+            );
+            return None;
+        }
+        return Some(p);
     }
     let p = cwd.join(PNPMFILE_NAME);
     p.is_file().then_some(p)
