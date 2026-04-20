@@ -54,6 +54,31 @@ where
     })
 }
 
+/// Deserialize `scripts` tolerant to non-string values. `firefox-profile`
+/// (and a handful of other legacy packages) ships junk like
+/// `"scripts": { "blanket": { "pattern": [...] } }` — tool-specific
+/// config that npm's CLI treats as "not a runnable script" and ignores.
+/// A strict `Record<string, string>` deserialization trips on the object
+/// entry and fails the whole install. Drop non-string entries so the
+/// real scripts still round-trip.
+pub fn scripts_tolerant<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(de)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => BTreeMap::new(),
+        Some(serde_json::Value::Object(m)) => m
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::String(s) => Some((k, s)),
+                _ => None,
+            })
+            .collect(),
+        Some(_) => BTreeMap::new(),
+    })
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateConfig {
@@ -89,7 +114,11 @@ pub struct PackageJson {
         skip_serializing_if = "Option::is_none"
     )]
     pub bundled_dependencies: Option<BundledDependencies>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "scripts_tolerant",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub scripts: BTreeMap<String, String>,
     /// `engines` field — declared runtime version constraints, e.g.
     /// `{"node": ">=18.0.0"}`. Checked against the current runtime during
@@ -710,6 +739,43 @@ mod tests {
         assert_eq!(p.engines.get("node").unwrap(), ">=18");
         assert!(!p.engines.contains_key("weird"));
         assert!(!p.engines.contains_key("n"));
+    }
+
+    /// `firefox-profile@4.7.0` (and other legacy packages) ship tool
+    /// config nested under `scripts`, e.g. `scripts.blanket = {...}`.
+    /// npm ignores non-string entries instead of failing the install,
+    /// and so do we — drop them and keep the real scripts.
+    #[test]
+    fn scripts_non_string_entries_are_dropped() {
+        let p = parse(
+            r#"{
+                "name":"firefox-profile",
+                "scripts": {
+                    "test": "grunt travis",
+                    "blanket": { "pattern": ["/lib/firefox_profile"] }
+                }
+            }"#,
+        );
+        assert_eq!(
+            p.scripts.get("test").map(String::as_str),
+            Some("grunt travis")
+        );
+        assert!(!p.scripts.contains_key("blanket"));
+    }
+
+    #[test]
+    fn scripts_null_is_treated_as_empty() {
+        let p = parse(r#"{"name":"x","scripts":null}"#);
+        assert!(p.scripts.is_empty());
+    }
+
+    #[test]
+    fn scripts_non_object_value_is_treated_as_empty() {
+        // Mirrors `engines_tolerant`'s legacy-shape handling: if the
+        // field exists but isn't a map, treat it as absent rather than
+        // failing the parse.
+        let p = parse(r#"{"name":"x","scripts":"oops"}"#);
+        assert!(p.scripts.is_empty());
     }
 
     #[test]
