@@ -830,14 +830,21 @@ fn format_bun_lockfile(
             "    {}: {{\n",
             serde_json::to_string(path).unwrap()
         ));
+        // Keys bun renders as multi-line blocks inside a workspace
+        // entry. Other object-valued keys (`bin`) stay inline to
+        // match bun's `"bin": { "name": "./path" }` form.
+        const MULTILINE_KEYS: &[&str] = &[
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ];
         for (k, v) in pairs.iter() {
             let key_str = serde_json::to_string(k).unwrap();
             // bun emits a trailing comma after every workspace-level
             // field, including the last one — `},` closes the block.
             match v {
-                serde_json::Value::Object(map) if !map.is_empty() => {
-                    // Multi-line block — bun expands workspace dep maps
-                    // even when small.
+                serde_json::Value::Object(map) if !map.is_empty() && MULTILINE_KEYS.contains(k) => {
                     out.push_str(&format!("      {key_str}: {{\n"));
                     for (dk, dv) in map {
                         out.push_str(&format!(
@@ -1455,6 +1462,15 @@ mod tests {
             .map(|x| x.as_str().unwrap())
             .collect();
         assert_eq!(optional_peers, vec!["@electric-sql/pglite", "kysely"]);
+
+        // `bin` must render inline — bun's own output puts it on one
+        // line (`"bin": { "drifti": "./dist/cli/bin.mjs" }`). A
+        // multi-line render here would produce the exact diff the
+        // writer is trying to avoid.
+        assert!(
+            raw.contains(r#""bin": { "drifti": "./dist/cli/bin.mjs" },"#),
+            "bin rendered multi-line or unexpected shape:\n{raw}"
+        );
 
         // Root entry stays minimal: no version/bin/optionalPeers.
         let root = &v["workspaces"][""];
