@@ -785,6 +785,53 @@ mod tests {
         assert!(p.engines.is_empty());
     }
 
+    /// Sanity-check the line/column → byte-offset conversion. An
+    /// off-by-one here silently slides miette's pointer to the wrong
+    /// byte, defeating the whole reason the source span exists.
+    #[test]
+    fn line_col_offset_single_line_col_one() {
+        assert_eq!(line_col_to_byte_offset("{}", 1, 1), 0);
+    }
+
+    #[test]
+    fn line_col_offset_multiline_line_two() {
+        // "a\nbc\n" — line 2, column 1 is the 'b' at byte 2.
+        assert_eq!(line_col_to_byte_offset("a\nbc\n", 2, 1), 2);
+        assert_eq!(line_col_to_byte_offset("a\nbc\n", 2, 2), 3);
+    }
+
+    /// `line == 0` can happen if serde_json hits EOF before any input;
+    /// treat as "beginning of file" rather than panic.
+    #[test]
+    fn line_col_offset_line_zero_returns_zero() {
+        assert_eq!(line_col_to_byte_offset("any", 0, 5), 0);
+    }
+
+    /// A column past the end of its line (or past EOF) clamps to the
+    /// last valid offset so we never build a SourceSpan that would
+    /// crash miette's renderer.
+    #[test]
+    fn line_col_offset_column_past_end_clamps() {
+        let s = "ab";
+        assert_eq!(line_col_to_byte_offset(s, 1, 999), s.len());
+    }
+
+    /// A line past the last line falls through the loop and clamps to
+    /// the file end.
+    #[test]
+    fn line_col_offset_line_past_end_clamps() {
+        let s = "a\nb";
+        assert_eq!(line_col_to_byte_offset(s, 10, 1), s.len());
+    }
+
+    /// A file whose last line has no trailing `\n` is the common case;
+    /// make sure columns on that final line still resolve correctly.
+    #[test]
+    fn line_col_offset_no_trailing_newline() {
+        let s = "a\nbc";
+        assert_eq!(line_col_to_byte_offset(s, 2, 2), 3);
+    }
+
     #[test]
     fn engines_map_drops_non_string_values() {
         // Stay consistent with how our dep-map parsers treat redacted

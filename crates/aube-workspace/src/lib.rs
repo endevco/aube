@@ -23,7 +23,7 @@ pub fn find_workspace_packages(project_dir: &Path) -> Result<Vec<PathBuf>, Error
     let config = WorkspaceConfig::load(project_dir).map_err(|e| match e {
         aube_manifest::Error::Io(p, e) => Error::Io(p, e),
         aube_manifest::Error::YamlParse(p, e) => Error::Parse(p, e),
-        aube_manifest::Error::Parse(pe) => Error::Parse(pe.path, pe.message),
+        aube_manifest::Error::Parse(pe) => Error::ParseDiag(pe),
     })?;
 
     let patterns: Vec<String> = if !config.packages.is_empty() {
@@ -73,7 +73,7 @@ fn package_json_workspace_patterns(project_dir: &Path) -> Result<Vec<String>, Er
     }
     let pkg = aube_manifest::PackageJson::from_path(&path).map_err(|e| match e {
         aube_manifest::Error::Io(p, e) => Error::Io(p, e),
-        aube_manifest::Error::Parse(pe) => Error::Parse(pe.path, pe.message),
+        aube_manifest::Error::Parse(pe) => Error::ParseDiag(pe),
         aube_manifest::Error::YamlParse(p, e) => Error::Parse(p, e),
     })?;
     Ok(pkg
@@ -83,12 +83,19 @@ fn package_json_workspace_patterns(project_dir: &Path) -> Result<Vec<String>, Er
         .unwrap_or_default())
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("I/O error at {0}: {1}")]
     Io(PathBuf, std::io::Error),
     #[error("failed to parse {0}: {1}")]
     Parse(PathBuf, String),
+    /// Parse failure that came in via `aube_manifest::Error::Parse` and
+    /// still carries its `NamedSource` + `SourceSpan`. Forwarded via
+    /// `#[diagnostic(transparent)]` so `miette`'s `fancy` handler draws
+    /// a pointer at the offending byte of the offending `package.json`.
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ParseDiag(Box<aube_manifest::ParseError>),
 }
 
 #[cfg(test)]

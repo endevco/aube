@@ -12,6 +12,7 @@ include = ["src/**/*.rs"]
 [dependencies]
 aube-manifest = { workspace = true }
 glob = { workspace = true }
+miette = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
