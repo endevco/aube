@@ -855,26 +855,43 @@ fn package_scope(name: &str) -> Option<&str> {
 /// Convert a registry URL to the URI key used in .npmrc for auth lookup.
 /// "https://registry.example.com/" -> "//registry.example.com/"
 ///
-/// Strips the scheme's default port (`:443` for https, `:80` for http) so
-/// `https://host:443/x/` collapses to the same key as `https://host/x/`,
-/// matching npm's nerf-dart behavior. Auth keys in `.npmrc` are stored
-/// after the same normalization (see [`normalize_npmrc_uri_key`]).
+/// Strips *only the scheme's own default port* (`:443` for https, `:80`
+/// for http) so `https://host:443/x/` collapses to the same key as
+/// `https://host/x/`, matching npm's nerf-dart behavior. The unusual
+/// case of `https://host:80/` (https on the http default port) is
+/// deliberately *not* collapsed — that's a different server.
 fn registry_uri_key(url: &str) -> String {
-    let rest = if let Some(rest) = url.strip_prefix("https:") {
-        rest
+    let (rest, default_port) = if let Some(rest) = url.strip_prefix("https:") {
+        (rest, ":443")
     } else if let Some(rest) = url.strip_prefix("http:") {
-        rest
+        (rest, ":80")
     } else {
         return url.to_string();
     };
-    normalize_npmrc_uri_key(rest)
+    strip_authority_port_suffix(rest, default_port)
 }
 
-/// Strip a trailing `:443` or `:80` from the authority of an
-/// `//host[:port]/path...` key. Used both when ingesting `.npmrc` URI
-/// entries and when computing the lookup key for a registry URL, so
-/// the two paths converge on the same canonical form.
+/// Normalize an `//host[:port]/path...` key from `.npmrc` so it matches
+/// what `registry_uri_key` produces on the lookup side.
+///
+/// Ingest can't know the scheme the user intended (`.npmrc` keys are
+/// scheme-less), so we strip both `:443` and `:80` — in practice
+/// nobody writes either explicitly unless they meant the default for
+/// the corresponding scheme. The lookup side is stricter: it only
+/// strips the matching default, so an `//host:80/x/` key will still
+/// not authenticate an `https://host:80/x/` request, and vice versa.
 fn normalize_npmrc_uri_key(key: &str) -> String {
+    let stripped = strip_authority_port_suffix(key, ":443");
+    if stripped != key {
+        return stripped;
+    }
+    strip_authority_port_suffix(key, ":80")
+}
+
+/// Strip a trailing `:N` from the authority of an `//host[:N]/path...`
+/// key. Returns the key unchanged when the prefix isn't `//` or the
+/// authority doesn't end with the requested port suffix.
+fn strip_authority_port_suffix(key: &str, port_suffix: &str) -> String {
     let Some(after) = key.strip_prefix("//") else {
         return key.to_string();
     };
@@ -882,11 +899,10 @@ fn normalize_npmrc_uri_key(key: &str) -> String {
         Some(idx) => (&after[..idx], &after[idx..]),
         None => (after, ""),
     };
-    let normalized = authority
-        .strip_suffix(":443")
-        .or_else(|| authority.strip_suffix(":80"))
-        .unwrap_or(authority);
-    format!("//{normalized}{path}")
+    let Some(authority) = authority.strip_suffix(port_suffix) else {
+        return key.to_string();
+    };
+    format!("//{authority}{path}")
 }
 
 /// Look up `key` in `map`, falling back to longest-prefix matching by
@@ -912,9 +928,9 @@ pub(crate) fn lookup_by_uri_prefix<'a, V>(
     let mut cursor = trimmed;
     while let Some(idx) = cursor.rfind('/') {
         cursor = &cursor[..idx];
-        // Stop at the leading "//" — anything shorter would be a
+        // Stop at or before the leading "//" — anything that short is a
         // host-less prefix that could match arbitrary registries.
-        if cursor.len() < 2 {
+        if cursor.len() <= 2 {
             break;
         }
         let with_slash = format!("{cursor}/");
@@ -1129,6 +1145,15 @@ mod tests {
             registry_uri_key("https://registry.example.com:8443/"),
             "//registry.example.com:8443/"
         );
+    }
+
+    #[test]
+    fn test_registry_uri_key_only_strips_matching_default_port() {
+        // https on the http default port (rare but valid) is a *different
+        // server* from https on its own default — don't collapse them.
+        assert_eq!(registry_uri_key("https://host:80/x/"), "//host:80/x/",);
+        // Symmetric case: http on https default port stays distinct.
+        assert_eq!(registry_uri_key("http://host:443/x/"), "//host:443/x/",);
     }
 
     #[test]
