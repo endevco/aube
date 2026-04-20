@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## Try disabling the global virtual store first
+
+If an install or build is behaving oddly, retry with the global virtual
+store off before digging further:
+
+```sh
+aube install --disable-gvs
+```
+
+To make it stick for a project, add `enableGlobalVirtualStore=false` to
+`.npmrc`. See [Global virtual store](/package-manager/node-modules#global-virtual-store)
+for what this changes.
+
 ## A package is missing from `node_modules`
 
 Run:
