@@ -244,6 +244,12 @@ pub struct WorkspaceConfig {
     #[serde(default, rename = "verifyStoreIntegrity")]
     pub verify_store_integrity: Option<bool>,
 
+    /// Companion to `verifyStoreIntegrity`. When true, a missing
+    /// `dist.integrity` on an imported packument is a hard error
+    /// instead of a warning. Defaults to `false` for pnpm parity.
+    #[serde(default, rename = "strictStoreIntegrity")]
+    pub strict_store_integrity: Option<bool>,
+
     /// Cache post-build side effects for dependency packages.
     /// Accepted for pnpm-config parity but currently a no-op —
     /// aube skips dep lifecycle scripts by default.

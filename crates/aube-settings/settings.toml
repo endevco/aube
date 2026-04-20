@@ -700,6 +700,27 @@ examples = [
     "echo 'verify-store-integrity=false' >> .npmrc",
 ]
 
+[strictStoreIntegrity]
+description = "Fail the install when a packument ships no dist.integrity."
+type = "bool"
+default = "false"
+docs = """
+Companion to `verifyStoreIntegrity`. When both are true and a packument
+comes back without a `dist.integrity` field, aube refuses to import the
+tarball rather than warning and continuing. Matches the behavior a
+security-conscious operator wants when a registry proxy or MITM has
+stripped the integrity field from an in-flight packument. Defaults to
+false for ecosystem parity with pnpm (which only warns), but is the
+recommended setting on production CI.
+"""
+sources.cli = ["strict-store-integrity"]
+sources.env = []
+sources.npmrc = ["strict-store-integrity", "strictStoreIntegrity"]
+sources.workspaceYaml = ["strictStoreIntegrity"]
+examples = [
+    "echo 'strict-store-integrity=true' >> .npmrc",
+]
+
 [useRunningStoreServer]
 description = "Only allow installs when the store server is running."
 type = "bool"
