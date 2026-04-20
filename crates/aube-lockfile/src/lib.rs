@@ -1495,34 +1495,12 @@ pub enum Error {
     Parse(std::path::PathBuf, String),
     /// Deserialization failure with a byte offset into the source
     /// content, so miette's `fancy` handler can draw a pointer at the
-    /// offending byte of the lockfile.
+    /// offending byte of the lockfile. Reuses `aube_manifest`'s
+    /// `ParseError` — identical shape, identical rendering — via the
+    /// same `ParseDiag` pattern `aube-workspace` uses.
     #[error(transparent)]
     #[diagnostic(transparent)]
-    ParseDiag(Box<ParseError>),
-}
-
-/// Parse failure carrying the source content + span. Shaped identically
-/// to `aube_manifest::ParseError` so the two crates render the same way
-/// through miette's fancy handler.
-#[derive(Debug, thiserror::Error)]
-#[error("failed to parse {path}: {message}")]
-pub struct ParseError {
-    pub path: std::path::PathBuf,
-    pub message: String,
-    pub src: miette::NamedSource<String>,
-    pub span: miette::SourceSpan,
-}
-
-impl miette::Diagnostic for ParseError {
-    fn source_code(&self) -> Option<&dyn miette::SourceCode> {
-        Some(&self.src)
-    }
-
-    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
-        Some(Box::new(std::iter::once(
-            miette::LabeledSpan::new_with_span(Some(self.message.clone()), self.span),
-        )))
-    }
+    ParseDiag(Box<aube_manifest::ParseError>),
 }
 
 /// Parse a JSON lockfile document, attaching a miette source span on
@@ -1543,9 +1521,9 @@ impl Error {
         content: String,
         err: &serde_json::Error,
     ) -> Self {
-        let offset = line_col_to_byte_offset(&content, err.line(), err.column());
-        let len = if offset >= content.len() { 0 } else { 1 };
-        Self::parse_at(path, content, err.to_string(), offset, len)
+        Error::ParseDiag(Box::new(aube_manifest::ParseError::from_json_err(
+            path, content, err,
+        )))
     }
 
     pub fn parse_yaml_err(
@@ -1553,49 +1531,10 @@ impl Error {
         content: String,
         err: &serde_yaml::Error,
     ) -> Self {
-        let (offset, len) = match err.location() {
-            Some(loc) => {
-                let idx = loc.index().min(content.len());
-                let len = if idx >= content.len() { 0 } else { 1 };
-                (idx, len)
-            }
-            None => (0, 0),
-        };
-        Self::parse_at(path, content, err.to_string(), offset, len)
+        Error::ParseDiag(Box::new(aube_manifest::ParseError::from_yaml_err(
+            path, content, err,
+        )))
     }
-
-    fn parse_at(
-        path: &std::path::Path,
-        content: String,
-        message: String,
-        offset: usize,
-        len: usize,
-    ) -> Self {
-        let span = miette::SourceSpan::new(offset.into(), len);
-        Error::ParseDiag(Box::new(ParseError {
-            path: path.to_path_buf(),
-            message,
-            src: miette::NamedSource::new(path.display().to_string(), content),
-            span,
-        }))
-    }
-}
-
-/// serde_json's 1-based line/column → 0-based byte offset. Clamps to
-/// `content.len()` when the reported position is at EOF so the
-/// resulting span never runs past the buffer.
-fn line_col_to_byte_offset(content: &str, line: usize, column: usize) -> usize {
-    if line == 0 {
-        return 0;
-    }
-    let mut offset = 0usize;
-    for (i, l) in content.split_inclusive('\n').enumerate() {
-        if i + 1 == line {
-            return (offset + column.saturating_sub(1)).min(content.len());
-        }
-        offset += l.len();
-    }
-    content.len()
 }
 
 #[cfg(test)]

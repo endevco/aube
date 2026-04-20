@@ -721,6 +721,52 @@ impl miette::Diagnostic for ParseError {
     }
 }
 
+impl ParseError {
+    /// Build a `ParseError` from a `serde_json::Error`, computing the
+    /// byte offset so miette can render a pointer into `content`.
+    /// Shared across crates (see `aube_lockfile::Error::parse_json_err`)
+    /// so there's a single implementation of the line/col → byte-offset
+    /// conversion and span clamping.
+    pub fn from_json_err(path: &Path, content: String, err: &serde_json::Error) -> Self {
+        let offset = line_col_to_byte_offset(&content, err.line(), err.column());
+        // Clamp the span length so it never extends past the content
+        // end. A trailing-newline-EOF error reports a position at or
+        // past `content.len()`; a fixed length of 1 would push the
+        // range one byte past the source and miette's renderer would
+        // fail to slice it. A zero-length span at `content.len()` is
+        // what miette expects for "end-of-input" labels.
+        let len = if offset >= content.len() { 0 } else { 1 };
+        Self::new(path, content, err.to_string(), offset, len)
+    }
+
+    /// Build a `ParseError` from a `serde_yaml::Error`.
+    /// `serde_yaml::Location::index` is already a byte offset, so no
+    /// line/col conversion is needed. Errors without a location
+    /// (notably those bubbling from `serde_yaml::from_value`) collapse
+    /// to an empty span at offset 0 — miette still renders the file
+    /// name + message, just without a pointer.
+    pub fn from_yaml_err(path: &Path, content: String, err: &serde_yaml::Error) -> Self {
+        let (offset, len) = match err.location() {
+            Some(loc) => {
+                let idx = loc.index().min(content.len());
+                let len = if idx >= content.len() { 0 } else { 1 };
+                (idx, len)
+            }
+            None => (0, 0),
+        };
+        Self::new(path, content, err.to_string(), offset, len)
+    }
+
+    fn new(path: &Path, content: String, message: String, offset: usize, len: usize) -> Self {
+        ParseError {
+            path: path.to_path_buf(),
+            message,
+            src: miette::NamedSource::new(path.display().to_string(), content),
+            span: miette::SourceSpan::new(offset.into(), len),
+        }
+    }
+}
+
 /// Parse a JSON document from `content`, returning an [`Error::Parse`] on
 /// failure with the source content + span attached so miette's fancy
 /// handler can render a pointer into the offending file.
@@ -751,47 +797,18 @@ pub fn parse_yaml<T: serde::de::DeserializeOwned>(
 }
 
 impl Error {
-    /// Build an [`Error::Parse`] from the offending content + serde error,
-    /// computing the byte offset so miette can render a pointer into the
-    /// source.
+    /// Build an [`Error::Parse`] from a `serde_json::Error`. Delegates
+    /// to [`ParseError::from_json_err`] — the crate-shared constructor
+    /// other crates (`aube-lockfile`) also reuse for their JSON parse
+    /// paths.
     pub fn parse(path: &Path, content: String, err: &serde_json::Error) -> Self {
-        let offset = line_col_to_byte_offset(&content, err.line(), err.column());
-        // Clamp the span length so it never extends past the content
-        // end. A trailing-newline-EOF error reports a position at or
-        // past `content.len()`; a fixed length of 1 would push the
-        // range one byte past the source and miette's renderer would
-        // fail to slice it. A zero-length span at `content.len()` is
-        // what miette expects for "end-of-input" labels.
-        let len = if offset >= content.len() { 0 } else { 1 };
-        Error::parse_at(path, content, err.to_string(), offset, len)
+        Error::Parse(Box::new(ParseError::from_json_err(path, content, err)))
     }
 
-    /// Build an [`Error::Parse`] from a `serde_yaml::Error`.
-    /// `serde_yaml::Location::index` is already a byte offset, so no
-    /// line/col conversion is needed. Errors without a location
-    /// (notably those bubbling from `serde_yaml::from_value`) collapse
-    /// to an empty span at offset 0 — miette still renders the file
-    /// name + message, just without a pointer.
+    /// Build an [`Error::Parse`] from a `serde_yaml::Error`. Delegates
+    /// to [`ParseError::from_yaml_err`].
     pub fn parse_yaml_err(path: &Path, content: String, err: &serde_yaml::Error) -> Self {
-        let (offset, len) = match err.location() {
-            Some(loc) => {
-                let idx = loc.index().min(content.len());
-                let len = if idx >= content.len() { 0 } else { 1 };
-                (idx, len)
-            }
-            None => (0, 0),
-        };
-        Error::parse_at(path, content, err.to_string(), offset, len)
-    }
-
-    fn parse_at(path: &Path, content: String, message: String, offset: usize, len: usize) -> Self {
-        let span = miette::SourceSpan::new(offset.into(), len);
-        Error::Parse(Box::new(ParseError {
-            path: path.to_path_buf(),
-            message,
-            src: miette::NamedSource::new(path.display().to_string(), content),
-            span,
-        }))
+        Error::Parse(Box::new(ParseError::from_yaml_err(path, content, err)))
     }
 }
 
