@@ -670,12 +670,23 @@ pub fn write(
                 .get("peerDependenciesMeta")
                 .and_then(Value::as_object)
         {
-            let optional_peers: Vec<Value> = meta
+            // `serde_json::Map` is workspace-configured with
+            // `preserve_order`, so `iter()` yields insertion order.
+            // bun emits `optionalPeers` alphabetized — sort here to
+            // match, otherwise a package.json that declares
+            // `peerDependenciesMeta` keys out of order would round-
+            // trip to a different byte sequence than bun produces.
+            let mut optional_peer_names: Vec<&String> = meta
                 .iter()
                 .filter(|(_, v)| v.get("optional").and_then(Value::as_bool).unwrap_or(false))
-                .map(|(k, _)| Value::String(k.clone()))
+                .map(|(k, _)| k)
                 .collect();
-            if !optional_peers.is_empty() {
+            optional_peer_names.sort();
+            if !optional_peer_names.is_empty() {
+                let optional_peers: Vec<Value> = optional_peer_names
+                    .into_iter()
+                    .map(|k| Value::String(k.clone()))
+                    .collect();
                 pairs.push(("optionalPeers", Value::Array(optional_peers)));
             }
         }
@@ -1408,8 +1419,9 @@ mod tests {
     "kysely": "*"
   },
   "peerDependenciesMeta": {
+    "kysely": { "optional": true },
     "@electric-sql/pglite": { "optional": true },
-    "kysely": { "optional": true }
+    "not-optional": { "optional": false }
   }
 }"#,
         )
@@ -1434,14 +1446,15 @@ mod tests {
         assert_eq!(drifti["name"], "@redact/drifti");
         assert_eq!(drifti["version"], "0.0.1");
         assert_eq!(drifti["bin"]["drifti"], "./dist/cli/bin.mjs");
+        // Sorted alphabetically even though package.json lists keys
+        // out of order, and the `optional: false` entry is excluded.
         let optional_peers: Vec<&str> = drifti["optionalPeers"]
             .as_array()
             .unwrap()
             .iter()
             .map(|x| x.as_str().unwrap())
             .collect();
-        assert!(optional_peers.contains(&"@electric-sql/pglite"));
-        assert!(optional_peers.contains(&"kysely"));
+        assert_eq!(optional_peers, vec!["@electric-sql/pglite", "kysely"]);
 
         // Root entry stays minimal: no version/bin/optionalPeers.
         let root = &v["workspaces"][""];
