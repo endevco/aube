@@ -1537,19 +1537,6 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Parse a YAML lockfile document, attaching a miette source span on
-/// failure. `serde_yaml::Error::location` gives a byte offset directly,
-/// so no line/col conversion is needed.
-pub fn parse_yaml<T: serde::de::DeserializeOwned>(
-    path: &std::path::Path,
-    content: String,
-) -> Result<T, Error> {
-    match serde_yaml::from_str(&content) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(Error::parse_yaml_err(path, content, &e)),
-    }
-}
-
 impl Error {
     pub fn parse_json_err(
         path: &std::path::Path,
@@ -1634,14 +1621,19 @@ mod parse_diag_tests {
     }
 
     /// Same story for YAML — serde_yaml reports a `Location` with a
-    /// byte index directly, so no line/col conversion is exercised here.
+    /// byte index directly, so no line/col conversion is exercised
+    /// here. Both production sites (`pnpm.rs`, `yarn.rs`) call
+    /// `Error::parse_yaml_err` directly (one iterates multiple YAML
+    /// documents, the other has only borrowed content), so that's the
+    /// entry point this test locks down.
     #[test]
-    fn parse_yaml_attaches_span_for_bad_input() {
+    fn parse_yaml_err_attaches_span_for_bad_input() {
         let path = Path::new("yarn.lock");
         let content = "packages:\n\t- pkg\n".to_string();
-        let Err(Error::ParseDiag(pe)) = parse_yaml::<serde_yaml::Value>(path, content.clone())
-        else {
-            panic!("parse_yaml must produce ParseDiag on malformed input");
+        let yaml_err: serde_yaml::Error = serde_yaml::from_str::<serde_yaml::Value>(&content)
+            .expect_err("tab-indented YAML must fail");
+        let Error::ParseDiag(pe) = Error::parse_yaml_err(path, content.clone(), &yaml_err) else {
+            panic!("parse_yaml_err must produce ParseDiag");
         };
         let offset: usize = pe.span.offset();
         let len: usize = pe.span.len();
