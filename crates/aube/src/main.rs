@@ -996,13 +996,23 @@ fn resolve_color_mode(cli: &Cli) -> ColorMode {
     {
         return mode;
     }
-    let Ok(cwd) = startup_cwd(cli) else {
-        return ColorMode::Auto;
-    };
-    let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
-    aube_settings::values::string_from_npmrc("color", &npmrc)
-        .and_then(|raw| parse_color_mode(&raw))
-        .unwrap_or(ColorMode::Auto)
+    if let Ok(cwd) = startup_cwd(cli) {
+        let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+        if let Some(mode) = aube_settings::values::string_from_npmrc("color", &npmrc)
+            .and_then(|raw| parse_color_mode(&raw))
+        {
+            return mode;
+        }
+    }
+    // Force color when running on a CI that renders ANSI in its log
+    // viewer (GitHub Actions, GitLab, Buildkite, CircleCI, …) — without
+    // this the install progress UI ships a plain non-TTY heartbeat
+    // because clx and miette both fall back to no-color when stderr
+    // isn't a real terminal.
+    if is_ci::cached() {
+        return ColorMode::Always;
+    }
+    ColorMode::Auto
 }
 
 fn startup_cwd(cli: &Cli) -> miette::Result<PathBuf> {
