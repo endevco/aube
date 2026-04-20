@@ -3019,6 +3019,15 @@ fn pick_override_spec(
     task_range: &str,
     ancestors: &[(String, String)],
 ) -> Option<String> {
+    // When the task range is an `npm:`/`jsr:` alias, the trailing
+    // `@<version>` — not the raw alias string — is what should
+    // participate in a selector's version-range check. Without this
+    // normalization, the matcher's `range_could_satisfy` never
+    // parses the raw `npm:@scope/pkg@6.0.9-patched.1` as a semver,
+    // hits its "probably matches" fallback, and fires overrides
+    // whose version req (`>=7 <9`) the real version doesn't satisfy.
+    // Reported in #174.
+    let effective_range = strip_alias_prefix(task_range);
     let frames: Vec<override_rule::AncestorFrame<'_>> = ancestors
         .iter()
         .map(|(n, v)| override_rule::AncestorFrame {
@@ -3028,12 +3037,27 @@ fn pick_override_spec(
         .collect();
     rules
         .iter()
-        .filter(|r| override_rule::matches(r, task_name, task_range, &frames))
+        .filter(|r| override_rule::matches(r, task_name, effective_range, &frames))
         .max_by_key(|r| {
             let named_parents = r.parents.iter().filter(|p| !p.is_wildcard()).count();
             named_parents * 2 + usize::from(r.target.version_req.is_some())
         })
         .map(|r| r.replacement.clone())
+}
+
+/// Extract the trailing `@<version>` from an `npm:<name>@<version>`
+/// or `jsr:<name>@<version>` alias spec. Returns the input unchanged
+/// when the spec isn't an alias or doesn't carry a version tail.
+fn strip_alias_prefix(range: &str) -> &str {
+    for prefix in ["npm:", "jsr:"] {
+        if let Some(rest) = range.strip_prefix(prefix) {
+            return match rest.rfind('@') {
+                Some(at) if at > 0 => &rest[at + 1..],
+                _ => rest,
+            };
+        }
+    }
+    range
 }
 
 pub(crate) fn version_satisfies(version: &str, range_str: &str) -> bool {
@@ -3199,6 +3223,41 @@ mod tests {
     #[test]
     fn dependency_policy_default_blocks_exotic_subdeps() {
         assert!(DependencyPolicy::default().block_exotic_subdeps);
+    }
+
+    #[test]
+    fn strip_alias_prefix_extracts_version_tail() {
+        assert_eq!(strip_alias_prefix("npm:bar@1.2.3"), "1.2.3");
+        assert_eq!(
+            strip_alias_prefix("npm:@descript/immer@6.0.9-patched.1"),
+            "6.0.9-patched.1"
+        );
+        assert_eq!(strip_alias_prefix("jsr:@std/fmt@1.0.0"), "1.0.0");
+        assert_eq!(strip_alias_prefix("^1.2.3"), "^1.2.3");
+        // Edge cases: alias without a version tail falls through.
+        assert_eq!(strip_alias_prefix("npm:bar"), "bar");
+        assert_eq!(strip_alias_prefix("jsr:^1.0.0"), "^1.0.0");
+    }
+
+    #[test]
+    fn pick_override_spec_respects_aliased_version_tail() {
+        use override_rule::compile;
+        // Override `immer@>=7.0.0 <9.0.6`, real dep is
+        // `npm:@descript/immer@6.0.9-patched.1`. The version tail is
+        // outside the selector's range, so the override must NOT fire
+        // (pnpm parity). Regression for #174.
+        let mut raw = BTreeMap::new();
+        raw.insert("immer@>=7.0.0 <9.0.6".to_string(), "11.1.4".to_string());
+        let rules = compile(&raw);
+        assert_eq!(
+            pick_override_spec(&rules, "immer", "npm:@descript/immer@6.0.9-patched.1", &[]),
+            None,
+        );
+        // A matching version tail still fires.
+        assert_eq!(
+            pick_override_spec(&rules, "immer", "npm:@descript/immer@8.0.0", &[]),
+            Some("11.1.4".to_string()),
+        );
     }
 
     #[test]
