@@ -168,8 +168,12 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // resolves first. Otherwise we exec the bin directly so its argv
     // round-trips bit-for-bit.
     let status = if shell_mode {
-        let line = std::iter::once(command.as_str())
-            .chain(bin_args.iter().map(String::as_str))
+        // POSIX-quote every positional before we join with spaces.
+        // Without this, a positional with a space or a shell meta
+        // character gets mangled once sh -c splits the line back into
+        // argv. Matches what aube exec --shell-mode already does.
+        let line = std::iter::once(super::exec::shell_quote(command.as_str()))
+            .chain(bin_args.iter().map(|a| super::exec::shell_quote(a)))
             .collect::<Vec<_>>()
             .join(" ");
         // `dlx` installs into a scratch tempdir, which honors `modulesDir`

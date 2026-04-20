@@ -389,10 +389,10 @@ pub fn unlink_bins(install_dir: &Path, bin_dir: &Path, bin_names: &[String]) {
                 .next();
             if let Some(rel) = owned {
                 let resolved = bin_dir.join(&rel);
-                if let Ok(resolved) = std::fs::canonicalize(&resolved) {
-                    if !resolved.starts_with(&install_canon) {
-                        continue; // owned by a different global install
-                    }
+                if let Ok(resolved) = std::fs::canonicalize(&resolved)
+                    && !resolved.starts_with(&install_canon)
+                {
+                    continue; // owned by a different global install
                 }
                 // Remove if owned or target no longer exists (stale shim)
             }

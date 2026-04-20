@@ -1526,7 +1526,12 @@ where
                     let registry_name = registry_name.clone();
                     let version = version.clone();
                     move || -> miette::Result<_> {
-                        if verify_integrity && let Some(ref expected) = integrity {
+                        if verify_integrity {
+                            let Some(ref expected) = integrity else {
+                                return Err(miette!(
+                                    "{display_name}@{version}: registry response has no `dist.integrity`. Refusing to import unverified bytes. Disable `verify-store-integrity` to override."
+                                ));
+                            };
                             aube_store::verify_integrity(&bytes, expected)
                                 .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
                         }
@@ -2719,7 +2724,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let dep_path = pkg.dep_path.clone();
                         let integrity = pkg.integrity.clone();
                         let index = tokio::task::spawn_blocking(move || -> miette::Result<_> {
-                            if fetch_verify_integrity && let Some(ref expected) = integrity {
+                            if fetch_verify_integrity {
+                                let Some(ref expected) = integrity else {
+                                    return Err(miette!(
+                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity`. Refusing to import unverified bytes."
+                                    ));
+                                };
                                 aube_store::verify_integrity(&bytes, expected).map_err(|e| {
                                     miette!("{pkg_display_name}@{pkg_version}: {e}")
                                 })?;

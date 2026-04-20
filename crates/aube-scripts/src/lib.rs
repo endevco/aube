@@ -115,6 +115,13 @@ pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
 }
 
 fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &ScriptSettings) {
+    // Strip credentials that aube itself owns before we spawn any
+    // lifecycle script. AUBE_AUTH_TOKEN is aube's own registry login
+    // token. No transitive postinstall has any business reading it.
+    // NPM_TOKEN and NODE_AUTH_TOKEN stay untouched because release
+    // flows ("npm publish" in a postpublish script) genuinely need
+    // them. Matches what pnpm does today.
+    cmd.env_remove("AUBE_AUTH_TOKEN");
     if let Some(node_options) = settings.node_options.as_deref() {
         cmd.env("NODE_OPTIONS", node_options);
     }

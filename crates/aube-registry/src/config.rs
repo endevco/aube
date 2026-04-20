@@ -355,7 +355,18 @@ impl NpmConfig {
                 self.no_proxy = non_empty(value);
             } else if matches!(key.as_str(), "strict-ssl" | "strictSsl") {
                 if let Some(b) = aube_settings::parse_bool(&value) {
-                    self.strict_ssl = b;
+                    // strict-ssl=false kills TLS cert validation for
+                    // the whole client. A project-committed .npmrc
+                    // must never flip this for the whole install. Only
+                    // user or global scope can disable validation.
+                    // Same trust gate tokenHelper already uses.
+                    if !b && !source.is_trusted_for_subprocess_settings() {
+                        tracing::warn!(
+                            "ignoring strict-ssl=false: {source:?} source is not trusted (committed `.npmrc` cannot disable TLS validation)"
+                        );
+                    } else {
+                        self.strict_ssl = b;
+                    }
                 }
             } else if matches!(key.as_str(), "local-address" | "localAddress") {
                 match value.trim().parse::<std::net::IpAddr>() {
