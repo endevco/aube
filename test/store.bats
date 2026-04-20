@@ -18,13 +18,12 @@ teardown() {
 	assert_output --partial "add"
 }
 
-@test "aube store path prints an aube-store path under HOME" {
+@test "aube store path defaults to \$XDG_DATA_HOME/aube/store" {
 	run aube store path
 	assert_success
-	assert_output --partial ".aube-store"
-	# HOME is isolated to the test temp dir, so the store path must live
-	# inside it — proves path() honors $HOME and isn't hardcoded.
-	assert_output --partial "$HOME"
+	# HOME is isolated to the test temp dir and XDG_DATA_HOME points
+	# inside it, so the resolved store path must match exactly.
+	assert_output "$XDG_DATA_HOME/aube/store/v1/files"
 }
 
 @test "aube store path honors store-dir from .npmrc and appends v1/files" {

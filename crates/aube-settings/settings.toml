@@ -653,13 +653,15 @@ examples = []
 [storeDir]
 description = "Location where packages are saved on disk (content-addressable store)."
 type = "path"
-default = "~/.aube-store/v1/files/"
+default = "$XDG_DATA_HOME/aube/store/v1/files/"
 docs = """
-Defaults to aube's own store path (`~/.aube-store/v1/files/`). aube does not
-read from or write to pnpm's `~/.pnpm-store/`. Set in `.npmrc` or
-`aube-workspace.yaml` to point at a different directory, which is useful for
-isolating CI runners, putting the store on a faster disk, or sharing one store
-across multiple users on the same host.
+Defaults to aube's own XDG-compliant store path
+(`$XDG_DATA_HOME/aube/store/v1/files/`, falling back to
+`~/.local/share/aube/store/v1/files/`). aube does not read from or write to
+pnpm's `~/.pnpm-store/`. Set in `.npmrc` or `aube-workspace.yaml` to point at
+a different directory, which is useful for isolating CI runners, putting the
+store on a faster disk, or sharing one store across multiple users on the
+same host.
 
 Path interpretation matches pnpm: `~` expands to the user's home
 directory and a relative path is resolved against the project root,

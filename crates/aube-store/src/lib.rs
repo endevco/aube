@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 /// The global content-addressable store, owned by aube.
 ///
-/// Default location: `~/.aube-store/v1/files/`
+/// Default location: `$XDG_DATA_HOME/aube/store/v1/files/` (falling
+/// back to `~/.local/share/aube/store/v1/files/`).
 /// Files are stored by BLAKE3 hash with two-char hex directory sharding.
 /// (Tarball-level integrity is still SHA-512 because that's the format the
 /// npm registry returns; the per-file CAS key is an internal choice.)
@@ -35,7 +36,7 @@ pub struct StoredFile {
 pub type PackageIndex = BTreeMap<String, StoredFile>;
 
 impl Store {
-    /// Open the store at the default location (~/.aube-store/v1/files/).
+    /// Open the store at the default location (see [`dirs::store_dir`]).
     pub fn default_location() -> Result<Self, Error> {
         let root = dirs::store_dir().ok_or(Error::NoHome)?;
         let cache_dir = dirs::cache_dir().ok_or(Error::NoHome)?;

@@ -303,7 +303,8 @@ pub(crate) fn take_project_lock(cwd: &std::path::Path) -> miette::Result<Project
 
 /// Open the global content-addressable store, honoring a `storeDir`
 /// override from `.npmrc` or `pnpm-workspace.yaml` in `cwd`. Falls
-/// back to the aube-owned default at `~/.aube-store/v1/files/`.
+/// back to the aube-owned default under `$XDG_DATA_HOME/aube/store/`
+/// (see [`aube_store::dirs::store_dir`] for exact resolution).
 ///
 /// Path interpretation matches pnpm: a leading `~` expands to the
 /// user's home directory; relative paths are resolved against `cwd`

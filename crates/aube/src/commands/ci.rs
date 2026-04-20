@@ -12,9 +12,9 @@
 //!      `--dangerously-allow-all-builds` is always off under `aube ci`.
 //!
 //! The global virtual store (`~/.cache/aube/virtual-store/`) and the content-
-//! addressable store (`~/.aube-store/`) are intentionally **not** deleted —
-//! those are caches, not per-project state, and wiping them would defeat the
-//! point of a CI cache layer.
+//! addressable store (`$XDG_DATA_HOME/aube/store/`) are intentionally **not**
+//! deleted — those are caches, not per-project state, and wiping them would
+//! defeat the point of a CI cache layer.
 
 use super::install;
 use clap::Args;

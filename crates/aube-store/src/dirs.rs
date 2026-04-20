@@ -23,13 +23,19 @@ pub fn global_links_dir() -> Option<PathBuf> {
 }
 
 /// Aube-owned global content-addressable store directory.
-/// Uses `$HOME/.aube-store/v1/files/` (or `%LOCALAPPDATA%\aube-store\v1\files` on Windows).
+///
+/// Follows the XDG Base Directory Specification: defaults to
+/// `$XDG_DATA_HOME/aube/store/v1/files/`, falling back to
+/// `$HOME/.local/share/aube/store/v1/files/` when `XDG_DATA_HOME` is
+/// unset (or `%LOCALAPPDATA%\aube\store\v1\files` on Windows).
 pub fn store_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        return Some(PathBuf::from(local).join("aube-store/v1/files"));
+        return Some(PathBuf::from(local).join("aube/store/v1/files"));
     }
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".aube-store/v1/files"))
+    let data_home = match std::env::var("XDG_DATA_HOME") {
+        Ok(xdg) if !xdg.is_empty() => PathBuf::from(xdg),
+        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".local/share"),
+    };
+    Some(data_home.join("aube/store/v1/files"))
 }

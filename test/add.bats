@@ -157,7 +157,7 @@ EOF
 	run grep "aliasOf: '@jsr/std__collections'" aube-lock.yaml
 	assert_success
 
-	rm -rf node_modules "$HOME/.aube-store"
+	rm -rf node_modules "$XDG_DATA_HOME/aube/store"
 	run aube install --frozen-lockfile
 	assert_success
 	assert_dir_exists node_modules/.aube/@std+collections@1.0.0

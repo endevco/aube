@@ -38,9 +38,10 @@ aube has the same CLI, config, and internals that pnpm v11 does.
   explicit allowlist.
 
 aube uses its own internal directory names: `node_modules/.aube/` for the
-virtual store and `~/.aube-store/` for the global store. Existing lockfiles
-are preserved in place; only projects with no supported lockfile yet start
-with `aube-lock.yaml`.
+virtual store and `$XDG_DATA_HOME/aube/store/` (defaulting to
+`~/.local/share/aube/store/`) for the global store. Existing lockfiles are
+preserved in place; only projects with no supported lockfile yet start with
+`aube-lock.yaml`.
 
 ## Reference sections
 
