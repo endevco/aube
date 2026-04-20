@@ -162,8 +162,16 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let raw_content =
         std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
     let cleaned = strip_jsonc(&raw_content);
+    // `strip_jsonc` preserves byte offsets, so a serde_json error on
+    // `cleaned` points at the same byte in `raw_content`. Feed the
+    // raw file into the `NamedSource` so miette renders the user's
+    // actual bun.lock (including comments) under the pointer.
+    debug_assert_eq!(raw_content.len(), cleaned.len());
 
-    let raw: RawBunLockfile = crate::parse_json(path, cleaned)?;
+    let raw: RawBunLockfile = match serde_json::from_str(&cleaned) {
+        Ok(v) => v,
+        Err(e) => return Err(Error::parse_json_err(path, raw_content, &e)),
+    };
 
     if raw.lockfile_version != 1 {
         return Err(Error::Parse(
@@ -458,6 +466,14 @@ fn split_ident(ident: &str) -> Option<(String, String)> {
 
 /// Strip JSONC features (line comments, block comments, trailing commas)
 /// to produce valid JSON. Respects string literals.
+///
+/// Output length is byte-identical to the input — comment bytes and
+/// trailing commas become spaces (newlines inside block comments are
+/// preserved). That keeps every byte offset in `cleaned` pointing at
+/// the same byte in the original file, so a `serde_json` parse error
+/// on the stripped buffer lines up with the user's editor line/column
+/// when rendered against the original source via `miette`'s fancy
+/// handler.
 fn strip_jsonc(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -481,31 +497,51 @@ fn strip_jsonc(input: &str) -> String {
             continue;
         }
 
-        // Line comment
+        // Line comment: replace every byte up to (not including) the
+        // newline with a space. The `\n` itself is kept.
         if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             while i < bytes.len() && bytes[i] != b'\n' {
+                out.push(' ');
                 i += 1;
             }
             continue;
         }
 
-        // Block comment
+        // Block comment: replace every byte with a space, but keep
+        // embedded newlines so line numbers don't shift.
         if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            out.push(' ');
+            out.push(' ');
             i += 2;
             while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                out.push(if bytes[i] == b'\n' { '\n' } else { ' ' });
                 i += 1;
             }
-            i += 2.min(bytes.len() - i.min(bytes.len()));
+            if i + 1 < bytes.len() {
+                // consume the closing `*/`
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+            } else {
+                // unterminated block comment — mirror every remaining
+                // byte to preserve length, keeping newlines intact.
+                while i < bytes.len() {
+                    out.push(if bytes[i] == b'\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+            }
             continue;
         }
 
-        // Trailing comma: drop `,` if the next non-whitespace char is `}` or `]`
+        // Trailing comma: replace `,` with a space when the next
+        // non-whitespace char is `}` or `]`.
         if c == b',' {
             let mut j = i + 1;
             while j < bytes.len() && (bytes[j] as char).is_whitespace() {
                 j += 1;
             }
             if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
+                out.push(' ');
                 i += 1;
                 continue;
             }
@@ -943,6 +979,36 @@ mod tests {
         let out = strip_jsonc(input);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["url"], "http://example.com/path");
+    }
+
+    /// `strip_jsonc` must preserve byte offsets so a `serde_json` error
+    /// on the stripped buffer maps 1:1 onto the original file — that's
+    /// the only reason `parse()` can hand `raw_content` to miette's
+    /// `NamedSource` and trust the span.
+    #[test]
+    fn test_strip_jsonc_preserves_byte_offsets() {
+        let cases = [
+            "{ \"a\": 1 }",                    // no-op
+            "{ // line\n  \"a\": 1 }",         // line comment
+            "{ /* block */ \"a\": 1 }",        // block comment
+            "{ /* multi\nline */ \"a\": 1 }",  // block spans newline
+            "{ \"a\": 1, \"b\": 2, }",         // trailing comma
+            "{ \"a\": \"// not a comment\" }", // comment inside string
+            "{ \"a\": 1 /* trailing",          // unterminated block
+        ];
+        for input in cases {
+            let out = strip_jsonc(input);
+            assert_eq!(
+                out.len(),
+                input.len(),
+                "length mismatch stripping {input:?} -> {out:?}"
+            );
+            // Every `\n` must land at the same byte offset so line
+            // numbers stay stable between the raw and cleaned buffers.
+            let raw_nls: Vec<usize> = input.match_indices('\n').map(|(i, _)| i).collect();
+            let out_nls: Vec<usize> = out.match_indices('\n').map(|(i, _)| i).collect();
+            assert_eq!(raw_nls, out_nls, "newline drift stripping {input:?}");
+        }
     }
 
     /// Build a placeholder SRI hash of the right shape (88-char base64
