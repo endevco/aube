@@ -98,7 +98,7 @@ pub fn render_install_warnings(
     let (direct, transitive) = classify(records, graph);
     match mode {
         DeprecationWarnings::None => {}
-        DeprecationWarnings::Summary => write_count_line(records.len()),
+        DeprecationWarnings::Summary => write_count_line(records.len(), !transitive.is_empty()),
         DeprecationWarnings::Direct => {
             for r in &direct {
                 write_warn_line(r);
@@ -129,13 +129,20 @@ fn write_warn_line(r: &DeprecationRecord) {
 fn write_transitive_count_line(count: usize) {
     let pkgs = pluralizer::pluralize("transitive package", count as isize, true);
     let verb = if count == 1 { "has" } else { "have" };
-    let msg = format!("{pkgs} {verb} deprecation warnings. Run `aube deprecations` to see them.");
+    let msg = format!(
+        "{pkgs} {verb} deprecation warnings. Run `aube deprecations --transitive` to see them."
+    );
     let _ = writeln!(std::io::stderr(), "{}", style::edim(msg));
 }
 
-fn write_count_line(count: usize) {
+fn write_count_line(count: usize, has_transitive: bool) {
     let pkgs = pluralizer::pluralize("package", count as isize, true);
     let verb = if count == 1 { "has" } else { "have" };
-    let msg = format!("{pkgs} {verb} deprecation warnings. Run `aube deprecations` to see them.");
+    let cmd = if has_transitive {
+        "aube deprecations --transitive"
+    } else {
+        "aube deprecations"
+    };
+    let msg = format!("{pkgs} {verb} deprecation warnings. Run `{cmd}` to see them.");
     let _ = writeln!(std::io::stderr(), "{}", style::edim(msg));
 }
