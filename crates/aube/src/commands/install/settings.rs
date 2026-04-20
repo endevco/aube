@@ -578,21 +578,29 @@ pub(super) fn configure_resolver(
     let resolve_peers_from_workspace_root_opt = resolve_peers_from_workspace_root(settings_ctx);
     let registry_supports_time_field = resolve_registry_supports_time_field(settings_ctx);
     let (sup_os, sup_cpu, sup_libc) = manifest.pnpm_supported_architectures();
-    // aube-lock.yaml is a committed, cross-platform artifact: if the
-    // user hasn't declared `pnpm.supportedArchitectures` we widen the
-    // resolver's platform filter to cover every common OS/CPU/libc so
-    // Linux-native optionals (e.g. `@rollup/rollup-linux-x64-gnu`)
-    // land in the lockfile even when `aube install` is run on macOS.
-    // Install-time filtering (see `filter_graph` call on the lockfile
-    // branch) still runs against the unmodified manifest setting, so
-    // `node_modules` stays trimmed to the host. For foreign lockfiles
-    // (pnpm-lock.yaml, yarn.lock, package-lock.json, bun.lock) we keep
-    // pnpm's host-only default — aube shouldn't silently bake in more
-    // packages than the native tool would have produced.
+    // aube-lock.yaml and pnpm-lock.yaml are both committed,
+    // cross-platform artifacts: if the user hasn't declared
+    // `pnpm.supportedArchitectures` we widen the resolver's platform
+    // filter to cover every common OS/CPU/libc so Linux-native
+    // optionals (e.g. `@rollup/rollup-linux-x64-gnu`) land in the
+    // lockfile even when `aube install` is run on macOS, and
+    // macOS-native optionals (`@esbuild/darwin-arm64`) land in a
+    // Linux-CI-generated lockfile. pnpm does the same — it records
+    // every optional-dep variant regardless of host — so withholding
+    // them from `pnpm-lock.yaml` leaves cross-platform teammates with
+    // "Cannot find native binding" on install. Install-time filtering
+    // (see `filter_graph` call on the lockfile branch) still runs
+    // against the unmodified manifest setting, so `node_modules`
+    // stays trimmed to the host. Yarn / npm / bun lockfiles don't
+    // carry per-package os/cpu metadata, so widening there would only
+    // bloat the lockfile — keep pnpm's host-only default for those.
     let manifest_set_supported_arch =
         !(sup_os.is_empty() && sup_cpu.is_empty() && sup_libc.is_empty());
-    let writes_aube_lock = target_lockfile_kind == Some(aube_lockfile::LockfileKind::Aube);
-    let supported_architectures = if !manifest_set_supported_arch && writes_aube_lock {
+    let writes_cross_platform_lock = matches!(
+        target_lockfile_kind,
+        Some(aube_lockfile::LockfileKind::Aube | aube_lockfile::LockfileKind::Pnpm)
+    );
+    let supported_architectures = if !manifest_set_supported_arch && writes_cross_platform_lock {
         aube_resolver::SupportedArchitectures::aube_lock_default()
     } else {
         aube_resolver::SupportedArchitectures {
