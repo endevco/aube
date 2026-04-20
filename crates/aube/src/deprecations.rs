@@ -116,12 +116,14 @@ fn write_warn_line(r: &DeprecationRecord) {
 
 fn write_transitive_count_line(count: usize) {
     let pkgs = pluralizer::pluralize("transitive package", count as isize, true);
-    let msg = format!("{pkgs} have deprecation warnings. Run `aube deprecations` to see them.");
+    let verb = if count == 1 { "has" } else { "have" };
+    let msg = format!("{pkgs} {verb} deprecation warnings. Run `aube deprecations` to see them.");
     let _ = writeln!(std::io::stderr(), "{}", style::edim(msg));
 }
 
 fn write_count_line(count: usize) {
     let pkgs = pluralizer::pluralize("package", count as isize, true);
-    let msg = format!("{pkgs} have deprecation warnings. Run `aube deprecations` to see them.");
+    let verb = if count == 1 { "has" } else { "have" };
+    let msg = format!("{pkgs} {verb} deprecation warnings. Run `aube deprecations` to see them.");
     let _ = writeln!(std::io::stderr(), "{}", style::edim(msg));
 }

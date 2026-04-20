@@ -62,29 +62,31 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
 
     let allowed = manifest.allowed_deprecated_versions();
 
-    let direct_names: BTreeSet<String> = graph
-        .importers
-        .values()
-        .flat_map(|deps| deps.iter().map(|d| d.name.clone()))
-        .collect();
-
-    // Which packages to query. Direct-only is the default; the
-    // full-graph mode includes transitive. Dedupe by name because the
-    // same package can appear under multiple peer-contextualized dep_paths.
-    let mut target_names: BTreeSet<String> = if args.transitive {
-        graph.packages.values().map(|p| p.name.clone()).collect()
-    } else {
-        direct_names.clone()
-    };
-    // Skip local-source packages — no registry record, no deprecation.
-    target_names.retain(|name| {
+    // Packages we need packuments for. Keyed by *registry name* — the
+    // real name behind an npm-alias, since `"my-lodash": "npm:lodash@^4"`
+    // would 404 a packument fetch under `my-lodash`. In direct-only
+    // mode we narrow to the names actually listed by importers (via
+    // their dep_path → LockedPackage lookup), which already correctly
+    // picks up aliased direct deps.
+    let target_registry_names: BTreeSet<String> = if args.transitive {
         graph
             .packages
             .values()
-            .any(|p| p.name == *name && p.local_source.is_none())
-    });
+            .filter(|p| p.local_source.is_none())
+            .map(|p| p.registry_name().to_string())
+            .collect()
+    } else {
+        graph
+            .importers
+            .values()
+            .flat_map(|deps| deps.iter())
+            .filter_map(|d| graph.packages.get(&d.dep_path))
+            .filter(|p| p.local_source.is_none())
+            .map(|p| p.registry_name().to_string())
+            .collect()
+    };
 
-    if target_names.is_empty() {
+    if target_registry_names.is_empty() {
         return emit_empty(args.json, args.exit_code, args.transitive);
     }
 
@@ -94,7 +96,7 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
     // Parallel packument fetch. Failures are per-name — one unreachable
     // package shouldn't sink the whole report.
     let mut set = tokio::task::JoinSet::new();
-    for name in &target_names {
+    for name in &target_registry_names {
         let client = client.clone();
         let cache_dir = cache_dir.clone();
         let name = name.clone();
@@ -103,7 +105,8 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
             (name, result)
         });
     }
-    let mut packuments: HashMap<String, Packument> = HashMap::with_capacity(target_names.len());
+    let mut packuments: HashMap<String, Packument> =
+        HashMap::with_capacity(target_registry_names.len());
     while let Some(res) = set.join_next().await {
         let (name, result) = res.into_diagnostic().wrap_err("packument fetch panicked")?;
         match result {
@@ -116,6 +119,8 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
 
     // Walk the graph (rather than the packument map) so the report
     // preserves lockfile order and honors dedupe on (name, version).
+    // `registry_name()` is what keys the packument map; `pkg.name` is
+    // what the user sees and what `allowedDeprecatedVersions` matches.
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     let mut records: Vec<DeprecationRecord> = Vec::new();
     for pkg in graph.packages.values() {
@@ -125,7 +130,7 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
         if !seen.insert((pkg.name.clone(), pkg.version.clone())) {
             continue;
         }
-        let Some(packument) = packuments.get(&pkg.name) else {
+        let Some(packument) = packuments.get(pkg.registry_name()) else {
             continue;
         };
         let Some(version_meta) = packument.versions.get(&pkg.version) else {
