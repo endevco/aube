@@ -246,7 +246,7 @@ cmd deploy help="Deploy a workspace package into a target directory with deps in
     }
     flag --no-optional help="Skip `optionalDependencies`"
     flag "-P --prod --production" help="Install only production dependencies (default)" {
-        long_help "Install only production dependencies (default).\n\nAccepted for pnpm compatibility. Intentionally unread: production is the deploy default, so the `!args.dev` axis already captures it. Reach for `!args.dev`, not `args.prod`, when extending the filter."
+        long_help "Install only production dependencies (default).\n\nAccepted for pnpm compatibility."
     }
     arg <TARGET> help="Target directory to deploy into" help_long="Target directory to deploy into.\n\nMust be empty or not yet exist."
 }

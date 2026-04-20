@@ -29,4 +29,4 @@ Skip `optionalDependencies`
 
 Install only production dependencies (default).
 
-Accepted for pnpm compatibility. Intentionally unread: production is the deploy default, so the `!args.dev` axis already captures it. Reach for `!args.dev`, not `args.prod`, when extending the filter.
+Accepted for pnpm compatibility.
