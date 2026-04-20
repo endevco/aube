@@ -352,7 +352,9 @@ watch(progressBarEl, (el, previousEl) => {
         <strong>Fastest Node.js package manager.</strong>
         <span>
           Across the benchmarks, aube is {{ pnpmBenchmarkRange }}x faster than
-          pnpm and {{ bunBenchmarkRange }}x faster than Bun.
+          pnpm and {{ bunBenchmarkRange }}x faster than Bun. The chart shows
+          warm CI with no <code>node_modules</code>, using the global virtual
+          store; the other benchmarks cover other situations.
         </span>
         <span class="aube-proof-link">See the benchmarks -></span>
       </a>
