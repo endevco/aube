@@ -9,6 +9,18 @@ store off before digging further:
 aube install --disable-gvs
 ```
 
+Symptoms that usually point here:
+
+- `Symlink ... is invalid, it points out of the filesystem root`
+- `ENOENT: no such file or directory` for a module that clearly exists
+  under `node_modules/.aube/`
+- `Cannot find module '<pkg>'` from Next.js / Turbopack, Vite,
+  VitePress, Nuxt, or Parcel during dev or build
+- Plugin config discovery (PostCSS, Tailwind, Vite) silently misses a
+  config file that lives at the project root
+- `ERR_INVALID_PACKAGE_TARGET` or exports-resolution failures for a
+  package that resolves fine under pnpm/npm
+
 To make it stick for a project, add `enableGlobalVirtualStore=false` to
 `.npmrc`. See [Global virtual store](/package-manager/node-modules#global-virtual-store)
 for what this changes.
