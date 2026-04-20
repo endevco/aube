@@ -34,3 +34,7 @@ Which `.npmrc` file(s) to list.
 - `global`
 
 **Default:** `merged`
+
+### `--local`
+
+Shortcut for `--location project`

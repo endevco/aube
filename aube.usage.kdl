@@ -186,6 +186,7 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
                 choices user project global
             }
         }
+        flag --local help="Shortcut for `--location project`"
         arg <KEY> help="The setting key" help_long="The setting key.\n\nAccepts either a pnpm canonical name (e.g. `autoInstallPeers`) or an `.npmrc` alias (e.g. `auto-install-peers`)."
     }
     cmd get help="Print the effective value of a key" {
@@ -198,6 +199,7 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
                 choices merged user project global
             }
         }
+        flag --local help="Shortcut for `--location project`"
         arg <KEY> help="The setting key" help_long="The setting key.\n\nAccepts either a pnpm canonical name (e.g. `autoInstallPeers`) or an `.npmrc` alias (e.g. `auto-install-peers`)."
     }
     cmd list help="Print every key/value from the selected `.npmrc` file(s)" {
@@ -214,6 +216,7 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
                 choices merged user project global
             }
         }
+        flag --local help="Shortcut for `--location project`"
     }
     cmd set help="Write a key=value pair to the selected `.npmrc` file" {
         flag --location help="Which `.npmrc` file to write to" default=user {
@@ -222,6 +225,7 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
                 choices user project global
             }
         }
+        flag --local help="Shortcut for `--location project`"
         arg <KEY> help="Setting key (canonical name or `.npmrc` alias)"
         arg <VALUE> help="Value to write. Stored verbatim after `key=`"
     }
@@ -335,6 +339,7 @@ cmd get hide=#true help="Alias for `config get` (hidden; prefer `config get`)" {
             choices merged user project global
         }
     }
+    flag --local help="Shortcut for `--location project`"
     arg <KEY> help="The setting key" help_long="The setting key.\n\nAccepts either a pnpm canonical name (e.g. `autoInstallPeers`) or an `.npmrc` alias (e.g. `auto-install-peers`)."
 }
 cmd ignored-builds help="Print packages whose install scripts were skipped by `pnpm.allowBuilds`" {
@@ -695,6 +700,7 @@ cmd set hide=#true help="Alias for `config set` (hidden; prefer `config set`)" {
             choices user project global
         }
     }
+    flag --local help="Shortcut for `--location project`"
     arg <KEY> help="Setting key (canonical name or `.npmrc` alias)"
     arg <VALUE> help="Value to write. Stored verbatim after `key=`"
 }

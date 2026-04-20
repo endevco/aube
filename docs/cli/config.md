@@ -7,7 +7,7 @@ Read and write settings in `.npmrc`
 
 ## Subcommands
 
-- [`aube config delete [--location <LOCATION>] <KEY>`](/cli/config/delete.md)
-- [`aube config get [--json] [--location <LOCATION>] <KEY>`](/cli/config/get.md)
+- [`aube config delete [--location <LOCATION>] [--local] <KEY>`](/cli/config/delete.md)
+- [`aube config get [FLAGS] <KEY>`](/cli/config/get.md)
 - [`aube config list [FLAGS]`](/cli/config/list.md)
-- [`aube config set [--location <LOCATION>] <KEY> <VALUE>`](/cli/config/set.md)
+- [`aube config set [--location <LOCATION>] [--local] <KEY> <VALUE>`](/cli/config/set.md)

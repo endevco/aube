@@ -59,6 +59,20 @@ pub struct KeyArgs {
     /// Defaults to `user` (`~/.npmrc`), matching pnpm.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
+
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+}
+
+impl KeyArgs {
+    fn effective_location(&self) -> Location {
+        if self.local {
+            Location::Project
+        } else {
+            self.location
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -83,6 +97,20 @@ pub struct GetArgs {
     /// `user` or `project` to restrict the lookup to a single file.
     #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
     pub location: ListLocation,
+
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+}
+
+impl GetArgs {
+    fn effective_location(&self) -> ListLocation {
+        if self.local {
+            ListLocation::Project
+        } else {
+            self.location
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -98,6 +126,20 @@ pub struct SetArgs {
     /// Defaults to `user`.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
+
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+}
+
+impl SetArgs {
+    fn effective_location(&self) -> Location {
+        if self.local {
+            Location::Project
+        } else {
+            self.location
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -126,6 +168,20 @@ pub struct ListArgs {
     /// reads config.
     #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
     pub location: ListLocation,
+
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+}
+
+impl ListArgs {
+    fn effective_location(&self) -> ListLocation {
+        if self.local {
+            ListLocation::Project
+        } else {
+            self.location
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -233,7 +289,7 @@ pub fn get(args: GetArgs) -> miette::Result<()> {
     // exist so callers can scope the lookup to a single file (e.g. to
     // answer "is this key set at the project level?") — dispatching
     // per-location here matches what `list` does.
-    let entries: Vec<(String, String)> = match args.location {
+    let entries: Vec<(String, String)> = match args.effective_location() {
         ListLocation::Merged => read_merged(&cwd)?,
         ListLocation::User | ListLocation::Global => read_single(&user_npmrc_path()?)?,
         ListLocation::Project => read_single(&cwd.join(".npmrc"))?,
@@ -261,7 +317,7 @@ pub fn get(args: GetArgs) -> miette::Result<()> {
 pub fn set(args: SetArgs) -> miette::Result<()> {
     let aliases = resolve_aliases(&args.key);
     let write_key = preferred_write_key(&args.key, &aliases);
-    let path = args.location.path()?;
+    let path = args.effective_location().path()?;
     let mut edit = NpmrcEdit::load(&path)?;
     // Remove every known alias before writing so that a prior
     // `auto-install-peers=false` doesn't linger after the user runs
@@ -279,7 +335,7 @@ pub fn set(args: SetArgs) -> miette::Result<()> {
 
 fn delete(args: KeyArgs) -> miette::Result<()> {
     let aliases = resolve_aliases(&args.key);
-    let path = args.location.path()?;
+    let path = args.effective_location().path()?;
     if !path.exists() {
         return Err(miette!("no .npmrc at {}", path.display()));
     }
@@ -303,13 +359,14 @@ fn list(args: ListArgs) -> miette::Result<()> {
     // location, a key set in the *other* file looks "unset" to this
     // command and we'd print its default alongside a real value, which
     // is misleading.
-    if args.all && !matches!(args.location, ListLocation::Merged) {
+    let location = args.effective_location();
+    if args.all && !matches!(location, ListLocation::Merged) {
         return Err(miette!(
             "--all is only supported with --location merged (the default)"
         ));
     }
     let cwd = crate::dirs::project_root_or_cwd()?;
-    let entries: Vec<(String, String)> = match args.location {
+    let entries: Vec<(String, String)> = match location {
         ListLocation::Merged => read_merged(&cwd)?,
         ListLocation::User | ListLocation::Global => read_single(&user_npmrc_path()?)?,
         ListLocation::Project => read_single(&cwd.join(".npmrc"))?,
