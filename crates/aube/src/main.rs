@@ -1022,17 +1022,20 @@ fn resolve_color_mode(cli: &Cli) -> ColorMode {
 /// from a script that captures stderr to a log file, …) keeps the
 /// default no-color behavior to avoid baking escapes into log artifacts.
 fn ci_renders_ansi() -> bool {
-    [
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "BUILDKITE",
-        "CIRCLECI",
-        "TRAVIS",
-        "DRONE",
-        "APPVEYOR",
-    ]
-    .iter()
-    .any(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty() && v != "false" && v != "0"))
+    use ci_info::types::Vendor;
+    matches!(
+        ci_info::get().vendor,
+        Some(
+            Vendor::GitHubActions
+                | Vendor::GitLabCI
+                | Vendor::Buildkite
+                | Vendor::CircleCI
+                | Vendor::TravisCI
+                | Vendor::Drone
+                | Vendor::AppVeyor
+                | Vendor::AzurePipelines
+        )
+    )
 }
 
 fn startup_cwd(cli: &Cli) -> miette::Result<PathBuf> {

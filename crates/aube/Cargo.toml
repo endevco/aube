@@ -73,6 +73,7 @@ diffy = { workspace = true }
 libc = "0.2"
 pathdiff = "0.2"
 is_ci = "1"
+ci_info = "0.14"
 pluralizer = "0.5.0"
 
 [dev-dependencies]
