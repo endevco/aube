@@ -21,6 +21,10 @@ Emit the value as JSON.
 
 Matches `pnpm config get --json`: a missing key renders as `undefined`, a found value is JSON-encoded.
 
+### `--local`
+
+Shortcut for `--location project`
+
 ### `--location <LOCATION>`
 
 Which `.npmrc` file(s) to read.
@@ -35,7 +39,3 @@ Defaults to `merged` — the last-write-wins view of `~/.npmrc` then `./.npmrc`,
 - `global`
 
 **Default:** `merged`
-
-### `--local`
-
-Shortcut for `--location project`

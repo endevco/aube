@@ -731,7 +731,7 @@
               "config",
               "delete"
             ],
-            "usage": "config delete [--location <LOCATION>] [--local] <KEY>",
+            "usage": "config delete [--local] [--location <LOCATION>] <KEY>",
             "subcommands": {},
             "args": [
               {
@@ -746,6 +746,18 @@
               }
             ],
             "flags": [
+              {
+                "name": "local",
+                "usage": "--local",
+                "help": "Shortcut for `--location project`",
+                "help_first_line": "Shortcut for `--location project`",
+                "short": [],
+                "long": [
+                  "local"
+                ],
+                "hide": false,
+                "global": false
+              },
               {
                 "name": "location",
                 "usage": "--location <LOCATION>",
@@ -775,18 +787,6 @@
                 "default": [
                   "user"
                 ]
-              },
-              {
-                "name": "local",
-                "usage": "--local",
-                "help": "Shortcut for `--location project`",
-                "help_first_line": "Shortcut for `--location project`",
-                "short": [],
-                "long": [
-                  "local"
-                ],
-                "hide": false,
-                "global": false
               }
             ],
             "mounts": [],
@@ -835,6 +835,18 @@
                 "global": false
               },
               {
+                "name": "local",
+                "usage": "--local",
+                "help": "Shortcut for `--location project`",
+                "help_first_line": "Shortcut for `--location project`",
+                "short": [],
+                "long": [
+                  "local"
+                ],
+                "hide": false,
+                "global": false
+              },
+              {
                 "name": "location",
                 "usage": "--location <LOCATION>",
                 "help": "Which `.npmrc` file(s) to read",
@@ -864,18 +876,6 @@
                 "default": [
                   "merged"
                 ]
-              },
-              {
-                "name": "local",
-                "usage": "--local",
-                "help": "Shortcut for `--location project`",
-                "help_first_line": "Shortcut for `--location project`",
-                "short": [],
-                "long": [
-                  "local"
-                ],
-                "hide": false,
-                "global": false
               }
             ],
             "mounts": [],
@@ -922,6 +922,18 @@
                 "global": false
               },
               {
+                "name": "local",
+                "usage": "--local",
+                "help": "Shortcut for `--location project`",
+                "help_first_line": "Shortcut for `--location project`",
+                "short": [],
+                "long": [
+                  "local"
+                ],
+                "hide": false,
+                "global": false
+              },
+              {
                 "name": "location",
                 "usage": "--location <LOCATION>",
                 "help": "Which `.npmrc` file(s) to list",
@@ -951,18 +963,6 @@
                 "default": [
                   "merged"
                 ]
-              },
-              {
-                "name": "local",
-                "usage": "--local",
-                "help": "Shortcut for `--location project`",
-                "help_first_line": "Shortcut for `--location project`",
-                "short": [],
-                "long": [
-                  "local"
-                ],
-                "hide": false,
-                "global": false
               }
             ],
             "mounts": [],
@@ -980,7 +980,7 @@
               "config",
               "set"
             ],
-            "usage": "config set [--location <LOCATION>] [--local] <KEY> <VALUE>",
+            "usage": "config set [--local] [--location <LOCATION>] <KEY> <VALUE>",
             "subcommands": {},
             "args": [
               {
@@ -1003,6 +1003,18 @@
               }
             ],
             "flags": [
+              {
+                "name": "local",
+                "usage": "--local",
+                "help": "Shortcut for `--location project`",
+                "help_first_line": "Shortcut for `--location project`",
+                "short": [],
+                "long": [
+                  "local"
+                ],
+                "hide": false,
+                "global": false
+              },
               {
                 "name": "location",
                 "usage": "--location <LOCATION>",
@@ -1032,18 +1044,6 @@
                 "default": [
                   "user"
                 ]
-              },
-              {
-                "name": "local",
-                "usage": "--local",
-                "help": "Shortcut for `--location project`",
-                "help_first_line": "Shortcut for `--location project`",
-                "short": [],
-                "long": [
-                  "local"
-                ],
-                "hide": false,
-                "global": false
               }
             ],
             "mounts": [],
@@ -1801,6 +1801,18 @@
             "global": false
           },
           {
+            "name": "local",
+            "usage": "--local",
+            "help": "Shortcut for `--location project`",
+            "help_first_line": "Shortcut for `--location project`",
+            "short": [],
+            "long": [
+              "local"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "location",
             "usage": "--location <LOCATION>",
             "help": "Which `.npmrc` file(s) to read",
@@ -1830,18 +1842,6 @@
             "default": [
               "merged"
             ]
-          },
-          {
-            "name": "local",
-            "usage": "--local",
-            "help": "Shortcut for `--location project`",
-            "help_first_line": "Shortcut for `--location project`",
-            "short": [],
-            "long": [
-              "local"
-            ],
-            "hide": false,
-            "global": false
           }
         ],
         "mounts": [],
@@ -4246,7 +4246,7 @@
         "full_cmd": [
           "set"
         ],
-        "usage": "set [--location <LOCATION>] [--local] <KEY> <VALUE>",
+        "usage": "set [--local] [--location <LOCATION>] <KEY> <VALUE>",
         "subcommands": {},
         "args": [
           {
@@ -4269,6 +4269,18 @@
           }
         ],
         "flags": [
+          {
+            "name": "local",
+            "usage": "--local",
+            "help": "Shortcut for `--location project`",
+            "help_first_line": "Shortcut for `--location project`",
+            "short": [],
+            "long": [
+              "local"
+            ],
+            "hide": false,
+            "global": false
+          },
           {
             "name": "location",
             "usage": "--location <LOCATION>",
@@ -4298,18 +4310,6 @@
             "default": [
               "user"
             ]
-          },
-          {
-            "name": "local",
-            "usage": "--local",
-            "help": "Shortcut for `--location project`",
-            "help_first_line": "Shortcut for `--location project`",
-            "short": [],
-            "long": [
-              "local"
-            ],
-            "hide": false,
-            "global": false
           }
         ],
         "mounts": [],

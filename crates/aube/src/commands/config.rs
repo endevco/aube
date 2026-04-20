@@ -54,15 +54,15 @@ pub struct KeyArgs {
     /// or an `.npmrc` alias (e.g. `auto-install-peers`).
     pub key: String,
 
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+
     /// Which `.npmrc` file to act on.
     ///
     /// Defaults to `user` (`~/.npmrc`), matching pnpm.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
-
-    /// Shortcut for `--location project`.
-    #[arg(long, conflicts_with = "location")]
-    pub local: bool,
 }
 
 impl KeyArgs {
@@ -90,6 +90,10 @@ pub struct GetArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+
     /// Which `.npmrc` file(s) to read.
     ///
     /// Defaults to `merged` — the last-write-wins view of `~/.npmrc`
@@ -97,10 +101,6 @@ pub struct GetArgs {
     /// `user` or `project` to restrict the lookup to a single file.
     #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
     pub location: ListLocation,
-
-    /// Shortcut for `--location project`.
-    #[arg(long, conflicts_with = "location")]
-    pub local: bool,
 }
 
 impl GetArgs {
@@ -121,15 +121,15 @@ pub struct SetArgs {
     /// Value to write. Stored verbatim after `key=`.
     pub value: String,
 
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+
     /// Which `.npmrc` file to write to.
     ///
     /// Defaults to `user`.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
-
-    /// Shortcut for `--location project`.
-    #[arg(long, conflicts_with = "location")]
-    pub local: bool,
 }
 
 impl SetArgs {
@@ -161,6 +161,10 @@ pub struct ListArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+
     /// Which `.npmrc` file(s) to list.
     ///
     /// `merged` (default) walks `~/.npmrc` then the project's
@@ -168,10 +172,6 @@ pub struct ListArgs {
     /// reads config.
     #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
     pub location: ListLocation,
-
-    /// Shortcut for `--location project`.
-    #[arg(long, conflicts_with = "location")]
-    pub local: bool,
 }
 
 impl ListArgs {
