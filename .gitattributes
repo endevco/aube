@@ -20,3 +20,13 @@ aube.usage.kdl text eol=lf
 # compares LF (what the writer emits) against CRLF (what's on disk)
 # and the test fails.
 crates/aube-lockfile/tests/fixtures/* text eol=lf
+
+# AGENTS.md / CLAUDE.md / GEMINI.md are git symlinks (mode 120000) to
+# `.rules`. On Windows git needs `core.symlinks=true` AND the checkout
+# user needs Developer Mode (Settings > For Developers) or admin. Without
+# both, git writes the link target as plain text ("./rules"), and an
+# agent reading AGENTS.md gets the string ".rules" instead of the rules.
+# Fix on a Windows clone:
+#   git config --global core.symlinks true
+#   # enable Developer Mode, then:
+#   git checkout -- AGENTS.md CLAUDE.md GEMINI.md
