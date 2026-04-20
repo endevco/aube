@@ -307,10 +307,15 @@ fn print_json(report: &CheckReport) {
     let mut arr = Vec::with_capacity(report.issues.len());
     for i in &report.issues {
         let mut obj = serde_json::Map::new();
-        obj.insert(
-            "consumer".into(),
-            format!("{}@{}", i.consumer_name, i.consumer_version).into(),
-        );
+        // `consumer_version` falls back to "" when the package's own
+        // manifest omits the field; in that case the human output
+        // drops the `@` separator and so does this.
+        let consumer = if i.consumer_version.is_empty() {
+            i.consumer_name.clone()
+        } else {
+            format!("{}@{}", i.consumer_name, i.consumer_version)
+        };
+        obj.insert("consumer".into(), consumer.into());
         obj.insert("name".into(), i.dep_name.clone().into());
         obj.insert("range".into(), i.dep_range.clone().into());
         let kind = match i.kind {
