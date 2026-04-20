@@ -1177,7 +1177,7 @@
             "name": "prod",
             "usage": "-P --prod",
             "help": "Install only production dependencies (default)",
-            "help_long": "Install only production dependencies (default).\n\nAccepted for pnpm compatibility.",
+            "help_long": "Install only production dependencies (default).\n\nAccepted for pnpm compatibility. Intentionally unread: production is the deploy default, so the `!args.dev` axis already captures it. Reach for `!args.dev`, not `args.prod`, when extending the filter.",
             "help_first_line": "Install only production dependencies (default)",
             "short": [
               "P"
