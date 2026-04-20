@@ -22,7 +22,9 @@ Honors `--all` and `--location` the same way the default text output does.
 
 ### `--local`
 
-Shortcut for `--location project`
+Shortcut for `--location project`.
+
+Conflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why.
 
 ### `--location <LOCATION>`
 

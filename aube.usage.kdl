@@ -210,7 +210,9 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
         flag --json help="Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`" {
             long_help "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does."
         }
-        flag --local help="Shortcut for `--location project`"
+        flag --local help="Shortcut for `--location project`" {
+            long_help "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why."
+        }
         flag --location help="Which `.npmrc` file(s) to list" default=merged {
             long_help "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config."
             arg <LOCATION> {

@@ -925,6 +925,7 @@
                 "name": "local",
                 "usage": "--local",
                 "help": "Shortcut for `--location project`",
+                "help_long": "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why.",
                 "help_first_line": "Shortcut for `--location project`",
                 "short": [],
                 "long": [

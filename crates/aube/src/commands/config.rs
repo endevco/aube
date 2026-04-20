@@ -162,7 +162,10 @@ pub struct ListArgs {
     pub json: bool,
 
     /// Shortcut for `--location project`.
-    #[arg(long, conflicts_with = "location")]
+    ///
+    /// Conflicts with `--all` since `--all` only makes sense against
+    /// the merged view — see the `--all` docs for why.
+    #[arg(long, conflicts_with_all = ["location", "all"])]
     pub local: bool,
 
     /// Which `.npmrc` file(s) to list.
