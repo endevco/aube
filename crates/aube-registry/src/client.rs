@@ -28,9 +28,11 @@ struct CachedFullPackument {
 }
 
 /// How long to trust a cached packument before revalidating with the registry.
-/// pnpm uses 5 minutes for `prefer-offline=false`. Inside this window we skip
-/// the network entirely.
-const PACKUMENT_TTL_SECS: u64 = 300;
+/// Trust cached packuments for 30 minutes before revalidating. This keeps
+/// repeated installs in a long-lived dev session from devolving into hundreds
+/// of conditional metadata requests once the cache is just over pnpm's 5-minute
+/// default staleness window.
+const PACKUMENT_TTL_SECS: u64 = 1800;
 
 /// Accept header for packument requests. `vnd.npm.install-v1+json` is the
 /// abbreviated (corgi) format npmjs emits for installs; the `application/json`
