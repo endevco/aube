@@ -622,19 +622,35 @@ pub fn write(
         workspace_manifests.insert(importer_path.clone(), pj);
     }
 
-    // Build the `workspaces[path]` object for each importer. bun's
-    // output leaves `version` off every workspace entry (root and
-    // non-root), even when package.json declares one — emitting it
-    // here produces a gratuitous diff on every round-trip against
-    // bun's own output.
+    // Build the `workspaces[path]` object for each importer.
     //
-    // Returns ordered `(key, value)` pairs rather than a `Map` so
-    // the hand-written JSONC emitter can render them in the same
-    // order bun does: `name`, then dep sections.
-    fn build_workspace_pairs(pj: &aube_manifest::PackageJson) -> Vec<(&'static str, Value)> {
+    // bun's root entry carries only `name` + dep sections (the root's
+    // `version`/`bin`/`peerDependenciesMeta` live in the adjacent
+    // `package.json`, so duplicating them into the lockfile would
+    // produce a gratuitous diff against bun's own output). Non-root
+    // entries carry the full picture — `version`, `bin`, dep sections,
+    // and `optionalPeers` (bun's compact list form of
+    // `peerDependenciesMeta[name].optional`) — because bun treats the
+    // lockfile as authoritative for workspace resolution and doesn't
+    // re-read every workspace package.json on install.
+    //
+    // Returns ordered `(key, value)` pairs rather than a `Map` so the
+    // hand-written JSONC emitter can render them in bun's field order.
+    fn build_workspace_pairs(
+        pj: &aube_manifest::PackageJson,
+        is_root: bool,
+    ) -> Vec<(&'static str, Value)> {
         let mut pairs: Vec<(&'static str, Value)> = Vec::new();
         if let Some(name) = &pj.name {
             pairs.push(("name", json!(name)));
+        }
+        if !is_root {
+            if let Some(version) = &pj.version {
+                pairs.push(("version", json!(version)));
+            }
+            if let Some(bin) = pj.extra.get("bin") {
+                pairs.push(("bin", bin.clone()));
+            }
         }
         if !pj.dependencies.is_empty() {
             pairs.push(("dependencies", json!(pj.dependencies)));
@@ -648,13 +664,39 @@ pub fn write(
         if !pj.peer_dependencies.is_empty() {
             pairs.push(("peerDependencies", json!(pj.peer_dependencies)));
         }
+        if !is_root
+            && let Some(meta) = pj
+                .extra
+                .get("peerDependenciesMeta")
+                .and_then(Value::as_object)
+        {
+            // `serde_json::Map` is workspace-configured with
+            // `preserve_order`, so `iter()` yields insertion order.
+            // bun emits `optionalPeers` alphabetized — sort here to
+            // match, otherwise a package.json that declares
+            // `peerDependenciesMeta` keys out of order would round-
+            // trip to a different byte sequence than bun produces.
+            let mut optional_peer_names: Vec<&String> = meta
+                .iter()
+                .filter(|(_, v)| v.get("optional").and_then(Value::as_bool).unwrap_or(false))
+                .map(|(k, _)| k)
+                .collect();
+            optional_peer_names.sort();
+            if !optional_peer_names.is_empty() {
+                let optional_peers: Vec<Value> = optional_peer_names
+                    .into_iter()
+                    .map(|k| Value::String(k.clone()))
+                    .collect();
+                pairs.push(("optionalPeers", Value::Array(optional_peers)));
+            }
+        }
         pairs
     }
 
     let mut workspace_pairs: Vec<(String, Vec<(&'static str, Value)>)> = Vec::new();
-    workspace_pairs.push(("".to_string(), build_workspace_pairs(manifest)));
+    workspace_pairs.push(("".to_string(), build_workspace_pairs(manifest, true)));
     for (importer_path, pj) in &workspace_manifests {
-        workspace_pairs.push((importer_path.clone(), build_workspace_pairs(pj)));
+        workspace_pairs.push((importer_path.clone(), build_workspace_pairs(pj, false)));
     }
 
     let mut package_entries: Vec<(String, Value)> = Vec::new();
@@ -788,14 +830,21 @@ fn format_bun_lockfile(
             "    {}: {{\n",
             serde_json::to_string(path).unwrap()
         ));
+        // Keys bun renders as multi-line blocks inside a workspace
+        // entry. Other object-valued keys (`bin`) stay inline to
+        // match bun's `"bin": { "name": "./path" }` form.
+        const MULTILINE_KEYS: &[&str] = &[
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ];
         for (k, v) in pairs.iter() {
             let key_str = serde_json::to_string(k).unwrap();
             // bun emits a trailing comma after every workspace-level
             // field, including the last one — `},` closes the block.
             match v {
-                serde_json::Value::Object(map) if !map.is_empty() => {
-                    // Multi-line block — bun expands workspace dep maps
-                    // even when small.
+                serde_json::Value::Object(map) if !map.is_empty() && MULTILINE_KEYS.contains(k) => {
                     out.push_str(&format!("      {key_str}: {{\n"));
                     for (dk, dv) in map {
                         out.push_str(&format!(
@@ -1347,6 +1396,93 @@ mod tests {
         let raw = std::fs::read_to_string(&lock_path).unwrap();
         assert!(raw.contains("\"packages/app\""));
         assert!(raw.contains("\"name\": \"app\""));
+    }
+
+    /// Non-root workspace entries must carry `version`, `bin`, and
+    /// `optionalPeers` (bun's compact form of
+    /// `peerDependenciesMeta[name].optional`). Root stays minimal —
+    /// bun's own output omits those three on the root entry because
+    /// the adjacent project `package.json` is authoritative.
+    #[test]
+    fn test_write_workspace_entry_carries_version_bin_and_optional_peers() {
+        use tempfile::TempDir;
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/drifti")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/drifti/package.json"),
+            r#"{
+  "name": "@redact/drifti",
+  "version": "0.0.1",
+  "bin": { "drifti": "./dist/cli/bin.mjs" },
+  "peerDependencies": {
+    "@electric-sql/pglite": "*",
+    "kysely": "*"
+  },
+  "peerDependenciesMeta": {
+    "kysely": { "optional": true },
+    "@electric-sql/pglite": { "optional": true },
+    "not-optional": { "optional": false }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let mut importers = BTreeMap::new();
+        importers.insert(".".to_string(), vec![]);
+        importers.insert("packages/drifti".to_string(), vec![]);
+        let graph = LockfileGraph {
+            importers,
+            ..Default::default()
+        };
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        let lock_path = project_dir.join("bun.lock");
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let raw = std::fs::read_to_string(&lock_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&strip_jsonc(&raw)).unwrap();
+        let drifti = &v["workspaces"]["packages/drifti"];
+        assert_eq!(drifti["name"], "@redact/drifti");
+        assert_eq!(drifti["version"], "0.0.1");
+        assert_eq!(drifti["bin"]["drifti"], "./dist/cli/bin.mjs");
+        // Sorted alphabetically even though package.json lists keys
+        // out of order, and the `optional: false` entry is excluded.
+        let optional_peers: Vec<&str> = drifti["optionalPeers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(optional_peers, vec!["@electric-sql/pglite", "kysely"]);
+
+        // `bin` must render inline — bun's own output puts it on one
+        // line (`"bin": { "drifti": "./dist/cli/bin.mjs" }`). A
+        // multi-line render here would produce the exact diff the
+        // writer is trying to avoid.
+        assert!(
+            raw.contains(r#""bin": { "drifti": "./dist/cli/bin.mjs" },"#),
+            "bin rendered multi-line or unexpected shape:\n{raw}"
+        );
+
+        // Root entry stays minimal: no version/bin/optionalPeers.
+        let root = &v["workspaces"][""];
+        assert!(
+            root.get("version").is_none(),
+            "root carried version: {root}"
+        );
+        assert!(root.get("bin").is_none(), "root carried bin: {root}");
+        assert!(
+            root.get("optionalPeers").is_none(),
+            "root carried optionalPeers: {root}"
+        );
     }
 
     /// A workspace-link package (`my-app` in this graph) must not leak
