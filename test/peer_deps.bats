@@ -126,12 +126,13 @@ JSON
 	assert_output --partial "react@17.0.2"
 }
 
-@test "user pin outside declared peer range stays pinned and warns" {
+@test "user pin outside declared peer range stays pinned" {
 	# react@19.0.0 does NOT satisfy use-sync-external-store's declared
 	# peer range (^16.8.0 || ^17.0.0 || ^18.0.0). pnpm keeps the user's
 	# direct pin authoritative, wires that version into the peer context,
-	# and reports the mismatch instead of installing a second satisfying
-	# react@18 tree.
+	# and we do the same instead of installing a second satisfying
+	# react@18 tree. The default install stays silent about the mismatch
+	# (bun parity); strict-peer-dependencies is tested separately.
 	cat >package.json <<'JSON'
 {
   "name": "per-range-auto-resolve",
@@ -144,8 +145,7 @@ JSON
 JSON
 	run aube install
 	assert_success
-	assert_output --partial "Issues with peer dependencies found"
-	assert_output --partial "expected peer react@^16.8.0 || ^17.0.0 || ^18.0.0, found 19.0.0"
+	refute_output --partial "Issues with peer dependencies"
 
 	# Only the user's pinned react version lives in the lockfile.
 	run bash -c 'grep -q "^  react@19.0.0:" aube-lock.yaml'
@@ -163,11 +163,12 @@ JSON
 	assert_output --partial "react@19.0.0"
 }
 
-@test "auto-install-peers=false leaves peers alone and warns they're missing" {
+@test "auto-install-peers=false leaves peers alone" {
 	# With auto-install disabled, the resolver must NOT drag in any peer
 	# version on its own: no top-level node_modules/react, no hoisted
 	# react entry in the lockfile importers section, no peer-context
-	# suffix on use-sync-external-store. The unmet warning still fires.
+	# suffix on use-sync-external-store. Default install is silent
+	# about the mismatch (bun parity).
 	cat >.npmrc <<'RC'
 auto-install-peers=false
 RC
@@ -182,8 +183,7 @@ RC
 JSON
 	run aube install
 	assert_success
-	assert_output --partial "Issues with peer dependencies found"
-	assert_output --partial "missing required peer react@"
+	refute_output --partial "Issues with peer dependencies"
 
 	# No top-level react symlink.
 	run test -e node_modules/react
@@ -231,11 +231,13 @@ JSON
 	refute_output --partial "expected peer"
 }
 
-@test "conflicting peer ranges keep user pins and warn" {
+@test "conflicting peer ranges keep user pins" {
 	# Pin react@17 at the root while pulling in @testing-library/react@14,
-	# which declares peers react: ^18 and react-dom: ^18. pnpm keeps the
-	# user's direct pins authoritative and reports unmet peer ranges
-	# instead of installing parallel react@18/react-dom@18 trees.
+	# which declares peers react: ^18 and react-dom: ^18. We keep the
+	# user's direct pins authoritative and record the mismatch in the
+	# peer-context dep_path instead of installing parallel
+	# react@18/react-dom@18 trees. Default install stays silent about
+	# the mismatch (bun parity).
 	cat >package.json <<'JSON'
 {
   "name": "per-range-peer",
@@ -249,9 +251,7 @@ JSON
 JSON
 	run aube install
 	assert_success
-	assert_output --partial "Issues with peer dependencies found"
-	assert_output --partial "expected peer react@^18.0.0, found 17.0.2"
-	assert_output --partial "expected peer react-dom@^18.0.0, found 17.0.2"
+	refute_output --partial "Issues with peer dependencies"
 
 	# Only the user's pinned react version should exist in the lockfile.
 	run bash -c 'grep -q "^  react@17.0.2:" aube-lock.yaml'
@@ -319,9 +319,12 @@ JSON
 	assert_output --partial "strict-peer-dependencies is enabled"
 }
 
-@test "strict-peer-dependencies is off by default — unmet peers warn only" {
+@test "default install is silent about unmet peers (bun parity)" {
 	# Same setup as the strict test but without the strict flag. Must
-	# succeed and emit the plain warn: prefix, not error:.
+	# succeed and emit no peer-dependency output at all — bun/npm/yarn
+	# are silent here, and pnpm is the outlier that warns on every
+	# mismatch. strict-peer-dependencies=true is the escape hatch for
+	# users who want the list.
 	cat >.npmrc <<'RC'
 auto-install-peers=false
 RC
@@ -336,18 +339,22 @@ RC
 JSON
 	run aube install
 	assert_success
-	assert_output --partial "warn: Issues with peer dependencies found"
+	refute_output --partial "Issues with peer dependencies"
+	refute_output --partial "missing required peer"
+	refute_output --partial "expected peer"
 	refute_output --partial "strict-peer-dependencies is enabled"
 }
 
-@test "peerDependencyRules.ignoreMissing silences missing-peer warning" {
+@test "peerDependencyRules.ignoreMissing silences strict check on matching name" {
 	# pnpm.peerDependencyRules.ignoreMissing in package.json should
-	# suppress the unmet-peer warning for matching names. The underlying
-	# condition (auto-install-peers=false + declared required peer) is
-	# identical to the plain-warn test above; the escape hatch is what
-	# differs.
+	# suppress the missing-peer error under strict mode. Without the
+	# rule, the same setup would fail (see
+	# "strict-peer-dependencies fails install on unmet required peer").
+	# Non-strict installs are silent regardless — this test drives the
+	# rule through strict mode so a regression actually surfaces.
 	cat >.npmrc <<'RC'
 auto-install-peers=false
+strict-peer-dependencies=true
 RC
 	cat >package.json <<'JSON'
 {
@@ -366,6 +373,7 @@ JSON
 	run aube install
 	assert_success
 	refute_output --partial "Issues with peer dependencies found"
+	refute_output --partial "strict-peer-dependencies is enabled"
 }
 
 @test "peerDependencyRules.ignoreMissing also silences strict-peer-dependencies error" {
@@ -397,10 +405,13 @@ JSON
 
 @test "peerDependencyRules.ignoreMissing respects glob patterns" {
 	# `react*` should catch `react` but NOT an unrelated missing peer.
-	# Verified here by pointing ignoreMissing at a non-matching pattern
-	# and confirming the warning still fires.
+	# Non-strict installs are silent either way, so drive this through
+	# strict-peer-dependencies: with a non-matching pattern the unmet
+	# peer still fails the install, proving the glob filter didn't
+	# accept `vue*` as a match for `react`.
 	cat >.npmrc <<'RC'
 auto-install-peers=false
+strict-peer-dependencies=true
 RC
 	cat >package.json <<'JSON'
 {
@@ -417,16 +428,20 @@ RC
 }
 JSON
 	run aube install
-	assert_success
-	assert_output --partial "warn: Issues with peer dependencies found"
+	assert_failure
+	assert_output --partial "error: Issues with peer dependencies found"
 	assert_output --partial "missing required peer react@"
+	assert_output --partial "strict-peer-dependencies is enabled"
 }
 
 @test "peerDependencyRules.ignoreMissing is read from pnpm-workspace.yaml" {
 	# Same behavior as the package.json case above, but sourced from
-	# pnpm-workspace.yaml. Covers the settings-generator path.
+	# pnpm-workspace.yaml. Covers the settings-generator path. Driven
+	# through strict mode so the silence is meaningful — non-strict
+	# installs are silent regardless.
 	cat >.npmrc <<'RC'
 auto-install-peers=false
+strict-peer-dependencies=true
 RC
 	cat >pnpm-workspace.yaml <<'YAML'
 peerDependencyRules:
@@ -445,16 +460,18 @@ JSON
 	run aube install
 	assert_success
 	refute_output --partial "Issues with peer dependencies found"
+	refute_output --partial "strict-peer-dependencies is enabled"
 }
 
 @test "peerDependencyRules.allowAny bypasses semver mismatch on resolved peer" {
 	# auto-install-peers=false + react@19 pinned at root means
 	# use-sync-external-store resolves its peer to react@19, which is
-	# outside its declared range (^16.8 || ^17 || ^18). That fires the
-	# "expected peer react@..., found 19" warning normally; allowAny
-	# silences it.
+	# outside its declared range (^16.8 || ^17 || ^18). Under strict
+	# mode that would fail with "expected peer react@..., found 19";
+	# allowAny silences it so the install succeeds.
 	cat >.npmrc <<'RC'
 auto-install-peers=false
+strict-peer-dependencies=true
 RC
 	cat >package.json <<'JSON'
 {
@@ -474,15 +491,17 @@ JSON
 	run aube install
 	assert_success
 	refute_output --partial "Issues with peer dependencies found"
+	refute_output --partial "strict-peer-dependencies is enabled"
 }
 
-@test "peerDependencyRules.allowAny also silences missing-peer warnings" {
+@test "peerDependencyRules.allowAny also silences missing peers" {
 	# allowAny is a strict superset of ignoreMissing: it bypasses the
 	# semver check and also silences missing peers for matching names.
 	# Verified here without pinning react — the peer is literally
-	# missing and allowAny: react silences it.
+	# missing and allowAny: react silences the strict-mode failure.
 	cat >.npmrc <<'RC'
 auto-install-peers=false
+strict-peer-dependencies=true
 RC
 	cat >package.json <<'JSON'
 {
@@ -501,4 +520,5 @@ JSON
 	run aube install
 	assert_success
 	refute_output --partial "Issues with peer dependencies found"
+	refute_output --partial "strict-peer-dependencies is enabled"
 }

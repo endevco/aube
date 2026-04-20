@@ -1303,11 +1303,9 @@ Fail if peer dependencies are missing or invalid.
 
 When true, any unmet peer dependency (missing, or resolved to a version
 outside the declared range) fails the install with a miette diagnostic
-instead of only surfacing as a warning. Mirrors pnpm's
-`strict-peer-dependencies` behavior. Combines with
-`autoInstallPeers`: peers the resolver auto-installs are never
-reported, so enabling strict mode only catches peers the resolver
-couldn't satisfy from an existing version in the graph.
+listing every mismatch. This is also the only way aube surfaces peer
+mismatches — by default aube is silent, matching bun/npm/yarn. Set
+this to `false` (the default) to disable.
 
 ### `resolvePeersFromWorkspaceRoot` {#setting-resolvepeersfromworkspaceroot}
 
@@ -1336,13 +1334,14 @@ Suppress warnings for specific missing peer dependencies.
 - .npmrc keys: `peerDependencyRules.ignoreMissing`, `peer-dependency-rules.ignore-missing`
 - Workspace YAML keys: `peerDependencyRules.ignoreMissing`
 
-Glob list of peer dependency names whose "missing required peer" warning
-should be silenced. Only silences peers that are missing entirely — a peer
-present at the wrong version still warns (use `allowedVersions` or
-`allowAny` for that). Read from the root `package.json`
-(`pnpm.peerDependencyRules.ignoreMissing`), `pnpm-workspace.yaml`, and
-`.npmrc`. Later sources fully replace the previous source's list — values
-do not concatenate across sources.
+Glob list of peer dependency names to exclude from the
+`strict-peer-dependencies` check when they're missing entirely. A peer
+present at the wrong version is still reported (use `allowedVersions`
+or `allowAny` for that). Has no effect on the default install — aube
+is silent about peer mismatches unless strict mode is on. Read from
+the root `package.json` (`pnpm.peerDependencyRules.ignoreMissing`),
+`pnpm-workspace.yaml`, and `.npmrc`; later sources fully replace the
+previous source's list.
 
 ### `peerDependencyRules.allowedVersions` {#setting-peerdependencyrules-allowedversions}
 
@@ -1375,10 +1374,12 @@ Allow any peer version to resolve, bypassing semver checks.
 
 Glob list of peer dependency names whose semver check should be
 bypassed entirely — any resolved version counts as satisfying the
-declared range. Also silences missing-peer warnings for matching names.
-Escape hatch for packages with incompatible peer declarations. Read
-from the root `package.json`, `pnpm-workspace.yaml`, and `.npmrc`.
-Later sources fully replace the previous source's list.
+declared range. Also excludes missing peers for matching names. Escape
+hatch for packages with incompatible peer declarations. Has no effect
+on the default install — aube is silent about peer mismatches unless
+`strict-peer-dependencies` is on. Read from the root `package.json`,
+`pnpm-workspace.yaml`, and `.npmrc`; later sources fully replace the
+previous source's list.
 
 ## CLI
 

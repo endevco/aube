@@ -4664,7 +4664,7 @@ mod tests {
 
     // Peer declared but completely absent from `pkg.dependencies` —
     // exercises the `found: None` branch that drives the "missing
-    // required peer" display path in `warn_unmet_peers`. Rare in
+    // required peer" display path in `check_unmet_peers`. Rare in
     // practice because the BFS peer walk usually drags *some* version
     // in, but possible for corner cases (registry fetch failure, etc).
     #[test]
