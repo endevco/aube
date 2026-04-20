@@ -72,7 +72,15 @@ struct RawNpmPackage {
     /// package entry; dropping them on re-emit is one of the
     /// remaining sources of `aube install --no-frozen-lockfile`
     /// churn against native npm output.
-    #[serde(default)]
+    ///
+    /// Uses `aube_manifest::engines_tolerant` so the legacy array
+    /// shape (e.g. `ansi-html-community@0.0.8` ships
+    /// `"engines": ["node >= 0.8.0"]` and npm preserves it verbatim
+    /// in the lockfile) doesn't blow up the whole parse. We normalize
+    /// the array to an empty map — same behavior modern npm gives the
+    /// shape for engine-strict checks, and the same tolerance the
+    /// manifest parser already applies.
+    #[serde(default, deserialize_with = "aube_manifest::engines_tolerant")]
     engines: BTreeMap<String, String>,
     #[serde(default)]
     bin: BTreeMap<String, String>,
@@ -1536,6 +1544,42 @@ mod tests {
 
         let err = parse(tmp.path()).unwrap_err();
         assert!(matches!(err, Error::Parse(_, msg) if msg.contains("lockfileVersion 1")));
+    }
+
+    /// Pre-npm-2.x packages (e.g. `ansi-html-community@0.0.8`) ship
+    /// `"engines": ["node >= 0.8.0"]` as an array; npm preserves that
+    /// shape verbatim in v2/v3 lockfiles. Without tolerant parsing, a
+    /// single such entry blows up the whole `aube ci`. Normalize to an
+    /// empty map (matches what modern npm does for engine-strict on
+    /// the array shape) so the install proceeds.
+    #[test]
+    fn test_parse_legacy_array_engines() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": { "ansi-html-community": "0.0.8" }
+                },
+                "node_modules/ansi-html-community": {
+                    "version": "0.0.8",
+                    "integrity": "sha512-aaa",
+                    "engines": ["node >= 0.8.0"]
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let pkg = &graph.packages["ansi-html-community@0.0.8"];
+        // Array shape gets normalized to an empty map — same as the
+        // manifest parser, and same as what modern npm honors for the
+        // engine-strict check on the array form.
+        assert!(pkg.engines.is_empty());
     }
 
     /// npm writes `"h3-v2": "npm:h3@..."` aliases as a packages entry

@@ -16,7 +16,12 @@ use std::path::Path;
 ///
 /// An explicit `null` is also tolerated (same as "field absent"),
 /// matching the tolerance our other dep-map parsers apply.
-fn engines_tolerant<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
+///
+/// Exposed (`pub`) so the lockfile parser can apply the same tolerance
+/// — npm v2/v3 lockfiles preserve the array shape verbatim from the
+/// originating `package.json`, so a strict map-only deserializer there
+/// trips on the same ancient packages and blocks `aube ci` outright.
+pub fn engines_tolerant<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
