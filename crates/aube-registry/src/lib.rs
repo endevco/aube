@@ -161,7 +161,16 @@ pub struct VersionMetadata {
     /// Round-tripped into the lockfile so pnpm-compatible output can
     /// emit `engines: {node: '>=8'}` on package entries without a
     /// packument re-fetch.
-    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    ///
+    /// Uses `aube_manifest::engines_tolerant` rather than
+    /// `non_string_tolerant_map` so the packument parser tolerates the
+    /// pre-npm-2.x legacy array shape (`"engines": ["node >= 0.4.0"]`,
+    /// still present on `html-entities@1.0.0` and other ancient
+    /// publishes). A strict map-only deserializer there aborts the
+    /// whole resolve for any transitive dep whose packument merely
+    /// *lists* an affected version — even when the user's range
+    /// wouldn't have selected it.
+    #[serde(default, deserialize_with = "aube_manifest::engines_tolerant")]
     pub engines: BTreeMap<String, String>,
     /// `license:` field from the package manifest. npm's lockfile
     /// keeps this per-package; other formats don't. Stored as
@@ -515,6 +524,31 @@ mod tests {
         );
         assert_eq!(v.dev_dependencies.len(), 1);
         assert_eq!(v.dev_dependencies["lodash"], "0.9.2");
+    }
+
+    /// `html-entities@1.0.0` (and other pre-npm-2.x publishes) ship
+    /// `"engines": ["node >= 0.4.0"]` — a legacy array shape. A strict
+    /// map-only deserializer fails the whole packument with
+    /// "invalid type: sequence, expected a map", aborting resolve for
+    /// every dependent. Tolerate the array (same behavior as
+    /// `aube-manifest::engines_tolerant`) by dropping it to an empty
+    /// map, matching what modern npm does with that field.
+    #[test]
+    fn engines_tolerates_legacy_array_shape() {
+        let v = parse(
+            r#"{
+                "name": "html-entities",
+                "version": "1.0.0",
+                "engines": ["node >= 0.4.0"]
+            }"#,
+        );
+        assert!(v.engines.is_empty());
+    }
+
+    #[test]
+    fn engines_map_is_preserved() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","engines":{"node":">=18"}}"#);
+        assert_eq!(v.engines["node"], ">=18");
     }
 
     #[test]
