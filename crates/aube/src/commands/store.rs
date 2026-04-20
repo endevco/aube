@@ -3,8 +3,8 @@
 //! Mirrors `pnpm store`:
 //!
 //! - `aube store path` — print the store root (aube-owned by default:
-//!   `$XDG_DATA_HOME/aube-store/v1/files/`, falling back to
-//!   `~/.local/share/aube-store/v1/files/`).
+//!   `$XDG_DATA_HOME/aube/store/v1/files/`, falling back to
+//!   `~/.local/share/aube/store/v1/files/`).
 //! - `aube store add <pkg>…` — resolve each spec against the registry, fetch
 //!   the tarball, and import it into the global CAS. Pre-warms the store
 //!   without touching any project's `node_modules/`.

@@ -1166,7 +1166,7 @@ pub(super) async fn fetch_packages(
     // job is to verify/populate the global store — it must not be
     // short-circuited by a stale `node_modules/.aube/<dep>` from a
     // prior install, which could leave the store empty on a setup
-    // that wipes `~/.aube-store/` but not `node_modules/` (e.g.
+    // that wipes the global aube store but not `node_modules/` (e.g.
     // Docker layer caching, where the store lives in one cached
     // layer and `node_modules` in another).
     let cwd = crate::dirs::project_root_or_cwd()?;
@@ -1288,7 +1288,7 @@ where
     //
     //   - **`aube fetch`.** The command exists to populate the
     //     global store (typical use: Docker layer caching, warming
-    //     a CI mirror, or recovering from a wiped `~/.aube-store/`).
+    //     a CI mirror, or recovering from a wiped aube store).
     //     If `node_modules/.aube/<dep>` happens to exist from a
     //     previous install, the `AlreadyLinked` shortcut would skip
     //     both `load_index` and the tarball fetch — which silently

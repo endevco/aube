@@ -675,19 +675,16 @@ warning suppresses itself in that case.
 Location where packages are saved on disk (content-addressable store).
 
 - Type: `path`
-- Default: `$XDG_DATA_HOME/aube-store/v1/files/`
+- Default: `$XDG_DATA_HOME/aube/store/v1/files/`
 - Environment: `npm_config_store_dir`, `NPM_CONFIG_STORE_DIR`
 
 Defaults to aube's own XDG-compliant store path
-(`$XDG_DATA_HOME/aube-store/v1/files/`, falling back to
-`~/.local/share/aube-store/v1/files/`). aube does not read from or write to
+(`$XDG_DATA_HOME/aube/store/v1/files/`, falling back to
+`~/.local/share/aube/store/v1/files/`). aube does not read from or write to
 pnpm's `~/.pnpm-store/`. Set in `.npmrc` or `aube-workspace.yaml` to point at
 a different directory, which is useful for isolating CI runners, putting the
 store on a faster disk, or sharing one store across multiple users on the
 same host.
-
-If the legacy path `~/.aube-store/` already exists from an older install,
-aube keeps using it so the upgrade doesn't silently orphan a populated store.
 
 Path interpretation matches pnpm: `~` expands to the user's home
 directory and a relative path is resolved against the project root,

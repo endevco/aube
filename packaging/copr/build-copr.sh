@@ -208,7 +208,7 @@ BuildRequires:  pkgconf-pkg-config
 Aube is a fast Node.js package manager written in Rust. It mirrors
 pnpm's CLI surface and isolated symlink layout so users can swap it
 in, with its own aube-owned on-disk state (global store under
-$XDG_DATA_HOME/aube-store/, per-project virtual store in
+$XDG_DATA_HOME/aube/store/, per-project virtual store in
 node_modules/.aube/).
 Aube reads and writes pnpm-lock.yaml, package-lock.json,
 npm-shrinkwrap.json, yarn.lock, and bun.lock in addition to its

@@ -428,7 +428,7 @@ run_bench_preinstall() {
 # Directories to wipe in cold scenarios. Each pm has its own cache /
 # store layout, so we reset everything we know about to guarantee
 # a fresh download on every iteration.
-COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.aube-store {home}/.local/share/aube-store {home}/.npm {home}/.yarn {home}/.bun {home}/.cache/aube {home}/.cache/yarn {home}/.cache/bun'
+COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.local/share/aube {home}/.npm {home}/.yarn {home}/.bun {home}/.cache/aube {home}/.cache/yarn {home}/.cache/bun'
 
 # Warm-cache lockfile restore: wipe the project-local state (lockfile
 # + node_modules) and drop the saved lockfile back. Uses the per-tool

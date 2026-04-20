@@ -565,9 +565,9 @@ pub struct LockedPackage {
 impl LockedPackage {
     /// The package name to use for registry / store operations — the real
     /// name behind an npm-alias when aliased, otherwise just `name`. Used
-    /// at every site that derives a tarball URL, a packument URL, or a
-    /// `~/.aube-store/` cache key so aliased entries hit the actual
-    /// package instead of the alias-qualified name.
+    /// at every site that derives a tarball URL, a packument URL, or an
+    /// aube-store cache key so aliased entries hit the actual package
+    /// instead of the alias-qualified name.
     pub fn registry_name(&self) -> &str {
         self.alias_of.as_deref().unwrap_or(&self.name)
     }

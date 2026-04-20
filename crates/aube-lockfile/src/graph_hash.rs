@@ -20,10 +20,10 @@
 //!
 //! Unlike pnpm, we use SHA-256 over a canonical JSON serialization —
 //! aube's virtual store is internal to aube (the CAS under
-//! `~/.aube-store/v1/files` is ours alone), so we don't need
-//! bit-for-bit compatibility with pnpm's `object-hash`. Determinism is
-//! all that matters, and `serde_json` plus `BTreeMap` gives us
-//! alphabetized keys for free.
+//! `$XDG_DATA_HOME/aube/store/v1/files` is ours alone), so we don't
+//! need bit-for-bit compatibility with pnpm's `object-hash`.
+//! Determinism is all that matters, and `serde_json` plus `BTreeMap`
+//! gives us alphabetized keys for free.
 
 use crate::{LockedPackage, LockfileGraph};
 use serde::Serialize;

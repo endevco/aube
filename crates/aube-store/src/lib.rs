@@ -10,10 +10,8 @@ use std::path::{Path, PathBuf};
 
 /// The global content-addressable store, owned by aube.
 ///
-/// Default location: `$XDG_DATA_HOME/aube-store/v1/files/` (falling
-/// back to `~/.local/share/aube-store/v1/files/`). An existing
-/// `~/.aube-store/` from an older aube install is kept as-is — see
-/// [`dirs::store_dir`] for details.
+/// Default location: `$XDG_DATA_HOME/aube/store/v1/files/` (falling
+/// back to `~/.local/share/aube/store/v1/files/`).
 /// Files are stored by BLAKE3 hash with two-char hex directory sharding.
 /// (Tarball-level integrity is still SHA-512 because that's the format the
 /// npm registry returns; the per-file CAS key is an internal choice.)

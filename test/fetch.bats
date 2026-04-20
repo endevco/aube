@@ -66,7 +66,7 @@ teardown() {
 	# which detects the missing store file and re-downloads.
 	_setup_basic_fixture
 
-	local aube_store="$XDG_DATA_HOME/aube-store"
+	local aube_store="$XDG_DATA_HOME/aube/store"
 
 	# First install populates both node_modules and the store.
 	run aube install
