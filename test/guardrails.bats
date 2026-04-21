@@ -74,7 +74,7 @@ _setup_workspace_fixture() {
 
 	NPM_CONFIG_COLOR=false run aube --workspace-root run env
 	assert_failure
-	[[ "$output" == *"no aube-workspace.yaml or pnpm-workspace.yaml found"* ]]
+	[[ "$output" == *"no workspace root"* ]]
 	[[ "$output" != *$'\033['* ]]
 }
 
