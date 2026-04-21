@@ -277,27 +277,11 @@ async fn run_script_filtered(
     enable_pre_post_scripts: bool,
 ) -> miette::Result<()> {
     // `cwd` is the nearest ancestor with a `package.json`, which in a
-    // monorepo subpackage is the child — not the workspace root. Walk
-    // up to the workspace root so discovery sees every sibling package.
-    let root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let workspace_pkgs = aube_workspace::find_workspace_packages(&root)
-        .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
-    if workspace_pkgs.is_empty() {
-        return Err(miette!(
-            "aube run: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
-            cwd.display()
-        ));
-    }
-
-    let matched =
-        aube_workspace::selector::select_workspace_packages(&root, &workspace_pkgs, filter)
-            .map_err(|e| miette!("invalid --filter selector: {e}"))?;
-
-    if matched.is_empty() {
-        return Err(miette!(
-            "aube run: filter {filter:?} did not match any workspace package"
-        ));
-    }
+    // monorepo subpackage is the child — not the workspace root. The
+    // shared helper walks up to the real workspace root before
+    // enumerating packages, so yarn / npm / bun monorepos work from a
+    // subpackage.
+    let (_root, matched) = super::select_workspace_packages(cwd, filter, "run")?;
 
     // Install once at the workspace root before fanning out — the
     // isolated linker already materializes every workspace package's

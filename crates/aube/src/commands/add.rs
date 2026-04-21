@@ -274,9 +274,19 @@ pub async fn run(
     // catalog-only yaml is not a workspace root, and a `package.json`
     // without a `workspaces` field isn't either.
     if !ignore_workspace_root_check && !workspace {
-        let yaml_has_packages = aube_manifest::WorkspaceConfig::load(&cwd)
-            .map(|ws| !ws.packages.is_empty())
-            .unwrap_or(false);
+        // `WorkspaceConfig::load` already returns an empty `packages`
+        // list when no yaml exists, so propagating errors here only
+        // surfaces genuine yaml problems (permission denied, malformed
+        // YAML) instead of silently letting `add` proceed against what
+        // might actually be a workspace root.
+        let ws = aube_manifest::WorkspaceConfig::load(&cwd)
+            .into_diagnostic()
+            .wrap_err("failed to read workspace config")?;
+        let yaml_has_packages = !ws.packages.is_empty();
+        // `package.json` read errors fall through intentionally: the
+        // install pipeline below re-reads and parses the same file and
+        // surfaces a richer miette diagnostic pointing at the offending
+        // byte. Duplicating that error here would double-report.
         let pkg_json_has_workspaces =
             aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
                 .ok()
