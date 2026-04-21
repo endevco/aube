@@ -216,6 +216,48 @@ JSON
 	run cat node_modules/.aube-state
 	assert_output --partial "lockfile_hash"
 	assert_output --partial "package_json_hashes"
+	assert_output --partial "\"layout\""
+	assert_output --partial "\"direct_entries\""
+	assert_output --partial "\"packages\""
+}
+
+@test "aube install does not treat missing top-level entry as up to date" {
+	_setup_basic_fixture
+
+	run aube install
+	assert_success
+
+	rm node_modules/is-odd
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_link_exists node_modules/is-odd
+}
+
+@test "aube run auto-installs when installed package metadata is missing" {
+	cat >package.json <<'JSON'
+{
+  "name": "missing-installed-metadata",
+  "version": "1.0.0",
+  "scripts": {
+    "check": "node -e 'console.log(require(\"is-odd\")(3))'"
+  },
+  "dependencies": {
+    "is-odd": "3.0.1"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+
+	rm node_modules/.aube/is-odd@3.0.1/node_modules/is-odd/package.json
+
+	run aube run check
+	assert_success
+	assert_output --partial "Auto-installing"
+	assert_output --partial "true"
 }
 
 @test "installed packages are requireable by node" {
