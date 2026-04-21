@@ -93,21 +93,24 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         }
     }
 
-    // Spot check that direct deps still have their top-level entries.
-    // `rm node_modules/<dep>` (or nuking its `.aube/` target so the
-    // top-level symlink dangles) leaves every hash above matching, so
-    // without this stat sweep the warm path declares "Already up to
-    // date" and never relinks. Skip optional/peer deps — those may
-    // legitimately not be on disk (platform-skipped optionals,
-    // `auto-install-peers=false`).
-    if let Some(reason) = missing_top_level_dep(project_dir, &modules_dir) {
-        return Some(reason);
-    }
-
     if state.section_filtered {
         return Some(
             "previous install omitted dependency sections; auto-installing full graph".into(),
         );
+    }
+
+    // Spot check that direct deps still have their top-level entries.
+    // `rm node_modules/<dep>` (or nuking its `.aube/` target so the
+    // top-level symlink dangles) leaves every hash above matching, so
+    // without this stat sweep the warm path declares "Already up to
+    // date" and never relinks. Must run after the `section_filtered`
+    // guard — a `--prod`/`--dev` install legitimately omits the other
+    // section, and the filtered-install message is more informative
+    // than a generic "<dep> is missing". Skip optional/peer deps —
+    // those may legitimately not be on disk (platform-skipped
+    // optionals, `auto-install-peers=false`).
+    if let Some(reason) = missing_top_level_dep(project_dir, &modules_dir) {
+        return Some(reason);
     }
 
     // no settings_hash check here. this path feeds ensure_installed
