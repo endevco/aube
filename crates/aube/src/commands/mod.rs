@@ -77,6 +77,7 @@ use std::sync::{OnceLock, RwLock};
 /// context struct through every command signature.
 static GLOBAL_FROZEN: OnceLock<Option<install::FrozenOverride>> = OnceLock::new();
 static GLOBAL_VIRTUAL_STORE: OnceLock<install::GlobalVirtualStoreFlags> = OnceLock::new();
+static SKIP_AUTO_INSTALL_ON_PM_MISMATCH: AtomicBool = AtomicBool::new(false);
 
 /// Process-wide registry override from the top-level `--registry=<url>`
 /// flag. Applied in `make_client` (and any direct `NpmConfig::load`
@@ -94,6 +95,14 @@ static GLOBAL_OUTPUT: OnceLock<GlobalOutputFlags> = OnceLock::new();
 pub(crate) fn set_registry_override(url: Option<String>) {
     *REGISTRY_OVERRIDE.write().expect("registry lock poisoned") =
         url.map(|u| aube_registry::config::normalize_registry_url_pub(&u));
+}
+
+pub(crate) fn set_skip_auto_install_on_package_manager_mismatch(skip: bool) {
+    SKIP_AUTO_INSTALL_ON_PM_MISMATCH.store(skip, Ordering::Relaxed);
+}
+
+pub(crate) fn skip_auto_install_on_package_manager_mismatch() -> bool {
+    SKIP_AUTO_INSTALL_ON_PM_MISMATCH.load(Ordering::Relaxed)
 }
 
 pub(crate) struct RegistryOverrideGuard {
@@ -895,6 +904,9 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
     if no_install {
         return Ok(());
     }
+    if skip_auto_install_on_package_manager_mismatch() {
+        return Ok(());
+    }
 
     let initial_cwd = crate::dirs::cwd()?;
     // Walk up to the nearest `package.json` so auto-install from a
@@ -1098,5 +1110,13 @@ mod dep_filter_tests {
         let f = DepFilter::from_flags(true, true);
         assert!(f.keeps(DepType::Production));
         assert!(!f.keeps(DepType::Dev));
+    }
+
+    #[test]
+    fn package_manager_mismatch_can_disable_auto_install() {
+        set_skip_auto_install_on_package_manager_mismatch(true);
+        assert!(skip_auto_install_on_package_manager_mismatch());
+        set_skip_auto_install_on_package_manager_mismatch(false);
+        assert!(!skip_auto_install_on_package_manager_mismatch());
     }
 }

@@ -646,8 +646,12 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         aube_scripts::set_saved_stderr_fd(guard.saved);
     }
 
+    commands::set_skip_auto_install_on_package_manager_mismatch(false);
     if command_needs_package_manager_guard(cli.command.as_ref()) {
-        enforce_package_manager_guardrails(&settings)?;
+        let guard = enforce_package_manager_guardrails(&settings, cli.command.as_ref())?;
+        commands::set_skip_auto_install_on_package_manager_mismatch(
+            guard == PackageManagerGuard::WarnRunOnly,
+        );
     }
 
     // `--recursive` / `-r` is sugar for `--filter=*`. When a filter is
@@ -1227,9 +1231,18 @@ fn init_logging(cli: &Cli, effective_level: LogLevel) {
     }
 }
 
-fn enforce_package_manager_guardrails(settings: &StartupSettings) -> miette::Result<()> {
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PackageManagerGuard {
+    Ok,
+    WarnRunOnly,
+}
+
+fn enforce_package_manager_guardrails(
+    settings: &StartupSettings,
+    command: Option<&Commands>,
+) -> miette::Result<PackageManagerGuard> {
     if !settings.package_manager_strict {
-        return Ok(());
+        return Ok(PackageManagerGuard::Ok);
     }
 
     let cwd = std::env::current_dir().into_diagnostic()?;
@@ -1237,7 +1250,7 @@ fn enforce_package_manager_guardrails(settings: &StartupSettings) -> miette::Res
         .filter(|root| root.join("package.json").is_file())
         .or_else(|| crate::dirs::find_project_root(&cwd))
     else {
-        return Ok(());
+        return Ok(PackageManagerGuard::Ok);
     };
     let path = root.join("package.json");
     let raw = std::fs::read_to_string(&path)
@@ -1247,7 +1260,7 @@ fn enforce_package_manager_guardrails(settings: &StartupSettings) -> miette::Res
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
     let Some(package_manager) = json.get("packageManager").and_then(|v| v.as_str()) else {
-        return Ok(());
+        return Ok(PackageManagerGuard::Ok);
     };
     let Some((name, version)) = parse_package_manager(package_manager) else {
         return Err(miette!(
@@ -1264,7 +1277,7 @@ fn enforce_package_manager_guardrails(settings: &StartupSettings) -> miette::Res
                     env!("CARGO_PKG_VERSION")
                 ));
             }
-            Ok(())
+            Ok(PackageManagerGuard::Ok)
         }
         "pnpm" => {
             if settings.package_manager_strict_version {
@@ -1273,12 +1286,21 @@ fn enforce_package_manager_guardrails(settings: &StartupSettings) -> miette::Res
                     env!("CARGO_PKG_VERSION")
                 ));
             }
-            Ok(())
+            Ok(PackageManagerGuard::Ok)
         }
-        other => Err(miette!(
-            "packageManager in {} uses unsupported package manager `{other}`. aube's packageManagerStrict guard is on by default and only accepts `aube` and `pnpm`; remove or change the `packageManager` field, or set `package-manager-strict=false` (or `packageManagerStrict=false`) in .npmrc to skip this guard.",
-            path.display()
-        )),
+        other => match package_manager_guard_mode(command) {
+            PackageManagerGuardMode::Error => Err(miette!(
+                "packageManager in {} uses unsupported package manager `{other}`. aube's packageManagerStrict guard is on by default and only accepts `aube` and `pnpm`; remove or change the `packageManager` field, or set `package-manager-strict=false` (or `packageManagerStrict=false`) in .npmrc to skip this guard.",
+                path.display()
+            )),
+            PackageManagerGuardMode::WarnAndSkipAutoInstall => {
+                eprintln!(
+                    "warning: packageManager in {} uses unsupported package manager `{other}`; continuing because this command only runs scripts, but auto-install is disabled. Switch packageManager to `aube`/`pnpm`, disable package-manager-strict, or pass `--no-install` to skip the install probe explicitly.",
+                    path.display()
+                );
+                Ok(PackageManagerGuard::WarnRunOnly)
+            }
+        },
     }
 }
 
@@ -1303,6 +1325,29 @@ fn command_needs_package_manager_guard(command: Option<&Commands>) -> bool {
             | Some(Commands::Completion(_))
             | Some(Commands::Usage)
     )
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PackageManagerGuardMode {
+    Error,
+    WarnAndSkipAutoInstall,
+}
+
+fn package_manager_guard_mode(command: Option<&Commands>) -> PackageManagerGuardMode {
+    if matches!(
+        command,
+        Some(Commands::Run(_))
+            | Some(Commands::Test(_))
+            | Some(Commands::Start(_))
+            | Some(Commands::Stop(_))
+            | Some(Commands::Restart(_))
+            | Some(Commands::InstallTest(_))
+            | Some(Commands::External(_))
+    ) {
+        PackageManagerGuardMode::WarnAndSkipAutoInstall
+    } else {
+        PackageManagerGuardMode::Error
+    }
 }
 
 fn compute_effective_filter(cli: &Cli) -> aube_workspace::selector::EffectiveFilter {
@@ -1558,6 +1603,35 @@ mod multicall_tests {
         assert_eq!(
             rewrite_multicall_argv(os(&["aubx.exe", "-V"])),
             os(&["aube", "-V"])
+        );
+    }
+}
+
+#[cfg(test)]
+mod package_manager_guard_tests {
+    use super::*;
+
+    #[test]
+    fn run_like_commands_warn_instead_of_erroring() {
+        let run = Cli::try_parse_from(["aube", "run", "test"]).expect("run should parse");
+        let test = Cli::try_parse_from(["aube", "test"]).expect("test should parse");
+
+        assert_eq!(
+            package_manager_guard_mode(run.command.as_ref()),
+            PackageManagerGuardMode::WarnAndSkipAutoInstall
+        );
+        assert_eq!(
+            package_manager_guard_mode(test.command.as_ref()),
+            PackageManagerGuardMode::WarnAndSkipAutoInstall
+        );
+    }
+
+    #[test]
+    fn install_still_errors_on_mismatch() {
+        let cli = Cli::try_parse_from(["aube", "install"]).expect("install should parse");
+        assert_eq!(
+            package_manager_guard_mode(cli.command.as_ref()),
+            PackageManagerGuardMode::Error
         );
     }
 }
