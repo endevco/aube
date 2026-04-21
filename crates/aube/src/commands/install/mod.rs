@@ -4323,17 +4323,21 @@ pub(crate) fn link_dep_bins(
         // contributes nothing to a local `.bin/`. Skipping here avoids
         // both the `pkg_dir.exists()` stat and the per-child
         // `link_bins_for_dep` dispatch on ~95% of entries in a typical
-        // graph. Children with `local_source` bypass the lockfile's
-        // bin map, and `bundled_dependencies` can ship bins from child
-        // tarballs regardless of the parent's `bin` field, so both
-        // escape the fast path.
+        // graph. Escape hatches: a child with `local_source`
+        // (file:/link:) bypasses the lockfile's bin map; a child with
+        // its *own* `bundled_dependencies` can ship bins from its
+        // nested tarballs that `link_bins_for_dep` -> `link_bundled_bins`
+        // surfaces into the parent's `.bin/`, so we must dispatch
+        // normally for it.
         if has_bin_metadata
             && pkg.bundled_dependencies.is_empty()
             && pkg.dependencies.iter().all(|(child_name, child_version)| {
                 let child_dep_path = format!("{child_name}@{child_version}");
-                graph
-                    .get_package(&child_dep_path)
-                    .is_some_and(|c| c.bin.is_empty() && c.local_source.is_none())
+                graph.get_package(&child_dep_path).is_some_and(|c| {
+                    c.bin.is_empty()
+                        && c.local_source.is_none()
+                        && c.bundled_dependencies.is_empty()
+                })
             })
         {
             continue;
