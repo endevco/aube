@@ -3633,7 +3633,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 // `.bin`. Walking them here duplicates work on the
                 // physical workspace and, at monorepo depth, pushes the
                 // kernel's per-lookup symlink budget over SYMLOOP_MAX.
-                if importer_path.contains("/node_modules/") {
+                if !aube_linker::is_physical_importer(importer_path) {
                     continue;
                 }
                 let pkg_dir = cwd.join(importer_path);

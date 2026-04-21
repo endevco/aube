@@ -26,7 +26,7 @@ pub use hoisted::HoistedPlacements;
 /// treats them as physical importers it queues parallel symlink tasks
 /// whose `link_path`s canonicalize to the same inode as a physical
 /// importer's task, producing EEXIST races on large monorepos.
-pub(crate) fn is_physical_importer(importer_path: &str) -> bool {
+pub fn is_physical_importer(importer_path: &str) -> bool {
     importer_path == "." || !importer_path.contains("/node_modules/")
 }
 pub use sys::{
