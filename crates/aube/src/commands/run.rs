@@ -460,6 +460,35 @@ pub(crate) async fn exec_script(
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
 
+    let mut command = build_script_command(cwd, manifest, script, cmd, args);
+
+    let status = command
+        .status()
+        .await
+        .into_diagnostic()
+        .wrap_err("failed to execute script")?;
+
+    if !status.success() {
+        std::process::exit(aube_scripts::exit_code_from_status(status));
+    }
+
+    Ok(())
+}
+
+/// Build a fully-configured `tokio::process::Command` for running a
+/// package.json script. Handles arg quoting, PATH prepend, npm-compat
+/// env vars, and INIT_CWD. Shared between `exec_script` (which exits
+/// on non-zero) and `exec_script_status` (which returns the status
+/// so the parallel path can collect all outcomes). Keeping one place
+/// to configure these means future security fixes land once, not
+/// twice.
+fn build_script_command(
+    cwd: &Path,
+    manifest: &PackageJson,
+    script: &str,
+    cmd: &str,
+    args: &[String],
+) -> tokio::process::Command {
     let shell_cmd = if args.is_empty() {
         cmd.to_string()
     } else {
@@ -481,12 +510,12 @@ pub(crate) async fn exec_script(
     let bin_dir = super::project_modules_dir(cwd).join(".bin");
     let new_path = aube_scripts::prepend_path(&bin_dir);
 
-    // npm-compat env vars. Lifecycle path already sets these in
-    // aube-scripts::run_root_hook, but `aube run` was bare env.
-    // Real breakage: build scripts that stamp `$npm_package_version`
-    // or branch on `$npm_lifecycle_event` got empty strings under
-    // `aube run` while working fine under `aube install`
-    // postinstall. npm and pnpm set these on every script exec.
+    // npm-compat env vars. Lifecycle path sets these in
+    // aube-scripts::run_root_hook, `aube run` was bare env before.
+    // Build scripts that stamp `$npm_package_version` or branch on
+    // `$npm_lifecycle_event` got empty strings under `aube run`
+    // while working fine under `aube install` postinstall. npm
+    // and pnpm set these on every script exec.
     let mut command = aube_scripts::spawn_shell(&shell_cmd);
     command
         .env("PATH", &new_path)
@@ -499,25 +528,18 @@ pub(crate) async fn exec_script(
     if let Some(ref version) = manifest.version {
         command.env("npm_package_version", version);
     }
-    // INIT_CWD is the dir the user invoked aube from. node-gyp and
-    // prebuild-install use it to locate the project root when
-    // caching binaries. Preserve parent-set value so nested aube
-    // calls see the outermost invocation cwd.
+    // INIT_CWD is the dir the user invoked aube from, NOT the
+    // project root. node-gyp and prebuild-install key their
+    // caches by INIT_CWD to locate the invoking project. Pulling
+    // the invocation cwd from dirs::cwd() matches npm and pnpm
+    // semantics when run from a subdirectory. Preserve a
+    // parent-set value so nested aube calls see the outermost
+    // invocation cwd.
     if std::env::var_os("INIT_CWD").is_none() {
-        command.env("INIT_CWD", cwd);
+        let init_cwd = crate::dirs::cwd().ok().unwrap_or_else(|| cwd.to_path_buf());
+        command.env("INIT_CWD", init_cwd);
     }
-
-    let status = command
-        .status()
-        .await
-        .into_diagnostic()
-        .wrap_err("failed to execute script")?;
-
-    if !status.success() {
-        std::process::exit(aube_scripts::exit_code_from_status(status));
-    }
-
-    Ok(())
+    command
 }
 
 pub(crate) async fn exec_script_chain(
@@ -553,41 +575,7 @@ pub(crate) async fn exec_script_status(
         .scripts
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
-    let shell_cmd = if args.is_empty() {
-        cmd.to_string()
-    } else {
-        // Quote each forwarded arg. Args land inside `sh -c "..."` or
-        // cmd `/c "..."` which reparses. Unquoted $, backticks, ;, |,
-        // () all get interpreted. `aube run echo '$(rm -rf ~)'` would
-        // run the subshell. Same npm/pnpm bug class from years ago.
-        // shell_quote_arg wraps per-platform. See aube-scripts.
-        let mut buf =
-            String::with_capacity(cmd.len() + args.iter().map(|a| a.len() + 3).sum::<usize>());
-        buf.push_str(cmd);
-        for a in args {
-            buf.push(' ');
-            buf.push_str(&aube_scripts::shell_quote_arg(a));
-        }
-        buf
-    };
-    let bin_dir = super::project_modules_dir(cwd).join(".bin");
-    let new_path = aube_scripts::prepend_path(&bin_dir);
-    let mut command = aube_scripts::spawn_shell(&shell_cmd);
-    command
-        .env("PATH", &new_path)
-        .current_dir(cwd)
-        .env("npm_lifecycle_event", script)
-        .stderr(aube_scripts::child_stderr());
-    if let Some(ref name) = manifest.name {
-        command.env("npm_package_name", name);
-    }
-    if let Some(ref version) = manifest.version {
-        command.env("npm_package_version", version);
-    }
-    if std::env::var_os("INIT_CWD").is_none() {
-        command.env("INIT_CWD", cwd);
-    }
-    command
+    build_script_command(cwd, manifest, script, cmd, args)
         .status()
         .await
         .into_diagnostic()
