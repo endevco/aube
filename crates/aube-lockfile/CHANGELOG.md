@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.11](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.10...aube-lockfile-v1.0.0-beta.11) - 2026-04-21
+
+### Other
+
+- warm-install speedup ([#177](https://github.com/endevco/aube/pull/177))
+- short-circuit bin linking on packages with no bin metadata ([#192](https://github.com/endevco/aube/pull/192))
+
 ## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.9...aube-lockfile-v1.0.0-beta.10) - 2026-04-21
 
 ### Fixed

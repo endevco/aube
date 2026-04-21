@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.11](https://github.com/endevco/aube/compare/v1.0.0-beta.10...v1.0.0-beta.11) - 2026-04-21
+
+### Other
+
+- recognize package.json#workspaces as a workspace-root marker ([#194](https://github.com/endevco/aube/pull/194))
+- verify warm-path deps from install state ([#188](https://github.com/endevco/aube/pull/188))
+- warm-install speedup ([#177](https://github.com/endevco/aube/pull/177))
+- short-circuit bin linking on packages with no bin metadata ([#192](https://github.com/endevco/aube/pull/192))
+- warn instead of erroring on packageManager mismatch for run ([#191](https://github.com/endevco/aube/pull/191))
+- skip pnpm v9 virtual importers in workspace link passes ([#190](https://github.com/endevco/aube/pull/190))
+
 ## [1.0.0-beta.10](https://github.com/endevco/aube/compare/v1.0.0-beta.9...v1.0.0-beta.10) - 2026-04-21
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.11](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.10...aube-resolver-v1.0.0-beta.11) - 2026-04-21
+
+### Other
+
+- warm-install speedup ([#177](https://github.com/endevco/aube/pull/177))
+
 ## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.9...aube-resolver-v1.0.0-beta.10) - 2026-04-21
 
 ### Fixed

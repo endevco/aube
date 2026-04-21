@@ -194,7 +194,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aube"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "ambient-id",
  "assert_cmd",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "aube-linker"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-lockfile",
  "aube-store",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "aube-lockfile"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-manifest",
  "aube-settings",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "aube-manifest"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "miette",
  "serde",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "aube-registry"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-manifest",
  "aube-settings",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "aube-resolver"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-lockfile",
  "aube-manifest",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "aube-scripts"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-manifest",
  "thiserror 2.0.18",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "aube-settings"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-manifest",
  "serde",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "aube-store"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "base64",
  "blake3",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "aube-workspace"
-version = "1.0.0-beta.10"
+version = "1.0.0-beta.11"
 dependencies = [
  "aube-manifest",
  "glob",
@@ -2937,9 +2937,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.12"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "aws-lc-rs",
  "ring",

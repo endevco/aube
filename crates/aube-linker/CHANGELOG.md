@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.11](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.10...aube-linker-v1.0.0-beta.11) - 2026-04-21
+
+### Other
+
+- skip pnpm v9 virtual importers in workspace link passes ([#190](https://github.com/endevco/aube/pull/190))
+
 ## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.9...aube-linker-v1.0.0-beta.10) - 2026-04-21
 
 ### Fixed
