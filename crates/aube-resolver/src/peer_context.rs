@@ -364,7 +364,11 @@ pub fn apply_peer_contexts(
         } else {
             after_once
         };
-        if current_keys.iter().map(String::as_str).eq(next.packages.keys().map(String::as_str)) {
+        if current_keys
+            .iter()
+            .map(String::as_str)
+            .eq(next.packages.keys().map(String::as_str))
+        {
             tracing::debug!("peer-context pass converged after {i} iteration(s)");
             current = next;
             converged = true;
