@@ -71,7 +71,7 @@ pub fn sweep_stale_tmp_dirs(virtual_store: &Path) {
 pub fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {
-        return std::fs::remove_dir_all(path);
+        std::fs::remove_dir_all(path)
     }
     #[cfg(windows)]
     {
