@@ -480,7 +480,7 @@ impl RegistryClient {
         let max_attempts = self.fetch_policy.retries.saturating_add(1);
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
-            match (|| {
+            match {
                 let mut req = self
                     .authed_get(&url, registry_url)
                     .header("Accept", PACKUMENT_FULL_ACCEPT);
@@ -493,7 +493,7 @@ impl RegistryClient {
                     }
                 }
                 req
-            })()
+            }
             .send()
             .await
             {
@@ -643,14 +643,14 @@ impl RegistryClient {
         let started = std::time::Instant::now();
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
-            match (|| {
+            match {
                 let req = self.authed_get(&url, registry_url);
                 if force_full_packument() {
                     req
                 } else {
                     req.header("Accept", PACKUMENT_ACCEPT)
                 }
-            })()
+            }
             .send()
             .await
             {
@@ -760,7 +760,7 @@ impl RegistryClient {
         let started = std::time::Instant::now();
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
-            match (|| {
+            match {
                 let mut req = self.authed_get(&url, registry_url);
                 if !force_full_packument() {
                     req = req.header("Accept", PACKUMENT_ACCEPT);
@@ -774,7 +774,7 @@ impl RegistryClient {
                     }
                 }
                 req
-            })()
+            }
             .send()
             .await
             {
