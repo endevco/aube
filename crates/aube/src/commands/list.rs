@@ -129,16 +129,27 @@ pub async fn run(
     }
 
     let cwd = crate::dirs::project_root()?;
+    // In yarn / npm / bun monorepos the lockfile lives only at the
+    // workspace root, not in the subpackage. When the caller asks for
+    // `--filter` we read manifest + lockfile from the root so
+    // `run_filtered` sees the real graph — otherwise `parse_lockfile`
+    // returns `NotFound` from the child and we exit before ever
+    // iterating the workspace.
+    let read_from = if !filter.is_empty() {
+        crate::dirs::find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone())
+    } else {
+        cwd.clone()
+    };
 
     // Read manifest (needed even for `list` — we print the project name/version
     // at the top, and the lockfile parser needs it for non-pnpm formats).
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
+    let manifest = aube_manifest::PackageJson::from_path(&read_from.join("package.json"))
         .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
 
     // Lockfile may be absent in a brand-new project — treat that as "nothing
     // installed yet" rather than a hard error, and print an empty tree.
-    let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
+    let graph = match aube_lockfile::parse_lockfile(&read_from, &manifest) {
         Ok(g) => g,
         Err(aube_lockfile::Error::NotFound(_)) => {
             eprintln!("No lockfile found. Run `aube install` to populate node_modules.");
@@ -177,7 +188,7 @@ pub async fn run(
 
     if !filter.is_empty() {
         return run_filtered(
-            &cwd,
+            &read_from,
             &manifest,
             &graph,
             &args,
@@ -209,7 +220,7 @@ use super::DepFilter;
 
 #[allow(clippy::too_many_arguments)]
 fn run_filtered(
-    cwd: &std::path::Path,
+    root: &std::path::Path,
     root_manifest: &aube_manifest::PackageJson,
     graph: &LockfileGraph,
     args: &ListArgs,
@@ -218,20 +229,16 @@ fn run_filtered(
     vstore_max_len: usize,
     vstore_prefix: &str,
 ) -> miette::Result<()> {
-    // Walk up to the workspace root so `--filter` works from a
-    // subpackage in a yarn / npm / bun monorepo (where only the root
-    // carries `package.json#workspaces`).
-    let root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let workspace_pkgs = aube_workspace::find_workspace_packages(&root)
+    let workspace_pkgs = aube_workspace::find_workspace_packages(root)
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
     if workspace_pkgs.is_empty() {
         return Err(miette!(
             "aube list: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
-            cwd.display()
+            root.display()
         ));
     }
     let selected = aube_workspace::selector::select_workspace_packages(
-        &root,
+        root,
         &workspace_pkgs,
         workspace_filter,
     )
@@ -254,7 +261,7 @@ fn run_filtered(
         ListFormat::Json => {
             let mut values = Vec::new();
             for pkg in &selected {
-                let importer = super::workspace_importer_path(&root, &pkg.dir)?;
+                let importer = super::workspace_importer_path(root, &pkg.dir)?;
                 values.push(json_importer_value(
                     &pkg.dir,
                     &pkg.manifest,
@@ -276,7 +283,7 @@ fn run_filtered(
                 if idx > 0 {
                     println!();
                 }
-                let importer = super::workspace_importer_path(&root, &pkg.dir)?;
+                let importer = super::workspace_importer_path(root, &pkg.dir)?;
                 render_default_for_importer(
                     &pkg.dir,
                     &pkg.manifest,
@@ -291,7 +298,7 @@ fn run_filtered(
         }
         ListFormat::Parseable => {
             for pkg in &selected {
-                let importer = super::workspace_importer_path(&root, &pkg.dir)?;
+                let importer = super::workspace_importer_path(root, &pkg.dir)?;
                 render_parseable_for_importer(graph, args, dep_filter, &importer)?;
             }
         }
