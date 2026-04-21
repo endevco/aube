@@ -174,16 +174,19 @@ pub async fn run(
     // Resolve `virtualStoreDirMaxLength` once so `--long` mode prints
     // the same `.aube/<name>` filename the linker actually wrote.
     // Passing the default would mis-report long dep_paths on projects
-    // that customize the cap via `.npmrc`.
-    let vstore_max_len = super::resolve_virtual_store_dir_max_length_for_cwd(&cwd);
+    // that customize the cap via `.npmrc`. Read from `read_from` so
+    // a yarn / npm / bun subpackage inherits the root's settings
+    // instead of falling back to defaults when the child has no
+    // `.npmrc` / `pnpm-workspace.yaml`.
+    let vstore_max_len = super::resolve_virtual_store_dir_max_length_for_cwd(&read_from);
     // Resolve `virtualStoreDir` too — without this, `--long` would
     // always print `./node_modules/.aube/...` even when the user has
     // relocated the virtual store (e.g. `virtualStoreDir=node_modules/vstore`
     // or an out-of-tree absolute path), pointing at a path that
     // doesn't exist.
     let vstore_prefix = super::format_virtual_store_display_prefix(
-        &super::resolve_virtual_store_dir_for_cwd(&cwd),
-        &cwd,
+        &super::resolve_virtual_store_dir_for_cwd(&read_from),
+        &read_from,
     );
 
     if !filter.is_empty() {
