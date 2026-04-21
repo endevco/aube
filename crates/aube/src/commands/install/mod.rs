@@ -4205,7 +4205,7 @@ fn filter_graph_to_importers<const N: usize>(
 /// truncate-and-hash fallback inside `dep_path_to_filename` will
 /// encode to a different filename than the one the linker wrote,
 /// and this function will return a path that doesn't exist.
-fn materialized_pkg_dir(
+pub(crate) fn materialized_pkg_dir(
     aube_dir: &std::path::Path,
     dep_path: &str,
     name: &str,

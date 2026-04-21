@@ -248,6 +248,46 @@ JSON
 	assert_output --partial "Already up to date"
 }
 
+@test "aube install warm path notices workspace package.json drift" {
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "1.0.0",
+  "private": true
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/a
+	cat >packages/a/package.json <<'JSON'
+{
+  "name": "a",
+  "version": "1.0.0",
+  "dependencies": {
+    "is-odd": "3.0.1"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	assert_link_exists packages/a/node_modules/is-odd
+
+	node -e '
+		const fs = require("fs");
+		const pkg = JSON.parse(fs.readFileSync("packages/a/package.json", "utf8"));
+		pkg.dependencies["is-even"] = "1.0.0";
+		fs.writeFileSync("packages/a/package.json", JSON.stringify(pkg, null, 2));
+	'
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_link_exists packages/a/node_modules/is-even
+}
+
 @test "aube run auto-installs when installed package metadata is missing" {
 	cat >package.json <<'JSON'
 {

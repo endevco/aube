@@ -130,13 +130,22 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         return Some("no lockfile found".into());
     }
 
-    // Check root package.json hash
-    let pkg_path = project_dir.join("package.json");
-    if pkg_path.exists() {
-        let current_hash = hash_file(&pkg_path);
-        let stored_hash = state.package_json_hashes.get(".");
-        if stored_hash != Some(&current_hash) {
-            return Some("package.json has changed".into());
+    // Check root + workspace package.json hashes.
+    for (rel, stored_hash) in &state.package_json_hashes {
+        let path = if rel == "." {
+            project_dir.join("package.json")
+        } else {
+            project_dir.join(rel)
+        };
+        if !path.exists() {
+            return Some(format!("{rel} is missing"));
+        }
+        if hash_file(&path) != *stored_hash {
+            return Some(if rel == "." {
+                "package.json has changed".into()
+            } else {
+                format!("{rel} has changed")
+            });
         }
     }
 
@@ -399,7 +408,7 @@ impl InstallLayoutState {
                 Some(aube_lockfile::LocalSource::Link(path)) => {
                     project_dir.join(path).join("package.json")
                 }
-                _ => materialized_pkg_dir(
+                _ => crate::commands::install::materialized_pkg_dir(
                     aube_dir,
                     &dep_path,
                     &pkg.name,
@@ -443,21 +452,7 @@ fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<Str
 
     for pkg in layout.packages.values() {
         let pkg_json_path = project_dir.join(&pkg.package_json_path);
-        let current_hash = match std::fs::metadata(&pkg_json_path) {
-            Ok(_) => hash_file(&pkg_json_path),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Some(format!(
-                    "installed package metadata missing: {}",
-                    pkg.package_json_path
-                ));
-            }
-            Err(_) => {
-                return Some(format!(
-                    "installed package metadata unreadable: {}",
-                    pkg.package_json_path
-                ));
-            }
-        };
+        let current_hash = hash_file(&pkg_json_path);
         if current_hash == pkg.package_json_hash {
             continue;
         }
@@ -529,27 +524,6 @@ fn collect_package_json_hashes(project_dir: &Path) -> BTreeMap<String, String> {
         }
     }
     hashes
-}
-
-fn materialized_pkg_dir(
-    aube_dir: &Path,
-    dep_path: &str,
-    name: &str,
-    virtual_store_dir_max_length: usize,
-    placements: Option<&aube_linker::HoistedPlacements>,
-) -> PathBuf {
-    if let Some(placements) = placements
-        && let Some(p) = placements.package_dir(dep_path)
-    {
-        return p.to_path_buf();
-    }
-    aube_dir
-        .join(aube_lockfile::dep_path_filename::dep_path_to_filename(
-            dep_path,
-            virtual_store_dir_max_length,
-        ))
-        .join("node_modules")
-        .join(name)
 }
 
 fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
