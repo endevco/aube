@@ -159,6 +159,17 @@ pub fn shell_quote_arg(arg: &str) -> String {
             match ch {
                 '"' => out.push_str("\\\""),
                 '\\' => out.push_str("\\\\"),
+                // cmd.exe expands %VAR% even inside double quotes.
+                // Outer `/s /c "..."` only strips the outermost
+                // quote pair, the shell still runs env expansion
+                // on the body. Argument like `%COMSPEC%` would
+                // otherwise get replaced with the shell path
+                // before the child saw it. Double the percent so
+                // cmd passes a literal `%` through. Full
+                // caret-escaping of `^ & | < > ( )` is a deeper
+                // rabbit hole, this handles the common injection
+                // vector.
+                '%' => out.push_str("%%"),
                 _ => out.push(ch),
             }
         }
