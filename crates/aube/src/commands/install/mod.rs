@@ -3879,11 +3879,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             package_content_hashes,
             graph_lthash,
             package_subtree_hashes,
-            &graph_for_link,
-            node_linker,
-            &aube_dir,
-            virtual_store_dir_max_length,
-            placements_ref,
+            state::WriteStateLayout {
+                graph: &graph_for_link,
+                node_linker,
+                modules_dir_name: &modules_dir_name,
+                aube_dir: &aube_dir,
+                virtual_store_dir_max_length,
+                placements: placements_ref,
+            },
         )
         .into_diagnostic()
         .wrap_err("failed to write install state")?;

@@ -88,13 +88,7 @@ pub struct InstalledPackageState {
     pub name: String,
     pub version: String,
     pub package_json_path: String,
-    pub package_json_fingerprint: InstalledFileFingerprint,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstalledFileFingerprint {
-    pub len: u64,
-    pub modified_unix_ms: u128,
+    pub package_json_hash: String,
 }
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
@@ -195,6 +189,15 @@ pub fn check_needs_install_with_flags(
 /// that expect the whole graph. `cli_flags` is the install's `opts.cli_flags`
 /// bag — threaded through so the stored `settings_hash` reflects CLI overrides
 /// (e.g. `--node-linker=hoisted`) that shaped the tree on disk.
+pub struct WriteStateLayout<'a> {
+    pub graph: &'a aube_lockfile::LockfileGraph,
+    pub node_linker: aube_linker::NodeLinker,
+    pub modules_dir_name: &'a str,
+    pub aube_dir: &'a Path,
+    pub virtual_store_dir_max_length: usize,
+    pub placements: Option<&'a aube_linker::HoistedPlacements>,
+}
+
 pub fn write_state(
     project_dir: &Path,
     section_filtered: bool,
@@ -202,11 +205,7 @@ pub fn write_state(
     package_content_hashes: BTreeMap<String, String>,
     graph_lthash: String,
     package_subtree_hashes: BTreeMap<String, String>,
-    graph: &aube_lockfile::LockfileGraph,
-    node_linker: aube_linker::NodeLinker,
-    aube_dir: &Path,
-    virtual_store_dir_max_length: usize,
-    placements: Option<&aube_linker::HoistedPlacements>,
+    layout: WriteStateLayout<'_>,
 ) -> Result<(), std::io::Error> {
     let lockfile_hash = match active_lockfile(project_dir).1 {
         Some(path) => hash_file(&path),
@@ -224,11 +223,12 @@ pub fn write_state(
         package_subtree_hashes,
         layout: Some(InstallLayoutState::from_graph(
             project_dir,
-            graph,
-            node_linker,
-            aube_dir,
-            virtual_store_dir_max_length,
-            placements,
+            layout.graph,
+            layout.node_linker,
+            layout.modules_dir_name,
+            layout.aube_dir,
+            layout.virtual_store_dir_max_length,
+            layout.placements,
         )),
     };
 
@@ -355,6 +355,7 @@ impl InstallLayoutState {
         project_dir: &Path,
         graph: &aube_lockfile::LockfileGraph,
         node_linker: aube_linker::NodeLinker,
+        modules_dir_name: &str,
         aube_dir: &Path,
         virtual_store_dir_max_length: usize,
         placements: Option<&aube_linker::HoistedPlacements>,
@@ -367,7 +368,7 @@ impl InstallLayoutState {
         if let Some(deps) = graph.importers.get(".") {
             let mut entries = Vec::with_capacity(deps.len());
             for dep in deps {
-                entries.push(project_dir.join("node_modules").join(&dep.name));
+                entries.push(project_dir.join(modules_dir_name).join(&dep.name));
             }
             direct_entries.insert(
                 ".".to_string(),
@@ -415,12 +416,7 @@ impl InstallLayoutState {
                     name: pkg.name.clone(),
                     version: pkg.version.clone(),
                     package_json_path: rel.to_string_lossy().replace('\\', "/"),
-                    package_json_fingerprint: file_fingerprint(&package_json_path).unwrap_or(
-                        InstalledFileFingerprint {
-                            len: 0,
-                            modified_unix_ms: 0,
-                        },
-                    ),
+                    package_json_hash: hash_file(&package_json_path),
                 },
             );
         }
@@ -447,8 +443,8 @@ fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<Str
 
     for pkg in layout.packages.values() {
         let pkg_json_path = project_dir.join(&pkg.package_json_path);
-        let fingerprint = match file_fingerprint(&pkg_json_path) {
-            Ok(fingerprint) => fingerprint,
+        let current_hash = match std::fs::metadata(&pkg_json_path) {
+            Ok(_) => hash_file(&pkg_json_path),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 return Some(format!(
                     "installed package metadata missing: {}",
@@ -462,7 +458,7 @@ fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<Str
                 ));
             }
         };
-        if fingerprint == pkg.package_json_fingerprint {
+        if current_hash == pkg.package_json_hash {
             continue;
         }
         let manifest = match read_installed_package_manifest(&pkg_json_path) {
@@ -480,10 +476,7 @@ fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<Str
                 ));
             }
         };
-        if manifest.name != pkg.name
-            || manifest.version != pkg.version
-            || fingerprint.len != pkg.package_json_fingerprint.len
-        {
+        if manifest.name != pkg.name || manifest.version != pkg.version {
             return Some(format!(
                 "installed package metadata changed: {}",
                 pkg.package_json_path
@@ -513,19 +506,6 @@ fn read_installed_package_manifest(
     let parsed = serde_json::from_str(&content)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     Ok(Some(parsed))
-}
-
-fn file_fingerprint(path: &Path) -> Result<InstalledFileFingerprint, std::io::Error> {
-    let meta = std::fs::metadata(path)?;
-    let modified = meta
-        .modified()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(std::io::Error::other)?
-        .as_millis();
-    Ok(InstalledFileFingerprint {
-        len: meta.len(),
-        modified_unix_ms: modified,
-    })
 }
 
 fn collect_package_json_hashes(project_dir: &Path) -> BTreeMap<String, String> {

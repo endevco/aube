@@ -235,6 +235,19 @@ JSON
 	assert_link_exists node_modules/is-odd
 }
 
+@test "aube install warm path respects custom modulesDir" {
+	_setup_basic_fixture
+	echo "modulesDir=.modules" >.npmrc
+
+	run aube install
+	assert_success
+	assert_link_exists .modules/is-odd
+
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+}
+
 @test "aube run auto-installs when installed package metadata is missing" {
 	cat >package.json <<'JSON'
 {
