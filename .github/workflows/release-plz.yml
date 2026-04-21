@@ -135,8 +135,8 @@ jobs:
           gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false
 
   # Replace the raw git-cliff-style body with a communique-generated
-  # narrative release note. Non-fatal: if communique fails for any
-  # reason the published release still has the release-plz body.
+  # narrative release note. If communique fails, fail the workflow so
+  # the broken release-note generation is visible and actionable.
   enhance-release:
     name: Enhance release notes
     needs: [release-plz-release, publish-release]
@@ -153,7 +153,6 @@ jobs:
         with:
           install_args: communique
       - name: Enhance GitHub release with communique
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
