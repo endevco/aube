@@ -1150,24 +1150,17 @@ fn read_cached_full_packument(path: &Path) -> Option<CachedFullPackument> {
 /// `Value` path.
 fn read_cached_full_packument_typed(path: &Path, force_cache: bool) -> Option<Packument> {
     #[derive(Deserialize)]
-    struct Borrowed<'a> {
+    struct Typed {
         fetched_at: u64,
-        #[serde(borrow)]
-        packument: &'a serde_json::value::RawValue,
+        packument: Packument,
     }
 
-    let content = std::fs::read(path).ok()?;
-    let head: Borrowed = serde_json::from_slice(&content).ok()?;
-    if !force_cache && now_secs().saturating_sub(head.fetched_at) >= PACKUMENT_TTL_SECS {
+    let mut content = std::fs::read(path).ok()?;
+    let typed: Typed = simd_json::serde::from_slice(&mut content).ok()?;
+    if !force_cache && now_secs().saturating_sub(typed.fetched_at) >= PACKUMENT_TTL_SECS {
         return None;
     }
-    // simd-json for the body parse — it's 2–3× faster than serde_json
-    // on dense packument JSON. It mutates its input, so we own a
-    // mutable Vec by copying the raw slice out of the `RawValue`.
-    // The copy is cheap (~tens of GB/s memcpy) and amortized against
-    // the parse that follows.
-    let mut buf = head.packument.get().as_bytes().to_vec();
-    simd_json::serde::from_slice(&mut buf).ok()
+    Some(typed.packument)
 }
 
 fn write_cached_full_packument(path: &Path, cached: &CachedFullPackument) -> std::io::Result<()> {
