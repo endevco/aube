@@ -67,6 +67,9 @@ impl HoistedPlacements {
     pub fn from_graph(root_dir: &Path, graph: &LockfileGraph, modules_dir_name: &str) -> Self {
         let mut placements = Self::default();
         for (importer_path, deps) in &graph.importers {
+            if !crate::is_physical_importer(importer_path) {
+                continue;
+            }
             let importer_dir = if importer_path == "." {
                 root_dir.to_path_buf()
             } else {

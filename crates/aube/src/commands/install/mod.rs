@@ -3626,6 +3626,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 if importer_path == "." {
                     continue;
                 }
+                // pnpm v9 emits nested peer-context importer entries
+                // (e.g. `a/node_modules/@scope/b`). Those paths are
+                // reached through the workspace-to-workspace symlink
+                // chain, not distinct directories to receive their own
+                // `.bin`. Walking them here duplicates work on the
+                // physical workspace and, at monorepo depth, pushes the
+                // kernel's per-lookup symlink budget over SYMLOOP_MAX.
+                if importer_path.contains("/node_modules/") {
+                    continue;
+                }
                 let pkg_dir = cwd.join(importer_path);
                 let bin_dir = pkg_dir.join(&modules_dir_name).join(".bin");
                 std::fs::create_dir_all(&bin_dir).into_diagnostic()?;

@@ -13,6 +13,22 @@ use std::path::{Path, PathBuf};
 mod hoisted;
 pub mod sys;
 pub use hoisted::HoistedPlacements;
+
+/// Real workspace importer, not a peer-context bookkeeping entry.
+///
+/// pnpm v9 lockfiles record the peer-resolution view of each
+/// workspace package reached through every nested `node_modules/`
+/// traversal. Those virtual importer paths (e.g.
+/// `packages/a/node_modules/@scope/b/node_modules/@scope/c`) describe
+/// *how* a package looks from a particular context — they are reached
+/// via the workspace-to-workspace symlink chain and have no
+/// independent `node_modules/` to populate. When the link pipeline
+/// treats them as physical importers it queues parallel symlink tasks
+/// whose `link_path`s canonicalize to the same inode as a physical
+/// importer's task, producing EEXIST races on large monorepos.
+pub(crate) fn is_physical_importer(importer_path: &str) -> bool {
+    importer_path == "." || !importer_path.contains("/node_modules/")
+}
 pub use sys::{
     BinShimOptions, create_bin_shim, create_dir_link, normalize_path, parse_posix_shim_target,
     remove_bin_shim, validate_bin_name, validate_bin_target,
@@ -1103,6 +1119,9 @@ impl Linker {
         let mut stats = LinkStats::default();
         let mut placements = HoistedPlacements::default();
         for (importer_path, deps) in &graph.importers {
+            if !is_physical_importer(importer_path) {
+                continue;
+            }
             let importer_dir = if importer_path == "." {
                 root_dir.to_path_buf()
             } else {
@@ -1413,6 +1432,9 @@ impl Linker {
             };
 
         for (importer_path, deps) in &graph.importers {
+            if !is_physical_importer(importer_path) {
+                continue;
+            }
             let nm = if importer_path == "." {
                 root_nm.clone()
             } else {
@@ -1503,6 +1525,7 @@ impl Linker {
         let tasks: Vec<Step2Task<'_>> = graph
             .importers
             .iter()
+            .filter(|(importer_path, _)| is_physical_importer(importer_path))
             .flat_map(|(importer_path, deps)| {
                 let nm = if importer_path == "." {
                     root_nm.clone()
@@ -2545,6 +2568,36 @@ fn split_patch_sections(text: &str) -> Vec<PatchSection> {
     }
     flush(&mut out, &mut current_path, &mut body, &mut is_deletion);
     out
+}
+
+#[cfg(test)]
+mod importer_classification_tests {
+    use super::is_physical_importer;
+
+    #[test]
+    fn root_is_physical() {
+        assert!(is_physical_importer("."));
+    }
+
+    #[test]
+    fn workspace_paths_are_physical() {
+        assert!(is_physical_importer("packages/dev/core"));
+        assert!(is_physical_importer("apps/web"));
+        assert!(is_physical_importer("libs/@scope/name"));
+    }
+
+    #[test]
+    fn nested_peer_context_paths_are_virtual() {
+        // pnpm v9 emits these for every peer-resolution view reachable
+        // through the workspace symlink chain. They describe the graph,
+        // they are not directories to populate.
+        assert!(!is_physical_importer(
+            "packages/dev/addons/node_modules/@dev/core"
+        ));
+        assert!(!is_physical_importer(
+            "packages/a/node_modules/@s/b/node_modules/@s/c"
+        ));
+    }
 }
 
 #[cfg(test)]
