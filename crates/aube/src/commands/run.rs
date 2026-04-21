@@ -276,17 +276,22 @@ async fn run_script_filtered(
     filter: &aube_workspace::selector::EffectiveFilter,
     enable_pre_post_scripts: bool,
 ) -> miette::Result<()> {
-    let workspace_pkgs = aube_workspace::find_workspace_packages(cwd)
+    // `cwd` is the nearest ancestor with a `package.json`, which in a
+    // monorepo subpackage is the child — not the workspace root. Walk
+    // up to the workspace root so discovery sees every sibling package.
+    let root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let workspace_pkgs = aube_workspace::find_workspace_packages(&root)
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
     if workspace_pkgs.is_empty() {
         return Err(miette!(
-            "aube run: --filter requires a pnpm-workspace.yaml at {}",
+            "aube run: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
             cwd.display()
         ));
     }
 
-    let matched = aube_workspace::selector::select_workspace_packages(cwd, &workspace_pkgs, filter)
-        .map_err(|e| miette!("invalid --filter selector: {e}"))?;
+    let matched =
+        aube_workspace::selector::select_workspace_packages(&root, &workspace_pkgs, filter)
+            .map_err(|e| miette!("invalid --filter selector: {e}"))?;
 
     if matched.is_empty() {
         return Err(miette!(

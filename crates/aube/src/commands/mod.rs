@@ -615,27 +615,6 @@ fn merge_manifest_catalogs(out: &mut CatalogMap, manifest: &aube_manifest::Packa
     merge_catalog_source(out, &manifest.pnpm_catalog(), &manifest.pnpm_catalogs());
 }
 
-/// Walk upward from `start` looking for the nearest ancestor whose
-/// `package.json` declares a `workspaces` field. bun / npm / yarn mark
-/// the workspace root that way (no separate `pnpm-workspace.yaml`), so
-/// when `aube install` runs from a subpackage of one of those projects
-/// this is the only handle we have on the workspace root.
-///
-/// `start` itself is included in the walk; the closest ancestor wins
-/// (nested workspaces aren't a thing in any of pnpm / bun / npm /
-/// yarn).
-fn find_workspaces_field_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
-    start.ancestors().find_map(|dir| {
-        let pkg = dir.join("package.json");
-        if !pkg.is_file() {
-            return None;
-        }
-        let manifest = aube_manifest::PackageJson::from_path(&pkg).ok()?;
-        manifest.workspaces.as_ref()?;
-        Some(dir.to_path_buf())
-    })
-}
-
 /// Discover catalog entries from every supported source and merge them
 /// into a single map for the resolver.
 ///
@@ -676,10 +655,8 @@ pub(crate) fn discover_catalogs(project_root: &std::path::Path) -> miette::Resul
     // either marker — yaml first (pnpm convention), then `workspaces`
     // field (bun / npm / yarn convention) — so a subpackage install in
     // a non-pnpm monorepo still picks up the root catalog.
-    let workspace_yaml_dir = crate::dirs::find_workspace_root(project_root);
-    let workspace_root_dir = workspace_yaml_dir
-        .clone()
-        .or_else(|| find_workspaces_field_root(project_root));
+    let workspace_yaml_dir = crate::dirs::find_workspace_yaml_root(project_root);
+    let workspace_root_dir = crate::dirs::find_workspace_root(project_root);
     if let Some(dir) = &workspace_root_dir
         && dir != project_root
         && let Ok(m) = aube_manifest::PackageJson::from_path(&dir.join("package.json"))
@@ -705,12 +682,13 @@ pub(crate) fn load_workspace_catalogs(cwd: &std::path::Path) -> miette::Result<C
     discover_catalogs(cwd)
 }
 
-/// Walk up from `start` looking for a directory that contains an
-/// `aube-workspace.yaml` or `pnpm-workspace.yaml` file and return it.
+/// Walk up from `start` looking for a directory that marks a workspace
+/// root — either an `aube-workspace.yaml` / `pnpm-workspace.yaml` file
+/// or a `package.json` with a `workspaces` field.
 pub(crate) fn find_workspace_root(start: &std::path::Path) -> miette::Result<std::path::PathBuf> {
     crate::dirs::find_workspace_root(start).ok_or_else(|| {
         miette!(
-            "no aube-workspace.yaml or pnpm-workspace.yaml found above {}",
+            "no workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) found above {}",
             start.display()
         )
     })

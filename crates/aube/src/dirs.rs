@@ -45,10 +45,33 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 
 /// Walk upward from `start` looking for the nearest workspace root.
 ///
-/// A workspace root is any ancestor containing `aube-workspace.yaml` or
-/// `pnpm-workspace.yaml`. The aube-owned name wins at read time elsewhere,
-/// but discovery only needs to know whether either file marks the root.
+/// A workspace root is any ancestor that either:
+/// - contains `aube-workspace.yaml` or `pnpm-workspace.yaml`, or
+/// - has a `package.json` with a `workspaces` field (yarn / npm / bun).
+///
+/// The aube-owned yaml name wins at read time elsewhere, but discovery
+/// only needs to know whether any of those markers fixes the root.
 pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|dir| {
+        if dir.join("aube-workspace.yaml").exists() || dir.join("pnpm-workspace.yaml").exists() {
+            return Some(dir.to_path_buf());
+        }
+        let pkg = dir.join("package.json");
+        if !pkg.is_file() {
+            return None;
+        }
+        let manifest = aube_manifest::PackageJson::from_path(&pkg).ok()?;
+        manifest.workspaces.as_ref()?;
+        Some(dir.to_path_buf())
+    })
+}
+
+/// Walk upward from `start` looking for the nearest ancestor that
+/// contains `aube-workspace.yaml` or `pnpm-workspace.yaml`. Unlike
+/// [`find_workspace_root`], this ignores `package.json#workspaces`
+/// because it feeds callers that specifically need the yaml file path
+/// (catalog loader, settings loader).
+pub fn find_workspace_yaml_root(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|dir| {
         if dir.join("aube-workspace.yaml").exists() || dir.join("pnpm-workspace.yaml").exists() {
             Some(dir.to_path_buf())
@@ -93,4 +116,105 @@ pub fn set_cwd(path: &Path) -> miette::Result<()> {
     };
     *CWD.write().expect("cwd lock poisoned") = Some(path);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn find_workspace_root_finds_pnpm_workspace_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n",
+        );
+        write(&dir.path().join("packages/a/package.json"), "{}");
+
+        let child = dir.path().join("packages/a");
+        assert_eq!(find_workspace_root(&child).unwrap(), dir.path());
+    }
+
+    #[test]
+    fn find_workspace_root_finds_package_json_workspaces_array() {
+        // yarn / npm / bun: no yaml, just a `workspaces` field in the
+        // root package.json. Running aube from a subpackage must still
+        // resolve to the monorepo root.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            &dir.path().join("packages/a/package.json"),
+            r#"{"name":"a"}"#,
+        );
+
+        let child = dir.path().join("packages/a");
+        assert_eq!(find_workspace_root(&child).unwrap(), dir.path());
+    }
+
+    #[test]
+    fn find_workspace_root_finds_package_json_workspaces_object() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":{"packages":["apps/*"]}}"#,
+        );
+        write(&dir.path().join("apps/a/package.json"), r#"{"name":"a"}"#);
+
+        let child = dir.path().join("apps/a");
+        assert_eq!(find_workspace_root(&child).unwrap(), dir.path());
+    }
+
+    #[test]
+    fn find_workspace_root_ignores_package_json_without_workspaces() {
+        // A child package.json with no `workspaces` field must not
+        // short-circuit the walk — otherwise nested single packages
+        // inside a monorepo would each be treated as a workspace root.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            &dir.path().join("packages/a/package.json"),
+            r#"{"name":"a"}"#,
+        );
+
+        let child = dir.path().join("packages/a");
+        let root = find_workspace_root(&child).unwrap();
+        assert_eq!(root, dir.path());
+        assert_ne!(root, child);
+    }
+
+    #[test]
+    fn find_workspace_yaml_root_ignores_package_json_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            &dir.path().join("packages/a/package.json"),
+            r#"{"name":"a"}"#,
+        );
+
+        let child = dir.path().join("packages/a");
+        assert!(find_workspace_yaml_root(&child).is_none());
+    }
+
+    #[test]
+    fn find_workspace_root_returns_none_without_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("package.json"), r#"{"name":"solo"}"#);
+        assert!(find_workspace_root(dir.path()).is_none());
+    }
 }

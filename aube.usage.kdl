@@ -95,10 +95,10 @@ cmd add help="Add a dependency" {
         long_help "Add as a peer dependency (written to `peerDependencies` in package.json).\n\nBy convention you usually pair this with `--save-dev` so the peer is also installed for local development; that's what pnpm does."
     }
     flag "-w --workspace" help="Add the dependency to the workspace root's `package.json`, regardless of the current working directory" {
-        long_help "Add the dependency to the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml` / `pnpm-workspace.yaml` and runs the add against that directory."
+        long_help "Add the dependency to the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory."
     }
     flag "-W --ignore-workspace-root-check" help="Allow `add` to run in a workspace root" {
-        long_help "Allow `add` to run in a workspace root.\n\nBy default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml` or `pnpm-workspace.yaml`) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`."
+        long_help "Allow `add` to run in a workspace root.\n\nBy default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`."
     }
     arg "[PACKAGES]…" help="Package(s) to add" required=#false var=#true
 }
@@ -637,7 +637,7 @@ cmd remove help="Remove a dependency" {
     flag "-g --global" help="Remove from the global install directory instead of the project"
     flag --ignore-scripts help="Skip root lifecycle scripts during the chained reinstall"
     flag "-w --workspace" help="Remove the dependency from the workspace root's `package.json`, regardless of the current working directory" {
-        long_help "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml` / `pnpm-workspace.yaml` and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`)."
+        long_help "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`)."
     }
     arg "[PACKAGES]…" help="Package(s) to remove" required=#false var=#true
 }

@@ -120,7 +120,7 @@ fn run_filtered(
 ) -> miette::Result<()> {
     let workspace_root = crate::dirs::find_workspace_root(cwd).ok_or_else(|| {
         miette!(
-            "aube why: --filter requires a pnpm-workspace.yaml at or above {}",
+            "aube why: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
             cwd.display()
         )
     })?;

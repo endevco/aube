@@ -49,17 +49,19 @@ pub struct AddArgs {
     /// Add the dependency to the workspace root's `package.json`,
     /// regardless of the current working directory.
     ///
-    /// Walks up from cwd looking for `aube-workspace.yaml` /
-    /// `pnpm-workspace.yaml` and runs the add against that directory.
+    /// Walks up from cwd looking for `aube-workspace.yaml`,
+    /// `pnpm-workspace.yaml`, or a `package.json` with a `workspaces`
+    /// field and runs the add against that directory.
     #[arg(short = 'w', long, conflicts_with = "global")]
     pub workspace: bool,
     /// Allow `add` to run in a workspace root.
     ///
     /// By default aube refuses to add dependencies to the root
     /// `package.json` of a workspace (a directory containing
-    /// `aube-workspace.yaml` or `pnpm-workspace.yaml`) because deps
-    /// added there end up shared by every package and usually reflect
-    /// a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.
+    /// `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json`
+    /// with a `workspaces` field) because deps added there end up
+    /// shared by every package and usually reflect a mistake. Pass
+    /// this flag to opt in. Mirrors `pnpm add -W`.
     #[arg(short = 'W', long)]
     pub ignore_workspace_root_check: bool,
 }
@@ -266,14 +268,15 @@ pub async fn run(
     // package and usually reflect a mistake. `-W` /
     // `--ignore-workspace-root-check` bypasses the check, and `-w` /
     // `--workspace` implies the bypass since the user explicitly
-    // targeted the root. We only trip on a workspace file that
-    // actually declares `packages:` — a bare catalog-only file is
-    // not a workspace root.
+    // targeted the root. We only trip on a workspace root that
+    // actually declares package patterns — bare catalog-only yaml is
+    // not a workspace root, and a `package.json` without a
+    // `workspaces` field isn't either.
     if !ignore_workspace_root_check && !workspace {
-        let ws = aube_manifest::WorkspaceConfig::load(&cwd)
-            .into_diagnostic()
-            .wrap_err("failed to read workspace config")?;
-        if !ws.packages.is_empty() {
+        let has_packages = aube_workspace::find_workspace_packages(&cwd)
+            .map(|pkgs| !pkgs.is_empty())
+            .unwrap_or(false);
+        if has_packages {
             return Err(miette!(
                 "refusing to add dependencies to the workspace root. \
                  If this is intentional, pass --ignore-workspace-root-check (-W)."
