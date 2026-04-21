@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.10](https://github.com/endevco/aube/compare/v1.0.0-beta.9...v1.0.0-beta.10) - 2026-04-21
+
+### Fixed
+
+- pnpm-workspace.yaml overrides/patches, npm: alias overrides, cross-platform pnpm-lock ([#175](https://github.com/endevco/aube/pull/175))
+- close remaining audit findings across registry, store, and linker ([#164](https://github.com/endevco/aube/pull/164))
+
+### Other
+
+- honor pnpm-workspace.yaml supportedArchitectures, ignoredOptionalDependencies, pnpmfilePath ([#181](https://github.com/endevco/aube/pull/181))
+- hint at `aube deprecations --transitive` when transitives exist ([#183](https://github.com/endevco/aube/pull/183))
+- support $name references in overrides ([#180](https://github.com/endevco/aube/pull/180))
+- scope deprecation warnings + add `aube deprecations` ([#170](https://github.com/endevco/aube/pull/170))
+- read top-level trustedDependencies as allow-source ([#172](https://github.com/endevco/aube/pull/172))
+- collapse install bool bags into enums, FxHashMap in resolver ([#165](https://github.com/endevco/aube/pull/165))
+- render parse errors with miette source span ([#166](https://github.com/endevco/aube/pull/166))
+
 ## [1.0.0-beta.9](https://github.com/endevco/aube/compare/v1.0.0-beta.8...v1.0.0-beta.9) - 2026-04-20
 
 ### Other

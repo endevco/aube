@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.9...aube-lockfile-v1.0.0-beta.10) - 2026-04-21
+
+### Fixed
+
+- pnpm-workspace.yaml overrides/patches, npm: alias overrides, cross-platform pnpm-lock ([#175](https://github.com/endevco/aube/pull/175))
+
+### Other
+
+- honor pnpm-workspace.yaml supportedArchitectures, ignoredOptionalDependencies, pnpmfilePath ([#181](https://github.com/endevco/aube/pull/181))
+- render parse errors with miette source span ([#166](https://github.com/endevco/aube/pull/166))
+- *(bun)* emit version, bin, optionalPeers on non-root workspaces ([#169](https://github.com/endevco/aube/pull/169))
+
 ## [1.0.0-beta.8](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.7...aube-lockfile-v1.0.0-beta.8) - 2026-04-20
 
 ### Other

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.9...aube-settings-v1.0.0-beta.10) - 2026-04-21
+
+### Fixed
+
+- close remaining audit findings across registry, store, and linker ([#164](https://github.com/endevco/aube/pull/164))
+
+### Other
+
+- honor pnpm-workspace.yaml supportedArchitectures, ignoredOptionalDependencies, pnpmfilePath ([#181](https://github.com/endevco/aube/pull/181))
+- scope deprecation warnings + add `aube deprecations` ([#170](https://github.com/endevco/aube/pull/170))
+
 ## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.8...aube-settings-v1.0.0-beta.9) - 2026-04-20
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.9...aube-linker-v1.0.0-beta.10) - 2026-04-21
+
+### Fixed
+
+- close remaining audit findings across registry, store, and linker ([#164](https://github.com/endevco/aube/pull/164))
+
 ## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.8...aube-linker-v1.0.0-beta.9) - 2026-04-20
 
 ### Other

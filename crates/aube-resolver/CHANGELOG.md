@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.9...aube-resolver-v1.0.0-beta.10) - 2026-04-21
+
+### Fixed
+
+- pnpm-workspace.yaml overrides/patches, npm: alias overrides, cross-platform pnpm-lock ([#175](https://github.com/endevco/aube/pull/175))
+
+### Other
+
+- avoid sorting packument versions during picks ([#176](https://github.com/endevco/aube/pull/176))
+- scope deprecation warnings + add `aube deprecations` ([#170](https://github.com/endevco/aube/pull/170))
+- collapse install bool bags into enums, FxHashMap in resolver ([#165](https://github.com/endevco/aube/pull/165))
+
 ## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.8...aube-resolver-v1.0.0-beta.9) - 2026-04-20
 
 ### Other
