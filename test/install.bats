@@ -246,6 +246,13 @@ JSON
 	run aube install
 	assert_success
 	assert_output --partial "Already up to date"
+
+	rm .modules/is-odd
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_link_exists .modules/is-odd
 }
 
 @test "aube install warm path notices workspace package.json drift" {

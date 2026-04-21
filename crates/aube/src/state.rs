@@ -95,6 +95,7 @@ pub struct InstalledPackageState {
     pub name: String,
     pub version: String,
     pub package_json_path: String,
+    #[serde(default)]
     pub package_json_hash: String,
 }
 
@@ -425,7 +426,7 @@ impl InstallLayoutState {
                     name: pkg.name.clone(),
                     version: pkg.version.clone(),
                     package_json_path: relative_path_or_original(&package_json_path, project_dir),
-                    package_json_hash: hash_file(&package_json_path),
+                    package_json_hash: hash_file_if_exists(&package_json_path).unwrap_or_default(),
                 },
             );
         }
@@ -452,8 +453,12 @@ fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<Str
 
     for pkg in layout.packages.values() {
         let pkg_json_path = project_dir.join(&pkg.package_json_path);
-        let current_hash = hash_file(&pkg_json_path);
-        if current_hash == pkg.package_json_hash {
+        let current_hash = hash_file_if_exists(&pkg_json_path);
+        if let Some(current_hash) = current_hash
+            && !pkg.package_json_hash.is_empty()
+            && pkg.package_json_hash != empty_blake3_hash()
+            && current_hash == pkg.package_json_hash
+        {
             continue;
         }
         let manifest = match read_installed_package_manifest(&pkg_json_path) {
@@ -522,23 +527,6 @@ fn collect_package_json_hashes(project_dir: &Path) -> BTreeMap<String, String> {
         }
     }
     hashes
-}
-
-#[cfg(test)]
-mod tests {
-    use super::relative_path_or_original;
-    use std::path::Path;
-
-    #[test]
-    fn relative_path_helper_keeps_original_path_when_diff_fails() {
-        let original = Path::new("/tmp/aube-test/package.json");
-        let base = Path::new("project/../project");
-
-        assert_eq!(
-            relative_path_or_original(original, base),
-            original.to_string_lossy()
-        );
-    }
 }
 
 fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
@@ -645,4 +633,82 @@ fn hash_file(path: &Path) -> String {
     let content = std::fs::read(path).unwrap_or_default();
     let hash = blake3::hash(&content);
     format!("blake3:{}", hash.to_hex())
+}
+
+fn hash_file_if_exists(path: &Path) -> Option<String> {
+    std::fs::read(path).ok().map(|content| {
+        let hash = blake3::hash(&content);
+        format!("blake3:{}", hash.to_hex())
+    })
+}
+
+fn empty_blake3_hash() -> &'static str {
+    "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        InstallLayoutMode, InstallLayoutState, InstallState, InstalledPackageState,
+        empty_blake3_hash, relative_path_or_original, verify_install_layout,
+    };
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn relative_path_helper_keeps_original_path_when_diff_fails() {
+        let original = Path::new("/tmp/aube-test/package.json");
+        let base = Path::new("project/../project");
+
+        assert_eq!(
+            relative_path_or_original(original, base),
+            original.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn verify_install_layout_treats_legacy_empty_hash_as_cache_miss() {
+        let project_dir = temp_project_dir("legacy-empty-hash");
+        let state = InstallState {
+            lockfile_hash: String::new(),
+            package_json_hashes: BTreeMap::new(),
+            aube_version: String::new(),
+            section_filtered: false,
+            settings_hash: String::new(),
+            package_content_hashes: BTreeMap::new(),
+            graph_lthash: String::new(),
+            package_subtree_hashes: BTreeMap::new(),
+            layout: Some(InstallLayoutState {
+                linker: InstallLayoutMode::Isolated,
+                direct_entries: BTreeMap::new(),
+                packages: BTreeMap::from([(
+                    "is-odd@3.0.1".to_string(),
+                    InstalledPackageState {
+                        name: "is-odd".to_string(),
+                        version: "3.0.1".to_string(),
+                        package_json_path:
+                            "node_modules/.aube/missing/node_modules/is-odd/package.json"
+                                .to_string(),
+                        package_json_hash: empty_blake3_hash().to_string(),
+                    },
+                )]),
+            }),
+        };
+
+        assert_eq!(
+            verify_install_layout(&project_dir, &state),
+            Some(
+                "installed package metadata missing: node_modules/.aube/missing/node_modules/is-odd/package.json"
+                    .to_string()
+            )
+        );
+    }
+
+    fn temp_project_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aube-state-tests-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+        dir
+    }
 }
