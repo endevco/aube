@@ -254,7 +254,7 @@ fn run_filtered(
         ListFormat::Json => {
             let mut values = Vec::new();
             for pkg in &selected {
-                let importer = super::workspace_importer_path(cwd, &pkg.dir)?;
+                let importer = super::workspace_importer_path(&root, &pkg.dir)?;
                 values.push(json_importer_value(
                     &pkg.dir,
                     &pkg.manifest,
@@ -276,7 +276,7 @@ fn run_filtered(
                 if idx > 0 {
                     println!();
                 }
-                let importer = super::workspace_importer_path(cwd, &pkg.dir)?;
+                let importer = super::workspace_importer_path(&root, &pkg.dir)?;
                 render_default_for_importer(
                     &pkg.dir,
                     &pkg.manifest,
@@ -291,7 +291,7 @@ fn run_filtered(
         }
         ListFormat::Parseable => {
             for pkg in &selected {
-                let importer = super::workspace_importer_path(cwd, &pkg.dir)?;
+                let importer = super::workspace_importer_path(&root, &pkg.dir)?;
                 render_parseable_for_importer(graph, args, dep_filter, &importer)?;
             }
         }

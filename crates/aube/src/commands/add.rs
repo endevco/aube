@@ -770,7 +770,7 @@ async fn run_filtered(
         return Err(miette!("no packages specified"));
     }
     let cwd = crate::dirs::cwd()?;
-    let matched = super::select_workspace_packages(&cwd, filter, "add")?;
+    let (_root, matched) = super::select_workspace_packages(&cwd, filter, "add")?;
     let _lock = super::take_project_lock(&cwd)?;
 
     let mut snapshots = Vec::new();

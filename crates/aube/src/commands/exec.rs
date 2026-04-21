@@ -101,7 +101,7 @@ async fn run_filtered(
     parallel: bool,
     filter: &aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let matched = super::select_workspace_packages(cwd, filter, "exec")?;
+    let (_root, matched) = super::select_workspace_packages(cwd, filter, "exec")?;
     if parallel {
         if !shell_mode {
             for pkg in &matched {

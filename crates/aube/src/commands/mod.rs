@@ -694,15 +694,19 @@ pub(crate) fn find_workspace_root(start: &std::path::Path) -> miette::Result<std
     })
 }
 
+/// Resolve `--filter` to the matching workspace packages, returning the
+/// workspace root alongside the matches. Callers need the root to
+/// compute importer paths, resolve the lockfile, etc., and `cwd`
+/// alone isn't it in yarn / npm / bun subpackage installs where only
+/// the monorepo root carries `package.json#workspaces`.
 pub(crate) fn select_workspace_packages(
     cwd: &std::path::Path,
     filter: &aube_workspace::selector::EffectiveFilter,
     command: &str,
-) -> miette::Result<Vec<aube_workspace::selector::SelectedPackage>> {
-    // `cwd` is the nearest ancestor with a `package.json`, which in a
-    // monorepo subpackage is the child — not the workspace root. Walk
-    // up so discovery sees every sibling package in yarn / npm / bun
-    // layouts where only the root carries `package.json#workspaces`.
+) -> miette::Result<(
+    std::path::PathBuf,
+    Vec<aube_workspace::selector::SelectedPackage>,
+)> {
     let root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let workspace_pkgs = aube_workspace::find_workspace_packages(&root)
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
@@ -720,7 +724,7 @@ pub(crate) fn select_workspace_packages(
             "aube {command}: filter {filter:?} did not match any workspace package"
         ));
     }
-    Ok(matched)
+    Ok((root, matched))
 }
 
 /// Resolve a version spec against a full packument. Returns the concrete

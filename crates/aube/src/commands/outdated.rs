@@ -130,11 +130,11 @@ async fn run_filtered(
     args: OutdatedArgs,
     filter: &aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let matched = super::select_workspace_packages(cwd, filter, "outdated")?;
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
+    let (root, matched) = super::select_workspace_packages(cwd, filter, "outdated")?;
+    let manifest = aube_manifest::PackageJson::from_path(&root.join("package.json"))
         .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
-    let graph = match aube_lockfile::parse_lockfile(cwd, &manifest) {
+    let graph = match aube_lockfile::parse_lockfile(&root, &manifest) {
         Ok(g) => g,
         Err(aube_lockfile::Error::NotFound(_)) => {
             eprintln!("No lockfile found. Run `aube install` first.");
@@ -148,13 +148,21 @@ async fn run_filtered(
             .name
             .clone()
             .unwrap_or_else(|| pkg.dir.display().to_string());
-        let importer_path = super::workspace_importer_path(cwd, &pkg.dir)?;
+        let importer_path = super::workspace_importer_path(&root, &pkg.dir)?;
         let roots = graph
             .importers
             .get(&importer_path)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        if run_graph(cwd, args.clone_for_fanout(), &graph, roots, Some(importer)).await? {
+        if run_graph(
+            &root,
+            args.clone_for_fanout(),
+            &graph,
+            roots,
+            Some(importer),
+        )
+        .await?
+        {
             any_drift = true;
         }
     }

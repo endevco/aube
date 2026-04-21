@@ -149,7 +149,7 @@ pub async fn run(
 
 async fn run_filtered(filter: &aube_workspace::selector::EffectiveFilter) -> miette::Result<()> {
     let cwd = crate::dirs::cwd()?;
-    let matched = super::select_workspace_packages(&cwd, filter, "rebuild")?;
+    let (_root, matched) = super::select_workspace_packages(&cwd, filter, "rebuild")?;
     let result = async {
         for pkg in matched {
             super::retarget_cwd(&pkg.dir)?;
