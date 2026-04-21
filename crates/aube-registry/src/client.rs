@@ -493,14 +493,11 @@ impl RegistryClient {
     /// [`Self::fetch_packument_full_cached`] so callers pay one network
     /// fetch for both the `aube view`-style full JSON and the time map.
     ///
-    /// Hot path on warm cache: reads the cache file once, deserializes
-    /// header fields into a tiny borrow-lived wrapper that captures
-    /// the packument body as a `&RawValue` (zero-copy), then
-    /// deserializes that slice directly into [`Packument`]. The
-    /// previous implementation went through `serde_json::Value` +
-    /// `serde_json::from_value`, which walked the untyped tree twice
-    /// and roughly doubled the resolver's packument-read time on the
-    /// medium benchmark fixture.
+    /// Hot path on warm cache: reads the cache file once and uses
+    /// `simd_json` to deserialize the wrapper directly into the typed
+    /// [`Packument`] shape in a single pass. This avoids the older
+    /// `serde_json::Value` + `serde_json::from_value` round-trip, which
+    /// walked the cached JSON twice on every resolver read.
     pub async fn fetch_packument_with_time_cached(
         &self,
         name: &str,
@@ -1138,12 +1135,9 @@ fn read_cached_full_packument(path: &Path) -> Option<CachedFullPackument> {
 }
 
 /// Typed fast-path read used by `fetch_packument_with_time_cached`
-/// in the warm-cache branch. Reads the file once, uses a borrow-lived
-/// wrapper with `&serde_json::value::RawValue` to capture the
-/// `packument` field as an untouched JSON slice, checks freshness,
-/// then hands that slice straight to `serde_json` for a typed
-/// `Packument` parse — no `Value` intermediate, no `Box<RawValue>`
-/// owned-string copy, one pass over the bytes.
+/// in the warm-cache branch. Reads the file once and uses `simd_json`
+/// to deserialize the cached wrapper directly into a tiny typed struct
+/// holding `fetched_at` plus a fully-typed [`Packument`].
 ///
 /// Returns `None` on any error (file missing, parse error, stale
 /// cache) so the caller transparently falls back to the network /
