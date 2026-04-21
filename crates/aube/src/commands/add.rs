@@ -268,15 +268,21 @@ pub async fn run(
     // package and usually reflect a mistake. `-W` /
     // `--ignore-workspace-root-check` bypasses the check, and `-w` /
     // `--workspace` implies the bypass since the user explicitly
-    // targeted the root. We only trip on a workspace root that
-    // actually declares package patterns — bare catalog-only yaml is
-    // not a workspace root, and a `package.json` without a
-    // `workspaces` field isn't either.
+    // targeted the root. We trip on a *declared* package-pattern list,
+    // not on the materialized glob — an empty `packages/*` directory
+    // is still a workspace root the user should opt into. Bare
+    // catalog-only yaml is not a workspace root, and a `package.json`
+    // without a `workspaces` field isn't either.
     if !ignore_workspace_root_check && !workspace {
-        let has_packages = aube_workspace::find_workspace_packages(&cwd)
-            .map(|pkgs| !pkgs.is_empty())
+        let yaml_has_packages = aube_manifest::WorkspaceConfig::load(&cwd)
+            .map(|ws| !ws.packages.is_empty())
             .unwrap_or(false);
-        if has_packages {
+        let pkg_json_has_workspaces =
+            aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
+                .ok()
+                .and_then(|m| m.workspaces)
+                .is_some_and(|w| !w.patterns().is_empty());
+        if yaml_has_packages || pkg_json_has_workspaces {
             return Err(miette!(
                 "refusing to add dependencies to the workspace root. \
                  If this is intentional, pass --ignore-workspace-root-check (-W)."
