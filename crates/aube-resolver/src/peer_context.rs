@@ -19,7 +19,7 @@
 
 use crate::version_satisfies;
 use aube_lockfile::{DepType, DirectDep, LockedPackage, LockfileGraph};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A peer dependency whose declared range doesn't match the version the
@@ -355,23 +355,21 @@ pub fn apply_peer_contexts(
 ) -> LockfileGraph {
     const MAX_ITERATIONS: usize = 16;
     let mut current = canonical;
-    let mut previous_keys: Option<std::collections::BTreeSet<String>> = None;
     let mut converged = false;
     for i in 0..MAX_ITERATIONS {
+        let current_keys: Vec<String> = current.packages.keys().cloned().collect();
         let after_once = apply_peer_contexts_once(current, options);
         let next = if options.dedupe_peer_dependents {
             dedupe_peer_variants(after_once)
         } else {
             after_once
         };
-        let next_keys: std::collections::BTreeSet<String> = next.packages.keys().cloned().collect();
-        if previous_keys.as_ref() == Some(&next_keys) {
+        if current_keys.iter().map(String::as_str).eq(next.packages.keys().map(String::as_str)) {
             tracing::debug!("peer-context pass converged after {i} iteration(s)");
             current = next;
             converged = true;
             break;
         }
-        previous_keys = Some(next_keys);
         current = next;
     }
     if !converged {
@@ -600,7 +598,7 @@ fn apply_peer_contexts_once(
     // Computed once from the canonical input so it reflects the
     // contextualized state of every root dep on fixed-point iterations
     // 2+ — same logic as per-importer `importer_scope` below.
-    let root_scope: BTreeMap<String, String> = canonical
+    let root_scope: FxHashMap<String, String> = canonical
         .importers
         .get(".")
         .map(|deps| {
@@ -628,7 +626,7 @@ fn apply_peer_contexts_once(
         // it's already contextualized, and passing the plain version
         // would make descendants look up keys that don't exist in the
         // (now-nested) graph.
-        let importer_scope: BTreeMap<String, String> = direct_deps
+        let importer_scope: FxHashMap<String, String> = direct_deps
             .iter()
             .map(|d| {
                 let tail = d
@@ -970,8 +968,8 @@ fn apply_dedupe_peers_to_tail(tail: &str) -> String {
 fn visit_peer_context(
     input_dep_path: &str,
     graph: &LockfileGraph,
-    ancestor_scope: &BTreeMap<String, String>,
-    root_scope: &BTreeMap<String, String>,
+    ancestor_scope: &FxHashMap<String, String>,
+    root_scope: &FxHashMap<String, String>,
     out_packages: &mut BTreeMap<String, LockedPackage>,
     visiting: &mut FxHashSet<String>,
     options: &PeerContextOptions,
@@ -1192,7 +1190,7 @@ fn visit_peer_context(
     // sibling symlink target inconsistent with the peer-context claim.
     // When the ancestor's version doesn't satisfy the declared range,
     // `detect_unmet_peers` will flag it as a warning after the pass.
-    let peer_context_versions: BTreeMap<String, String> = peer_context.iter().cloned().collect();
+    let peer_context_versions: FxHashMap<String, String> = peer_context.iter().cloned().collect();
 
     let mut new_dependencies: BTreeMap<String, String> = BTreeMap::new();
     let mut visited_dep_names: FxHashSet<String> = FxHashSet::default();
