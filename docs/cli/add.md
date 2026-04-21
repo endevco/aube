@@ -51,10 +51,10 @@ By convention you usually pair this with `--save-dev` so the peer is also instal
 
 Add the dependency to the workspace root's `package.json`, regardless of the current working directory.
 
-Walks up from cwd looking for `aube-workspace.yaml` / `pnpm-workspace.yaml` and runs the add against that directory.
+Walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory.
 
 ### `-W --ignore-workspace-root-check`
 
 Allow `add` to run in a workspace root.
 
-By default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml` or `pnpm-workspace.yaml`) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.
+By default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.

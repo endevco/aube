@@ -123,7 +123,7 @@
             "name": "workspace",
             "usage": "-w --workspace",
             "help": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory",
-            "help_long": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml` / `pnpm-workspace.yaml` and runs the add against that directory.",
+            "help_long": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory.",
             "help_first_line": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory",
             "short": [
               "w"
@@ -138,7 +138,7 @@
             "name": "ignore-workspace-root-check",
             "usage": "-W --ignore-workspace-root-check",
             "help": "Allow `add` to run in a workspace root",
-            "help_long": "Allow `add` to run in a workspace root.\n\nBy default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml` or `pnpm-workspace.yaml`) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.",
+            "help_long": "Allow `add` to run in a workspace root.\n\nBy default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.",
             "help_first_line": "Allow `add` to run in a workspace root",
             "short": [
               "W"
@@ -3889,7 +3889,7 @@
             "name": "workspace",
             "usage": "-w --workspace",
             "help": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory",
-            "help_long": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml` / `pnpm-workspace.yaml` and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`).",
+            "help_long": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`).",
             "help_first_line": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory",
             "short": [
               "w"
