@@ -383,6 +383,39 @@ impl RegistryClient {
         Ok(resp)
     }
 
+    async fn retry_bytes_body_read<F>(
+        &self,
+        label: &str,
+        build: F,
+    ) -> Result<bytes::Bytes, reqwest::Error>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        let max_attempts = self.fetch_policy.retries.saturating_add(1);
+        for attempt in 0..max_attempts {
+            let is_last = attempt + 1 >= max_attempts;
+            let resp = self.send_with_retry(&build).await?;
+            let resp = resp.error_for_status()?;
+            match resp.bytes().await {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) if !is_last => {
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label,
+                        "retrying HTTP request after response body read error",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
+    }
+
     /// Fetch the *full* (non-corgi) packument for a package as raw JSON
     /// with disk caching + ETag revalidation, mirroring
     /// [`Self::fetch_packument_cached`]. Returns `serde_json::Value` so
@@ -534,24 +567,44 @@ impl RegistryClient {
             return Err(Error::Offline(format!("packument for {name}")));
         }
         let (url, registry_url) = self.packument_url(name);
+        let label = format!("packument {name}");
+        let max_attempts = self.fetch_policy.retries.saturating_add(1);
+        for attempt in 0..max_attempts {
+            let is_last = attempt + 1 >= max_attempts;
+            let resp = self
+                .send_metadata_with_retry(&label, || {
+                    let req = self.authed_get(&url, registry_url);
+                    if force_full_packument() {
+                        req
+                    } else {
+                        req.header("Accept", PACKUMENT_ACCEPT)
+                    }
+                })
+                .await?;
 
-        let resp = self
-            .send_metadata_with_retry(&format!("packument {name}"), || {
-                let req = self.authed_get(&url, registry_url);
-                if force_full_packument() {
-                    req
-                } else {
-                    req.header("Accept", PACKUMENT_ACCEPT)
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(Error::NotFound(name.to_string()));
+            }
+
+            let resp = resp.error_for_status()?;
+            match resp.json().await {
+                Ok(packument) => return Ok(packument),
+                Err(err) if !is_last => {
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label,
+                        "retrying HTTP request after response body decode error",
+                    );
+                    tokio::time::sleep(wait).await;
                 }
-            })
-            .await?;
-
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::NotFound(name.to_string()));
+                Err(err) => return Err(err.into()),
+            }
         }
-
-        let packument: Packument = resp.error_for_status()?.json().await?;
-        Ok(packument)
+        unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
     }
 
     /// Fetch a packument using a disk-backed cache:
@@ -597,64 +650,85 @@ impl RegistryClient {
         // using the correct `If-None-Match` / `If-Modified-Since`
         // without silently stripping cache hints.
         let cached_ref = cached.as_ref();
-        let resp = self
-            .send_metadata_with_retry(&format!("packument {name}"), || {
-                let mut req = self.authed_get(&url, registry_url);
-                if !force_full_packument() {
-                    req = req.header("Accept", PACKUMENT_ACCEPT);
-                }
-                if let Some(c) = cached_ref {
-                    if let Some(ref etag) = c.etag {
-                        req = req.header("If-None-Match", etag);
+        let label = format!("packument {name}");
+        let max_attempts = self.fetch_policy.retries.saturating_add(1);
+        for attempt in 0..max_attempts {
+            let is_last = attempt + 1 >= max_attempts;
+            let resp = self
+                .send_metadata_with_retry(&label, || {
+                    let mut req = self.authed_get(&url, registry_url);
+                    if !force_full_packument() {
+                        req = req.header("Accept", PACKUMENT_ACCEPT);
                     }
-                    if let Some(ref lm) = c.last_modified {
-                        req = req.header("If-Modified-Since", lm);
+                    if let Some(c) = cached_ref {
+                        if let Some(ref etag) = c.etag {
+                            req = req.header("If-None-Match", etag);
+                        }
+                        if let Some(ref lm) = c.last_modified {
+                            req = req.header("If-Modified-Since", lm);
+                        }
                     }
+                    req
+                })
+                .await?;
+
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(Error::NotFound(name.to_string()));
+            }
+
+            if resp.status() == reqwest::StatusCode::NOT_MODIFIED
+                && let Some(c) = cached.as_ref()
+            {
+                // Refresh the timestamp so we can skip the network next time
+                let to_cache = CachedPackument {
+                    etag: c.etag.clone(),
+                    last_modified: c.last_modified.clone(),
+                    fetched_at: now_secs(),
+                    packument: c.packument.clone(),
+                };
+                let _ = write_cached_packument(&cache_path, &to_cache);
+                return Ok(c.packument.clone());
+            }
+
+            let etag = resp
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let last_modified = resp
+                .headers()
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            let resp = resp.error_for_status()?;
+            match resp.json::<Packument>().await {
+                Ok(packument) => {
+                    let to_cache = CachedPackument {
+                        etag,
+                        last_modified,
+                        fetched_at: now_secs(),
+                        packument: packument.clone(),
+                    };
+                    let _ = write_cached_packument(&cache_path, &to_cache);
+                    return Ok(packument);
                 }
-                req
-            })
-            .await?;
-
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::NotFound(name.to_string()));
+                Err(err) if !is_last => {
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label,
+                        "retrying HTTP request after response body decode error",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
-
-        if resp.status() == reqwest::StatusCode::NOT_MODIFIED
-            && let Some(c) = cached
-        {
-            // Refresh the timestamp so we can skip the network next time
-            let to_cache = CachedPackument {
-                etag: c.etag.clone(),
-                last_modified: c.last_modified.clone(),
-                fetched_at: now_secs(),
-                packument: c.packument.clone(),
-            };
-            let _ = write_cached_packument(&cache_path, &to_cache);
-            return Ok(c.packument);
-        }
-
-        let etag = resp
-            .headers()
-            .get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let last_modified = resp
-            .headers()
-            .get(reqwest::header::LAST_MODIFIED)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-
-        let packument: Packument = resp.error_for_status()?.json().await?;
-
-        let to_cache = CachedPackument {
-            etag,
-            last_modified,
-            fetched_at: now_secs(),
-            packument: packument.clone(),
-        };
-        let _ = write_cached_packument(&cache_path, &to_cache);
-
-        Ok(packument)
+        unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
     }
 
     /// POST to the npm bulk security advisories endpoint used by `npm audit`
@@ -720,12 +794,10 @@ impl RegistryClient {
         // in `registry_config_for` can find path-scoped auth entries
         // (e.g. `//host/artifactory/npm/`). Retries cover transient
         // 5xx / 429 / connection errors; see [`Self::send_with_retry`].
-        let resp = self
-            .send_with_retry(|| self.authed_get(url, url))
-            .await?
-            .error_for_status()?;
         let started = std::time::Instant::now();
-        let bytes = resp.bytes().await?;
+        let bytes = self
+            .retry_bytes_body_read(url, || self.authed_get(url, url))
+            .await?;
         let elapsed = started.elapsed();
         warn_slow_tarball(self.fetch_policy.min_speed_kibps, url, bytes.len(), elapsed);
         Ok(bytes)
@@ -1489,6 +1561,42 @@ mod retry_tests {
             .await
             .expect("warn-threshold is advisory — request must still succeed");
         assert_eq!(packument.name, "demo");
+    }
+
+    #[tokio::test]
+    async fn retries_on_packument_body_decode_error_then_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/demo"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("{not valid json", "application/json"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/demo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(make_packument_json()))
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 5_000,
+            retries: 2,
+            retry_factor: 1,
+            retry_min_timeout_ms: 1,
+            retry_max_timeout_ms: 1,
+            ..FetchPolicy::default()
+        };
+        let client = client_with(&server, policy);
+        let packument = client
+            .fetch_packument("demo")
+            .await
+            .expect("decode error should be retried");
+        assert_eq!(packument.name, "demo");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "expected retry after decode error");
     }
 
     #[tokio::test]
