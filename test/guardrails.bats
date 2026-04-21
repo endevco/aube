@@ -87,12 +87,25 @@ _setup_workspace_fixture() {
 	[[ "$stderr" == *"DEBUG"* ]]
 }
 
-@test "packageManagerStrict rejects unsupported package managers" {
+@test "packageManagerStrict warns for run commands on unsupported package managers" {
 	_make_script_project
 	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	echo "verifyDepsBeforeRun=false" >.npmrc
 
 	run aube run ok
+	assert_success
+	[[ "$output" == *"unsupported package manager"* ]]
+	[[ "$output" == *"auto-install is disabled"* ]]
+	[[ "$output" == *"ok"* ]]
+	[ ! -e node_modules ]
+}
+
+@test "packageManagerStrict still rejects install-test on unsupported package managers" {
+	_make_script_project
+	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
+	echo "verifyDepsBeforeRun=false" >.npmrc
+
+	run aube install-test
 	assert_failure
 	[[ "$output" == *"unsupported package manager"* ]]
 }

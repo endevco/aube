@@ -1113,10 +1113,7 @@ mod dep_filter_tests {
     }
 
     #[test]
-    fn package_manager_mismatch_can_disable_auto_install() {
-        set_skip_auto_install_on_package_manager_mismatch(true);
-        assert!(skip_auto_install_on_package_manager_mismatch());
-        set_skip_auto_install_on_package_manager_mismatch(false);
+    fn package_manager_mismatch_skip_auto_install_defaults_off() {
         assert!(!skip_auto_install_on_package_manager_mismatch());
     }
 }

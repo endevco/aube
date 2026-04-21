@@ -1341,7 +1341,6 @@ fn package_manager_guard_mode(command: Option<&Commands>) -> PackageManagerGuard
             | Some(Commands::Start(_))
             | Some(Commands::Stop(_))
             | Some(Commands::Restart(_))
-            | Some(Commands::InstallTest(_))
             | Some(Commands::External(_))
     ) {
         PackageManagerGuardMode::WarnAndSkipAutoInstall
@@ -1629,6 +1628,15 @@ mod package_manager_guard_tests {
     #[test]
     fn install_still_errors_on_mismatch() {
         let cli = Cli::try_parse_from(["aube", "install"]).expect("install should parse");
+        assert_eq!(
+            package_manager_guard_mode(cli.command.as_ref()),
+            PackageManagerGuardMode::Error
+        );
+    }
+
+    #[test]
+    fn install_test_still_errors_on_mismatch() {
+        let cli = Cli::try_parse_from(["aube", "install-test"]).expect("install-test should parse");
         assert_eq!(
             package_manager_guard_mode(cli.command.as_ref()),
             PackageManagerGuardMode::Error
