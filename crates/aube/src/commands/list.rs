@@ -218,17 +218,24 @@ fn run_filtered(
     vstore_max_len: usize,
     vstore_prefix: &str,
 ) -> miette::Result<()> {
-    let workspace_pkgs = aube_workspace::find_workspace_packages(cwd)
+    // Walk up to the workspace root so `--filter` works from a
+    // subpackage in a yarn / npm / bun monorepo (where only the root
+    // carries `package.json#workspaces`).
+    let root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let workspace_pkgs = aube_workspace::find_workspace_packages(&root)
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
     if workspace_pkgs.is_empty() {
         return Err(miette!(
-            "aube list: --filter requires a pnpm-workspace.yaml at {}",
+            "aube list: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
             cwd.display()
         ));
     }
-    let selected =
-        aube_workspace::selector::select_workspace_packages(cwd, &workspace_pkgs, workspace_filter)
-            .map_err(|e| miette!("invalid --filter selector: {e}"))?;
+    let selected = aube_workspace::selector::select_workspace_packages(
+        &root,
+        &workspace_pkgs,
+        workspace_filter,
+    )
+    .map_err(|e| miette!("invalid --filter selector: {e}"))?;
     if selected.is_empty() {
         return Err(miette!(
             "aube list: filter {workspace_filter:?} did not match any workspace package"

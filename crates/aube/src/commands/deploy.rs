@@ -101,7 +101,7 @@ pub async fn run(
     if workspace_pkgs.is_empty() {
         return Err(miette!(
             "aube deploy: no workspace packages found. \
-             `deploy` requires a pnpm-workspace.yaml at {}",
+             `deploy` requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at {}",
             source_root.display()
         ));
     }

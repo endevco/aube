@@ -234,7 +234,7 @@ async fn run_recursive(
     if workspace_pkgs.is_empty() {
         return Err(miette!(
             "aube publish: no workspace packages found. \
-             `--recursive` / `--filter` requires a pnpm-workspace.yaml at {}",
+             `--recursive` / `--filter` requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at {}",
             source_root.display()
         ));
     }

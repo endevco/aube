@@ -144,7 +144,7 @@ fn run_filtered(
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
     if workspace_pkgs.is_empty() {
         return Err(miette!(
-            "aube why: --filter requires a pnpm-workspace.yaml at {}",
+            "aube why: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at {}",
             workspace_root.display()
         ));
     }
