@@ -629,6 +629,23 @@ impl LockfileGraph {
         self.packages.get(dep_path)
     }
 
+    /// `true` when at least one package in the graph carries a
+    /// non-empty `bin` map — a cheap signal that the source (lockfile
+    /// parser or fresh resolve) populated bin metadata. Bin-linking
+    /// passes use this to short-circuit the `package.json` read on
+    /// packages whose `bin` is empty (95%+ of a typical graph).
+    ///
+    /// The pnpm, bun, npm, and aube parsers all fill `bin`; a fresh
+    /// resolve fills it from packument data. The yarn-classic parser
+    /// leaves it empty, so a graph loaded exclusively from `yarn.lock`
+    /// returns `false` here and bin linking falls back to the full
+    /// `package.json` read. That's a correctness-over-speed choice:
+    /// misreading "empty" as "no bin" on yarn would silently drop
+    /// executables from `node_modules/.bin/`.
+    pub fn has_bin_metadata(&self) -> bool {
+        self.packages.values().any(|p| !p.bin.is_empty())
+    }
+
     /// BFS the transitive closure of `roots` through `self.packages`,
     /// returning every reachable dep_path (roots included). Missing
     /// roots are skipped silently — a root without a matching package
@@ -1579,6 +1596,59 @@ impl Error {
         Error::ParseDiag(Box::new(aube_manifest::ParseError::from_yaml_err(
             path, content, err,
         )))
+    }
+}
+
+#[cfg(test)]
+mod has_bin_metadata_tests {
+    use super::*;
+
+    fn pkg_with_bin(bin: BTreeMap<String, String>) -> LockedPackage {
+        LockedPackage {
+            name: "p".to_string(),
+            version: "1.0.0".to_string(),
+            dep_path: "p@1.0.0".to_string(),
+            bin,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_graph_has_no_bin_metadata() {
+        let g = LockfileGraph::default();
+        assert!(!g.has_bin_metadata());
+    }
+
+    #[test]
+    fn graph_with_no_bins_returns_false() {
+        let mut g = LockfileGraph::default();
+        g.packages
+            .insert("a@1.0.0".to_string(), pkg_with_bin(BTreeMap::new()));
+        g.packages
+            .insert("b@2.0.0".to_string(), pkg_with_bin(BTreeMap::new()));
+        assert!(!g.has_bin_metadata());
+    }
+
+    #[test]
+    fn any_non_empty_bin_flips_to_true() {
+        let mut g = LockfileGraph::default();
+        g.packages
+            .insert("a@1.0.0".to_string(), pkg_with_bin(BTreeMap::new()));
+        let mut bin = BTreeMap::new();
+        bin.insert("tool".to_string(), "bin/tool.js".to_string());
+        g.packages.insert("b@2.0.0".to_string(), pkg_with_bin(bin));
+        assert!(g.has_bin_metadata());
+    }
+
+    /// pnpm parsers record `hasBin: true` as a one-entry placeholder
+    /// map (empty key + empty value). That still flips the flag.
+    #[test]
+    fn pnpm_placeholder_bin_counts() {
+        let mut g = LockfileGraph::default();
+        let mut bin = BTreeMap::new();
+        bin.insert(String::new(), String::new());
+        g.packages.insert("a@1.0.0".to_string(), pkg_with_bin(bin));
+        assert!(g.has_bin_metadata());
     }
 }
 

@@ -106,6 +106,7 @@ pub async fn run(
                 super::resolve_virtual_store_dir_max_length(&settings_ctx),
                 hoisted_placements.as_ref(),
                 shim_opts,
+                graph.has_bin_metadata(),
             )?;
             super::install::run_dep_lifecycle_scripts(
                 &cwd,
