@@ -93,6 +93,17 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         }
     }
 
+    // Spot check that direct deps still have their top-level entries.
+    // `rm node_modules/<dep>` (or nuking its `.aube/` target so the
+    // top-level symlink dangles) leaves every hash above matching, so
+    // without this stat sweep the warm path declares "Already up to
+    // date" and never relinks. Skip optional/peer deps — those may
+    // legitimately not be on disk (platform-skipped optionals,
+    // `auto-install-peers=false`).
+    if let Some(reason) = missing_top_level_dep(project_dir, &modules_dir) {
+        return Some(reason);
+    }
+
     if state.section_filtered {
         return Some(
             "previous install omitted dependency sections; auto-installing full graph".into(),
@@ -242,6 +253,30 @@ fn active_lockfile(project_dir: &Path) -> (String, Option<PathBuf>) {
         }
     }
     (preferred, None)
+}
+
+/// Return `Some(reason)` if any direct dep in the root `package.json`
+/// has no top-level entry under `modules_dir`. `try_exists` follows
+/// symlinks, so a dangling top-level symlink (its `.aube/` target was
+/// deleted) also counts as missing — both kinds of corruption need a
+/// real install pass to heal.
+fn missing_top_level_dep(project_dir: &Path, modules_dir: &Path) -> Option<String> {
+    let manifest = aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).ok()?;
+    let modules_name = modules_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("node_modules");
+    for name in manifest
+        .dependencies
+        .keys()
+        .chain(manifest.dev_dependencies.keys())
+    {
+        let entry = modules_dir.join(name);
+        if !entry.try_exists().unwrap_or(false) {
+            return Some(format!("{modules_name}/{name} is missing"));
+        }
+    }
+    None
 }
 
 fn read_state(path: &PathBuf) -> Option<InstallState> {

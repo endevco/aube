@@ -43,6 +43,25 @@ teardown() {
 	refute_output --partial "Already up to date"
 }
 
+@test "aube install heals a top-level entry deleted from node_modules" {
+	# Regression: the warm-path freshness check only stat'd node_modules
+	# itself, so `rm node_modules/<dep>` between installs left every
+	# hash matching and the second install printed "Already up to date"
+	# without re-creating the symlink. bun catches this case; aube must too.
+	_setup_basic_fixture
+	run aube install
+	assert_success
+	assert_file_exists node_modules/is-odd/package.json
+
+	rm node_modules/is-odd
+	assert [ ! -e node_modules/is-odd ]
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_file_exists node_modules/is-odd/package.json
+}
+
 @test "aube install --dev installs only devDependencies" {
 	cat >package.json <<'JSON'
 {
