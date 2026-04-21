@@ -770,11 +770,17 @@ async fn run_filtered(
         return Err(miette!("no packages specified"));
     }
     let cwd = crate::dirs::cwd()?;
-    let (_root, matched) = super::select_workspace_packages(&cwd, filter, "add")?;
-    let _lock = super::take_project_lock(&cwd)?;
+    // The workspace root — not the child `cwd` — is what owns the
+    // lockfile and the project lock in yarn / npm / bun monorepos.
+    // Taking the lock or snapshotting the lockfile against `cwd` would
+    // target a stale subpackage path, letting `install::run` (which
+    // walks up) mutate the real root lockfile and then silently skip
+    // the restore under `--no-save`.
+    let (root, matched) = super::select_workspace_packages(&cwd, filter, "add")?;
+    let _lock = super::take_project_lock(&root)?;
 
     let mut snapshots = Vec::new();
-    let lockfile_path = lockfile_path_for_project(&cwd);
+    let lockfile_path = lockfile_path_for_project(&root);
     let root_lockfile_snapshot = if args.no_save {
         match std::fs::read(&lockfile_path) {
             Ok(bytes) => Some(bytes),
