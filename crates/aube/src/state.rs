@@ -33,6 +33,13 @@ fn state_file(project_dir: &Path) -> PathBuf {
     resolve_paths(project_dir).1
 }
 
+fn relative_path_or_original(path: &Path, base: &Path) -> String {
+    pathdiff::diff_paths(path, base)
+        .unwrap_or_else(|| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallState {
     pub lockfile_hash: String,
@@ -383,12 +390,7 @@ impl InstallLayoutState {
                 ".".to_string(),
                 entries
                     .into_iter()
-                    .map(|p| {
-                        pathdiff::diff_paths(&p, project_dir)
-                            .unwrap_or(p)
-                            .to_string_lossy()
-                            .replace('\\', "/")
-                    })
+                    .map(|p| relative_path_or_original(&p, project_dir))
                     .collect(),
             );
         }
@@ -417,14 +419,12 @@ impl InstallLayoutState {
                 )
                 .join("package.json"),
             };
-            let rel = pathdiff::diff_paths(&package_json_path, project_dir)
-                .unwrap_or_else(|| PathBuf::from("package.json"));
             packages.insert(
                 dep_path,
                 InstalledPackageState {
                     name: pkg.name.clone(),
                     version: pkg.version.clone(),
-                    package_json_path: rel.to_string_lossy().replace('\\', "/"),
+                    package_json_path: relative_path_or_original(&package_json_path, project_dir),
                     package_json_hash: hash_file(&package_json_path),
                 },
             );
@@ -515,15 +515,30 @@ fn collect_package_json_hashes(project_dir: &Path) -> BTreeMap<String, String> {
             if !pkg_json.is_file() {
                 continue;
             }
-            let rel =
-                pathdiff::diff_paths(&pkg_json, project_dir).unwrap_or_else(|| pkg_json.clone());
             hashes.insert(
-                rel.to_string_lossy().replace('\\', "/"),
+                relative_path_or_original(&pkg_json, project_dir),
                 hash_file(&pkg_json),
             );
         }
     }
     hashes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_path_or_original;
+    use std::path::Path;
+
+    #[test]
+    fn relative_path_helper_keeps_original_path_when_diff_fails() {
+        let original = Path::new("/tmp/aube-test/package.json");
+        let base = Path::new("project/../project");
+
+        assert_eq!(
+            relative_path_or_original(original, base),
+            original.to_string_lossy()
+        );
+    }
 }
 
 fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
