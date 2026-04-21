@@ -33,6 +33,13 @@ fn state_file(project_dir: &Path) -> PathBuf {
     resolve_paths(project_dir).1
 }
 
+fn relative_path_or_original(path: &Path, base: &Path) -> String {
+    pathdiff::diff_paths(path, base)
+        .unwrap_or_else(|| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallState {
     pub lockfile_hash: String,
@@ -65,6 +72,31 @@ pub struct InstallState {
     /// leaf-only diff.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub package_subtree_hashes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub layout: Option<InstallLayoutState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallLayoutState {
+    pub linker: InstallLayoutMode,
+    pub direct_entries: BTreeMap<String, Vec<String>>,
+    pub packages: BTreeMap<String, InstalledPackageState>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallLayoutMode {
+    Isolated,
+    Hoisted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledPackageState {
+    pub name: String,
+    pub version: String,
+    pub package_json_path: String,
+    #[serde(default)]
+    pub package_json_hash: String,
 }
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
@@ -106,13 +138,22 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         return Some("no lockfile found".into());
     }
 
-    // Check root package.json hash
-    let pkg_path = project_dir.join("package.json");
-    if pkg_path.exists() {
-        let current_hash = hash_file(&pkg_path);
-        let stored_hash = state.package_json_hashes.get(".");
-        if stored_hash != Some(&current_hash) {
-            return Some("package.json has changed".into());
+    // Check root + workspace package.json hashes.
+    for (rel, stored_hash) in &state.package_json_hashes {
+        let path = if rel == "." {
+            project_dir.join("package.json")
+        } else {
+            project_dir.join(rel)
+        };
+        if !path.exists() {
+            return Some(format!("{rel} is missing"));
+        }
+        if hash_file(&path) != *stored_hash {
+            return Some(if rel == "." {
+                "package.json has changed".into()
+            } else {
+                format!("{rel} has changed")
+            });
         }
     }
 
@@ -120,6 +161,10 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         return Some(
             "previous install omitted dependency sections; auto-installing full graph".into(),
         );
+    }
+
+    if let Some(reason) = verify_install_layout(project_dir, &state) {
+        return Some(reason);
     }
 
     // no settings_hash check here. this path feeds ensure_installed
@@ -161,6 +206,15 @@ pub fn check_needs_install_with_flags(
 /// that expect the whole graph. `cli_flags` is the install's `opts.cli_flags`
 /// bag — threaded through so the stored `settings_hash` reflects CLI overrides
 /// (e.g. `--node-linker=hoisted`) that shaped the tree on disk.
+pub struct WriteStateLayout<'a> {
+    pub graph: &'a aube_lockfile::LockfileGraph,
+    pub node_linker: aube_linker::NodeLinker,
+    pub modules_dir_name: &'a str,
+    pub aube_dir: &'a Path,
+    pub virtual_store_dir_max_length: usize,
+    pub placements: Option<&'a aube_linker::HoistedPlacements>,
+}
+
 pub fn write_state(
     project_dir: &Path,
     section_filtered: bool,
@@ -168,16 +222,8 @@ pub fn write_state(
     package_content_hashes: BTreeMap<String, String>,
     graph_lthash: String,
     package_subtree_hashes: BTreeMap<String, String>,
+    layout: WriteStateLayout<'_>,
 ) -> Result<(), std::io::Error> {
-    let mut package_json_hashes = BTreeMap::new();
-
-    let pkg_path = project_dir.join("package.json");
-    if pkg_path.exists() {
-        package_json_hashes.insert(".".to_string(), hash_file(&pkg_path));
-    }
-
-    // TODO: hash workspace package.json files
-
     let lockfile_hash = match active_lockfile(project_dir).1 {
         Some(path) => hash_file(&path),
         None => String::new(),
@@ -185,13 +231,22 @@ pub fn write_state(
 
     let state = InstallState {
         lockfile_hash,
-        package_json_hashes,
+        package_json_hashes: collect_package_json_hashes(project_dir),
         aube_version: env!("CARGO_PKG_VERSION").to_string(),
         section_filtered,
         settings_hash: hash_settings(project_dir, cli_flags),
         package_content_hashes,
         graph_lthash,
         package_subtree_hashes,
+        layout: Some(InstallLayoutState::from_graph(
+            project_dir,
+            layout.graph,
+            layout.node_linker,
+            layout.modules_dir_name,
+            layout.aube_dir,
+            layout.virtual_store_dir_max_length,
+            layout.placements,
+        )),
     };
 
     let state_path = state_file(project_dir);
@@ -312,6 +367,168 @@ fn read_state(path: &PathBuf) -> Option<InstallState> {
     serde_json::from_str(&content).ok()
 }
 
+impl InstallLayoutState {
+    fn from_graph(
+        project_dir: &Path,
+        graph: &aube_lockfile::LockfileGraph,
+        node_linker: aube_linker::NodeLinker,
+        modules_dir_name: &str,
+        aube_dir: &Path,
+        virtual_store_dir_max_length: usize,
+        placements: Option<&aube_linker::HoistedPlacements>,
+    ) -> Self {
+        let linker = match node_linker {
+            aube_linker::NodeLinker::Isolated => InstallLayoutMode::Isolated,
+            aube_linker::NodeLinker::Hoisted => InstallLayoutMode::Hoisted,
+        };
+        let mut direct_entries = BTreeMap::new();
+        if let Some(deps) = graph.importers.get(".") {
+            let mut entries = Vec::with_capacity(deps.len());
+            for dep in deps {
+                entries.push(project_dir.join(modules_dir_name).join(&dep.name));
+            }
+            direct_entries.insert(
+                ".".to_string(),
+                entries
+                    .into_iter()
+                    .map(|p| relative_path_or_original(&p, project_dir))
+                    .collect(),
+            );
+        }
+
+        let mut packages = BTreeMap::new();
+        let direct_dep_paths: std::collections::BTreeSet<String> = graph
+            .importers
+            .get(".")
+            .into_iter()
+            .flat_map(|deps| deps.iter().map(|dep| dep.dep_path.clone()))
+            .collect();
+        for dep_path in direct_dep_paths {
+            let Some(pkg) = graph.packages.get(&dep_path) else {
+                continue;
+            };
+            let package_json_path = match pkg.local_source.as_ref() {
+                Some(aube_lockfile::LocalSource::Link(path)) => {
+                    project_dir.join(path).join("package.json")
+                }
+                _ => crate::commands::install::materialized_pkg_dir(
+                    aube_dir,
+                    &dep_path,
+                    &pkg.name,
+                    virtual_store_dir_max_length,
+                    placements,
+                )
+                .join("package.json"),
+            };
+            packages.insert(
+                dep_path,
+                InstalledPackageState {
+                    name: pkg.name.clone(),
+                    version: pkg.version.clone(),
+                    package_json_path: relative_path_or_original(&package_json_path, project_dir),
+                    package_json_hash: hash_file_if_exists(&package_json_path).unwrap_or_default(),
+                },
+            );
+        }
+
+        Self {
+            linker,
+            direct_entries,
+            packages,
+        }
+    }
+}
+
+fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<String> {
+    let layout = state.layout.as_ref()?;
+
+    for entries in layout.direct_entries.values() {
+        for rel in entries {
+            let path = project_dir.join(rel);
+            if !path.exists() {
+                return Some(format!("installed entry missing: {rel}"));
+            }
+        }
+    }
+
+    for pkg in layout.packages.values() {
+        let pkg_json_path = project_dir.join(&pkg.package_json_path);
+        let current_hash = hash_file_if_exists(&pkg_json_path);
+        if let Some(current_hash) = current_hash
+            && !pkg.package_json_hash.is_empty()
+            && pkg.package_json_hash != empty_blake3_hash()
+            && current_hash == pkg.package_json_hash
+        {
+            continue;
+        }
+        let manifest = match read_installed_package_manifest(&pkg_json_path) {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => {
+                return Some(format!(
+                    "installed package metadata missing: {}",
+                    pkg.package_json_path
+                ));
+            }
+            Err(_) => {
+                return Some(format!(
+                    "installed package metadata unreadable: {}",
+                    pkg.package_json_path
+                ));
+            }
+        };
+        if manifest.name != pkg.name || manifest.version != pkg.version {
+            return Some(format!(
+                "installed package metadata changed: {}",
+                pkg.package_json_path
+            ));
+        }
+    }
+
+    None
+}
+
+#[derive(Deserialize)]
+struct InstalledManifest {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+}
+
+fn read_installed_package_manifest(
+    path: &Path,
+) -> Result<Option<InstalledManifest>, std::io::Error> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let parsed = serde_json::from_str(&content)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    Ok(Some(parsed))
+}
+
+fn collect_package_json_hashes(project_dir: &Path) -> BTreeMap<String, String> {
+    let mut hashes = BTreeMap::new();
+    let pkg_path = project_dir.join("package.json");
+    if pkg_path.exists() {
+        hashes.insert(".".to_string(), hash_file(&pkg_path));
+    }
+    if let Ok(workspaces) = aube_workspace::find_workspace_packages(project_dir) {
+        for pkg_dir in workspaces {
+            let pkg_json = pkg_dir.join("package.json");
+            if !pkg_json.is_file() {
+                continue;
+            }
+            hashes.insert(
+                relative_path_or_original(&pkg_json, project_dir),
+                hash_file(&pkg_json),
+            );
+        }
+    }
+    hashes
+}
+
 fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
     // hash resolved settings not raw file bytes. old byte hash tripped on
     // noop edits like `optimisticRepeatInstall=true` (same as default).
@@ -416,4 +633,82 @@ fn hash_file(path: &Path) -> String {
     let content = std::fs::read(path).unwrap_or_default();
     let hash = blake3::hash(&content);
     format!("blake3:{}", hash.to_hex())
+}
+
+fn hash_file_if_exists(path: &Path) -> Option<String> {
+    std::fs::read(path).ok().map(|content| {
+        let hash = blake3::hash(&content);
+        format!("blake3:{}", hash.to_hex())
+    })
+}
+
+fn empty_blake3_hash() -> &'static str {
+    "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        InstallLayoutMode, InstallLayoutState, InstallState, InstalledPackageState,
+        empty_blake3_hash, relative_path_or_original, verify_install_layout,
+    };
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn relative_path_helper_keeps_original_path_when_diff_fails() {
+        let original = Path::new("/tmp/aube-test/package.json");
+        let base = Path::new("project/../project");
+
+        assert_eq!(
+            relative_path_or_original(original, base),
+            original.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn verify_install_layout_treats_legacy_empty_hash_as_cache_miss() {
+        let project_dir = temp_project_dir("legacy-empty-hash");
+        let state = InstallState {
+            lockfile_hash: String::new(),
+            package_json_hashes: BTreeMap::new(),
+            aube_version: String::new(),
+            section_filtered: false,
+            settings_hash: String::new(),
+            package_content_hashes: BTreeMap::new(),
+            graph_lthash: String::new(),
+            package_subtree_hashes: BTreeMap::new(),
+            layout: Some(InstallLayoutState {
+                linker: InstallLayoutMode::Isolated,
+                direct_entries: BTreeMap::new(),
+                packages: BTreeMap::from([(
+                    "is-odd@3.0.1".to_string(),
+                    InstalledPackageState {
+                        name: "is-odd".to_string(),
+                        version: "3.0.1".to_string(),
+                        package_json_path:
+                            "node_modules/.aube/missing/node_modules/is-odd/package.json"
+                                .to_string(),
+                        package_json_hash: empty_blake3_hash().to_string(),
+                    },
+                )]),
+            }),
+        };
+
+        assert_eq!(
+            verify_install_layout(&project_dir, &state),
+            Some(
+                "installed package metadata missing: node_modules/.aube/missing/node_modules/is-odd/package.json"
+                    .to_string()
+            )
+        );
+    }
+
+    fn temp_project_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aube-state-tests-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+        dir
+    }
 }

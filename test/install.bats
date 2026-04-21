@@ -216,6 +216,108 @@ JSON
 	run cat node_modules/.aube-state
 	assert_output --partial "lockfile_hash"
 	assert_output --partial "package_json_hashes"
+	assert_output --partial "\"layout\""
+	assert_output --partial "\"direct_entries\""
+	assert_output --partial "\"packages\""
+}
+
+@test "aube install does not treat missing top-level entry as up to date" {
+	_setup_basic_fixture
+
+	run aube install
+	assert_success
+
+	rm node_modules/is-odd
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_link_exists node_modules/is-odd
+}
+
+@test "aube install warm path respects custom modulesDir" {
+	_setup_basic_fixture
+	echo "modulesDir=.modules" >.npmrc
+
+	run aube install
+	assert_success
+	assert_link_exists .modules/is-odd
+
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+
+	rm .modules/is-odd
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_link_exists .modules/is-odd
+}
+
+@test "aube install warm path notices workspace package.json drift" {
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "1.0.0",
+  "private": true
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/a
+	cat >packages/a/package.json <<'JSON'
+{
+  "name": "a",
+  "version": "1.0.0",
+  "dependencies": {
+    "is-odd": "3.0.1"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	assert_link_exists packages/a/node_modules/is-odd
+
+	node -e '
+		const fs = require("fs");
+		const pkg = JSON.parse(fs.readFileSync("packages/a/package.json", "utf8"));
+		pkg.dependencies["is-even"] = "1.0.0";
+		fs.writeFileSync("packages/a/package.json", JSON.stringify(pkg, null, 2));
+	'
+
+	run aube install
+	assert_success
+	refute_output --partial "Already up to date"
+	assert_link_exists packages/a/node_modules/is-even
+}
+
+@test "aube run auto-installs when installed package metadata is missing" {
+	cat >package.json <<'JSON'
+{
+  "name": "missing-installed-metadata",
+  "version": "1.0.0",
+  "scripts": {
+    "check": "node -e 'console.log(require(\"is-odd\")(3))'"
+  },
+  "dependencies": {
+    "is-odd": "3.0.1"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+
+	rm node_modules/.aube/is-odd@3.0.1/node_modules/is-odd/package.json
+
+	run aube run check
+	assert_success
+	assert_output --partial "Auto-installing"
+	assert_output --partial "true"
 }
 
 @test "installed packages are requireable by node" {

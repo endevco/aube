@@ -3879,6 +3879,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             package_content_hashes,
             graph_lthash,
             package_subtree_hashes,
+            state::WriteStateLayout {
+                graph: &graph_for_link,
+                node_linker,
+                modules_dir_name: &modules_dir_name,
+                aube_dir: &aube_dir,
+                virtual_store_dir_max_length,
+                placements: placements_ref,
+            },
         )
         .into_diagnostic()
         .wrap_err("failed to write install state")?;
@@ -4197,7 +4205,7 @@ fn filter_graph_to_importers<const N: usize>(
 /// truncate-and-hash fallback inside `dep_path_to_filename` will
 /// encode to a different filename than the one the linker wrote,
 /// and this function will return a path that doesn't exist.
-fn materialized_pkg_dir(
+pub(crate) fn materialized_pkg_dir(
     aube_dir: &std::path::Path,
     dep_path: &str,
     name: &str,
