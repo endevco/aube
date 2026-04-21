@@ -46,17 +46,20 @@ _write_clean_fixture() {
 	assert_output --partial "no lockfile"
 }
 
-@test "aube audit --ignore-registry-errors exits 0 when registry is unreachable" {
+@test "aube audit --ignore-registry-errors exits 2 with degraded status" {
 	_write_clean_fixture
 	run aube install
 	assert_success
 
-	# Point at a dead port so the bulk POST fails. The flag should swallow
-	# the error and exit cleanly, matching pnpm's CI-friendly behavior.
+	# Point at a dead port so the bulk POST fails. The flag used to
+	# swallow the error and exit 0 with "No known vulnerabilities
+	# found", which masked real CVEs in CI when the registry was
+	# down. Now it exits 2 and says "audit degraded" so downstream
+	# scripts can tell a clean scan from a failed one.
 	echo "registry=http://127.0.0.1:1/" >.npmrc
 	run aube audit --ignore-registry-errors
-	assert_success
-	assert_output --partial "No known vulnerabilities found"
+	[ "$status" -eq 2 ]
+	assert_output --partial "audit degraded"
 }
 
 _start_audit_server() {
