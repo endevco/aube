@@ -225,7 +225,7 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     drop(tmp);
 
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(aube_scripts::exit_code_from_status(status));
     }
     Ok(())
 }
@@ -245,6 +245,15 @@ fn dlx_install_options() -> InstallOptions {
             "false".to_string(),
         ));
     }
+    // Force ignore-scripts on transient dlx installs. User asked to
+    // run one bin. They did not ask postinstall scripts on fresh
+    // downloaded pkg to run. Without this, a user with
+    // `allowedBuildDependencies=["*"]` in ~/.npmrc (common for
+    // convenience) gets every dlx'd package running arbitrary
+    // postinstall code. That is how supply chain attacks land.
+    // pnpm dlx does the same, match it.
+    opts.cli_flags
+        .push(("ignore-scripts".to_string(), "true".to_string()));
     opts
 }
 

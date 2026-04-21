@@ -146,7 +146,12 @@ pub fn compute_graph_hashes_with_patches(
     // allowed to run its scripts. This is the "builds" set.
     let mut builds: FxHashSet<String> = FxHashSet::default();
     for (dep_path, pkg) in &graph.packages {
-        if allow_build(&pkg.name, &pkg.version) {
+        // Feed registry_name to allow_build, not pkg.name. pkg.name
+        // could be an npm: alias from the manifest. Allowlist pins
+        // the real name. Without this, an aliased import smuggles
+        // past the allowlist. Same fix applied at every policy.decide
+        // callsite in aube/ (install/mod.rs, ignored_builds.rs).
+        if allow_build(pkg.registry_name(), &pkg.version) {
             builds.insert(dep_path.clone());
         }
     }

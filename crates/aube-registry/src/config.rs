@@ -912,12 +912,34 @@ fn userconfig_override_from_env(env: &[(String, String)], home: Option<&Path>) -
 }
 
 /// Parse a .npmrc file into key=value pairs.
-/// Supports environment variable substitution (${VAR}).
+/// Supports environment variable substitution (${VAR}) and backslash
+/// line continuation. npm's `ini` parser treats a trailing `\` as
+/// "continue value on next physical line", used for long auth
+/// tokens or multi-value arrays. Without this aube would silently
+/// truncate the value at the first line break and reparse the
+/// continuation as a bogus key.
 fn parse_npmrc(path: &Path) -> Result<Vec<(String, String)>, std::io::Error> {
     let content = std::fs::read_to_string(path)?;
     let mut entries = Vec::new();
 
-    for line in content.lines() {
+    // Fold backslash-continuation before line iteration. Trailing
+    // `\` plus newline gets joined with the next line verbatim.
+    // Same as npm's `ini` semantics.
+    let mut logical: Vec<String> = Vec::new();
+    let mut acc = String::new();
+    for raw in content.lines() {
+        if let Some(stripped) = raw.strip_suffix('\\') {
+            acc.push_str(stripped);
+            continue;
+        }
+        acc.push_str(raw);
+        logical.push(std::mem::take(&mut acc));
+    }
+    if !acc.is_empty() {
+        logical.push(acc);
+    }
+
+    for line in &logical {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
@@ -1101,7 +1123,23 @@ fn normalize_registry_url(url: &str) -> String {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
+    // HOME wins if set. Covers every Unix plus POSIX-compat Windows
+    // shells (Git Bash, MSYS, WSL invoked from Windows) that set it.
+    // USERPROFILE is the native Windows fallback. Old code was HOME
+    // only which meant vanilla `cmd.exe` / PowerShell users had their
+    // `%USERPROFILE%\.npmrc` auth tokens silently ignored, so any
+    // aube install against a private registry returned 401 with no
+    // hint why.
+    if let Ok(h) = std::env::var("HOME") {
+        return Some(PathBuf::from(h));
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(p) = std::env::var("USERPROFILE") {
+            return Some(PathBuf::from(p));
+        }
+    }
+    None
 }
 
 /// Resolve the path to pnpm's global auth file. When an explicit

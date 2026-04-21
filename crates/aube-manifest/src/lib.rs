@@ -79,6 +79,32 @@ where
     })
 }
 
+/// Tolerant dep-map deserializer. Same shape as scripts_tolerant
+/// but used for dependencies / devDependencies / peerDependencies /
+/// optionalDependencies. Real world manifests written by tools
+/// sometimes emit `"peerDependencies": null` when a package has
+/// none, and strict Record<string, string> deserialization rejects
+/// that. npm and pnpm both tolerate null. Drop non-string values
+/// (numbers, arrays, objects) silently since nothing sensible maps
+/// those to a version range.
+pub fn deps_tolerant<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(de)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => BTreeMap::new(),
+        Some(serde_json::Value::Object(m)) => m
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::String(s) => Some((k, s)),
+                _ => None,
+            })
+            .collect(),
+        Some(_) => BTreeMap::new(),
+    })
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateConfig {
@@ -93,13 +119,29 @@ pub struct PackageJson {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deps_tolerant",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub dependencies: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deps_tolerant",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub dev_dependencies: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deps_tolerant",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub peer_dependencies: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deps_tolerant",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub optional_dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_config: Option<UpdateConfig>,
@@ -164,6 +206,12 @@ impl BundledDependencies {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Workspaces {
+    /// Bare single-pattern form. npm accepts
+    /// `"workspaces": "packages/*"` even though the docs only show
+    /// the array form. Some bun projects in the wild use it too.
+    /// Without this, those manifests fail to parse and user gets a
+    /// cryptic serde error pointing at the string.
+    String(String),
     Array(Vec<String>),
     Object {
         // `packages` stays required (no `#[serde(default)]`) so that a
@@ -189,6 +237,7 @@ pub enum Workspaces {
 impl Workspaces {
     pub fn patterns(&self) -> &[String] {
         match self {
+            Workspaces::String(s) => std::slice::from_ref(s),
             Workspaces::Array(v) => v,
             Workspaces::Object { packages, .. } => packages,
         }
@@ -199,7 +248,7 @@ impl Workspaces {
     pub fn catalog(&self) -> &BTreeMap<String, String> {
         static EMPTY: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
         match self {
-            Workspaces::Array(_) => EMPTY.get_or_init(BTreeMap::new),
+            Workspaces::String(_) | Workspaces::Array(_) => EMPTY.get_or_init(BTreeMap::new),
             Workspaces::Object { catalog, .. } => catalog,
         }
     }
@@ -209,7 +258,7 @@ impl Workspaces {
         static EMPTY: std::sync::OnceLock<BTreeMap<String, BTreeMap<String, String>>> =
             std::sync::OnceLock::new();
         match self {
-            Workspaces::Array(_) => EMPTY.get_or_init(BTreeMap::new),
+            Workspaces::String(_) | Workspaces::Array(_) => EMPTY.get_or_init(BTreeMap::new),
             Workspaces::Object { catalogs, .. } => catalogs,
         }
     }
@@ -875,9 +924,38 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     path: &Path,
     content: String,
 ) -> Result<T, Error> {
+    // Strip leading UTF-8 BOM (U+FEFF, bytes EF BB BF). Notepad on
+    // Windows writes BOM by default. VS Code can be configured to do
+    // the same. serde_json does not tolerate BOM, errors at "line 1
+    // column 1". npm and pnpm both tolerate it. Without this strip,
+    // opening package.json in Notepad, saving, then running aube
+    // returns a cryptic parse error. Cheap fix, no downside.
+    let content = if let Some(stripped) = content.strip_prefix('\u{FEFF}') {
+        stripped.to_owned()
+    } else {
+        content
+    };
     match serde_json::from_str(&content) {
         Ok(v) => Ok(v),
-        Err(e) => Err(Error::parse(path, content, &e)),
+        Err(e) => {
+            // Helpful targeted message when the file looks like
+            // JSONC. VS Code and other editors happily write `//`
+            // and `/* */` into package.json and the user gets a
+            // raw serde "expected `,` or `}`" pointing at a
+            // random byte. Detect the common comment markers up
+            // front so the error tells the user what is wrong.
+            let trimmed = content.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+                return Err(Error::parse_msg(
+                    path,
+                    content,
+                    "package.json cannot contain JSON comments. \
+                     Remove any `//` or `/* */` lines. aube does not support JSONC for package.json"
+                        .to_string(),
+                ));
+            }
+            Err(Error::parse(path, content, &e))
+        }
     }
 }
 
@@ -910,6 +988,23 @@ impl Error {
     /// to [`ParseError::from_yaml_err`].
     pub fn parse_yaml_err(path: &Path, content: String, err: &serde_yaml::Error) -> Self {
         Error::Parse(Box::new(ParseError::from_yaml_err(path, content, err)))
+    }
+
+    /// Build an [`Error::Parse`] with a plain message and a span
+    /// pointing at the start of the file. Used for hand-crafted
+    /// pre-parse diagnostics like the JSONC comment detector,
+    /// where we want a clear message without serde's usual
+    /// cryptic one.
+    pub fn parse_msg(path: &Path, content: String, message: String) -> Self {
+        let len = content.len();
+        let src = miette::NamedSource::new(path.display().to_string(), content);
+        let span = miette::SourceSpan::new(0.into(), len.min(1));
+        Error::Parse(Box::new(ParseError {
+            path: path.to_path_buf(),
+            message,
+            src,
+            span,
+        }))
     }
 }
 

@@ -8,7 +8,7 @@ pub struct ExecArgs {
     /// Binary name
     pub bin: String,
     /// Arguments to pass to the binary
-    #[arg(trailing_var_arg = true)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
     /// Continue recursive execution after a command fails.
     ///
@@ -142,7 +142,7 @@ async fn run_filtered(
             match task.await {
                 Ok(Ok(status)) => {
                     if !status.success() && first_exit.is_none() {
-                        let code = status.code().unwrap_or(1);
+                        let code = aube_scripts::exit_code_from_status(status);
                         first_exit = Some(code);
                         first_err =
                             Some(miette!("aube exec: `{bin}` failed in {name} (exit {code})"));
@@ -207,7 +207,7 @@ async fn exec_bin(
         .wrap_err("failed to execute binary")?;
 
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(aube_scripts::exit_code_from_status(status));
     }
 
     Ok(())

@@ -254,7 +254,30 @@ pub fn write_state(
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(&state)?;
-    std::fs::write(state_path, json)?;
+    // Atomic write via tempfile + rename. Old `fs::write` truncated
+    // the file in place, so Ctrl+C, AV quarantine, or a crash mid
+    // `write_all` left the state file zero bytes or partial JSON.
+    // Next install saw corrupt state, fell back to "install state
+    // not found" and ran a full cold install. User wondered why
+    // frozen fast path never kicked in. Rename on POSIX is atomic,
+    // on Windows ReplaceFileW behaves similarly post Win10.
+    let parent = state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = tempfile::Builder::new()
+        .prefix(".aube-state-")
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    use std::io::Write as _;
+    {
+        let mut f = tmp.as_file();
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+    }
+    // persist() does the atomic rename. On Windows it still succeeds
+    // when the target exists via MoveFileEx semantics.
+    tmp.persist(&state_path)
+        .map_err(|e| std::io::Error::other(format!("persist state: {e}")))?;
 
     Ok(())
 }
@@ -621,6 +644,68 @@ fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
             hasher.update(&bytes);
         }
         hasher.update(b"\x1e");
+    }
+    hasher.update(b"\0");
+    // Raw `.npmrc` bytes. Resolved settings above only cover the
+    // install-shape keys we read. A user swapping `registry=` or
+    // `//host/:_authToken=` changes what tarballs we would fetch
+    // but the resolved-values hash never noticed, so fast path
+    // stayed green while the actual source of truth for deps
+    // changed. Hashing raw bytes is coarse (comment edits
+    // invalidate too) but correct.
+    hasher.update(b"npmrc=");
+    {
+        let path = project_dir.join(".npmrc");
+        hasher.update(b".npmrc\x1f");
+        if let Ok(bytes) = std::fs::read(&path) {
+            hasher.update(&bytes);
+        }
+        hasher.update(b"\x1e");
+    }
+    hasher.update(b"\0");
+    // OS + arch + libc. Optional deps filter by these. Swap host
+    // between runs (committed node_modules across machines, shared
+    // CI cache volume, Rosetta switch) and the correct prebuilts
+    // change. Old fast path did not notice and skipped the install,
+    // node_modules had the wrong variant for the active host.
+    hasher.update(b"host=");
+    hasher.update(std::env::consts::OS.as_bytes());
+    hasher.update(b"\x1f");
+    hasher.update(std::env::consts::ARCH.as_bytes());
+    hasher.update(b"\x1f");
+    // Piggyback on resolver's runtime libc probe. OS != linux
+    // returns empty string, harmless but stable.
+    hasher.update(aube_resolver::platform::host_triple().2.as_bytes());
+    hasher.update(b"\0");
+    // Patches dir. patch-commit and patch-remove touch patches in
+    // `<project>/patches/` and `.aube-patches.json`. Old fast path
+    // did not hash either. User edits a patch file, next install
+    // says up-to-date, node_modules still has old patched content.
+    hasher.update(b"patches=");
+    let patches_sidecar = project_dir.join(".aube-patches.json");
+    if let Ok(bytes) = std::fs::read(&patches_sidecar) {
+        hasher.update(b".aube-patches.json\x1f");
+        hasher.update(&bytes);
+        hasher.update(b"\x1e");
+    }
+    let patches_dir = project_dir.join("patches");
+    if let Ok(entries) = std::fs::read_dir(&patches_dir) {
+        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        // Sort so hash is deterministic across filesystems that
+        // return dir entries in different order (ext4 vs tmpfs vs
+        // NTFS).
+        paths.sort();
+        for p in paths {
+            let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            hasher.update(name.as_bytes());
+            hasher.update(b"\x1f");
+            if let Ok(bytes) = std::fs::read(&p) {
+                hasher.update(&bytes);
+            }
+            hasher.update(b"\x1e");
+        }
     }
     hasher.update(b"\0");
     format!("blake3:{}", hasher.finalize().to_hex())

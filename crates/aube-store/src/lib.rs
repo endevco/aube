@@ -219,16 +219,58 @@ impl Store {
                 use std::io::Write;
                 file.write_all(content)
                     .map_err(|e| Error::Io(store_path.clone(), e))?;
+                // fsync before closing. write_all returning success
+                // only gets the bytes into the kernel page cache, not
+                // onto stable storage. If the host crashes or power
+                // fails between write_all and the next checkpoint,
+                // a hardlink pointing at this inode can survive with
+                // zero-byte content. Next install reuses it via the
+                // AlreadyExists fast path and ships empty files into
+                // node_modules. Real failure mode reported by users
+                // of other tools, fsync kills the class at modest
+                // cost (one syscall per new CAS file, cold install
+                // only since warm runs hit AlreadyExists and skip
+                // the write). Ignore fsync errors on platforms where
+                // sync_all is unsupported but do not swallow IO
+                // errors from real failures.
+                file.sync_all()
+                    .map_err(|e| Error::Io(store_path.clone(), e))?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Another writer already populated this content — skip.
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Shard dir missing. `ensure_shards_exist` pre-creates
-                // all 256, so this only fires when the caller didn't
-                // call it (or the shard tree was wiped mid-install).
-                // Fall back to the slow path for correctness.
-                xx::file::write(&store_path, content).map_err(|e| Error::Xx(e.to_string()))?;
+                // Shard dir missing. ensure_shards_exist pre-creates
+                // all 256 shards so this only fires when the caller
+                // did not call it, or a concurrent prune wiped the
+                // shard tree mid-install. Recreate the shard dir
+                // then retry the atomic create_new path rather than
+                // falling back to xx::file::write which truncates
+                // in place and has no fsync. Non-atomic fallback
+                // left room for a torn CAS file after a second
+                // crash.
+                if let Some(parent) = store_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+                }
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&store_path)
+                {
+                    Ok(mut file) => {
+                        use std::io::Write;
+                        file.write_all(content)
+                            .map_err(|e| Error::Io(store_path.clone(), e))?;
+                        file.sync_all()
+                            .map_err(|e| Error::Io(store_path.clone(), e))?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // Another writer raced us. Same-content CAS
+                        // guarantees the existing file is correct.
+                    }
+                    Err(e) => return Err(Error::Io(store_path.clone(), e)),
+                }
             }
             Err(e) => return Err(Error::Io(store_path.clone(), e)),
         }
@@ -262,7 +304,22 @@ impl Store {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    xx::file::write(&exec_marker, "").map_err(|e| Error::Xx(e.to_string()))?;
+                    // Same as above, recreate the shard, retry
+                    // atomic create_new. Marker is a zero-byte
+                    // sidecar, no content to sync.
+                    if let Some(parent) = exec_marker.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+                    }
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&exec_marker)
+                    {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(e) => return Err(Error::Io(exec_marker.clone(), e)),
+                    }
                 }
                 Err(e) => return Err(Error::Io(exec_marker, e)),
             }
@@ -528,6 +585,44 @@ fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
                         "tarball entry path contains a malformed component: {raw:?}"
                     )));
                 }
+                // Windows-only filename restrictions. Gated to
+                // cfg(windows) so Unix hosts keep tarballs with
+                // valid-on-Linux names like `CON.js` or `foo.`.
+                // Rejecting those cross-platform would regress real
+                // Linux installs for a hazard that only hits
+                // Windows users. Windows users get the checks they
+                // need, portability of a package to Windows is the
+                // publisher's problem to validate.
+                #[cfg(windows)]
+                {
+                    // NTFS reserved device names. `CON`, `con.txt`,
+                    // `CON.tar.gz` all resolve to the console
+                    // device. Writing one either fails with
+                    // ERROR_INVALID_NAME or gets silently consumed
+                    // by the device driver and hangs the writer.
+                    if is_windows_reserved_name(s) {
+                        return Err(Error::Tar(format!(
+                            "tarball entry path contains a Windows reserved device name: {raw:?}"
+                        )));
+                    }
+                    // NTFS strips trailing `.` and trailing space
+                    // on create so `foo` and `foo.` alias. Reject
+                    // both rather than sort out aliasing at
+                    // materialize time.
+                    if s.ends_with('.') || s.ends_with(' ') {
+                        return Err(Error::Tar(format!(
+                            "tarball entry path has a trailing dot or space which Windows strips: {raw:?}"
+                        )));
+                    }
+                    // Control chars 0x01..0x1F invalid on NTFS.
+                    // Reject the whole tarball instead of hitting
+                    // per-file create errors mid-extract.
+                    if s.bytes().any(|b| b < 0x20) {
+                        return Err(Error::Tar(format!(
+                            "tarball entry path contains control characters: {raw:?}"
+                        )));
+                    }
+                }
                 if !out.is_empty() {
                     out.push('/');
                 }
@@ -559,6 +654,42 @@ fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
     } else {
         Ok(Some(out))
     }
+}
+
+/// Check if a tarball path component matches a Windows reserved
+/// device name. Compare case-insensitively on the stem only.
+/// `CON`, `Con`, `con`, `con.txt`, `CON.tar.gz` all resolve to the
+/// same DOS device on NTFS. Only base name matters, the extension
+/// is irrelevant to the device lookup.
+#[cfg(windows)]
+fn is_windows_reserved_name(name: &str) -> bool {
+    let stem = name.split_once('.').map(|(a, _)| a).unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 /// Hard ceiling on the per-entry `Vec::with_capacity` hint. 64 KiB

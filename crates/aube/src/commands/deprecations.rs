@@ -15,7 +15,7 @@ use aube_registry::Packument;
 use aube_resolver::is_deprecation_allowed;
 use clap::Args;
 use clx::style;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, IntoDiagnostic};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -57,7 +57,7 @@ pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
             eprintln!("No lockfile found. Run `aube install` first.");
             return Ok(Some(0));
         }
-        Err(e) => return Err(miette!(e)).wrap_err("failed to parse lockfile"),
+        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
     let allowed = manifest.allowed_deprecated_versions();

@@ -377,9 +377,17 @@ pub fn apply_peer_contexts(
         current = next;
     }
     if !converged {
-        tracing::warn!(
-            "peer-context pass hit MAX_ITERATIONS={MAX_ITERATIONS} without converging — \
-             lockfile may not be byte-identical to pnpm's nested form"
+        // Hit iteration cap. Means mutually recursive peers or
+        // genuine cycle. Lockfile now has partial nested suffixes.
+        // Linker downstream will wire symlinks against incomplete
+        // graph. Returning this silently ships broken node_modules.
+        // Old code used warn!, warn gets swallowed in CI. Bump to
+        // error! so ops see it. Proper fix is returning a Result
+        // from apply_peer_contexts but that cascades up through
+        // Resolver::resolve signature, do that separately.
+        tracing::error!(
+            "peer-context hit MAX_ITERATIONS={MAX_ITERATIONS} without convergence. \
+             mutually recursive peers likely. lockfile incomplete, linker output will be wrong"
         );
     }
     // `dedupe-peers=true` rewrites the parenthesized peer suffix to

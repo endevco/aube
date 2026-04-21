@@ -113,8 +113,11 @@ pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<V
         if !seen.insert((pkg.name.clone(), pkg.version.clone())) {
             continue;
         }
+        // Match on registry_name, not pkg.name. Allowlist pins the
+        // real pkg name. npm: alias would sneak past otherwise. Same
+        // fix as every other policy.decide callsite.
         if matches!(
-            policy.decide(&pkg.name, &pkg.version),
+            policy.decide(pkg.registry_name(), &pkg.version),
             aube_scripts::AllowDecision::Allow
         ) {
             continue;

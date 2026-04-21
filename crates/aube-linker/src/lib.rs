@@ -14,6 +14,93 @@ mod hoisted;
 pub mod sys;
 pub use hoisted::HoistedPlacements;
 
+/// Sweep orphan `.tmp-<pid>-*` directories in the virtual store.
+///
+/// Linker materializes each package into `.tmp-<pid>-<subdir>/`
+/// then atomic-renames into `.aube/<subdir>/`. Crash or Ctrl-C
+/// between materialize and rename leaves the tmp dir behind.
+/// Nothing else cleans these up so they accumulate on every aborted
+/// install. Small footprint per entry but a few hundred aborted
+/// CI runs pile up gigabytes.
+///
+/// Called early in link_all so each fresh install reclaims space
+/// from prior crashes. Only matches the exact prefix we produce so
+/// user files named `.tmp-*` in the virtual store are safe.
+pub fn sweep_stale_tmp_dirs(virtual_store: &Path) {
+    let Ok(entries) = std::fs::read_dir(virtual_store) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Match our exact prefix. Format: `.tmp-<pid>-<subdir>`
+        // where pid is numeric.
+        if !name.starts_with(".tmp-") {
+            continue;
+        }
+        let rest = &name[".tmp-".len()..];
+        let Some((pid_str, _rest)) = rest.split_once('-') else {
+            continue;
+        };
+        if pid_str.chars().any(|c| !c.is_ascii_digit()) {
+            continue;
+        }
+        // Do not touch the dir of our own still-running process.
+        // Materialize path creates and removes its tmp dir in the
+        // same call and crashes mid-way are the target here, the
+        // active pid will not leave ones around that matter.
+        if pid_str == std::process::id().to_string() {
+            continue;
+        }
+        let _ = remove_dir_all_with_retry(&entry.path());
+    }
+}
+
+/// Remove a directory with retry on Windows sharing violations.
+///
+/// Windows does not let you delete a file while another process holds
+/// a handle open. Dev server, vitest watcher, tsc --watch all hold
+/// .js / .node files inside node_modules. aube reinstall hits ERROR
+/// 32 (SHARING_VIOLATION) or ERROR 5 (ACCESS_DENIED, AV scanner
+/// mid-scan) and leaves a half-deleted virtual store. pnpm, npm,
+/// rimraf all retry with backoff. Do the same. Unix passthrough.
+///
+/// Retries 10 times with exponential backoff starting at 50ms. Total
+/// worst case around 10 seconds which is tolerable for an install
+/// already paying for filesystem work.
+pub fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        return std::fs::remove_dir_all(path);
+    }
+    #[cfg(windows)]
+    {
+        use std::io::ErrorKind;
+        let mut delay_ms = 50u64;
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(e) => {
+                    // Sharing violation and PermissionDenied both
+                    // map to retriable Windows errors. Bail on
+                    // attempt 10.
+                    let retriable =
+                        matches!(e.kind(), ErrorKind::PermissionDenied | ErrorKind::Other)
+                            || e.raw_os_error() == Some(32);
+                    if !retriable || attempt == 9 {
+                        return Err(e);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    delay_ms = (delay_ms * 2).min(2000);
+                }
+            }
+        }
+        // Unreachable, loop always returns by attempt 10.
+        Ok(())
+    }
+}
+
 /// Real workspace importer, not a peer-context bookkeeping entry.
 ///
 /// pnpm v9 lockfiles record the peer-resolution view of each
@@ -625,9 +712,28 @@ impl Linker {
     }
 
     /// Detect the best linking strategy for the filesystem at the given path.
+    ///
+    /// One-arg form. Probes within one dir. Fine when store and
+    /// project node_modules share the same mount. Use the two-arg
+    /// form for installs where the store lives on a different
+    /// filesystem than the project (USB drives, bind mounts, Docker
+    /// volumes, cross-drive Windows installs). Otherwise the probe
+    /// reports reflink or hardlink based on project-FS self-test,
+    /// then every real link call crosses an FS boundary and hits
+    /// EXDEV. Runtime falls back to `fs::copy` per file silently,
+    /// thousands of wasted syscalls, user thinks they got hardlinks.
     pub fn detect_strategy(path: &Path) -> LinkStrategy {
-        let test_src = path.join(".aube-link-test-src");
-        let test_dst = path.join(".aube-link-test-dst");
+        Self::detect_strategy_cross(path, path)
+    }
+
+    /// Two-arg probe. src is the store shard (or any dir on the
+    /// store FS), dst is the project modules dir (or any dir on the
+    /// destination FS). Probe creates a real cross-mount src file
+    /// and tries to reflink/hardlink into dst, which catches EXDEV
+    /// up front.
+    pub fn detect_strategy_cross(src_dir: &Path, dst_dir: &Path) -> LinkStrategy {
+        let test_src = src_dir.join(".aube-link-test-src");
+        let test_dst = dst_dir.join(".aube-link-test-dst");
 
         if std::fs::write(&test_src, b"test").is_ok() {
             if reflink_copy::reflink(&test_src, &test_dst).is_ok() {
@@ -677,7 +783,9 @@ impl Linker {
             // stale tree would keep satisfying phantom deps for any
             // leftover `.aube/<dep_path>/` directories until their
             // eventual cleanup. Honors `virtualStoreDir`.
-            let _ = std::fs::remove_dir_all(self.aube_dir_for(project_dir).join("node_modules"));
+            let _ = crate::remove_dir_all_with_retry(
+                &self.aube_dir_for(project_dir).join("node_modules"),
+            );
             stats.hoisted_placements = Some(placements);
             return Ok(stats);
         }
@@ -686,6 +794,12 @@ impl Linker {
         let aube_dir = self.aube_dir_for(project_dir);
 
         xx::file::mkdirp(&aube_dir).map_err(|e| Error::Xx(e.to_string()))?;
+
+        // Reclaim space from prior aborted installs. A crash or
+        // Ctrl+C between materialize_into and the atomic rename
+        // leaves `.tmp-<pid>-*` dirs in the virtual store. Sweep
+        // them now so the current install starts clean.
+        sweep_stale_tmp_dirs(&aube_dir);
 
         // Clean up stale top-level entries not in the current graph.
         // With shamefully_hoist, every package name in the graph is
@@ -984,7 +1098,11 @@ impl Linker {
         // driver's responsibility to skip in this mode.
         if self.virtual_store_only {
             self.link_hidden_hoist(&aube_dir, graph)?;
-            write_applied_patches(&nm, &curr_applied);
+            if let Err(e) = write_applied_patches(&nm, &curr_applied) {
+                log::error!(
+                    "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
+                );
+            }
             return Ok(stats);
         }
 
@@ -1098,7 +1216,11 @@ impl Linker {
         // root-level symlinks even on name clashes.
         self.link_hidden_hoist(&aube_dir, graph)?;
 
-        write_applied_patches(&nm, &curr_applied);
+        if let Err(e) = write_applied_patches(&nm, &curr_applied) {
+            log::error!(
+                "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
+            );
+        }
         Ok(stats)
     }
 
@@ -1173,7 +1295,7 @@ impl Linker {
         // `.aube/node_modules/` left behind by a prior isolated
         // install so hoisted's dotfile-preserving cleanup doesn't
         // leak a stale hidden tree. Honors `virtualStoreDir`.
-        let _ = std::fs::remove_dir_all(self.aube_dir_for(root_dir).join("node_modules"));
+        let _ = crate::remove_dir_all_with_retry(&self.aube_dir_for(root_dir).join("node_modules"));
         stats.hoisted_placements = Some(placements);
         Ok(stats)
     }
@@ -1394,7 +1516,11 @@ impl Linker {
                 }
             }
             self.link_hidden_hoist(&aube_dir, graph)?;
-            write_applied_patches(&root_nm, &curr_applied);
+            if let Err(e) = write_applied_patches(&root_nm, &curr_applied) {
+                log::error!(
+                    "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
+                );
+            }
             return Ok(stats);
         }
 
@@ -1670,7 +1796,11 @@ impl Linker {
         // sufficient for the whole workspace.
         self.link_hidden_hoist(&aube_dir, graph)?;
 
-        write_applied_patches(&root_nm, &curr_applied);
+        if let Err(e) = write_applied_patches(&root_nm, &curr_applied) {
+            log::error!(
+                "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
+            );
+        }
         Ok(stats)
     }
 
@@ -2333,37 +2463,53 @@ fn read_applied_patches(nm_dir: &Path) -> std::collections::BTreeMap<String, Str
 /// `aube-linker` for one file. Returns `None` on any malformed input
 /// so the caller falls back to "no previous state."
 fn serde_json_parse_map(s: &str) -> Option<std::collections::BTreeMap<String, String>> {
-    let s = s.trim();
-    let s = s.strip_prefix('{')?.strip_suffix('}')?;
-    let mut out = std::collections::BTreeMap::new();
-    if s.trim().is_empty() {
-        return Some(out);
-    }
-    for entry in s.split(',') {
-        let (k, v) = entry.split_once(':')?;
-        let k = k.trim().trim_matches('"');
-        let v = v.trim().trim_matches('"');
-        out.insert(k.to_string(), v.to_string());
-    }
-    Some(out)
+    // Old code hand-rolled JSON with split(',') and trim_matches('"').
+    // Breaks on any key or value containing a comma, escaped quote,
+    // or backslash. Keys are name@version strings today but patch
+    // content hashes are fine, and if pnpm ever extends the key
+    // schema this blows up. Real JSON parser handles escaping.
+    serde_json::from_str(s).ok()
 }
 
-/// Write the applied-patch sidecar so the next install can detect
-/// added/removed/changed patches and re-materialize the affected
-/// `.aube/<dep_path>` entries. Best-effort: a write error here just
-/// means the next run will conservatively wipe more entries than
-/// strictly necessary.
-fn write_applied_patches(nm_dir: &Path, map: &std::collections::BTreeMap<String, String>) {
+/// Write the applied-patch sidecar.
+///
+/// Next install reads this to compute which `.aube/<dep_path>`
+/// entries need re-materializing because their patch set changed.
+/// Old code was `let _ = fs::write(...)`, dropped any IO error. If
+/// write silently failed (disk full, read-only mount, perms), the
+/// sidecar was missing on next install, and
+/// wipe_changed_patched_entries did not know which entries to
+/// re-link. Install reported success while node_modules had stale
+/// patched content on disk. Return Result, caller logs loudly.
+fn write_applied_patches(
+    nm_dir: &Path,
+    map: &std::collections::BTreeMap<String, String>,
+) -> std::io::Result<()> {
     let path = nm_dir.join(".aube-applied-patches.json");
-    let mut out = String::from("{");
-    for (i, (k, v)) in map.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&format!("\"{k}\":\"{v}\""));
+    let out = serde_json::to_string(map)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // Atomic write via tempfile + rename. Old fs::write truncated
+    // in place. Kill aube mid write (Ctrl+C, power loss, AV
+    // quarantine), sidecar ends up empty or partial JSON. Next
+    // install treats it as "no previous patches" and skips the
+    // diff, leaving stale patched entries materialized in
+    // node_modules that should have been re-linked.
+    if !nm_dir.exists() {
+        std::fs::create_dir_all(nm_dir)?;
     }
-    out.push('}');
-    let _ = std::fs::write(path, out);
+    let tmp = tempfile::Builder::new()
+        .prefix(".aube-applied-patches-")
+        .suffix(".tmp")
+        .tempfile_in(nm_dir)?;
+    {
+        use std::io::Write as _;
+        let mut f = tmp.as_file();
+        f.write_all(out.as_bytes())?;
+        f.sync_all()?;
+    }
+    tmp.persist(&path)
+        .map_err(|e| std::io::Error::other(format!("persist applied-patches: {e}")))?;
+    Ok(())
 }
 
 /// Wipe `.aube/<dep_path>` for any package whose patch fingerprint

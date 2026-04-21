@@ -114,6 +114,84 @@ pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
     }
 }
 
+/// Shell-quote one arg for safe splicing into a shell command line.
+///
+/// Used by `aube run <script> -- args`. Args get joined into the
+/// script string, then sh -c or cmd /c reparses the whole thing. If
+/// user arg contains $, backticks, ;, |, &, (, ), etc, the shell
+/// interprets those as metacharacters. That is shell injection.
+/// `aube run echo 'hello; rm -rf ~'` would run two commands. Same
+/// issue npm had pre-2016. Quote each arg so shell treats it as one
+/// literal token.
+///
+/// Unix: wrap in single quotes. sh treats interior of '...' as pure
+/// literal with one exception, embedded single quote. Handle that
+/// with the standard '\'' escape trick: close the single-quoted
+/// string, emit an escaped quote, reopen. Works in every POSIX sh.
+///
+/// Windows cmd.exe: wrap in double quotes. cmd interprets many
+/// metachars even inside double quotes, but CreateProcessW hands the
+/// string to our spawn_shell that uses `/d /s /c "..."`, the outer
+/// quotes get stripped per /s rule and the content runs. Escape
+/// interior " and backslash per CommandLineToArgvW. Full cmd.exe
+/// metachar caret-escaping is a rabbit hole, so this is best-effort,
+/// works for the common cases, matches what node's shell-quote does.
+pub fn shell_quote_arg(arg: &str) -> String {
+    #[cfg(unix)]
+    {
+        let mut out = String::with_capacity(arg.len() + 2);
+        out.push('\'');
+        for ch in arg.chars() {
+            if ch == '\'' {
+                out.push_str("'\\''");
+            } else {
+                out.push(ch);
+            }
+        }
+        out.push('\'');
+        out
+    }
+    #[cfg(windows)]
+    {
+        let mut out = String::with_capacity(arg.len() + 2);
+        out.push('"');
+        for ch in arg.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                _ => out.push(ch),
+            }
+        }
+        out.push('"');
+        out
+    }
+}
+
+/// Translate child ExitStatus to a parent exit code.
+///
+/// On Unix a signal-killed child has None from .code(). Old code
+/// collapsed that to 1. That loses signal identity: SIGKILL (OOM
+/// killer, exit 137), SIGSEGV (139), Ctrl-C (130) all look like
+/// plain exit 1. CI pipelines watching for 137 to detect OOM cannot
+/// distinguish it from a normal script error anymore. Bash convention
+/// is 128 + signum, match that.
+///
+/// Windows has no signal concept so .code() is always Some, the
+/// fallback 1 is dead code there but keeps the function total.
+pub fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig;
+        }
+    }
+    1
+}
+
 fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &ScriptSettings) {
     // Strip credentials that aube itself owns before we spawn any
     // lifecycle script. AUBE_AUTH_TOKEN is aube's own registry login

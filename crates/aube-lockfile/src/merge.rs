@@ -163,21 +163,38 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
     for (dep_path, incoming) in src.packages {
         match dst.packages.remove(&dep_path) {
             Some(existing) => {
-                if existing.version != incoming.version || existing.integrity != incoming.integrity
-                {
+                let version_diff = existing.version != incoming.version;
+                let integrity_diff = existing.integrity != incoming.integrity;
+                if version_diff || integrity_diff {
+                    // Integrity mismatch on same version is a real
+                    // supply chain signal. Means one branch fetched
+                    // a tarball with different bytes than the other.
+                    // Registry re-publish, mirror replay, or worse.
+                    // Flag it LOUDER than a plain version conflict
+                    // so the user actually investigates instead of
+                    // just accepting "higher semver wins" silently.
                     let keep_existing = prefer_higher_version(&existing.version, &incoming.version);
                     let chosen = if keep_existing { existing } else { incoming };
-                    report.conflicts.push(format!(
-                        "{dep_path}: conflicting package records; kept version {}",
-                        chosen.version
-                    ));
-                    tracing::warn!(
-                        "merge conflict on {dep_path}: kept version {} (inputs disagreed on version or integrity)",
-                        chosen.version
-                    );
+                    let reason = if !version_diff && integrity_diff {
+                        format!(
+                            "INTEGRITY MISMATCH on same version {} (one branch may have \
+                             a tampered or re-published tarball, investigate before \
+                             trusting the merged lockfile)",
+                            chosen.version
+                        )
+                    } else if version_diff && integrity_diff {
+                        format!(
+                            "version and integrity both differ, kept version {}",
+                            chosen.version
+                        )
+                    } else {
+                        format!("version differs, kept {}", chosen.version)
+                    };
+                    report.conflicts.push(format!("{dep_path}: {reason}"));
+                    tracing::warn!("merge conflict on {dep_path}: {reason}");
                     dst.packages.insert(dep_path, chosen);
                 } else {
-                    // Identical — just put the existing one back.
+                    // Identical. Put existing one back.
                     dst.packages.insert(dep_path, existing);
                 }
             }
@@ -191,8 +208,8 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
     // one whose `dep_path` sorts higher by semver; same DirectDep name
     // with identical dep_path is a no-op.
     for (importer_key, incoming_deps) in src.importers {
-        let entry = dst.importers.entry(importer_key).or_default();
-        merge_direct_deps(entry, incoming_deps);
+        let entry = dst.importers.entry(importer_key.clone()).or_default();
+        merge_direct_deps(entry, incoming_deps, &importer_key, report);
     }
 
     // Overrides / ignored / skipped / times / catalogs: union where
@@ -200,7 +217,27 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
     // round-trip stability (the primary lockfile is authoritative for
     // header fields like `auto_install_peers`).
     for (k, v) in src.overrides {
-        dst.overrides.entry(k).or_insert(v);
+        // Old code was or_insert which silently picked base on a
+        // collision. User intent divergence dropped without a
+        // peep. Now record the conflict when values differ, still
+        // pick base for determinism but tell the user the other
+        // branch wanted something else.
+        use std::collections::btree_map::Entry;
+        match dst.overrides.entry(k) {
+            Entry::Vacant(slot) => {
+                slot.insert(v);
+            }
+            Entry::Occupied(slot) => {
+                if slot.get() != &v {
+                    report.conflicts.push(format!(
+                        "override `{}`: kept {} over {}",
+                        slot.key(),
+                        slot.get(),
+                        v
+                    ));
+                }
+            }
+        }
     }
     for name in src.ignored_optional_dependencies {
         dst.ignored_optional_dependencies.insert(name);
@@ -227,19 +264,69 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
             .or_insert(incoming_time);
     }
     for (cat_name, entries) in src.catalogs {
+        // Catalog merge used to be silent first-write-wins. Two
+        // branches bumping the same catalog pin (`react: ^18` vs
+        // `^19`) left base untouched with zero user feedback.
+        // Catalog drift is a root cause of "works on my branch,
+        // fails in CI" since the bumped version never reaches the
+        // merged lockfile. Record conflicts now.
+        use std::collections::btree_map::Entry;
+        let cat_label = cat_name.clone();
         let merged = dst.catalogs.entry(cat_name).or_default();
         for (name, entry) in entries {
-            merged.entry(name).or_insert(entry);
+            match merged.entry(name) {
+                Entry::Vacant(slot) => {
+                    slot.insert(entry);
+                }
+                Entry::Occupied(slot) => {
+                    if slot.get().specifier != entry.specifier {
+                        report.conflicts.push(format!(
+                            "catalog `{}` entry `{}`: kept {} over {}",
+                            cat_label,
+                            slot.key(),
+                            slot.get().specifier,
+                            entry.specifier
+                        ));
+                    }
+                }
+            }
         }
     }
 }
 
-fn merge_direct_deps(dst: &mut Vec<DirectDep>, incoming: Vec<DirectDep>) {
+fn merge_direct_deps(
+    dst: &mut Vec<DirectDep>,
+    incoming: Vec<DirectDep>,
+    importer_key: &str,
+    report: &mut MergeReport,
+) {
     let mut by_name: BTreeMap<String, DirectDep> =
         dst.drain(..).map(|d| (d.name.clone(), d)).collect();
     for dep in incoming {
         match by_name.remove(&dep.name) {
             Some(existing) => {
+                // Record the conflict when the user's declared
+                // range differs between branches. Old code picked
+                // the entry with the higher resolved dep_path
+                // version silently, which overwrote the user's
+                // manifest intent. If branch-A had "^1" and
+                // branch-B had "^2", branch-B won but the user on
+                // branch-A never learned their pin got clobbered
+                // on merge.
+                if existing.specifier != dep.specifier {
+                    let importer_label = if importer_key.is_empty() {
+                        "<root>".to_string()
+                    } else {
+                        importer_key.to_string()
+                    };
+                    let a = existing.specifier.as_deref().unwrap_or("<none>");
+                    let b = dep.specifier.as_deref().unwrap_or("<none>");
+                    report.conflicts.push(format!(
+                        "importer `{importer_label}` dep `{}`: branches disagreed on \
+                         specifier ({a} vs {b}), kept the one resolving to higher version",
+                        dep.name
+                    ));
+                }
                 let keep_existing = prefer_higher_version(
                     existing_version_from_dep_path(&existing),
                     existing_version_from_dep_path(&dep),

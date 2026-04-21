@@ -178,11 +178,31 @@ pub fn resolve_registry(flag: Option<&str>, scope: Option<&str>) -> miette::Resu
 }
 
 /// `~/.npmrc`, or an error if we can't locate the user's home directory.
+///
+/// Reads HOME first (every Unix, and POSIX-compat Windows toolchains
+/// that set it). Falls back to USERPROFILE on Windows since vanilla
+/// Windows does not set HOME. Old code was HOME-only, so `aube login`
+/// on a native Windows shell errored out with "$HOME is not set"
+/// instead of using C:\Users\<user>\.npmrc. Same issue would make
+/// `aube logout` fail and `aube config` never find the user file.
 pub fn user_npmrc_path() -> miette::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| miette!("$HOME is not set; can't locate ~/.npmrc"))?;
+    let home = read_home_env().ok_or_else(|| {
+        miette!("could not locate home directory. set HOME or USERPROFILE to point at ~/.npmrc")
+    })?;
     Ok(home.join(".npmrc"))
+}
+
+fn read_home_env() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(h));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            return Some(PathBuf::from(p));
+        }
+    }
+    None
 }
 
 #[cfg(test)]

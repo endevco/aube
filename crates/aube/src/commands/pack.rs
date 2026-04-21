@@ -349,8 +349,13 @@ fn matches_ignore_line(line: &str, rel: &str) -> bool {
 }
 
 fn is_npm_ignored(name: &str) -> bool {
-    // Mirrors the hardcoded list in npm's `pack` implementation.
-    matches!(
+    // Secret-file blocklist. User runs `aube publish` in a dir with
+    // `.env`, SSH keys, AWS creds. No `files` allowlist, no
+    // `.npmignore`. Without this list, those files ship to the
+    // registry. Real footgun, real incidents, npm/pnpm both ship a
+    // similar list. Users can still override via `files` field if
+    // they really want to publish one of these (nobody should).
+    if matches!(
         name,
         ".git"
             | ".svn"
@@ -367,8 +372,30 @@ fn is_npm_ignored(name: &str) -> bool {
             | "pnpm-lock.yaml"
             | "bun.lock"
             | "aube-lock.yaml"
-    ) || name.ends_with(".tgz")
-        || name.ends_with(".swp")
+            | ".env"
+            | ".envrc"
+            | ".ssh"
+            | ".aws"
+            | ".gnupg"
+            | "id_rsa"
+            | "id_dsa"
+            | "id_ecdsa"
+            | "id_ed25519"
+    ) {
+        return true;
+    }
+    if name.ends_with(".tgz") || name.ends_with(".swp") {
+        return true;
+    }
+    // `.env.local`, `.env.production`, etc.
+    if name.starts_with(".env.") {
+        return true;
+    }
+    // Private keys / certs users routinely keep alongside source.
+    if name.ends_with(".pem") || name.ends_with(".key") || name.ends_with(".p12") {
+        return true;
+    }
+    false
 }
 
 fn always_included_files(project_dir: &Path, manifest: &PackageJson) -> Vec<String> {

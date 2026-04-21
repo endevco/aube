@@ -675,7 +675,28 @@ impl Resolver {
         };
         match self.catalogs.get(&catalog_name) {
             Some(catalog) => match catalog.get(task_name) {
-                Some(real_range) => Ok(Some((catalog_name, real_range.clone()))),
+                Some(real_range) => {
+                    // Catch `catalog:` pointing at another `catalog:`
+                    // value. Before this guard, the rewrite ran once
+                    // then the outer loop treated `catalog:other` as
+                    // a literal semver range. User got a confusing
+                    // "range does not satisfy" from the registry
+                    // instead of "catalog is not a level of
+                    // indirection". pnpm disallows the same. No
+                    // cycle detection needed beyond depth-one since
+                    // we refuse the chain outright.
+                    if real_range.starts_with("catalog:") {
+                        return Err(Error::UnknownCatalogEntry {
+                            name: task_name.to_string(),
+                            spec: spec.to_string(),
+                            catalog: format!(
+                                "{catalog_name} (value {real_range} is itself a catalog: \
+                                 reference, catalogs cannot chain)"
+                            ),
+                        });
+                    }
+                    Ok(Some((catalog_name, real_range.clone())))
+                }
                 None => Err(Error::UnknownCatalogEntry {
                     name: task_name.to_string(),
                     spec: spec.to_string(),
@@ -1493,8 +1514,35 @@ impl Resolver {
                 //      preferring the local copy matches every other
                 //      mainstream pm.
                 if let Some(ws_version) = workspace_packages.get(&task.name)
-                    && (task.range.starts_with("workspace:")
-                        || version_satisfies(ws_version, &task.range))
+                    && (match task.range.strip_prefix("workspace:") {
+                        // workspace:*, workspace:^, workspace:~
+                        // bind to whatever local workspace version is.
+                        // These are pnpm's "don't pin me, just track
+                        // local" sigils. Match them before range check.
+                        Some("" | "*" | "^" | "~") => true,
+                        // workspace:<range> like workspace:^2.0.0 or
+                        // workspace:1.x. Must still satisfy local
+                        // version. Before this fix, any workspace:
+                        // prefix short-circuited. Consumer could pin
+                        // workspace:^2 against local 1.0.0 and aube
+                        // would silently link the wrong version.
+                        // pnpm errors here with no-matching-version.
+                        Some(rest) => version_satisfies(ws_version, rest),
+                        // Bare semver (no workspace: prefix) path.
+                        // Linker walks up to workspace yarn-v1 style.
+                        // Special case `*` and `""` (bare catch-all)
+                        // to always match the workspace copy, even
+                        // when the ws version is a prerelease like
+                        // `0.0.0-0` which semver strict rules would
+                        // otherwise exclude. Placeholder versions
+                        // are common in fresh changesets-managed
+                        // workspaces and would silently fall through
+                        // to registry resolution otherwise, picking
+                        // up a stale published build instead of the
+                        // local source.
+                        None if task.range.is_empty() || task.range == "*" => true,
+                        None => version_satisfies(ws_version, &task.range),
+                    })
                 {
                     let dep_path = dep_path_for(&task.name, ws_version);
                     if task.is_root
@@ -2573,9 +2621,24 @@ fn pick_version<'a>(
     cutoff: Option<&str>,
     strict: bool,
 ) -> PickResult<'a> {
-    // Handle dist-tag references
+    // Handle dist-tag references. If the requested range is a tag
+    // name and the packument has that tag, use the tagged version
+    // as the effective range. Special case `latest`: some registries
+    // serve packuments where dist-tags.latest is absent (fresh
+    // publish race, all versions deprecated, private mirror bug).
+    // Old code then tried to parse "latest" as a semver range,
+    // failed, returned NoMatch. Caller could not tell whether the
+    // range was genuinely unsatisfiable or the tag was just missing.
+    // npm and pnpm fall back to the highest non-prerelease version.
+    // Do the same so `aube install foo` does not silently fail on a
+    // packument that just happens to lack the tag.
     let effective_range = if let Some(tagged_version) = packument.dist_tags.get(range_str) {
         tagged_version.clone()
+    } else if range_str == "latest" {
+        match highest_stable_version(packument) {
+            Some(v) => v,
+            None => return PickResult::NoMatch,
+        }
     } else {
         range_str.to_string()
     };
@@ -2659,6 +2722,33 @@ fn pick_version<'a>(
         return PickResult::Found(meta);
     }
     PickResult::NoMatch
+}
+
+/// Walk the packument's versions and return the highest non
+/// prerelease version string. Used as the `latest` tag fallback
+/// when the registry response lacks `dist-tags.latest`. Some
+/// private mirrors and mid-publish races drop the tag briefly
+/// and returning NoMatch there would break `aube install foo` for
+/// no real reason. npm and pnpm both fall back to highest stable.
+fn highest_stable_version(packument: &Packument) -> Option<String> {
+    let mut best: Option<(node_semver::Version, String)> = None;
+    for key in packument.versions.keys() {
+        let Ok(v) = node_semver::Version::parse(key) else {
+            continue;
+        };
+        // Skip prereleases so we match npm semantics. Registry
+        // with only prereleases returns None and caller gets
+        // NoMatch, same as before.
+        if !v.pre_release.is_empty() {
+            continue;
+        }
+        match &best {
+            None => best = Some((v, key.clone())),
+            Some((cur, _)) if v > *cur => best = Some((v, key.clone())),
+            _ => {}
+        }
+    }
+    best.map(|(_, k)| k)
 }
 
 /// Lexical path normalization — collapse `.` and `..` components

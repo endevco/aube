@@ -534,6 +534,31 @@ impl Drop for FetchRow {
 /// (`-v`, `--silent`, append-only, ndjson) the progress display
 /// isn't running; pause/resume become benign no-ops and the event
 /// still flushes cleanly.
+/// Print a message to stderr safely while the install progress bar
+/// may be active. Direct `eprintln!` during an active bar smears
+/// output across frames (bar paints over half the message, next tick
+/// repaints over what remains). Use this for warnings that need to
+/// surface mid-install like peer-dep errors, allowBuilds policy
+/// warnings, retry notifications, etc. If no bar is up, degenerates
+/// to a plain stderr write. Trailing newline is appended. Call sites
+/// that already hold a bar handle can use ProgressJob::println
+/// instead, but this works without one.
+pub fn safe_eprintln(msg: &str) {
+    use std::io::Write;
+    let was_paused = clx::progress::is_paused();
+    if !was_paused {
+        clx::progress::pause();
+    }
+    let _: () = clx::progress::with_terminal_lock(|| {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "{msg}");
+        let _ = stderr.flush();
+    });
+    if !was_paused {
+        clx::progress::resume();
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct PausingWriter;
 

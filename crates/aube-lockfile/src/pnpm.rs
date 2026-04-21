@@ -767,7 +767,12 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
     let yaml = serde_yaml::to_string(&lockfile)
         .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
     let yaml = reformat_for_pnpm_parity(&yaml);
-    std::fs::write(path, yaml).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    // Atomic via tempfile + persist. Crash, Ctrl+C, or AV
+    // quarantine during the write used to leave the user with a
+    // truncated pnpm-lock.yaml on disk, next install failed to
+    // parse and the user thought their lockfile was gone. See
+    // atomic_write_lockfile for full rationale.
+    crate::atomic_write_lockfile(path, yaml.as_bytes())?;
     Ok(())
 }
 

@@ -824,7 +824,7 @@ pub fn write(
     // trips instead of silently downgrading on re-emit.
     let config_version = graph.bun_config_version.unwrap_or(1);
     let body = format_bun_lockfile(&workspace_pairs, &package_entries, config_version);
-    std::fs::write(path, body).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    crate::atomic_write_lockfile(path, body.as_bytes())?;
     Ok(())
 }
 

@@ -223,7 +223,14 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
         .env("AUBE_HOOK", "afterAllResolved")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::inherit())
+        // Match ReadPackageHost::spawn below. Without kill_on_drop
+        // the Node child keeps running when the parent future is
+        // cancelled. Install task panics or gets aborted, user
+        // Ctrl-C's aube, Node process stays alive running the
+        // afterAllResolved hook body until stdin closes on its own.
+        // Unlikely to bite in practice but zero-cost to guard.
+        .kill_on_drop(true);
 
     let mut child = cmd
         .spawn()

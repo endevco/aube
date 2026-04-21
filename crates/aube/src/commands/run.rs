@@ -13,7 +13,7 @@ pub struct RunArgs {
     /// scripts.
     pub script: Option<String>,
     /// Arguments to pass to the script
-    #[arg(trailing_var_arg = true)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
     /// Don't error if the script is missing from package.json
     #[arg(long)]
@@ -88,7 +88,7 @@ pub struct RunArgs {
 #[derive(Debug, Args)]
 pub struct ScriptArgs {
     /// Arguments to pass to the script
-    #[arg(trailing_var_arg = true)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
     /// Skip auto-install check
     #[arg(long)]
@@ -252,7 +252,19 @@ pub(crate) async fn run_script_with(
         if if_present {
             return Ok(());
         }
-        return Err(miette!("script not found: {script}"));
+        // Old error was "script not found: foo" with no list. User
+        // has to cat package.json to figure out what to type. npm
+        // and pnpm both list available scripts here. Do the same.
+        // Keep the list on one line when short, separate lines when
+        // long, since users often have 20+ scripts in a real project.
+        let mut names: Vec<&str> = manifest.scripts.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        let hint = if names.is_empty() {
+            "no scripts defined in package.json".to_string()
+        } else {
+            format!("available scripts: {}", names.join(", "))
+        };
+        return Err(miette!("script not found: {script}\n  {hint}"));
     }
 
     ensure_installed(no_install).await?;
@@ -350,10 +362,10 @@ async fn run_script_filtered(
             match t.await {
                 Ok(Ok(status)) => {
                     if !status.success() && first_exit.is_none() {
-                        first_exit = Some(status.code().unwrap_or(1));
+                        let code = aube_scripts::exit_code_from_status(status);
+                        first_exit = Some(code);
                         first_err = Some(miette!(
-                            "aube run: `{script}` failed in {name} (exit {})",
-                            status.code().unwrap_or(1)
+                            "aube run: `{script}` failed in {name} (exit {code})"
                         ));
                     }
                 }
@@ -451,23 +463,58 @@ pub(crate) async fn exec_script(
     let shell_cmd = if args.is_empty() {
         cmd.to_string()
     } else {
-        format!("{cmd} {}", args.join(" "))
+        // Quote each forwarded arg. Args land inside `sh -c "..."` or
+        // cmd `/c "..."` which reparses. Unquoted $, backticks, ;, |,
+        // () all get interpreted. `aube run echo '$(rm -rf ~)'` would
+        // run the subshell. Same npm/pnpm bug class from years ago.
+        // shell_quote_arg wraps per-platform. See aube-scripts.
+        let mut buf =
+            String::with_capacity(cmd.len() + args.iter().map(|a| a.len() + 3).sum::<usize>());
+        buf.push_str(cmd);
+        for a in args {
+            buf.push(' ');
+            buf.push_str(&aube_scripts::shell_quote_arg(a));
+        }
+        buf
     };
 
     let bin_dir = super::project_modules_dir(cwd).join(".bin");
     let new_path = aube_scripts::prepend_path(&bin_dir);
 
-    let status = aube_scripts::spawn_shell(&shell_cmd)
+    // npm-compat env vars. Lifecycle path already sets these in
+    // aube-scripts::run_root_hook, but `aube run` was bare env.
+    // Real breakage: build scripts that stamp `$npm_package_version`
+    // or branch on `$npm_lifecycle_event` got empty strings under
+    // `aube run` while working fine under `aube install`
+    // postinstall. npm and pnpm set these on every script exec.
+    let mut command = aube_scripts::spawn_shell(&shell_cmd);
+    command
         .env("PATH", &new_path)
         .current_dir(cwd)
-        .stderr(aube_scripts::child_stderr())
+        .env("npm_lifecycle_event", script)
+        .stderr(aube_scripts::child_stderr());
+    if let Some(ref name) = manifest.name {
+        command.env("npm_package_name", name);
+    }
+    if let Some(ref version) = manifest.version {
+        command.env("npm_package_version", version);
+    }
+    // INIT_CWD is the dir the user invoked aube from. node-gyp and
+    // prebuild-install use it to locate the project root when
+    // caching binaries. Preserve parent-set value so nested aube
+    // calls see the outermost invocation cwd.
+    if std::env::var_os("INIT_CWD").is_none() {
+        command.env("INIT_CWD", cwd);
+    }
+
+    let status = command
         .status()
         .await
         .into_diagnostic()
         .wrap_err("failed to execute script")?;
 
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(aube_scripts::exit_code_from_status(status));
     }
 
     Ok(())
@@ -509,14 +556,38 @@ pub(crate) async fn exec_script_status(
     let shell_cmd = if args.is_empty() {
         cmd.to_string()
     } else {
-        format!("{cmd} {}", args.join(" "))
+        // Quote each forwarded arg. Args land inside `sh -c "..."` or
+        // cmd `/c "..."` which reparses. Unquoted $, backticks, ;, |,
+        // () all get interpreted. `aube run echo '$(rm -rf ~)'` would
+        // run the subshell. Same npm/pnpm bug class from years ago.
+        // shell_quote_arg wraps per-platform. See aube-scripts.
+        let mut buf =
+            String::with_capacity(cmd.len() + args.iter().map(|a| a.len() + 3).sum::<usize>());
+        buf.push_str(cmd);
+        for a in args {
+            buf.push(' ');
+            buf.push_str(&aube_scripts::shell_quote_arg(a));
+        }
+        buf
     };
     let bin_dir = super::project_modules_dir(cwd).join(".bin");
     let new_path = aube_scripts::prepend_path(&bin_dir);
-    aube_scripts::spawn_shell(&shell_cmd)
+    let mut command = aube_scripts::spawn_shell(&shell_cmd);
+    command
         .env("PATH", &new_path)
         .current_dir(cwd)
-        .stderr(aube_scripts::child_stderr())
+        .env("npm_lifecycle_event", script)
+        .stderr(aube_scripts::child_stderr());
+    if let Some(ref name) = manifest.name {
+        command.env("npm_package_name", name);
+    }
+    if let Some(ref version) = manifest.version {
+        command.env("npm_package_version", version);
+    }
+    if std::env::var_os("INIT_CWD").is_none() {
+        command.env("INIT_CWD", cwd);
+    }
+    command
         .status()
         .await
         .into_diagnostic()

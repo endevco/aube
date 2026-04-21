@@ -150,16 +150,64 @@ pub fn host_triple() -> (&'static str, &'static str, &'static str) {
         "powerpc64" => "ppc64",
         other => other,
     };
-    let libc = if cfg!(target_os = "linux") {
-        if cfg!(target_env = "musl") {
-            "musl"
-        } else {
-            "glibc"
-        }
+    // Detect libc at runtime, not compile time. Old code used
+    // `cfg!(target_env = "musl")` which is the toolchain that built
+    // the aube binary, not the host's libc. Real bug: an aube static
+    // binary built against musl and shipped to glibc users reported
+    // libc=musl everywhere, and the glibc-built distro reported
+    // glibc everywhere. Wrong prebuilts got installed, runtime
+    // ld.so errors. Probe /lib/ld-musl-* vs /lib*/ld-linux-*.
+    let libc = if std::env::consts::OS == "linux" {
+        detect_linux_libc()
     } else {
         ""
     };
     (os, cpu, libc)
+}
+
+/// Probe the active dynamic linker to tell musl from glibc at runtime.
+/// Alpine and other musl distros ship `/lib/ld-musl-<arch>.so.1`.
+/// glibc distros ship `/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`,
+/// etc. Cache once via OnceLock so repeated calls in the resolver
+/// BFS do not re-stat. If neither matches (unusual container, stripped
+/// rootfs), fall back to glibc which is the common case.
+fn detect_linux_libc() -> &'static str {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<&'static str> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let lib_dir = std::path::Path::new("/lib");
+        if let Ok(entries) = std::fs::read_dir(lib_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("ld-musl-") {
+                    return "musl";
+                }
+            }
+        }
+        // Look for glibc explicitly before defaulting. Covers cases
+        // where /lib has no ld-musl-* but also no ld-linux-* (sparse
+        // containers), in which case we still pick glibc as the
+        // safer default since more prebuilts ship for glibc.
+        for dir in [
+            "/lib",
+            "/lib64",
+            "/lib/x86_64-linux-gnu",
+            "/lib/aarch64-linux-gnu",
+        ] {
+            let p = std::path::Path::new(dir);
+            if let Ok(entries) = std::fs::read_dir(p) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("ld-linux") {
+                        return "glibc";
+                    }
+                }
+            }
+        }
+        "glibc"
+    })
 }
 
 /// Apply npm's `os`/`cpu`/`libc` rules to a single (pkg_field, host)

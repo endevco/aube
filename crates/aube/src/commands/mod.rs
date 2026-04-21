@@ -348,15 +348,20 @@ fn resolved_store_dir(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     })
 }
 
-/// Expand a path-typed setting value: `~` → `$HOME`, relative → absolute
-/// against `cwd`. Returns `None` when the value starts with `~` but
-/// `HOME` is not set, so callers can fall back to a safe default
-/// instead of producing a nonsensical path like `/project/~/foo`.
+/// Expand a path-typed setting value. `~` -> home dir, relative ->
+/// absolute against `cwd`. Returns None if the value begins with `~`
+/// but no home env var is set, caller then falls back to a platform
+/// default. On Unix reads HOME. On Windows reads HOME first (for
+/// POSIX-compat toolchains that set it) then USERPROFILE (native
+/// Windows default). Old code only checked HOME, Windows users got
+/// silent None back for any `~/...` settings like `storeDir: ~/store`,
+/// and the caller fell through to the platform default, so custom
+/// store paths never took effect on Windows.
 pub(crate) fn expand_setting_path(raw: &str, cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-        std::path::PathBuf::from(std::env::var_os("HOME")?).join(rest)
+        std::path::PathBuf::from(home_dir_os()?).join(rest)
     } else if raw == "~" {
-        std::path::PathBuf::from(std::env::var_os("HOME")?)
+        std::path::PathBuf::from(home_dir_os()?)
     } else {
         std::path::PathBuf::from(raw)
     };
@@ -365,6 +370,19 @@ pub(crate) fn expand_setting_path(raw: &str, cwd: &std::path::Path) -> Option<st
     } else {
         cwd.join(expanded)
     })
+}
+
+fn home_dir_os() -> Option<std::ffi::OsString> {
+    if let Some(h) = std::env::var_os("HOME") {
+        return Some(h);
+    }
+    #[cfg(windows)]
+    {
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// Build a file-only `ResolveCtx` for `cwd` and call `f` with it.

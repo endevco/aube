@@ -803,7 +803,7 @@ pub fn write(
         .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
     // npm writes a trailing newline; match it so diffs stay clean.
     body.push('\n');
-    std::fs::write(path, body).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    crate::atomic_write_lockfile(path, body.as_bytes())?;
     Ok(())
 }
 

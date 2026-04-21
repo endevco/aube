@@ -413,7 +413,15 @@ async fn run_root_lifecycle(
     tracing::debug!("Running {} script...", hook.script_name());
     aube_scripts::run_root_hook(project_dir, modules_dir_name, manifest, hook)
         .await
-        .map_err(|e| miette!("{}", e))?;
+        .map_err(|e| {
+            // Old message was just the bare error string. User got
+            // a cryptic "exit status 1" with no hook name, no script
+            // path, nothing. Tag with which hook fired so the log
+            // line is self-documenting. This is the common case
+            // (failed preinstall on `aube install`) so the regression
+            // really hurt triage.
+            miette!("root {} script failed: {e}", hook.script_name())
+        })?;
     Ok(())
 }
 
@@ -470,9 +478,22 @@ pub(crate) fn resolve_link_strategy(
 ) -> miette::Result<aube_linker::LinkStrategy> {
     let package_import_method_cli =
         aube_settings::values::string_from_cli("packageImportMethod", ctx.cli);
+    // Shared probe used by both the CLI and resolved-setting paths
+    // below. Probe across store dir and project modules dir. Single
+    // dir probe reports reflink but real link ops across a mount
+    // boundary hit EXDEV and silently fall back to per-file copy.
+    // Catches the cross-FS case at probe time.
+    let auto_probe = || {
+        let store_dir = super::open_store(cwd).map(|s| s.root().to_path_buf()).ok();
+        let modules_dir = cwd.join("node_modules");
+        match store_dir.as_deref() {
+            Some(sd) => aube_linker::Linker::detect_strategy_cross(sd, &modules_dir),
+            None => aube_linker::Linker::detect_strategy(cwd),
+        }
+    };
     let strategy = if let Some(cli) = package_import_method_cli.as_deref() {
         match cli.trim().to_ascii_lowercase().as_str() {
-            "" | "auto" => aube_linker::Linker::detect_strategy(cwd),
+            "" | "auto" => auto_probe(),
             "hardlink" => aube_linker::LinkStrategy::Hardlink,
             "copy" => aube_linker::LinkStrategy::Copy,
             "clone-or-copy" => aube_linker::LinkStrategy::Reflink,
@@ -491,9 +512,7 @@ pub(crate) fn resolve_link_strategy(
         }
     } else {
         match aube_settings::resolved::package_import_method(ctx) {
-            aube_settings::resolved::PackageImportMethod::Auto => {
-                aube_linker::Linker::detect_strategy(cwd)
-            }
+            aube_settings::resolved::PackageImportMethod::Auto => auto_probe(),
             aube_settings::resolved::PackageImportMethod::Hardlink => {
                 aube_linker::LinkStrategy::Hardlink
             }
@@ -556,7 +575,13 @@ pub(crate) async fn run_dep_lifecycle_scripts(
 
     let mut jobs: Vec<BuildJob> = Vec::new();
     for (dep_path, pkg) in &graph.packages {
-        match policy.decide(&pkg.name, &pkg.version) {
+        // Use registry_name(), not pkg.name. pkg.name is the in-tree
+        // alias (`h3-safe`). Real package is `h3`. Allowlist entry for
+        // `h3` would miss if we checked against the alias. Attacker
+        // writes `"h3-safe": "npm:h3@0.19.0"` to sneak a denied pkg
+        // through the allowlist. registry_name() strips alias back to
+        // real name.
+        match policy.decide(pkg.registry_name(), &pkg.version) {
             aube_scripts::AllowDecision::Allow => {}
             aube_scripts::AllowDecision::Deny | aube_scripts::AllowDecision::Unspecified => {
                 continue;
@@ -825,7 +850,7 @@ fn unreviewed_dep_builds(
     let mut unreviewed = Vec::new();
     for (dep_path, pkg) in &graph.packages {
         if !matches!(
-            policy.decide(&pkg.name, &pkg.version),
+            policy.decide(pkg.registry_name(), &pkg.version),
             aube_scripts::AllowDecision::Unspecified
         ) {
             continue;
@@ -1459,7 +1484,12 @@ where
         // time vs the previous 64.
         let sem_permits = network_concurrency.unwrap_or_else(default_lockfile_network_concurrency);
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(sem_permits));
-        let mut handles = Vec::new();
+        // JoinSet so a first-error path aborts the sibling fetches
+        // instead of detaching them into the background. Detached
+        // tasks keep writing to the CAS after the install command
+        // has already errored out.
+        let mut handles: tokio::task::JoinSet<miette::Result<(String, aube_store::PackageIndex)>> =
+            tokio::task::JoinSet::new();
 
         for (dep_path, display_name, registry_name, version, tarball_url_override, integrity) in
             to_fetch
@@ -1470,7 +1500,7 @@ where
             let row = progress.map(|p| p.start_fetch(&display_name, &version));
             let bytes_progress = progress.cloned();
 
-            let handle = tokio::spawn(async move {
+            handles.spawn(async move {
                 let _row = row;
                 let task_start = std::time::Instant::now();
                 let permit = sem.acquire().await.unwrap();
@@ -1586,11 +1616,10 @@ where
 
                 Ok::<_, miette::Report>((dep_path, index))
             });
-            handles.push(handle);
         }
 
-        for handle in handles {
-            let (dep_path, index) = handle.await.into_diagnostic()??;
+        while let Some(joined) = handles.join_next().await {
+            let (dep_path, index) = joined.into_diagnostic()??;
             indices.insert(dep_path, index);
         }
     }
@@ -1854,10 +1883,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             filenames.join(", ")
                         );
                         if !report.conflicts.is_empty() {
-                            tracing::warn!(
-                                "{} conflict(s) during branch-lockfile merge; see --verbose for details",
+                            // Surface conflicts to the user, not just
+                            // at warn level. Without this, branch
+                            // lockfile merges silently dropped data:
+                            // override divergences, catalog drift,
+                            // importer pin mismatches, integrity
+                            // differences. All logged at debug only.
+                            // Users saw "N conflicts" with zero
+                            // detail and no hint what lost. Dump
+                            // each conflict on its own line through
+                            // the progress-safe writer so the list
+                            // does not smear the install bar.
+                            crate::progress::safe_eprintln(&format!(
+                                "warn: {} conflict(s) resolved during branch-lockfile merge:",
                                 report.conflicts.len()
-                            );
+                            ));
+                            for c in &report.conflicts {
+                                crate::progress::safe_eprintln(&format!("warn:   {c}"));
+                            }
                         }
                     } else {
                         tracing::debug!(
@@ -2009,7 +2052,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 .to_string();
 
             if let Some(ref name) = pkg_manifest.name {
-                let version = pkg_manifest.version.as_deref().unwrap_or("0.0.0");
+                // Workspace members MUST carry a version. Old code
+                // silently defaulted to "0.0.0", which collided any
+                // two unversioned members under one dep_path and made
+                // `workspace:^2.0.0` match nothing. pnpm refuses to
+                // install here, aube should too. Private packages
+                // without a version are fine in package.json but not
+                // once they enter a workspace graph where siblings
+                // pin them. User fix: add a version field. Skip
+                // silently only when name is also missing (pure-root
+                // scratch manifest case).
+                let version = pkg_manifest.version.as_deref().ok_or_else(|| {
+                    miette!(
+                        "workspace package {name} at {rel_path} has no `version` field. \
+                         add one to its package.json. workspace members must be versioned \
+                         so siblings can pin them via workspace: protocol"
+                    )
+                })?;
                 ws_package_versions.insert(name.clone(), version.to_string());
                 ws_dirs.insert(name.clone(), pkg_dir.clone());
                 tracing::debug!("  {name}@{version} ({rel_path})");
@@ -2152,7 +2211,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         if let Err(e) = parsed
             && !matches!(e, aube_lockfile::Error::NotFound(_))
         {
-            return Err(miette!("failed to parse lockfile: {e}"));
+            // Can't hand &Error to miette::Report since Diagnostic
+            // is only implemented on owned Error. Re-parse once to
+            // get an owned Error value for the Diagnostic path.
+            // Slightly wasteful on the error branch, install is
+            // about to abort anyway so speed does not matter here.
+            // What matters: keeping the source span and miette help
+            // text instead of flattening to one line via `{e}`.
+            match aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest) {
+                Ok(_) => {
+                    // Race: second parse succeeded while first failed.
+                    // Surface the observed error text as a best
+                    // effort flat message. Extremely unlikely.
+                    return Err(miette!("failed to parse lockfile: {e}"));
+                }
+                Err(owned) => {
+                    return Err(miette::Report::new(owned)).wrap_err("failed to parse lockfile");
+                }
+            }
         }
         let fresh = !force_resolve
             && matches!(
@@ -2685,7 +2761,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_handle = tokio::spawn(async move {
                 let semaphore =
                     std::sync::Arc::new(tokio::sync::Semaphore::new(fetch_network_concurrency));
-                let mut handles = Vec::new();
+                // JoinSet over bare Vec<JoinHandle>. If the first
+                // fetch errors and we return via `?`, a plain Vec
+                // drops the remaining JoinHandles which detaches the
+                // tasks. They keep fetching tarballs and writing
+                // to the CAS while the CLI has already errored.
+                // JoinSet aborts every outstanding task on drop,
+                // matches the pattern ensure_dep_scripts uses.
+                let mut handles: tokio::task::JoinSet<
+                    miette::Result<(String, aube_store::PackageIndex)>,
+                > = tokio::task::JoinSet::new();
                 let mut indices: BTreeMap<String, aube_store::PackageIndex> = BTreeMap::new();
                 let mut cached_count = 0usize;
 
@@ -2789,7 +2874,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         .map(|p| p.start_fetch(&pkg.name, &pkg.version));
                     let bytes_progress = fetch_progress.clone();
 
-                    handles.push(tokio::spawn(async move {
+                    handles.spawn(async move {
                         let _row = row;
                         let permit = sem.acquire().await.unwrap();
                         let url = pkg
@@ -2876,13 +2961,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         .into_diagnostic()??;
 
                         Ok::<_, miette::Report>((dep_path, index))
-                    }));
+                    });
                 }
 
-                // Collect all fetch results
+                // Collect all fetch results via JoinSet. Drop on
+                // error aborts outstanding siblings.
                 let fetch_count = handles.len();
-                for handle in handles {
-                    let (dep_path, index) = handle.await.into_diagnostic()??;
+                while let Some(joined) = handles.join_next().await {
+                    let (dep_path, index) = joined.into_diagnostic()??;
                     let _ = materialize_tx.send((dep_path.clone(), index.clone()));
                     indices.insert(dep_path, index);
                 }
@@ -2972,6 +3058,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let materialize_node_version = node_version_for_prewarm.clone();
             let materialize_allow = {
                 let build_policy = build_policy_for_prewarm.clone();
+                // Closure gets (name, version). Caller in graph_hash
+                // already hands us registry_name(), not alias. Safe
+                // to feed into policy.decide directly. If a new caller
+                // gets wired up that passes pkg.name instead, the
+                // alias-bypass would come back. Audit graph_hash.rs
+                // callers if changing this.
                 move |name: &str, version: &str| {
                     matches!(
                         build_policy.decide(name, version),
@@ -3419,11 +3511,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         &ws_config_shared,
         opts.dangerously_allow_all_builds,
     );
-    // Emit policy-config warnings regardless of `--ignore-scripts` —
-    // a typo in `allowBuilds` should still surface to the user even
-    // when lifecycle execution is disabled.
+    // Emit policy-config warnings regardless of `--ignore-scripts`.
+    // User wants to know about typos in `allowBuilds` even if scripts
+    // will not run, otherwise they reenable scripts later and wonder
+    // why nothing runs. Bar is active here (set_phase=linking comes
+    // soon, set_phase=fetching already ran). Raw eprintln smears
+    // output across bar frames. Route through safe_eprintln which
+    // pauses the bar and holds the terminal lock for atomic output.
     for w in &policy_warnings {
-        eprintln!("warn: {w}");
+        crate::progress::safe_eprintln(&format!("warn: {w}"));
     }
 
     // 6. Link node_modules

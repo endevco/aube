@@ -739,9 +739,12 @@ async fn update_manifest_for_add(
     let json = serde_json::to_string_pretty(&manifest)
         .into_diagnostic()
         .wrap_err("failed to serialize package.json")?;
-    std::fs::write(&manifest_path, format!("{json}\n"))
-        .into_diagnostic()
-        .wrap_err("failed to write package.json")?;
+    // Atomic write. Old fs::write truncates in place so a crash
+    // mid-write corrupts the user's manifest. Losing package.json
+    // is the worst failure mode of aube add, user has to `git
+    // restore` to recover. Tempfile + persist makes the swap
+    // atomic, crash leaves either old or new bytes, never torn.
+    write_atomic(&manifest_path, format!("{json}\n").as_bytes())?;
     if print_updated {
         eprintln!("Updated package.json");
     }
@@ -1137,6 +1140,34 @@ async fn run_global_inner(
         );
     }
 
+    Ok(())
+}
+
+/// Atomic file write. Tempfile in the same dir, fsync, rename over
+/// the target. Caller uses this for package.json mutation in add /
+/// remove / workspace writes so a crash mid-write cannot corrupt
+/// the user's manifest. Rename is atomic on POSIX, on Windows
+/// MoveFileEx gives the same guarantee post Win10.
+fn write_atomic(path: &std::path::Path, body: &[u8]) -> miette::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = tempfile::Builder::new()
+        .prefix(".aube-add-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to open tempfile for {}", path.display()))?;
+    {
+        use std::io::Write as _;
+        let mut f = tmp.as_file();
+        f.write_all(body)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to write tempfile for {}", path.display()))?;
+        f.sync_all()
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to sync tempfile for {}", path.display()))?;
+    }
+    tmp.persist(path)
+        .map_err(|e| miette!("failed to persist {}: {e}", path.display()))?;
     Ok(())
 }
 

@@ -35,10 +35,37 @@ pub fn cwd() -> miette::Result<PathBuf> {
 /// matching pnpm's behavior of walking up when run outside a project
 /// directory.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
+    // Walk up looking for package.json. Stops at $HOME so a stray
+    // `aube install` in an empty /tmp dir cannot climb out into the
+    // user's home dir and attach itself to a parent project. Real
+    // bug: in testing, running `aube install` from an empty /tmp
+    // path walked up to the user's home package.json and started
+    // writing into ~/node_modules with "Access denied" errors
+    // halfway through. Destructive, surprising, real.
+    let stop = home_stop_boundary();
     for dir in start.ancestors() {
         if dir.join("package.json").is_file() {
             return Some(dir.to_path_buf());
         }
+        if stop.as_deref() == Some(dir) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Resolve home dir for the find_project_root walk boundary. On Unix
+/// reads HOME. On Windows falls back to USERPROFILE since HOME is
+/// typically unset. Returns None if neither is set, which means the
+/// walk falls back to old unbounded behavior. Not ideal, but better
+/// than panicking, and CI runners always set one of them.
+fn home_stop_boundary() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(h));
+    }
+    #[cfg(windows)]
+    if let Some(p) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(p));
     }
     None
 }
@@ -52,18 +79,28 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 /// The aube-owned yaml name wins at read time elsewhere, but discovery
 /// only needs to know whether any of those markers fixes the root.
 pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
-    start.ancestors().find_map(|dir| {
+    // Same home-boundary story as find_project_root. Without it, an
+    // `aube install` from an empty scratch dir could climb into the
+    // user's home, find a parent workspace yaml or package.json with
+    // a workspaces field, and attach to that workspace. Cap the walk
+    // at $HOME so that never happens.
+    let stop = home_stop_boundary();
+    for dir in start.ancestors() {
         if dir.join("aube-workspace.yaml").exists() || dir.join("pnpm-workspace.yaml").exists() {
             return Some(dir.to_path_buf());
         }
         let pkg = dir.join("package.json");
-        if !pkg.is_file() {
+        if pkg.is_file()
+            && let Ok(manifest) = aube_manifest::PackageJson::from_path(&pkg)
+            && manifest.workspaces.is_some()
+        {
+            return Some(dir.to_path_buf());
+        }
+        if stop.as_deref() == Some(dir) {
             return None;
         }
-        let manifest = aube_manifest::PackageJson::from_path(&pkg).ok()?;
-        manifest.workspaces.as_ref()?;
-        Some(dir.to_path_buf())
-    })
+    }
+    None
 }
 
 /// Walk upward from `start` looking for the nearest ancestor that
@@ -72,13 +109,17 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 /// because it feeds callers that specifically need the yaml file path
 /// (catalog loader, settings loader).
 pub fn find_workspace_yaml_root(start: &Path) -> Option<PathBuf> {
-    start.ancestors().find_map(|dir| {
+    // Cap the walk at $HOME for the same reason as find_project_root.
+    let stop = home_stop_boundary();
+    for dir in start.ancestors() {
         if dir.join("aube-workspace.yaml").exists() || dir.join("pnpm-workspace.yaml").exists() {
-            Some(dir.to_path_buf())
-        } else {
-            None
+            return Some(dir.to_path_buf());
         }
-    })
+        if stop.as_deref() == Some(dir) {
+            return None;
+        }
+    }
+    None
 }
 
 /// Return the nearest project root at or above the cached cwd.

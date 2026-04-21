@@ -49,6 +49,18 @@ pub fn find_workspace_packages(project_dir: &Path) -> Result<Vec<PathBuf>, Error
         let full_pattern = project_dir.join(pattern).join("package.json");
         if let Ok(entries) = glob::glob(full_pattern.to_str().unwrap_or_default()) {
             for entry in entries.flatten() {
+                // Skip paths under any node_modules/ segment. Raw
+                // `packages/**` glob otherwise picks up installed
+                // deps' package.json files and registers them as
+                // workspace members. Pollutes importer iteration,
+                // state hash, validate_required_scripts, everything
+                // downstream. npm and pnpm implicitly exclude the
+                // same. Check every path component, not just leading
+                // segment, since workspace could be `apps/*/packages`
+                // with node_modules nested arbitrarily deep.
+                if entry.components().any(|c| c.as_os_str() == "node_modules") {
+                    continue;
+                }
                 if let Some(parent) = entry.parent()
                     && seen.insert(parent.to_path_buf())
                 {

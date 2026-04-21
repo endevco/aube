@@ -381,11 +381,36 @@ async fn publish_one(
         })?
         .to_string();
 
+    // publishConfig in package.json overrides both registry and tag
+    // if the user has not passed CLI flags. pnpm and npm both honor
+    // this field, so without it migrating users would silently
+    // publish to the wrong place. Most common case: scoped private
+    // registries like `{"publishConfig": {"registry": "https://npm.pkg.github.com"}}`
+    // and `{"publishConfig": {"access": "public"}}` for first-time
+    // scoped-public publishes. CLI override still wins over the
+    // manifest setting, matching pnpm precedence.
+    let publish_config = manifest
+        .extra
+        .get("publishConfig")
+        .and_then(|v| v.as_object());
+    let pc_registry = publish_config
+        .and_then(|p| p.get("registry"))
+        .and_then(|v| v.as_str());
+    let pc_tag = publish_config
+        .and_then(|p| p.get("tag"))
+        .and_then(|v| v.as_str());
+
     let registry_url = registry_override
         .map(normalize_registry_url_pub)
+        .or_else(|| pc_registry.map(normalize_registry_url_pub))
         .unwrap_or_else(|| config.registry_for(&name).to_string());
 
-    let tag = args.tag.as_deref().unwrap_or("latest").to_string();
+    let tag = args
+        .tag
+        .as_deref()
+        .or(pc_tag)
+        .unwrap_or("latest")
+        .to_string();
 
     if args.dry_run {
         // Dry-run still builds the archive: the whole point is to show
@@ -460,12 +485,23 @@ async fn publish_one(
         None
     };
 
+    // Same publishConfig precedence story for `access`. CLI flag
+    // wins, then manifest.publishConfig.access, then default.
+    // Without this, a first-time `@scope/pkg` publish with
+    // `publishConfig.access=public` in package.json would fail with
+    // 402 unless the user also passed `--access public` on every
+    // publish invocation.
+    let pc_access = publish_config
+        .and_then(|p| p.get("access"))
+        .and_then(|v| v.as_str());
+    let effective_access = args.access.as_deref().or(pc_access);
+
     let body = build_publish_body(
         &archive,
         &manifest,
         &registry_url,
         &tag,
-        args.access.as_deref(),
+        effective_access,
         provenance_bundle.as_deref(),
     )?;
 

@@ -71,16 +71,25 @@ pub async fn run(
         let removed = if args.save_dev {
             manifest.dev_dependencies.remove(name).is_some()
         } else {
-            // Clear every section that could hold this name — `--save-peer`
-            // may have written to both `peerDependencies` and
-            // `devDependencies` simultaneously, so we need to strip both to
-            // fully uninstall.
+            // Strip from every section. `--save-peer` previously
+            // wrote to both peerDependencies and devDependencies so
+            // both need clearing on a full uninstall.
             let from_deps = manifest.dependencies.remove(name).is_some();
             let from_dev = manifest.dev_dependencies.remove(name).is_some();
             let from_optional = manifest.optional_dependencies.remove(name).is_some();
             let from_peer = manifest.peer_dependencies.remove(name).is_some();
             from_deps || from_dev || from_optional || from_peer
         };
+
+        // Also prune sidecar metadata so a later `aube add <name>`
+        // does not silently inherit the old entries. Main concern is
+        // pnpm.allowBuilds. If user removes a build-script package
+        // then later adds a malicious package with the same name
+        // (typo-squat, name reclaim), the old allowBuilds entry
+        // would auto-approve its postinstall. Same hazard, lower
+        // risk, for overrides and resolutions which just leave dead
+        // rewrite rules around. Matches pnpm remove behavior.
+        prune_sidecar_entries(&mut manifest, name);
 
         if !removed {
             let section = if args.save_dev {
@@ -94,13 +103,13 @@ pub async fn run(
         eprintln!("  - {name}");
     }
 
-    // Write updated package.json
+    // Write updated package.json atomically. Crash mid-write would
+    // otherwise truncate the user manifest, worst-case aube failure
+    // mode. Tempfile + persist keeps the swap atomic.
     let json = serde_json::to_string_pretty(&manifest)
         .into_diagnostic()
         .wrap_err("failed to serialize package.json")?;
-    std::fs::write(&manifest_path, format!("{json}\n"))
-        .into_diagnostic()
-        .wrap_err("failed to write package.json")?;
+    write_manifest_atomic(&manifest_path, format!("{json}\n").as_bytes())?;
     eprintln!("Updated package.json");
 
     // Re-resolve dependency tree without the removed packages
@@ -189,5 +198,105 @@ fn run_global(packages: &[String]) -> miette::Result<()> {
     if !any_removed {
         return Err(miette!("no matching global packages were removed"));
     }
+    Ok(())
+}
+
+/// Prune aube/pnpm sidecar metadata entries that reference `name`.
+/// Covers pnpm.allowBuilds, pnpm.onlyBuiltDependencies,
+/// pnpm.neverBuiltDependencies, pnpm.overrides, aube.* mirrors,
+/// top-level overrides, yarn resolutions. Also removes the whole
+/// namespace block if its last entry was the one we just dropped.
+/// Safe no-op if the manifest has none of these fields.
+fn prune_sidecar_entries(manifest: &mut aube_manifest::PackageJson, name: &str) {
+    // Namespaced (pnpm.* / aube.*) allowlists, overrides, denylists.
+    for ns_key in ["pnpm", "aube"] {
+        let Some(ns) = manifest.extra.get_mut(ns_key) else {
+            continue;
+        };
+        let Some(obj) = ns.as_object_mut() else {
+            continue;
+        };
+        // Map-shape fields: key is package name.
+        for map_key in ["allowBuilds", "overrides", "peerDependencyRules"] {
+            if let Some(inner) = obj.get_mut(map_key).and_then(|v| v.as_object_mut()) {
+                inner.remove(name);
+                // peerDependencyRules has nested allowedVersions,
+                // ignoreMissing. Only clean the outer pkg-keyed
+                // entries, deeper structures are author-controlled.
+                if inner.is_empty() {
+                    obj.remove(map_key);
+                }
+            }
+        }
+        // Array-shape fields: whole entries match name or name@ver.
+        for arr_key in [
+            "onlyBuiltDependencies",
+            "neverBuiltDependencies",
+            "trustedDependencies",
+        ] {
+            if let Some(arr) = obj.get_mut(arr_key).and_then(|v| v.as_array_mut()) {
+                arr.retain(|entry| match entry.as_str() {
+                    Some(s) => {
+                        // "pkg" stays only if it is not our name.
+                        // "pkg@range" stays only if pkg is not ours.
+                        let base = s.rsplit_once('@').map(|(a, _)| a).unwrap_or(s);
+                        base != name
+                    }
+                    None => true,
+                });
+                if arr.is_empty() {
+                    obj.remove(arr_key);
+                }
+            }
+        }
+        // Drop the whole pnpm/aube block if we emptied it completely.
+        if obj.is_empty() {
+            manifest.extra.remove(ns_key);
+        }
+    }
+    // Top-level `overrides` (npm + pnpm both accept it here).
+    if let Some(top) = manifest
+        .extra
+        .get_mut("overrides")
+        .and_then(|v| v.as_object_mut())
+    {
+        top.remove(name);
+        if top.is_empty() {
+            manifest.extra.remove("overrides");
+        }
+    }
+    // yarn `resolutions` at top level.
+    if let Some(top) = manifest
+        .extra
+        .get_mut("resolutions")
+        .and_then(|v| v.as_object_mut())
+    {
+        top.remove(name);
+        if top.is_empty() {
+            manifest.extra.remove("resolutions");
+        }
+    }
+}
+
+fn write_manifest_atomic(path: &std::path::Path, body: &[u8]) -> miette::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = tempfile::Builder::new()
+        .prefix(".aube-remove-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to open tempfile for {}", path.display()))?;
+    {
+        use std::io::Write as _;
+        let mut f = tmp.as_file();
+        f.write_all(body)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to write tempfile for {}", path.display()))?;
+        f.sync_all()
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to sync tempfile for {}", path.display()))?;
+    }
+    tmp.persist(path)
+        .map_err(|e| miette!("failed to persist {}: {e}", path.display()))?;
     Ok(())
 }

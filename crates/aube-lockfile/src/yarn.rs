@@ -551,7 +551,7 @@ pub fn write_classic(
         out.push('\n');
     }
 
-    std::fs::write(path, out).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    crate::atomic_write_lockfile(path, out.as_bytes())?;
     Ok(())
 }
 
@@ -1229,7 +1229,7 @@ pub fn write_berry(
         out.push_str("\n\n");
     }
 
-    std::fs::write(path, out).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    crate::atomic_write_lockfile(path, out.as_bytes())?;
     Ok(())
 }
 

@@ -162,13 +162,26 @@ pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Re
         Ok(v) => v,
         Err(e) => {
             if args.ignore_registry_errors {
+                // Old code here printed "No known vulnerabilities
+                // found" and exited 0. That is a false negative. User
+                // passed --ignore-registry-errors to keep CI green
+                // when offline, but silently claiming clean audit can
+                // mask real CVEs. If the registry was down on a scan
+                // day, whole pipeline would ship vuln'd code with a
+                // "passed" audit step. Now: report degraded status,
+                // exit non-zero. CI fails loudly. JSON consumers
+                // check `status` field.
                 eprintln!("warn: advisory fetch failed: {e}");
                 if args.json {
-                    println!("{{}}");
+                    println!(
+                        "{{\"status\":\"degraded\",\"reason\":\"advisory fetch failed: {e}\"}}"
+                    );
                 } else {
-                    println!("No known vulnerabilities found");
+                    eprintln!(
+                        "audit degraded: advisory fetch failed, vulnerability status unknown"
+                    );
                 }
-                return Ok(());
+                std::process::exit(2);
             }
             return Err(miette!("advisory fetch failed: {e}"));
         }
