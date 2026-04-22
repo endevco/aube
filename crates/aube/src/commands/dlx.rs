@@ -150,9 +150,15 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // restores the original on drop — so the exec path below, any error
     // diagnostic rendering, and even a panic unwinding past this frame all
     // observe the user's real cwd instead of a dir that's about to vanish.
+    // Pin `project_dir` to the scratch path explicitly so install::run
+    // does not walk upward looking for a workspace root — the scratch
+    // dir lives under TMPDIR, which inside a parent workspace would
+    // otherwise resolve to that workspace and install the wrong tree.
     let prev_cwd = {
         let _cwd_guard = CwdGuard::switch_to(&project_dir)?;
-        let install_result = super::install::run(dlx_install_options()).await;
+        let mut opts = dlx_install_options();
+        opts.project_dir = Some(project_dir.clone());
+        let install_result = super::install::run(opts).await;
         let prev = _cwd_guard.original.clone();
         install_result.wrap_err("dlx install failed")?;
         prev
