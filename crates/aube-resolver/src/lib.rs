@@ -1315,7 +1315,11 @@ impl Resolver {
                 // falls through to the normal resolver path and fails
                 // loudly there.
                 if is_non_registry_specifier(&task.range) {
-                    if !task.is_root && self.dependency_policy.block_exotic_subdeps {
+                    if should_block_exotic_subdep(
+                        &task,
+                        &resolved,
+                        self.dependency_policy.block_exotic_subdeps,
+                    ) {
                         return Err(Error::BlockedExoticSubdep {
                             name: task.name.clone(),
                             spec: task.range.clone(),
@@ -2893,6 +2897,21 @@ fn is_non_registry_specifier(s: &str) -> bool {
     s.starts_with("file:")
 }
 
+fn should_block_exotic_subdep(
+    task: &ResolveTask,
+    resolved: &BTreeMap<String, LockedPackage>,
+    block_exotic_subdeps: bool,
+) -> bool {
+    block_exotic_subdeps
+        && !task.is_root
+        && is_non_registry_specifier(&task.range)
+        && !task
+            .parent
+            .as_ref()
+            .and_then(|parent| resolved.get(parent))
+            .is_some_and(|pkg| pkg.local_source.is_some())
+}
+
 /// Turn a raw `GitSource` (committish parsed from the user's
 /// specifier, empty `resolved`) into a fully-resolved one by running
 /// `git ls-remote`, then shallow-cloning to read the package's own
@@ -3160,7 +3179,7 @@ pub enum Error {
         catalog: String,
     },
     #[error(
-        "blocked exotic transitive dependency {name}@{spec} from {parent} (blockExoticSubdeps=true)"
+        "blocked exotic transitive dependency {name}@{spec} from {parent} (blockExoticSubdeps=true; set blockExoticSubdeps=false to allow trusted git/file/tarball subdeps)"
     )]
     BlockedExoticSubdep {
         name: String,
@@ -3211,6 +3230,61 @@ mod tests {
     #[test]
     fn dependency_policy_default_blocks_exotic_subdeps() {
         assert!(DependencyPolicy::default().block_exotic_subdeps);
+    }
+
+    #[test]
+    fn exotic_subdeps_from_local_parents_are_allowed() {
+        let task = ResolveTask {
+            name: "xlsx".to_string(),
+            range: "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz".to_string(),
+            dep_type: DepType::Production,
+            is_root: false,
+            parent: Some("pi-web-ui@file+abc123".to_string()),
+            importer: ".".to_string(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+        let mut resolved = BTreeMap::new();
+        resolved.insert(
+            "pi-web-ui@file+abc123".to_string(),
+            LockedPackage {
+                name: "pi-web-ui".to_string(),
+                version: "0.68.1".to_string(),
+                dep_path: "pi-web-ui@file+abc123".to_string(),
+                local_source: Some(LocalSource::Directory(PathBuf::from("packages/web-ui"))),
+                ..Default::default()
+            },
+        );
+
+        assert!(!should_block_exotic_subdep(&task, &resolved, true));
+    }
+
+    #[test]
+    fn exotic_subdeps_from_registry_parents_stay_blocked() {
+        let task = ResolveTask {
+            name: "xlsx".to_string(),
+            range: "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz".to_string(),
+            dep_type: DepType::Production,
+            is_root: false,
+            parent: Some("pi-web-ui@0.68.1".to_string()),
+            importer: ".".to_string(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+        let mut resolved = BTreeMap::new();
+        resolved.insert(
+            "pi-web-ui@0.68.1".to_string(),
+            LockedPackage {
+                name: "pi-web-ui".to_string(),
+                version: "0.68.1".to_string(),
+                dep_path: "pi-web-ui@0.68.1".to_string(),
+                ..Default::default()
+            },
+        );
+
+        assert!(should_block_exotic_subdep(&task, &resolved, true));
     }
 
     #[test]
