@@ -3654,12 +3654,20 @@ enum RegistryErrorKind {
 /// message without plumbing a new enum through every call site.
 fn classify_registry_error(msg: &str) -> RegistryErrorKind {
     let lower = msg.to_ascii_lowercase();
-    if lower.contains("tarball") || lower.contains("integrity") {
+    // Git checks must run before the generic http check: git error
+    // strings are formatted as `git resolve {range}: ...` and `range`
+    // is commonly an `https://` / `git+https://` URL, so the substring
+    // `http` would otherwise steal them into the Fetch bucket.
+    if lower.starts_with("git resolve ")
+        || lower.starts_with("git dep ")
+        || lower.starts_with("git task ")
+        || lower.contains("git+")
+    {
+        RegistryErrorKind::Git
+    } else if lower.contains("tarball") || lower.contains("integrity") {
         RegistryErrorKind::Tarball
     } else if lower.starts_with("fetch ") || lower.contains("packument") || lower.contains("http") {
         RegistryErrorKind::Fetch
-    } else if lower.contains("git") {
-        RegistryErrorKind::Git
     } else if lower.contains("local specifier") || lower.contains("workspace:") {
         RegistryErrorKind::LocalSpec
     } else if lower.contains("readpackage") {
@@ -3780,6 +3788,29 @@ mod tests {
         assert!(matches!(
             classify_registry_error("READPACKAGE hook: error"),
             RegistryErrorKind::Hook
+        ));
+    }
+
+    #[test]
+    fn classify_registry_error_prefers_git_over_http_url() {
+        // `git resolve {range}: ...` with an https:// or git+https:// range
+        // must land in Git, not Fetch — the substring `http` inside the URL
+        // would otherwise steal it into the Fetch bucket.
+        assert!(matches!(
+            classify_registry_error("git resolve https://github.com/foo/bar.git#v1: auth failed"),
+            RegistryErrorKind::Git
+        ));
+        assert!(matches!(
+            classify_registry_error("git resolve git+https://host/x.git: ref not found"),
+            RegistryErrorKind::Git
+        ));
+        assert!(matches!(
+            classify_registry_error("git task panicked: join error"),
+            RegistryErrorKind::Git
+        ));
+        assert!(matches!(
+            classify_registry_error("git dep https://github.com/...: nested install failed"),
+            RegistryErrorKind::Git
         ));
     }
 
