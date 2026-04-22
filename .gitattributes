@@ -3,8 +3,11 @@
 # offline BATS runs. Mark as generated so GitHub excludes it from the
 # language stats bar and collapses these files in PR diffs by default
 # (the individual packuments are hundreds of thousands of lines of
-# proxy JSON and would otherwise drown out every source diff).
-test/registry/storage/** linguist-generated=true
+# proxy JSON and would otherwise drown out every source diff). `-diff`
+# also suppresses text diffs in `git diff` / `gh pr diff` output;
+# inspect changes with `git diff --text` when actually needed (uplink
+# refreshes, new package seeding).
+test/registry/storage/** linguist-generated=true -diff
 
 # Golden file consumed by `crates/aube/src/main.rs`'s
 # `usage_kdl_matches_committed_golden_file` test via `include_str!`.
