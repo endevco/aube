@@ -2307,7 +2307,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         } else {
             resolver.resolve(&manifest, existing_for_resolver).await
         }
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
         drop(resolver);
         if let Some(pnpmfile_path) = pnpmfile_path.as_deref() {
@@ -3021,7 +3021,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             } else {
                 resolver.resolve(&manifest, existing_for_resolver).await
             }
-            .into_diagnostic()
+            .map_err(miette::Report::new)
             .wrap_err("failed to resolve dependencies");
 
             if resolve_result.is_err() {

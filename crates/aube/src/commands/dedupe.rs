@@ -74,7 +74,7 @@ pub async fn run(args: DedupeArgs) -> miette::Result<()> {
     let graph = resolver
         .resolve_workspace(&manifests, None, &ws_package_versions)
         .await
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
 
     let (removed, added) = diff_graphs(existing.as_ref(), &graph);

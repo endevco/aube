@@ -686,28 +686,41 @@ impl Resolver {
                     // cycle detection needed beyond depth-one since
                     // we refuse the chain outright.
                     if real_range.starts_with("catalog:") {
-                        return Err(Error::UnknownCatalogEntry {
+                        // Preserve the chain explanation in the catalog
+                        // field so the top-level `#[error]` template still
+                        // tells the user *why* the entry "doesn't resolve",
+                        // and set `chained_value` so the help formatter
+                        // skips the suggestion path (which would otherwise
+                        // match the user's own input back at them since
+                        // the entry exists, its value is just invalid).
+                        return Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
                             name: task_name.to_string(),
                             spec: spec.to_string(),
                             catalog: format!(
                                 "{catalog_name} (value {real_range} is itself a catalog: \
                                  reference, catalogs cannot chain)"
                             ),
-                        });
+                            available: Vec::new(),
+                            chained_value: Some(real_range.clone()),
+                        })));
                     }
                     Ok(Some((catalog_name, real_range.clone())))
                 }
-                None => Err(Error::UnknownCatalogEntry {
+                None => Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
                     name: task_name.to_string(),
                     spec: spec.to_string(),
                     catalog: catalog_name,
-                }),
+                    available: catalog.keys().cloned().collect(),
+                    chained_value: None,
+                }))),
             },
-            None => Err(Error::UnknownCatalog {
+            None => Err(Error::UnknownCatalog(Box::new(CatalogDetails {
                 name: task_name.to_string(),
                 spec: spec.to_string(),
                 catalog: catalog_name,
-            }),
+                available: self.catalogs.keys().cloned().collect(),
+                chained_value: None,
+            }))),
         }
     }
 
@@ -1345,14 +1358,16 @@ impl Resolver {
                         &resolved,
                         self.dependency_policy.block_exotic_subdeps,
                     ) {
-                        return Err(Error::BlockedExoticSubdep {
+                        return Err(Error::BlockedExoticSubdep(Box::new(ExoticSubdepDetails {
                             name: task.name.clone(),
                             spec: task.range.clone(),
                             parent: task
                                 .parent
                                 .clone()
                                 .unwrap_or_else(|| "<unknown>".to_string()),
-                        });
+                            ancestors: task.ancestors.clone(),
+                            importer: task.importer.clone(),
+                        })));
                     }
                     let importer_root = if task.importer == "." {
                         self.project_root.clone()
@@ -1941,18 +1956,18 @@ impl Resolver {
                     // instead of a misleading "older than 0 minutes".
                     PickResult::AgeGated => match self.minimum_release_age.as_ref() {
                         Some(mra) => {
-                            return Err(Error::AgeGate {
-                                name: task.name.clone(),
-                                range: task.range.clone(),
-                                minutes: mra.minutes,
-                            });
+                            return Err(Error::AgeGate(Box::new(build_age_gate(
+                                &task,
+                                packument,
+                                mra.minutes,
+                            ))));
                         }
                         None => {
-                            return Err(Error::NoMatch(task.name.clone(), task.range.clone()));
+                            return Err(Error::NoMatch(Box::new(build_no_match(&task, packument))));
                         }
                     },
                     PickResult::NoMatch => {
-                        return Err(Error::NoMatch(task.name.clone(), task.range.clone()));
+                        return Err(Error::NoMatch(Box::new(build_no_match(&task, packument))));
                     }
                 };
                 // Clone the picked metadata into an owned value so we can
@@ -2647,7 +2662,7 @@ fn pick_version<'a>(
         range_str.to_string()
     };
 
-    let range = match node_semver::Range::parse(&effective_range) {
+    let range = match node_semver::Range::parse(normalize_range(&effective_range)) {
         Ok(r) => r,
         Err(_) => return PickResult::NoMatch,
     };
@@ -3169,10 +3184,24 @@ pub(crate) fn version_satisfies(version: &str, range_str: &str) -> bool {
     let Ok(v) = node_semver::Version::parse(version) else {
         return false;
     };
-    with_cached_range(range_str, |r| match r {
+    with_cached_range(normalize_range(range_str), |r| match r {
         Some(r) => v.satisfies(r),
         None => false,
     })
+}
+
+/// npm / pnpm / yarn all treat an empty or whitespace-only version
+/// range as equivalent to `"*"` (match any). `node_semver` rejects it
+/// with `No valid ranges could be parsed`. Normalize here so the
+/// resolver and every `version_satisfies` caller agree with the
+/// upstream registry semantics. Real-world case: `hashring@0.0.8`
+/// declares `"bisection": ""` in its dependencies.
+fn normalize_range(range_str: &str) -> &str {
+    if range_str.trim().is_empty() {
+        "*"
+    } else {
+        range_str
+    }
 }
 
 /// Thread-local `node_semver::Range` parse cache.
@@ -3275,48 +3304,722 @@ pub fn is_deprecation_allowed(
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no version of {0} matches range {1}")]
-    NoMatch(String, String),
+    #[error("no version of {} matches range `{}`", .0.name, .0.range)]
+    NoMatch(Box<NoMatchDetails>),
     #[error(
-        "no version of {name} matching {range} is older than {minutes} minute(s) (minimumReleaseAgeStrict=true)"
+        "no version of {} matching {} is older than {} minute(s) (minimumReleaseAgeStrict=true)",
+        .0.name, .0.range, .0.minutes
     )]
-    AgeGate {
-        name: String,
-        range: String,
-        minutes: u64,
-    },
+    AgeGate(Box<AgeGateDetails>),
     #[error("registry error for {0}: {1}")]
     Registry(String, String),
     #[error(
-        "{name}: catalog reference `{spec}` does not resolve — catalog `{catalog}` is not defined (add it to `catalog:` / `catalogs.{catalog}:` in pnpm-workspace.yaml, or under `workspaces.catalog` / `pnpm.catalog` in package.json)"
+        "{}: catalog reference `{}` does not resolve — catalog `{}` is not defined (add it to `catalog:` / `catalogs.{}:` in pnpm-workspace.yaml, or under `workspaces.catalog` / `pnpm.catalog` in package.json)",
+        .0.name, .0.spec, .0.catalog, .0.catalog
     )]
-    UnknownCatalog {
-        name: String,
-        spec: String,
-        catalog: String,
-    },
+    UnknownCatalog(Box<CatalogDetails>),
     #[error(
-        "{name}: catalog reference `{spec}` does not resolve — catalog `{catalog}` has no entry for `{name}`"
+        "{}: catalog reference `{}` does not resolve — catalog `{}` has no entry for `{}`",
+        .0.name, .0.spec, .0.catalog, .0.name
     )]
-    UnknownCatalogEntry {
-        name: String,
-        spec: String,
-        catalog: String,
-    },
+    UnknownCatalogEntry(Box<CatalogDetails>),
     #[error(
-        "blocked exotic transitive dependency {name}@{spec} from {parent} (blockExoticSubdeps=true; set blockExoticSubdeps=false to allow trusted git/file/tarball subdeps)"
+        "blocked exotic transitive dependency {}@{} from {} (blockExoticSubdeps=true; set blockExoticSubdeps=false to allow trusted git/file/tarball subdeps)",
+        .0.name, .0.spec, .0.parent
     )]
-    BlockedExoticSubdep {
-        name: String,
-        spec: String,
-        parent: String,
-    },
+    BlockedExoticSubdep(Box<ExoticSubdepDetails>),
+}
+
+/// Context attached to a `NoMatch` error so the miette `help()` output can
+/// show importer path, parent chain, and what versions the packument
+/// actually contains. Boxed into the enum variant to keep `Error`'s size
+/// under `clippy::result_large_err`.
+#[derive(Debug)]
+pub struct NoMatchDetails {
+    pub name: String,
+    pub range: String,
+    pub importer: String,
+    pub ancestors: Vec<(String, String)>,
+    pub original_spec: Option<String>,
+    /// Up to 5 most-recent version strings from the packument. Stable
+    /// versions are preferred; when the packument contains only
+    /// prereleases we fall back to showing those so the diagnostic
+    /// doesn't misreport the packument as empty.
+    pub available: Vec<String>,
+    /// Total number of versions in the packument, including prereleases
+    /// and unparseable keys. Used by the help text to distinguish a
+    /// genuinely empty packument (wrong registry, missing package) from
+    /// one that only publishes prereleases.
+    pub total_versions: usize,
+    /// True when every shown entry in `available` is a prerelease — the
+    /// user asked for a stable range but the registry only has alpha /
+    /// beta / rc builds. Help text steers them toward `name@next` or a
+    /// prerelease range.
+    pub only_prereleases: bool,
+}
+
+#[derive(Debug)]
+pub struct AgeGateDetails {
+    pub name: String,
+    pub range: String,
+    pub minutes: u64,
+    pub importer: String,
+    pub ancestors: Vec<(String, String)>,
+    /// Version strings that satisfied the range but were blocked by
+    /// the age gate, sorted newest-first. Empty when the cutoff was
+    /// tighter than every published version.
+    pub gated: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct CatalogDetails {
+    pub name: String,
+    pub spec: String,
+    pub catalog: String,
+    /// For `UnknownCatalog`: the catalog names that *are* defined.
+    /// For `UnknownCatalogEntry`: the package names defined under
+    /// `catalog`. Empty when the catalog map itself is empty, or
+    /// when the error is a chained-catalog case (see `chained_value`).
+    pub available: Vec<String>,
+    /// Set only for the chained-catalog case: the entry exists, but
+    /// its value is itself another `catalog:` reference. Carries the
+    /// offending value (e.g. `catalog:other`) so the help text can
+    /// explain the chain rule rather than pretending the entry is
+    /// missing.
+    pub chained_value: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ExoticSubdepDetails {
+    pub name: String,
+    pub spec: String,
+    pub parent: String,
+    pub ancestors: Vec<(String, String)>,
+    pub importer: String,
+}
+
+impl miette::Diagnostic for Error {
+    fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        match self {
+            Self::NoMatch(d) => Some(Box::new(format_no_match_help(d))),
+            Self::AgeGate(d) => Some(Box::new(format_age_gate_help(d))),
+            Self::Registry(name, msg) => Some(Box::new(format_registry_help(name, msg))),
+            Self::UnknownCatalog(d) => Some(Box::new(format_unknown_catalog_help(d))),
+            Self::UnknownCatalogEntry(d) => Some(Box::new(format_unknown_catalog_entry_help(d))),
+            Self::BlockedExoticSubdep(d) => Some(Box::new(format_exotic_subdep_help(d))),
+        }
+    }
+}
+
+/// Build a `NoMatchDetails` snapshot from the task that failed and the
+/// packument it was looked up against. Captures importer, parent chain,
+/// the original package.json spec (if rewritten by catalog/override/
+/// alias), and a sample of the highest non-prerelease versions so the
+/// diagnostic can tell the user how close they were.
+fn build_no_match(task: &ResolveTask, packument: &Packument) -> NoMatchDetails {
+    let mut stable: Vec<(node_semver::Version, &str)> = Vec::new();
+    let mut prerelease: Vec<(node_semver::Version, &str)> = Vec::new();
+    for v in packument.versions.keys() {
+        let Ok(parsed) = node_semver::Version::parse(v) else {
+            continue;
+        };
+        if parsed.pre_release.is_empty() {
+            stable.push((parsed, v.as_str()));
+        } else {
+            prerelease.push((parsed, v.as_str()));
+        }
+    }
+    stable.sort_by(|a, b| b.0.cmp(&a.0));
+    prerelease.sort_by(|a, b| b.0.cmp(&a.0));
+    let (pool, only_prereleases) = if stable.is_empty() {
+        (prerelease, true)
+    } else {
+        (stable, false)
+    };
+    let available = pool
+        .into_iter()
+        .take(5)
+        .map(|(_, s)| s.to_string())
+        .collect();
+    NoMatchDetails {
+        name: task.name.clone(),
+        range: task.range.clone(),
+        importer: task.importer.clone(),
+        ancestors: task.ancestors.clone(),
+        original_spec: task.original_specifier.clone(),
+        available,
+        total_versions: packument.versions.len(),
+        only_prereleases,
+    }
+}
+
+/// Build an `AgeGateDetails` snapshot: which versions actually
+/// satisfied the range but were blocked by the cutoff. Recomputed from
+/// the packument rather than threaded out of `pick_version` because
+/// the age-gate path is uncommon and the recompute cost is dwarfed by
+/// the resolution itself.
+/// Resolve a `task.range` string that may be a dist-tag (`"latest"`,
+/// `"next"`, …) to the concrete version it points at. Used by the
+/// diagnostic builders where we need to parse the range for display
+/// purposes after `pick_version` has already accepted or rejected it.
+/// Falls back to the raw input when nothing matches — callers treat a
+/// subsequent semver parse failure as "skip, best-effort".
+fn resolve_dist_tag_range(packument: &Packument, range_str: &str) -> String {
+    if let Some(tagged) = packument.dist_tags.get(range_str) {
+        tagged.clone()
+    } else if range_str == "latest"
+        && let Some(v) = highest_stable_version(packument)
+    {
+        v
+    } else {
+        range_str.to_string()
+    }
+}
+
+fn build_age_gate(task: &ResolveTask, packument: &Packument, minutes: u64) -> AgeGateDetails {
+    // Mirror `pick_version`'s dist-tag handling: if `task.range` is a
+    // tag name (e.g. `"latest"`, `"next"`), resolve it to the concrete
+    // version string before parsing. Without this the semver parse
+    // fails silently and the help text drops the "blocked by age gate"
+    // line entirely, losing the most useful diagnostic.
+    let effective = resolve_dist_tag_range(packument, &task.range);
+    let range = node_semver::Range::parse(&effective).ok();
+    let mut gated: Vec<(node_semver::Version, String)> = Vec::new();
+    if let Some(r) = range {
+        for ver in packument.versions.keys() {
+            let Ok(v) = node_semver::Version::parse(ver) else {
+                continue;
+            };
+            if !v.satisfies(&r) {
+                continue;
+            }
+            gated.push((v, ver.clone()));
+        }
+    }
+    gated.sort_by(|a, b| b.0.cmp(&a.0));
+    AgeGateDetails {
+        name: task.name.clone(),
+        range: task.range.clone(),
+        minutes,
+        importer: task.importer.clone(),
+        ancestors: task.ancestors.clone(),
+        gated: gated.into_iter().map(|(_, s)| s).collect(),
+    }
+}
+
+fn format_no_match_help(d: &NoMatchDetails) -> String {
+    let mut s = String::new();
+    push_importer(&mut s, &d.importer);
+    push_chain(&mut s, &d.ancestors, &d.name);
+    if let Some(orig) = &d.original_spec
+        && orig != &d.range
+    {
+        s.push_str(&format!(
+            "original spec: `{orig}` (rewritten to `{}`)\n",
+            d.range
+        ));
+    }
+    if d.available.is_empty() {
+        if d.total_versions == 0 {
+            s.push_str("packument has no versions — check that the package exists on the configured registry");
+        } else {
+            s.push_str(&format!(
+                "packument has {} unparseable version(s) — check registry for non-semver tags",
+                d.total_versions
+            ));
+        }
+    } else if d.only_prereleases {
+        s.push_str(&format!(
+            "no stable versions published; only prereleases available: {}\nhint: request a prerelease explicitly (e.g. `{}@{}`) or via the `next` dist-tag",
+            d.available.join(", "),
+            d.name,
+            d.available.first().map(String::as_str).unwrap_or("next"),
+        ));
+    } else {
+        s.push_str(&format!("available versions: {}", d.available.join(", ")));
+    }
+    s
+}
+
+fn format_age_gate_help(d: &AgeGateDetails) -> String {
+    let mut s = String::new();
+    push_importer(&mut s, &d.importer);
+    push_chain(&mut s, &d.ancestors, &d.name);
+    if !d.gated.is_empty() {
+        s.push_str(&format!(
+            "blocked by age gate: {}\n",
+            d.gated
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    s.push_str("to bypass: loosen `minimumReleaseAge` in .npmrc, set `minimumReleaseAgeStrict=false` to fall back to the lowest satisfying version, or add `");
+    s.push_str(&d.name);
+    s.push_str("` to `minimumReleaseAgeExclude`");
+    s
+}
+
+fn format_registry_help(name: &str, msg: &str) -> String {
+    let kind = classify_registry_error(msg);
+    let mut s = String::new();
+    if !name.is_empty() && name != "(resolver)" {
+        s.push_str(&format!("package: {name}\n"));
+    }
+    s.push_str(match kind {
+        RegistryErrorKind::Tarball => {
+            "tarball download or integrity check failed — try `aube store prune` to clear the cache; if the lockfile references a tarball that moved, delete the lockfile entry for this package and re-resolve"
+        }
+        RegistryErrorKind::Fetch => {
+            "packument fetch failed — verify the registry URL in .npmrc, check auth (`npm login` / `NPM_TOKEN`), and confirm network connectivity"
+        }
+        RegistryErrorKind::Git => {
+            "git dep failed to resolve — confirm the ref exists, that credentials are configured for the host, and that the URL form is supported"
+        }
+        RegistryErrorKind::LocalSpec => {
+            "unparseable local specifier — `file:`/`link:`/`workspace:` paths must be relative to the importer, and `http(s):` URLs must end in `.tgz`"
+        }
+        RegistryErrorKind::Hook => {
+            "pnpmfile `readPackage` hook returned an error — check the hook's stack trace above for the underlying cause"
+        }
+        RegistryErrorKind::ResolverBug => {
+            "internal resolver invariant violated — please report at https://github.com/endevco/aube/discussions with the lockfile and command that reproduced this"
+        }
+        RegistryErrorKind::Generic => {
+            "registry operation failed — see the message above for the underlying cause"
+        }
+    });
+    s
+}
+
+fn format_unknown_catalog_help(d: &CatalogDetails) -> String {
+    let mut s = String::new();
+    if d.available.is_empty() {
+        s.push_str("no catalogs are defined in this workspace; add a `catalog:` block to `pnpm-workspace.yaml` or a `workspaces.catalog` entry in root `package.json`");
+    } else {
+        s.push_str(&format!("defined catalogs: {}", d.available.join(", ")));
+    }
+    s
+}
+
+fn format_unknown_catalog_entry_help(d: &CatalogDetails) -> String {
+    if let Some(chained) = &d.chained_value {
+        return format!(
+            "catalogs cannot chain — replace `{}` with a concrete semver range (e.g. `^1.0.0`) under the catalog entry",
+            chained
+        );
+    }
+    let mut s = String::new();
+    if d.available.is_empty() {
+        s.push_str(&format!(
+            "catalog `{}` is empty; add `{}: <version>` under `catalogs.{}` in pnpm-workspace.yaml",
+            d.catalog, d.name, d.catalog
+        ));
+    } else {
+        let suggestion = suggest_similar(&d.name, &d.available);
+        if let Some(best) = suggestion {
+            s.push_str(&format!(
+                "catalog `{}` defines: {} — did you mean `{}`?",
+                d.catalog,
+                truncate_list(&d.available, 8),
+                best
+            ));
+        } else {
+            s.push_str(&format!(
+                "catalog `{}` defines: {}",
+                d.catalog,
+                truncate_list(&d.available, 8)
+            ));
+        }
+    }
+    s
+}
+
+fn format_exotic_subdep_help(d: &ExoticSubdepDetails) -> String {
+    let mut s = String::new();
+    push_importer(&mut s, &d.importer);
+    push_chain(&mut s, &d.ancestors, &d.name);
+    s.push_str(&format!(
+        "to allow: either pin `{}` in your root package.json (moves the exotic spec out of the transitive graph), or set `blockExoticSubdeps=false` in .npmrc / settings.toml to trust every transitive git/file/tarball dep",
+        d.name
+    ));
+    s
+}
+
+fn push_importer(s: &mut String, importer: &str) {
+    if !importer.is_empty() && importer != "." {
+        s.push_str(&format!("importer: {importer}\n"));
+    }
+}
+
+fn push_chain(s: &mut String, ancestors: &[(String, String)], leaf: &str) {
+    if ancestors.is_empty() {
+        return;
+    }
+    s.push_str("chain: ");
+    for (i, (n, v)) in ancestors.iter().enumerate() {
+        if i > 0 {
+            s.push_str(" > ");
+        }
+        s.push_str(&format!("{n}@{v}"));
+    }
+    s.push_str(&format!(" > {leaf}\n"));
+}
+
+fn truncate_list(items: &[String], max: usize) -> String {
+    if items.len() <= max {
+        items.join(", ")
+    } else {
+        let (head, tail) = items.split_at(max);
+        format!("{} (+{} more)", head.join(", "), tail.len())
+    }
+}
+
+/// Suggest the closest string in `choices` to `needle` using a simple
+/// case-insensitive prefix/substring match, falling back to first-char
+/// equality. Returns `None` when nothing plausibly matches. This is a
+/// deliberately cheap heuristic — good enough for catalog typos,
+/// nothing more.
+fn suggest_similar<'a>(needle: &str, choices: &'a [String]) -> Option<&'a str> {
+    let lower = needle.to_ascii_lowercase();
+    choices
+        .iter()
+        .map(String::as_str)
+        .find(|c| {
+            c.to_ascii_lowercase().contains(&lower) || lower.contains(&c.to_ascii_lowercase())
+        })
+        .or_else(|| {
+            choices
+                .iter()
+                .map(String::as_str)
+                .find(|c| c.chars().next() == needle.chars().next())
+        })
+}
+
+enum RegistryErrorKind {
+    Tarball,
+    Fetch,
+    Git,
+    LocalSpec,
+    Hook,
+    ResolverBug,
+    Generic,
+}
+
+/// Coarse classification by substring match. Registry errors carry
+/// free-form `format!` strings from helper functions that already embed
+/// intent ("fetch ", "tarball ", "git ", "readPackage", etc.), so a
+/// lightweight match on those prefixes lets us pick a targeted help
+/// message without plumbing a new enum through every call site.
+fn classify_registry_error(msg: &str) -> RegistryErrorKind {
+    let lower = msg.to_ascii_lowercase();
+    // Specific-prefix branches (git, hook, local-spec) must run before
+    // the generic `http` / `tarball` substring checks: each of those
+    // error payloads can itself embed an https:// URL or a tarball
+    // path, so a bare substring match on later arms would steal them.
+    if lower.starts_with("git resolve ")
+        || lower.starts_with("git dep ")
+        || lower.starts_with("git task ")
+        || lower.contains("git+")
+    {
+        RegistryErrorKind::Git
+    } else if lower.starts_with("readpackage ") || lower.contains("readpackage hook") {
+        RegistryErrorKind::Hook
+    } else if lower.starts_with("unparseable local specifier") || lower.contains("workspace:") {
+        RegistryErrorKind::LocalSpec
+    } else if lower.contains("tarball") || lower.contains("integrity") {
+        RegistryErrorKind::Tarball
+    } else if lower.starts_with("fetch ") || lower.contains("packument") || lower.contains("http") {
+        RegistryErrorKind::Fetch
+    } else if lower.contains("deferred") || lower.contains("invariant") {
+        RegistryErrorKind::ResolverBug
+    } else {
+        RegistryErrorKind::Generic
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use aube_registry::{Dist, Packument, VersionMetadata};
+    use miette::Diagnostic;
+
+    #[test]
+    fn no_match_help_renders_context() {
+        let err = Error::NoMatch(Box::new(NoMatchDetails {
+            name: "bisection".into(),
+            range: "^9.9.9".into(),
+            importer: "packages/app".into(),
+            ancestors: vec![("parent-pkg".into(), "1.2.3".into())],
+            original_spec: Some("catalog:evens".into()),
+            available: vec!["1.0.1".into(), "1.0.0".into(), "0.1.0".into()],
+            total_versions: 3,
+            only_prereleases: false,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("importer: packages/app"));
+        assert!(help.contains("chain: parent-pkg@1.2.3 > bisection"));
+        assert!(help.contains("original spec: `catalog:evens`"));
+        assert!(help.contains("available versions: 1.0.1, 1.0.0, 0.1.0"));
+    }
+
+    #[test]
+    fn no_match_help_flags_empty_packument() {
+        let err = Error::NoMatch(Box::new(NoMatchDetails {
+            name: "ghost".into(),
+            range: "^1".into(),
+            importer: ".".into(),
+            ancestors: vec![],
+            original_spec: None,
+            available: vec![],
+            total_versions: 0,
+            only_prereleases: false,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("packument has no versions"));
+        assert!(!help.contains("importer:"));
+    }
+
+    #[test]
+    fn no_match_help_flags_prerelease_only_packument() {
+        let err = Error::NoMatch(Box::new(NoMatchDetails {
+            name: "bleeding".into(),
+            range: "^1".into(),
+            importer: ".".into(),
+            ancestors: vec![],
+            original_spec: None,
+            available: vec!["2.0.0-rc.3".into(), "2.0.0-rc.2".into()],
+            total_versions: 2,
+            only_prereleases: true,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("no stable versions published"));
+        assert!(help.contains("2.0.0-rc.3"));
+        assert!(help.contains("bleeding@2.0.0-rc.3"));
+        assert!(help.contains("`next` dist-tag"));
+    }
+
+    #[test]
+    fn build_age_gate_resolves_dist_tag_range() {
+        let packument = make_packument("foo", &["1.0.0", "2.0.0", "3.0.0"], "3.0.0");
+        let task = ResolveTask {
+            name: "foo".into(),
+            range: "latest".into(),
+            dep_type: DepType::Production,
+            is_root: true,
+            parent: None,
+            importer: ".".into(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+        let d = build_age_gate(&task, &packument, 60);
+        // `latest` → 3.0.0; the exact-version range only matches 3.0.0.
+        assert_eq!(d.gated, vec!["3.0.0".to_string()]);
+    }
+
+    #[test]
+    fn build_no_match_falls_back_to_prereleases() {
+        let packument = make_packument(
+            "alpha",
+            &["1.0.0-alpha.1", "1.0.0-alpha.2"],
+            "1.0.0-alpha.2",
+        );
+        let task = ResolveTask {
+            name: "alpha".into(),
+            range: "^2".into(),
+            dep_type: DepType::Production,
+            is_root: true,
+            parent: None,
+            importer: ".".into(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+        let d = build_no_match(&task, &packument);
+        assert!(d.only_prereleases);
+        assert_eq!(d.total_versions, 2);
+        assert_eq!(
+            d.available,
+            vec!["1.0.0-alpha.2".to_string(), "1.0.0-alpha.1".to_string()]
+        );
+    }
+
+    #[test]
+    fn classify_registry_error_is_case_insensitive() {
+        assert!(matches!(
+            classify_registry_error("fetch https://reg.example: HTTP 403"),
+            RegistryErrorKind::Fetch
+        ));
+        assert!(matches!(
+            classify_registry_error("fetch https://reg.example: http 403"),
+            RegistryErrorKind::Fetch
+        ));
+        assert!(matches!(
+            classify_registry_error("tarball https://x/y.tgz: Integrity mismatch"),
+            RegistryErrorKind::Tarball
+        ));
+        assert!(matches!(
+            classify_registry_error("readPackage hook: TypeError"),
+            RegistryErrorKind::Hook
+        ));
+        assert!(matches!(
+            classify_registry_error("READPACKAGE hook: error"),
+            RegistryErrorKind::Hook
+        ));
+    }
+
+    #[test]
+    fn classify_registry_error_prefers_hook_over_http_url() {
+        // `readPackage hook:` messages can embed an HTTPS URL from the
+        // hook's own error payload — must land in Hook, not Fetch.
+        assert!(matches!(
+            classify_registry_error(
+                "readPackage hook: Error: failed to fetch https://internal.example/thing"
+            ),
+            RegistryErrorKind::Hook
+        ));
+        assert!(matches!(
+            classify_registry_error("readPackage hook: TypeError: Cannot read property"),
+            RegistryErrorKind::Hook
+        ));
+    }
+
+    #[test]
+    fn unknown_catalog_entry_help_explains_chained_value() {
+        // Chained-catalog case: the help path suggests a concrete semver
+        // range instead of listing siblings (which would match the user's
+        // own input and produce a bogus "did you mean `react`?").
+        let err = Error::UnknownCatalogEntry(Box::new(CatalogDetails {
+            name: "react".into(),
+            spec: "catalog:".into(),
+            catalog: "default (value catalog:other is itself a catalog: reference, catalogs \
+                     cannot chain)"
+                .into(),
+            available: Vec::new(),
+            chained_value: Some("catalog:other".into()),
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(!help.contains("did you mean"));
+        assert!(!help.contains("is empty"));
+        assert!(help.contains("catalogs cannot chain"));
+        assert!(help.contains("catalog:other"));
+        assert!(help.contains("concrete semver range"));
+    }
+
+    #[test]
+    fn classify_registry_error_prefers_git_over_http_url() {
+        // `git resolve {range}: ...` with an https:// or git+https:// range
+        // must land in Git, not Fetch — the substring `http` inside the URL
+        // would otherwise steal it into the Fetch bucket.
+        assert!(matches!(
+            classify_registry_error("git resolve https://github.com/foo/bar.git#v1: auth failed"),
+            RegistryErrorKind::Git
+        ));
+        assert!(matches!(
+            classify_registry_error("git resolve git+https://host/x.git: ref not found"),
+            RegistryErrorKind::Git
+        ));
+        assert!(matches!(
+            classify_registry_error("git task panicked: join error"),
+            RegistryErrorKind::Git
+        ));
+        assert!(matches!(
+            classify_registry_error("git dep https://github.com/...: nested install failed"),
+            RegistryErrorKind::Git
+        ));
+    }
+
+    #[test]
+    fn age_gate_help_lists_gated_versions_and_bypass() {
+        let err = Error::AgeGate(Box::new(AgeGateDetails {
+            name: "lodash".into(),
+            range: "^4".into(),
+            minutes: 60,
+            importer: "packages/app".into(),
+            ancestors: vec![("parent".into(), "1.0.0".into())],
+            gated: vec!["4.17.21".into(), "4.17.20".into()],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("importer: packages/app"));
+        assert!(help.contains("chain: parent@1.0.0 > lodash"));
+        assert!(help.contains("blocked by age gate: 4.17.21, 4.17.20"));
+        assert!(help.contains("minimumReleaseAgeStrict=false"));
+        assert!(help.contains("minimumReleaseAgeExclude"));
+    }
+
+    #[test]
+    fn registry_help_classifies_common_subtypes() {
+        let tarball = format_registry_help("lodash", "tarball https://x/y.tgz: eof");
+        assert!(tarball.contains("aube store prune"));
+        let fetch = format_registry_help("lodash", "fetch https://registry.npmjs.org: 403");
+        assert!(fetch.contains("registry URL"));
+        let git = format_registry_help("some-pkg", "git resolve git+ssh://...: auth");
+        assert!(git.contains("git dep"));
+        let local = format_registry_help("pkg", "unparseable local specifier: file:../x");
+        assert!(local.contains("local specifier"));
+        let hook = format_registry_help("pkg", "readPackage hook: TypeError");
+        assert!(hook.contains("readPackage"));
+        let bug = format_registry_help("(resolver)", "3 transitives still deferred");
+        assert!(bug.contains("report at"));
+    }
+
+    #[test]
+    fn unknown_catalog_help_lists_defined() {
+        let err = Error::UnknownCatalog(Box::new(CatalogDetails {
+            name: "react".into(),
+            spec: "catalog:missing".into(),
+            catalog: "missing".into(),
+            available: vec!["default".into(), "evens".into()],
+            chained_value: None,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("defined catalogs: default, evens"));
+    }
+
+    #[test]
+    fn unknown_catalog_help_when_none_defined() {
+        let err = Error::UnknownCatalog(Box::new(CatalogDetails {
+            name: "react".into(),
+            spec: "catalog:".into(),
+            catalog: "default".into(),
+            available: vec![],
+            chained_value: None,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("no catalogs are defined"));
+    }
+
+    #[test]
+    fn unknown_catalog_entry_help_suggests_similar() {
+        let err = Error::UnknownCatalogEntry(Box::new(CatalogDetails {
+            name: "reactt".into(),
+            spec: "catalog:".into(),
+            catalog: "default".into(),
+            available: vec!["react".into(), "react-dom".into()],
+            chained_value: None,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("defines: react, react-dom"));
+        assert!(help.contains("did you mean `react`"));
+    }
+
+    #[test]
+    fn exotic_subdep_help_shows_chain_and_fix() {
+        let err = Error::BlockedExoticSubdep(Box::new(ExoticSubdepDetails {
+            name: "xlsx".into(),
+            spec: "https://cdn.sheetjs.com/xlsx-0.20.3.tgz".into(),
+            parent: "some-pkg@1.0.0".into(),
+            ancestors: vec![("some-pkg".into(), "1.0.0".into())],
+            importer: ".".into(),
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("chain: some-pkg@1.0.0 > xlsx"));
+        assert!(help.contains("pin `xlsx`"));
+        assert!(help.contains("blockExoticSubdeps=false"));
+    }
 
     #[test]
     fn test_version_satisfies() {
@@ -3350,6 +4053,16 @@ mod tests {
     fn test_version_satisfies_invalid() {
         assert!(!version_satisfies("notaversion", "^1.0.0"));
         assert!(!version_satisfies("1.0.0", "notarange"));
+    }
+
+    #[test]
+    fn test_version_satisfies_empty_range_is_any() {
+        // `hashring@0.0.8` in the wild declares `"bisection": ""`.
+        // npm / pnpm / yarn treat empty and whitespace-only ranges as
+        // `"*"`; aube must match.
+        assert!(version_satisfies("0.0.3", ""));
+        assert!(version_satisfies("99.99.99", ""));
+        assert!(version_satisfies("1.2.3", "   "));
     }
 
     #[test]

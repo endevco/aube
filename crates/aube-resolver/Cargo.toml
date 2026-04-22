@@ -23,5 +23,6 @@ base64 = { workspace = true }
 pathdiff = "0.2"
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
+miette = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

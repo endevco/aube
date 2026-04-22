@@ -223,7 +223,7 @@ pub async fn run(
     let graph = resolver
         .resolve(&resolver_manifest, filtered_existing.as_ref())
         .await
-        .into_diagnostic()
+        .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
 
     // Report what changed
