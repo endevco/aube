@@ -1948,11 +1948,11 @@ impl Resolver {
                             });
                         }
                         None => {
-                            return Err(Error::NoMatch(task.name.clone(), task.range.clone()));
+                            return Err(Error::NoMatch(Box::new(build_no_match(&task, packument))));
                         }
                     },
                     PickResult::NoMatch => {
-                        return Err(Error::NoMatch(task.name.clone(), task.range.clone()));
+                        return Err(Error::NoMatch(Box::new(build_no_match(&task, packument))));
                     }
                 };
                 // Clone the picked metadata into an owned value so we can
@@ -3275,8 +3275,8 @@ pub fn is_deprecation_allowed(
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no version of {0} matches range {1}")]
-    NoMatch(String, String),
+    #[error("no version of {} matches range `{}`", .0.name, .0.range)]
+    NoMatch(Box<NoMatchDetails>),
     #[error(
         "no version of {name} matching {range} is older than {minutes} minute(s) (minimumReleaseAgeStrict=true)"
     )]
@@ -3313,10 +3313,134 @@ pub enum Error {
     },
 }
 
+/// Context attached to a `NoMatch` error so the miette `help()` output can
+/// show importer path, parent chain, and what versions the packument
+/// actually contains. Boxed into the enum variant to keep `Error`'s size
+/// under `clippy::result_large_err`.
+#[derive(Debug)]
+pub struct NoMatchDetails {
+    pub name: String,
+    pub range: String,
+    pub importer: String,
+    pub ancestors: Vec<(String, String)>,
+    pub original_spec: Option<String>,
+    /// Up to 5 most-recent version strings from the packument, for
+    /// "nearby versions" diagnostic output. Empty if the packument had
+    /// no versions (usually means the wrong registry was queried).
+    pub available: Vec<String>,
+}
+
+impl miette::Diagnostic for Error {
+    fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        match self {
+            Self::NoMatch(d) => Some(Box::new(format_no_match_help(d))),
+            Self::AgeGate { .. }
+            | Self::Registry(_, _)
+            | Self::UnknownCatalog { .. }
+            | Self::UnknownCatalogEntry { .. }
+            | Self::BlockedExoticSubdep { .. } => None,
+        }
+    }
+}
+
+/// Build a `NoMatchDetails` snapshot from the task that failed and the
+/// packument it was looked up against. Captures importer, parent chain,
+/// the original package.json spec (if rewritten by catalog/override/
+/// alias), and a sample of the highest non-prerelease versions so the
+/// diagnostic can tell the user how close they were.
+fn build_no_match(task: &ResolveTask, packument: &Packument) -> NoMatchDetails {
+    let mut parsed: Vec<(node_semver::Version, &str)> = packument
+        .versions
+        .keys()
+        .filter_map(|v| node_semver::Version::parse(v).ok().map(|p| (p, v.as_str())))
+        .filter(|(v, _)| v.pre_release.is_empty())
+        .collect();
+    parsed.sort_by(|a, b| b.0.cmp(&a.0));
+    let available = parsed
+        .into_iter()
+        .take(5)
+        .map(|(_, s)| s.to_string())
+        .collect();
+    NoMatchDetails {
+        name: task.name.clone(),
+        range: task.range.clone(),
+        importer: task.importer.clone(),
+        ancestors: task.ancestors.clone(),
+        original_spec: task.original_specifier.clone(),
+        available,
+    }
+}
+
+fn format_no_match_help(d: &NoMatchDetails) -> String {
+    let mut s = String::new();
+    if !d.importer.is_empty() && d.importer != "." {
+        s.push_str(&format!("importer: {}\n", d.importer));
+    }
+    if !d.ancestors.is_empty() {
+        s.push_str("chain: ");
+        for (i, (n, v)) in d.ancestors.iter().enumerate() {
+            if i > 0 {
+                s.push_str(" > ");
+            }
+            s.push_str(&format!("{n}@{v}"));
+        }
+        s.push_str(&format!(" > {}\n", d.name));
+    }
+    if let Some(orig) = &d.original_spec
+        && orig != &d.range
+    {
+        s.push_str(&format!(
+            "original spec: `{orig}` (rewritten to `{}`)\n",
+            d.range
+        ));
+    }
+    if d.available.is_empty() {
+        s.push_str(
+            "packument has no versions — check that the package exists on the configured registry",
+        );
+    } else {
+        s.push_str(&format!("available versions: {}", d.available.join(", ")));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use aube_registry::{Dist, Packument, VersionMetadata};
+    use miette::Diagnostic;
+
+    #[test]
+    fn no_match_help_renders_context() {
+        let err = Error::NoMatch(Box::new(NoMatchDetails {
+            name: "bisection".into(),
+            range: "^9.9.9".into(),
+            importer: "packages/app".into(),
+            ancestors: vec![("parent-pkg".into(), "1.2.3".into())],
+            original_spec: Some("catalog:evens".into()),
+            available: vec!["1.0.1".into(), "1.0.0".into(), "0.1.0".into()],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("importer: packages/app"));
+        assert!(help.contains("chain: parent-pkg@1.2.3 > bisection"));
+        assert!(help.contains("original spec: `catalog:evens`"));
+        assert!(help.contains("available versions: 1.0.1, 1.0.0, 0.1.0"));
+    }
+
+    #[test]
+    fn no_match_help_flags_empty_packument() {
+        let err = Error::NoMatch(Box::new(NoMatchDetails {
+            name: "ghost".into(),
+            range: "^1".into(),
+            importer: ".".into(),
+            ancestors: vec![],
+            original_spec: None,
+            available: vec![],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("packument has no versions"));
+        assert!(!help.contains("importer:"));
+    }
 
     #[test]
     fn test_version_satisfies() {
