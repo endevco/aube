@@ -227,18 +227,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let link_targets: BTreeSet<String> = raw
         .packages
         .iter()
-        .filter_map(|(install_path, entry)| {
-            entry
-                .link
-                .then(|| {
-                    entry
-                        .resolved
-                        .as_ref()
-                        .map(|target| (target.clone(), install_path.clone()))
-                })
-                .flatten()
-                .map(|(target, _)| target)
-        })
+        .filter_map(|(_, entry)| entry.link.then(|| entry.resolved.clone()).flatten())
         .collect();
 
     // Map each install_path to the locked dep_path it resolves to. We need
