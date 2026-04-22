@@ -225,9 +225,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // record during the main loop and let the link entry synthesize a local
     // package from it.
     let link_targets: BTreeSet<String> = raw
-        .packages
-        .iter()
-        .filter_map(|(_, entry)| entry.link.then(|| entry.resolved.clone()).flatten())
+        .packages.values().filter_map(|entry| entry.link.then(|| entry.resolved.clone()).flatten())
         .collect();
 
     // Map each install_path to the locked dep_path it resolves to. We need
