@@ -425,17 +425,22 @@ pub(crate) fn make_client(cwd: &std::path::Path) -> aube_registry::client::Regis
 
 /// Build the standard resolver used by add/remove/update/dedupe: a
 /// shared `RegistryClient` wrapped in `Arc`, the shared packument
-/// cache directory, and the given catalog map. Every call site does
-/// these same three bindings in the same order; keep them in one
-/// place so a future addition (e.g. a fetch-policy tweak) lands
-/// everywhere at once.
+/// cache directory, the given catalog map, and the dependency policy
+/// resolved from `.npmrc` / workspace yaml. Without applying the
+/// policy here `blockExoticSubdeps=false` (and other policy bits)
+/// gets honored by `aube install` but ignored by `aube add` — the
+/// install pipeline runs `configure_resolver` while these commands
+/// re-resolve manifests through this stripped-down builder.
 pub(crate) fn build_resolver(
     cwd: &std::path::Path,
+    manifest: &aube_manifest::PackageJson,
     catalogs: CatalogMap,
 ) -> aube_resolver::Resolver {
+    let policy = with_settings_ctx(cwd, |ctx| install::resolve_dependency_policy(manifest, ctx));
     aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd)))
         .with_packument_cache(packument_cache_dir())
         .with_catalogs(catalogs)
+        .with_dependency_policy(policy)
 }
 
 /// Resolve [`aube_registry::config::FetchPolicy`] from the same

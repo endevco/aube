@@ -17,6 +17,7 @@ mod side_effects_cache;
 pub use dep_selection::DepSelection;
 pub use frozen::{FrozenMode, FrozenOverride, GlobalVirtualStoreFlags};
 pub(crate) use settings::PeerDependencyRules;
+pub(crate) use settings::resolve_dependency_policy;
 pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_root};
 
 use settings::{

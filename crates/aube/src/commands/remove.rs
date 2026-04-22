@@ -110,7 +110,7 @@ pub async fn run(
     // Re-resolve dependency tree without the removed packages
     let existing = aube_lockfile::parse_lockfile(&cwd, &manifest).ok();
     let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
-    let mut resolver = super::build_resolver(&cwd, workspace_catalogs);
+    let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
     let graph = resolver
         .resolve(&manifest, existing.as_ref())
         .await

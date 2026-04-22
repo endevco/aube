@@ -65,7 +65,7 @@ pub async fn run(args: DedupeArgs) -> miette::Result<()> {
     }
 
     let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
-    let mut resolver = super::build_resolver(&cwd, workspace_catalogs);
+    let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
     let graph = resolver
         .resolve_workspace(&manifests, None, &ws_package_versions)
         .await

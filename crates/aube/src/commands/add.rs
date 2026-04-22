@@ -360,7 +360,7 @@ pub async fn run(
     // written lockfile) on disk, breaking the `--no-save` promise.
     let pipeline_result: miette::Result<()> = async {
         let existing = aube_lockfile::parse_lockfile(&cwd, &manifest).ok();
-        let mut resolver = super::build_resolver(&cwd, workspace_catalogs);
+        let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
         let graph = resolver
             .resolve(&manifest, existing.as_ref())
             .await

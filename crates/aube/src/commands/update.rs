@@ -216,7 +216,7 @@ pub async fn run(
 
     // Re-resolve the full dependency tree
     let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
-    let mut resolver = super::build_resolver(&cwd, workspace_catalogs);
+    let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
     let graph = resolver
         .resolve(&resolver_manifest, filtered_existing.as_ref())
         .await

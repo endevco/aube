@@ -368,7 +368,7 @@ fn resolve_registry_supports_time_field(ctx: &aube_settings::ResolveCtx<'_>) -> 
     aube_settings::resolved::registry_supports_time_field(ctx)
 }
 
-fn resolve_dependency_policy(
+pub(crate) fn resolve_dependency_policy(
     manifest: &aube_manifest::PackageJson,
     ctx: &aube_settings::ResolveCtx<'_>,
 ) -> aube_resolver::DependencyPolicy {
