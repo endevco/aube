@@ -87,7 +87,7 @@ _setup_workspace_fixture() {
 	[[ "$stderr" == *"DEBUG"* ]]
 }
 
-@test "packageManagerStrict warns for run commands on unsupported package managers" {
+@test "packageManagerStrict=warn (default) warns for run commands on unsupported package managers" {
 	_make_script_project
 	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	echo "verifyDepsBeforeRun=false" >.npmrc
@@ -100,17 +100,61 @@ _setup_workspace_fixture() {
 	[ ! -e node_modules ]
 }
 
-@test "packageManagerStrict still rejects install-test on unsupported package managers" {
+@test "packageManagerStrict=warn (default) warns install-test on unsupported package managers without erroring" {
 	_make_script_project
 	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	echo "verifyDepsBeforeRun=false" >.npmrc
+
+	# Without an install running, `aube install-test` still needs to
+	# exit non-zero if the `test` script is missing — but the PM guard
+	# itself must only warn. We assert the warning is present; the exit
+	# status is driven by the absence of a `test` script, not the guard.
+	run aube install-test
+	[[ "$output" == *"unsupported package manager"* ]]
+	[[ "$output" != *"packageManagerStrict=error"* ]]
+}
+
+@test "packageManagerStrict=error rejects install-test on unsupported package managers" {
+	_make_script_project
+	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
+	{
+		echo "packageManagerStrict=error"
+		echo "verifyDepsBeforeRun=false"
+	} >.npmrc
 
 	run aube install-test
 	assert_failure
 	[[ "$output" == *"unsupported package manager"* ]]
 }
 
-@test "packageManagerStrict=false skips packageManager guard" {
+@test "packageManagerStrict=true (back-compat alias for error) rejects install-test" {
+	_make_script_project
+	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
+	{
+		echo "packageManagerStrict=true"
+		echo "verifyDepsBeforeRun=false"
+	} >.npmrc
+
+	run aube install-test
+	assert_failure
+	[[ "$output" == *"unsupported package manager"* ]]
+}
+
+@test "packageManagerStrict=off skips packageManager guard" {
+	_make_script_project
+	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
+	{
+		echo "packageManagerStrict=off"
+		echo "verifyDepsBeforeRun=false"
+	} >.npmrc
+
+	run aube run ok
+	assert_success
+	[[ "$output" == *"ok"* ]]
+	[[ "$output" != *"unsupported package manager"* ]]
+}
+
+@test "packageManagerStrict=false (back-compat alias for off) skips guard" {
 	_make_script_project
 	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	{
@@ -121,6 +165,7 @@ _setup_workspace_fixture() {
 	run aube run ok
 	assert_success
 	[[ "$output" == *"ok"* ]]
+	[[ "$output" != *"unsupported package manager"* ]]
 }
 
 @test "packageManagerStrict checks workspace root from package subdirectory" {

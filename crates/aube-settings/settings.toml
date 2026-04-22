@@ -1480,10 +1480,19 @@ sources.npmrc = ["npmPath"]
 examples = []
 
 [packageManagerStrict]
-description = "Enforce the `packageManager` field in package.json."
-type = "bool"
-default = "true"
-docs = "When a project declares `packageManager`, aube accepts `aube` and `pnpm` package-manager names and rejects npm/yarn/bun/etc. Set to false to skip this guard."
+description = "Enforce the `packageManager` field in package.json (`off` | `warn` | `error`)."
+type = '"off" | "warn" | "error" | true | false'
+default = "\"warn\""
+docs = """
+Controls how aube reacts when a project's `packageManager` field
+names something other than `aube` or `pnpm` (npm, yarn, bun, …).
+`warn` (the default) prints a warning and continues; install-class
+commands also disable the implicit auto-install probe so aube does
+not silently install on top of another package manager's layout.
+`error` fails install-class commands hard (run-class commands still
+warn). `off` skips the check entirely. The bool spellings are
+accepted for back-compat: `true` maps to `error`, `false` to `off`.
+"""
 sources.cli = []
 sources.env = []
 sources.npmrc = ["package-manager-strict", "packageManagerStrict"]

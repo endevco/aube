@@ -1022,8 +1022,39 @@ enum ColorMode {
 #[derive(Debug)]
 struct StartupSettings {
     loglevel: Option<String>,
-    package_manager_strict: bool,
+    package_manager_strict: PackageManagerStrictMode,
     package_manager_strict_version: bool,
+}
+
+/// Tri-state for the `packageManagerStrict` setting.
+///
+/// `Off` skips the check entirely. `Warn` (the default) prints a
+/// warning for unsupported `packageManager` names but lets every
+/// command continue; install-class commands also disable the implicit
+/// auto-install probe so aube does not write into another package
+/// manager's `node_modules` layout. `Error` fails install-class
+/// commands hard while still degrading to a warning for run-class
+/// commands (matching the prior `true` behavior).
+///
+/// Accepts the bool spellings (`true` → `Error`, `false` → `Off`) for
+/// back-compat with older `.npmrc` files that pre-date the tri-state.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+enum PackageManagerStrictMode {
+    Off,
+    #[default]
+    Warn,
+    Error,
+}
+
+impl PackageManagerStrictMode {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "false" | "0" => Some(Self::Off),
+            "warn" => Some(Self::Warn),
+            "error" | "true" | "1" => Some(Self::Error),
+            _ => None,
+        }
+    }
 }
 
 fn resolve_color_mode(cli: &Cli) -> ColorMode {
@@ -1120,7 +1151,10 @@ fn load_startup_settings() -> miette::Result<StartupSettings> {
     Ok(StartupSettings {
         loglevel: aube_settings::values::string_from_env("loglevel", &env)
             .or_else(|| aube_settings::values::string_from_npmrc("loglevel", &npmrc)),
-        package_manager_strict: aube_settings::resolved::package_manager_strict(&ctx),
+        package_manager_strict: PackageManagerStrictMode::parse(
+            &aube_settings::resolved::package_manager_strict(&ctx),
+        )
+        .unwrap_or_default(),
         package_manager_strict_version: aube_settings::resolved::package_manager_strict_version(
             &ctx,
         ),
@@ -1300,7 +1334,7 @@ fn enforce_package_manager_guardrails(
     settings: &StartupSettings,
     command: Option<&Commands>,
 ) -> miette::Result<PackageManagerGuard> {
-    if !settings.package_manager_strict {
+    if settings.package_manager_strict == PackageManagerStrictMode::Off {
         return Ok(PackageManagerGuard::Ok);
     }
 
@@ -1347,19 +1381,30 @@ fn enforce_package_manager_guardrails(
             }
             Ok(PackageManagerGuard::Ok)
         }
-        other => match package_manager_guard_mode(command) {
-            PackageManagerGuardMode::Error => Err(miette!(
-                "packageManager in {} uses unsupported package manager `{other}`. aube's packageManagerStrict guard is on by default and only accepts `aube` and `pnpm`; remove or change the `packageManager` field, or set `package-manager-strict=false` (or `packageManagerStrict=false`) in .npmrc to skip this guard.",
-                path.display()
-            )),
-            PackageManagerGuardMode::WarnAndSkipAutoInstall => {
-                eprintln!(
-                    "warning: packageManager in {} uses unsupported package manager `{other}`; continuing because this command only runs scripts, but auto-install is disabled. Switch packageManager to `aube`/`pnpm`, disable package-manager-strict, or pass `--no-install` to skip the install probe explicitly.",
+        other => {
+            // `error` mode: install-class commands fail hard, run-class
+            // commands warn-and-skip-auto-install (matches the prior
+            // `true` behavior). `warn` mode: every command warns; for
+            // install-class we still suppress auto-install so aube
+            // does not write into another PM's node_modules layout.
+            let mode = match settings.package_manager_strict {
+                PackageManagerStrictMode::Error => package_manager_guard_mode(command),
+                _ => PackageManagerGuardMode::WarnAndSkipAutoInstall,
+            };
+            match mode {
+                PackageManagerGuardMode::Error => Err(miette!(
+                    "packageManager in {} uses unsupported package manager `{other}`. aube's packageManagerStrict=error guard only accepts `aube` and `pnpm`; remove or change the `packageManager` field, or set `package-manager-strict=warn` (the default) or `=off` in .npmrc to soften this guard.",
                     path.display()
-                );
-                Ok(PackageManagerGuard::WarnRunOnly)
+                )),
+                PackageManagerGuardMode::WarnAndSkipAutoInstall => {
+                    eprintln!(
+                        "warning: packageManager in {} uses unsupported package manager `{other}`; continuing but auto-install is disabled. Switch packageManager to `aube`/`pnpm`, set packageManagerStrict=off, or pass `--no-install` to skip the install probe explicitly.",
+                        path.display()
+                    );
+                    Ok(PackageManagerGuard::WarnRunOnly)
+                }
             }
-        },
+        }
     }
 }
 
