@@ -1778,7 +1778,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let line = format!(
                 "{} {} {} {} {}",
                 style::emagenta("aube").bold(),
-                style::edim(env!("CARGO_PKG_VERSION")),
+                style::edim(crate::version::VERSION.as_str()),
                 style::edim("by en.dev"),
                 style::edim("·"),
                 style::egreen("Already up to date").bold(),

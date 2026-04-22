@@ -148,7 +148,7 @@ impl CiState {
         let header_text = format!(
             "{} {} {}",
             style::emagenta("aube").bold(),
-            style::edim(env!("CARGO_PKG_VERSION")),
+            style::edim(crate::version::VERSION.as_str()),
             style::edim("by en.dev"),
         );
         render_centered_line(&header_text, term_width())

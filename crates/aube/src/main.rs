@@ -7,6 +7,7 @@ mod pnpmfile;
 mod progress;
 mod state;
 mod update_check;
+mod version;
 
 // mimalloc as global allocator on release builds. Cuts linker-phase
 // wall time and peak RSS on large installs. Per-thread heaps suit
@@ -59,7 +60,7 @@ fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
 }
 
 #[derive(Parser)]
-#[command(name = "aube", about = "A fast Node.js package manager", version)]
+#[command(name = "aube", about = "A fast Node.js package manager", version = version::VERSION.as_str())]
 pub(crate) struct Cli {
     /// Change to directory before running (like `make -C` or `mise --cd`)
     #[arg(short = 'C', long = "dir", visible_aliases = ["cd", "prefix"], global = true, value_name = "DIR")]

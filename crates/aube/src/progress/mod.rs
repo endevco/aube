@@ -124,7 +124,7 @@ impl InstallProgress {
         let header = format!(
             "{} {} {}",
             style::emagenta("aube").bold(),
-            style::edim(env!("CARGO_PKG_VERSION")),
+            style::edim(crate::version::VERSION.as_str()),
             style::edim("by en.dev"),
         );
         let root = ProgressJobBuilder::new()
@@ -361,7 +361,7 @@ impl InstallProgress {
             let line = format!(
                 "{} {} {} {} {}",
                 style::emagenta("aube").bold(),
-                style::edim(env!("CARGO_PKG_VERSION")),
+                style::edim(crate::version::VERSION.as_str()),
                 style::edim("by en.dev"),
                 style::edim("·"),
                 style::egreen(msg).bold(),
@@ -388,7 +388,7 @@ impl InstallProgress {
         let line = format!(
             "{} {} {} {} {}",
             style::emagenta("aube").bold(),
-            style::edim(env!("CARGO_PKG_VERSION")),
+            style::edim(crate::version::VERSION.as_str()),
             style::edim("by en.dev"),
             style::edim("·"),
             style::egreen(msg).bold(),
