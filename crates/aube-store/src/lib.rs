@@ -1630,9 +1630,19 @@ mod tests {
         // Delete the actual store file to simulate staleness
         std::fs::remove_file(&store_path).unwrap();
 
-        // Both load_index and load_index_verified detect missing files
-        let loaded = store.load_index("pkg", "1.0.0", TEST_INTEGRITY);
-        assert!(loaded.is_none());
+        // Both variants detect missing store files and return None.
+        assert!(store.load_index("pkg", "1.0.0", TEST_INTEGRITY).is_none());
+        // save_index wrote the file and load_index just deleted it
+        // after detecting the stale store entry, so re-seed before
+        // exercising the verified variant.
+        store
+            .save_index("pkg", "1.0.0", TEST_INTEGRITY, &index)
+            .unwrap();
+        assert!(
+            store
+                .load_index_verified("pkg", "1.0.0", TEST_INTEGRITY)
+                .is_none()
+        );
     }
 
     #[test]

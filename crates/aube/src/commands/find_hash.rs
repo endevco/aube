@@ -215,12 +215,21 @@ fn split_stem(stem: &str) -> Option<(String, String)> {
 /// Drop the trailing `+<16 lowercase hex>` integrity suffix if present.
 /// Anything shorter, longer, or non-hex is left alone so old-format
 /// stems (pre integrity-keyed cache) still parse.
+///
+/// Strictly lowercase-hex: `hex::encode` in `Store::index_path` always
+/// emits `0-9a-f`, and accepting uppercase here would falsely strip a
+/// legitimate semver build-metadata suffix that happens to be exactly
+/// 16 uppercase-or-mixed hex chars (e.g. `pkg@1.0.0+DEADBEEF12345678`).
 fn strip_integrity_suffix(stem: &str) -> &str {
     let Some(plus) = stem.rfind('+') else {
         return stem;
     };
     let suffix = &stem[plus + 1..];
-    if suffix.len() == 16 && suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if suffix.len() == 16
+        && suffix
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
         &stem[..plus]
     } else {
         stem
@@ -309,6 +318,17 @@ mod tests {
         assert_eq!(
             split_stem("foo@1.0.0+build123"),
             Some(("foo".into(), "1.0.0+build123".into()))
+        );
+    }
+
+    #[test]
+    fn split_stem_does_not_strip_uppercase_hex_suffix() {
+        // Regression: `hex::encode` always emits lowercase, so
+        // accepting uppercase would falsely strip a legitimate
+        // build-metadata suffix that happens to be 16 hex chars.
+        assert_eq!(
+            split_stem("foo@1.0.0+DEADBEEF12345678"),
+            Some(("foo".into(), "1.0.0+DEADBEEF12345678".into()))
         );
     }
 
