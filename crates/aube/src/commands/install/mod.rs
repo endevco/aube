@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 mod delta;
 mod dep_selection;
 mod frozen;
+mod node_gyp_bootstrap;
 mod settings;
 mod side_effects_cache;
 
@@ -662,6 +663,15 @@ pub(crate) async fn run_dep_lifecycle_scripts(
         return Ok(0);
     }
 
+    // Bootstrap node-gyp once before the fan-out when the ambient
+    // `PATH` doesn't already provide one. At least one job is about
+    // to run a lifecycle script, and we can't cheaply predict which
+    // ones will end up shelling out to `node-gyp` (explicit,
+    // implicit via binding.gyp, or transitive via node-gyp-build).
+    // If the user already has node-gyp (system install, nvm, a test
+    // shim), `ensure` returns `None` and we leave their copy alone.
+    let node_gyp_bin_dir = std::sync::Arc::new(node_gyp_bootstrap::ensure().await?);
+
     // Pass 2 (parallel, bounded): fan out across `child_concurrency`
     // concurrent workers. Inside one job the three hooks
     // (preinstall → install → postinstall) still run sequentially —
@@ -689,6 +699,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
         let sem = semaphore.clone();
         let project_dir = project_dir.clone();
         let modules_dir_name = modules_dir_name.clone();
+        let node_gyp_bin_dir = node_gyp_bin_dir.clone();
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             if should_restore_side_effects_cache && let Some(cache_entry) = job.cache_entry.clone()
@@ -714,6 +725,11 @@ pub(crate) async fn run_dep_lifecycle_scripts(
             }
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
+                let tool_dirs: Vec<&std::path::Path> = node_gyp_bin_dir
+                    .as_ref()
+                    .as_deref()
+                    .map(|p| vec![p])
+                    .unwrap_or_default();
                 let did_run = aube_scripts::run_dep_hook(
                     &job.package_dir,
                     &job.dep_modules_dir,
@@ -721,6 +737,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                     &modules_dir_name,
                     &job.manifest,
                     hook,
+                    &tool_dirs,
                 )
                 .await
                 .map_err(|e| {

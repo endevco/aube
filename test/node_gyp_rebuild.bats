@@ -191,6 +191,34 @@ JSON
 	assert_output --partial "aube-test-binding-gyp"
 }
 
+@test "bootstrap is skipped when node-gyp is already on PATH" {
+	# The shim installed in `setup()` is a `node-gyp` on PATH, so
+	# `node_gyp_bootstrap::ensure()` must return `None` and leave the
+	# cache untouched. If we ever regress to bootstrapping
+	# unconditionally this test will start hitting the real npm
+	# registry and fail in the hermetic CI environment.
+	cat >package.json <<'JSON'
+{
+  "name": "binding-gyp-bootstrap-skip-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-binding-gyp": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-binding-gyp": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	# The shim wrote the marker, proving the on-PATH copy was used.
+	assert_file_exists node-gyp.marker
+	# And the aube cache must NOT have a bootstrapped node-gyp dir.
+	assert_dir_not_exists "$XDG_CACHE_HOME/aube/tools/node-gyp"
+}
+
 @test "--ignore-scripts suppresses the implicit node-gyp rebuild" {
 	cat >package.json <<'JSON'
 {
