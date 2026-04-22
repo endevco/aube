@@ -129,12 +129,32 @@ fn scan_matches(
         let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if fname == plain || fname.starts_with(prefix) {
+        if fname == plain || is_integrity_suffixed_match(fname, prefix) {
             matches.push(path);
         }
     }
     matches.sort();
     Ok(matches)
+}
+
+/// Match only `{prefix}<16 lowercase hex>.json` — not a semver
+/// build-metadata collision. With `prefix = "pkg@1.0.0+"`, this
+/// accepts `pkg@1.0.0+deadbeefdeadbeef.json` but rejects
+/// `pkg@1.0.0+build123.json` (that file's version is
+/// `1.0.0+build123`, saved without integrity, and matches the plain
+/// key instead). Lowercase-only because `hex::encode` in
+/// `Store::index_path` always writes lowercase.
+fn is_integrity_suffixed_match(fname: &str, prefix: &str) -> bool {
+    let Some(rest) = fname.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(suffix) = rest.strip_suffix(".json") else {
+        return false;
+    };
+    suffix.len() == 16
+        && suffix
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Split `name@version` into its parts, respecting scoped packages.
@@ -164,7 +184,7 @@ fn split_name_version(input: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_name_version;
+    use super::{is_integrity_suffixed_match, scan_matches, split_name_version};
 
     #[test]
     fn plain_name_version() {
@@ -195,5 +215,61 @@ mod tests {
         // error instead of the format hint.
         assert_eq!(split_name_version("lodash@"), None);
         assert_eq!(split_name_version("@babel/core@"), None);
+    }
+
+    #[test]
+    fn integrity_prefix_accepts_valid_hex_suffix() {
+        assert!(is_integrity_suffixed_match(
+            "pkg@1.0.0+deadbeefdeadbeef.json",
+            "pkg@1.0.0+",
+        ));
+    }
+
+    #[test]
+    fn integrity_prefix_rejects_semver_build_metadata() {
+        // Regression: the prefix-only match conflated the `+` we write
+        // before the integrity hex suffix with the `+` in a legitimate
+        // semver build-metadata version. `pkg@1.0.0+build123.json` is
+        // the integrity-less cache entry for version `1.0.0+build123`
+        // and must *not* match a `pkg@1.0.0` query.
+        assert!(!is_integrity_suffixed_match(
+            "pkg@1.0.0+build123.json",
+            "pkg@1.0.0+",
+        ));
+    }
+
+    #[test]
+    fn integrity_prefix_rejects_wrong_length_or_non_hex() {
+        assert!(!is_integrity_suffixed_match(
+            "pkg@1.0.0+deadbeef.json",
+            "pkg@1.0.0+",
+        ));
+        assert!(!is_integrity_suffixed_match(
+            "pkg@1.0.0+deadbeefdeadbeefdead.json",
+            "pkg@1.0.0+",
+        ));
+        // hex::encode writes lowercase, so reject uppercase to stay in
+        // lockstep with find_hash::strip_integrity_suffix.
+        assert!(!is_integrity_suffixed_match(
+            "pkg@1.0.0+DEADBEEFDEADBEEF.json",
+            "pkg@1.0.0+",
+        ));
+    }
+
+    #[test]
+    fn scan_matches_separates_integrity_from_build_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Integrity-keyed cache entry for `pkg@1.0.0`.
+        std::fs::write(dir.join("pkg@1.0.0+deadbeefdeadbeef.json"), "{}").unwrap();
+        // Integrity-less cache entry for a *different* version that
+        // happens to carry semver build metadata.
+        std::fs::write(dir.join("pkg@1.0.0+build123.json"), "{}").unwrap();
+
+        let prefix = "pkg@1.0.0+";
+        let plain = "pkg@1.0.0.json";
+        let matches = scan_matches(dir, prefix, plain).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].file_name().unwrap() == "pkg@1.0.0+deadbeefdeadbeef.json");
     }
 }
