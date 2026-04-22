@@ -2904,12 +2904,16 @@ fn should_block_exotic_subdep(
 ) -> bool {
     block_exotic_subdeps
         && !task.is_root
-        && is_non_registry_specifier(&task.range)
         && task
             .parent
             .as_ref()
             .and_then(|parent| resolved.get(parent))
-            .is_none_or(|pkg| pkg.local_source.is_none())
+            .is_none_or(|pkg| {
+                matches!(
+                    pkg.local_source,
+                    Some(LocalSource::Directory(_)) | Some(LocalSource::Link(_))
+                )
+            })
 }
 
 /// Turn a raw `GitSource` (committish parsed from the user's
@@ -3258,6 +3262,23 @@ mod tests {
         );
 
         assert!(!should_block_exotic_subdep(&task, &resolved, true));
+    }
+
+    #[test]
+    fn exotic_subdeps_from_unknown_parents_stay_blocked() {
+        let task = ResolveTask {
+            name: "xlsx".to_string(),
+            range: "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz".to_string(),
+            dep_type: DepType::Production,
+            is_root: false,
+            parent: Some("pi-web-ui@file+missing".to_string()),
+            importer: ".".to_string(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+
+        assert!(should_block_exotic_subdep(&task, &BTreeMap::new(), true));
     }
 
     #[test]
