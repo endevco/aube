@@ -2904,11 +2904,11 @@ fn should_block_exotic_subdep(
 ) -> bool {
     block_exotic_subdeps
         && !task.is_root
-        && task
+        && !task
             .parent
             .as_ref()
             .and_then(|parent| resolved.get(parent))
-            .is_none_or(|pkg| {
+            .is_some_and(|pkg| {
                 matches!(
                     pkg.local_source,
                     Some(LocalSource::Directory(_)) | Some(LocalSource::Link(_))
