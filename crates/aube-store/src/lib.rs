@@ -127,7 +127,10 @@ impl Store {
         version: &str,
         verify_files: bool,
     ) -> Option<PackageIndex> {
-        let safe_name = name.replace('/', "__");
+        let safe_name = validate_and_encode_name(name)?;
+        if !validate_version(version) {
+            return None;
+        }
         let index_path = self.index_dir().join(format!("{safe_name}@{version}.json"));
         let content = xx::file::read_to_string(&index_path).ok()?;
         let index: PackageIndex = serde_json::from_str(&content).ok()?;
@@ -153,7 +156,14 @@ impl Store {
 
     /// Save a package index to the cache.
     pub fn save_index(&self, name: &str, version: &str, index: &PackageIndex) -> Result<(), Error> {
-        let safe_name = name.replace('/', "__");
+        let safe_name = validate_and_encode_name(name).ok_or_else(|| {
+            Error::Tar(format!("refusing to cache: invalid package name {name:?}"))
+        })?;
+        if !validate_version(version) {
+            return Err(Error::Tar(format!(
+                "refusing to cache: invalid version {version:?}"
+            )));
+        }
         let index_path = self.index_dir().join(format!("{safe_name}@{version}.json"));
         let json =
             serde_json::to_string(index).map_err(|e| Error::Tar(format!("serialize: {e}")))?;
@@ -785,6 +795,89 @@ fn hex_digit(n: u8) -> u8 {
     }
 }
 
+/// Validate a package name and return the `safe_name` form used as a
+/// cache filename stem (`/` collapsed to `__` so scoped names survive
+/// a single path component). Refuses anything outside the npm name
+/// grammar so a hostile packument cannot turn a cache write into an
+/// arbitrary-file-write primitive. Public so callers in
+/// `aube-registry` and `aube` (which own separate cache layouts under
+/// the same cache root) can share one validator.
+///
+/// A malicious packument can set `name` to `../../etc/passwd` (or, on
+/// Windows, to something with a drive prefix or backslash). The old
+/// `name.replace('/', "__")` only stripped forward slashes, so
+/// `index_dir().join(format!("{name}@{version}.json"))` would silently
+/// resolve outside the cache directory on the first resolve of the
+/// hostile package.
+///
+/// Accepted grammar is `[A-Za-z0-9_.-]` per component, with a single
+/// optional `@scope/` prefix. Uppercase and leading `.` / `_` are
+/// allowed on purpose: npm's registry bans them for *new* publishes
+/// but thousands of pre-rule packages (`JSONStream`, `Base64`, etc.)
+/// still resolve fine under pnpm and bun, and mirroring the registry's
+/// publish grammar here would block their cache path and break
+/// install. The only rejects are empty components, `.` / `..`, the
+/// 214-char length ceiling, and any byte outside the grammar.
+pub fn validate_and_encode_name(name: &str) -> Option<String> {
+    if name.is_empty() || name.len() > 214 {
+        return None;
+    }
+    let (scope, bare) = match name.strip_prefix('@') {
+        Some(rest) => {
+            let (s, b) = rest.split_once('/')?;
+            (Some(s), b)
+        }
+        None => (None, name),
+    };
+    let ok_component = |s: &str| -> bool {
+        // npm's registry bars new packages from leading `.` / `_` but
+        // historical packages that predate the rule still resolve
+        // fine, and scoped private registries allow them. Only bar
+        // empty and `.`/`..` since those collide with path components
+        // after the `/` → `__` folding.
+        if s.is_empty() || s == "." || s == ".." {
+            return false;
+        }
+        s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    if let Some(s) = scope
+        && !ok_component(s)
+    {
+        return None;
+    }
+    if !ok_component(bare) {
+        return None;
+    }
+    Some(name.replace('/', "__"))
+}
+
+/// Check a version string for use as a cache filename component.
+/// The lockfile already constrains versions to semver-ish shapes, but
+/// the cache path is independent of the lockfile on the write side so
+/// a crafted packument version would still land here. Returns `true`
+/// for anything the cache path builder is willing to accept.
+pub fn validate_version(version: &str) -> bool {
+    if version.is_empty() || version.len() > 256 {
+        return false;
+    }
+    // pnpm and bun sometimes route non-semver specs (git URLs, file
+    // specs, aliased registries) through the `version` slot, so the
+    // guard only needs to block what actually breaks the cache path
+    // builder: path separators on any platform, `\0`, control chars,
+    // and the two "this is a directory name" aliases.
+    if version
+        .bytes()
+        .any(|b| b.is_ascii_control() || matches!(b, b'/' | b'\\' | b'\0'))
+    {
+        return false;
+    }
+    if version == "." || version == ".." {
+        return false;
+    }
+    true
+}
+
 /// Verify that data matches an integrity hash (e.g., "sha512-<base64>").
 /// Returns Ok(()) if valid, Err with details if mismatch.
 pub fn verify_integrity(data: &[u8], expected: &str) -> Result<(), Error> {
@@ -1284,6 +1377,31 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
         // we cannot use the argv separator here. `validate_git_positional`
         // at function entry already rejected a leading `-` on `commit`.
         run_in(&scratch, &["checkout", "-q", commit])?;
+        // Confirm the checkout landed exactly on the expected commit
+        // before the scratch clone is renamed into place. Git's own
+        // SHA-1 object addressing protects against a server returning
+        // a different blob for a given SHA, but a local git
+        // misconfiguration (default branch mismatch, rewritten ref,
+        // stale reflog) could still leave HEAD on something else —
+        // mirrors the defensive check the reuse path at line 1260
+        // already performs.
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&scratch)
+            .output()
+            .map_err(|e| Error::Git(format!("spawn git rev-parse: {e}")))?;
+        if !out.status.success() {
+            return Err(Error::Git(format!(
+                "git rev-parse HEAD failed: {}",
+                redact_url(String::from_utf8_lossy(&out.stderr).trim())
+            )));
+        }
+        let actual = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if actual != commit {
+            return Err(Error::Git(format!(
+                "git clone HEAD {actual} does not match requested commit {commit}"
+            )));
+        }
         Ok(())
     };
     if let Err(e) = do_clone() {

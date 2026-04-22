@@ -2832,7 +2832,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         .await
                         {
                             Ok(Some(index)) => {
-                                let _ = materialize_tx.send((pkg.dep_path.clone(), index.clone()));
+                                // Send failure means the materializer
+                                // task died. Bail now instead of
+                                // continuing to import tarballs into a
+                                // half-wired virtual store.
+                                materialize_tx
+                                    .send((pkg.dep_path.clone(), index.clone()))
+                                    .map_err(|_| {
+                                        miette!("materializer task exited before fetch finished")
+                                    })?;
                                 indices.insert(pkg.dep_path, index);
                                 cached_count += 1;
                                 if let Some(p) = fetch_progress.as_ref() {
@@ -2857,7 +2865,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // later 404 the tarball fetch).
                     let pkg_registry_name = pkg.registry_name().to_string();
                     if let Some(index) = fetch_store.load_index(&pkg_registry_name, &pkg.version) {
-                        let _ = materialize_tx.send((pkg.dep_path.clone(), index.clone()));
+                        materialize_tx
+                            .send((pkg.dep_path.clone(), index.clone()))
+                            .map_err(|_| {
+                                miette!("materializer task exited before fetch finished")
+                            })?;
                         indices.insert(pkg.dep_path, index);
                         cached_count += 1;
                         if let Some(p) = fetch_progress.as_ref() {
@@ -2969,7 +2981,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 let fetch_count = handles.len();
                 while let Some(joined) = handles.join_next().await {
                     let (dep_path, index) = joined.into_diagnostic()??;
-                    let _ = materialize_tx.send((dep_path.clone(), index.clone()));
+                    materialize_tx
+                        .send((dep_path.clone(), index.clone()))
+                        .map_err(|_| miette!("materializer task exited before fetch finished"))?;
                     indices.insert(dep_path, index);
                 }
                 // Explicitly drop the materialize sender so the

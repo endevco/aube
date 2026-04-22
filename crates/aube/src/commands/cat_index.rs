@@ -42,7 +42,14 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     // in fact present the moment before and has now been removed).
     // Re-serialize the parsed index so the output is pretty-printed the
     // same way load_index would have given us.
-    let safe_name = name.replace('/', "__");
+    // Validate through the same grammar `Store::save_index` enforces
+    // so a user passing `aube cat-index ../../evil 1.0.0` gets a clear
+    // refusal instead of a surprising path outside `index_dir()`.
+    let safe_name = aube_store::validate_and_encode_name(name)
+        .ok_or_else(|| miette!("invalid package name: {name:?}"))?;
+    if !aube_store::validate_version(version) {
+        return Err(miette!("invalid version: {version:?}"));
+    }
     let index_path = store
         .index_dir()
         .join(format!("{safe_name}@{version}.json"));

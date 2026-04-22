@@ -286,12 +286,49 @@ pub fn validate_bin_target(rel: &str) -> io::Result<()> {
 }
 
 fn is_safe_bin_component(s: &str) -> bool {
-    !s.is_empty()
-        && s != "."
-        && s != ".."
-        && !s.contains('\0')
-        && !s.contains('\\')
-        && !s.contains('/')
+    if s.is_empty() || s == "." || s == ".." {
+        return false;
+    }
+    if s.bytes()
+        .any(|b| b == 0 || b == b'/' || b == b'\\' || b.is_ascii_control())
+    {
+        return false;
+    }
+    // Windows-only extras: `:` opens an NTFS alternate data stream
+    // and separates drive letters, reserved device names map to
+    // physical devices, and trailing dot / space gets stripped by
+    // the filesystem so `con.` collides with `con`. npm, pnpm, and
+    // bun all accept these on POSIX so this reject must stay
+    // platform-gated — otherwise packages with a legitimate `:` in
+    // their bin key (a handful of cordova / ionic tools) stop
+    // linking on Linux and macOS.
+    #[cfg(windows)]
+    {
+        if s.contains(':') || is_windows_reserved(s) || s.ends_with('.') || s.ends_with(' ') {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(windows)]
+fn is_windows_reserved(s: &str) -> bool {
+    let stem = match s.find('.') {
+        Some(i) => &s[..i],
+        None => s,
+    };
+    let upper = stem.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "NUL" | "AUX" => true,
+        s if s.len() == 4
+            && (s.starts_with("COM") || s.starts_with("LPT"))
+            && s.as_bytes()[3].is_ascii_digit()
+            && s.as_bytes()[3] != b'0' =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Remove bin shims previously created by [`create_bin_shim`].

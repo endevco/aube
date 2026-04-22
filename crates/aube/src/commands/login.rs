@@ -236,15 +236,34 @@ async fn poll_done(client: &reqwest::Client, done_url: &str) -> miette::Result<S
 /// swallowed by the caller — the URL is always printed first, so the user
 /// can copy it manually if we can't spawn a browser (headless env, missing
 /// `xdg-open`, etc).
+///
+/// The URL is validated against a strict `http(s)://` shape before being
+/// passed to the platform launcher. On Windows the launcher goes through
+/// `cmd /c start`, and `cmd.exe` re-parses its argument after
+/// stdlib quoting so a URL containing `&`, `|`, `^`, or `%VAR%` from a
+/// hostile registry login response would otherwise become a command
+/// injection primitive (same class as CVE-2024-24576 / BatBadBut).
 fn open_browser(url: &str) -> std::io::Result<()> {
+    if !is_safe_browser_url(url) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to open non-http(s) or unsafe URL: {url:?}"),
+        ));
+    }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open").arg(url).status()?;
     }
     #[cfg(target_os = "windows")]
     {
+        // `cmd.exe` expands `%VAR%` inside double-quoted args, so the
+        // stdlib arg quoting alone cannot neutralize a hostile URL
+        // containing `%SYSTEMROOT%` or similar. Double every `%` to
+        // suppress expansion, matching the same escape the lifecycle
+        // script runner already applies in `aube-scripts`.
+        let escaped = url.replace('%', "%%");
         std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
+            .args(["/c", "start", "", &escaped])
             .status()?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -252,4 +271,36 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         std::process::Command::new("xdg-open").arg(url).status()?;
     }
     Ok(())
+}
+
+/// Reject anything that isn't a plain `http(s)://` URL, or that contains
+/// a character `cmd.exe` re-parses after stdlib arg quoting. Accepts the
+/// set of characters needed for a realistic OAuth / device-code flow
+/// (query strings, percent-encoding, fragments).
+fn is_safe_browser_url(url: &str) -> bool {
+    let rest = match url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    if rest.is_empty() || rest.len() > 2048 {
+        return false;
+    }
+    // RFC 3986 unreserved + reserved chars. Excludes whitespace, any
+    // control character, and `"` / `\\` / `|` / `^` / `<` / `>` / `` ` ``
+    // so a hostile URL can neither close the stdlib's double-quoted arg
+    // nor pivot into a shell metachar. `%` stays in the allow list for
+    // legitimate percent-encoding; the Windows `start` path separately
+    // doubles every `%` to suppress `cmd.exe` variable expansion.
+    rest.chars().all(|c| {
+        matches!(c,
+            'a'..='z' | 'A'..='Z' | '0'..='9'
+            | '-' | '_' | '.' | '~'
+            | ':' | '/' | '?' | '#' | '[' | ']' | '@'
+            | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ','
+            | ';' | '=' | '%'
+        )
+    })
 }

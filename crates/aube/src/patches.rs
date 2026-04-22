@@ -38,6 +38,33 @@ impl ResolvedPatch {
     }
 }
 
+/// True when `rel` is a project-relative patch path that stays within
+/// the project root. Refuses absolute paths, Windows drive or UNC
+/// prefixes, NUL bytes, and any `..` component. Used as a read-side
+/// guard so a hostile manifest cannot point the patch loader at
+/// arbitrary files (e.g. `/etc/passwd` or `\\server\share\secret`).
+fn is_safe_patch_rel(rel: &str) -> bool {
+    if rel.is_empty() || rel.contains('\0') {
+        return false;
+    }
+    let p = Path::new(rel);
+    if p.is_absolute() || p.has_root() {
+        return false;
+    }
+    // Reject a leading drive letter (`C:foo`) that `is_absolute` does
+    // not always catch on the non-Windows host that rendered the
+    // lockfile.
+    if rel.len() >= 2 && rel.as_bytes()[1] == b':' {
+        return false;
+    }
+    p.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
+}
+
 /// Split a `name@version` patch key into its parts. Mirrors
 /// `commands::split_name_spec` but always requires a version (a bare
 /// name is rejected — patches are always per-version).
@@ -89,6 +116,17 @@ pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
     let mut out = BTreeMap::new();
     for (key, rel) in entries {
         let (name, version) = split_patch_key(&key)?;
+        // Refuse absolute paths and `..` traversal in the manifest-
+        // declared patch path so a hostile `package.json` cannot
+        // coerce `aube install` into reading an arbitrary file off
+        // disk. The linker already guards the *apply* side with
+        // `is_safe_rel_component`, and mirroring the same check on
+        // the *read* side keeps the trust boundary uniform.
+        if !is_safe_patch_rel(&rel) {
+            return Err(miette!(
+                "refusing unsafe patch path for {key}: {rel:?} (absolute, UNC, or contains `..`)"
+            ));
+        }
         let path = cwd.join(&rel);
         let content = std::fs::read_to_string(&path)
             .into_diagnostic()

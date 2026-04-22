@@ -48,6 +48,31 @@ const PACKUMENT_ACCEPT: &str =
 /// `PACKUMENT_ACCEPT` — some proxies won't serve JSON unless it's in the list.
 const PACKUMENT_FULL_ACCEPT: &str = "application/json; q=1.0, */*";
 
+/// Hard cap on a packument response body, compressed or not. A hostile
+/// registry (or MITM with a valid cert on a compromised mirror) could
+/// otherwise stream gigabytes of JSON into the resolver and OOM the
+/// whole install. 64 MiB is ~10x the largest packument on npmjs today
+/// (`@types/node`, `lodash`, `chalk` all land well under 6 MiB) so the
+/// cap is a loud failure if reality ever tries to exceed it.
+const PACKUMENT_BODY_CAP: u64 = 64 << 20;
+
+/// Hard cap on a tarball response body (still compressed on the wire).
+/// The decompressed cap in `aube-store` (1 GiB) only fires after the
+/// gzip reader runs, so without a wire-level cap a hostile mirror can
+/// still stream a multi-GiB compressed payload into memory before the
+/// decompressor ever sees a byte. 1 GiB compressed is comfortably
+/// above the biggest real npm tarball (a handful of packages like
+/// `playwright` cross 100 MiB compressed) while still stopping runaway
+/// streams.
+const TARBALL_BODY_CAP: u64 = 1 << 30;
+
+/// Hard cap for the `/-/npm/v1/security/advisories/bulk` response. The
+/// body scales with the number of distinct `<name>@<version>` pairs in
+/// the request, which is bounded by the lockfile. 256 MiB gives an
+/// extremely generous upper bound for monorepos with tens of thousands
+/// of locked versions.
+const AUDIT_BODY_CAP: u64 = 256 << 20;
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -366,8 +391,9 @@ impl RegistryClient {
     async fn retry_bytes_body_read<F>(
         &self,
         label: &str,
+        cap: u64,
         build: F,
-    ) -> Result<(bytes::Bytes, std::time::Duration), reqwest::Error>
+    ) -> Result<(bytes::Bytes, std::time::Duration), Error>
     where
         F: Fn() -> reqwest::RequestBuilder,
     {
@@ -394,6 +420,7 @@ impl RegistryClient {
                 }
                 Ok(resp) => {
                     let resp = resp.error_for_status()?;
+                    check_body_cap(&resp, cap, label)?;
                     let started = std::time::Instant::now();
                     match resp.bytes().await {
                         Ok(bytes) => return Ok((bytes, started.elapsed())),
@@ -409,7 +436,7 @@ impl RegistryClient {
                             );
                             tokio::time::sleep(wait).await;
                         }
-                        Err(err) => return Err(err),
+                        Err(err) => return Err(Error::Http(err)),
                     }
                 }
                 Err(err) if !is_last => {
@@ -424,7 +451,7 @@ impl RegistryClient {
                     );
                     tokio::time::sleep(wait).await;
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(Error::Http(err)),
             }
         }
         unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
@@ -450,7 +477,8 @@ impl RegistryClient {
         name: &str,
         cache_dir: &Path,
     ) -> Result<serde_json::Value, Error> {
-        let cache_path = packument_full_cache_path(cache_dir, name);
+        let cache_path = packument_full_cache_path(cache_dir, name)
+            .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let cached = read_cached_full_packument(&cache_path);
 
         // --prefer-offline / --offline: trust any cached copy regardless of age.
@@ -529,7 +557,12 @@ impl RegistryClient {
                             fetched_at: now_secs(),
                             packument: c.packument.clone(),
                         };
-                        let _ = write_cached_full_packument(&cache_path, &to_cache);
+                        if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                            tracing::warn!(
+                                "failed to write packument cache {}: {e}",
+                                cache_path.display()
+                            );
+                        }
                         self.maybe_warn_slow_metadata(&label, started);
                         return Ok(c.packument.clone());
                     }
@@ -545,6 +578,7 @@ impl RegistryClient {
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string());
                     let resp = resp.error_for_status()?;
+                    check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
                     match resp.json::<serde_json::Value>().await {
                         Ok(packument) => {
                             let to_cache = CachedFullPackument {
@@ -553,7 +587,12 @@ impl RegistryClient {
                                 fetched_at: now_secs(),
                                 packument: packument.clone(),
                             };
-                            let _ = write_cached_full_packument(&cache_path, &to_cache);
+                            if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                                tracing::warn!(
+                                    "failed to write packument cache {}: {e}",
+                                    cache_path.display()
+                                );
+                            }
                             self.maybe_warn_slow_metadata(&label, started);
                             return Ok(packument);
                         }
@@ -610,7 +649,8 @@ impl RegistryClient {
         // Fast path: try the warm-cache read first. Matches the
         // freshness window logic in `fetch_packument_full_cached`
         // exactly so the two APIs share revalidation behavior.
-        let cache_path = packument_full_cache_path(cache_dir, name);
+        let cache_path = packument_full_cache_path(cache_dir, name)
+            .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let force_cache = matches!(
             self.network_mode,
             NetworkMode::PreferOffline | NetworkMode::Offline
@@ -723,7 +763,8 @@ impl RegistryClient {
         name: &str,
         cache_dir: &Path,
     ) -> Result<Packument, Error> {
-        let cache_path = packument_cache_path(cache_dir, name);
+        let cache_path = packument_cache_path(cache_dir, name)
+            .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let cached = read_cached_packument(&cache_path);
 
         // Fast path: trust the cache if it's still fresh.
@@ -809,7 +850,12 @@ impl RegistryClient {
                         fetched_at: now_secs(),
                         packument: c.packument.clone(),
                     };
-                    let _ = write_cached_packument(&cache_path, &to_cache);
+                    if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
+                        tracing::warn!(
+                            "failed to write packument cache {}: {e}",
+                            cache_path.display()
+                        );
+                    }
                     self.maybe_warn_slow_metadata(&label, started);
                     return Ok(c.packument.clone());
                 }
@@ -826,6 +872,7 @@ impl RegistryClient {
                         .map(|s| s.to_string());
 
                     let resp = resp.error_for_status()?;
+                    check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
                     match resp.json::<Packument>().await {
                         Ok(packument) => {
                             let to_cache = CachedPackument {
@@ -834,7 +881,12 @@ impl RegistryClient {
                                 fetched_at: now_secs(),
                                 packument: packument.clone(),
                             };
-                            let _ = write_cached_packument(&cache_path, &to_cache);
+                            if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
+                                tracing::warn!(
+                                    "failed to write packument cache {}: {e}",
+                                    cache_path.display()
+                                );
+                            }
                             self.maybe_warn_slow_metadata(&label, started);
                             return Ok(packument);
                         }
@@ -911,6 +963,7 @@ impl RegistryClient {
         }
 
         let resp = resp.error_for_status()?;
+        check_body_cap(&resp, AUDIT_BODY_CAP, "bulk advisories")?;
         let json: serde_json::Value = resp.json().await?;
         Ok(json)
     }
@@ -935,7 +988,7 @@ impl RegistryClient {
         // (e.g. `//host/artifactory/npm/`). Retries cover transient
         // 5xx / 429 / connection errors; see [`Self::send_with_retry`].
         let (bytes, body_elapsed) = self
-            .retry_bytes_body_read(url, || self.authed_get(url, url))
+            .retry_bytes_body_read(url, TARBALL_BODY_CAP, || self.authed_get(url, url))
             .await?;
         warn_slow_tarball(
             self.fetch_policy.min_speed_kibps,
@@ -944,13 +997,6 @@ impl RegistryClient {
             body_elapsed,
         );
         Ok(bytes)
-    }
-
-    /// Download a tarball to a file path.
-    pub async fn fetch_tarball(&self, url: &str, dest: &Path) -> Result<(), Error> {
-        let bytes = self.fetch_tarball_bytes(url).await?;
-        std::fs::write(dest, &bytes)?;
-        Ok(())
     }
 
     /// Fetch the *full* (non-corgi) packument as raw JSON, bypassing the
@@ -969,7 +1015,9 @@ impl RegistryClient {
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(Error::NotFound(name.to_string()));
         }
-        let value: serde_json::Value = resp.error_for_status()?.json().await?;
+        let resp = resp.error_for_status()?;
+        check_body_cap(&resp, PACKUMENT_BODY_CAP, "packument")?;
+        let value: serde_json::Value = resp.json().await?;
         Ok(value)
     }
 
@@ -1019,8 +1067,9 @@ impl RegistryClient {
     /// and I/O errors are swallowed — the cache is advisory, not load
     /// bearing.
     pub fn invalidate_full_packument_cache(&self, name: &str, cache_dir: &Path) {
-        let path = packument_full_cache_path(cache_dir, name);
-        let _ = std::fs::remove_file(&path);
+        if let Some(path) = packument_full_cache_path(cache_dir, name) {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     /// Fetch the authoritative dist-tag map for a package from the
@@ -1159,6 +1208,10 @@ fn build_http_client(
         // is a security hole on purpose: corporate registries should
         // prefer per-registry `ca` / `cafile` so validation stays on.
         .danger_accept_invalid_certs(!config.strict_ssl)
+        // rustls already defaults to TLS 1.2+, but pinning the floor
+        // here makes the policy explicit so a future default-loosening
+        // upstream does not silently re-enable TLS 1.1 for aube.
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
         // Block https to http downgrades on redirect. reqwest already
         // strips Authorization on cross-host redirects as of 0.12, so
         // this policy only adds the scheme guard. A 302 from a good
@@ -1275,9 +1328,35 @@ fn force_full_packument() -> bool {
     std::env::var("AUBE_INTERNAL_FORCE_FULL_PACKUMENT").as_deref() == Ok("1")
 }
 
-fn packument_cache_path(cache_dir: &Path, name: &str) -> PathBuf {
-    let safe_name = name.replace('/', "__");
-    cache_dir.join(format!("{safe_name}.json"))
+/// Refuse a response whose declared `Content-Length` exceeds `cap`
+/// before reading the body. A hostile registry (or MITM on a
+/// compromised mirror) could otherwise stream gigabytes into the
+/// resolver and OOM the install. Servers that omit `Content-Length`
+/// (chunked transfer) still reach `bytes()` below, where the read is
+/// bounded by the caller's operational timeout. The full-streaming
+/// cap-while-reading variant is left for a follow-up, since it needs
+/// a `futures` / `tokio-stream` dep that the crate does not yet pull
+/// in.
+fn check_body_cap(resp: &reqwest::Response, cap: u64, label: &str) -> Result<(), Error> {
+    if let Some(len) = resp.content_length()
+        && len > cap
+    {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{label}: response Content-Length {len} exceeds cap {cap}"),
+        )));
+    }
+    Ok(())
+}
+
+fn packument_cache_path(cache_dir: &Path, name: &str) -> Option<PathBuf> {
+    // `name` is derived from registry responses and user-written
+    // manifests. `replace('/', "__")` alone would let `../../evil`
+    // escape the cache directory and turn a first resolve into an
+    // arbitrary-file-write primitive. Delegate to the store's
+    // shared validator so the grammar never drifts across crates.
+    let safe_name = aube_store::validate_and_encode_name(name)?;
+    Some(cache_dir.join(format!("{safe_name}.json")))
 }
 
 /// URL-encode a package name for the `/-/package/<name>/...` path.
@@ -1339,9 +1418,9 @@ fn write_cached_packument(path: &Path, cached: &CachedPackument) -> std::io::Res
     std::fs::write(path, json)
 }
 
-fn packument_full_cache_path(cache_dir: &Path, name: &str) -> PathBuf {
-    let safe_name = name.replace('/', "__");
-    cache_dir.join(format!("{safe_name}.json"))
+fn packument_full_cache_path(cache_dir: &Path, name: &str) -> Option<PathBuf> {
+    let safe_name = aube_store::validate_and_encode_name(name)?;
+    Some(cache_dir.join(format!("{safe_name}.json")))
 }
 
 fn read_cached_full_packument(path: &Path) -> Option<CachedFullPackument> {
@@ -1414,6 +1493,9 @@ fn warn_slow_tarball(threshold_kibps: u64, url: &str, len: usize, elapsed: std::
 /// format is rare in practice for npm-style registries and `chrono`
 /// isn't a dep — callers fall back to the computed exponential
 /// backoff if the header is missing, unparseable, or in date form.
+/// `RETRY_AFTER_CAP_SECS` clamps the parsed value so a hostile
+/// registry can't park an install for hours or years by returning
+/// `Retry-After: 999999999`.
 fn retry_after_from(resp: &reqwest::Response) -> Option<std::time::Duration> {
     let raw = resp
         .headers()
@@ -1421,8 +1503,16 @@ fn retry_after_from(resp: &reqwest::Response) -> Option<std::time::Duration> {
         .to_str()
         .ok()?;
     let secs: u64 = raw.trim().parse().ok()?;
-    Some(std::time::Duration::from_secs(secs))
+    Some(std::time::Duration::from_secs(
+        secs.min(RETRY_AFTER_CAP_SECS),
+    ))
 }
+
+/// Upper bound on `Retry-After` we are willing to honour. 60 seconds
+/// is well above any real npm-style rate-limit cooldown and keeps the
+/// total retry budget bounded even when a server hands us a bogus
+/// value.
+const RETRY_AFTER_CAP_SECS: u64 = 60;
 
 #[cfg(test)]
 mod retry_tests {

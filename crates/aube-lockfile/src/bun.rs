@@ -126,6 +126,11 @@ fn is_integrity_hash(s: &str) -> bool {
     let Some((algo, body)) = s.split_once('-') else {
         return false;
     };
+    // Accept sha1 and md5 at the parser layer so bun lockfiles that
+    // reference pre-2017 npm packages (whose `dist.integrity` is only
+    // ever sha1) still round-trip without losing the hash. Downgrade
+    // enforcement lives at verify time in `aube-store::verify_integrity`,
+    // which already refuses anything but sha512 for content verification.
     let expected_len = match algo {
         "sha512" => 88,
         "sha384" => 64,

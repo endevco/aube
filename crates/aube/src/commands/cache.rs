@@ -202,7 +202,11 @@ fn delete(args: DeleteArgs) -> miette::Result<()> {
 }
 
 fn view(args: ViewArgs) -> miette::Result<()> {
-    let safe = encode_safe_name(&args.name);
+    // Validate the user-supplied name against the npm grammar before
+    // it becomes a path component. `encode_safe_name` alone would let
+    // `aube cache view ../../evil` escape the cache directory.
+    let safe = aube_store::validate_and_encode_name(&args.name)
+        .ok_or_else(|| miette!("invalid package name: {:?}", args.name))?;
     let filename = format!("{safe}.json");
 
     // Probe both directories. The corgi cache has a richer schema we can

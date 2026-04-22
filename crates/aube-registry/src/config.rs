@@ -341,18 +341,48 @@ impl NpmConfig {
                 self.registry = normalize_registry_url(&value);
             } else if key == "_authToken" {
                 self.global_auth_token = Some(value);
-            } else if matches!(key.as_str(), "https-proxy" | "httpsProxy") {
-                self.https_proxy = non_empty(value);
-            } else if matches!(key.as_str(), "http-proxy" | "httpProxy") {
-                self.http_proxy = non_empty(value);
-            } else if key == "proxy" {
-                // pnpm treats `.npmrc proxy=` as the fallback source
-                // for `httpsProxy` (and, transitively, `httpProxy`) —
-                // not as a direct alias for `httpProxy`. See the
-                // `apply_proxy_env` resolution chain.
-                self.npmrc_proxy = non_empty(value);
-            } else if matches!(key.as_str(), "noproxy" | "noProxy" | "no-proxy") {
-                self.no_proxy = non_empty(value);
+            } else if matches!(
+                key.as_str(),
+                "https-proxy"
+                    | "httpsProxy"
+                    | "http-proxy"
+                    | "httpProxy"
+                    | "proxy"
+                    | "noproxy"
+                    | "noProxy"
+                    | "no-proxy"
+            ) {
+                // Proxies redirect every registry request through a
+                // third party for the rest of the process. A
+                // project-committed `.npmrc` must not be able to set
+                // that for everyone who clones the repository, same
+                // trust gate `strict-ssl` and `tokenHelper` already
+                // apply.
+                if !source.is_trusted_for_subprocess_settings() {
+                    tracing::warn!(
+                        "ignoring {key} from untrusted source {source:?}: committed `.npmrc` cannot set registry proxies"
+                    );
+                } else {
+                    match key.as_str() {
+                        "https-proxy" | "httpsProxy" => {
+                            self.https_proxy = non_empty(value);
+                        }
+                        "http-proxy" | "httpProxy" => {
+                            self.http_proxy = non_empty(value);
+                        }
+                        "proxy" => {
+                            // pnpm treats `.npmrc proxy=` as the
+                            // fallback source for `httpsProxy` (and,
+                            // transitively, `httpProxy`) — not as a
+                            // direct alias for `httpProxy`. See the
+                            // `apply_proxy_env` resolution chain.
+                            self.npmrc_proxy = non_empty(value);
+                        }
+                        _ => {
+                            self.no_proxy = non_empty(value);
+                        }
+                    }
+                }
             } else if matches!(key.as_str(), "strict-ssl" | "strictSsl") {
                 if let Some(b) = aube_settings::parse_bool(&value) {
                     // strict-ssl=false kills TLS cert validation for

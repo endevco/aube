@@ -116,6 +116,25 @@ pub fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
 pub fn is_physical_importer(importer_path: &str) -> bool {
     importer_path == "." || !importer_path.contains("/node_modules/")
 }
+
+/// Wipe `path` when it looks like a linker-managed `.aube/node_modules`
+/// tree. If a previously-tampered install (or attacker) replaced the
+/// tree with a symlink / junction pointing elsewhere on disk, refuse
+/// to recurse into it — modern Rust `remove_dir_all` already declines
+/// to follow symlinks, mirroring the invariant at the call site keeps
+/// the intent explicit and catches any future regression in the
+/// callee.
+fn remove_hidden_hoist_tree(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() => {
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Err(_) => {}
+    }
+}
 pub use sys::{
     BinShimOptions, create_bin_shim, create_dir_link, normalize_path, parse_posix_shim_target,
     remove_bin_shim, validate_bin_name, validate_bin_target,
@@ -1825,12 +1844,12 @@ impl Linker {
             // Previous install may have populated this tree with
             // hoist=true. Nuke it so Node doesn't keep resolving
             // phantom deps through the stale symlinks.
-            let _ = std::fs::remove_dir_all(&hidden);
+            remove_hidden_hoist_tree(&hidden);
             return Ok(());
         }
         // Wipe before repopulating so a dependency removed from the
         // graph (or a pattern that no longer matches) doesn't linger.
-        let _ = std::fs::remove_dir_all(&hidden);
+        remove_hidden_hoist_tree(&hidden);
         let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (dep_path, pkg) in &graph.packages {
             if pkg.local_source.is_some() {
@@ -2613,16 +2632,36 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
             .map_err(|e| format!("failed to apply patch for {rel}: {e}"))?;
         // Break any reflink/hardlink to the global store before
         // writing the patched bytes — otherwise we'd silently mutate
-        // every other project sharing this CAS file.
-        if target.exists() {
-            std::fs::remove_file(&target)
-                .map_err(|e| format!("failed to unlink {}: {e}", target.display()))?;
-        } else if let Some(parent) = target.parent() {
+        // every other project sharing this CAS file. Stage the write
+        // through a sibling tempfile and `rename` into place so a
+        // crash or Ctrl-C mid-patch cannot leave the package with
+        // the original file unlinked and no replacement written.
+        // POSIX `rename(2)` atomically replaces the destination, so
+        // no pre-removal is needed and removing first would create
+        // the exact TOCTOU window the rename is supposed to close.
+        // Windows `MoveFileExW` fails when the destination exists,
+        // so the unlink is gated behind `cfg(windows)`.
+        if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
         }
-        std::fs::write(&target, patched.as_bytes())
-            .map_err(|e| format!("failed to write {}: {e}", target.display()))?;
+        let tmp = target.with_extension(format!("aube-patch.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, patched.as_bytes())
+            .map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
+        #[cfg(windows)]
+        {
+            if target.exists() {
+                std::fs::remove_file(&target)
+                    .map_err(|e| format!("failed to unlink {}: {e}", target.display()))?;
+            }
+        }
+        std::fs::rename(&tmp, &target).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!(
+                "failed to rename patched file into place {}: {e}",
+                target.display()
+            )
+        })?;
     }
     Ok(())
 }

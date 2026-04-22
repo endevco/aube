@@ -343,6 +343,12 @@ pub enum Error {
     RegistryWrite { status: u16, body: String },
     #[error("offline: {0} is not available in the local cache")]
     Offline(String),
+    /// The caller passed a package name that does not match the npm
+    /// name grammar. Returned eagerly (before any I/O) so a hostile
+    /// packument or manifest cannot use the cache-path builder as an
+    /// arbitrary-file-write primitive.
+    #[error("invalid package name: {0:?}")]
+    InvalidName(String),
 }
 
 #[cfg(test)]
