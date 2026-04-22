@@ -686,28 +686,31 @@ impl Resolver {
                     // cycle detection needed beyond depth-one since
                     // we refuse the chain outright.
                     if real_range.starts_with("catalog:") {
-                        return Err(Error::UnknownCatalogEntry {
+                        return Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
                             name: task_name.to_string(),
                             spec: spec.to_string(),
                             catalog: format!(
                                 "{catalog_name} (value {real_range} is itself a catalog: \
                                  reference, catalogs cannot chain)"
                             ),
-                        });
+                            available: catalog.keys().cloned().collect(),
+                        })));
                     }
                     Ok(Some((catalog_name, real_range.clone())))
                 }
-                None => Err(Error::UnknownCatalogEntry {
+                None => Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
                     name: task_name.to_string(),
                     spec: spec.to_string(),
                     catalog: catalog_name,
-                }),
+                    available: catalog.keys().cloned().collect(),
+                }))),
             },
-            None => Err(Error::UnknownCatalog {
+            None => Err(Error::UnknownCatalog(Box::new(CatalogDetails {
                 name: task_name.to_string(),
                 spec: spec.to_string(),
                 catalog: catalog_name,
-            }),
+                available: self.catalogs.keys().cloned().collect(),
+            }))),
         }
     }
 
@@ -1345,14 +1348,16 @@ impl Resolver {
                         &resolved,
                         self.dependency_policy.block_exotic_subdeps,
                     ) {
-                        return Err(Error::BlockedExoticSubdep {
+                        return Err(Error::BlockedExoticSubdep(Box::new(ExoticSubdepDetails {
                             name: task.name.clone(),
                             spec: task.range.clone(),
                             parent: task
                                 .parent
                                 .clone()
                                 .unwrap_or_else(|| "<unknown>".to_string()),
-                        });
+                            ancestors: task.ancestors.clone(),
+                            importer: task.importer.clone(),
+                        })));
                     }
                     let importer_root = if task.importer == "." {
                         self.project_root.clone()
@@ -1941,11 +1946,11 @@ impl Resolver {
                     // instead of a misleading "older than 0 minutes".
                     PickResult::AgeGated => match self.minimum_release_age.as_ref() {
                         Some(mra) => {
-                            return Err(Error::AgeGate {
-                                name: task.name.clone(),
-                                range: task.range.clone(),
-                                minutes: mra.minutes,
-                            });
+                            return Err(Error::AgeGate(Box::new(build_age_gate(
+                                &task,
+                                packument,
+                                mra.minutes,
+                            ))));
                         }
                         None => {
                             return Err(Error::NoMatch(Box::new(build_no_match(&task, packument))));
@@ -3278,39 +3283,27 @@ pub enum Error {
     #[error("no version of {} matches range `{}`", .0.name, .0.range)]
     NoMatch(Box<NoMatchDetails>),
     #[error(
-        "no version of {name} matching {range} is older than {minutes} minute(s) (minimumReleaseAgeStrict=true)"
+        "no version of {} matching {} is older than {} minute(s) (minimumReleaseAgeStrict=true)",
+        .0.name, .0.range, .0.minutes
     )]
-    AgeGate {
-        name: String,
-        range: String,
-        minutes: u64,
-    },
+    AgeGate(Box<AgeGateDetails>),
     #[error("registry error for {0}: {1}")]
     Registry(String, String),
     #[error(
-        "{name}: catalog reference `{spec}` does not resolve — catalog `{catalog}` is not defined (add it to `catalog:` / `catalogs.{catalog}:` in pnpm-workspace.yaml, or under `workspaces.catalog` / `pnpm.catalog` in package.json)"
+        "{}: catalog reference `{}` does not resolve — catalog `{}` is not defined (add it to `catalog:` / `catalogs.{}:` in pnpm-workspace.yaml, or under `workspaces.catalog` / `pnpm.catalog` in package.json)",
+        .0.name, .0.spec, .0.catalog, .0.catalog
     )]
-    UnknownCatalog {
-        name: String,
-        spec: String,
-        catalog: String,
-    },
+    UnknownCatalog(Box<CatalogDetails>),
     #[error(
-        "{name}: catalog reference `{spec}` does not resolve — catalog `{catalog}` has no entry for `{name}`"
+        "{}: catalog reference `{}` does not resolve — catalog `{}` has no entry for `{}`",
+        .0.name, .0.spec, .0.catalog, .0.name
     )]
-    UnknownCatalogEntry {
-        name: String,
-        spec: String,
-        catalog: String,
-    },
+    UnknownCatalogEntry(Box<CatalogDetails>),
     #[error(
-        "blocked exotic transitive dependency {name}@{spec} from {parent} (blockExoticSubdeps=true; set blockExoticSubdeps=false to allow trusted git/file/tarball subdeps)"
+        "blocked exotic transitive dependency {}@{} from {} (blockExoticSubdeps=true; set blockExoticSubdeps=false to allow trusted git/file/tarball subdeps)",
+        .0.name, .0.spec, .0.parent
     )]
-    BlockedExoticSubdep {
-        name: String,
-        spec: String,
-        parent: String,
-    },
+    BlockedExoticSubdep(Box<ExoticSubdepDetails>),
 }
 
 /// Context attached to a `NoMatch` error so the miette `help()` output can
@@ -3330,15 +3323,48 @@ pub struct NoMatchDetails {
     pub available: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct AgeGateDetails {
+    pub name: String,
+    pub range: String,
+    pub minutes: u64,
+    pub importer: String,
+    pub ancestors: Vec<(String, String)>,
+    /// Version strings that satisfied the range but were blocked by
+    /// the age gate, sorted newest-first. Empty when the cutoff was
+    /// tighter than every published version.
+    pub gated: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct CatalogDetails {
+    pub name: String,
+    pub spec: String,
+    pub catalog: String,
+    /// For `UnknownCatalog`: the catalog names that *are* defined.
+    /// For `UnknownCatalogEntry`: the package names defined under
+    /// `catalog`. Empty when the catalog map itself is empty.
+    pub available: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct ExoticSubdepDetails {
+    pub name: String,
+    pub spec: String,
+    pub parent: String,
+    pub ancestors: Vec<(String, String)>,
+    pub importer: String,
+}
+
 impl miette::Diagnostic for Error {
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
         match self {
             Self::NoMatch(d) => Some(Box::new(format_no_match_help(d))),
-            Self::AgeGate { .. }
-            | Self::Registry(_, _)
-            | Self::UnknownCatalog { .. }
-            | Self::UnknownCatalogEntry { .. }
-            | Self::BlockedExoticSubdep { .. } => None,
+            Self::AgeGate(d) => Some(Box::new(format_age_gate_help(d))),
+            Self::Registry(name, msg) => Some(Box::new(format_registry_help(name, msg))),
+            Self::UnknownCatalog(d) => Some(Box::new(format_unknown_catalog_help(d))),
+            Self::UnknownCatalogEntry(d) => Some(Box::new(format_unknown_catalog_entry_help(d))),
+            Self::BlockedExoticSubdep(d) => Some(Box::new(format_exotic_subdep_help(d))),
         }
     }
 }
@@ -3371,21 +3397,40 @@ fn build_no_match(task: &ResolveTask, packument: &Packument) -> NoMatchDetails {
     }
 }
 
+/// Build an `AgeGateDetails` snapshot: which versions actually
+/// satisfied the range but were blocked by the cutoff. Recomputed from
+/// the packument rather than threaded out of `pick_version` because
+/// the age-gate path is uncommon and the recompute cost is dwarfed by
+/// the resolution itself.
+fn build_age_gate(task: &ResolveTask, packument: &Packument, minutes: u64) -> AgeGateDetails {
+    let range = node_semver::Range::parse(&task.range).ok();
+    let mut gated: Vec<(node_semver::Version, String)> = Vec::new();
+    if let Some(r) = range {
+        for ver in packument.versions.keys() {
+            let Ok(v) = node_semver::Version::parse(ver) else {
+                continue;
+            };
+            if !v.satisfies(&r) {
+                continue;
+            }
+            gated.push((v, ver.clone()));
+        }
+    }
+    gated.sort_by(|a, b| b.0.cmp(&a.0));
+    AgeGateDetails {
+        name: task.name.clone(),
+        range: task.range.clone(),
+        minutes,
+        importer: task.importer.clone(),
+        ancestors: task.ancestors.clone(),
+        gated: gated.into_iter().map(|(_, s)| s).collect(),
+    }
+}
+
 fn format_no_match_help(d: &NoMatchDetails) -> String {
     let mut s = String::new();
-    if !d.importer.is_empty() && d.importer != "." {
-        s.push_str(&format!("importer: {}\n", d.importer));
-    }
-    if !d.ancestors.is_empty() {
-        s.push_str("chain: ");
-        for (i, (n, v)) in d.ancestors.iter().enumerate() {
-            if i > 0 {
-                s.push_str(" > ");
-            }
-            s.push_str(&format!("{n}@{v}"));
-        }
-        s.push_str(&format!(" > {}\n", d.name));
-    }
+    push_importer(&mut s, &d.importer);
+    push_chain(&mut s, &d.ancestors, &d.name);
     if let Some(orig) = &d.original_spec
         && orig != &d.range
     {
@@ -3402,6 +3447,190 @@ fn format_no_match_help(d: &NoMatchDetails) -> String {
         s.push_str(&format!("available versions: {}", d.available.join(", ")));
     }
     s
+}
+
+fn format_age_gate_help(d: &AgeGateDetails) -> String {
+    let mut s = String::new();
+    push_importer(&mut s, &d.importer);
+    push_chain(&mut s, &d.ancestors, &d.name);
+    if !d.gated.is_empty() {
+        s.push_str(&format!(
+            "blocked by age gate: {}\n",
+            d.gated
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    s.push_str("to bypass: loosen `minimumReleaseAge` in .npmrc, set `minimumReleaseAgeStrict=false` to fall back to the lowest satisfying version, or add `");
+    s.push_str(&d.name);
+    s.push_str("` to `minimumReleaseAgeExclude`");
+    s
+}
+
+fn format_registry_help(name: &str, msg: &str) -> String {
+    let kind = classify_registry_error(msg);
+    let mut s = String::new();
+    if !name.is_empty() && name != "(resolver)" {
+        s.push_str(&format!("package: {name}\n"));
+    }
+    s.push_str(match kind {
+        RegistryErrorKind::Tarball => {
+            "tarball download or integrity check failed — try `aube store prune` to clear the cache; if the lockfile references a tarball that moved, delete the lockfile entry for this package and re-resolve"
+        }
+        RegistryErrorKind::Fetch => {
+            "packument fetch failed — verify the registry URL in .npmrc, check auth (`npm login` / `NPM_TOKEN`), and confirm network connectivity"
+        }
+        RegistryErrorKind::Git => {
+            "git dep failed to resolve — confirm the ref exists, that credentials are configured for the host, and that the URL form is supported"
+        }
+        RegistryErrorKind::LocalSpec => {
+            "unparseable local specifier — `file:`/`link:`/`workspace:` paths must be relative to the importer, and `http(s):` URLs must end in `.tgz`"
+        }
+        RegistryErrorKind::Hook => {
+            "pnpmfile `readPackage` hook returned an error — check the hook's stack trace above for the underlying cause"
+        }
+        RegistryErrorKind::ResolverBug => {
+            "internal resolver invariant violated — please report at https://github.com/endevco/aube/discussions with the lockfile and command that reproduced this"
+        }
+        RegistryErrorKind::Generic => {
+            "registry operation failed — see the message above for the underlying cause"
+        }
+    });
+    s
+}
+
+fn format_unknown_catalog_help(d: &CatalogDetails) -> String {
+    let mut s = String::new();
+    if d.available.is_empty() {
+        s.push_str("no catalogs are defined in this workspace; add a `catalog:` block to `pnpm-workspace.yaml` or a `workspaces.catalog` entry in root `package.json`");
+    } else {
+        s.push_str(&format!("defined catalogs: {}", d.available.join(", ")));
+    }
+    s
+}
+
+fn format_unknown_catalog_entry_help(d: &CatalogDetails) -> String {
+    let mut s = String::new();
+    if d.available.is_empty() {
+        s.push_str(&format!(
+            "catalog `{}` is empty; add `{}: <version>` under `catalogs.{}` in pnpm-workspace.yaml",
+            d.catalog, d.name, d.catalog
+        ));
+    } else {
+        let suggestion = suggest_similar(&d.name, &d.available);
+        if let Some(best) = suggestion {
+            s.push_str(&format!(
+                "catalog `{}` defines: {} — did you mean `{}`?",
+                d.catalog,
+                truncate_list(&d.available, 8),
+                best
+            ));
+        } else {
+            s.push_str(&format!(
+                "catalog `{}` defines: {}",
+                d.catalog,
+                truncate_list(&d.available, 8)
+            ));
+        }
+    }
+    s
+}
+
+fn format_exotic_subdep_help(d: &ExoticSubdepDetails) -> String {
+    let mut s = String::new();
+    push_importer(&mut s, &d.importer);
+    push_chain(&mut s, &d.ancestors, &d.name);
+    s.push_str(&format!(
+        "to allow: either pin `{}` in your root package.json (moves the exotic spec out of the transitive graph), or set `blockExoticSubdeps=false` in .npmrc / settings.toml to trust every transitive git/file/tarball dep",
+        d.name
+    ));
+    s
+}
+
+fn push_importer(s: &mut String, importer: &str) {
+    if !importer.is_empty() && importer != "." {
+        s.push_str(&format!("importer: {importer}\n"));
+    }
+}
+
+fn push_chain(s: &mut String, ancestors: &[(String, String)], leaf: &str) {
+    if ancestors.is_empty() {
+        return;
+    }
+    s.push_str("chain: ");
+    for (i, (n, v)) in ancestors.iter().enumerate() {
+        if i > 0 {
+            s.push_str(" > ");
+        }
+        s.push_str(&format!("{n}@{v}"));
+    }
+    s.push_str(&format!(" > {leaf}\n"));
+}
+
+fn truncate_list(items: &[String], max: usize) -> String {
+    if items.len() <= max {
+        items.join(", ")
+    } else {
+        let (head, tail) = items.split_at(max);
+        format!("{} (+{} more)", head.join(", "), tail.len())
+    }
+}
+
+/// Suggest the closest string in `choices` to `needle` using a simple
+/// case-insensitive prefix/substring match, falling back to first-char
+/// equality. Returns `None` when nothing plausibly matches. This is a
+/// deliberately cheap heuristic — good enough for catalog typos,
+/// nothing more.
+fn suggest_similar<'a>(needle: &str, choices: &'a [String]) -> Option<&'a str> {
+    let lower = needle.to_ascii_lowercase();
+    choices
+        .iter()
+        .map(String::as_str)
+        .find(|c| {
+            c.to_ascii_lowercase().contains(&lower) || lower.contains(&c.to_ascii_lowercase())
+        })
+        .or_else(|| {
+            choices
+                .iter()
+                .map(String::as_str)
+                .find(|c| c.chars().next() == needle.chars().next())
+        })
+}
+
+enum RegistryErrorKind {
+    Tarball,
+    Fetch,
+    Git,
+    LocalSpec,
+    Hook,
+    ResolverBug,
+    Generic,
+}
+
+/// Coarse classification by substring match. Registry errors carry
+/// free-form `format!` strings from helper functions that already embed
+/// intent ("fetch ", "tarball ", "git ", "readPackage", etc.), so a
+/// lightweight match on those prefixes lets us pick a targeted help
+/// message without plumbing a new enum through every call site.
+fn classify_registry_error(msg: &str) -> RegistryErrorKind {
+    if msg.contains("tarball") || msg.contains("integrity") {
+        RegistryErrorKind::Tarball
+    } else if msg.starts_with("fetch ") || msg.contains("packument") || msg.contains("HTTP") {
+        RegistryErrorKind::Fetch
+    } else if msg.contains("git") {
+        RegistryErrorKind::Git
+    } else if msg.contains("local specifier") || msg.contains("workspace:") {
+        RegistryErrorKind::LocalSpec
+    } else if msg.contains("readPackage") {
+        RegistryErrorKind::Hook
+    } else if msg.contains("deferred") || msg.contains("invariant") {
+        RegistryErrorKind::ResolverBug
+    } else {
+        RegistryErrorKind::Generic
+    }
 }
 
 #[cfg(test)]
@@ -3440,6 +3669,92 @@ mod tests {
         let help = err.help().expect("help set").to_string();
         assert!(help.contains("packument has no versions"));
         assert!(!help.contains("importer:"));
+    }
+
+    #[test]
+    fn age_gate_help_lists_gated_versions_and_bypass() {
+        let err = Error::AgeGate(Box::new(AgeGateDetails {
+            name: "lodash".into(),
+            range: "^4".into(),
+            minutes: 60,
+            importer: "packages/app".into(),
+            ancestors: vec![("parent".into(), "1.0.0".into())],
+            gated: vec!["4.17.21".into(), "4.17.20".into()],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("importer: packages/app"));
+        assert!(help.contains("chain: parent@1.0.0 > lodash"));
+        assert!(help.contains("blocked by age gate: 4.17.21, 4.17.20"));
+        assert!(help.contains("minimumReleaseAgeStrict=false"));
+        assert!(help.contains("minimumReleaseAgeExclude"));
+    }
+
+    #[test]
+    fn registry_help_classifies_common_subtypes() {
+        let tarball = format_registry_help("lodash", "tarball https://x/y.tgz: eof");
+        assert!(tarball.contains("aube store prune"));
+        let fetch = format_registry_help("lodash", "fetch https://registry.npmjs.org: 403");
+        assert!(fetch.contains("registry URL"));
+        let git = format_registry_help("some-pkg", "git resolve git+ssh://...: auth");
+        assert!(git.contains("git dep"));
+        let local = format_registry_help("pkg", "unparseable local specifier: file:../x");
+        assert!(local.contains("local specifier"));
+        let hook = format_registry_help("pkg", "readPackage hook: TypeError");
+        assert!(hook.contains("readPackage"));
+        let bug = format_registry_help("(resolver)", "3 transitives still deferred");
+        assert!(bug.contains("report at"));
+    }
+
+    #[test]
+    fn unknown_catalog_help_lists_defined() {
+        let err = Error::UnknownCatalog(Box::new(CatalogDetails {
+            name: "react".into(),
+            spec: "catalog:missing".into(),
+            catalog: "missing".into(),
+            available: vec!["default".into(), "evens".into()],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("defined catalogs: default, evens"));
+    }
+
+    #[test]
+    fn unknown_catalog_help_when_none_defined() {
+        let err = Error::UnknownCatalog(Box::new(CatalogDetails {
+            name: "react".into(),
+            spec: "catalog:".into(),
+            catalog: "default".into(),
+            available: vec![],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("no catalogs are defined"));
+    }
+
+    #[test]
+    fn unknown_catalog_entry_help_suggests_similar() {
+        let err = Error::UnknownCatalogEntry(Box::new(CatalogDetails {
+            name: "reactt".into(),
+            spec: "catalog:".into(),
+            catalog: "default".into(),
+            available: vec!["react".into(), "react-dom".into()],
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("defines: react, react-dom"));
+        assert!(help.contains("did you mean `react`"));
+    }
+
+    #[test]
+    fn exotic_subdep_help_shows_chain_and_fix() {
+        let err = Error::BlockedExoticSubdep(Box::new(ExoticSubdepDetails {
+            name: "xlsx".into(),
+            spec: "https://cdn.sheetjs.com/xlsx-0.20.3.tgz".into(),
+            parent: "some-pkg@1.0.0".into(),
+            ancestors: vec![("some-pkg".into(), "1.0.0".into())],
+            importer: ".".into(),
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("chain: some-pkg@1.0.0 > xlsx"));
+        assert!(help.contains("pin `xlsx`"));
+        assert!(help.contains("blockExoticSubdeps=false"));
     }
 
     #[test]
