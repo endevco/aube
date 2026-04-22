@@ -1378,12 +1378,18 @@ fn enforce_package_manager_guardrails(
         ));
     };
 
+    // Accept either the clean CARGO_PKG_VERSION or the `-DEBUG`-suffixed
+    // runtime string: users may copy `aube --version` (which appends `-DEBUG`
+    // on non-release builds) into `packageManager`, and `aube init` writes
+    // the clean version. Both should pass the strict check on the same
+    // binary.
+    let normalized = version.strip_suffix("-DEBUG").unwrap_or(version);
     match name {
         "aube" => {
-            if settings.package_manager_strict_version && version != version::VERSION.as_str() {
+            if settings.package_manager_strict_version && normalized != env!("CARGO_PKG_VERSION") {
                 return Err(miette!(
                     "packageManager requires aube@{version}, but this is aube@{}",
-                    version::VERSION.as_str()
+                    env!("CARGO_PKG_VERSION")
                 ));
             }
             Ok(PackageManagerGuard::Ok)
@@ -1392,7 +1398,7 @@ fn enforce_package_manager_guardrails(
             if settings.package_manager_strict_version {
                 return Err(miette!(
                     "packageManager requires exact pnpm@{version}, but aube cannot download or re-exec a specific pnpm version. Use pnpm directly, set packageManagerStrictVersion=false, or pin packageManager to aube@{}.",
-                    version::VERSION.as_str()
+                    env!("CARGO_PKG_VERSION")
                 ));
             }
             Ok(PackageManagerGuard::Ok)
