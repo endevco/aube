@@ -34,12 +34,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const npmDir = resolve(__dirname, '..');
 const stageRoot = resolve(npmDir, '.stage');
 
+// `libc` is only set on Linux targets; it feeds both the published
+// package name suffix (`-musl`) and the `libc` field in the generated
+// package.json so npm picks the right variant if ever listed as an
+// optional dep. Absence of `libc` = not applicable (darwin/win32).
 const TARGETS = [
-    { triple: 'aarch64-apple-darwin',       os: 'darwin', cpu: 'arm64', ext: '.tar.gz', exe: '' },
-    { triple: 'x86_64-unknown-linux-gnu',   os: 'linux',  cpu: 'x64',   ext: '.tar.gz', exe: '' },
-    { triple: 'aarch64-unknown-linux-gnu',  os: 'linux',  cpu: 'arm64', ext: '.tar.gz', exe: '' },
-    { triple: 'x86_64-pc-windows-msvc',     os: 'win32',  cpu: 'x64',   ext: '.zip',    exe: '.exe' },
-    { triple: 'aarch64-pc-windows-msvc',    os: 'win32',  cpu: 'arm64', ext: '.zip',    exe: '.exe' },
+    { triple: 'aarch64-apple-darwin',       os: 'darwin', cpu: 'arm64',                 ext: '.tar.gz', exe: '' },
+    { triple: 'x86_64-unknown-linux-gnu',   os: 'linux',  cpu: 'x64',   libc: 'glibc',  ext: '.tar.gz', exe: '' },
+    { triple: 'aarch64-unknown-linux-gnu',  os: 'linux',  cpu: 'arm64', libc: 'glibc',  ext: '.tar.gz', exe: '' },
+    { triple: 'x86_64-unknown-linux-musl',  os: 'linux',  cpu: 'x64',   libc: 'musl',   ext: '.tar.gz', exe: '' },
+    { triple: 'aarch64-unknown-linux-musl', os: 'linux',  cpu: 'arm64', libc: 'musl',   ext: '.tar.gz', exe: '' },
+    { triple: 'x86_64-pc-windows-msvc',     os: 'win32',  cpu: 'x64',                   ext: '.zip',    exe: '.exe' },
+    { triple: 'aarch64-pc-windows-msvc',    os: 'win32',  cpu: 'arm64',                 ext: '.zip',    exe: '.exe' },
 ];
 
 const BINS = ['aube', 'aubr', 'aubx'];
@@ -104,15 +110,18 @@ function extractArchive(archivePath, target, destDir) {
 }
 
 async function buildPlatformPackage(repo, tag, version, target) {
-    const pkgName = `@endevco/aube-${target.os}-${target.cpu}`;
-    const stageDir = resolve(stageRoot, `${target.os}-${target.cpu}`);
+    // musl gets a `-musl` name suffix; glibc keeps the historical name
+    // so existing installers upgrade in place without a rename.
+    const suffix = target.libc === 'musl' ? '-musl' : '';
+    const pkgName = `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
+    const stageDir = resolve(stageRoot, `${target.os}-${target.cpu}${suffix}`);
     rmSync(stageDir, { recursive: true, force: true });
     const binDir = resolve(stageDir, 'bin');
     mkdirSync(binDir, { recursive: true });
 
     const dlDir = resolve(stageRoot, '_downloads');
     const archivePath = await downloadArchive(repo, tag, target, dlDir);
-    const extractDir = resolve(stageRoot, `_extract-${target.os}-${target.cpu}`);
+    const extractDir = resolve(stageRoot, `_extract-${target.os}-${target.cpu}${suffix}`);
     rmSync(extractDir, { recursive: true, force: true });
     extractArchive(archivePath, target, extractDir);
 
@@ -137,6 +146,7 @@ async function buildPlatformPackage(repo, tag, version, target) {
         files: ['bin', 'README.md'],
         os: [target.os],
         cpu: [target.cpu],
+        ...(target.libc ? { libc: [target.libc] } : {}),
     };
     writeFileSync(resolve(stageDir, 'package.json'), JSON.stringify(pkgJson, null, 2) + '\n');
 

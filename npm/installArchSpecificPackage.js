@@ -22,7 +22,16 @@ function main() {
 
     var platform = process.platform; // darwin | linux | win32
     var arch = process.arch;         // arm64 | x64
-    var subpkgName = '@endevco/aube-' + platform + '-' + arch;
+    // On Linux, `process.report` exposes `glibcVersionRuntime` when the
+    // runtime linked against glibc; its absence means musl (Alpine,
+    // distroless-static). Same heuristic the `detect-libc` package uses.
+    var suffix = '';
+    if (platform === 'linux') {
+        var glibc = '';
+        try { glibc = process.report.getReport().header.glibcVersionRuntime || ''; } catch (_) {}
+        if (!glibc) suffix = '-musl';
+    }
+    var subpkgName = '@endevco/aube-' + platform + '-' + arch + suffix;
 
     var npmCmd = platform === 'win32' ? 'npm.cmd' : 'npm';
     var args = ['install', '--no-save', '--no-package-lock', subpkgName + '@' + version];
