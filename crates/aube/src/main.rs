@@ -641,6 +641,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     let settings = load_startup_settings()?;
     let effective_level = resolve_loglevel(&cli, settings.loglevel.as_deref());
     init_logging(&cli, effective_level);
+    raise_nofile_limit();
 
     // `--silent` suppresses non-error stderr output from every command,
     // including the ~230 direct `eprintln!` calls in command bodies. The
@@ -1175,6 +1176,53 @@ fn parse_color_mode(raw: &str) -> Option<ColorMode> {
         _ => None,
     }
 }
+
+/// Raise the `RLIMIT_NOFILE` soft limit toward the hard limit on Unix.
+/// macOS defaults this to ~256 on some setups, which installs blow past
+/// during concurrent fetch + tarball-extract + materialize (one FD per
+/// CAS file open, multiplied across the tokio blocking pool and rayon
+/// linker threads). Silent no-op on Windows.
+///
+/// First try `soft = hard`. If that fails (macOS reports `rlim_max` as
+/// `RLIM_INFINITY` but the kernel still caps at `kern.maxfilesperproc`,
+/// usually 24576), retry with `OPEN_MAX = 10240` which is accepted on
+/// every stock macOS.
+#[cfg(unix)]
+fn raise_nofile_limit() {
+    // SAFETY: get/setrlimit are sync syscalls that read/write our own
+    // process's resource table. No aliasing. Failure is reported as a
+    // non-zero return and handled by the caller.
+    unsafe {
+        let mut rlim = std::mem::zeroed::<libc::rlimit>();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) != 0 {
+            tracing::trace!("getrlimit(RLIMIT_NOFILE) failed; keeping default FD limit");
+            return;
+        }
+        let before = rlim.rlim_cur;
+        if before >= rlim.rlim_max {
+            tracing::trace!("RLIMIT_NOFILE soft={before} already at hard limit");
+            return;
+        }
+        let hard = rlim.rlim_max;
+        rlim.rlim_cur = hard;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) == 0 {
+            tracing::trace!("raised RLIMIT_NOFILE soft {before} -> {hard}");
+            return;
+        }
+        rlim.rlim_cur = before.max(10240).min(hard);
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) == 0 {
+            tracing::trace!(
+                "raised RLIMIT_NOFILE soft {before} -> {} (hard={hard}, fallback cap)",
+                rlim.rlim_cur
+            );
+        } else {
+            tracing::trace!("setrlimit(RLIMIT_NOFILE) failed; keeping soft={before}");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_nofile_limit() {}
 
 fn init_logging(cli: &Cli, effective_level: LogLevel) {
     let log_level = effective_level.filter();
