@@ -1378,9 +1378,15 @@ fn enforce_package_manager_guardrails(
         ));
     };
 
+    // Accept either the clean CARGO_PKG_VERSION or the `-DEBUG`-suffixed
+    // runtime string: users may copy `aube --version` (which appends `-DEBUG`
+    // on non-release builds) into `packageManager`, and `aube init` writes
+    // the clean version. Both should pass the strict check on the same
+    // binary.
+    let normalized = version.strip_suffix("-DEBUG").unwrap_or(version);
     match name {
         "aube" => {
-            if settings.package_manager_strict_version && version != env!("CARGO_PKG_VERSION") {
+            if settings.package_manager_strict_version && normalized != env!("CARGO_PKG_VERSION") {
                 return Err(miette!(
                     "packageManager requires aube@{version}, but this is aube@{}",
                     env!("CARGO_PKG_VERSION")

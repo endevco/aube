@@ -225,6 +225,20 @@ _setup_workspace_fixture() {
 	[[ "$output" == *"ok"* ]]
 }
 
+@test "packageManagerStrictVersion accepts the clean version aube init writes on debug builds" {
+	_make_script_project
+	clean="$(aube --version | awk '{print $2}' | sed 's/-DEBUG$//')"
+	node -e 'let p=require("./package.json"); p.packageManager=`aube@'"$clean"'`; require("fs").writeFileSync("package.json", JSON.stringify(p))'
+	{
+		echo "packageManagerStrictVersion=true"
+		echo "verifyDepsBeforeRun=false"
+	} >.npmrc
+
+	run aube run ok
+	assert_success
+	[[ "$output" == *"ok"* ]]
+}
+
 @test "bare aube prints help without packageManager guardrail" {
 	_make_script_project
 	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
