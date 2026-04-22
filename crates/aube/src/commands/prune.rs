@@ -37,9 +37,7 @@ pub async fn run(args: PruneArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root()?;
     let _lock = super::take_project_lock(&cwd)?;
 
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&cwd.join("package.json"))?;
 
     let graph = aube_lockfile::parse_lockfile(&cwd, &manifest)
         .map_err(miette::Report::new)

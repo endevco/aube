@@ -389,11 +389,8 @@ fn seed_target_lockfile(
     // timestamps for any package resolved with a peer context.
     // Build the canonical key set from `LockedPackage.name` /
     // `.version` and filter against that.
-    let canonical_keys: std::collections::HashSet<String> = subset
-        .packages
-        .values()
-        .map(|pkg| format!("{}@{}", pkg.name, pkg.version))
-        .collect();
+    let canonical_keys: std::collections::HashSet<String> =
+        subset.packages.values().map(|pkg| pkg.spec_key()).collect();
     subset.times.retain(|key, _| canonical_keys.contains(key));
 
     // Re-read the rewritten target manifest. The writer uses `name`
@@ -433,9 +430,7 @@ fn stage_one(
         // `.git/`, and the target itself when nested). Read the
         // manifest directly to reuse `name`/`version` for the final
         // println without building a throwaway tarball.
-        let manifest = PackageJson::from_path(&source_pkg_dir.join("package.json"))
-            .map_err(miette::Report::new)
-            .wrap_err("failed to read package.json")?;
+        let manifest = super::load_manifest(&source_pkg_dir.join("package.json"))?;
         let name = manifest
             .name
             .ok_or_else(|| miette!("deploy: package.json has no `name` field"))?;

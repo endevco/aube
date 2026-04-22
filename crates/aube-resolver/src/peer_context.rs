@@ -68,7 +68,7 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
             }
 
             let found_tail = pkg.dependencies.get(peer_name);
-            let found_version = found_tail.map(|t| t.split('(').next().unwrap_or(t).to_string());
+            let found_version = found_tail.map(|t| canonical_tail(t).to_string());
 
             let satisfied = match &found_version {
                 Some(v) => version_satisfies(v, declared_range),
@@ -194,7 +194,7 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
                 let Some(version) = resolved_version else {
                     continue;
                 };
-                let canonical_version = version.split('(').next().unwrap_or(&version).to_string();
+                let canonical_version = canonical_tail(&version).to_string();
                 let synth_dep_path = format!("{peer_name}@{canonical_version}");
                 if !graph.packages.contains_key(&synth_dep_path) {
                     // The peer version the package wired didn't match an
@@ -415,12 +415,12 @@ pub fn apply_peer_contexts(
 /// Packages whose `peer_dependencies` map is empty — i.e. the canonical
 /// base already has only one variant — are skipped.
 pub(crate) fn dedupe_peer_variants(graph: LockfileGraph) -> LockfileGraph {
-    let canonical_base = |key: &str| -> String { key.split('(').next().unwrap_or(key).to_string() };
+    let canonical_base = |key: &str| -> String { canonical_tail(key).to_string() };
     // Only the peer-bearing part of the resolved peer tail is
     // comparable across subtrees — the nested suffix could differ even
     // for peer-equivalent variants on mid-iterations of the outer
     // fixed-point loop.
-    let peer_base = |tail: &str| -> String { tail.split('(').next().unwrap_or(tail).to_string() };
+    let peer_base = |tail: &str| -> String { canonical_tail(tail).to_string() };
 
     // Group dep_paths by their peer-free base name.
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -623,18 +623,7 @@ fn apply_peer_contexts_once(
     let root_scope: FxHashMap<String, String> = canonical
         .importers
         .get(".")
-        .map(|deps| {
-            deps.iter()
-                .map(|d| {
-                    let tail = d
-                        .dep_path
-                        .strip_prefix(&format!("{}@", d.name))
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| d.dep_path.clone());
-                    (d.name.clone(), tail)
-                })
-                .collect()
-        })
+        .map(|deps| scope_map_from_deps(deps))
         .unwrap_or_default();
 
     for (importer_path, direct_deps) in &canonical.importers {
@@ -648,17 +637,7 @@ fn apply_peer_contexts_once(
         // it's already contextualized, and passing the plain version
         // would make descendants look up keys that don't exist in the
         // (now-nested) graph.
-        let importer_scope: FxHashMap<String, String> = direct_deps
-            .iter()
-            .map(|d| {
-                let tail = d
-                    .dep_path
-                    .strip_prefix(&format!("{}@", d.name))
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| d.dep_path.clone());
-                (d.name.clone(), tail)
-            })
-            .collect();
+        let importer_scope = scope_map_from_deps(direct_deps);
 
         let mut new_deps = Vec::with_capacity(direct_deps.len());
         for dep in direct_deps {
@@ -732,6 +711,32 @@ fn apply_peer_contexts_once(
 /// `name@version` base, and semver forbids `_` inside a version, so
 /// an underscore 10 chars from the end of `name@version` can only be
 /// our marker.
+/// Everything before the first `(` — i.e. the canonical `name@version`
+/// part of a dep-path with the peer-context suffix stripped. Returns
+/// the original string when no `(` is present. Borrowed; callers that
+/// need owned bump with `.to_string()`.
+fn canonical_tail(s: &str) -> &str {
+    s.split('(').next().unwrap_or(s)
+}
+
+/// Build a `name → contextualized tail` map from a direct-dep slice.
+/// The tail is the dep_path with the `{name}@` prefix stripped, which
+/// on pass 1 is equal to `pkg.version` and on pass 2+ carries the
+/// nested peer-context suffix. Used both for the root scope and for
+/// each importer's own scope inside `apply_peer_contexts_once`.
+fn scope_map_from_deps(deps: &[DirectDep]) -> FxHashMap<String, String> {
+    deps.iter()
+        .map(|d| {
+            let tail = d
+                .dep_path
+                .strip_prefix(&format!("{}@", d.name))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| d.dep_path.clone());
+            (d.name.clone(), tail)
+        })
+        .collect()
+}
+
 fn strip_hashed_peer_suffix(s: &str) -> &str {
     const MARKER_LEN: usize = 11; // `_` + 10 hex chars
     if s.len() < MARKER_LEN {
@@ -1014,7 +1019,7 @@ fn visit_peer_context<'g>(
     //      stripped; otherwise each pass re-hashes the already-hashed
     //      key and appends another marker (exposed by the
     //      `peer_suffix_is_hashed_when_exceeding_cap` unit test).
-    let canonical_base = input_dep_path.split('(').next().unwrap_or(input_dep_path);
+    let canonical_base = canonical_tail(input_dep_path);
     let canonical_base = strip_hashed_peer_suffix(canonical_base).to_string();
 
     // Compute peer context: walk declared peers, resolve from ancestors
@@ -1051,7 +1056,7 @@ fn visit_peer_context<'g>(
         let satisfies_declared = |v: &str| -> bool {
             // The tail may carry a nested peer suffix on fixed-point
             // iterations 2+; strip it before checking the semver.
-            let canonical = v.split('(').next().unwrap_or(v);
+            let canonical = canonical_tail(v);
             version_satisfies(canonical, declared_range)
         };
 
@@ -1156,7 +1161,7 @@ fn visit_peer_context<'g>(
         .map(|(n, v)| {
             let cycles_back = contains_canonical_back_ref(v, &canonical_base);
             let display_v = if cycles_back {
-                v.split('(').next().unwrap_or(v).to_string()
+                canonical_tail(v).to_string()
             } else {
                 v.clone()
             };

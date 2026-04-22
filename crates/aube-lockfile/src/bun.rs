@@ -604,9 +604,7 @@ pub fn write(
         if matches!(pkg.local_source, Some(LocalSource::Link(_))) {
             continue;
         }
-        canonical
-            .entry(format!("{}@{}", pkg.name, pkg.version))
-            .or_insert(pkg);
+        canonical.entry(pkg.spec_key()).or_insert(pkg);
     }
 
     // Build the hoist tree from every importer's direct deps (not just
@@ -813,7 +811,7 @@ pub fn write(
             meta.insert("bin".to_string(), Value::Object(real_bins));
         }
 
-        let ident = format!("{}@{}", pkg.name, pkg.version);
+        let ident = pkg.spec_key();
         let integrity = pkg.integrity.clone().unwrap_or_default();
         let entry = Value::Array(vec![
             Value::String(ident),

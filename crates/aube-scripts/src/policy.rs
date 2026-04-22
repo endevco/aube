@@ -159,11 +159,7 @@ impl BuildPolicy {
         if self.denied.contains(name) || self.denied.contains(&with_version) {
             return AllowDecision::Deny;
         }
-        if self
-            .denied_wildcards
-            .iter()
-            .any(|p| matches_wildcard(name, p))
-        {
+        if matches_any_wildcard(name, &self.denied_wildcards) {
             return AllowDecision::Deny;
         }
         if self.allow_all {
@@ -172,11 +168,7 @@ impl BuildPolicy {
         if self.allowed.contains(name) || self.allowed.contains(&with_version) {
             return AllowDecision::Allow;
         }
-        if self
-            .allowed_wildcards
-            .iter()
-            .any(|p| matches_wildcard(name, p))
-        {
+        if matches_any_wildcard(name, &self.allowed_wildcards) {
             return AllowDecision::Allow;
         }
         AllowDecision::Unspecified
@@ -220,6 +212,10 @@ fn sort_entries(entries: Vec<String>, exact: &mut HashSet<String>, wildcards: &m
 /// right anchor is what makes this safe — `ends_with(last)` is
 /// independent of greedy choices, and everything between the last
 /// greedy hit and the suffix anchor is a free `*`.
+fn matches_any_wildcard(name: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| matches_wildcard(name, p))
+}
+
 fn matches_wildcard(name: &str, pattern: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     // `split` on a pattern with N wildcards yields N+1 parts, so the

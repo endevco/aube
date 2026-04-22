@@ -131,9 +131,7 @@ async fn run_filtered(
     filter: &aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     let (root, matched) = super::select_workspace_packages(cwd, filter, "outdated")?;
-    let manifest = aube_manifest::PackageJson::from_path(&root.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&root.join("package.json"))?;
     let graph = match aube_lockfile::parse_lockfile(&root, &manifest) {
         Ok(g) => g,
         Err(aube_lockfile::Error::NotFound(_)) => {
@@ -173,9 +171,7 @@ async fn run_filtered(
 }
 
 async fn run_one(cwd: &Path, args: OutdatedArgs, importer: Option<String>) -> miette::Result<bool> {
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&cwd.join("package.json"))?;
 
     let graph = match aube_lockfile::parse_lockfile(cwd, &manifest) {
         Ok(g) => g,

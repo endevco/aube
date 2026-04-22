@@ -423,12 +423,7 @@ pub fn write_classic(
     manifest: &aube_manifest::PackageJson,
 ) -> Result<(), Error> {
     // Collapse peer-context variants: one entry per canonical (name, version).
-    let mut canonical: BTreeMap<String, &LockedPackage> = BTreeMap::new();
-    for pkg in graph.packages.values() {
-        canonical
-            .entry(format!("{}@{}", pkg.name, pkg.version))
-            .or_insert(pkg);
-    }
+    let canonical = crate::build_canonical_map(graph);
 
     // Collect every spec that points at a canonical `(name, version)` —
     // both root-manifest ranges *and* transitive declared ranges from
@@ -1079,12 +1074,7 @@ pub fn write_berry(
     // `(name, version)` — same as the classic writer. The canonical
     // key is `name@version`; we need it to look up a package's extra
     // specifiers in the same map.
-    let mut canonical: BTreeMap<String, &LockedPackage> = BTreeMap::new();
-    for pkg in graph.packages.values() {
-        canonical
-            .entry(format!("{}@{}", pkg.name, pkg.version))
-            .or_insert(pkg);
-    }
+    let canonical = crate::build_canonical_map(graph);
 
     // `extra_specs[canonical_key]` is the set of range-form
     // specifiers (e.g. `"foo@npm:^1.0.0"`) that should appear in the

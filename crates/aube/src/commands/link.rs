@@ -38,9 +38,7 @@ pub async fn run(args: LinkArgs) -> miette::Result<()> {
     match package {
         None => {
             // `aube link` — register current package globally
-            let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-                .map_err(miette::Report::new)
-                .wrap_err("failed to read package.json")?;
+            let manifest = super::load_manifest(&cwd.join("package.json"))?;
             let name = manifest
                 .name
                 .as_deref()

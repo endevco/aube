@@ -167,12 +167,7 @@ pub fn create_bin_shim(
         let link_path = bin_dir.join(name);
         let link_parent = link_path.parent().unwrap_or(bin_dir);
         // Remove any stale files (previous shims or legacy symlinks).
-        for ext in ["", ".cmd", ".ps1"] {
-            let p = if ext.is_empty() {
-                link_path.clone()
-            } else {
-                bin_dir.join(format!("{name}{ext}"))
-            };
+        for p in win_shim_paths(bin_dir, name) {
             let _ = std::fs::remove_file(&p);
         }
         std::fs::create_dir_all(link_parent)?;
@@ -342,15 +337,28 @@ pub fn remove_bin_shim(bin_dir: &Path, name: &str) {
     let link_path = bin_dir.join(name);
     let _ = std::fs::remove_file(&link_path);
     #[cfg(windows)]
-    {
-        let _ = std::fs::remove_file(bin_dir.join(format!("{name}.cmd")));
-        let _ = std::fs::remove_file(bin_dir.join(format!("{name}.ps1")));
+    for p in win_shim_paths(bin_dir, name).into_iter().skip(1) {
+        let _ = std::fs::remove_file(&p);
     }
     if let Some(parent) = link_path.parent()
         && parent != bin_dir
     {
         let _ = std::fs::remove_dir(parent);
     }
+}
+
+/// Paths of every Windows shim file `create_bin_shim` writes for
+/// `name`: the extensionless wrapper, the `.cmd` stub, and the
+/// `.ps1` stub. Index 0 is the extensionless wrapper — callers that
+/// already unlinked it (the unix-first branch of `remove_bin_shim`)
+/// can skip it with `.into_iter().skip(1)`.
+#[cfg(windows)]
+fn win_shim_paths(bin_dir: &Path, name: &str) -> [PathBuf; 3] {
+    [
+        bin_dir.join(name),
+        bin_dir.join(format!("{name}.cmd")),
+        bin_dir.join(format!("{name}.ps1")),
+    ]
 }
 
 /// Compute the relative path from `base_dir` to `target`, using

@@ -163,13 +163,5 @@ async fn run_filtered(filter: &aube_workspace::selector::EffectiveFilter) -> mie
         Ok(())
     }
     .await;
-    let restore_result = super::retarget_cwd(&cwd)
-        .wrap_err_with(|| format!("failed to restore cwd to {}", cwd.display()));
-    match result {
-        Ok(()) => restore_result,
-        Err(err) => {
-            let _ = restore_result;
-            Err(err)
-        }
-    }
+    super::finish_filtered_workspace(&cwd, result)
 }

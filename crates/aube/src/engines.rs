@@ -207,7 +207,7 @@ pub fn collect_dep_mismatches(
                 Ok(None)
             } else {
                 Ok(Some(Mismatch {
-                    package: format!("{}@{}", pkg.name, pkg.version),
+                    package: pkg.spec_key(),
                     declared: node_range.to_string(),
                     current: node_version.to_string(),
                 }))

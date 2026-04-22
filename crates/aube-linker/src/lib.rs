@@ -135,6 +135,123 @@ fn remove_hidden_hoist_tree(path: &Path) {
         Err(_) => {}
     }
 }
+
+/// Best-effort unlink of `path` regardless of whether it's a file,
+/// symlink, junction, or directory. Errors are intentionally ignored
+/// because this is a "clear the slot" operation — the caller is about
+/// to place something else here and any residual entry that survives
+/// will surface as a downstream error.
+pub(crate) fn try_remove_entry(path: &Path) {
+    let _ = std::fs::remove_dir_all(path);
+    let _ = std::fs::remove_file(path);
+}
+
+/// `xx::file::mkdirp` wrapped with the linker's `Error::Xx` conversion.
+/// Every materialize pass calls this before creating a symlink /
+/// junction, so the lossy `.to_string()` wrap lives in exactly one
+/// place.
+pub(crate) fn mkdirp(dir: &Path) -> Result<(), Error> {
+    xx::file::mkdirp(dir).map_err(|e| Error::Xx(e.to_string()))
+}
+
+/// Classification of a `.aube/<dep_path>` symlink relative to the
+/// current hashed global entry the linker wants to point at.
+#[derive(Copy, Clone)]
+pub(crate) enum EntryState {
+    /// The symlink already points at `expected` and the target exists —
+    /// nothing to do. Caller can bump a `packages_cached` counter and
+    /// move on.
+    Fresh,
+    /// No entry at `link_path` yet. Caller needs to materialize and
+    /// create the symlink, but there's nothing to unlink first.
+    Missing,
+    /// An entry exists but is stale (different target, dangling link,
+    /// or an `Err` read that isn't NotFound). Caller must unlink
+    /// before resymlinking.
+    Stale,
+}
+
+/// Sweep stale entries out of a `node_modules/` directory while
+/// preserving everything in `preserve` (bare names like `lodash` and
+/// scope prefixes like `@babel`), dotfiles, and — if set — the
+/// virtual-store leaf (`aube_dir_leaf`) sitting right under `nm`
+/// with a non-dotfile name (the `virtualStoreDir=node_modules/vstore`
+/// case). For `@scope` entries we recurse one level and drop any
+/// `@scope/<pkg>` whose full `@scope/pkg` name is not in `preserve`;
+/// an empty scope directory left behind by the sweep is removed so
+/// the next install doesn't trip over a phantom scope tombstone.
+pub(crate) fn sweep_stale_top_level_entries(
+    nm: &Path,
+    preserve: &std::collections::HashSet<&str>,
+    aube_dir_leaf: Option<&std::ffi::OsStr>,
+) {
+    let scope_prefixes: std::collections::HashSet<&str> = preserve
+        .iter()
+        .filter_map(|n| n.split_once('/').map(|(scope, _)| scope))
+        .collect();
+    let Ok(entries) = std::fs::read_dir(nm) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        if aube_dir_leaf == Some(name.as_os_str()) {
+            continue;
+        }
+        if preserve.contains(name_str.as_ref()) {
+            continue;
+        }
+        if scope_prefixes.contains(name_str.as_ref()) {
+            let scope_dir = entry.path();
+            if let Ok(inner) = std::fs::read_dir(&scope_dir) {
+                for inner_entry in inner.flatten() {
+                    let inner_name = inner_entry.file_name();
+                    let full = format!("{}/{}", name_str, inner_name.to_string_lossy());
+                    if !preserve.contains(full.as_str()) {
+                        try_remove_entry(&inner_entry.path());
+                    }
+                }
+            }
+            // If the scope dir is now empty (every member was stale),
+            // drop the tombstone directory too.
+            if std::fs::read_dir(&scope_dir)
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(false)
+            {
+                let _ = std::fs::remove_dir(&scope_dir);
+            }
+            continue;
+        }
+        try_remove_entry(&entry.path());
+    }
+}
+
+/// Classify `link_path` against `expected` without the double-check
+/// (`read_link` then `exists`) that ate ~1.4k ENOENT syscalls per
+/// install on the medium fixture. Fresh means "points at expected
+/// AND the target still exists"; everything else is Missing or
+/// Stale. The fast path returns without touching disk a second time.
+pub(crate) fn classify_entry_state(link_path: &Path, expected: &Path) -> EntryState {
+    match std::fs::read_link(link_path) {
+        Ok(existing) if existing == expected => {
+            if link_path.exists() {
+                EntryState::Fresh
+            } else {
+                EntryState::Stale
+            }
+        }
+        Ok(_) => EntryState::Stale,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => EntryState::Missing,
+        // Some other error (permission, etc.): treat as Stale and
+        // let the removal/recreate path try its best-effort cleanup
+        // + surface the real error on symlink creation if unlucky.
+        Err(_) => EntryState::Stale,
+    }
+}
+
 pub use sys::{
     BinShimOptions, create_bin_shim, create_dir_link, normalize_path, parse_posix_shim_target,
     remove_bin_shim, validate_bin_name, validate_bin_target,
@@ -812,7 +929,7 @@ impl Linker {
         let nm = project_dir.join(&self.modules_dir_name);
         let aube_dir = self.aube_dir_for(project_dir);
 
-        xx::file::mkdirp(&aube_dir).map_err(|e| Error::Xx(e.to_string()))?;
+        mkdirp(&aube_dir)?;
 
         // Reclaim space from prior aborted installs. A crash or
         // Ctrl+C between materialize_into and the atomic rename
@@ -840,13 +957,9 @@ impl Linker {
                 }
             }
         }
-        let scope_prefixes: std::collections::HashSet<&str> = root_dep_names
-            .iter()
-            .filter_map(|n| n.split_once('/').map(|(scope, _)| scope))
-            .collect();
         // Preserve the virtual-store leaf name when `aube_dir` sits
         // directly under `nm`. With the default `.aube` the dotfile
-        // check below covers it, but a user who sets
+        // check inside the sweep covers it, but a user who sets
         // `virtualStoreDir=node_modules/vstore` would otherwise see
         // the sweep delete the freshly-`mkdirp`d virtual store on
         // every install because `vstore` isn't a dotfile and isn't
@@ -856,44 +969,7 @@ impl Linker {
         } else {
             None
         };
-        if let Ok(entries) = std::fs::read_dir(&nm) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                // Skip .aube, .bin, and other dotfiles
-                if name_str.starts_with('.') {
-                    continue;
-                }
-                if aube_dir_leaf.as_deref() == Some(name.as_os_str()) {
-                    continue;
-                }
-                if root_dep_names.contains(name_str.as_ref()) {
-                    continue;
-                }
-                // Preserved `@scope` directory: keep the directory
-                // itself, but recurse and drop any `@scope/<pkg>`
-                // whose full name is no longer in the graph. Without
-                // this, a scoped dep removed from package.json would
-                // linger as a phantom symlink (its `.aube/` entry
-                // also persists) and still resolve successfully.
-                if scope_prefixes.contains(name_str.as_ref()) {
-                    let scope_dir = entry.path();
-                    if let Ok(inner) = std::fs::read_dir(&scope_dir) {
-                        for inner_entry in inner.flatten() {
-                            let inner_name = inner_entry.file_name();
-                            let full = format!("{}/{}", name_str, inner_name.to_string_lossy());
-                            if !root_dep_names.contains(full.as_str()) {
-                                let _ = std::fs::remove_dir_all(inner_entry.path());
-                                let _ = std::fs::remove_file(inner_entry.path());
-                            }
-                        }
-                    }
-                    continue;
-                }
-                let _ = std::fs::remove_dir_all(entry.path());
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
+        sweep_stale_top_level_entries(&nm, &root_dep_names, aube_dir_leaf.as_deref());
 
         let mut stats = LinkStats::default();
 
@@ -975,40 +1051,7 @@ impl Linker {
                             // `remove_dir`/`remove_file` pair on cold installs,
                             // which strace showed as ~1.4k ENOENT syscalls per
                             // install on the medium fixture.
-                            enum EntryState {
-                                /// `.aube/<dep_path>` already points at the
-                                /// current hashed global entry — nothing to do.
-                                Fresh,
-                                /// `.aube/<dep_path>` doesn't exist yet. We need
-                                /// to materialize + create the symlink, but
-                                /// there's nothing to remove first.
-                                Missing,
-                                /// `.aube/<dep_path>` exists and points somewhere
-                                /// else (stale hash, patch change, etc.). Must
-                                /// unlink before resymlinking.
-                                Stale,
-                            }
-                            let state = match std::fs::read_link(&local_aube_entry) {
-                                Ok(existing) if existing == global_entry => {
-                                    // Verify the target actually exists — a
-                                    // dangling link needs to fall through to
-                                    // the materialize path.
-                                    if local_aube_entry.exists() {
-                                        EntryState::Fresh
-                                    } else {
-                                        EntryState::Stale
-                                    }
-                                }
-                                Ok(_) => EntryState::Stale,
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                    EntryState::Missing
-                                }
-                                // Some other error (permission, etc.): treat as
-                                // Stale and let the removal/recreate path try
-                                // its best-effort cleanup + surface the real
-                                // error on symlink creation if unlucky.
-                                Err(_) => EntryState::Stale,
-                            };
+                            let state = classify_entry_state(&local_aube_entry, &global_entry);
 
                             if matches!(state, EntryState::Fresh) {
                                 local_stats.packages_cached += 1;
@@ -1051,7 +1094,7 @@ impl Linker {
                                     .or_else(|_| std::fs::remove_file(&local_aube_entry));
                             }
                             if let Some(parent) = local_aube_entry.parent() {
-                                xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                                mkdirp(parent)?;
                             }
                             sys::create_dir_link(&global_entry, &local_aube_entry)
                                 .map_err(|e| Error::Io(local_aube_entry.clone(), e))?;
@@ -1155,7 +1198,7 @@ impl Linker {
                             return Ok(false);
                         }
                         if let Some(parent) = target_dir.parent() {
-                            xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                            mkdirp(parent)?;
                         }
                         sys::create_dir_link(&rel_target, &target_dir)
                             .map_err(|e| Error::Io(target_dir.clone(), e))?;
@@ -1186,7 +1229,7 @@ impl Linker {
                         return Ok(false);
                     }
                     if let Some(parent) = target_dir.parent() {
-                        xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                        mkdirp(parent)?;
                     }
 
                     sys::create_dir_link(&rel_target, &target_dir)
@@ -1299,10 +1342,9 @@ impl Linker {
                 };
                 let link_path = nm.join(&dep.name);
                 if let Some(parent) = link_path.parent() {
-                    xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                    mkdirp(parent)?;
                 }
-                let _ = std::fs::remove_dir_all(&link_path);
-                let _ = std::fs::remove_file(&link_path);
+                try_remove_entry(&link_path);
                 let link_parent = link_path.parent().unwrap_or(&nm);
                 let target = pathdiff::diff_paths(ws_dir, link_parent).unwrap_or(ws_dir.clone());
                 sys::create_dir_link(&target, &link_path)
@@ -1338,8 +1380,8 @@ impl Linker {
         let root_nm = root_dir.join(&self.modules_dir_name);
         let aube_dir = self.aube_dir_for(root_dir);
 
-        xx::file::mkdirp(&aube_dir).map_err(|e| Error::Xx(e.to_string()))?;
-        xx::file::mkdirp(&root_nm).map_err(|e| Error::Xx(e.to_string()))?;
+        mkdirp(&aube_dir)?;
+        mkdirp(&root_nm)?;
 
         let mut stats = LinkStats::default();
 
@@ -1411,25 +1453,7 @@ impl Linker {
                             let global_entry =
                                 self.virtual_store.join(self.virtual_store_subdir(dep_path));
 
-                            enum EntryState {
-                                Fresh,
-                                Missing,
-                                Stale,
-                            }
-                            let state = match std::fs::read_link(&local_aube_entry) {
-                                Ok(existing) if existing == global_entry => {
-                                    if local_aube_entry.exists() {
-                                        EntryState::Fresh
-                                    } else {
-                                        EntryState::Stale
-                                    }
-                                }
-                                Ok(_) => EntryState::Stale,
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                    EntryState::Missing
-                                }
-                                Err(_) => EntryState::Stale,
-                            };
+                            let state = classify_entry_state(&local_aube_entry, &global_entry);
 
                             if matches!(state, EntryState::Fresh) {
                                 local_stats.packages_cached += 1;
@@ -1456,7 +1480,7 @@ impl Linker {
                                     .or_else(|_| std::fs::remove_file(&local_aube_entry));
                             }
                             if let Some(parent) = local_aube_entry.parent() {
-                                xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                                mkdirp(parent)?;
                             }
                             sys::create_dir_link(&global_entry, &local_aube_entry)
                                 .map_err(|e| Error::Io(local_aube_entry.clone(), e))?;
@@ -1530,8 +1554,7 @@ impl Linker {
                     if aube_dir_leaf.as_deref() == Some(name.as_os_str()) {
                         continue;
                     }
-                    let _ = std::fs::remove_dir_all(entry.path());
-                    let _ = std::fs::remove_file(entry.path());
+                    try_remove_entry(&entry.path());
                 }
             }
             self.link_hidden_hoist(&aube_dir, graph)?;
@@ -1586,7 +1609,7 @@ impl Linker {
                 root_dir.join(importer_path).join(&self.modules_dir_name)
             };
             if importer_path != "." {
-                xx::file::mkdirp(&nm).map_err(|e| Error::Xx(e.to_string()))?;
+                mkdirp(&nm)?;
             }
 
             let mut preserve: std::collections::HashSet<&str> =
@@ -1604,54 +1627,12 @@ impl Linker {
                     }
                 }
             }
-            let scope_prefixes: std::collections::HashSet<&str> = preserve
-                .iter()
-                .filter_map(|n| n.split_once('/').map(|(scope, _)| scope))
-                .collect();
-            let aube_leaf_here: Option<&std::ffi::OsString> = if importer_path == "." {
-                aube_dir_leaf_root.as_ref()
+            let aube_leaf_here = if importer_path == "." {
+                aube_dir_leaf_root.as_deref()
             } else {
                 None
             };
-            if let Ok(entries) = std::fs::read_dir(&nm) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if name_str.starts_with('.') {
-                        continue;
-                    }
-                    if aube_leaf_here.map(|l| l.as_os_str()) == Some(name.as_os_str()) {
-                        continue;
-                    }
-                    if preserve.contains(name_str.as_ref()) {
-                        continue;
-                    }
-                    if scope_prefixes.contains(name_str.as_ref()) {
-                        let scope_dir = entry.path();
-                        if let Ok(inner) = std::fs::read_dir(&scope_dir) {
-                            for inner_entry in inner.flatten() {
-                                let inner_name = inner_entry.file_name();
-                                let full = format!("{}/{}", name_str, inner_name.to_string_lossy());
-                                if !preserve.contains(full.as_str()) {
-                                    let _ = std::fs::remove_dir_all(inner_entry.path());
-                                    let _ = std::fs::remove_file(inner_entry.path());
-                                }
-                            }
-                        }
-                        // If the scope is now empty (no preserved members
-                        // left), drop the tombstone directory too.
-                        if std::fs::read_dir(&scope_dir)
-                            .map(|mut d| d.next().is_none())
-                            .unwrap_or(false)
-                        {
-                            let _ = std::fs::remove_dir(&scope_dir);
-                        }
-                        continue;
-                    }
-                    let _ = std::fs::remove_dir_all(entry.path());
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
+            sweep_stale_top_level_entries(&nm, &preserve, aube_leaf_here);
         }
 
         // Step 2b: Create top-level symlinks in parallel.
@@ -1723,7 +1704,7 @@ impl Linker {
                             return Ok(false);
                         }
                         if let Some(parent) = link_path.parent() {
-                            xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                            mkdirp(parent)?;
                         }
                         sys::create_dir_link(&rel_target, &link_path)
                             .map_err(|e| Error::Io(link_path.clone(), e))?;
@@ -1742,7 +1723,7 @@ impl Linker {
                             return Ok(false);
                         }
                         if let Some(parent) = link_path.parent() {
-                            xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                            mkdirp(parent)?;
                         }
                         sys::create_dir_link(&rel_target, &link_path)
                             .map_err(|e| Error::Io(link_path.clone(), e))?;
@@ -1765,7 +1746,7 @@ impl Linker {
                         return Ok(false);
                     }
                     if let Some(parent) = link_path.parent() {
-                        xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                        mkdirp(parent)?;
                     }
                     sys::create_dir_link(&rel_target, &link_path)
                         .map_err(|e| Error::Io(link_path.clone(), e))?;
@@ -1873,7 +1854,7 @@ impl Linker {
             }
             let target_dir = hidden.join(&pkg.name);
             if let Some(parent) = target_dir.parent() {
-                xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                mkdirp(parent)?;
             }
             let link_parent = target_dir.parent().unwrap_or(&hidden);
             let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
@@ -1980,7 +1961,7 @@ impl Linker {
                 continue;
             }
             if let Some(parent) = target_dir.parent() {
-                xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                mkdirp(parent)?;
             }
             sys::create_dir_link(&rel_target, &target_dir)
                 .map_err(|e| Error::Io(target_dir.clone(), e))?;
@@ -2050,7 +2031,7 @@ impl Linker {
 
         // Ensure the parent of the final entry exists (e.g. for scoped packages).
         if let Some(parent) = final_entry.parent() {
-            xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+            mkdirp(parent)?;
         }
 
         match std::fs::rename(&tmp_entry, &final_entry) {
@@ -2190,7 +2171,7 @@ impl Linker {
         // patched bytes live alongside the unpatched ones at a
         // distinct subdir (the graph hash callback is responsible for
         // making sure that's true).
-        let patch_key = format!("{}@{}", pkg.name, pkg.version);
+        let patch_key = pkg.spec_key();
         if let Some(patch_text) = self.patches.get(&patch_key) {
             apply_multi_file_patch(&pkg_nm_dir, patch_text)
                 .map_err(|msg| Error::Patch(patch_key.clone(), msg))?;
@@ -2552,7 +2533,7 @@ fn wipe_changed_patched_entries(
         return;
     }
     for (dep_path, pkg) in &graph.packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
+        let key = pkg.spec_key();
         if affected.contains(&key) {
             let entry = aube_dir.join(dep_path_to_filename(dep_path, max_length));
             let _ = std::fs::remove_dir_all(entry);

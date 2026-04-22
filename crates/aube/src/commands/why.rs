@@ -78,9 +78,7 @@ pub async fn run(
         return run_filtered(&cwd, &args, &filter);
     }
 
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&cwd.join("package.json"))?;
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
         Ok(g) => g,
@@ -125,9 +123,7 @@ fn run_filtered(
         )
     })?;
 
-    let manifest = aube_manifest::PackageJson::from_path(&workspace_root.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&workspace_root.join("package.json"))?;
 
     let graph = match aube_lockfile::parse_lockfile(&workspace_root, &manifest) {
         Ok(g) => g,

@@ -80,6 +80,21 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Pull ETag + Last-Modified off a response as owned strings.
+fn extract_cache_headers(resp: &reqwest::Response) -> (Option<String>, Option<String>) {
+    let headers = resp.headers();
+    let grab = |name: reqwest::header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    };
+    (
+        grab(reqwest::header::ETAG),
+        grab(reqwest::header::LAST_MODIFIED),
+    )
+}
+
 /// Client for interacting with the npm registry.
 pub struct RegistryClient {
     http: reqwest::Client,
@@ -567,16 +582,7 @@ impl RegistryClient {
                         return Ok(c.packument.clone());
                     }
 
-                    let etag = resp
-                        .headers()
-                        .get(reqwest::header::ETAG)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
-                    let last_modified = resp
-                        .headers()
-                        .get(reqwest::header::LAST_MODIFIED)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
+                    let (etag, last_modified) = extract_cache_headers(&resp);
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
                     match resp.json::<serde_json::Value>().await {
@@ -860,16 +866,7 @@ impl RegistryClient {
                     return Ok(c.packument.clone());
                 }
                 Ok(resp) => {
-                    let etag = resp
-                        .headers()
-                        .get(reqwest::header::ETAG)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
-                    let last_modified = resp
-                        .headers()
-                        .get(reqwest::header::LAST_MODIFIED)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
+                    let (etag, last_modified) = extract_cache_headers(&resp);
 
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;

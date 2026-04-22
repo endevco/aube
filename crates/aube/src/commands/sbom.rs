@@ -5,9 +5,9 @@
 //! 1.5 JSON or SPDX 2.3 JSON. Pure read; does not touch `node_modules/` or
 //! take the project lock.
 
-use aube_lockfile::{DirectDep, LockedPackage, LockfileGraph};
+use aube_lockfile::{LockedPackage, LockfileGraph};
 use clap::Args;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, IntoDiagnostic};
 use std::collections::BTreeMap;
 
 use super::DepFilter;
@@ -41,22 +41,16 @@ pub enum SbomFormat {
 pub async fn run(args: SbomArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root()?;
 
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&cwd.join("package.json"))?;
 
-    let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
-        Ok(g) => g,
-        Err(aube_lockfile::Error::NotFound(_)) => {
-            return Err(miette!(
-                "no lockfile found — run `aube install` before generating an SBOM"
-            ));
-        }
-        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
-    };
+    let graph = super::load_graph(
+        &cwd,
+        &manifest,
+        "no lockfile found — run `aube install` before generating an SBOM",
+    )?;
 
     let filter = DepFilter::from_flags(args.prod, args.dev);
-    let closure = collect_closure(&graph, filter);
+    let closure = super::collect_dep_closure(&graph, filter, false);
 
     let json = match args.format {
         SbomFormat::Cyclonedx => render_cyclonedx(&manifest, &closure)?,
@@ -65,32 +59,6 @@ pub async fn run(args: SbomArgs) -> miette::Result<()> {
 
     println!("{json}");
     Ok(())
-}
-
-/// Reachable packages from the filtered root deps, keyed by dep_path. Sorted
-/// so output is byte-stable across runs.
-fn collect_closure(graph: &LockfileGraph, filter: DepFilter) -> BTreeMap<String, &LockedPackage> {
-    let mut out: BTreeMap<String, &LockedPackage> = BTreeMap::new();
-    let roots: Vec<&DirectDep> = graph
-        .root_deps()
-        .iter()
-        .filter(|d| filter.keeps(d.dep_type))
-        .collect();
-
-    let mut stack: Vec<String> = roots.iter().map(|d| d.dep_path.clone()).collect();
-    while let Some(dep_path) = stack.pop() {
-        if out.contains_key(&dep_path) {
-            continue;
-        }
-        let Some(pkg) = graph.get_package(&dep_path) else {
-            continue;
-        };
-        out.insert(dep_path.clone(), pkg);
-        for (name, version) in &pkg.dependencies {
-            stack.push(format!("{name}@{version}"));
-        }
-    }
-    out
 }
 
 /// CycloneDX 1.5 JSON. See https://cyclonedx.org/docs/1.5/json/.

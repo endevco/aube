@@ -578,6 +578,13 @@ impl LockedPackage {
     pub fn registry_name(&self) -> &str {
         self.alias_of.as_deref().unwrap_or(&self.name)
     }
+
+    /// Canonical `"name@version"` key used as a handle in patches,
+    /// approve-builds prompts, lockfile canonical maps, and display
+    /// paths. Not the dep-path — that includes peer-context suffixes.
+    pub fn spec_key(&self) -> String {
+        format!("{}@{}", self.name, self.version)
+    }
 }
 
 /// Metadata about a single declared peer dependency. Matches the shape of
@@ -831,14 +838,9 @@ impl LockfileGraph {
         // Build a canonical `name@version → prior pkg` lookup once so
         // repeated peer-context variants in `self.packages` all hit
         // the same prior entry.
-        let mut prior_index: BTreeMap<String, &LockedPackage> = BTreeMap::new();
-        for pkg in prior.packages.values() {
-            prior_index
-                .entry(format!("{}@{}", pkg.name, pkg.version))
-                .or_insert(pkg);
-        }
+        let prior_index = build_canonical_map(prior);
         for pkg in self.packages.values_mut() {
-            let key = format!("{}@{}", pkg.name, pkg.version);
+            let key = pkg.spec_key();
             let Some(prior_pkg) = prior_index.get(&key) else {
                 continue;
             };
@@ -1315,6 +1317,19 @@ pub fn write_lockfile(
 }
 
 /// Write a lockfile using the existing project lockfile kind, or
+/// Collapse peer-context variants from `graph` into a single map keyed
+/// by `"name@version"`, pointing at the first-seen package. Several
+/// writers (npm, yarn, …) share this shape: one canonical entry per
+/// `(name, version)` pair regardless of how many peer suffixes the
+/// full graph emits.
+pub fn build_canonical_map(graph: &LockfileGraph) -> BTreeMap<String, &LockedPackage> {
+    let mut canonical: BTreeMap<String, &LockedPackage> = BTreeMap::new();
+    for pkg in graph.packages.values() {
+        canonical.entry(pkg.spec_key()).or_insert(pkg);
+    }
+    canonical
+}
+
 /// `aube-lock.yaml` when the project does not have one yet.
 ///
 /// This is the default write path for commands that mutate the active

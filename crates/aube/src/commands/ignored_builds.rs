@@ -88,9 +88,7 @@ impl std::cmp::PartialOrd for IgnoredEntry {
 /// Returns an empty list (not an error) if there is no lockfile yet —
 /// callers print their own "nothing to do" message.
 pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<Vec<IgnoredEntry>> {
-    let manifest = aube_manifest::PackageJson::from_path(&project_dir.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&project_dir.join("package.json"))?;
 
     let graph = match aube_lockfile::parse_lockfile(project_dir, &manifest) {
         Ok(g) => g,

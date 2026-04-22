@@ -295,51 +295,17 @@ pub(crate) fn link_hoisted_importer(
     placements: &mut HoistedPlacements,
 ) -> Result<(), Error> {
     let nm = importer_dir.join(linker.modules_dir_name());
-    xx::file::mkdirp(&nm).map_err(|e| Error::Xx(e.to_string()))?;
+    crate::mkdirp(&nm)?;
 
     let plan = plan_importer(&nm, root_deps, graph);
 
     // Sweep any top-level entries that are no longer claimed by the
-    // plan. Dotfiles (`.aube`, `.bin`, …) are
-    // preserved — .aube in particular may hold a previous isolated
-    // tree that the user hasn't switched off; we leave it alone
-    // rather than wiping bytes the other layout owns.
+    // plan. Dotfiles (`.aube`, `.bin`, …) are preserved — .aube in
+    // particular may hold a previous isolated tree that the user
+    // hasn't switched off; we leave it alone rather than wiping
+    // bytes the other layout owns.
     let keep_root: std::collections::HashSet<&str> = plan.root_names().collect();
-    let keep_scopes: std::collections::HashSet<&str> = keep_root
-        .iter()
-        .filter_map(|n| n.split_once('/').map(|(scope, _)| scope))
-        .collect();
-    if let Ok(entries) = std::fs::read_dir(&nm) {
-        for entry in entries.flatten() {
-            let raw = entry.file_name();
-            let name_str = raw.to_string_lossy();
-            if name_str.starts_with('.') {
-                continue;
-            }
-            if keep_root.contains(name_str.as_ref()) {
-                continue;
-            }
-            if keep_scopes.contains(name_str.as_ref()) {
-                // Scoped dir: prune stale members but keep surviving siblings.
-                let scope_dir = entry.path();
-                if let Ok(inner) = std::fs::read_dir(&scope_dir) {
-                    for inner_entry in inner.flatten() {
-                        let full =
-                            format!("{}/{}", name_str, inner_entry.file_name().to_string_lossy());
-                        if !keep_root.contains(full.as_str()) {
-                            let p = inner_entry.path();
-                            let _ = std::fs::remove_dir_all(&p);
-                            let _ = std::fs::remove_file(&p);
-                        }
-                    }
-                }
-                continue;
-            }
-            let p = entry.path();
-            let _ = std::fs::remove_dir_all(&p);
-            let _ = std::fs::remove_file(&p);
-        }
-    }
+    crate::sweep_stale_top_level_entries(&nm, &keep_root, None);
 
     // Materialize every non-root node. Order doesn't matter for
     // correctness (each package's files are written into its own
@@ -370,10 +336,9 @@ pub(crate) fn link_hoisted_importer(
         // normalized the relative path to be importer-relative.
         if let Some(LocalSource::Link(rel)) = pkg.local_source.as_ref() {
             if let Some(parent) = pkg_dir.parent() {
-                xx::file::mkdirp(parent).map_err(|e| Error::Xx(e.to_string()))?;
+                crate::mkdirp(parent)?;
             }
-            let _ = std::fs::remove_dir_all(&pkg_dir);
-            let _ = std::fs::remove_file(&pkg_dir);
+            crate::try_remove_entry(&pkg_dir);
             let abs_target = importer_dir.join(rel);
             let link_parent = pkg_dir.parent().unwrap_or(&nm);
             let rel_target = pathdiff::diff_paths(&abs_target, link_parent).unwrap_or(abs_target);
@@ -410,8 +375,7 @@ pub(crate) fn link_hoisted_importer(
         // changing versions doesn't leave stale files behind, then
         // batch-create every intermediate parent directory the index
         // will write into.
-        let _ = std::fs::remove_dir_all(&pkg_dir);
-        let _ = std::fs::remove_file(&pkg_dir);
+        crate::try_remove_entry(&pkg_dir);
         let mut parents: BTreeSet<PathBuf> = BTreeSet::new();
         parents.insert(pkg_dir.clone());
         // Validate every key once here. The file-linking loop below
@@ -440,7 +404,7 @@ pub(crate) fn link_hoisted_importer(
             }
         }
 
-        let patch_key = format!("{}@{}", pkg.name, pkg.version);
+        let patch_key = pkg.spec_key();
         if let Some(patch_text) = linker.patches.get(&patch_key) {
             apply_multi_file_patch(&pkg_dir, patch_text)
                 .map_err(|msg| Error::Patch(patch_key.clone(), msg))?;

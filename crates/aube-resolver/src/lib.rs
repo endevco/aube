@@ -398,6 +398,50 @@ impl ResolveTask {
     fn registry_name(&self) -> &str {
         self.real_name.as_deref().unwrap_or(&self.name)
     }
+
+    /// Construct a root-importer task for `(name, range)` under
+    /// `importer`, with the appropriate `dep_type` and no parent/ancestry.
+    /// Every root-dep enqueue site uses this shape; the factory keeps
+    /// the literal in one place so a new field added to `ResolveTask`
+    /// lands consistently across prod/dev/optional loops.
+    fn root(name: String, range: String, dep_type: DepType, importer: String) -> Self {
+        let original = range.clone();
+        Self {
+            name,
+            range,
+            dep_type,
+            is_root: true,
+            parent: None,
+            importer,
+            original_specifier: Some(original),
+            real_name: None,
+            ancestors: Vec::new(),
+        }
+    }
+
+    /// Construct a transitive (non-root) task discovered by walking a
+    /// parent package's dependency map. Carries the parent dep_path
+    /// and inherited ancestor chain for overrides.
+    fn transitive(
+        name: String,
+        range: String,
+        dep_type: DepType,
+        parent: String,
+        importer: String,
+        ancestors: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            name,
+            range,
+            dep_type,
+            is_root: false,
+            parent: Some(parent),
+            importer,
+            original_specifier: None,
+            real_name: None,
+            ancestors,
+        }
+    }
 }
 
 impl Resolver {
@@ -836,33 +880,23 @@ impl Resolver {
             importers.insert(importer_path.clone(), Vec::new());
 
             for (name, range) in &manifest.dependencies {
-                queue.push_back(ResolveTask {
-                    name: name.clone(),
-                    range: range.clone(),
-                    dep_type: DepType::Production,
-                    is_root: true,
-                    parent: None,
-                    importer: importer_path.clone(),
-                    original_specifier: Some(range.clone()),
-                    real_name: None,
-                    ancestors: Vec::new(),
-                });
+                queue.push_back(ResolveTask::root(
+                    name.clone(),
+                    range.clone(),
+                    DepType::Production,
+                    importer_path.clone(),
+                ));
             }
             for (name, range) in &manifest.dev_dependencies {
                 if manifest.dependencies.contains_key(name) {
                     continue;
                 }
-                queue.push_back(ResolveTask {
-                    name: name.clone(),
-                    range: range.clone(),
-                    dep_type: DepType::Dev,
-                    is_root: true,
-                    parent: None,
-                    importer: importer_path.clone(),
-                    original_specifier: Some(range.clone()),
-                    real_name: None,
-                    ancestors: Vec::new(),
-                });
+                queue.push_back(ResolveTask::root(
+                    name.clone(),
+                    range.clone(),
+                    DepType::Dev,
+                    importer_path.clone(),
+                ));
             }
             for (name, range) in &manifest.optional_dependencies {
                 if self.ignored_optional_dependencies.contains(name) {
@@ -876,17 +910,12 @@ impl Resolver {
                 {
                     continue;
                 }
-                queue.push_back(ResolveTask {
-                    name: name.clone(),
-                    range: range.clone(),
-                    dep_type: DepType::Optional,
-                    is_root: true,
-                    parent: None,
-                    importer: importer_path.clone(),
-                    original_specifier: Some(range.clone()),
-                    real_name: None,
-                    ancestors: Vec::new(),
-                });
+                queue.push_back(ResolveTask::root(
+                    name.clone(),
+                    range.clone(),
+                    DepType::Optional,
+                    importer_path.clone(),
+                ));
             }
         }
 
@@ -1497,17 +1526,14 @@ impl Resolver {
                             let mut child_ancestors = task.ancestors.clone();
                             child_ancestors.push((linked_name.clone(), real_version.clone()));
                             for (child_name, child_range) in target_deps {
-                                queue.push_back(ResolveTask {
-                                    name: child_name,
-                                    range: child_range,
-                                    dep_type: DepType::Production,
-                                    is_root: false,
-                                    parent: Some(dep_path.clone()),
-                                    importer: task.importer.clone(),
-                                    original_specifier: None,
-                                    real_name: None,
-                                    ancestors: child_ancestors.clone(),
-                                });
+                                queue.push_back(ResolveTask::transitive(
+                                    child_name,
+                                    child_range,
+                                    DepType::Production,
+                                    dep_path.clone(),
+                                    task.importer.clone(),
+                                    child_ancestors.clone(),
+                                ));
                             }
                         }
                     }
@@ -1807,17 +1833,14 @@ impl Resolver {
                                     } else {
                                         DepType::Production
                                     };
-                                queue.push_back(ResolveTask {
-                                    name: dep_name.clone(),
-                                    range: canonical_version,
+                                queue.push_back(ResolveTask::transitive(
+                                    dep_name.clone(),
+                                    canonical_version,
                                     dep_type,
-                                    is_root: false,
-                                    parent: Some(dep_path.clone()),
-                                    importer: task.importer.clone(),
-                                    original_specifier: None,
-                                    real_name: None,
-                                    ancestors: child_ancestors.clone(),
-                                });
+                                    dep_path.clone(),
+                                    task.importer.clone(),
+                                    child_ancestors.clone(),
+                                ));
                             }
                         }
                         lockfile_reuse_count += 1;
@@ -2339,17 +2362,14 @@ impl Resolver {
                     {
                         ensure_fetch!(dep_name);
                     }
-                    queue.push_back(ResolveTask {
-                        name: dep_name.clone(),
-                        range: dep_range.clone(),
-                        dep_type: DepType::Production,
-                        is_root: false,
-                        parent: Some(dep_path.clone()),
-                        importer: task.importer.clone(),
-                        original_specifier: None,
-                        real_name: None,
-                        ancestors: child_ancestors.clone(),
-                    });
+                    queue.push_back(ResolveTask::transitive(
+                        dep_name.clone(),
+                        dep_range.clone(),
+                        DepType::Production,
+                        dep_path.clone(),
+                        task.importer.clone(),
+                        child_ancestors.clone(),
+                    ));
                 }
 
                 for (dep_name, dep_range) in &version_meta.optional_dependencies {
@@ -2374,17 +2394,14 @@ impl Resolver {
                     {
                         ensure_fetch!(dep_name);
                     }
-                    queue.push_back(ResolveTask {
-                        name: dep_name.clone(),
-                        range: dep_range.clone(),
-                        dep_type: DepType::Optional,
-                        is_root: false,
-                        parent: Some(dep_path.clone()),
-                        importer: task.importer.clone(),
-                        original_specifier: None,
-                        real_name: None,
-                        ancestors: child_ancestors.clone(),
-                    });
+                    queue.push_back(ResolveTask::transitive(
+                        dep_name.clone(),
+                        dep_range.clone(),
+                        DepType::Optional,
+                        dep_path.clone(),
+                        task.importer.clone(),
+                        child_ancestors.clone(),
+                    ));
                 }
 
                 // Peer dependencies: enqueue only required peers that
@@ -2462,17 +2479,14 @@ impl Resolver {
                         {
                             ensure_fetch!(dep_name);
                         }
-                        queue.push_back(ResolveTask {
-                            name: dep_name.clone(),
-                            range: dep_range.clone(),
-                            dep_type: DepType::Production,
-                            is_root: false,
-                            parent: Some(dep_path.clone()),
-                            importer: task.importer.clone(),
-                            original_specifier: None,
-                            real_name: None,
-                            ancestors: child_ancestors.clone(),
-                        });
+                        queue.push_back(ResolveTask::transitive(
+                            dep_name.clone(),
+                            dep_range.clone(),
+                            DepType::Production,
+                            dep_path.clone(),
+                            task.importer.clone(),
+                            child_ancestors.clone(),
+                        ));
                     }
                 }
 

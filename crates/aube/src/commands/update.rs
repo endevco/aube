@@ -1,4 +1,4 @@
-use super::{install, make_client, packument_cache_dir};
+use super::install;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::{BTreeMap, BTreeSet};
@@ -215,11 +215,8 @@ pub async fn run(
     });
 
     // Re-resolve the full dependency tree
-    let client = std::sync::Arc::new(make_client(&cwd));
     let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
-    let mut resolver = aube_resolver::Resolver::new(client)
-        .with_packument_cache(packument_cache_dir())
-        .with_catalogs(workspace_catalogs);
+    let mut resolver = super::build_resolver(&cwd, workspace_catalogs);
     let graph = resolver
         .resolve(&resolver_manifest, filtered_existing.as_ref())
         .await
@@ -306,27 +303,13 @@ pub async fn run(
                 wrote_any = true;
             }
             if wrote_any {
-                let json = serde_json::to_string_pretty(&manifest)
-                    .into_diagnostic()
-                    .wrap_err("failed to serialize package.json")?;
-                std::fs::write(&manifest_path, format!("{json}\n"))
-                    .into_diagnostic()
-                    .wrap_err("failed to write package.json")?;
+                super::write_manifest_json(&manifest_path, &manifest)?;
                 eprintln!("Updated package.json");
             }
         }
     }
 
-    let written_path = aube_lockfile::write_lockfile_preserving_existing(&cwd, &graph, &manifest)
-        .into_diagnostic()
-        .wrap_err("failed to write lockfile")?;
-    eprintln!(
-        "Wrote {}",
-        written_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| written_path.display().to_string())
-    );
+    super::write_and_log_lockfile(&cwd, &graph, &manifest)?;
 
     install::run(install::InstallOptions::with_mode(
         super::chained_frozen_mode(install::FrozenMode::Prefer),
@@ -377,15 +360,7 @@ async fn run_filtered(
         Ok(())
     }
     .await;
-    let restore_result = super::retarget_cwd(&cwd)
-        .wrap_err_with(|| format!("failed to restore cwd to {}", cwd.display()));
-    match result {
-        Ok(()) => restore_result,
-        Err(err) => {
-            let _ = restore_result;
-            Err(err)
-        }
-    }
+    super::finish_filtered_workspace(&cwd, result)
 }
 
 /// Rewrite a direct-dep specifier to pin `resolved_version`, preserving:

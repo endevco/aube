@@ -710,12 +710,7 @@ pub fn write(
     // Key packages by `name@version` (ignore peer-context suffix) so
     // lookups from parent deps resolve to one canonical entry even if
     // the graph has several contextualized variants.
-    let mut canonical: BTreeMap<String, &LockedPackage> = BTreeMap::new();
-    for pkg in graph.packages.values() {
-        canonical
-            .entry(format!("{}@{}", pkg.name, pkg.version))
-            .or_insert(pkg);
-    }
+    let canonical = crate::build_canonical_map(graph);
 
     // Compute reachability for dev/optional flags. A package is
     // `dev: true` iff it's only reachable from dev roots; `optional:

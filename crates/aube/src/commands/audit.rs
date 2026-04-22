@@ -8,7 +8,6 @@
 //! Pure read: no lockfile writes, no `node_modules/` touches, no project lock.
 
 use super::DepFilter;
-use aube_lockfile::{DepType, DirectDep, LockedPackage, LockfileGraph};
 use aube_registry::Packument;
 use aube_registry::client::RegistryClient;
 use aube_registry::config::normalize_registry_url_pub;
@@ -121,22 +120,16 @@ pub enum Severity {
 pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Result<()> {
     let cwd = crate::dirs::project_root()?;
 
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    let manifest = super::load_manifest(&cwd.join("package.json"))?;
 
-    let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
-        Ok(g) => g,
-        Err(aube_lockfile::Error::NotFound(_)) => {
-            return Err(miette!(
-                "no lockfile found — run `aube install` before `aube audit`"
-            ));
-        }
-        Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
-    };
+    let graph = super::load_graph(
+        &cwd,
+        &manifest,
+        "no lockfile found — run `aube install` before `aube audit`",
+    )?;
 
     let filter = DepFilter::from_flags(args.prod, args.dev);
-    let closure = collect_closure(&graph, filter, args.no_optional);
+    let closure = super::collect_dep_closure(&graph, filter, args.no_optional);
 
     // Build the bulk request body: { name: [version, ...] } with versions
     // deduped so the registry doesn't do extra work on a diamond dep.
@@ -432,9 +425,7 @@ async fn write_fix_overrides(
         overrides.insert(name.clone(), serde_json::Value::String(version.clone()));
     }
 
-    let json = serde_json::to_string_pretty(&root).into_diagnostic()?;
-    write_manifest_atomic(&manifest_path, format!("{json}\n").as_bytes())
-        .wrap_err("failed to write package.json")?;
+    super::write_manifest_json(&manifest_path, &root)?;
     eprintln!(
         "Updated package.json overrides for {} package(s).",
         fixes.len()
@@ -443,32 +434,6 @@ async fn write_fix_overrides(
 }
 
 /// Atomic package.json write via tempfile + rename. Crash or Ctrl+C
-/// mid-write used to leave the user with a truncated manifest,
-/// worst-case aube failure mode. Matches the pattern used in
-/// add/remove/state.
-fn write_manifest_atomic(path: &std::path::Path, body: &[u8]) -> miette::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp = tempfile::Builder::new()
-        .prefix(".aube-audit-")
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .into_diagnostic()
-        .wrap_err_with(|| format!("failed to open tempfile for {}", path.display()))?;
-    {
-        use std::io::Write as _;
-        let mut f = tmp.as_file();
-        f.write_all(body)
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to write tempfile for {}", path.display()))?;
-        f.sync_all()
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to sync tempfile for {}", path.display()))?;
-    }
-    tmp.persist(path)
-        .map_err(|e| miette!("failed to persist {}: {e}", path.display()))?;
-    Ok(())
-}
-
 fn best_non_vulnerable(packument: &Packument, vulnerable_versions: &[String]) -> Option<String> {
     let vulnerable: Vec<node_semver::Range> = vulnerable_versions
         .iter()
@@ -493,34 +458,6 @@ fn best_non_vulnerable(packument: &Packument, vulnerable_versions: &[String]) ->
 }
 
 /// Reachable packages from the filtered roots, keyed by `dep_path`.
-fn collect_closure(
-    graph: &LockfileGraph,
-    filter: DepFilter,
-    no_optional: bool,
-) -> BTreeMap<String, &LockedPackage> {
-    let mut out: BTreeMap<String, &LockedPackage> = BTreeMap::new();
-    let roots: Vec<&DirectDep> = graph
-        .root_deps()
-        .iter()
-        .filter(|d| filter.keeps(d.dep_type))
-        .filter(|d| !(no_optional && matches!(d.dep_type, DepType::Optional)))
-        .collect();
-
-    let mut stack: Vec<String> = roots.iter().map(|d| d.dep_path.clone()).collect();
-    while let Some(dep_path) = stack.pop() {
-        if out.contains_key(&dep_path) {
-            continue;
-        }
-        let Some(pkg) = graph.get_package(&dep_path) else {
-            continue;
-        };
-        out.insert(dep_path.clone(), pkg);
-        for (name, version) in &pkg.dependencies {
-            stack.push(format!("{name}@{version}"));
-        }
-    }
-    out
-}
 
 #[derive(Debug)]
 struct Row {

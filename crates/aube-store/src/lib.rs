@@ -201,6 +201,59 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically create `path` via `create_new` (O_CREAT|O_EXCL) and
+    /// optionally write + fsync `content`. `AlreadyExists` is a no-op —
+    /// in a CAS, same path = same bytes by construction. `NotFound`
+    /// means a concurrent prune or a missed `ensure_shards_exist`
+    /// removed the parent shard; recreate it and retry exactly once
+    /// before surfacing. Truncating fallbacks (`xx::file::write`) are
+    /// intentionally avoided so a crash can't leave a torn CAS file.
+    fn create_cas_file(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
+        fn do_create_and_write(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut file) => {
+                    if let Some(bytes) = content {
+                        use std::io::Write;
+                        file.write_all(bytes)
+                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                        // fsync before closing. write_all returning
+                        // success only gets the bytes into the kernel
+                        // page cache, not stable storage; a power-loss
+                        // between here and the next checkpoint can
+                        // leave a hardlink pointing at zero-byte
+                        // content that downstream installs happily
+                        // reuse via the AlreadyExists fast path.
+                        file.sync_all()
+                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                    }
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                Err(e) => Err(Error::Io(path.to_path_buf(), e)),
+            }
+        }
+
+        match do_create_and_write(path, content) {
+            Ok(()) => Ok(()),
+            Err(Error::Io(_, ref ioe)) if ioe.kind() == std::io::ErrorKind::NotFound => {
+                // Shard dir missing. `ensure_shards_exist` normally
+                // pre-creates all 256 shards; this only fires when the
+                // caller didn't call it or a concurrent prune wiped
+                // the tree mid-install.
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+                }
+                do_create_and_write(path, content)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Import a single file's content into the store. Returns the stored file info.
     ///
     /// Hot path on cold installs: callers should invoke
@@ -220,70 +273,7 @@ impl Store {
         // install). On a warm CAS, concurrent writers are safe: EEXIST
         // means another writer already materialized this content (same
         // hash = same bytes), so we skip and share the entry.
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&store_path)
-        {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(content)
-                    .map_err(|e| Error::Io(store_path.clone(), e))?;
-                // fsync before closing. write_all returning success
-                // only gets the bytes into the kernel page cache, not
-                // onto stable storage. If the host crashes or power
-                // fails between write_all and the next checkpoint,
-                // a hardlink pointing at this inode can survive with
-                // zero-byte content. Next install reuses it via the
-                // AlreadyExists fast path and ships empty files into
-                // node_modules. Real failure mode reported by users
-                // of other tools, fsync kills the class at modest
-                // cost (one syscall per new CAS file, cold install
-                // only since warm runs hit AlreadyExists and skip
-                // the write). Ignore fsync errors on platforms where
-                // sync_all is unsupported but do not swallow IO
-                // errors from real failures.
-                file.sync_all()
-                    .map_err(|e| Error::Io(store_path.clone(), e))?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Another writer already populated this content — skip.
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Shard dir missing. ensure_shards_exist pre-creates
-                // all 256 shards so this only fires when the caller
-                // did not call it, or a concurrent prune wiped the
-                // shard tree mid-install. Recreate the shard dir
-                // then retry the atomic create_new path rather than
-                // falling back to xx::file::write which truncates
-                // in place and has no fsync. Non-atomic fallback
-                // left room for a torn CAS file after a second
-                // crash.
-                if let Some(parent) = store_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
-                }
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&store_path)
-                {
-                    Ok(mut file) => {
-                        use std::io::Write;
-                        file.write_all(content)
-                            .map_err(|e| Error::Io(store_path.clone(), e))?;
-                        file.sync_all()
-                            .map_err(|e| Error::Io(store_path.clone(), e))?;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        // Another writer raced us. Same-content CAS
-                        // guarantees the existing file is correct.
-                    }
-                    Err(e) => return Err(Error::Io(store_path.clone(), e)),
-                }
-            }
-            Err(e) => return Err(Error::Io(store_path.clone(), e)),
-        }
+        Self::create_cas_file(&store_path, Some(content))?;
 
         if executable {
             // Behavior note: this branch now runs unconditionally when
@@ -306,33 +296,7 @@ impl Store {
             // through the `PackageIndex` and the linker. So flipping
             // a marker-absent-to-present for a shared hash is safe.
             let exec_marker = PathBuf::from(format!("{}-exec", store_path.display()));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&exec_marker)
-            {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Same as above, recreate the shard, retry
-                    // atomic create_new. Marker is a zero-byte
-                    // sidecar, no content to sync.
-                    if let Some(parent) = exec_marker.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
-                    }
-                    match std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&exec_marker)
-                    {
-                        Ok(_) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                        Err(e) => return Err(Error::Io(exec_marker.clone(), e)),
-                    }
-                }
-                Err(e) => return Err(Error::Io(exec_marker, e)),
-            }
+            Self::create_cas_file(&exec_marker, None)?;
         }
 
         Ok(StoredFile {

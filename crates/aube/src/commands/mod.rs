@@ -423,6 +423,21 @@ pub(crate) fn make_client(cwd: &std::path::Path) -> aube_registry::client::Regis
     aube_registry::client::RegistryClient::from_config_with_policy(config, policy)
 }
 
+/// Build the standard resolver used by add/remove/update/dedupe: a
+/// shared `RegistryClient` wrapped in `Arc`, the shared packument
+/// cache directory, and the given catalog map. Every call site does
+/// these same three bindings in the same order; keep them in one
+/// place so a future addition (e.g. a fetch-policy tweak) lands
+/// everywhere at once.
+pub(crate) fn build_resolver(
+    cwd: &std::path::Path,
+    catalogs: CatalogMap,
+) -> aube_resolver::Resolver {
+    aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd)))
+        .with_packument_cache(packument_cache_dir())
+        .with_catalogs(catalogs)
+}
+
 /// Resolve [`aube_registry::config::FetchPolicy`] from the same
 /// sources the rest of the CLI consumes settings from. Kept separate
 /// from [`make_client`] so tests and ad-hoc callers (publish,
@@ -707,6 +722,141 @@ pub(crate) fn discover_catalogs(project_root: &std::path::Path) -> miette::Resul
 /// [`discover_catalogs`] so every command sees the same merged view.
 pub(crate) fn load_workspace_catalogs(cwd: &std::path::Path) -> miette::Result<CatalogMap> {
     discover_catalogs(cwd)
+}
+
+/// Read and parse `package.json` at `manifest_path` with the standard
+/// miette-wrapped error message used across commands.
+pub(crate) fn load_manifest(manifest_path: &Path) -> miette::Result<aube_manifest::PackageJson> {
+    aube_manifest::PackageJson::from_path(manifest_path)
+        .map_err(miette::Report::new)
+        .wrap_err("failed to read package.json")
+}
+
+/// Serialize `value` as pretty JSON with a trailing newline and
+/// atomically write it to `path`. Wraps the serialize + atomic-write
+/// pair used by add/remove/update/audit when mutating `package.json`.
+pub(crate) fn write_manifest_json<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+) -> miette::Result<()> {
+    let json = serde_json::to_string_pretty(value)
+        .into_diagnostic()
+        .wrap_err("failed to serialize package.json")?;
+    write_manifest_atomic(path, format!("{json}\n").as_bytes())
+        .wrap_err("failed to write package.json")
+}
+
+/// Atomic write for `package.json` (and any sibling JSON we care
+/// about): write to a tempfile in the same directory then rename.
+/// The old `fs::write` truncates in place and a crash mid-write left
+/// users with an empty manifest — the worst aube failure mode.
+pub(crate) fn write_manifest_atomic(path: &Path, body: &[u8]) -> miette::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = tempfile::Builder::new()
+        .prefix(".aube-mf-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to open tempfile for {}", path.display()))?;
+    {
+        use std::io::Write as _;
+        let mut f = tmp.as_file();
+        f.write_all(body)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to write tempfile for {}", path.display()))?;
+        f.sync_all()
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to sync tempfile for {}", path.display()))?;
+    }
+    tmp.persist(path)
+        .map_err(|e| miette!("failed to persist {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Parse the project lockfile, mapping `NotFound` to a user-facing hint
+/// that includes `context` (e.g. `"aube audit"`).
+pub(crate) fn load_graph(
+    project_dir: &Path,
+    manifest: &aube_manifest::PackageJson,
+    missing_hint: &str,
+) -> miette::Result<aube_lockfile::LockfileGraph> {
+    match aube_lockfile::parse_lockfile(project_dir, manifest) {
+        Ok(g) => Ok(g),
+        Err(aube_lockfile::Error::NotFound(_)) => Err(miette!("{missing_hint}")),
+        Err(e) => Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
+    }
+}
+
+/// Collect the transitive dep-path closure reachable from the filtered
+/// root deps, keyed by dep_path for stable iteration. Used by audit,
+/// sbom, and anything else that needs "which packages would apply if
+/// the user ran install in this mode".
+pub(crate) fn collect_dep_closure(
+    graph: &aube_lockfile::LockfileGraph,
+    filter: DepFilter,
+    no_optional: bool,
+) -> std::collections::BTreeMap<String, &aube_lockfile::LockedPackage> {
+    let mut out: std::collections::BTreeMap<String, &aube_lockfile::LockedPackage> =
+        std::collections::BTreeMap::new();
+    let mut stack: Vec<String> = graph
+        .root_deps()
+        .iter()
+        .filter(|d| filter.keeps(d.dep_type))
+        .filter(|d| !(no_optional && matches!(d.dep_type, aube_lockfile::DepType::Optional)))
+        .map(|d| d.dep_path.clone())
+        .collect();
+    while let Some(dep_path) = stack.pop() {
+        if out.contains_key(&dep_path) {
+            continue;
+        }
+        let Some(pkg) = graph.get_package(&dep_path) else {
+            continue;
+        };
+        out.insert(dep_path.clone(), pkg);
+        for (name, version) in &pkg.dependencies {
+            stack.push(format!("{name}@{version}"));
+        }
+    }
+    out
+}
+
+/// Restore `cwd` after a filtered-workspace loop and fold any restore
+/// error into the original `result`. Filter loops mutate the process
+/// cwd so they can run per-package commands as if the user were in
+/// that directory; this puts things back exactly once, even when the
+/// loop itself failed.
+pub(crate) fn finish_filtered_workspace(
+    cwd: &Path,
+    result: miette::Result<()>,
+) -> miette::Result<()> {
+    let restore =
+        retarget_cwd(cwd).wrap_err_with(|| format!("failed to restore cwd to {}", cwd.display()));
+    match result {
+        Ok(()) => restore,
+        Err(err) => {
+            let _ = restore;
+            Err(err)
+        }
+    }
+}
+
+/// Write lockfile preserving existing format and log the file name.
+pub(crate) fn write_and_log_lockfile(
+    cwd: &Path,
+    graph: &aube_lockfile::LockfileGraph,
+    manifest: &aube_manifest::PackageJson,
+) -> miette::Result<std::path::PathBuf> {
+    let written_path = aube_lockfile::write_lockfile_preserving_existing(cwd, graph, manifest)
+        .into_diagnostic()
+        .wrap_err("failed to write lockfile")?;
+    eprintln!(
+        "Wrote {}",
+        written_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| written_path.display().to_string())
+    );
+    Ok(written_path)
 }
 
 /// Walk up from `start` looking for a directory that marks a workspace

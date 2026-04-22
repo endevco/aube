@@ -783,6 +783,64 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     Ok(ran)
 }
 
+/// Verify + import + validate + save-index for a freshly fetched
+/// tarball. Shared between the lockfile-driven fetch path and the
+/// no-lockfile streaming fetch path so both honor the same integrity
+/// and content-check settings. Runs inside `spawn_blocking` — no
+/// async in this function.
+#[allow(clippy::too_many_arguments)]
+fn import_verified_tarball(
+    store: &aube_store::Store,
+    bytes: &[u8],
+    display_name: &str,
+    registry_name: &str,
+    version: &str,
+    integrity: Option<&str>,
+    verify_integrity: bool,
+    strict_integrity: bool,
+    strict_pkg_content_check: bool,
+) -> miette::Result<aube_store::PackageIndex> {
+    if verify_integrity {
+        if let Some(expected) = integrity {
+            aube_store::verify_integrity(bytes, expected)
+                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+        } else if strict_integrity {
+            // strict-store-integrity=true opts the user into
+            // fail-closed. Default is off so ecosystem parity with
+            // pnpm stays intact. A registry proxy that strips
+            // dist.integrity will no longer slip past silently when
+            // strict is on.
+            return Err(miette!(
+                "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes."
+            ));
+        } else {
+            tracing::warn!(
+                "{display_name}@{version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
+            );
+        }
+    }
+    let index = store
+        .import_tarball(bytes)
+        .map_err(|e| miette!("failed to import {display_name}@{version}: {e}"))?;
+    // strictStorePkgContentCheck: cross-check the freshly stored
+    // package.json against the resolver-asserted (name, version)
+    // before the index is cached or returned to the linker. Validate
+    // against `registry_name` — the real package name that appears
+    // in the tarball's own `package.json` — not the alias, or this
+    // would fail every npm-aliased entry.
+    if strict_pkg_content_check {
+        aube_store::validate_pkg_content(&index, registry_name, version)
+            .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+    }
+    // Cache under `registry_name` so two aliases of the same real
+    // package hit the same on-disk index file and avoid redundant
+    // fetches.
+    if let Err(e) = store.save_index(registry_name, version, &index) {
+        tracing::warn!("Failed to cache index for {display_name}@{version}: {e}");
+    }
+    Ok(index)
+}
+
 fn validate_required_scripts(
     project_dir: &std::path::Path,
     manifest: &aube_manifest::PackageJson,
@@ -882,7 +940,7 @@ fn unreviewed_dep_builds(
             .map_err(miette::Report::new)
             .wrap_err_with(|| format!("failed to parse package.json for {}", pkg.name))?;
         if aube_scripts::has_dep_lifecycle_work(&package_dir, &dep_manifest) {
-            unreviewed.push(format!("{}@{}", pkg.name, pkg.version));
+            unreviewed.push(pkg.spec_key());
         }
     }
     unreviewed.sort();
@@ -1547,59 +1605,19 @@ where
                     let registry_name = registry_name.clone();
                     let version = version.clone();
                     move || -> miette::Result<_> {
-                        if verify_integrity {
-                            if let Some(ref expected) = integrity {
-                                aube_store::verify_integrity(&bytes, expected)
-                                    .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
-                            } else if strict_integrity {
-                                // strict-store-integrity=true opts the
-                                // user into fail-closed. Default is off
-                                // so ecosystem parity with pnpm stays
-                                // intact. A registry proxy that strips
-                                // dist.integrity will no longer slip
-                                // past silently when strict is on.
-                                return Err(miette!(
-                                    "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes."
-                                ));
-                            } else {
-                                tracing::warn!(
-                                    "{display_name}@{version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
-                                );
-                            }
-                        }
                         let import_start = std::time::Instant::now();
-                        let index = store.import_tarball(&bytes).map_err(|e| {
-                            miette!("failed to import {display_name}@{version}: {e}")
-                        })?;
-                        let import_time = import_start.elapsed();
-                        // strictStorePkgContentCheck: cross-check the
-                        // freshly stored package.json against the
-                        // resolver-asserted (name, version) before the
-                        // index is cached or returned to the linker.
-                        // Skip the check entirely when disabled — the
-                        // call would still be cheap (a single store
-                        // read + JSON parse) but pnpm parity is to
-                        // produce no error path at all when the user
-                        // opted out.
-                        //
-                        // Validate against `registry_name` — the real
-                        // package name that appears in the tarball's
-                        // own `package.json` — not the alias, or this
-                        // would fail every npm-aliased entry.
-                        if strict_pkg_content_check {
-                            aube_store::validate_pkg_content(&index, &registry_name, &version)
-                                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
-                        }
-                        // Cache under `registry_name` so two aliases
-                        // of the same real package hit the same
-                        // on-disk index file and avoid redundant
-                        // fetches.
-                        if let Err(e) = store.save_index(&registry_name, &version, &index) {
-                            tracing::warn!(
-                                "Failed to cache index for {display_name}@{version}: {e}"
-                            );
-                        }
-                        Ok((index, import_time))
+                        let index = import_verified_tarball(
+                            &store,
+                            &bytes,
+                            &display_name,
+                            &registry_name,
+                            &version,
+                            integrity.as_deref(),
+                            verify_integrity,
+                            strict_integrity,
+                            strict_pkg_content_check,
+                        )?;
+                        Ok((index, import_start.elapsed()))
                     }
                 })
                 .await
@@ -1648,7 +1666,7 @@ fn remap_indices_to_contextualized(
 ) -> BTreeMap<String, aube_store::PackageIndex> {
     let mut out = BTreeMap::new();
     for (dep_path, pkg) in &graph.packages {
-        let canonical_key = format!("{}@{}", pkg.name, pkg.version);
+        let canonical_key = pkg.spec_key();
         if let Some(idx) = canonical_indices
             .get(dep_path)
             .or_else(|| canonical_indices.get(&canonical_key))
@@ -2889,10 +2907,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     handles.spawn(async move {
                         let _row = row;
                         let permit = sem.acquire().await.unwrap();
-                        let url = pkg
-                            .tarball_url
-                            .clone()
-                            .unwrap_or_else(|| client.tarball_url(&pkg_registry_name, &pkg.version));
+                        let url = pkg.tarball_url.clone().unwrap_or_else(|| {
+                            client.tarball_url(&pkg_registry_name, &pkg.version)
+                        });
                         tracing::trace!("Fetching {}@{}", pkg.name, pkg.version);
 
                         let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
@@ -2922,52 +2939,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let pkg_version = pkg.version.clone();
                         let dep_path = pkg.dep_path.clone();
                         let integrity = pkg.integrity.clone();
-                        let index = tokio::task::spawn_blocking(move || -> miette::Result<_> {
-                            if fetch_verify_integrity {
-                                if let Some(ref expected) = integrity {
-                                    aube_store::verify_integrity(&bytes, expected).map_err(
-                                        |e| miette!("{pkg_display_name}@{pkg_version}: {e}"),
-                                    )?;
-                                } else if fetch_strict_integrity {
-                                    return Err(miette!(
-                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes."
-                                    ));
-                                } else {
-                                    tracing::warn!(
-                                        "{pkg_display_name}@{pkg_version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
-                                    );
-                                }
-                            }
-                            let index = store.import_tarball(&bytes).map_err(|e| {
-                                miette!("failed to import {pkg_display_name}@{pkg_version}: {e}")
-                            })?;
-                            // strictStorePkgContentCheck: see the
-                            // matching block in `fetch_packages_with_root`
-                            // for the rationale. Both fetch paths must
-                            // honor the same setting or the no-lockfile
-                            // path would silently let through manifest
-                            // mismatches that the lockfile path catches.
-                            // Validates against the *registry* name —
-                            // the tarball's package.json records the
-                            // real name, not the alias, so comparing
-                            // against `pkg_display_name` would fail
-                            // every aliased install.
-                            if fetch_strict_pkg_content_check {
-                                aube_store::validate_pkg_content(
-                                    &index,
-                                    &pkg_registry_name,
-                                    &pkg_version,
-                                )
-                                .map_err(|e| miette!("{pkg_display_name}@{pkg_version}: {e}"))?;
-                            }
-                            if let Err(e) =
-                                store.save_index(&pkg_registry_name, &pkg_version, &index)
-                            {
-                                tracing::warn!(
-                                    "Failed to cache index for {pkg_display_name}@{pkg_version}: {e}"
-                                );
-                            }
-                            Ok(index)
+                        let index = tokio::task::spawn_blocking(move || {
+                            import_verified_tarball(
+                                &store,
+                                &bytes,
+                                &pkg_display_name,
+                                &pkg_registry_name,
+                                &pkg_version,
+                                integrity.as_deref(),
+                                fetch_verify_integrity,
+                                fetch_strict_integrity,
+                                fetch_strict_pkg_content_check,
+                            )
                         })
                         .await
                         .into_diagnostic()??;
@@ -3154,7 +3137,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     if pkg.local_source.is_some() {
                         continue;
                     }
-                    let canonical = format!("{}@{}", pkg.name, pkg.version);
+                    let canonical = pkg.spec_key();
                     canonical_to_contextualized
                         .entry(canonical)
                         .or_default()
