@@ -155,6 +155,40 @@ _setup_filter_workspace() {
 	refute_output --partial "lib-a-ran"
 }
 
+@test "aube install --filter keeps root devDependencies" {
+	cat >pnpm-workspace.yaml <<-EOF
+		packages:
+		  - packages/*
+	EOF
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "1.0.0",
+		  "private": true,
+		  "devDependencies": {
+		    "is-odd": "^3.0.1"
+		  }
+		}
+	EOF
+	mkdir -p packages/app
+	cat >packages/app/package.json <<-'EOF'
+		{
+		  "name": "@scope/app",
+		  "version": "1.0.0",
+		  "dependencies": {
+		    "is-even": "^1.0.0"
+		  }
+		}
+	EOF
+
+	run aube install --filter '@scope/app...'
+	assert_success
+	assert_link_exists node_modules/is-odd
+	run node -e 'console.log(require.resolve("is-odd"))'
+	assert_success
+	assert_output --partial "node_modules/is-odd"
+}
+
 @test "aube -F run: unmatched selector errors" {
 	_setup_filter_workspace
 	run aube -F no-such-pkg run hello

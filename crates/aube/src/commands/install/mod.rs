@@ -4028,6 +4028,9 @@ fn filter_graph_to_workspace_selection(
         ));
     }
     let mut keep_importers = std::collections::BTreeSet::new();
+    if graph.importers.contains_key(".") {
+        keep_importers.insert(".".to_string());
+    }
     for pkg in selected {
         keep_importers.insert(super::workspace_importer_path(workspace_root, &pkg.dir)?);
     }
