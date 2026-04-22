@@ -2908,7 +2908,8 @@ fn should_block_exotic_subdep(
         && task
             .parent
             .as_ref()
-            .and_then(|parent| resolved.get(parent)).is_none_or(|pkg| pkg.local_source.is_none())
+            .and_then(|parent| resolved.get(parent))
+            .is_none_or(|pkg| pkg.local_source.is_none())
 }
 
 /// Turn a raw `GitSource` (committish parsed from the user's
