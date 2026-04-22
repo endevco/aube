@@ -308,6 +308,7 @@ version = "1.0.0-beta.11"
 dependencies = [
  "aube-manifest",
  "aube-settings",
+ "aube-store",
  "base64",
  "bytes",
  "flate2",
