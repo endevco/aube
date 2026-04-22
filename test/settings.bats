@@ -62,7 +62,9 @@ _make_env_probe_project() {
 	echo 'loglevel=debug' >>"$HOME/.npmrc"
 	run --separate-stderr aube install
 	assert_success
-	[[ "$stderr" == *"DEBUG"* ]]
+	# Match tracing's DEBUG level (preceded by space or ANSI escape), not
+	# the `-DEBUG` suffix appended to the version string on debug builds.
+	[[ "$stderr" =~ [^-]DEBUG ]]
 }
 
 @test "--loglevel warn CLI flag overrides loglevel=debug in .npmrc" {
@@ -70,7 +72,7 @@ _make_env_probe_project() {
 	echo 'loglevel=debug' >>"$HOME/.npmrc"
 	run --separate-stderr aube --loglevel warn install
 	assert_success
-	[[ "$stderr" != *"DEBUG"* ]]
+	[[ ! "$stderr" =~ [^-]DEBUG ]]
 }
 
 # --- useStderr ---

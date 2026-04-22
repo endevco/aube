@@ -75,7 +75,9 @@ teardown() {
 	_setup_basic_fixture
 	run --separate-stderr aube --loglevel debug install
 	assert_success
-	[[ "$stderr" == *"DEBUG"* ]]
+	# Match tracing's DEBUG level (preceded by space or ANSI escape), not
+	# the `-DEBUG` suffix appended to the version string on debug builds.
+	[[ "$stderr" =~ [^-]DEBUG ]]
 }
 
 @test "aube --loglevel rejects invalid level" {

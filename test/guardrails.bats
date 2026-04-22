@@ -84,7 +84,8 @@ _setup_workspace_fixture() {
 
 	run --separate-stderr aube install
 	assert_success
-	[[ "$stderr" == *"DEBUG"* ]]
+	# Match tracing's DEBUG level, not the `-DEBUG` version suffix.
+	[[ "$stderr" =~ [^-]DEBUG ]]
 }
 
 @test "packageManagerStrict warns for run commands on unsupported package managers" {
