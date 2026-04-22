@@ -1709,11 +1709,22 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         project_dir.clone()
     } else {
         let initial_cwd = crate::dirs::cwd()?;
-        // Walk upward to the nearest `package.json` so `aube install` run
-        // from a subdirectory (e.g. `repo/docs`) installs against the
-        // project root instead of erroring with "package.json not found".
-        // Matches pnpm's behavior.
-        match crate::dirs::find_project_root(&initial_cwd) {
+        // Prefer the workspace root so `aube install` from inside a
+        // workspace member installs against the workspace, not the
+        // member as a standalone project — otherwise the member gets
+        // its own `aube-lock.yaml`, its own `.aube/` virtual store,
+        // and re-downloads anything not already in the global cache.
+        // The workspace root must have its own `package.json` —
+        // `find_workspace_root` returns yaml-only roots too, but
+        // `install::run` reads the root manifest unconditionally and
+        // would error on a yaml-only workspace. Fall through to the
+        // nearest `package.json` (the member itself, or the cwd for
+        // non-workspace subdirectory installs like `repo/docs`).
+        // Mirrors the anchor logic in `ensure_installed`.
+        match crate::dirs::find_workspace_root(&initial_cwd)
+            .filter(|root| root.join("package.json").is_file())
+            .or_else(|| crate::dirs::find_project_root(&initial_cwd))
+        {
             Some(root) => root,
             None => {
                 return Err(miette!(

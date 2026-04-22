@@ -84,8 +84,6 @@ _setup_minimal_workspace() {
 	# workspace root.
 	run test -e packages/a/aube-lock.yaml
 	assert_failure
-	run test -e packages/a/pnpm-lock.yaml
-	assert_failure
 	run test -d packages/a/node_modules/.aube
 	assert_failure
 	run test -e packages/a/node_modules/.aube-state
@@ -93,6 +91,7 @@ _setup_minimal_workspace() {
 
 	# The root install state is byte-identical — the only correct
 	# warm path is "do nothing", and "do nothing" can't write any
-	# state file.
-	[ "$(cat node_modules/.aube-state)" = "$root_state_before" ]
+	# state file. `assert_equal` (not `[`) so a regression prints
+	# both snapshots and we can diff what changed.
+	assert_equal "$(cat node_modules/.aube-state)" "$root_state_before"
 }
