@@ -686,6 +686,13 @@ impl Resolver {
                     // cycle detection needed beyond depth-one since
                     // we refuse the chain outright.
                     if real_range.starts_with("catalog:") {
+                        // Preserve the chain explanation in the catalog
+                        // field so the top-level `#[error]` template still
+                        // tells the user *why* the entry "doesn't resolve",
+                        // and set `chained_value` so the help formatter
+                        // skips the suggestion path (which would otherwise
+                        // match the user's own input back at them since
+                        // the entry exists, its value is just invalid).
                         return Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
                             name: task_name.to_string(),
                             spec: spec.to_string(),
@@ -693,7 +700,8 @@ impl Resolver {
                                 "{catalog_name} (value {real_range} is itself a catalog: \
                                  reference, catalogs cannot chain)"
                             ),
-                            available: catalog.keys().cloned().collect(),
+                            available: Vec::new(),
+                            chained_value: Some(real_range.clone()),
                         })));
                     }
                     Ok(Some((catalog_name, real_range.clone())))
@@ -703,6 +711,7 @@ impl Resolver {
                     spec: spec.to_string(),
                     catalog: catalog_name,
                     available: catalog.keys().cloned().collect(),
+                    chained_value: None,
                 }))),
             },
             None => Err(Error::UnknownCatalog(Box::new(CatalogDetails {
@@ -710,6 +719,7 @@ impl Resolver {
                 spec: spec.to_string(),
                 catalog: catalog_name,
                 available: self.catalogs.keys().cloned().collect(),
+                chained_value: None,
             }))),
         }
     }
@@ -3354,8 +3364,15 @@ pub struct CatalogDetails {
     pub catalog: String,
     /// For `UnknownCatalog`: the catalog names that *are* defined.
     /// For `UnknownCatalogEntry`: the package names defined under
-    /// `catalog`. Empty when the catalog map itself is empty.
+    /// `catalog`. Empty when the catalog map itself is empty, or
+    /// when the error is a chained-catalog case (see `chained_value`).
     pub available: Vec<String>,
+    /// Set only for the chained-catalog case: the entry exists, but
+    /// its value is itself another `catalog:` reference. Carries the
+    /// offending value (e.g. `catalog:other`) so the help text can
+    /// explain the chain rule rather than pretending the entry is
+    /// missing.
+    pub chained_value: Option<String>,
 }
 
 #[derive(Debug)]
@@ -3550,6 +3567,12 @@ fn format_unknown_catalog_help(d: &CatalogDetails) -> String {
 }
 
 fn format_unknown_catalog_entry_help(d: &CatalogDetails) -> String {
+    if let Some(chained) = &d.chained_value {
+        return format!(
+            "catalogs cannot chain — replace `{}` with a concrete semver range (e.g. `^1.0.0`) under the catalog entry",
+            chained
+        );
+    }
     let mut s = String::new();
     if d.available.is_empty() {
         s.push_str(&format!(
@@ -3654,24 +3677,24 @@ enum RegistryErrorKind {
 /// message without plumbing a new enum through every call site.
 fn classify_registry_error(msg: &str) -> RegistryErrorKind {
     let lower = msg.to_ascii_lowercase();
-    // Git checks must run before the generic http check: git error
-    // strings are formatted as `git resolve {range}: ...` and `range`
-    // is commonly an `https://` / `git+https://` URL, so the substring
-    // `http` would otherwise steal them into the Fetch bucket.
+    // Specific-prefix branches (git, hook, local-spec) must run before
+    // the generic `http` / `tarball` substring checks: each of those
+    // error payloads can itself embed an https:// URL or a tarball
+    // path, so a bare substring match on later arms would steal them.
     if lower.starts_with("git resolve ")
         || lower.starts_with("git dep ")
         || lower.starts_with("git task ")
         || lower.contains("git+")
     {
         RegistryErrorKind::Git
+    } else if lower.starts_with("readpackage ") || lower.contains("readpackage hook") {
+        RegistryErrorKind::Hook
+    } else if lower.starts_with("unparseable local specifier") || lower.contains("workspace:") {
+        RegistryErrorKind::LocalSpec
     } else if lower.contains("tarball") || lower.contains("integrity") {
         RegistryErrorKind::Tarball
     } else if lower.starts_with("fetch ") || lower.contains("packument") || lower.contains("http") {
         RegistryErrorKind::Fetch
-    } else if lower.contains("local specifier") || lower.contains("workspace:") {
-        RegistryErrorKind::LocalSpec
-    } else if lower.contains("readpackage") {
-        RegistryErrorKind::Hook
     } else if lower.contains("deferred") || lower.contains("invariant") {
         RegistryErrorKind::ResolverBug
     } else {
@@ -3792,6 +3815,44 @@ mod tests {
     }
 
     #[test]
+    fn classify_registry_error_prefers_hook_over_http_url() {
+        // `readPackage hook:` messages can embed an HTTPS URL from the
+        // hook's own error payload — must land in Hook, not Fetch.
+        assert!(matches!(
+            classify_registry_error(
+                "readPackage hook: Error: failed to fetch https://internal.example/thing"
+            ),
+            RegistryErrorKind::Hook
+        ));
+        assert!(matches!(
+            classify_registry_error("readPackage hook: TypeError: Cannot read property"),
+            RegistryErrorKind::Hook
+        ));
+    }
+
+    #[test]
+    fn unknown_catalog_entry_help_explains_chained_value() {
+        // Chained-catalog case: the help path suggests a concrete semver
+        // range instead of listing siblings (which would match the user's
+        // own input and produce a bogus "did you mean `react`?").
+        let err = Error::UnknownCatalogEntry(Box::new(CatalogDetails {
+            name: "react".into(),
+            spec: "catalog:".into(),
+            catalog: "default (value catalog:other is itself a catalog: reference, catalogs \
+                     cannot chain)"
+                .into(),
+            available: Vec::new(),
+            chained_value: Some("catalog:other".into()),
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(!help.contains("did you mean"));
+        assert!(!help.contains("is empty"));
+        assert!(help.contains("catalogs cannot chain"));
+        assert!(help.contains("catalog:other"));
+        assert!(help.contains("concrete semver range"));
+    }
+
+    #[test]
     fn classify_registry_error_prefers_git_over_http_url() {
         // `git resolve {range}: ...` with an https:// or git+https:// range
         // must land in Git, not Fetch — the substring `http` inside the URL
@@ -3855,6 +3916,7 @@ mod tests {
             spec: "catalog:missing".into(),
             catalog: "missing".into(),
             available: vec!["default".into(), "evens".into()],
+            chained_value: None,
         }));
         let help = err.help().expect("help set").to_string();
         assert!(help.contains("defined catalogs: default, evens"));
@@ -3867,6 +3929,7 @@ mod tests {
             spec: "catalog:".into(),
             catalog: "default".into(),
             available: vec![],
+            chained_value: None,
         }));
         let help = err.help().expect("help set").to_string();
         assert!(help.contains("no catalogs are defined"));
@@ -3879,6 +3942,7 @@ mod tests {
             spec: "catalog:".into(),
             catalog: "default".into(),
             available: vec!["react".into(), "react-dom".into()],
+            chained_value: None,
         }));
         let help = err.help().expect("help set").to_string();
         assert!(help.contains("defines: react, react-dom"));
