@@ -3317,10 +3317,21 @@ pub struct NoMatchDetails {
     pub importer: String,
     pub ancestors: Vec<(String, String)>,
     pub original_spec: Option<String>,
-    /// Up to 5 most-recent version strings from the packument, for
-    /// "nearby versions" diagnostic output. Empty if the packument had
-    /// no versions (usually means the wrong registry was queried).
+    /// Up to 5 most-recent version strings from the packument. Stable
+    /// versions are preferred; when the packument contains only
+    /// prereleases we fall back to showing those so the diagnostic
+    /// doesn't misreport the packument as empty.
     pub available: Vec<String>,
+    /// Total number of versions in the packument, including prereleases
+    /// and unparseable keys. Used by the help text to distinguish a
+    /// genuinely empty packument (wrong registry, missing package) from
+    /// one that only publishes prereleases.
+    pub total_versions: usize,
+    /// True when every shown entry in `available` is a prerelease — the
+    /// user asked for a stable range but the registry only has alpha /
+    /// beta / rc builds. Help text steers them toward `name@next` or a
+    /// prerelease range.
+    pub only_prereleases: bool,
 }
 
 #[derive(Debug)]
@@ -3375,14 +3386,26 @@ impl miette::Diagnostic for Error {
 /// alias), and a sample of the highest non-prerelease versions so the
 /// diagnostic can tell the user how close they were.
 fn build_no_match(task: &ResolveTask, packument: &Packument) -> NoMatchDetails {
-    let mut parsed: Vec<(node_semver::Version, &str)> = packument
-        .versions
-        .keys()
-        .filter_map(|v| node_semver::Version::parse(v).ok().map(|p| (p, v.as_str())))
-        .filter(|(v, _)| v.pre_release.is_empty())
-        .collect();
-    parsed.sort_by(|a, b| b.0.cmp(&a.0));
-    let available = parsed
+    let mut stable: Vec<(node_semver::Version, &str)> = Vec::new();
+    let mut prerelease: Vec<(node_semver::Version, &str)> = Vec::new();
+    for v in packument.versions.keys() {
+        let Ok(parsed) = node_semver::Version::parse(v) else {
+            continue;
+        };
+        if parsed.pre_release.is_empty() {
+            stable.push((parsed, v.as_str()));
+        } else {
+            prerelease.push((parsed, v.as_str()));
+        }
+    }
+    stable.sort_by(|a, b| b.0.cmp(&a.0));
+    prerelease.sort_by(|a, b| b.0.cmp(&a.0));
+    let (pool, only_prereleases) = if stable.is_empty() {
+        (prerelease, true)
+    } else {
+        (stable, false)
+    };
+    let available = pool
         .into_iter()
         .take(5)
         .map(|(_, s)| s.to_string())
@@ -3394,6 +3417,8 @@ fn build_no_match(task: &ResolveTask, packument: &Packument) -> NoMatchDetails {
         ancestors: task.ancestors.clone(),
         original_spec: task.original_specifier.clone(),
         available,
+        total_versions: packument.versions.len(),
+        only_prereleases,
     }
 }
 
@@ -3440,9 +3465,21 @@ fn format_no_match_help(d: &NoMatchDetails) -> String {
         ));
     }
     if d.available.is_empty() {
-        s.push_str(
-            "packument has no versions — check that the package exists on the configured registry",
-        );
+        if d.total_versions == 0 {
+            s.push_str("packument has no versions — check that the package exists on the configured registry");
+        } else {
+            s.push_str(&format!(
+                "packument has {} unparseable version(s) — check registry for non-semver tags",
+                d.total_versions
+            ));
+        }
+    } else if d.only_prereleases {
+        s.push_str(&format!(
+            "no stable versions published; only prereleases available: {}\nhint: request a prerelease explicitly (e.g. `{}@{}`) or via the `next` dist-tag",
+            d.available.join(", "),
+            d.name,
+            d.available.first().map(String::as_str).unwrap_or("next"),
+        ));
     } else {
         s.push_str(&format!("available versions: {}", d.available.join(", ")));
     }
@@ -3616,17 +3653,18 @@ enum RegistryErrorKind {
 /// lightweight match on those prefixes lets us pick a targeted help
 /// message without plumbing a new enum through every call site.
 fn classify_registry_error(msg: &str) -> RegistryErrorKind {
-    if msg.contains("tarball") || msg.contains("integrity") {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("tarball") || lower.contains("integrity") {
         RegistryErrorKind::Tarball
-    } else if msg.starts_with("fetch ") || msg.contains("packument") || msg.contains("HTTP") {
+    } else if lower.starts_with("fetch ") || lower.contains("packument") || lower.contains("http") {
         RegistryErrorKind::Fetch
-    } else if msg.contains("git") {
+    } else if lower.contains("git") {
         RegistryErrorKind::Git
-    } else if msg.contains("local specifier") || msg.contains("workspace:") {
+    } else if lower.contains("local specifier") || lower.contains("workspace:") {
         RegistryErrorKind::LocalSpec
-    } else if msg.contains("readPackage") {
+    } else if lower.contains("readpackage") {
         RegistryErrorKind::Hook
-    } else if msg.contains("deferred") || msg.contains("invariant") {
+    } else if lower.contains("deferred") || lower.contains("invariant") {
         RegistryErrorKind::ResolverBug
     } else {
         RegistryErrorKind::Generic
@@ -3648,6 +3686,8 @@ mod tests {
             ancestors: vec![("parent-pkg".into(), "1.2.3".into())],
             original_spec: Some("catalog:evens".into()),
             available: vec!["1.0.1".into(), "1.0.0".into(), "0.1.0".into()],
+            total_versions: 3,
+            only_prereleases: false,
         }));
         let help = err.help().expect("help set").to_string();
         assert!(help.contains("importer: packages/app"));
@@ -3665,10 +3705,82 @@ mod tests {
             ancestors: vec![],
             original_spec: None,
             available: vec![],
+            total_versions: 0,
+            only_prereleases: false,
         }));
         let help = err.help().expect("help set").to_string();
         assert!(help.contains("packument has no versions"));
         assert!(!help.contains("importer:"));
+    }
+
+    #[test]
+    fn no_match_help_flags_prerelease_only_packument() {
+        let err = Error::NoMatch(Box::new(NoMatchDetails {
+            name: "bleeding".into(),
+            range: "^1".into(),
+            importer: ".".into(),
+            ancestors: vec![],
+            original_spec: None,
+            available: vec!["2.0.0-rc.3".into(), "2.0.0-rc.2".into()],
+            total_versions: 2,
+            only_prereleases: true,
+        }));
+        let help = err.help().expect("help set").to_string();
+        assert!(help.contains("no stable versions published"));
+        assert!(help.contains("2.0.0-rc.3"));
+        assert!(help.contains("bleeding@2.0.0-rc.3"));
+        assert!(help.contains("`next` dist-tag"));
+    }
+
+    #[test]
+    fn build_no_match_falls_back_to_prereleases() {
+        let packument = make_packument(
+            "alpha",
+            &["1.0.0-alpha.1", "1.0.0-alpha.2"],
+            "1.0.0-alpha.2",
+        );
+        let task = ResolveTask {
+            name: "alpha".into(),
+            range: "^2".into(),
+            dep_type: DepType::Production,
+            is_root: true,
+            parent: None,
+            importer: ".".into(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+        let d = build_no_match(&task, &packument);
+        assert!(d.only_prereleases);
+        assert_eq!(d.total_versions, 2);
+        assert_eq!(
+            d.available,
+            vec!["1.0.0-alpha.2".to_string(), "1.0.0-alpha.1".to_string()]
+        );
+    }
+
+    #[test]
+    fn classify_registry_error_is_case_insensitive() {
+        assert!(matches!(
+            classify_registry_error("fetch https://reg.example: HTTP 403"),
+            RegistryErrorKind::Fetch
+        ));
+        assert!(matches!(
+            classify_registry_error("fetch https://reg.example: http 403"),
+            RegistryErrorKind::Fetch
+        ));
+        assert!(matches!(
+            classify_registry_error("tarball https://x/y.tgz: Integrity mismatch"),
+            RegistryErrorKind::Tarball
+        ));
+        assert!(matches!(
+            classify_registry_error("readPackage hook: TypeError"),
+            RegistryErrorKind::Hook
+        ));
+        assert!(matches!(
+            classify_registry_error("READPACKAGE hook: error"),
+            RegistryErrorKind::Hook
+        ));
     }
 
     #[test]
