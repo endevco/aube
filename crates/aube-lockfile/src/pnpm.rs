@@ -263,11 +263,33 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // `lockfileIncludeTarballUrl=true` was active at write time.
         // Preserve it on read so the round-trip writes the same URL
         // back without having to reconsult the registry client.
+        //
+        // pnpm also writes a `tarball:` entry for non-registry transitive
+        // deps whose key is a URL (remote tarball from a github override,
+        // pkg.pr.new, etc.) — capture those on the same field so the
+        // install path can fetch them verbatim instead of deriving a
+        // registry URL that would 404.
         let tarball_url = pkg_info
             .and_then(|p| p.resolution.as_ref())
             .and_then(|r| r.tarball.as_ref())
             .filter(|t| t.starts_with("http://") || t.starts_with("https://"))
             .cloned();
+
+        // pnpm writes `version: <semver>` alongside non-registry entries
+        // whose dep-path key is a URL. Prefer that over the URL itself
+        // when the dep-path version isn't a real semver — the install
+        // path uses `pkg.version` for the store-content cross-check, and
+        // comparing a URL to the tarball's declared `2.4.1` would fail
+        // every github override'd package.
+        let version_is_url = version.starts_with("http://")
+            || version.starts_with("https://")
+            || version.starts_with("git+")
+            || version.starts_with("git://");
+        let version = if version_is_url {
+            pkg_info.and_then(|p| p.version.clone()).unwrap_or(version)
+        } else {
+            version
+        };
 
         let dependencies = raw
             .snapshots
@@ -551,6 +573,19 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         let canonical = match pkg.local_source.as_ref() {
             Some(LocalSource::Link(_)) => continue,
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
+            // Non-registry transitive entries (github overrides, remote
+            // tarballs fetched by URL) keep the URL in their dep-path
+            // key and carry the real semver on `pkg.version`. Round-trip
+            // with the URL key so the written lockfile stays byte-
+            // compatible with pnpm and other tools that match packages
+            // by dep-path.
+            None if pkg
+                .tarball_url
+                .as_ref()
+                .is_some_and(|url| pkg.dep_path == format!("{}@{url}", pkg.name)) =>
+            {
+                pkg.dep_path.clone()
+            }
             None => version_to_dep_path(&pkg.name, &pkg.version),
         };
         let peer_deps = if pkg.peer_dependencies.is_empty() {
@@ -642,10 +677,23 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 type_: None,
             }),
         };
+        // Mirror pnpm: emit `version:` alongside the resolution block
+        // for non-registry transitive entries where the canonical key
+        // is a URL rather than `name@version`. Without this, reading a
+        // pnpm lockfile with a github-override'd dep and re-writing it
+        // would drop pnpm's `version:` field and leave tooling that
+        // matches packages by (name, version) with no handle on the
+        // real semver. Scoped to the `local_source: None` path — local
+        // deps (file:/link:/git: direct deps) use their own placeholder
+        // version and shouldn't leak it into the lockfile.
+        let write_version = (pkg.local_source.is_none()
+            && canonical != version_to_dep_path(&pkg.name, &pkg.version))
+        .then(|| pkg.version.clone());
         packages.insert(
             canonical,
             WritablePackageInfo {
                 resolution,
+                version: write_version,
                 engines: if pkg.engines.is_empty() {
                     None
                 } else {
@@ -1017,6 +1065,13 @@ struct WritablePeerDepMeta {
 struct WritablePackageInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     resolution: Option<WritableResolution>,
+    /// Real semver for non-registry entries (remote tarball / git),
+    /// where the dep-path key is a URL rather than a version. pnpm
+    /// emits this field so tooling that reads lockfile entries by
+    /// `(name, version)` still finds the right semver. Omitted for
+    /// ordinary registry entries — the version lives in the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
     /// pnpm writes `engines: {node: '>=8'}` in flow form immediately
     /// after `resolution:` when the package declared any engines.
     /// Emitted as a block map here — `reformat_for_pnpm_parity` flips it
@@ -1232,6 +1287,13 @@ struct RawPackageInfo {
     /// for ordinary (non-aliased) packages.
     #[serde(default)]
     alias_of: Option<String>,
+    /// pnpm emits `version: <semver>` on `packages:` entries whose dep-path
+    /// key is a URL (remote tarball, git) rather than a bare semver —
+    /// that way the key stays unique (one URL, one entry) while the real
+    /// semver is still recorded for tooling. None for ordinary registry
+    /// entries, where the version lives in the dep-path key itself.
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1588,6 +1650,124 @@ snapshots:
             .unwrap();
         assert_eq!(local.dependencies.get("native").unwrap(), "1.0.0");
         assert_eq!(local.optional_dependencies.get("native").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn parse_transitive_url_entry_uses_pnpm_version_field() {
+        // Regression: pnpm writes non-registry transitive entries with
+        // the tarball URL in the dep-path key and the real semver in a
+        // `version:` field. Parsing used the URL as the `version`
+        // itself, and the install path's store-content cross-check then
+        // compared the URL against the tarball's declared `2.4.1` and
+        // failed every override'd github dep.
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      xml2json:
+        specifier: ^0.12.0
+        version: 0.12.0
+
+packages:
+  xml2json@0.12.0:
+    resolution: {integrity: sha512-xxx}
+
+  node-expat@https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65:
+    resolution: {tarball: https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65}
+    version: 2.4.1
+
+snapshots:
+  xml2json@0.12.0:
+    dependencies:
+      node-expat: https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65
+
+  node-expat@https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let url = "https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65";
+        let pkg = graph
+            .packages
+            .get(&format!("node-expat@{url}"))
+            .expect("transitive remote-tarball entry present");
+        assert_eq!(pkg.name, "node-expat");
+        // pnpm's `version:` field, not the URL.
+        assert_eq!(pkg.version, "2.4.1");
+        // The URL drives the fetch path via `tarball_url`; dep-path
+        // still carries the URL so xml2json's snapshot reference
+        // resolves.
+        assert_eq!(pkg.tarball_url.as_deref(), Some(url));
+    }
+
+    #[test]
+    fn url_dep_path_round_trips_with_pnpm_version_field() {
+        // Write-side companion: the URL has to stay in the canonical
+        // key and the `version:` field has to reappear in the written
+        // output so tooling reading the file back sees the same shape
+        // pnpm wrote.
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        let src = r#"lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      xml2json:
+        specifier: ^0.12.0
+        version: 0.12.0
+
+packages:
+
+  node-expat@https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65:
+    resolution: {tarball: https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65}
+    version: 2.4.1
+
+  xml2json@0.12.0:
+    resolution: {integrity: sha512-xxx}
+
+snapshots:
+
+  node-expat@https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65: {}
+
+  xml2json@0.12.0:
+    dependencies:
+      node-expat: https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65
+"#;
+        std::fs::write(&lockfile_path, src).unwrap();
+        let graph = parse(&lockfile_path).unwrap();
+
+        let manifest = PackageJson {
+            name: Some("root".to_string()),
+            version: Some("0.0.0".to_string()),
+            dependencies: [("xml2json".to_string(), "^0.12.0".to_string())]
+                .into_iter()
+                .collect(),
+            ..PackageJson::default()
+        };
+        let out_path = dir.path().join("round-trip.yaml");
+        write(&out_path, &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(&out_path).unwrap();
+        assert!(
+            written.contains("node-expat@https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65:"),
+            "URL canonical key missing from output: {written}"
+        );
+        assert!(
+            written.contains("    version: 2.4.1"),
+            "`version:` field missing from output: {written}"
+        );
     }
 
     #[test]
