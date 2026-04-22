@@ -1380,10 +1380,10 @@ fn enforce_package_manager_guardrails(
 
     match name {
         "aube" => {
-            if settings.package_manager_strict_version && version != env!("CARGO_PKG_VERSION") {
+            if settings.package_manager_strict_version && version != version::VERSION.as_str() {
                 return Err(miette!(
                     "packageManager requires aube@{version}, but this is aube@{}",
-                    env!("CARGO_PKG_VERSION")
+                    version::VERSION.as_str()
                 ));
             }
             Ok(PackageManagerGuard::Ok)
@@ -1392,7 +1392,7 @@ fn enforce_package_manager_guardrails(
             if settings.package_manager_strict_version {
                 return Err(miette!(
                     "packageManager requires exact pnpm@{version}, but aube cannot download or re-exec a specific pnpm version. Use pnpm directly, set packageManagerStrictVersion=false, or pin packageManager to aube@{}.",
-                    env!("CARGO_PKG_VERSION")
+                    version::VERSION.as_str()
                 ));
             }
             Ok(PackageManagerGuard::Ok)
