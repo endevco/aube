@@ -14,10 +14,10 @@
 //!
 //! v1 lockfiles (npm 5-6, uses nested `dependencies` tree) are rejected.
 
-use crate::{DepType, DirectDep, Error, LockedPackage, LockfileGraph};
+use crate::{DepType, DirectDep, Error, LocalSource, LockedPackage, LockfileGraph};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 struct RawNpmLockfile {
@@ -49,6 +49,8 @@ struct RawNpmPackage {
     /// can round-trip `resolved:` faithfully when we write back.
     #[serde(default)]
     resolved: Option<String>,
+    #[serde(default)]
+    link: bool,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
     #[serde(default)]
@@ -88,6 +90,12 @@ struct RawNpmPackage {
     license: Option<String>,
     #[serde(default)]
     funding: Option<RawNpmFunding>,
+}
+
+#[derive(Clone)]
+struct InstallPathInfo {
+    name: String,
+    dep_path: String,
 }
 
 /// npm's `funding:` block on a package entry. npm copies the field
@@ -208,14 +216,42 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         ..Default::default()
     };
 
-    // Map each entry's install_path to its (name, version). We need this to
-    // resolve transitive dep references via the node nested-resolution walk
-    // (necessary when the same package exists at multiple versions).
-    let mut install_path_info: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // npm workspace links come in pairs:
+    // - `node_modules/@scope/pkg: { resolved: "packages/pkg", link: true }`
+    // - `packages/pkg: { name, version, dependencies, ... }`
+    //
+    // The `node_modules/` entry is the actual edge consumers resolve through;
+    // the target path entry carries the package metadata. Skip the target-path
+    // record during the main loop and let the link entry synthesize a local
+    // package from it.
+    let link_targets: BTreeSet<String> = raw
+        .packages
+        .iter()
+        .filter_map(|(install_path, entry)| {
+            entry
+                .link
+                .then(|| {
+                    entry
+                        .resolved
+                        .as_ref()
+                        .map(|target| (target.clone(), install_path.clone()))
+                })
+                .flatten()
+                .map(|(target, _)| target)
+        })
+        .collect();
+
+    // Map each install_path to the locked dep_path it resolves to. We need
+    // this for the nested-resolution walk, including local/workspace links
+    // whose dep_path isn't just `name@version`.
+    let mut install_path_info: BTreeMap<String, InstallPathInfo> = BTreeMap::new();
 
     for (install_path, entry) in &raw.packages {
         if install_path.is_empty() {
             continue; // root project, handled separately
+        }
+        if link_targets.contains(install_path) {
+            continue;
         }
 
         // The install-path segment is what every other package in the
@@ -242,18 +278,53 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             .as_ref()
             .filter(|real| real.as_str() != install_name.as_str())
             .cloned();
-        let version = entry.version.clone().ok_or_else(|| {
-            Error::Parse(
-                path.to_path_buf(),
-                format!("package '{install_name}' has no version"),
+        let (package_entry, version, dep_path, local_source) = if entry.link {
+            let target = entry.resolved.as_ref().ok_or_else(|| {
+                Error::Parse(
+                    path.to_path_buf(),
+                    format!("linked package '{install_name}' has no resolved target"),
+                )
+            })?;
+            let target_entry = raw.packages.get(target).ok_or_else(|| {
+                Error::Parse(
+                    path.to_path_buf(),
+                    format!("linked package '{install_name}' points to missing target '{target}'"),
+                )
+            })?;
+            let version = target_entry.version.clone().ok_or_else(|| {
+                Error::Parse(
+                    path.to_path_buf(),
+                    format!("linked package '{install_name}' target '{target}' has no version"),
+                )
+            })?;
+            let local = LocalSource::Link(PathBuf::from(target));
+            (
+                target_entry,
+                version,
+                local.dep_path(&install_name),
+                Some(local),
             )
-        })?;
+        } else {
+            let version = entry.version.clone().ok_or_else(|| {
+                Error::Parse(
+                    path.to_path_buf(),
+                    format!("package '{install_name}' has no version"),
+                )
+            })?;
+            (
+                entry,
+                version.clone(),
+                format!("{install_name}@{version}"),
+                None,
+            )
+        };
         install_path_info.insert(
             install_path.clone(),
-            (install_name.clone(), version.clone()),
+            InstallPathInfo {
+                name: install_name.clone(),
+                dep_path: dep_path.clone(),
+            },
         );
-
-        let dep_path = format!("{install_name}@{version}");
 
         // Same (name, version) may appear at multiple nest levels; keep the first occurrence.
         if graph.packages.contains_key(&dep_path) {
@@ -261,10 +332,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         }
 
         let mut deps: BTreeMap<String, String> = BTreeMap::new();
-        for dep_name in entry
+        for dep_name in package_entry
             .dependencies
             .keys()
-            .chain(entry.optional_dependencies.keys())
+            .chain(package_entry.optional_dependencies.keys())
         {
             // Forward references — we'll resolve them in a second pass using
             // the node nested-resolution walk.
@@ -275,10 +346,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // `aube install --no-frozen-lockfile` from rewriting every
         // `"^4.1.0"` to `"4.3.0"` on re-emit.
         let mut declared: BTreeMap<String, String> = BTreeMap::new();
-        for (k, v) in entry
+        for (k, v) in package_entry
             .dependencies
             .iter()
-            .chain(entry.optional_dependencies.iter())
+            .chain(package_entry.optional_dependencies.iter())
         {
             declared.insert(k.clone(), v.clone());
         }
@@ -289,7 +360,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // JSR-specific cases where the URL is strictly unrecoverable
         // from name+version. Dropping it was the single largest
         // source of churn against npm's own output.
-        let tarball_url = entry
+        let tarball_url = package_entry
             .resolved
             .as_ref()
             .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
@@ -302,8 +373,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // virtual store. An npm lockfile without these fields
         // populated here would silently produce a tree where
         // peer-dependent packages can't find their peers at runtime.
-        let peer_dependencies = entry.peer_dependencies.clone();
-        let peer_dependencies_meta: BTreeMap<String, crate::PeerDepMeta> = entry
+        let peer_dependencies = package_entry.peer_dependencies.clone();
+        let peer_dependencies_meta: BTreeMap<String, crate::PeerDepMeta> = package_entry
             .peer_dependencies_meta
             .iter()
             .map(|(k, v)| {
@@ -321,18 +392,19 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             LockedPackage {
                 name: install_name,
                 version,
-                integrity: entry.integrity.clone(),
+                integrity: package_entry.integrity.clone(),
                 dependencies: deps,
                 peer_dependencies,
                 peer_dependencies_meta,
                 dep_path,
+                local_source,
                 alias_of,
                 tarball_url,
                 declared_dependencies: declared,
-                engines: entry.engines.clone(),
-                bin: entry.bin.clone(),
-                license: entry.license.clone(),
-                funding_url: entry.funding.as_ref().and_then(|f| f.url.clone()),
+                engines: package_entry.engines.clone(),
+                bin: package_entry.bin.clone(),
+                license: package_entry.license.clone(),
+                funding_url: package_entry.funding.as_ref().and_then(|f| f.url.clone()),
                 ..Default::default()
             },
         );
@@ -361,10 +433,26 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         if install_path.is_empty() {
             continue;
         }
-        let Some((name, version)) = install_path_info.get(install_path) else {
+        if link_targets.contains(install_path) {
+            continue;
+        }
+        let Some(info) = install_path_info.get(install_path) else {
             continue;
         };
-        let dep_path = format!("{name}@{version}");
+        let package_entry = if entry.link {
+            let Some(target) = entry.resolved.as_ref() else {
+                continue;
+            };
+            raw.packages.get(target).unwrap_or(entry)
+        } else {
+            entry
+        };
+        let dep_path = info.dep_path.clone();
+        let lookup_path = if entry.link {
+            entry.resolved.as_deref().unwrap_or(install_path.as_str())
+        } else {
+            install_path.as_str()
+        };
 
         // Skip if another occurrence already produced a resolution for this
         // dep_path (first wins, matching how we built `graph.packages`).
@@ -373,16 +461,19 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         }
 
         let mut resolved: BTreeMap<String, String> = BTreeMap::new();
-        for dep_name in entry
+        for dep_name in package_entry
             .dependencies
             .keys()
-            .chain(entry.optional_dependencies.keys())
+            .chain(package_entry.optional_dependencies.keys())
         {
             if let Some(target_install_path) =
-                resolve_nested(install_path, dep_name, &install_path_info)
-                && let Some((_, dver)) = install_path_info.get(&target_install_path)
+                resolve_nested(lookup_path, dep_name, &install_path_info)
+                && let Some(target_info) = install_path_info.get(&target_install_path)
             {
-                resolved.insert(dep_name.clone(), dver.clone());
+                resolved.insert(
+                    dep_name.clone(),
+                    dep_path_tail(&target_info.name, &target_info.dep_path).to_string(),
+                );
             }
         }
         resolved_by_dep_path.insert(dep_path, resolved);
@@ -400,10 +491,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let mut direct: Vec<DirectDep> = Vec::new();
     let push_direct = |dep_name: &str, dep_type: DepType, direct: &mut Vec<DirectDep>| {
         let root_path = format!("node_modules/{dep_name}");
-        if let Some((dname, dver)) = install_path_info.get(&root_path) {
+        if let Some(info) = install_path_info.get(&root_path) {
             direct.push(DirectDep {
-                name: dname.clone(),
-                dep_path: format!("{dname}@{dver}"),
+                name: info.name.clone(),
+                dep_path: info.dep_path.clone(),
                 dep_type,
                 specifier: None,
             });
@@ -423,6 +514,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     Ok(graph)
 }
 
+fn dep_path_tail<'a>(name: &str, dep_path: &'a str) -> &'a str {
+    dep_path
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('@'))
+        .unwrap_or(dep_path)
+}
+
 /// Resolve a transitive dep name from the perspective of a package at
 /// `pkg_install_path` using npm's nested-resolution walk: look first inside
 /// the package's own `node_modules`, then walk up each ancestor's
@@ -430,7 +528,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 fn resolve_nested(
     pkg_install_path: &str,
     dep_name: &str,
-    install_paths: &BTreeMap<String, (String, String)>,
+    install_paths: &BTreeMap<String, InstallPathInfo>,
 ) -> Option<String> {
     let mut base = pkg_install_path.to_string();
     loop {
@@ -2004,6 +2102,61 @@ mod tests {
                 "npm writer drifted from native npm output.\n\n--- expected ---\n{original}\n--- got ---\n{written}"
             );
         }
+    }
+
+    #[test]
+    fn test_parse_workspace_links() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "workspace-root",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "workspace-root",
+                    "version": "1.0.0",
+                    "dependencies": { "@scope/app": "file:packages/app" }
+                },
+                "node_modules/@scope/app": {
+                    "resolved": "packages/app",
+                    "link": true
+                },
+                "node_modules/chalk": {
+                    "version": "5.4.1",
+                    "integrity": "sha512-chalk"
+                },
+                "packages/app": {
+                    "name": "@scope/app",
+                    "version": "0.68.1",
+                    "dependencies": {
+                        "chalk": "^5.4.1"
+                    }
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let dep_path = LocalSource::Link(PathBuf::from("packages/app")).dep_path("@scope/app");
+
+        let importer = &graph.importers["."];
+        assert_eq!(importer.len(), 1);
+        assert_eq!(importer[0].name, "@scope/app");
+        assert_eq!(importer[0].dep_path, dep_path);
+        assert!(matches!(importer[0].dep_type, DepType::Production));
+        assert!(importer[0].specifier.is_none());
+
+        let app = &graph.packages[&importer[0].dep_path];
+        assert_eq!(app.version, "0.68.1");
+        assert_eq!(
+            app.local_source,
+            Some(LocalSource::Link(PathBuf::from("packages/app")))
+        );
+        assert_eq!(
+            app.dependencies.get("chalk").map(String::as_str),
+            Some("5.4.1")
+        );
+        assert!(!graph.packages.contains_key("@scope/app@0.68.1"));
     }
 
     /// npm copies `funding:` verbatim from each package's
