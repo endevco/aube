@@ -84,7 +84,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`recursiveInstall`](#setting-recursiveinstall) | `bool` | Install on all workspace packages by default. |
 | [`engineStrict`](#setting-enginestrict) | `bool` | Fail if a package is incompatible with the current Node version. |
 | [`npmPath`](#setting-npmpath) | `path` | Path to the npm binary aube should shell out to when needed. |
-| [`packageManagerStrict`](#setting-packagemanagerstrict) | `bool` | Enforce the `packageManager` field in package.json. |
+| [`packageManagerStrict`](#setting-packagemanagerstrict) | `"off" \| "warn" \| "error" \| true \| false` | Enforce the `packageManager` field in package.json (`off` \| `warn` \| `error`). |
 | [`packageManagerStrictVersion`](#setting-packagemanagerstrictversion) | `bool` | Enforce the exact `packageManager` version from package.json. |
 | [`managePackageManagerVersions`](#setting-managepackagemanagerversions) | `bool` | Auto-download the specified pnpm version when mismatched. |
 | [`ignoreScripts`](#setting-ignorescripts) | `bool` | Skip all lifecycle scripts in package.json. |
@@ -1514,14 +1514,21 @@ Used for npm-only compatibility commands (`owner`, `pkg`, `search`, `set-script`
 
 ### `packageManagerStrict` {#setting-packagemanagerstrict}
 
-Enforce the `packageManager` field in package.json.
+Enforce the `packageManager` field in package.json (`off` | `warn` | `error`).
 
-- Type: `bool`
-- Default: `true`
+- Type: `"off" | "warn" | "error" | true | false`
+- Default: `"warn"`
 - Environment: `npm_config_package_manager_strict`, `NPM_CONFIG_PACKAGE_MANAGER_STRICT`
 - .npmrc keys: `package-manager-strict`, `packageManagerStrict`
 
-When a project declares `packageManager`, aube accepts `aube` and `pnpm` package-manager names and rejects npm/yarn/bun/etc. Set to false to skip this guard.
+Controls how aube reacts when a project's `packageManager` field
+names something other than `aube` or `pnpm` (npm, yarn, bun, …).
+`warn` (the default) prints a warning and continues; install-class
+commands also disable the implicit auto-install probe so aube does
+not silently install on top of another package manager's layout.
+`error` fails install-class commands hard (run-class commands still
+warn). `off` skips the check entirely. The bool spellings are
+accepted for back-compat: `true` maps to `error`, `false` to `off`.
 
 ### `packageManagerStrictVersion` {#setting-packagemanagerstrictversion}
 
