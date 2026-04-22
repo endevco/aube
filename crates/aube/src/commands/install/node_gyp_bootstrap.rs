@@ -125,6 +125,19 @@ fn bootstrap_blocking(
         r#"{{"name":"aube-tool-node-gyp","private":true,"dependencies":{{"node-gyp":"{SPEC}"}}}}"#
     );
     std::fs::write(tool_dir.join("package.json"), manifest).into_diagnostic()?;
+    // Pin the recursive `aube install` invocation below to `tool_dir`
+    // so its workspace-root walk-up stops here instead of escaping
+    // upward. `tool_dir` lives under `$XDG_CACHE_HOME/aube/tools/` —
+    // i.e. inside the user's HOME and inside any test temp dir set
+    // via `HOME=$TEST_TEMP_DIR`. Without this stub yaml,
+    // `find_workspace_root` would walk past `$XDG_CACHE_HOME`,
+    // discover the outer project's `pnpm-workspace.yaml`, and run
+    // the recursive install against the *outer* tree — deadlocking
+    // on the outer process's project lock. The empty yaml hits the
+    // first marker check at the start of the walk, returns
+    // `tool_dir`, and the install runs as a single-package install
+    // (`workspace_packages` is empty so `has_workspace` is false).
+    std::fs::write(tool_dir.join("aube-workspace.yaml"), "").into_diagnostic()?;
     // Forward the outer project's `.npmrc` so private registries and
     // auth tokens configured at project scope carry through to the
     // recursive install. The subprocess's cwd is `tool_dir`, so
