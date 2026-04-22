@@ -72,6 +72,18 @@ release_profile:
   strip: debuginfo
   panic: abort
 
+when_to_use_release:
+  default: debug. `cargo build` / `cargo clippy` already produce the `target/debug/aube` binary that bats and local smoke tests exercise
+  bats_binary: test/test_helper/common_setup.bash prepends `target/debug` to PATH. never `cargo build --release` to debug a bats failure — rebuild debug, which is already warm from clippy
+  allowed_release_uses[4]:
+    - profiling (samply, flamegraph, hyperfine) — optimizer-off numbers are meaningless
+    - reproducing a perf bug only observable in release
+    - benchmarks (mise run bench* always builds release via its own manifest)
+    - `cargo test --release` — .rules commands.test_unit mandates release because release is 3x+ slower to build but tests run 10x faster; one-time cost pays off across a full suite
+  forbidden[2]:
+    - rebuilding release "just to be safe" during iterative debug (1+ min cost vs 5s incremental debug)
+    - shipping release-only asserts that don't exist in debug — keep invariants consistent across profiles
+
 commits:
   format: <area>(<subscope>): <description>
   style: lowercase after colon, imperative mood, concise, subject typically <=80 chars (p95 in history is 73), usually no body
