@@ -1,9 +1,12 @@
 //! `aube cat-index <pkg@version>` — print the cached package index JSON.
 //!
 //! Prints the index that `aube fetch`/`aube install` writes under
-//! `~/.cache/aube/index/<name>@<version>+<integrity>.json`: a mapping of
-//! relative paths in the package to their store file hashes. Useful for
-//! debugging linker behavior or confirming which files landed in the CAS.
+//! `~/.cache/aube/index/`. Integrity-keyed entries live under
+//! `<16 hex>/<name>@<version>.json` (subdirectory keyed by the
+//! tarball's SHA-512 prefix); integrity-less entries live at
+//! `<name>@<version>.json` in the root. The filename alone never
+//! carries discriminating data, so a version with semver build
+//! metadata can't collide with an integrity-keyed entry.
 //!
 //! The package must have been fetched by aube at least once — if the cache
 //! is cold for that version, we surface a friendly error pointing at
@@ -55,14 +58,13 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     if !aube_store::validate_version(version) {
         return Err(miette!("invalid version: {version:?}"));
     }
-    // The on-disk name is `{safe_name}@{version}+{integrity_short}.json`
-    // when the tarball came with a `dist.integrity` and the plain
-    // `{safe_name}@{version}.json` when it didn't (proxies that strip
-    // integrity). Scan for both so cat-index can find either variant
-    // without asking the user to know the integrity suffix.
-    let prefix = format!("{safe_name}@{version}+");
-    let plain = format!("{safe_name}@{version}.json");
-    let matches = scan_matches(&store.index_dir(), &prefix, &plain)?;
+    // Look in the integrity-less slot at the index root and in every
+    // `<16 hex>/` subdir. The filename we're looking for is always
+    // `{safe_name}@{version}.json` — the integrity (when present)
+    // lives in the parent directory name, not the filename, so we
+    // never have to reason about how `+` composes with the version.
+    let filename = format!("{safe_name}@{version}.json");
+    let matches = scan_matches(&store.index_dir(), &filename)?;
     let index_path = match matches.as_slice() {
         [] => {
             return Err(miette!(
@@ -72,19 +74,17 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
         [p] => p.clone(),
         many => {
             // Two different tarballs were fetched under the same
-            // (name, version). Print the list so the user knows which
-            // integrity suffixes exist; they can pick one via
-            // `cat-file`/direct read of the file.
+            // (name, version). Print the integrity directory of each
+            // so the user knows which distinct sources exist; they
+            // can pick one via a direct read of the file.
             let mut msg = format!(
                 "{} distinct cached tarballs for {name}@{version}:\n",
                 many.len()
             );
             for p in many {
-                if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                    msg.push_str("  ");
-                    msg.push_str(fname);
-                    msg.push('\n');
-                }
+                msg.push_str("  ");
+                msg.push_str(&p.display().to_string());
+                msg.push('\n');
             }
             msg.push_str(
                 "help: read the specific file directly, or re-run `aube fetch` in the project whose tarball you want.",
@@ -110,51 +110,40 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     Ok(())
 }
 
+/// Find every cached index whose filename matches `filename`. Looks
+/// at the index-root for the integrity-less entry, then peeks into
+/// each `<16 hex>/` subdir for the integrity-keyed variants. Returns
+/// the discovered paths sorted for stable output.
 fn scan_matches(
     index_dir: &std::path::Path,
-    prefix: &str,
-    plain: &str,
+    filename: &str,
 ) -> miette::Result<Vec<std::path::PathBuf>> {
+    let mut matches = Vec::new();
+
+    // Integrity-less entry (no `dist.integrity` on the tarball).
+    let plain = index_dir.join(filename);
+    if plain.is_file() {
+        matches.push(plain);
+    }
+
+    // Integrity-keyed entries under `<16 hex>/` subdirs.
     let entries = match std::fs::read_dir(index_dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(miette!("failed to read {}: {e}", index_dir.display())),
     };
-    let mut matches = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        if !path.is_dir() {
             continue;
         }
-        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if fname == plain || is_integrity_suffixed_match(fname, prefix) {
-            matches.push(path);
+        let candidate = path.join(filename);
+        if candidate.is_file() {
+            matches.push(candidate);
         }
     }
     matches.sort();
     Ok(matches)
-}
-
-/// Match only `{prefix}<16 lowercase hex>.json` — not a semver
-/// build-metadata collision. With `prefix = "pkg@1.0.0+"`, this
-/// accepts `pkg@1.0.0+deadbeefdeadbeef.json` but rejects
-/// `pkg@1.0.0+build123.json` (that file's version is
-/// `1.0.0+build123`, saved without integrity, and matches the plain
-/// key instead). Lowercase-only because `hex::encode` in
-/// `Store::index_path` always writes lowercase.
-fn is_integrity_suffixed_match(fname: &str, prefix: &str) -> bool {
-    let Some(rest) = fname.strip_prefix(prefix) else {
-        return false;
-    };
-    let Some(suffix) = rest.strip_suffix(".json") else {
-        return false;
-    };
-    suffix.len() == 16
-        && suffix
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Split `name@version` into its parts, respecting scoped packages.
@@ -184,7 +173,7 @@ fn split_name_version(input: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_integrity_suffixed_match, scan_matches, split_name_version};
+    use super::{scan_matches, split_name_version};
 
     #[test]
     fn plain_name_version() {
@@ -218,58 +207,73 @@ mod tests {
     }
 
     #[test]
-    fn integrity_prefix_accepts_valid_hex_suffix() {
-        assert!(is_integrity_suffixed_match(
-            "pkg@1.0.0+deadbeefdeadbeef.json",
-            "pkg@1.0.0+",
-        ));
+    fn scan_matches_finds_integrity_less_entry_at_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("pkg@1.0.0.json"), "{}").unwrap();
+
+        let matches = scan_matches(dir, "pkg@1.0.0.json").unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].file_name().unwrap(), "pkg@1.0.0.json");
     }
 
     #[test]
-    fn integrity_prefix_rejects_semver_build_metadata() {
-        // Regression: the prefix-only match conflated the `+` we write
-        // before the integrity hex suffix with the `+` in a legitimate
-        // semver build-metadata version. `pkg@1.0.0+build123.json` is
-        // the integrity-less cache entry for version `1.0.0+build123`
-        // and must *not* match a `pkg@1.0.0` query.
-        assert!(!is_integrity_suffixed_match(
-            "pkg@1.0.0+build123.json",
-            "pkg@1.0.0+",
-        ));
-    }
+    fn scan_matches_finds_integrity_keyed_entry_in_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let subdir = dir.join("aabbccddeeff0011");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("pkg@1.0.0.json"), "{}").unwrap();
 
-    #[test]
-    fn integrity_prefix_rejects_wrong_length_or_non_hex() {
-        assert!(!is_integrity_suffixed_match(
-            "pkg@1.0.0+deadbeef.json",
-            "pkg@1.0.0+",
-        ));
-        assert!(!is_integrity_suffixed_match(
-            "pkg@1.0.0+deadbeefdeadbeefdead.json",
-            "pkg@1.0.0+",
-        ));
-        // hex::encode writes lowercase, so reject uppercase to stay in
-        // lockstep with find_hash::strip_integrity_suffix.
-        assert!(!is_integrity_suffixed_match(
-            "pkg@1.0.0+DEADBEEFDEADBEEF.json",
-            "pkg@1.0.0+",
-        ));
+        let matches = scan_matches(dir, "pkg@1.0.0.json").unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].parent().unwrap().file_name().unwrap(),
+            "aabbccddeeff0011"
+        );
     }
 
     #[test]
     fn scan_matches_separates_integrity_from_build_metadata() {
+        // Regression: the old flat layout with a `+<hex>` filename
+        // suffix could conflate an integrity-keyed entry for
+        // version `1.0.0` with an integrity-less entry for version
+        // `1.0.0+build123`. The subdir layout forecloses that: the
+        // build-metadata version lives at
+        // `pkg@1.0.0+build123.json` (its own file, different stem),
+        // while the integrity-keyed `pkg@1.0.0` lives at
+        // `<16 hex>/pkg@1.0.0.json`.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        // Integrity-keyed cache entry for `pkg@1.0.0`.
-        std::fs::write(dir.join("pkg@1.0.0+deadbeefdeadbeef.json"), "{}").unwrap();
-        // Integrity-less cache entry for a *different* version that
-        // happens to carry semver build metadata.
+        let subdir = dir.join("deadbeefdeadbeef");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("pkg@1.0.0.json"), "{}").unwrap();
         std::fs::write(dir.join("pkg@1.0.0+build123.json"), "{}").unwrap();
 
-        let prefix = "pkg@1.0.0+";
-        let plain = "pkg@1.0.0.json";
-        let matches = scan_matches(dir, prefix, plain).unwrap();
+        let matches = scan_matches(dir, "pkg@1.0.0.json").unwrap();
         assert_eq!(matches.len(), 1);
-        assert!(matches[0].file_name().unwrap() == "pkg@1.0.0+deadbeefdeadbeef.json");
+        assert_eq!(
+            matches[0].parent().unwrap().file_name().unwrap(),
+            "deadbeefdeadbeef"
+        );
+
+        // Separately, the build-metadata version has its own distinct
+        // filename and is discoverable under its own query.
+        let bmeta = scan_matches(dir, "pkg@1.0.0+build123.json").unwrap();
+        assert_eq!(bmeta.len(), 1);
+        assert_eq!(bmeta[0].parent().unwrap(), dir);
+    }
+
+    #[test]
+    fn scan_matches_returns_both_variants_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let subdir = dir.join("1122334455667788");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("pkg@1.0.0.json"), "{}").unwrap();
+        std::fs::write(dir.join("pkg@1.0.0.json"), "{}").unwrap();
+
+        let matches = scan_matches(dir, "pkg@1.0.0.json").unwrap();
+        assert_eq!(matches.len(), 2);
     }
 }

@@ -112,34 +112,63 @@ pub async fn run(args: FindHashArgs) -> miette::Result<()> {
     Ok(())
 }
 
-/// Walk every `*.json` file under the cache dir, parse it as a
-/// `PackageIndex`, and collect every entry whose `hex_hash` matches
-/// `target_hex`. Cache entries that fail to parse or can't be decoded
+/// Walk every `*.json` file in the cache dir — both at the root
+/// (integrity-less entries) and one level down under `<integrity-hex>/`
+/// subdirs (integrity-keyed entries) — parse each as a `PackageIndex`,
+/// and collect every entry whose `hex_hash` matches `target_hex`.
+/// Cache entries that fail to parse or whose filename can't be decoded
 /// into `{name}@{version}` are skipped silently — the cache is a
 /// best-effort artifact, not a source of truth.
 fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Result<Vec<Match>> {
     let mut matches: Vec<Match> = Vec::new();
+    scan_one_level(index_dir, target_hex, &mut matches)?;
 
+    // Recurse exactly one level deep for the `<integrity-hex>/` subdirs.
+    // The layout is flat by design; anything deeper would be foreign.
     let entries = std::fs::read_dir(index_dir)
         .into_diagnostic()
         .map_err(|e| miette!("failed to read {}: {e}", index_dir.display()))?;
-
     for entry in entries {
         let entry = entry
             .into_diagnostic()
             .map_err(|e| miette!("failed to read directory entry: {e}"))?;
         let path = entry.path();
+        if path.is_dir() {
+            scan_one_level(&path, target_hex, &mut matches)?;
+        }
+    }
+
+    matches.sort_by(|a, b| (&a.name, &a.version, &a.path).cmp(&(&b.name, &b.version, &b.path)));
+    Ok(matches)
+}
+
+fn scan_one_level(
+    dir: &std::path::Path,
+    target_hex: &str,
+    matches: &mut Vec<Match>,
+) -> miette::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(miette!("failed to read {}: {e}", dir.display())),
+    };
+    for entry in entries {
+        let entry = entry
+            .into_diagnostic()
+            .map_err(|e| miette!("failed to read directory entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
         let Some((name, version)) = split_stem(stem) else {
             continue;
         };
-
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -148,7 +177,6 @@ fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Resu
         else {
             continue;
         };
-
         for (rel_path, file) in index {
             if file.hex_hash == target_hex {
                 matches.push(Match {
@@ -159,16 +187,14 @@ fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Resu
             }
         }
     }
-
-    matches.sort_by(|a, b| (&a.name, &a.version, &a.path).cmp(&(&b.name, &b.version, &b.path)));
-    Ok(matches)
+    Ok(())
 }
 
-/// Reverse the `{safe_name}@{version}+{integrity_short}.json` naming
-/// scheme used by `Store::save_index`. The safe-name rule is
-/// `/` → `__`, which isn't globally bijective — a non-scoped package
-/// whose name legitimately contains `__` (e.g. `foo__bar`) would
-/// round-trip back as `foo/bar` under naive `replace("__", "/")`.
+/// Reverse the `{safe_name}@{version}.json` naming scheme used by
+/// `Store::save_index`. The safe-name rule is `/` → `__`, which isn't
+/// globally bijective — a non-scoped package whose name legitimately
+/// contains `__` (e.g. `foo__bar`) would round-trip back as `foo/bar`
+/// under naive `replace("__", "/")`.
 ///
 /// Exploit the structure of npm names: only scoped packages contain
 /// `/`, and always exactly one — between the scope and the package
@@ -182,12 +208,9 @@ fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Resu
 /// decodes to the latter. That's a limitation of the underlying
 /// `save_index` encoding, not fixable in the reverse direction alone.)
 ///
-/// The trailing `+{16 hex chars}` integrity suffix is stripped before
-/// splitting on `@`, so the printed `{name}@{version}` output stays
-/// stable across the cache-key change. Stems from older aube versions
-/// (without a `+<hex>` suffix) still parse correctly.
+/// Integrity (when present) lives in the parent directory name, not
+/// the filename, so no suffix stripping is needed here.
 fn split_stem(stem: &str) -> Option<(String, String)> {
-    let stem = strip_integrity_suffix(stem);
     let at = stem.rfind('@')?;
     if at == 0 {
         return None;
@@ -210,30 +233,6 @@ fn split_stem(stem: &str) -> Option<(String, String)> {
         safe_name.to_string()
     };
     Some((name, version.to_string()))
-}
-
-/// Drop the trailing `+<16 lowercase hex>` integrity suffix if present.
-/// Anything shorter, longer, or non-hex is left alone so old-format
-/// stems (pre integrity-keyed cache) still parse.
-///
-/// Strictly lowercase-hex: `hex::encode` in `Store::index_path` always
-/// emits `0-9a-f`, and accepting uppercase here would falsely strip a
-/// legitimate semver build-metadata suffix that happens to be exactly
-/// 16 uppercase-or-mixed hex chars (e.g. `pkg@1.0.0+DEADBEEF12345678`).
-fn strip_integrity_suffix(stem: &str) -> &str {
-    let Some(plus) = stem.rfind('+') else {
-        return stem;
-    };
-    let suffix = &stem[plus + 1..];
-    if suffix.len() == 16
-        && suffix
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    {
-        &stem[..plus]
-    } else {
-        stem
-    }
 }
 
 #[cfg(test)]
@@ -295,40 +294,17 @@ mod tests {
     }
 
     #[test]
-    fn split_stem_strips_integrity_suffix() {
-        // New cache-key format appends `+<16 hex>` as an integrity
-        // discriminator. `find_hash`'s output should stay
-        // `{name}@{version}` regardless.
-        assert_eq!(
-            split_stem("lodash@4.17.21+deadbeefdeadbeef"),
-            Some(("lodash".into(), "4.17.21".into()))
-        );
-        assert_eq!(
-            split_stem("@babel__core@7.0.0+0123456789abcdef"),
-            Some(("@babel/core".into(), "7.0.0".into()))
-        );
-    }
-
-    #[test]
-    fn split_stem_leaves_non_integrity_plus_suffix_intact() {
-        // A semver build metadata suffix like `+build123` shouldn't be
-        // stripped — only a precise 16-lowercase-hex tail is the
-        // integrity marker. `build123` has fewer than 16 chars and is
-        // not hex, so it stays as part of the version.
+    fn split_stem_preserves_build_metadata_in_version() {
+        // Integrity moved out of the filename into a parent subdir,
+        // so no part of the stem ever needs stripping. Build
+        // metadata in the version passes through verbatim.
         assert_eq!(
             split_stem("foo@1.0.0+build123"),
             Some(("foo".into(), "1.0.0+build123".into()))
         );
-    }
-
-    #[test]
-    fn split_stem_does_not_strip_uppercase_hex_suffix() {
-        // Regression: `hex::encode` always emits lowercase, so
-        // accepting uppercase would falsely strip a legitimate
-        // build-metadata suffix that happens to be 16 hex chars.
         assert_eq!(
-            split_stem("foo@1.0.0+DEADBEEF12345678"),
-            Some(("foo".into(), "1.0.0+DEADBEEF12345678".into()))
+            split_stem("foo@1.0.0+deadbeefdeadbeef"),
+            Some(("foo".into(), "1.0.0+deadbeefdeadbeef".into()))
         );
     }
 
@@ -402,5 +378,39 @@ mod tests {
 
         let matches = scan_index_dir(dir, "deadbeef").unwrap();
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn scan_index_dir_descends_into_integrity_subdirs() {
+        // Integrity-keyed entries live under `<16 hex>/<name>@<ver>.json`.
+        // scan_index_dir must walk those too, not just the root.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let target = "deadbeef";
+        let index = serde_json::json!({
+            "lib.js": { "hex_hash": target, "store_path": "/tmp/x", "executable": false }
+        });
+
+        // Integrity-keyed: under a hex subdir.
+        let subdir = dir.join("aabbccddeeff0011");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(
+            subdir.join("lodash@4.17.21.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
+
+        // Integrity-less: at the root.
+        std::fs::write(
+            dir.join("other-pkg@1.0.0.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
+
+        let matches = scan_index_dir(dir, target).unwrap();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].name, "lodash");
+        assert_eq!(matches[1].name, "other-pkg");
     }
 }

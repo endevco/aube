@@ -150,15 +150,35 @@ async fn add(specs: Vec<String>) -> miette::Result<()> {
 }
 
 /// Collect the set of hex hashes referenced by any cached package index
-/// under `~/.cache/aube/index/`. Used as the "known-referenced" set for
-/// `store prune` and `store status`.
+/// under `~/.cache/aube/index/`. Integrity-keyed entries live under
+/// `<16 hex>/<name>@<version>.json` subdirs; integrity-less entries
+/// live at the root as `<name>@<version>.json`. Walk both. Used as
+/// the "known-referenced" set for `store prune` and `store status`.
 fn referenced_hashes(store: &aube_store::Store) -> std::collections::HashSet<String> {
     let mut seen = std::collections::HashSet::new();
-    let Ok(entries) = std::fs::read_dir(store.index_dir()) else {
+    let index_dir = store.index_dir();
+    collect_hashes_from_dir(&index_dir, &mut seen);
+    let Ok(entries) = std::fs::read_dir(&index_dir) else {
         return seen;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.is_dir() {
+            collect_hashes_from_dir(&path, &mut seen);
+        }
+    }
+    seen
+}
+
+fn collect_hashes_from_dir(dir: &std::path::Path, seen: &mut std::collections::HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
@@ -172,7 +192,6 @@ fn referenced_hashes(store: &aube_store::Store) -> std::collections::HashSet<Str
             seen.insert(stored.hex_hash.clone());
         }
     }
-    seen
 }
 
 fn prune() -> miette::Result<()> {
@@ -268,34 +287,15 @@ fn status() -> miette::Result<()> {
     let mut checked = 0usize;
     let mut broken: Vec<String> = Vec::new();
 
+    // Walk the index root (integrity-less entries) and every
+    // `<16 hex>/` subdir (integrity-keyed entries). Flat filenames at
+    // the root are the integrity-less variants; files one level
+    // deep are the integrity-keyed variants — both need verifying.
+    verify_indices_in_dir(&index_dir, &mut checked, &mut broken).into_diagnostic()?;
     for entry in std::fs::read_dir(&index_dir).into_diagnostic()?.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        // `@scope/name@version.json` gets stored as `@scope__name@version.json`.
-        let pkg_label = stem.replace("__", "/");
-
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(index): Result<aube_store::PackageIndex, _> = serde_json::from_str(&content) else {
-            continue;
-        };
-
-        checked += 1;
-        let mut pkg_ok = true;
-        for (rel, stored) in &index {
-            if !verify_stored_file(&stored.store_path, &stored.hex_hash) {
-                broken.push(format!("{pkg_label}: {rel}"));
-                pkg_ok = false;
-            }
-        }
-        if pkg_ok {
-            tracing::debug!("store ok: {pkg_label}");
+        if path.is_dir() {
+            verify_indices_in_dir(&path, &mut checked, &mut broken).into_diagnostic()?;
         }
     }
 
@@ -318,6 +318,51 @@ fn status() -> miette::Result<()> {
             pluralizer::pluralize("file", broken.len() as isize, false)
         ))
     }
+}
+
+/// Verify every `*.json` cached index directly inside `dir` (no
+/// recursion). Callers walk the layout hierarchy and call this on
+/// each directory that can hold index files. Keeps the BLAKE3 hot
+/// loop in one place.
+fn verify_indices_in_dir(
+    dir: &Path,
+    checked: &mut usize,
+    broken: &mut Vec<String>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // `@scope/name@version.json` gets stored as `@scope__name@version.json`.
+        let pkg_label = stem.replace("__", "/");
+
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(index): Result<aube_store::PackageIndex, _> = serde_json::from_str(&content) else {
+            continue;
+        };
+
+        *checked += 1;
+        let mut pkg_ok = true;
+        for (rel, stored) in &index {
+            if !verify_stored_file(&stored.store_path, &stored.hex_hash) {
+                broken.push(format!("{pkg_label}: {rel}"));
+                pkg_ok = false;
+            }
+        }
+        if pkg_ok {
+            tracing::debug!("store ok: {pkg_label}");
+        }
+    }
+    Ok(())
 }
 
 /// Stream the file at `path` through BLAKE3 and compare to the expected

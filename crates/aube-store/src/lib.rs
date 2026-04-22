@@ -195,19 +195,28 @@ impl Store {
         Ok(())
     }
 
-    /// Build the on-disk path for a cached index. The integrity suffix
-    /// keeps different tarballs for the same (name, version) — e.g. a
-    /// codeload tarball vs. the npm-published one — from aliasing on
-    /// disk. When `integrity` is `None`, falls back to a plain
-    /// `<name>@<version>.json` (narrow collision risk only between two
-    /// integrity-less sources; users on that path already opted out of
-    /// integrity enforcement). Returns `None` when any component is
-    /// invalid (including an integrity string we can't hex-decode).
+    /// Build the on-disk path for a cached index.
+    ///
+    /// Layout:
+    /// - With integrity: `index/<16 hex>/<name>@<version>.json`. The
+    ///   integrity hex lives in a subdirectory (not as part of the
+    ///   filename) so a version whose semver build metadata happens
+    ///   to be 16 lowercase hex chars (e.g. `1.0.0+a1b2c3d4e5f6a7b8`)
+    ///   can never collide with an integrity-keyed entry for
+    ///   `1.0.0` — they land in distinct directories by construction.
+    /// - Without integrity: `index/<name>@<version>.json` at the
+    ///   index dir root. Used for registry proxies that strip
+    ///   `dist.integrity`; the user has already opted out of
+    ///   cross-source integrity enforcement.
+    ///
+    /// Returns `None` when any component is invalid (including an
+    /// integrity string we can't hex-decode).
     fn index_path(&self, name: &str, version: &str, integrity: Option<&str>) -> Option<PathBuf> {
         let safe_name = validate_and_encode_name(name)?;
         if !validate_version(version) {
             return None;
         }
+        let filename = format!("{safe_name}@{version}.json");
         let dir = self.index_dir();
         match integrity {
             Some(i) => {
@@ -219,9 +228,9 @@ impl Store {
                 // on fetch, so birthday-bound collisions aren't a
                 // correctness risk; 16 chars is plenty.
                 let short = &hex[..16.min(hex.len())];
-                Some(dir.join(format!("{safe_name}@{version}+{short}.json")))
+                Some(dir.join(short).join(filename))
             }
-            None => Some(dir.join(format!("{safe_name}@{version}.json"))),
+            None => Some(dir.join(filename)),
         }
     }
 
@@ -1759,12 +1768,55 @@ mod tests {
         assert!(loaded.unwrap().contains_key("index.js"));
 
         // The integrity-keyed key does *not* see the integrity-less
-        // entry — different filename on disk.
+        // entry — different directory on disk.
         assert!(
             store
                 .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_index_cache_build_metadata_does_not_collide_with_integrity() {
+        // Regression: an earlier flat-filename scheme
+        // (`<name>@<version>+<16 hex>.json`) could in theory collide
+        // with an integrity-less entry for a version whose semver
+        // build metadata was exactly 16 lowercase hex chars
+        // (`1.0.0+a1b2c3d4e5f6a7b8`). The subdir layout forecloses
+        // that: integrity lives in a directory, not in the filename.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let a = store.import_bytes(b"integrity-keyed bytes", false).unwrap();
+        let mut integrity_keyed = PackageIndex::new();
+        integrity_keyed.insert("integrity-keyed.js".to_string(), a);
+
+        let b = store.import_bytes(b"build-metadata bytes", false).unwrap();
+        let mut build_meta = PackageIndex::new();
+        build_meta.insert("build-meta.js".to_string(), b);
+
+        // Integrity whose first 16 hex == the version's build metadata.
+        // TEST_INTEGRITY hex-decodes to `ee26b0dd4af7e749...`, so the
+        // directory name for the integrity-keyed entry is
+        // `ee26b0dd4af7e749`. A version with that exact 16-hex build
+        // metadata under the plain key must not alias it.
+        let colliding_version = "1.0.0+ee26b0dd4af7e749";
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &integrity_keyed)
+            .unwrap();
+        store
+            .save_index("pkg", colliding_version, None, &build_meta)
+            .unwrap();
+
+        let by_integrity = store
+            .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
+        let by_build_meta = store.load_index("pkg", colliding_version, None).unwrap();
+        assert!(by_integrity.contains_key("integrity-keyed.js"));
+        assert!(by_build_meta.contains_key("build-meta.js"));
+        // And neither entry leaks into the other's file list.
+        assert!(!by_integrity.contains_key("build-meta.js"));
+        assert!(!by_build_meta.contains_key("integrity-keyed.js"));
     }
 
     fn index_with_manifest(store: &Store, name: &str, version: &str) -> PackageIndex {
