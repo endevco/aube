@@ -100,18 +100,36 @@ _setup_workspace_fixture() {
 	[ ! -e node_modules ]
 }
 
-@test "packageManagerStrict=warn (default) warns install-test on unsupported package managers without erroring" {
+@test "packageManagerStrict=warn (default) warns install on unsupported package managers without erroring" {
 	_make_script_project
 	node -e 'let p=require("./package.json"); p.packageManager="yarn@4.0.0"; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	echo "verifyDepsBeforeRun=false" >.npmrc
 
-	# Without an install running, `aube install-test` still needs to
-	# exit non-zero if the `test` script is missing — but the PM guard
-	# itself must only warn. We assert the warning is present; the exit
-	# status is driven by the absence of a `test` script, not the guard.
-	run aube install-test
+	# Use `install` (not `install-test`) so exit status reflects only the
+	# guard's decision: the project has no deps and no `test` script, so
+	# `install` succeeds iff the warn-mode guard let it through. The
+	# companion `=error` test below is the assert_failure counterpart.
+	run aube install
+	assert_success
 	[[ "$output" == *"unsupported package manager"* ]]
-	[[ "$output" != *"packageManagerStrict=error"* ]]
+}
+
+@test "packageManagerStrict warns and falls back to default on unrecognized value" {
+	_make_script_project
+	{
+		echo "packageManagerStrict=errror"
+		echo "verifyDepsBeforeRun=false"
+	} >.npmrc
+
+	# Unparseable value must emit a startup warning naming the bad
+	# input rather than silently degrading to the default. The warning
+	# goes to stderr (tracing isn't initialized this early), so we
+	# split to keep the assertions precise.
+	run --separate-stderr aube install
+	assert_success
+	[[ "$stderr" == *"packageManagerStrict"* ]]
+	[[ "$stderr" == *"errror"* ]]
+	[[ "$stderr" == *"falling back to"* ]]
 }
 
 @test "packageManagerStrict=error rejects install-test on unsupported package managers" {

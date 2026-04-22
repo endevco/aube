@@ -1057,6 +1057,21 @@ impl PackageManagerStrictMode {
     }
 }
 
+/// Resolve `packageManagerStrict`, surfacing a warning when the user
+/// configured an unrecognized value (e.g. `errror` typo) instead of
+/// silently falling back to the default. Tracing isn't initialized
+/// yet at startup, so the warning goes straight to stderr.
+fn resolve_package_manager_strict(ctx: &aube_settings::ResolveCtx<'_>) -> PackageManagerStrictMode {
+    let raw = aube_settings::resolved::package_manager_strict(ctx);
+    if let Some(mode) = PackageManagerStrictMode::parse(&raw) {
+        return mode;
+    }
+    eprintln!(
+        "warning: packageManagerStrict={raw:?} is not a recognized value (expected `off`, `warn`, `error`, or back-compat bool `true`/`false`); falling back to `warn`."
+    );
+    PackageManagerStrictMode::default()
+}
+
 fn resolve_color_mode(cli: &Cli) -> ColorMode {
     if cli.no_color {
         return ColorMode::Never;
@@ -1151,10 +1166,7 @@ fn load_startup_settings() -> miette::Result<StartupSettings> {
     Ok(StartupSettings {
         loglevel: aube_settings::values::string_from_env("loglevel", &env)
             .or_else(|| aube_settings::values::string_from_npmrc("loglevel", &npmrc)),
-        package_manager_strict: PackageManagerStrictMode::parse(
-            &aube_settings::resolved::package_manager_strict(&ctx),
-        )
-        .unwrap_or_default(),
+        package_manager_strict: resolve_package_manager_strict(&ctx),
         package_manager_strict_version: aube_settings::resolved::package_manager_strict_version(
             &ctx,
         ),
@@ -1745,6 +1757,43 @@ mod package_manager_guard_tests {
             package_manager_guard_mode(cli.command.as_ref()),
             PackageManagerGuardMode::Error
         );
+    }
+
+    #[test]
+    fn package_manager_strict_mode_parses_canonical_spellings() {
+        for (input, expected) in [
+            ("off", PackageManagerStrictMode::Off),
+            ("warn", PackageManagerStrictMode::Warn),
+            ("error", PackageManagerStrictMode::Error),
+            ("  ERROR\n", PackageManagerStrictMode::Error),
+        ] {
+            assert_eq!(PackageManagerStrictMode::parse(input), Some(expected));
+        }
+    }
+
+    #[test]
+    fn package_manager_strict_mode_parses_bool_back_compat() {
+        // `true`/`false` (and the shell-style `1`/`0` admitted by the
+        // generic bool parser) need to keep working so projects on the
+        // pre-tri-state default don't break.
+        for (input, expected) in [
+            ("true", PackageManagerStrictMode::Error),
+            ("false", PackageManagerStrictMode::Off),
+            ("1", PackageManagerStrictMode::Error),
+            ("0", PackageManagerStrictMode::Off),
+        ] {
+            assert_eq!(PackageManagerStrictMode::parse(input), Some(expected));
+        }
+    }
+
+    #[test]
+    fn package_manager_strict_mode_returns_none_for_typos() {
+        // Caller turns `None` into a startup warning + default. The
+        // unit test pins the precondition: parse must NOT silently
+        // coerce a typo to the default.
+        assert!(PackageManagerStrictMode::parse("errror").is_none());
+        assert!(PackageManagerStrictMode::parse("warning").is_none());
+        assert!(PackageManagerStrictMode::parse("").is_none());
     }
 }
 
