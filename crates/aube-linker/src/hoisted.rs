@@ -367,14 +367,9 @@ pub(crate) fn link_hoisted_importer(
                 // tarball, file:) can't pick up a registry-sourced
                 // cache entry and get a different file list than its
                 // own tarball actually contains.
-                let loaded = pkg
-                    .integrity
-                    .as_deref()
-                    .and_then(|integrity| {
-                        linker
-                            .store
-                            .load_index(pkg.registry_name(), &pkg.version, integrity)
-                    })
+                let loaded = linker
+                    .store
+                    .load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
                     .ok_or_else(|| Error::MissingPackageIndex(dep_path.clone()))?;
                 owned_index = loaded;
                 &owned_index

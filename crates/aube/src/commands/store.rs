@@ -129,12 +129,12 @@ async fn add(specs: Vec<String>) -> miette::Result<()> {
         let index = store
             .import_tarball(&bytes)
             .map_err(|e| miette!("failed to import {name}@{version}: {e}"))?;
-        // Skip caching when the packument didn't ship an integrity —
-        // the cache key requires a proof of identity so cross-source
-        // lookups can't alias on (name, version) alone.
-        if let Some(integrity) = integrity.as_deref()
-            && let Err(e) = store.save_index(name, &version, integrity, &index)
-        {
+        // When the packument shipped a `dist.integrity`, the cache
+        // filename carries a `+<hex>` suffix that discriminates
+        // same-(name, version) tarballs from different sources.
+        // Otherwise we fall back to the plain key (proxies that strip
+        // integrity still get a warm cache).
+        if let Err(e) = store.save_index(name, &version, integrity.as_deref(), &index) {
             tracing::warn!("failed to cache index for {name}@{version}: {e}");
         }
 

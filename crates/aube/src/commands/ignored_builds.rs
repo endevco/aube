@@ -150,11 +150,12 @@ fn has_lifecycle_scripts(
     version: &str,
     integrity: Option<&str>,
 ) -> bool {
-    // Cache lookup is integrity-keyed to prevent same-(name, version)
-    // entries from different sources colliding. Missing integrity
-    // means we have no cache key, so conservatively report false —
-    // matches the behavior for "we couldn't read the manifest".
-    let Some(index) = integrity.and_then(|i| store.load_index(name, version, i)) else {
+    // Cache lookup is integrity-keyed when available (prevents
+    // same-(name, version) entries from different sources colliding)
+    // and falls back to the plain (name, version) key when integrity
+    // is absent so proxy-served packages without `dist.integrity` are
+    // still classifiable.
+    let Some(index) = store.load_index(name, version, integrity) else {
         return false;
     };
     let Some(stored) = index.get("package.json") else {

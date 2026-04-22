@@ -834,11 +834,12 @@ fn import_verified_tarball(
     }
     // Cache under `registry_name` so two aliases of the same real
     // package hit the same on-disk index file and avoid redundant
-    // fetches. Skip caching when integrity is unknown — the cache key
-    // requires a proof of identity to avoid cross-source collisions.
-    if let Some(integrity) = integrity
-        && let Err(e) = store.save_index(registry_name, version, integrity, &index)
-    {
+    // fetches. When `integrity` is `Some` the filename carries a
+    // `+<hex>` suffix that discriminates same-(name, version)
+    // tarballs from different sources; when `None` falls back to the
+    // plain name@version key so warm installs still find the cache
+    // on integrity-stripping proxies.
+    if let Err(e) = store.save_index(registry_name, version, integrity, &index) {
         tracing::warn!("Failed to cache index for {display_name}@{version}: {e}");
     }
     Ok(index)
@@ -1423,10 +1424,7 @@ where
             // under the same (name, version) — e.g. a github codeload
             // archive vs. the npm-published bytes — can't return the
             // wrong file list.
-            let cached = pkg.integrity.as_deref().and_then(|integrity| {
-                store.load_index(pkg.registry_name(), &pkg.version, integrity)
-            });
-            match cached {
+            match store.load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref()) {
                 Some(index) => (dep_path.clone(), pkg, CheckResult::Cached(index)),
                 None => (dep_path.clone(), pkg, CheckResult::NeedsFetch),
             }
@@ -2895,10 +2893,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // under the same (name, version) can't return the
                     // registry-cached file list.
                     let pkg_registry_name = pkg.registry_name().to_string();
-                    let cached = pkg.integrity.as_deref().and_then(|integrity| {
-                        fetch_store.load_index(&pkg_registry_name, &pkg.version, integrity)
-                    });
-                    if let Some(index) = cached {
+                    if let Some(index) = fetch_store.load_index(
+                        &pkg_registry_name,
+                        &pkg.version,
+                        pkg.integrity.as_deref(),
+                    ) {
                         materialize_tx
                             .send((pkg.dep_path.clone(), index.clone()))
                             .map_err(|_| {

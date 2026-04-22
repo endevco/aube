@@ -112,13 +112,22 @@ impl Store {
 
     /// Load a cached package index, if it exists.
     ///
-    /// `integrity` is the registry-advertised `sha512-<base64>` of the
-    /// tarball these cache files came from — part of the cache key so
-    /// the same `(name, version)` resolved from different sources
-    /// (npm registry vs. github codeload vs. a proxy that served
-    /// different bytes) can't alias on disk and return each other's
-    /// file lists to the linker.
-    pub fn load_index(&self, name: &str, version: &str, integrity: &str) -> Option<PackageIndex> {
+    /// `integrity`, when `Some`, is the registry-advertised
+    /// `sha512-<base64>` of the tarball these cache files came from —
+    /// part of the cache key so the same `(name, version)` resolved
+    /// from different sources (npm registry vs. github codeload vs. a
+    /// proxy that served different bytes) can't alias on disk and
+    /// return each other's file lists to the linker. `None` falls
+    /// back to an unsuffixed `<name>@<version>.json` key so packages
+    /// fetched through a registry proxy that strips `dist.integrity`
+    /// can still warm-install — an integrity-less setup is already a
+    /// degraded mode the user opted into via `strict-store-integrity=false`.
+    pub fn load_index(
+        &self,
+        name: &str,
+        version: &str,
+        integrity: Option<&str>,
+    ) -> Option<PackageIndex> {
         self.load_index_inner(name, version, integrity, false)
     }
 
@@ -128,7 +137,7 @@ impl Store {
         &self,
         name: &str,
         version: &str,
-        integrity: &str,
+        integrity: Option<&str>,
     ) -> Option<PackageIndex> {
         self.load_index_inner(name, version, integrity, true)
     }
@@ -137,7 +146,7 @@ impl Store {
         &self,
         name: &str,
         version: &str,
-        integrity: &str,
+        integrity: Option<&str>,
         verify_files: bool,
     ) -> Option<PackageIndex> {
         let index_path = self.index_path(name, version, integrity)?;
@@ -165,13 +174,13 @@ impl Store {
 
     /// Save a package index to the cache.
     ///
-    /// See [`load_index`](Self::load_index) for why `integrity` is part
-    /// of the cache key.
+    /// See [`load_index`](Self::load_index) for the semantics of
+    /// `integrity` and the integrity-less fallback.
     pub fn save_index(
         &self,
         name: &str,
         version: &str,
-        integrity: &str,
+        integrity: Option<&str>,
         index: &PackageIndex,
     ) -> Result<(), Error> {
         let index_path = self.index_path(name, version, integrity).ok_or_else(|| {
@@ -189,24 +198,31 @@ impl Store {
     /// Build the on-disk path for a cached index. The integrity suffix
     /// keeps different tarballs for the same (name, version) — e.g. a
     /// codeload tarball vs. the npm-published one — from aliasing on
-    /// disk. Returns `None` when any component is invalid (including an
-    /// integrity string we can't hex-decode).
-    fn index_path(&self, name: &str, version: &str, integrity: &str) -> Option<PathBuf> {
+    /// disk. When `integrity` is `None`, falls back to a plain
+    /// `<name>@<version>.json` (narrow collision risk only between two
+    /// integrity-less sources; users on that path already opted out of
+    /// integrity enforcement). Returns `None` when any component is
+    /// invalid (including an integrity string we can't hex-decode).
+    fn index_path(&self, name: &str, version: &str, integrity: Option<&str>) -> Option<PathBuf> {
         let safe_name = validate_and_encode_name(name)?;
         if !validate_version(version) {
             return None;
         }
-        let hex = integrity_to_hex(integrity)?;
-        // 16 hex chars = 64 bits of tarball SHA-512 prefix. Two tarballs
-        // whose SHA-512 prefixes collide would both have to be valid
-        // registry responses for the same (name, version) *and* survive
-        // `verify_integrity` on fetch, so birthday-bound collisions
-        // aren't a correctness risk; 16 chars is plenty.
-        let short = &hex[..16.min(hex.len())];
-        Some(
-            self.index_dir()
-                .join(format!("{safe_name}@{version}+{short}.json")),
-        )
+        let dir = self.index_dir();
+        match integrity {
+            Some(i) => {
+                let hex = integrity_to_hex(i)?;
+                // 16 hex chars = 64 bits of tarball SHA-512 prefix.
+                // Two tarballs whose SHA-512 prefixes collide would
+                // both have to be valid registry responses for the
+                // same (name, version) *and* survive `verify_integrity`
+                // on fetch, so birthday-bound collisions aren't a
+                // correctness risk; 16 chars is plenty.
+                let short = &hex[..16.min(hex.len())];
+                Some(dir.join(format!("{safe_name}@{version}+{short}.json")))
+            }
+            None => Some(dir.join(format!("{safe_name}@{version}.json"))),
+        }
     }
 
     /// Ensure every two-char shard directory under the CAS root exists.
@@ -1586,10 +1602,10 @@ mod tests {
         index.insert("index.js".to_string(), stored);
 
         store
-            .save_index("test-pkg", "1.0.0", TEST_INTEGRITY, &index)
+            .save_index("test-pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
             .unwrap();
 
-        let loaded = store.load_index("test-pkg", "1.0.0", TEST_INTEGRITY);
+        let loaded = store.load_index("test-pkg", "1.0.0", Some(TEST_INTEGRITY));
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.len(), 1);
@@ -1607,9 +1623,9 @@ mod tests {
 
         // Scoped package name should work (slash replaced with __)
         store
-            .save_index("@scope/pkg", "1.0.0", TEST_INTEGRITY, &index)
+            .save_index("@scope/pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
             .unwrap();
-        let loaded = store.load_index("@scope/pkg", "1.0.0", TEST_INTEGRITY);
+        let loaded = store.load_index("@scope/pkg", "1.0.0", Some(TEST_INTEGRITY));
         assert!(loaded.is_some());
     }
 
@@ -1624,23 +1640,27 @@ mod tests {
         index.insert("index.js".to_string(), stored);
 
         store
-            .save_index("pkg", "1.0.0", TEST_INTEGRITY, &index)
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
             .unwrap();
 
         // Delete the actual store file to simulate staleness
         std::fs::remove_file(&store_path).unwrap();
 
         // Both variants detect missing store files and return None.
-        assert!(store.load_index("pkg", "1.0.0", TEST_INTEGRITY).is_none());
+        assert!(
+            store
+                .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .is_none()
+        );
         // save_index wrote the file and load_index just deleted it
         // after detecting the stale store entry, so re-seed before
         // exercising the verified variant.
         store
-            .save_index("pkg", "1.0.0", TEST_INTEGRITY, &index)
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
             .unwrap();
         assert!(
             store
-                .load_index_verified("pkg", "1.0.0", TEST_INTEGRITY)
+                .load_index_verified("pkg", "1.0.0", Some(TEST_INTEGRITY))
                 .is_none()
         );
     }
@@ -1652,7 +1672,7 @@ mod tests {
 
         assert!(
             store
-                .load_index("nonexistent", "1.0.0", TEST_INTEGRITY)
+                .load_index("nonexistent", "1.0.0", Some(TEST_INTEGRITY))
                 .is_none()
         );
     }
@@ -1679,18 +1699,18 @@ mod tests {
         });
 
         store
-            .save_index("node-expat", "2.4.1", TEST_INTEGRITY, &registry_index)
+            .save_index("node-expat", "2.4.1", Some(TEST_INTEGRITY), &registry_index)
             .unwrap();
         store
-            .save_index("node-expat", "2.4.1", OTHER_INTEGRITY, &github_index)
+            .save_index("node-expat", "2.4.1", Some(OTHER_INTEGRITY), &github_index)
             .unwrap();
 
         // Each integrity returns its own distinct index.
         let registry = store
-            .load_index("node-expat", "2.4.1", TEST_INTEGRITY)
+            .load_index("node-expat", "2.4.1", Some(TEST_INTEGRITY))
             .unwrap();
         let github = store
-            .load_index("node-expat", "2.4.1", OTHER_INTEGRITY)
+            .load_index("node-expat", "2.4.1", Some(OTHER_INTEGRITY))
             .unwrap();
         assert_eq!(registry.len(), 1);
         assert_eq!(github.len(), 2);
@@ -1710,12 +1730,39 @@ mod tests {
         // load returns None rather than falling back to a weaker key.
         assert!(
             store
-                .save_index("pkg", "1.0.0", "not-an-integrity", &index)
+                .save_index("pkg", "1.0.0", Some("not-an-integrity"), &index)
                 .is_err()
         );
         assert!(
             store
-                .load_index("pkg", "1.0.0", "not-an-integrity")
+                .load_index("pkg", "1.0.0", Some("not-an-integrity"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_index_cache_integrity_none_roundtrip() {
+        // Registry proxies that strip `dist.integrity` still need to
+        // warm-install. With `integrity = None` the cache falls back
+        // to `<name>@<version>.json` (no suffix), matching the
+        // pre-integrity-keyed behavior for exactly that narrow case.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let stored = store.import_bytes(b"no-integrity content", false).unwrap();
+        let mut index = PackageIndex::new();
+        index.insert("index.js".to_string(), stored);
+
+        store.save_index("pkg", "1.0.0", None, &index).unwrap();
+        let loaded = store.load_index("pkg", "1.0.0", None);
+        assert!(loaded.is_some());
+        assert!(loaded.unwrap().contains_key("index.js"));
+
+        // The integrity-keyed key does *not* see the integrity-less
+        // entry — different filename on disk.
+        assert!(
+            store
+                .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
                 .is_none()
         );
     }

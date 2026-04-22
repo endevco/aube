@@ -56,11 +56,13 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
         return Err(miette!("invalid version: {version:?}"));
     }
     // The on-disk name is `{safe_name}@{version}+{integrity_short}.json`
-    // since the cache became integrity-keyed. Scan for every file
-    // matching the (name, version) prefix so cat-index can still be
-    // invoked without asking the user to know the integrity suffix.
+    // when the tarball came with a `dist.integrity` and the plain
+    // `{safe_name}@{version}.json` when it didn't (proxies that strip
+    // integrity). Scan for both so cat-index can find either variant
+    // without asking the user to know the integrity suffix.
     let prefix = format!("{safe_name}@{version}+");
-    let matches = scan_matches(&store.index_dir(), &prefix)?;
+    let plain = format!("{safe_name}@{version}.json");
+    let matches = scan_matches(&store.index_dir(), &prefix, &plain)?;
     let index_path = match matches.as_slice() {
         [] => {
             return Err(miette!(
@@ -111,6 +113,7 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
 fn scan_matches(
     index_dir: &std::path::Path,
     prefix: &str,
+    plain: &str,
 ) -> miette::Result<Vec<std::path::PathBuf>> {
     let entries = match std::fs::read_dir(index_dir) {
         Ok(e) => e,
@@ -126,7 +129,7 @@ fn scan_matches(
         let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if fname.starts_with(prefix) {
+        if fname == plain || fname.starts_with(prefix) {
             matches.push(path);
         }
     }
