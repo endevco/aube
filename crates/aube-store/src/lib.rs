@@ -856,7 +856,19 @@ pub fn validate_pkg_content(
         .strip_prefix('v')
         .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
         .unwrap_or(actual_version);
-    if actual_name != expected_name || actual_version_normalized != expected_version {
+    // pnpm v9 lockfiles key git-hosted deps by the codeload tarball URL
+    // (or a `git+<url>#<commit>` form) in the `version` slot of the
+    // dep_path — that URL is what the resolver hands us as
+    // `expected_version`, and it can't meaningfully be compared to the
+    // tarball's real semver. pnpm scopes its equivalent check to
+    // registry sources; do the same by dropping the version comparison
+    // (but still checking the name) whenever `expected_version` isn't
+    // semver-shaped.
+    let expected_is_url_or_ref = expected_version.contains("://")
+        || expected_version.starts_with("git+")
+        || expected_version.starts_with("file:");
+    let version_matches = expected_is_url_or_ref || actual_version_normalized == expected_version;
+    if actual_name != expected_name || !version_matches {
         // Only carry the *actual* coordinate the tarball declared.
         // Every caller wraps the error with the expected
         // `{name}@{version}: ` prefix (mirroring the Error::Integrity
@@ -1547,6 +1559,22 @@ mod tests {
         let store = Store::at(dir.path().join("files"));
         let index = index_with_manifest(&store, "@upstash/ratelimit", "v2.0.8");
         assert!(validate_pkg_content(&index, "@upstash/ratelimit", "2.0.8").is_ok());
+    }
+
+    #[test]
+    fn test_validate_pkg_content_skips_version_for_url_shaped_expected() {
+        // pnpm v9 lockfiles key github-hosted deps by the codeload
+        // tarball URL in the version slot; the tarball's real semver
+        // will never match it. Skip the version comparison for
+        // non-semver expected values, but still enforce the name.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        let index = index_with_manifest(&store, "datejs", "1.0.0-rc3");
+        let url = "https://codeload.github.com/PruvoNet/datejs/tar.gz/e2cde1e";
+        assert!(validate_pkg_content(&index, "datejs", url).is_ok());
+        // Name mismatch still rejects.
+        let err = validate_pkg_content(&index, "evil", url).unwrap_err();
+        assert!(err.to_string().contains("content mismatch"), "{err}");
     }
 
     #[test]
