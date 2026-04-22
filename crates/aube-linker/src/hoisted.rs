@@ -362,9 +362,19 @@ pub(crate) fn link_hoisted_importer(
                 // `registry_name()` is the lookup key for npm-aliased
                 // packages (`"h3-v2": "npm:h3@..."`), which saved the
                 // index under the real package name at fetch time.
-                let loaded = linker
-                    .store
-                    .load_index(pkg.registry_name(), &pkg.version)
+                // Integrity is part of the cache key so a same-name
+                // dep resolved from a non-registry source (git, remote
+                // tarball, file:) can't pick up a registry-sourced
+                // cache entry and get a different file list than its
+                // own tarball actually contains.
+                let loaded = pkg
+                    .integrity
+                    .as_deref()
+                    .and_then(|integrity| {
+                        linker
+                            .store
+                            .load_index(pkg.registry_name(), &pkg.version, integrity)
+                    })
                     .ok_or_else(|| Error::MissingPackageIndex(dep_path.clone()))?;
                 owned_index = loaded;
                 &owned_index

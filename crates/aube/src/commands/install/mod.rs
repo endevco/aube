@@ -834,8 +834,11 @@ fn import_verified_tarball(
     }
     // Cache under `registry_name` so two aliases of the same real
     // package hit the same on-disk index file and avoid redundant
-    // fetches.
-    if let Err(e) = store.save_index(registry_name, version, &index) {
+    // fetches. Skip caching when integrity is unknown — the cache key
+    // requires a proof of identity to avoid cross-source collisions.
+    if let Some(integrity) = integrity
+        && let Err(e) = store.save_index(registry_name, version, integrity, &index)
+    {
         tracing::warn!("Failed to cache index for {display_name}@{version}: {e}");
     }
     Ok(index)
@@ -1415,8 +1418,15 @@ where
             }
             // Keyed by registry name so two npm-aliases of the same
             // real package share one store index entry instead of
-            // wastefully double-fetching under the alias.
-            match store.load_index(pkg.registry_name(), &pkg.version) {
+            // wastefully double-fetching under the alias. Integrity
+            // is part of the cache key so a different tarball served
+            // under the same (name, version) — e.g. a github codeload
+            // archive vs. the npm-published bytes — can't return the
+            // wrong file list.
+            let cached = pkg.integrity.as_deref().and_then(|integrity| {
+                store.load_index(pkg.registry_name(), &pkg.version, integrity)
+            });
+            match cached {
                 Some(index) => (dep_path.clone(), pkg, CheckResult::Cached(index)),
                 None => (dep_path.clone(), pkg, CheckResult::NeedsFetch),
             }
@@ -2880,9 +2890,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // to `name` for the common case, and the alias's
                     // real target for npm-alias entries (where the
                     // alias-qualified name would miss the cache and
-                    // later 404 the tarball fetch).
+                    // later 404 the tarball fetch). Integrity is part
+                    // of the cache key so a github-sourced tarball
+                    // under the same (name, version) can't return the
+                    // registry-cached file list.
                     let pkg_registry_name = pkg.registry_name().to_string();
-                    if let Some(index) = fetch_store.load_index(&pkg_registry_name, &pkg.version) {
+                    let cached = pkg.integrity.as_deref().and_then(|integrity| {
+                        fetch_store.load_index(&pkg_registry_name, &pkg.version, integrity)
+                    });
+                    if let Some(index) = cached {
                         materialize_tx
                             .send((pkg.dep_path.clone(), index.clone()))
                             .map_err(|_| {

@@ -1,14 +1,19 @@
 //! `aube cat-index <pkg@version>` — print the cached package index JSON.
 //!
 //! Prints the index that `aube fetch`/`aube install` writes under
-//! `~/.cache/aube/index/<name>@<version>.json`: a mapping of relative paths
-//! in the package to their store file hashes. Useful for debugging linker
-//! behavior or confirming which files landed in the CAS.
+//! `~/.cache/aube/index/<name>@<version>+<integrity>.json`: a mapping of
+//! relative paths in the package to their store file hashes. Useful for
+//! debugging linker behavior or confirming which files landed in the CAS.
 //!
 //! The package must have been fetched by aube at least once — if the cache
 //! is cold for that version, we surface a friendly error pointing at
 //! `aube fetch`. This is a read-only introspection command: no lockfile,
 //! no node_modules, no project lock.
+//!
+//! If the user has fetched multiple distinct tarballs under the same
+//! `(name, version)` — e.g. a github codeload archive and the
+//! npm-published bytes — the command lists every cached integrity and
+//! asks the user to disambiguate.
 
 use clap::Args;
 use miette::{IntoDiagnostic, miette};
@@ -50,18 +55,43 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     if !aube_store::validate_version(version) {
         return Err(miette!("invalid version: {version:?}"));
     }
-    let index_path = store
-        .index_dir()
-        .join(format!("{safe_name}@{version}.json"));
-    let content = std::fs::read_to_string(&index_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            miette!(
+    // The on-disk name is `{safe_name}@{version}+{integrity_short}.json`
+    // since the cache became integrity-keyed. Scan for every file
+    // matching the (name, version) prefix so cat-index can still be
+    // invoked without asking the user to know the integrity suffix.
+    let prefix = format!("{safe_name}@{version}+");
+    let matches = scan_matches(&store.index_dir(), &prefix)?;
+    let index_path = match matches.as_slice() {
+        [] => {
+            return Err(miette!(
                 "no cached index for {name}@{version}\nhelp: run `aube fetch` or `aube install` to populate the store first"
-            )
-        } else {
-            miette!("failed to read {}: {e}", index_path.display())
+            ));
         }
-    })?;
+        [p] => p.clone(),
+        many => {
+            // Two different tarballs were fetched under the same
+            // (name, version). Print the list so the user knows which
+            // integrity suffixes exist; they can pick one via
+            // `cat-file`/direct read of the file.
+            let mut msg = format!(
+                "{} distinct cached tarballs for {name}@{version}:\n",
+                many.len()
+            );
+            for p in many {
+                if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                    msg.push_str("  ");
+                    msg.push_str(fname);
+                    msg.push('\n');
+                }
+            }
+            msg.push_str(
+                "help: read the specific file directly, or re-run `aube fetch` in the project whose tarball you want.",
+            );
+            return Err(miette!("{msg}"));
+        }
+    };
+    let content = std::fs::read_to_string(&index_path)
+        .map_err(|e| miette!("failed to read {}: {e}", index_path.display()))?;
     let index: aube_store::PackageIndex = serde_json::from_str(&content)
         .into_diagnostic()
         .map_err(|e| {
@@ -76,6 +106,32 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     println!("{json}");
 
     Ok(())
+}
+
+fn scan_matches(
+    index_dir: &std::path::Path,
+    prefix: &str,
+) -> miette::Result<Vec<std::path::PathBuf>> {
+    let entries = match std::fs::read_dir(index_dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(miette!("failed to read {}: {e}", index_dir.display())),
+    };
+    let mut matches = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if fname.starts_with(prefix) {
+            matches.push(path);
+        }
+    }
+    matches.sort();
+    Ok(matches)
 }
 
 /// Split `name@version` into its parts, respecting scoped packages.

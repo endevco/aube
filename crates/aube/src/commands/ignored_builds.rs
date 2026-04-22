@@ -120,7 +120,7 @@ pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<V
         ) {
             continue;
         }
-        if !has_lifecycle_scripts(&store, &pkg.name, &pkg.version) {
+        if !has_lifecycle_scripts(&store, &pkg.name, &pkg.version, pkg.integrity.as_deref()) {
             continue;
         }
         out.push(IgnoredEntry {
@@ -144,8 +144,17 @@ pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<V
 /// package might have scripts we can't see, but reporting them as
 /// "ignored" would be noise since the install pipeline also skipped
 /// them for the same reason.
-fn has_lifecycle_scripts(store: &aube_store::Store, name: &str, version: &str) -> bool {
-    let Some(index) = store.load_index(name, version) else {
+fn has_lifecycle_scripts(
+    store: &aube_store::Store,
+    name: &str,
+    version: &str,
+    integrity: Option<&str>,
+) -> bool {
+    // Cache lookup is integrity-keyed to prevent same-(name, version)
+    // entries from different sources colliding. Missing integrity
+    // means we have no cache key, so conservatively report false —
+    // matches the behavior for "we couldn't read the manifest".
+    let Some(index) = integrity.and_then(|i| store.load_index(name, version, i)) else {
         return false;
     };
     let Some(stored) = index.get("package.json") else {

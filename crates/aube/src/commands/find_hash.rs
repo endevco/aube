@@ -164,11 +164,11 @@ fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Resu
     Ok(matches)
 }
 
-/// Reverse the `{safe_name}@{version}.json` naming scheme used by
-/// `Store::save_index`. The safe-name rule is `/` → `__`, which isn't
-/// globally bijective — a non-scoped package whose name legitimately
-/// contains `__` (e.g. `foo__bar`) would round-trip back as `foo/bar`
-/// under naive `replace("__", "/")`.
+/// Reverse the `{safe_name}@{version}+{integrity_short}.json` naming
+/// scheme used by `Store::save_index`. The safe-name rule is
+/// `/` → `__`, which isn't globally bijective — a non-scoped package
+/// whose name legitimately contains `__` (e.g. `foo__bar`) would
+/// round-trip back as `foo/bar` under naive `replace("__", "/")`.
 ///
 /// Exploit the structure of npm names: only scoped packages contain
 /// `/`, and always exactly one — between the scope and the package
@@ -181,7 +181,13 @@ fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Resu
 /// `@foo__bar/baz` — is still ambiguous vs. `@foo/bar__baz` and
 /// decodes to the latter. That's a limitation of the underlying
 /// `save_index` encoding, not fixable in the reverse direction alone.)
+///
+/// The trailing `+{16 hex chars}` integrity suffix is stripped before
+/// splitting on `@`, so the printed `{name}@{version}` output stays
+/// stable across the cache-key change. Stems from older aube versions
+/// (without a `+<hex>` suffix) still parse correctly.
 fn split_stem(stem: &str) -> Option<(String, String)> {
+    let stem = strip_integrity_suffix(stem);
     let at = stem.rfind('@')?;
     if at == 0 {
         return None;
@@ -204,6 +210,21 @@ fn split_stem(stem: &str) -> Option<(String, String)> {
         safe_name.to_string()
     };
     Some((name, version.to_string()))
+}
+
+/// Drop the trailing `+<16 lowercase hex>` integrity suffix if present.
+/// Anything shorter, longer, or non-hex is left alone so old-format
+/// stems (pre integrity-keyed cache) still parse.
+fn strip_integrity_suffix(stem: &str) -> &str {
+    let Some(plus) = stem.rfind('+') else {
+        return stem;
+    };
+    let suffix = &stem[plus + 1..];
+    if suffix.len() == 16 && suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        &stem[..plus]
+    } else {
+        stem
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +282,33 @@ mod tests {
         assert_eq!(
             split_stem("@scope__pkg__name@1.0.0"),
             Some(("@scope/pkg__name".into(), "1.0.0".into()))
+        );
+    }
+
+    #[test]
+    fn split_stem_strips_integrity_suffix() {
+        // New cache-key format appends `+<16 hex>` as an integrity
+        // discriminator. `find_hash`'s output should stay
+        // `{name}@{version}` regardless.
+        assert_eq!(
+            split_stem("lodash@4.17.21+deadbeefdeadbeef"),
+            Some(("lodash".into(), "4.17.21".into()))
+        );
+        assert_eq!(
+            split_stem("@babel__core@7.0.0+0123456789abcdef"),
+            Some(("@babel/core".into(), "7.0.0".into()))
+        );
+    }
+
+    #[test]
+    fn split_stem_leaves_non_integrity_plus_suffix_intact() {
+        // A semver build metadata suffix like `+build123` shouldn't be
+        // stripped — only a precise 16-lowercase-hex tail is the
+        // integrity marker. `build123` has fewer than 16 chars and is
+        // not hex, so it stays as part of the version.
+        assert_eq!(
+            split_stem("foo@1.0.0+build123"),
+            Some(("foo".into(), "1.0.0+build123".into()))
         );
     }
 
