@@ -278,14 +278,19 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // pnpm writes `version: <semver>` alongside non-registry entries
         // whose dep-path key is a URL. Prefer that over the URL itself
         // when the dep-path version isn't a real semver — the install
-        // path uses `pkg.version` for the store-content cross-check, and
-        // comparing a URL to the tarball's declared `2.4.1` would fail
-        // every github override'd package.
-        let version_is_url = version.starts_with("http://")
-            || version.starts_with("https://")
-            || version.starts_with("git+")
-            || version.starts_with("git://");
-        let version = if version_is_url {
+        // path uses `pkg.version` for the store-content cross-check,
+        // and comparing a URL to the tarball's declared `2.4.1` would
+        // fail every github override'd package.
+        //
+        // Gated on `tarball_url.is_some()` so the swap only applies to
+        // the remote-tarball case (where the URL is recoverable from
+        // `resolution.tarball` at write time). `git+`/`git://` /
+        // `.git#sha` transitive entries resolve through
+        // `resolution: {type: git, commit, repo}` and need a separate
+        // round-trip path — they stay on the pre-existing URL-as-
+        // version behavior until that path lands.
+        let version_is_http_url = version.starts_with("http://") || version.starts_with("https://");
+        let version = if version_is_http_url && tarball_url.is_some() {
             pkg_info.and_then(|p| p.version.clone()).unwrap_or(version)
         } else {
             version
@@ -570,21 +575,28 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         // `foo@file:./vendor/foo`) so pnpm can read the lockfile.
         // `link:` deps are omitted from the packages section entirely,
         // matching pnpm.
+        // Non-registry transitive entries (github overrides, remote
+        // tarballs fetched by URL) keep the URL in their dep-path key
+        // and carry the real semver on `pkg.version`. `tarball_url`
+        // carries the URL through the graph — when the dep-path's
+        // version segment is that same URL, the entry was parsed from
+        // a URL-keyed pnpm snapshot and needs to round-trip under the
+        // same URL key. Paired with the parser's `version_is_http_url
+        // && tarball_url.is_some()` gate.
+        let url_keyed = pkg
+            .tarball_url
+            .as_ref()
+            .is_some_and(|url| parse_dep_path(&pkg.dep_path).is_some_and(|(_, v)| v == *url));
         let canonical = match pkg.local_source.as_ref() {
             Some(LocalSource::Link(_)) => continue,
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
-            // Non-registry transitive entries (github overrides, remote
-            // tarballs fetched by URL) keep the URL in their dep-path
-            // key and carry the real semver on `pkg.version`. Round-trip
-            // with the URL key so the written lockfile stays byte-
-            // compatible with pnpm and other tools that match packages
-            // by dep-path.
-            None if pkg
-                .tarball_url
-                .as_ref()
-                .is_some_and(|url| pkg.dep_path == format!("{}@{url}", pkg.name)) =>
-            {
-                pkg.dep_path.clone()
+            None if url_keyed => {
+                // Strip any peer suffix; the packages section keys the
+                // canonical form (no peer contexts), the snapshots
+                // section keys the full dep_path.
+                let (name, version) = parse_dep_path(&pkg.dep_path)
+                    .unwrap_or_else(|| (pkg.name.clone(), pkg.version.clone()));
+                format!("{name}@{version}")
             }
             None => version_to_dep_path(&pkg.name, &pkg.version),
         };
@@ -658,6 +670,21 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 repo: None,
                 type_: None,
             }),
+            None if url_keyed => {
+                // URL-keyed transitive entries (github overrides, etc.)
+                // typically carry no integrity — just the tarball URL
+                // in `resolution:`. Gating on `pkg.integrity` would
+                // silently drop the tarball on round-trip, and a
+                // re-parse would then have no way to fetch the package.
+                Some(WritableResolution {
+                    integrity: pkg.integrity.clone(),
+                    directory: None,
+                    tarball: pkg.tarball_url.clone(),
+                    commit: None,
+                    repo: None,
+                    type_: None,
+                })
+            }
             None => pkg.integrity.as_ref().map(|i| WritableResolution {
                 integrity: Some(i.clone()),
                 directory: None,
@@ -678,17 +705,12 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
             }),
         };
         // Mirror pnpm: emit `version:` alongside the resolution block
-        // for non-registry transitive entries where the canonical key
-        // is a URL rather than `name@version`. Without this, reading a
-        // pnpm lockfile with a github-override'd dep and re-writing it
-        // would drop pnpm's `version:` field and leave tooling that
-        // matches packages by (name, version) with no handle on the
-        // real semver. Scoped to the `local_source: None` path — local
-        // deps (file:/link:/git: direct deps) use their own placeholder
-        // version and shouldn't leak it into the lockfile.
-        let write_version = (pkg.local_source.is_none()
-            && canonical != version_to_dep_path(&pkg.name, &pkg.version))
-        .then(|| pkg.version.clone());
+        // for URL-keyed transitive entries so tooling that matches
+        // packages by (name, version) still has a handle on the real
+        // semver. Ordinary registry entries skip this — the key already
+        // carries the version, and adding a field would diverge from
+        // byte-for-byte pnpm output.
+        let write_version = url_keyed.then(|| pkg.version.clone());
         packages.insert(
             canonical,
             WritablePackageInfo {
@@ -1768,6 +1790,24 @@ snapshots:
             written.contains("    version: 2.4.1"),
             "`version:` field missing from output: {written}"
         );
+        // Round-trip must preserve the `resolution: {tarball: …}` block.
+        // URL-keyed transitives typically have no integrity, so gating
+        // the block on `pkg.integrity` would silently drop the tarball
+        // URL and a re-parse would have no way to fetch the package.
+        assert!(
+            written.contains("resolution: {tarball: https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65}"),
+            "`resolution: {{tarball: …}}` missing from output: {written}"
+        );
+        // Re-parse the written lockfile and assert the tarball URL
+        // makes it all the way back onto `LockedPackage.tarball_url`.
+        let reparsed = parse(&out_path).unwrap();
+        let url = "https://codeload.github.com/PruvoNet/node-expat/tar.gz/0732e16b0b679da2d12e062f78b3a511f419bb65";
+        let pkg = reparsed
+            .packages
+            .get(&format!("node-expat@{url}"))
+            .expect("URL-keyed entry survives round-trip");
+        assert_eq!(pkg.version, "2.4.1");
+        assert_eq!(pkg.tarball_url.as_deref(), Some(url));
     }
 
     #[test]
