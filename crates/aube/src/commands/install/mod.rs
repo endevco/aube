@@ -670,7 +670,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     // implicit via binding.gyp, or transitive via node-gyp-build).
     // If the user already has node-gyp (system install, nvm, a test
     // shim), `ensure` returns `None` and we leave their copy alone.
-    let node_gyp_bin_dir = std::sync::Arc::new(node_gyp_bootstrap::ensure().await?);
+    let node_gyp_bin_dir = std::sync::Arc::new(node_gyp_bootstrap::ensure(project_dir).await?);
 
     // Pass 2 (parallel, bounded): fan out across `child_concurrency`
     // concurrent workers. Inside one job the three hooks

@@ -19,10 +19,15 @@
 //!
 //! The install is performed by recursively invoking the current aube
 //! binary with `install --ignore-scripts` inside a freshly-written
-//! `package.json` that pins node-gyp. An `xx::fslock` lock keyed off
-//! the tool dir serializes concurrent bootstraps across processes;
-//! the fast-path existence check short-circuits every subsequent
-//! invocation.
+//! `package.json` that pins node-gyp. The outer project's `.npmrc`
+//! (if any) is copied into the tool dir as its own project-level
+//! `.npmrc` so private-registry URLs and auth tokens configured by
+//! monorepo / enterprise setups flow through to the recursive
+//! install — the subprocess's cwd is the tool dir, which would
+//! otherwise only pick up `~/.npmrc`. An `xx::fslock` lock keyed
+//! off the tool dir serializes concurrent bootstraps across
+//! processes; the fast-path existence check short-circuits every
+//! subsequent invocation.
 use miette::{IntoDiagnostic, WrapErr, miette};
 use std::path::{Path, PathBuf};
 
@@ -67,7 +72,11 @@ fn tool_root() -> miette::Result<PathBuf> {
 /// when the ambient `PATH` doesn't already provide one, or `None` when
 /// the user already has a copy on `PATH` — in which case we don't
 /// touch their setup.
-pub async fn ensure() -> miette::Result<Option<PathBuf>> {
+///
+/// `project_dir` is the outer install's project root; its `.npmrc`
+/// (if any) is propagated to the tool dir so the bootstrap inherits
+/// the same registry/auth configuration.
+pub async fn ensure(project_dir: &Path) -> miette::Result<Option<PathBuf>> {
     if node_gyp_on_path() {
         return Ok(None);
     }
@@ -80,8 +89,14 @@ pub async fn ensure() -> miette::Result<Option<PathBuf>> {
     let lock_key = root.join(format!("{BUCKET}.lock"));
     let tool_dir_blocking = tool_dir.clone();
     let bin_dir_blocking = bin_dir.clone();
+    let project_npmrc = project_dir.join(".npmrc");
     tokio::task::spawn_blocking(move || {
-        bootstrap_blocking(&lock_key, &tool_dir_blocking, &bin_dir_blocking)
+        bootstrap_blocking(
+            &lock_key,
+            &tool_dir_blocking,
+            &bin_dir_blocking,
+            &project_npmrc,
+        )
     })
     .await
     .into_diagnostic()
@@ -89,7 +104,12 @@ pub async fn ensure() -> miette::Result<Option<PathBuf>> {
     Ok(Some(bin_dir))
 }
 
-fn bootstrap_blocking(lock_key: &Path, tool_dir: &Path, bin_dir: &Path) -> miette::Result<()> {
+fn bootstrap_blocking(
+    lock_key: &Path,
+    tool_dir: &Path,
+    bin_dir: &Path,
+    project_npmrc: &Path,
+) -> miette::Result<()> {
     std::fs::create_dir_all(tool_dir).into_diagnostic()?;
     let _lock = xx::fslock::FSLock::new(lock_key)
         .with_callback(|_| {
@@ -105,6 +125,26 @@ fn bootstrap_blocking(lock_key: &Path, tool_dir: &Path, bin_dir: &Path) -> miett
         r#"{{"name":"aube-tool-node-gyp","private":true,"dependencies":{{"node-gyp":"{SPEC}"}}}}"#
     );
     std::fs::write(tool_dir.join("package.json"), manifest).into_diagnostic()?;
+    // Forward the outer project's `.npmrc` so private registries and
+    // auth tokens configured at project scope carry through to the
+    // recursive install. The subprocess's cwd is `tool_dir`, so
+    // without this copy its `.npmrc` walk would only ever see
+    // `~/.npmrc`. Overwrite on every bootstrap so a user updating
+    // their project `.npmrc` between runs picks up fresh config;
+    // delete the stale copy if the project no longer has one.
+    let tool_npmrc = tool_dir.join(".npmrc");
+    if project_npmrc.exists() {
+        std::fs::copy(project_npmrc, &tool_npmrc)
+            .into_diagnostic()
+            .wrap_err_with(|| {
+                format!(
+                    "failed to propagate {} to node-gyp bootstrap dir",
+                    project_npmrc.display()
+                )
+            })?;
+    } else if tool_npmrc.exists() {
+        let _ = std::fs::remove_file(&tool_npmrc);
+    }
     let exe = std::env::current_exe()
         .into_diagnostic()
         .wrap_err("could not locate current aube executable for node-gyp bootstrap")?;
