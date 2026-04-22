@@ -2647,7 +2647,7 @@ fn pick_version<'a>(
         range_str.to_string()
     };
 
-    let range = match node_semver::Range::parse(&effective_range) {
+    let range = match node_semver::Range::parse(normalize_range(&effective_range)) {
         Ok(r) => r,
         Err(_) => return PickResult::NoMatch,
     };
@@ -3169,10 +3169,24 @@ pub(crate) fn version_satisfies(version: &str, range_str: &str) -> bool {
     let Ok(v) = node_semver::Version::parse(version) else {
         return false;
     };
-    with_cached_range(range_str, |r| match r {
+    with_cached_range(normalize_range(range_str), |r| match r {
         Some(r) => v.satisfies(r),
         None => false,
     })
+}
+
+/// npm / pnpm / yarn all treat an empty or whitespace-only version
+/// range as equivalent to `"*"` (match any). `node_semver` rejects it
+/// with `No valid ranges could be parsed`. Normalize here so the
+/// resolver and every `version_satisfies` caller agree with the
+/// upstream registry semantics. Real-world case: `hashring@0.0.8`
+/// declares `"bisection": ""` in its dependencies.
+fn normalize_range(range_str: &str) -> &str {
+    if range_str.trim().is_empty() {
+        "*"
+    } else {
+        range_str
+    }
 }
 
 /// Thread-local `node_semver::Range` parse cache.
@@ -3350,6 +3364,16 @@ mod tests {
     fn test_version_satisfies_invalid() {
         assert!(!version_satisfies("notaversion", "^1.0.0"));
         assert!(!version_satisfies("1.0.0", "notarange"));
+    }
+
+    #[test]
+    fn test_version_satisfies_empty_range_is_any() {
+        // `hashring@0.0.8` in the wild declares `"bisection": ""`.
+        // npm / pnpm / yarn treat empty and whitespace-only ranges as
+        // `"*"`; aube must match.
+        assert!(version_satisfies("0.0.3", ""));
+        assert!(version_satisfies("99.99.99", ""));
+        assert!(version_satisfies("1.2.3", "   "));
     }
 
     #[test]
