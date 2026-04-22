@@ -80,6 +80,20 @@ teardown() {
 	assert_output --partial "hello from aube!"
 }
 
+@test "aube run from workspace subpackage reuses root install state" {
+	# Regression: ensure_installed used to anchor its freshness check
+	# at the nearest package.json (the subpackage) and miss the state
+	# file that install writes only at the workspace root. Result: every
+	# `aube run` / `aube start` from a subpackage spuriously reported
+	# "install state not found" and re-ran install.
+	cp -r "$PROJECT_ROOT/fixtures/workspace/"* .
+	aube install
+	cd packages/app
+	run aube start
+	assert_success
+	refute_output --partial "Auto-installing"
+}
+
 @test "aube run auto-installs when package.json changes" {
 	_setup_basic_fixture
 	aube install

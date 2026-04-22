@@ -1065,9 +1065,18 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
     }
 
     let initial_cwd = crate::dirs::cwd()?;
-    // Walk up to the nearest `package.json` so auto-install from a
-    // subdirectory checks (and installs into) the project root.
-    let cwd = crate::dirs::find_project_root(&initial_cwd).unwrap_or(initial_cwd);
+    // Prefer the workspace root as the freshness anchor. A monorepo
+    // install writes exactly one `.aube-state` file, at the workspace
+    // root — subpackages get symlinked `node_modules/` with no state
+    // file of their own. Walking up only to the nearest `package.json`
+    // (the subpackage itself) would miss that state file and report
+    // "install state not found" on every `aube run`/`exec`/`start`
+    // from a subpackage even when the root install is fresh. Fall
+    // back to the nearest `package.json` for non-workspace projects,
+    // and finally to the cwd itself so we never panic resolving it.
+    let cwd = crate::dirs::find_workspace_root(&initial_cwd)
+        .or_else(|| crate::dirs::find_project_root(&initial_cwd))
+        .unwrap_or(initial_cwd);
     // Resolve both pieces of auto-install policy in a single
     // `with_settings_ctx` call so the `.npmrc` + workspace-yaml read
     // pays off once. `aubeNoAutoInstall` lets a project/workspace opt
