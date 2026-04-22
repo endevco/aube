@@ -3444,8 +3444,32 @@ fn build_no_match(task: &ResolveTask, packument: &Packument) -> NoMatchDetails {
 /// the packument rather than threaded out of `pick_version` because
 /// the age-gate path is uncommon and the recompute cost is dwarfed by
 /// the resolution itself.
+/// Resolve a `task.range` string that may be a dist-tag (`"latest"`,
+/// `"next"`, …) to the concrete version it points at. Used by the
+/// diagnostic builders where we need to parse the range for display
+/// purposes after `pick_version` has already accepted or rejected it.
+/// Falls back to the raw input when nothing matches — callers treat a
+/// subsequent semver parse failure as "skip, best-effort".
+fn resolve_dist_tag_range(packument: &Packument, range_str: &str) -> String {
+    if let Some(tagged) = packument.dist_tags.get(range_str) {
+        tagged.clone()
+    } else if range_str == "latest"
+        && let Some(v) = highest_stable_version(packument)
+    {
+        v
+    } else {
+        range_str.to_string()
+    }
+}
+
 fn build_age_gate(task: &ResolveTask, packument: &Packument, minutes: u64) -> AgeGateDetails {
-    let range = node_semver::Range::parse(&task.range).ok();
+    // Mirror `pick_version`'s dist-tag handling: if `task.range` is a
+    // tag name (e.g. `"latest"`, `"next"`), resolve it to the concrete
+    // version string before parsing. Without this the semver parse
+    // fails silently and the help text drops the "blocked by age gate"
+    // line entirely, losing the most useful diagnostic.
+    let effective = resolve_dist_tag_range(packument, &task.range);
+    let range = node_semver::Range::parse(&effective).ok();
     let mut gated: Vec<(node_semver::Version, String)> = Vec::new();
     if let Some(r) = range {
         for ver in packument.versions.keys() {
@@ -3761,6 +3785,25 @@ mod tests {
         assert!(help.contains("2.0.0-rc.3"));
         assert!(help.contains("bleeding@2.0.0-rc.3"));
         assert!(help.contains("`next` dist-tag"));
+    }
+
+    #[test]
+    fn build_age_gate_resolves_dist_tag_range() {
+        let packument = make_packument("foo", &["1.0.0", "2.0.0", "3.0.0"], "3.0.0");
+        let task = ResolveTask {
+            name: "foo".into(),
+            range: "latest".into(),
+            dep_type: DepType::Production,
+            is_root: true,
+            parent: None,
+            importer: ".".into(),
+            original_specifier: None,
+            real_name: None,
+            ancestors: Vec::new(),
+        };
+        let d = build_age_gate(&task, &packument, 60);
+        // `latest` → 3.0.0; the exact-version range only matches 3.0.0.
+        assert_eq!(d.gated, vec!["3.0.0".to_string()]);
     }
 
     #[test]
