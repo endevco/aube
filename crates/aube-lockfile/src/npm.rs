@@ -443,7 +443,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             let Some(target) = entry.resolved.as_ref() else {
                 continue;
             };
-            raw.packages.get(target).unwrap_or(entry)
+            let Some(target_entry) = raw.packages.get(target) else {
+                unreachable!("first pass validates that linked package target '{target}' exists");
+            };
+            target_entry
         } else {
             entry
         };
@@ -518,7 +521,13 @@ fn dep_path_tail<'a>(name: &str, dep_path: &'a str) -> &'a str {
     dep_path
         .strip_prefix(name)
         .and_then(|rest| rest.strip_prefix('@'))
-        .unwrap_or(dep_path)
+        .unwrap_or_else(|| {
+            debug_assert!(
+                false,
+                "dep_path '{dep_path}' does not start with name '{name}'"
+            );
+            dep_path
+        })
 }
 
 /// Resolve a transitive dep name from the perspective of a package at
