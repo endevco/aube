@@ -665,6 +665,50 @@ impl Linker {
         dep_path_to_filename(dep_path, self.virtual_store_dir_max_length)
     }
 
+    /// Remove `.aube/<dep_path>` entries no longer in the resolved
+    /// graph, so a package dropped from package.json doesn't linger
+    /// and keep satisfying phantom imports reached through nested
+    /// `node_modules/` walks. Preserves the hidden hoist tree at
+    /// `.aube/node_modules/` and any dotfile/`.tmp-*` sidecars; those
+    /// are owned by `link_hidden_hoist` and `sweep_stale_tmp_dirs`.
+    /// In gvs mode each entry is a symlink into the shared store, so
+    /// `file_type` drives the unlink to keep `remove_dir_all` from
+    /// recursing through the link and wiping another project's data.
+    fn prune_stale_virtual_store_entries(&self, aube_dir: &Path, graph: &LockfileGraph) {
+        let current: std::collections::HashSet<String> = graph
+            .packages
+            .keys()
+            .map(|dp| self.aube_dir_entry_name(dp))
+            .collect();
+        let Ok(entries) = std::fs::read_dir(aube_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Membership check first: warm re-installs hit `current`
+            // for every package entry, so this skips the reserved-name
+            // compares in the overwhelming common case.
+            if current.contains(name_str.as_ref()) {
+                continue;
+            }
+            if name_str == "node_modules" || name_str.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
+            if is_symlink {
+                // `remove_dir` before `remove_file` to match the
+                // stale-symlink cleanup in Step 1. Windows NTFS
+                // junctions look like directories and `remove_file`
+                // can't unlink them; Unix symlinks fall through.
+                let _ = std::fs::remove_dir(&path).or_else(|_| std::fs::remove_file(&path));
+            } else {
+                let _ = remove_dir_all_with_retry(&path);
+            }
+        }
+    }
+
     /// Whether this linker populates the project's `.aube/` entries as
     /// symlinks into the shared virtual store (true) or materializes a
     /// per-project copy (false). Callers that want to mutate package
@@ -899,6 +943,8 @@ impl Linker {
                 self.virtual_store_dir_max_length,
             );
         }
+
+        self.prune_stale_virtual_store_entries(&aube_dir, graph);
 
         // Step 1: Populate .aube virtual store
         //
@@ -1341,6 +1387,8 @@ impl Linker {
                 self.virtual_store_dir_max_length,
             );
         }
+
+        self.prune_stale_virtual_store_entries(&aube_dir, graph);
 
         // Step 1a: Materialize local (`file:` dir/tarball) packages
         // straight into the shared per-project `.aube/`. They never
@@ -3346,6 +3394,58 @@ mod tests {
             "module.exports = 'foo@2';",
             "install 2 should repoint the hoisted symlink to foo@2.0.0"
         );
+    }
+
+    /// Regression: removing a package from package.json between
+    /// installs must drop its `.aube/<dep_path>/` entry. Previously
+    /// the linker only swept the top-level `node_modules/<name>`
+    /// symlink, leaving the virtual-store dir behind where it could
+    /// keep satisfying phantom imports reached through a nested
+    /// `node_modules/` walk. Exercise both the per-project and
+    /// global-virtual-store modes because the entry type differs
+    /// (directory vs. symlink into the shared store).
+    #[test]
+    fn test_link_all_prunes_removed_package_from_virtual_store() {
+        for use_gvs in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let project_dir = dir.path().join("project");
+            std::fs::create_dir_all(&project_dir).unwrap();
+
+            let (store, indices) = setup_store_with_files(dir.path());
+            let linker = Linker::new_with_gvs(&store, LinkStrategy::Copy, use_gvs);
+
+            linker
+                .link_all(&project_dir, &make_graph(), &indices)
+                .unwrap();
+            let aube_foo = project_dir.join("node_modules/.aube/foo@1.0.0");
+            let aube_bar = project_dir.join("node_modules/.aube/bar@2.0.0");
+            assert!(
+                aube_foo.symlink_metadata().is_ok(),
+                "gvs={use_gvs}: foo should be materialized after install 1"
+            );
+            assert!(
+                aube_bar.symlink_metadata().is_ok(),
+                "gvs={use_gvs}: bar should be materialized after install 1"
+            );
+
+            let empty = LockfileGraph::default();
+            linker
+                .link_all(&project_dir, &empty, &BTreeMap::new())
+                .unwrap();
+
+            assert!(
+                aube_foo.symlink_metadata().is_err(),
+                "gvs={use_gvs}: foo@1.0.0 should be pruned from .aube after removal"
+            );
+            assert!(
+                aube_bar.symlink_metadata().is_err(),
+                "gvs={use_gvs}: bar@2.0.0 should be pruned from .aube after removal"
+            );
+            assert!(
+                project_dir.join("node_modules/.aube").exists(),
+                "gvs={use_gvs}: the .aube dir itself must survive the sweep"
+            );
+        }
     }
 
     // ---------------------------------------------------------------
