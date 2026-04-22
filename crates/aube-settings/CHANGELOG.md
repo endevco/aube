@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.11...aube-settings-v1.0.0-beta.12) - 2026-04-22
+
+### Other
+
+- make packageManagerStrict a tri-state, default warn ([#213](https://github.com/endevco/aube/pull/213))
+
 ## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.9...aube-settings-v1.0.0-beta.10) - 2026-04-21
 
 ### Fixed

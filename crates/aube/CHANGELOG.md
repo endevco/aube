@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.12](https://github.com/endevco/aube/compare/v1.0.0-beta.11...v1.0.0-beta.12) - 2026-04-22
+
+### Other
+
+- anchor aube install at workspace root from member subdir ([#217](https://github.com/endevco/aube/pull/217))
+- apply dependency policy in add/remove/update/dedupe resolver ([#218](https://github.com/endevco/aube/pull/218))
+- compare packageManagerStrictVersion against user-facing version ([#216](https://github.com/endevco/aube/pull/216))
+- anchor auto-install freshness check at workspace root ([#215](https://github.com/endevco/aube/pull/215))
+- make packageManagerStrict a tri-state, default warn ([#213](https://github.com/endevco/aube/pull/213))
+- append -DEBUG to version on non-release builds ([#212](https://github.com/endevco/aube/pull/212))
+- include integrity in package index cache key ([#209](https://github.com/endevco/aube/pull/209))
+- bootstrap node-gyp when absent from PATH ([#210](https://github.com/endevco/aube/pull/210))
+- cross-crate dedup pass ([#208](https://github.com/endevco/aube/pull/208))
+- enrich NoMatch error with importer, chain, available versions ([#205](https://github.com/endevco/aube/pull/205))
+- raise RLIMIT_NOFILE soft limit at startup ([#207](https://github.com/endevco/aube/pull/207))
+- cross-crate security hardening ([#202](https://github.com/endevco/aube/pull/202))
+- *(filter)* keep root importer deps in workspace selects ([#199](https://github.com/endevco/aube/pull/199))
+- cross-crate correctness and security fixes ([#196](https://github.com/endevco/aube/pull/196))
+
 ## [1.0.0-beta.11](https://github.com/endevco/aube/compare/v1.0.0-beta.10...v1.0.0-beta.11) - 2026-04-21
 
 ### Other

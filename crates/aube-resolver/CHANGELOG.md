@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.11...aube-resolver-v1.0.0-beta.12) - 2026-04-22
+
+### Other
+
+- cross-crate dedup pass ([#208](https://github.com/endevco/aube/pull/208))
+- enrich NoMatch error with importer, chain, available versions ([#205](https://github.com/endevco/aube/pull/205))
+- treat empty version range as `*` ([#206](https://github.com/endevco/aube/pull/206))
+- allow exotic subdeps from local parents ([#201](https://github.com/endevco/aube/pull/201))
+- cross-crate correctness and security fixes ([#196](https://github.com/endevco/aube/pull/196))
+
 ## [1.0.0-beta.11](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.10...aube-resolver-v1.0.0-beta.11) - 2026-04-21
 
 ### Other

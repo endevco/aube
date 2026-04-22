@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-workspace-v1.0.0-beta.11...aube-workspace-v1.0.0-beta.12) - 2026-04-22
+
+### Other
+
+- cross-crate correctness and security fixes ([#196](https://github.com/endevco/aube/pull/196))
+
 ## [1.0.0-beta.9](https://github.com/endevco/aube/compare/aube-workspace-v1.0.0-beta.8...aube-workspace-v1.0.0-beta.9) - 2026-04-20
 
 ### Other

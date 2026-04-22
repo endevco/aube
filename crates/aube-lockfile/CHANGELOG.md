@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.11...aube-lockfile-v1.0.0-beta.12) - 2026-04-22
+
+### Other
+
+- *(pnpm)* strip peer-context suffix from URL importer versions ([#214](https://github.com/endevco/aube/pull/214))
+- cross-crate dedup pass ([#208](https://github.com/endevco/aube/pull/208))
+- *(pnpm)* prefer pnpm version field for url-keyed transitives ([#204](https://github.com/endevco/aube/pull/204))
+- cross-crate security hardening ([#202](https://github.com/endevco/aube/pull/202))
+- *(npm)* parse workspace link entries ([#198](https://github.com/endevco/aube/pull/198))
+- cross-crate correctness and security fixes ([#196](https://github.com/endevco/aube/pull/196))
+
 ## [1.0.0-beta.11](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.10...aube-lockfile-v1.0.0-beta.11) - 2026-04-21
 
 ### Other

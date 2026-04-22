@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0-beta.11...aube-scripts-v1.0.0-beta.12) - 2026-04-22
+
+### Other
+
+- bootstrap node-gyp when absent from PATH ([#210](https://github.com/endevco/aube/pull/210))
+- cross-crate dedup pass ([#208](https://github.com/endevco/aube/pull/208))
+- cross-crate correctness and security fixes ([#196](https://github.com/endevco/aube/pull/196))
+
 ## [1.0.0-beta.10](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0-beta.9...aube-scripts-v1.0.0-beta.10) - 2026-04-21
 
 ### Fixed
