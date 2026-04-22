@@ -2905,11 +2905,10 @@ fn should_block_exotic_subdep(
     block_exotic_subdeps
         && !task.is_root
         && is_non_registry_specifier(&task.range)
-        && !task
+        && task
             .parent
             .as_ref()
-            .and_then(|parent| resolved.get(parent))
-            .is_some_and(|pkg| pkg.local_source.is_some())
+            .and_then(|parent| resolved.get(parent)).is_none_or(|pkg| pkg.local_source.is_none())
 }
 
 /// Turn a raw `GitSource` (committish parsed from the user's
