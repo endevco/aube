@@ -723,13 +723,13 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                     SideEffectsCacheRestore::Miss => {}
                 }
             }
+            let tool_dirs: Vec<&std::path::Path> = node_gyp_bin_dir
+                .as_ref()
+                .as_deref()
+                .map(|p| vec![p])
+                .unwrap_or_default();
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
-                let tool_dirs: Vec<&std::path::Path> = node_gyp_bin_dir
-                    .as_ref()
-                    .as_deref()
-                    .map(|p| vec![p])
-                    .unwrap_or_default();
                 let did_run = aube_scripts::run_dep_hook(
                     &job.package_dir,
                     &job.dep_modules_dir,

@@ -42,13 +42,19 @@ fn node_gyp_on_path() -> bool {
         return false;
     };
     for dir in std::env::split_paths(&path) {
-        for name in BINARY_NAMES {
-            if dir.join(name).exists() {
-                return true;
-            }
+        if node_gyp_bin_exists(&dir) {
+            return true;
         }
     }
     false
+}
+
+/// True if `bin_dir` contains any of the platform's accepted
+/// `node-gyp` shim filenames. On Windows npm installs `node-gyp.cmd`
+/// (sometimes `.exe` alongside), so a bare-string check would always
+/// miss the bootstrapped shim and the fast-path would never fire.
+fn node_gyp_bin_exists(bin_dir: &Path) -> bool {
+    BINARY_NAMES.iter().any(|name| bin_dir.join(name).exists())
 }
 
 fn tool_root() -> miette::Result<PathBuf> {
@@ -68,7 +74,7 @@ pub async fn ensure() -> miette::Result<Option<PathBuf>> {
     let root = tool_root()?;
     let tool_dir = root.join(BUCKET);
     let bin_dir = tool_dir.join("node_modules").join(".bin");
-    if bin_dir.join("node-gyp").exists() {
+    if node_gyp_bin_exists(&bin_dir) {
         return Ok(Some(bin_dir));
     }
     let lock_key = root.join(format!("{BUCKET}.lock"));
@@ -92,7 +98,7 @@ fn bootstrap_blocking(lock_key: &Path, tool_dir: &Path, bin_dir: &Path) -> miett
         .lock()
         .map_err(|e| miette!("failed to acquire node-gyp bootstrap lock: {e}"))?;
     // Re-check under the lock: another process may have raced us.
-    if bin_dir.join("node-gyp").exists() {
+    if node_gyp_bin_exists(bin_dir) {
         return Ok(());
     }
     let manifest = format!(
@@ -117,10 +123,10 @@ fn bootstrap_blocking(lock_key: &Path, tool_dir: &Path, bin_dir: &Path) -> miett
             tool_dir.display()
         ));
     }
-    if !bin_dir.join("node-gyp").exists() {
+    if !node_gyp_bin_exists(bin_dir) {
         return Err(miette!(
-            "node-gyp bootstrap completed but {} is missing",
-            bin_dir.join("node-gyp").display()
+            "node-gyp bootstrap completed but no shim found under {}",
+            bin_dir.display()
         ));
     }
     Ok(())
