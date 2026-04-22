@@ -24,7 +24,18 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
     let mut push_direct =
         |deps: &mut Vec<DirectDep>, name: &str, info: &RawDepSpec, dep_type: DepType| {
-            if let Some(local) = LocalSource::parse(&info.version, Path::new("")) {
+            // pnpm appends a `(peer@ver)` suffix to the importer
+            // `version:` of URL- and git-based direct deps when the
+            // resolved snapshot carries peer context, the same way it
+            // does for semver versions. `LocalSource::parse` treats the
+            // whole string as the URL, so a RemoteTarballSource built
+            // from the raw value fetches `…/tar.gz/SHA(peer@ver)` and
+            // 404s. Strip it here so the URL that reaches the fetcher
+            // and the dep_path hash are both peer-context-free —
+            // consistent with what `parse_dep_path` does for snapshot
+            // keys downstream.
+            let classify_version = info.version.split('(').next().unwrap_or(&info.version);
+            if let Some(local) = LocalSource::parse(classify_version, Path::new("")) {
                 // `Path::new("")` means tarball-vs-dir classification is
                 // skipped; we default to Directory and rely on the
                 // resolver's on-disk re-read for the authoritative source
@@ -158,12 +169,24 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     for local_pkg in local_packages.values_mut() {
         if let Some(ref local) = local_pkg.local_source {
             let canonical = format!("{}@{}", local_pkg.name, local.specifier());
-            if let Some(snap) = raw.snapshots.get(&canonical)
+            // URL-based direct deps have their peer-context suffix
+            // stripped (see `push_direct`), but the matching snapshot
+            // entry pnpm wrote still carries the suffix. Fall back to
+            // any snapshot whose peer-stripped canonical matches so
+            // transitive dependency metadata still flows through.
+            let snap = raw.snapshots.get(&canonical).or_else(|| {
+                raw.snapshots.iter().find_map(|(k, v)| {
+                    parse_dep_path(k)
+                        .filter(|(n, ver)| format!("{n}@{ver}") == canonical)
+                        .map(|_| v)
+                })
+            });
+            if let Some(snap) = snap
                 && let Some(deps) = snap.dependencies.clone()
             {
                 local_pkg.dependencies = deps;
             }
-            if let Some(snap) = raw.snapshots.get(&canonical)
+            if let Some(snap) = snap
                 && let Some(opt_deps) = snap.optional_dependencies.clone()
             {
                 local_pkg.dependencies.extend(opt_deps.clone());
@@ -247,6 +270,15 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let (name, version) = parse_dep_path(&dep_path).ok_or_else(|| {
             Error::Parse(path.to_path_buf(), format!("invalid dep path: {dep_path}"))
         })?;
+        // URL-based direct deps are absorbed into `local_packages`
+        // under the peer-stripped URL form (see `push_direct`), but the
+        // snapshot key still carries any `(peer@ver)` suffix pnpm
+        // appended. Check the peer-stripped canonical too so we don't
+        // create a duplicate entry that round-trips as a stray
+        // `packages:` block.
+        if local_canonical_keys.contains(&format!("{name}@{version}")) {
+            continue;
+        }
 
         // Look up the canonical package entry by stripping any peer suffix.
         let canonical_key = version_to_dep_path(&name, &version);
@@ -1808,6 +1840,83 @@ snapshots:
             .expect("URL-keyed entry survives round-trip");
         assert_eq!(pkg.version, "2.4.1");
         assert_eq!(pkg.tarball_url.as_deref(), Some(url));
+    }
+
+    #[test]
+    fn direct_url_importer_strips_peer_suffix_from_fetch_url() {
+        // Regression: when a direct dep's importer `version:` is a
+        // tarball URL *with* a pnpm peer-context suffix
+        // (`(peer@ver)`), the parser used to bake the whole string
+        // into `RemoteTarballSource.url`, so the install path fetched
+        // `…/tar.gz/SHA(peer@ver)` and hit a 404.
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      dep-a:
+        specifier: github:owner/dep-a#abcdef1234567890abcdef1234567890abcdef12
+        version: https://codeload.github.com/owner/dep-a/tar.gz/abcdef1234567890abcdef1234567890abcdef12(encoding@0.1.13)
+
+packages:
+  dep-a@https://codeload.github.com/owner/dep-a/tar.gz/abcdef1234567890abcdef1234567890abcdef12:
+    resolution: {tarball: https://codeload.github.com/owner/dep-a/tar.gz/abcdef1234567890abcdef1234567890abcdef12}
+    version: 1.0.0
+
+  encoding@0.1.13:
+    resolution: {integrity: sha512-enc}
+
+snapshots:
+  dep-a@https://codeload.github.com/owner/dep-a/tar.gz/abcdef1234567890abcdef1234567890abcdef12(encoding@0.1.13):
+    dependencies:
+      encoding: 0.1.13
+
+  encoding@0.1.13: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let clean_url = "https://codeload.github.com/owner/dep-a/tar.gz/abcdef1234567890abcdef1234567890abcdef12";
+
+        let dep_a = graph
+            .packages
+            .values()
+            .find(|pkg| pkg.name == "dep-a")
+            .expect("dep-a present after parse");
+        match dep_a.local_source.as_ref() {
+            Some(LocalSource::RemoteTarball(t)) => {
+                assert_eq!(
+                    t.url, clean_url,
+                    "peer suffix leaked into RemoteTarballSource.url — fetch would 404"
+                );
+            }
+            other => panic!("expected RemoteTarball, got {other:?}"),
+        }
+        // The snapshot carrying the peer suffix shouldn't produce a
+        // second entry — that would round-trip as a stray packages
+        // block.
+        let dep_a_entries: Vec<_> = graph
+            .packages
+            .values()
+            .filter(|p| p.name == "dep-a")
+            .collect();
+        assert_eq!(
+            dep_a_entries.len(),
+            1,
+            "exactly one dep-a entry expected (suffix'd snapshot should fold into the local)"
+        );
+        // Transitive deps declared on the peer-context'd snapshot flow
+        // onto the local package.
+        assert_eq!(
+            dep_a.dependencies.get("encoding"),
+            Some(&"0.1.13".to_string())
+        );
     }
 
     #[test]
