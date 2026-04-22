@@ -25,23 +25,13 @@ printf "Running non-serial BATS shard %s/%s with %s files\n" "$((shard_index + 1
 printf "  %s\n" "${test_files[@]}"
 mkdir -p "$report_dir"
 status=0
-# DEBUG (TEMP): run files one at a time with a 90s per-file timeout so
-# any hanging test surfaces as a SIGTERM with the file name visible in
-# the log. Revert this change once the hang is identified.
-for tf in "${test_files[@]}"; do
-	echo "::group::bats $tf"
-	if ! timeout --signal=KILL --verbose 90 ./test/bats/bin/bats \
-		--filter-tags "!serial" \
-		--timing \
-		"$tf"; then
-		rc=$?
-		echo "::endgroup::"
-		echo "BATS file failed or timed out: $tf (exit $rc)"
-		status=$rc
-		break
-	fi
-	echo "::endgroup::"
-done
+BATS_REPORT_FILENAME="$report_name" ./test/bats/bin/bats \
+	--report-formatter junit \
+	--output "$report_dir" \
+	--jobs "$jobs" \
+	--parallel-binary-name parallel \
+	--filter-tags "!serial" \
+	"${test_files[@]}" || status=$?
 
 upload_status=0
 mise run ci:test-engine:upload -- "$report_path" || upload_status=$?
