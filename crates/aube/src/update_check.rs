@@ -63,7 +63,7 @@ fn should_check(offline: bool) -> bool {
     if offline {
         return false;
     }
-    if std::env::var_os("CI").is_some() {
+    if aube_util::env::is_ci() {
         return false;
     }
     if std::env::var_os("AUBE_NO_UPDATE_CHECK").is_some() {

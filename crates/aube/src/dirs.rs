@@ -60,14 +60,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 /// walk falls back to old unbounded behavior. Not ideal, but better
 /// than panicking, and CI runners always set one of them.
 fn home_stop_boundary() -> Option<PathBuf> {
-    if let Some(h) = std::env::var_os("HOME") {
-        return Some(PathBuf::from(h));
-    }
-    #[cfg(windows)]
-    if let Some(p) = std::env::var_os("USERPROFILE") {
-        return Some(PathBuf::from(p));
-    }
-    None
+    aube_util::env::home_dir()
 }
 
 /// Walk upward from `start` looking for the nearest workspace root.

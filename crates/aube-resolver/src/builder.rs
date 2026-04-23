@@ -35,6 +35,7 @@ impl Resolver {
             dedupe_peers: false,
             resolve_peers_from_workspace_root: true,
             registry_supports_time_field: false,
+            packument_network_concurrency: None,
         }
     }
 
@@ -70,9 +71,15 @@ impl Resolver {
                 dedupe_peers: false,
                 resolve_peers_from_workspace_root: true,
                 registry_supports_time_field: false,
+                packument_network_concurrency: None,
             },
             rx,
         )
+    }
+
+    pub fn with_packument_network_concurrency(mut self, n: Option<usize>) -> Self {
+        self.packument_network_concurrency = n.filter(|&n| n > 0);
+        self
     }
 
     /// Enable disk-backed packument caching with ETag/Last-Modified revalidation.

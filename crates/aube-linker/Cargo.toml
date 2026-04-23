@@ -12,8 +12,9 @@ include = ["src/**/*.rs"]
 [dependencies]
 aube-store = { workspace = true }
 aube-lockfile = { workspace = true }
+aube-util = { workspace = true }
 xx = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 serde_json = { workspace = true }
 reflink-copy = { workspace = true }
 thiserror = { workspace = true }

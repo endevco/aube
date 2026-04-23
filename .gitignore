@@ -2,3 +2,7 @@
 /.cache
 /docs/.aube/
 /docs/node_modules/
+/scratch/
+/sandbox/
+/bench-install.sh
+/.claude/

@@ -356,19 +356,18 @@ pub fn apply_peer_contexts(
     const MAX_ITERATIONS: usize = 16;
     let mut current = canonical;
     let mut converged = false;
+    let key_set_hash = |g: &LockfileGraph| -> u64 {
+        aube_util::hash::keyset_hash(g.packages.keys().map(String::as_str))
+    };
     for i in 0..MAX_ITERATIONS {
-        let current_keys: Vec<String> = current.packages.keys().cloned().collect();
+        let before = key_set_hash(&current);
         let after_once = apply_peer_contexts_once(current, options);
         let next = if options.dedupe_peer_dependents {
             dedupe_peer_variants(after_once)
         } else {
             after_once
         };
-        if current_keys
-            .iter()
-            .map(String::as_str)
-            .eq(next.packages.keys().map(String::as_str))
-        {
+        if before == key_set_hash(&next) {
             tracing::debug!("peer-context pass converged after {i} iteration(s)");
             current = next;
             converged = true;
@@ -725,16 +724,20 @@ fn canonical_tail(s: &str) -> &str {
 /// nested peer-context suffix. Used both for the root scope and for
 /// each importer's own scope inside `apply_peer_contexts_once`.
 fn scope_map_from_deps(deps: &[DirectDep]) -> FxHashMap<String, String> {
-    deps.iter()
-        .map(|d| {
-            let tail = d
-                .dep_path
-                .strip_prefix(&format!("{}@", d.name))
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| d.dep_path.clone());
-            (d.name.clone(), tail)
-        })
-        .collect()
+    let mut out = FxHashMap::with_capacity_and_hasher(deps.len(), Default::default());
+    for d in deps {
+        let prefix_len = d.name.len() + 1;
+        let tail = if d.dep_path.len() > prefix_len
+            && d.dep_path.as_bytes().get(d.name.len()) == Some(&b'@')
+            && d.dep_path.as_bytes().starts_with(d.name.as_bytes())
+        {
+            d.dep_path[prefix_len..].to_string()
+        } else {
+            d.dep_path.clone()
+        };
+        out.insert(d.name.clone(), tail);
+    }
+    out
 }
 
 fn strip_hashed_peer_suffix(s: &str) -> &str {

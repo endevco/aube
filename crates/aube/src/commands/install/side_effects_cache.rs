@@ -139,7 +139,7 @@ impl SideEffectsCacheEntry {
                 self.path.display()
             )
         })?;
-        match std::fs::rename(&tmp, &self.path) {
+        match aube_util::fs_atomic::rename_with_retry(&tmp, &self.path) {
             Ok(()) => {
                 tracing::debug!("side-effects-cache: saved {}", self.path.display());
                 Ok(())
@@ -214,14 +214,17 @@ fn write_side_effects_marker(
     package_dir: &std::path::Path,
     input_hash: &str,
 ) -> miette::Result<()> {
-    std::fs::write(package_dir.join(SIDE_EFFECTS_CACHE_MARKER), input_hash)
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "failed to write side effects cache marker in {}",
-                package_dir.display()
-            )
-        })
+    aube_util::fs_atomic::atomic_write(
+        &package_dir.join(SIDE_EFFECTS_CACHE_MARKER),
+        input_hash.as_bytes(),
+    )
+    .into_diagnostic()
+    .wrap_err_with(|| {
+        format!(
+            "failed to write side effects cache marker in {}",
+            package_dir.display()
+        )
+    })
 }
 
 fn hash_dir_for_side_effects_cache(package_dir: &std::path::Path) -> miette::Result<String> {

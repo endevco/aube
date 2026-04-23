@@ -453,7 +453,7 @@ fn detect_interpreter(target: &Path) -> String {
         // and prog go through Debug formatting so any terminal
         // escape sequences smuggled in either one are printed as
         // escaped literals rather than acted on by the terminal.
-        log::warn!("ignoring unsafe shebang interpreter in {target:?}: {prog:?}");
+        tracing::warn!("ignoring unsafe shebang interpreter in {target:?}: {prog:?}");
     }
     default_interpreter_for_extension(target)
 }
@@ -495,14 +495,14 @@ fn default_interpreter_for_extension(target: &Path) -> String {
 /// without passing `is_safe_prog`. Every caller in this crate goes
 /// through `detect_interpreter` and never trips this branch, but a
 /// future caller that bypasses that path would otherwise produce a
-/// shim with attacker-controlled bytes. A `log::error!` is emitted
+/// shim with attacker-controlled bytes. A `tracing::error!` is emitted
 /// so the regression is visible in release builds too, not only in
 /// debug.
 fn safe_prog(prog: &str) -> &str {
     if is_safe_prog(prog) {
         prog
     } else {
-        log::error!("refusing to splice unsafe prog {prog:?} into shim, substituting \"node\"");
+        tracing::error!("refusing to splice unsafe prog {prog:?} into shim, substituting \"node\"");
         "node"
     }
 }

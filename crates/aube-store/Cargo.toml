@@ -10,6 +10,7 @@ homepage.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
+aube-util = { workspace = true }
 sha2 = { workspace = true }
 blake3 = { workspace = true }
 hex = { workspace = true }

@@ -1246,62 +1246,7 @@ pub enum DriftStatus {
 /// the same guarantee post Win10. Caller passes the serialized
 /// bytes already formatted, this just handles the IO layer.
 pub(crate) fn atomic_write_lockfile(path: &Path, body: &[u8]) -> Result<(), Error> {
-    // Raw open + rename, same dir. Atomic on POSIX (rename(2)) and
-    // on Windows (MoveFileEx under fs::rename). Crash between
-    // write and rename leaves the old file intact, plus a dotfile
-    // tmp sibling, old file still parses fine so next install
-    // succeeds.
-    //
-    // Tried tempfile::NamedTempFile::persist first but on Windows
-    // it collided with tests that passed a NamedTempFile as the
-    // target path. The persist rename hit Access Denied because
-    // the outer NamedTempFile handle blocked the replacement.
-    // Direct open/write/rename sidesteps that.
-    use std::io::Write as _;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("lockfile");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    // Dot prefix keeps the tmp hidden on Unix and out of most
-    // file explorers on Windows. Pid + nanos avoid collision
-    // between racing processes even if the outer project lock
-    // somehow missed.
-    let tmp_name = format!(".{}.aube-tmp-{}-{}", file_name, std::process::id(), nanos);
-    let tmp_path = parent.join(tmp_name);
-    // Helper closure so every failure path cleans up the tmp file.
-    // Without this, a disk-full or permission error mid-write left
-    // a `.lockfile.aube-tmp-<pid>-<nanos>` sibling on disk forever.
-    // Enough aborted installs and these pile up in the project dir.
-    let write_then_rename = || -> Result<(), Error> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
-            .map_err(|e| Error::Io(tmp_path.clone(), e))?;
-        f.write_all(body)
-            .map_err(|e| Error::Io(tmp_path.clone(), e))?;
-        // sync_all before rename. Rename is a metadata op that can
-        // commit before the data blocks reach stable storage, so a
-        // crash right after rename would leave a valid-looking
-        // file with zero bytes. fsync forces the data first.
-        f.sync_all().map_err(|e| Error::Io(tmp_path.clone(), e))?;
-        // Drop the file handle explicitly before rename. Windows
-        // ReplaceFileW is happier when the source handle is closed.
-        drop(f);
-        std::fs::rename(&tmp_path, path).map_err(|e| Error::Io(path.to_path_buf(), e))
-    };
-    match write_then_rename() {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            Err(e)
-        }
-    }
+    aube_util::fs_atomic::atomic_write(path, body).map_err(|e| Error::Io(path.to_path_buf(), e))
 }
 
 /// Write a lockfile to the given project directory using aube's default

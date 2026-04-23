@@ -13,6 +13,7 @@ include = ["src/**/*.rs"]
 aube-manifest = { workspace = true }
 aube-settings = { workspace = true }
 aube-store = { workspace = true }
+aube-util = { workspace = true }
 reqwest = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"

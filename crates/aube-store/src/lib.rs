@@ -5,8 +5,31 @@ pub mod dirs;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub const SHA512_INTEGRITY_PREFIX: &str = "sha512-";
+
+pub const CACHE_DIR_NAME: &str = "aube-cache";
+pub const INDEX_SUBDIR: &str = "index";
+pub const VIRTUAL_STORE_SUBDIR: &str = "virtual-store";
+pub const PACKUMENT_CACHE_SUBDIR: &str = "packuments-v1";
+pub const PACKUMENT_FULL_CACHE_SUBDIR: &str = "packuments-full-v1";
+
+thread_local! {
+    static B3_HASHER: RefCell<blake3::Hasher> = RefCell::new(blake3::Hasher::new());
+    static SHA512_HASHER: RefCell<Sha512> = RefCell::new(Sha512::new());
+}
+
+fn blake3_hex(content: &[u8]) -> String {
+    B3_HASHER.with(|cell| {
+        let mut h = cell.borrow_mut();
+        h.reset();
+        h.update(content);
+        h.finalize().to_hex().to_string()
+    })
+}
 
 /// The global content-addressable store, owned by aube.
 ///
@@ -57,7 +80,7 @@ impl Store {
     /// Used by tests that need a fully isolated layout; production code
     /// should prefer `default_location` or `with_root`.
     pub fn at(root: PathBuf) -> Self {
-        let cache_dir = root.parent().unwrap_or(&root).join("aube-cache");
+        let cache_dir = root.parent().unwrap_or(&root).join(CACHE_DIR_NAME);
         Self { root, cache_dir }
     }
 
@@ -68,19 +91,19 @@ impl Store {
     /// Directory for cached package indices. Public so introspection
     /// commands (`aube find-hash`) can walk it directly.
     pub fn index_dir(&self) -> PathBuf {
-        self.cache_dir.join("index")
+        self.cache_dir.join(INDEX_SUBDIR)
     }
 
     /// Directory for the global virtual store (materialized packages).
     pub fn virtual_store_dir(&self) -> PathBuf {
-        self.cache_dir.join("virtual-store")
+        self.cache_dir.join(VIRTUAL_STORE_SUBDIR)
     }
 
     /// Directory for cached packument metadata (abbreviated/corgi format).
     /// Versioned so we can bump the schema without breaking old caches —
     /// old caches at older versions stay around until manually pruned.
     pub fn packument_cache_dir(&self) -> PathBuf {
-        self.cache_dir.join("packuments-v1")
+        self.cache_dir.join(PACKUMENT_CACHE_SUBDIR)
     }
 
     /// Directory for cached *full* packument JSON (non-corgi) used by
@@ -89,7 +112,7 @@ impl Store {
     /// `maintainers`). Separate from `packument_cache_dir` because the
     /// corgi and full responses have different shapes.
     pub fn packument_full_cache_dir(&self) -> PathBuf {
-        self.cache_dir.join("packuments-full-v1")
+        self.cache_dir.join(PACKUMENT_FULL_CACHE_SUBDIR)
     }
 
     /// Check if a file with the given integrity hash exists in the store.
@@ -324,7 +347,7 @@ impl Store {
     /// exist yet, the `create_new` open will fail with `NotFound`; we
     /// fall back to the slow path for correctness.
     pub fn import_bytes(&self, content: &[u8], executable: bool) -> Result<StoredFile, Error> {
-        let hex_hash = blake3::hash(content).to_hex().to_string();
+        let hex_hash = blake3_hex(content);
 
         let store_path = self.file_path_from_hex(&hex_hash);
 
@@ -907,22 +930,30 @@ pub fn validate_version(version: &str) -> bool {
 /// Verify that data matches an integrity hash (e.g., "sha512-<base64>").
 /// Returns Ok(()) if valid, Err with details if mismatch.
 pub fn verify_integrity(data: &[u8], expected: &str) -> Result<(), Error> {
-    let Some(expected_b64) = expected.strip_prefix("sha512-") else {
+    let Some(expected_b64) = expected.strip_prefix(SHA512_INTEGRITY_PREFIX) else {
         return Err(Error::Integrity(format!(
             "unsupported integrity format (expected sha512-...): {expected}"
         )));
     };
 
-    let mut hasher = Sha512::new();
-    hasher.update(data);
-    let actual_bytes = hasher.finalize();
+    let actual_bytes = SHA512_HASHER.with(|cell| {
+        let mut hasher = cell.borrow_mut();
+        hasher.reset();
+        hasher.update(data);
+        hasher.finalize_reset()
+    });
 
     use base64::Engine;
-    let actual_b64 = base64::engine::general_purpose::STANDARD.encode(actual_bytes);
-
-    if actual_b64 == expected_b64 {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut expected_buf = [0u8; 64];
+    let matched = engine
+        .decode_slice(expected_b64, &mut expected_buf)
+        .map(|n| n == 64 && expected_buf[..] == actual_bytes[..])
+        .unwrap_or(false);
+    if matched {
         Ok(())
     } else {
+        let actual_b64 = engine.encode(actual_bytes);
         Err(Error::Integrity(format!(
             "integrity mismatch: expected sha512-{expected_b64}, got sha512-{actual_b64}"
         )))
@@ -1005,7 +1036,7 @@ pub fn validate_pkg_content(
 /// registry integrity format as an ergonomic input. Returns `None` if
 /// the input isn't a well-formed integrity string.
 pub fn integrity_to_hex(integrity: &str) -> Option<String> {
-    let b64 = integrity.strip_prefix("sha512-")?;
+    let b64 = integrity.strip_prefix(SHA512_INTEGRITY_PREFIX)?;
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     Some(hex::encode(bytes))
@@ -1453,7 +1484,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     //    was a stale partial-failure stub above) → rename fails
     //    with ENOTEMPTY/EEXIST. Verify the existing target has our
     //    commit and reuse it; otherwise remove it and retry once.
-    match std::fs::rename(&scratch, &target) {
+    match aube_util::fs_atomic::rename_with_retry(&scratch, &target) {
         Ok(()) => Ok(target),
         Err(_) => {
             if target.join(".git").is_dir()
@@ -1472,7 +1503,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
             // both trying to replace a stale target, which is still
             // safe because each scratch is PID-scoped.
             let _ = std::fs::remove_dir_all(&target);
-            std::fs::rename(&scratch, &target).map_err(|e| {
+            aube_util::fs_atomic::rename_with_retry(&scratch, &target).map_err(|e| {
                 let _ = std::fs::remove_dir_all(&scratch);
                 Error::Git(format!("rename clone into place: {e}"))
             })?;

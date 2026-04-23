@@ -39,16 +39,17 @@ fn script_settings_lock() -> &'static std::sync::RwLock<ScriptSettings> {
 /// this after resolving `.npmrc` / workspace settings for the active
 /// project.
 pub fn set_script_settings(settings: ScriptSettings) {
-    *script_settings_lock()
-        .write()
-        .expect("script settings lock poisoned") = settings;
+    match script_settings_lock().write() {
+        Ok(mut guard) => *guard = settings,
+        Err(poisoned) => *poisoned.into_inner() = settings,
+    }
 }
 
 fn script_settings() -> ScriptSettings {
-    script_settings_lock()
-        .read()
-        .expect("script settings lock poisoned")
-        .clone()
+    match script_settings_lock().read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
 }
 
 /// Prepend `bin_dir` to the current `PATH` using the platform's path

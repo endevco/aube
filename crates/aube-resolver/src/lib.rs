@@ -179,6 +179,7 @@ pub struct Resolver {
     /// active, since the abbreviated path is already the only one
     /// running.
     registry_supports_time_field: bool,
+    pub(crate) packument_network_concurrency: Option<usize>,
 }
 
 pub(crate) struct ResolveTask {

@@ -133,7 +133,9 @@ impl Resolver {
         // speculatively at every enqueue site, by the time a task is
         // popped its packument is usually already cached, so the
         // wait is short.
-        let shared_semaphore = Arc::new(tokio::sync::Semaphore::new(64));
+        let shared_semaphore = Arc::new(tokio::sync::Semaphore::new(
+            self.packument_network_concurrency.unwrap_or(64),
+        ));
         // Time-based mode and `minimumReleaseAge` both need the
         // packument's `time:` map. The abbreviated (corgi) response
         // omits `time` by default, so we normally fall back to the

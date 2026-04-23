@@ -12,6 +12,8 @@ struct CachedPackument {
     last_modified: Option<String>,
     /// Unix epoch seconds when this entry was written
     fetched_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_age_secs: Option<u64>,
     packument: Packument,
 }
 
@@ -24,7 +26,15 @@ struct CachedFullPackument {
     etag: Option<String>,
     last_modified: Option<String>,
     fetched_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_age_secs: Option<u64>,
     packument: serde_json::Value,
+}
+
+fn cached_is_fresh(fetched_at: u64, max_age_secs: Option<u64>) -> bool {
+    let age = now_secs().saturating_sub(fetched_at);
+    let budget = max_age_secs.unwrap_or(PACKUMENT_TTL_SECS);
+    age < budget
 }
 
 /// How long to trust a cached packument before revalidating with the registry.
@@ -93,6 +103,28 @@ fn extract_cache_headers(resp: &reqwest::Response) -> (Option<String>, Option<St
         grab(reqwest::header::ETAG),
         grab(reqwest::header::LAST_MODIFIED),
     )
+}
+
+fn parse_cache_control_max_age(resp: &reqwest::Response) -> Option<u64> {
+    let raw = resp
+        .headers()
+        .get(reqwest::header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())?;
+    let mut max_age = None;
+    let mut s_maxage = None;
+    for directive in raw.split(',').map(str::trim) {
+        let directive_lc = directive.to_ascii_lowercase();
+        match directive_lc.as_str() {
+            "no-store" | "no-cache" | "must-revalidate" | "private" => return Some(0),
+            _ => {}
+        }
+        if let Some(val) = directive_lc.strip_prefix("s-maxage=") {
+            s_maxage = val.parse::<u64>().ok();
+        } else if let Some(val) = directive_lc.strip_prefix("max-age=") {
+            max_age = val.parse::<u64>().ok();
+        }
+    }
+    s_maxage.or(max_age)
 }
 
 /// Client for interacting with the npm registry.
@@ -503,7 +535,7 @@ impl RegistryClient {
             NetworkMode::PreferOffline | NetworkMode::Offline
         );
         if let Some(c) = cached.as_ref()
-            && (force_cache || now_secs().saturating_sub(c.fetched_at) < PACKUMENT_TTL_SECS)
+            && (force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs))
         {
             return Ok(cached.unwrap().packument);
         }
@@ -566,10 +598,13 @@ impl RegistryClient {
                     if resp.status() == reqwest::StatusCode::NOT_MODIFIED
                         && let Some(c) = cached.as_ref()
                     {
+                        let revalidated_max_age =
+                            parse_cache_control_max_age(&resp).or(c.max_age_secs);
                         let to_cache = CachedFullPackument {
                             etag: c.etag.clone(),
                             last_modified: c.last_modified.clone(),
                             fetched_at: now_secs(),
+                            max_age_secs: revalidated_max_age,
                             packument: c.packument.clone(),
                         };
                         if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
@@ -583,6 +618,7 @@ impl RegistryClient {
                     }
 
                     let (etag, last_modified) = extract_cache_headers(&resp);
+                    let max_age_secs = parse_cache_control_max_age(&resp);
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
                     match resp.json::<serde_json::Value>().await {
@@ -591,6 +627,7 @@ impl RegistryClient {
                                 etag,
                                 last_modified,
                                 fetched_at: now_secs(),
+                                max_age_secs,
                                 packument: packument.clone(),
                             };
                             if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
@@ -782,7 +819,7 @@ impl RegistryClient {
             NetworkMode::PreferOffline | NetworkMode::Offline
         );
         if let Some(c) = cached.as_ref()
-            && (force_cache || now_secs().saturating_sub(c.fetched_at) < PACKUMENT_TTL_SECS)
+            && (force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs))
         {
             return Ok(cached.unwrap().packument);
         }
@@ -850,10 +887,12 @@ impl RegistryClient {
                     if resp.status() == reqwest::StatusCode::NOT_MODIFIED && cached.is_some() =>
                 {
                     let c = cached.as_ref().unwrap();
+                    let revalidated_max_age = parse_cache_control_max_age(&resp).or(c.max_age_secs);
                     let to_cache = CachedPackument {
                         etag: c.etag.clone(),
                         last_modified: c.last_modified.clone(),
                         fetched_at: now_secs(),
+                        max_age_secs: revalidated_max_age,
                         packument: c.packument.clone(),
                     };
                     if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
@@ -867,6 +906,7 @@ impl RegistryClient {
                 }
                 Ok(resp) => {
                     let (etag, last_modified) = extract_cache_headers(&resp);
+                    let max_age_secs = parse_cache_control_max_age(&resp);
 
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
@@ -876,6 +916,7 @@ impl RegistryClient {
                                 etag,
                                 last_modified,
                                 fetched_at: now_secs(),
+                                max_age_secs,
                                 packument: packument.clone(),
                             };
                             if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
@@ -1406,13 +1447,8 @@ fn read_cached_packument(path: &Path) -> Option<CachedPackument> {
 }
 
 fn write_cached_packument(path: &Path, cached: &CachedPackument) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // serde_json for writes — simd-json's serializer doesn't have a meaningful
-    // perf advantage on writes, and we want JSON output that's readable.
     let json = serde_json::to_vec(cached).map_err(std::io::Error::other)?;
-    std::fs::write(path, json)
+    aube_util::fs_atomic::atomic_write(path, &json)
 }
 
 fn packument_full_cache_path(cache_dir: &Path, name: &str) -> Option<PathBuf> {
@@ -1437,23 +1473,22 @@ fn read_cached_full_packument_typed(path: &Path, force_cache: bool) -> Option<Pa
     #[derive(Deserialize)]
     struct Typed {
         fetched_at: u64,
+        #[serde(default)]
+        max_age_secs: Option<u64>,
         packument: Packument,
     }
 
     let mut content = std::fs::read(path).ok()?;
     let typed: Typed = simd_json::serde::from_slice(&mut content).ok()?;
-    if !force_cache && now_secs().saturating_sub(typed.fetched_at) >= PACKUMENT_TTL_SECS {
+    if !force_cache && !cached_is_fresh(typed.fetched_at, typed.max_age_secs) {
         return None;
     }
     Some(typed.packument)
 }
 
 fn write_cached_full_packument(path: &Path, cached: &CachedFullPackument) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let json = serde_json::to_vec(cached).map_err(std::io::Error::other)?;
-    std::fs::write(path, json)
+    aube_util::fs_atomic::atomic_write(path, &json)
 }
 
 /// Emit a `fetchMinSpeedKiBps` warning if the tarball downloaded slower

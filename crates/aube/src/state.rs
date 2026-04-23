@@ -73,6 +73,8 @@ pub struct InstallState {
     /// leaf-only diff.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub package_subtree_hashes: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package_json_shape_digests: BTreeMap<String, String>,
     #[serde(default)]
     pub layout: Option<InstallLayoutState>,
 }
@@ -149,12 +151,29 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         if !path.exists() {
             return Some(format!("{rel} is missing"));
         }
-        if hash_file(&path) != *stored_hash {
-            return Some(if rel == "." {
+        if hash_file(&path) == *stored_hash {
+            continue;
+        }
+        let stale_reason = || {
+            if rel == "." {
                 "package.json has changed".into()
             } else {
                 format!("{rel} has changed")
-            });
+            }
+        };
+        let Some(stored_shape) = state.package_json_shape_digests.get(rel) else {
+            return Some(stale_reason());
+        };
+        let Ok(content) = std::fs::read(&path) else {
+            return Some(stale_reason());
+        };
+        let parsed: Result<serde_json::Value, _> = serde_json::from_slice(&content);
+        let Ok(parsed) = parsed else {
+            return Some(stale_reason());
+        };
+        let current_shape = hex::encode(aube_util::hash::manifest_install_shape_digest(&parsed));
+        if current_shape != *stored_shape {
+            return Some(stale_reason());
         }
     }
 
@@ -252,6 +271,8 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         layout.placements,
     );
 
+    let package_json_shape_digests: BTreeMap<String, String> = BTreeMap::new();
+
     let state = InstallState {
         lockfile_hash,
         package_json_hashes,
@@ -261,38 +282,13 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         package_content_hashes,
         graph_lthash,
         package_subtree_hashes,
+        package_json_shape_digests,
         layout: Some(install_layout),
     };
 
     let state_path = state_file(project_dir);
-    if let Some(parent) = state_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let json = serde_json::to_string_pretty(&state)?;
-    // Atomic write via tempfile + rename. Old `fs::write` truncated
-    // the file in place, so Ctrl+C, AV quarantine, or a crash mid
-    // `write_all` left the state file zero bytes or partial JSON.
-    // Next install saw corrupt state, fell back to "install state
-    // not found" and ran a full cold install. User wondered why
-    // frozen fast path never kicked in. Rename on POSIX is atomic,
-    // on Windows ReplaceFileW behaves similarly post Win10.
-    let parent = state_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let tmp = tempfile::Builder::new()
-        .prefix(".aube-state-")
-        .suffix(".tmp")
-        .tempfile_in(parent)?;
-    use std::io::Write as _;
-    {
-        let mut f = tmp.as_file();
-        f.write_all(json.as_bytes())?;
-        f.sync_all()?;
-    }
-    // persist() does the atomic rename. On Windows it still succeeds
-    // when the target exists via MoveFileEx semantics.
-    tmp.persist(&state_path)
-        .map_err(|e| std::io::Error::other(format!("persist state: {e}")))?;
+    aube_util::fs_atomic::atomic_write(&state_path, json.as_bytes())?;
 
     Ok(())
 }
@@ -783,6 +779,7 @@ mod tests {
             package_content_hashes: BTreeMap::new(),
             graph_lthash: String::new(),
             package_subtree_hashes: BTreeMap::new(),
+            package_json_shape_digests: BTreeMap::new(),
             layout: Some(InstallLayoutState {
                 linker: InstallLayoutMode::Isolated,
                 direct_entries: BTreeMap::new(),
@@ -842,5 +839,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
         dir
+    }
+
+    #[test]
+    fn shape_digest_keeps_fast_path_on_cosmetic_edit() {
+        use std::collections::BTreeMap;
+        let dir = temp_project_dir("shape-cosmetic");
+        let original = r#"{
+  "name": "x",
+  "dependencies": { "react": "19.0.0" },
+  "scripts": { "test": "vitest" }
+}"#;
+        let pkg_path = dir.join("package.json");
+        std::fs::write(&pkg_path, original).unwrap();
+
+        let orig_bytes = std::fs::read(&pkg_path).unwrap();
+        let orig_parsed: serde_json::Value = serde_json::from_slice(&orig_bytes).unwrap();
+        let orig_shape = hex::encode(aube_util::hash::manifest_install_shape_digest(&orig_parsed));
+
+        let mut pjh = BTreeMap::new();
+        pjh.insert(".".to_string(), hash_file(&pkg_path));
+        let mut shapes = BTreeMap::new();
+        shapes.insert(".".to_string(), orig_shape);
+        let state = InstallState {
+            lockfile_hash: String::new(),
+            package_json_hashes: pjh,
+            aube_version: env!("CARGO_PKG_VERSION").to_string(),
+            section_filtered: false,
+            settings_hash: String::new(),
+            package_content_hashes: BTreeMap::new(),
+            graph_lthash: String::new(),
+            package_subtree_hashes: BTreeMap::new(),
+            package_json_shape_digests: shapes,
+            layout: None,
+        };
+        let reformatted = r#"{
+  "name": "x",
+  "dependencies": { "react": "19.0.0" },
+  "scripts": { "test": "jest" }
+}
+"#;
+        std::fs::write(&pkg_path, reformatted).unwrap();
+
+        let new_bytes = std::fs::read(&pkg_path).unwrap();
+        let new_parsed: serde_json::Value = serde_json::from_slice(&new_bytes).unwrap();
+        let new_shape = hex::encode(aube_util::hash::manifest_install_shape_digest(&new_parsed));
+        assert_eq!(
+            new_shape, state.package_json_shape_digests["."],
+            "shape digest should ignore scripts + whitespace"
+        );
     }
 }

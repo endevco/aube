@@ -373,16 +373,7 @@ pub(crate) fn expand_setting_path(raw: &str, cwd: &std::path::Path) -> Option<st
 }
 
 fn home_dir_os() -> Option<std::ffi::OsString> {
-    if let Some(h) = std::env::var_os("HOME") {
-        return Some(h);
-    }
-    #[cfg(windows)]
-    {
-        if let Some(p) = std::env::var_os("USERPROFILE") {
-            return Some(p);
-        }
-    }
-    None
+    aube_util::env::home_dir().map(|p| p.into_os_string())
 }
 
 /// Build a file-only `ResolveCtx` for `cwd` and call `f` with it.
@@ -756,26 +747,9 @@ pub(crate) fn write_manifest_json<T: serde::Serialize>(
 /// The old `fs::write` truncates in place and a crash mid-write left
 /// users with an empty manifest — the worst aube failure mode.
 pub(crate) fn write_manifest_atomic(path: &Path, body: &[u8]) -> miette::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp = tempfile::Builder::new()
-        .prefix(".aube-mf-")
-        .suffix(".tmp")
-        .tempfile_in(parent)
+    aube_util::fs_atomic::atomic_write(path, body)
         .into_diagnostic()
-        .wrap_err_with(|| format!("failed to open tempfile for {}", path.display()))?;
-    {
-        use std::io::Write as _;
-        let mut f = tmp.as_file();
-        f.write_all(body)
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to write tempfile for {}", path.display()))?;
-        f.sync_all()
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to sync tempfile for {}", path.display()))?;
-    }
-    tmp.persist(path)
-        .map_err(|e| miette!("failed to persist {}: {e}", path.display()))?;
-    Ok(())
+        .wrap_err_with(|| format!("failed to write {}", path.display()))
 }
 
 /// Parse the project lockfile, mapping `NotFound` to a user-facing hint

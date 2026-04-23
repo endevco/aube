@@ -393,7 +393,8 @@ pub async fn run(
     // failure rather than silently dropping later ones.
     let restore_errors = if let Some(snapshot) = no_save_snapshot {
         let mut errors: Vec<miette::Report> = Vec::new();
-        if let Err(e) = std::fs::write(&manifest_path, &snapshot.manifest_bytes) {
+        if let Err(e) = aube_util::fs_atomic::atomic_write(&manifest_path, &snapshot.manifest_bytes)
+        {
             errors.push(
                 Result::<(), _>::Err(e)
                     .into_diagnostic()
@@ -402,7 +403,7 @@ pub async fn run(
             );
         }
         let lockfile_restore = match &snapshot.lockfile_bytes {
-            Some(bytes) => std::fs::write(&lockfile_path, bytes),
+            Some(bytes) => aube_util::fs_atomic::atomic_write(&lockfile_path, bytes),
             None => match std::fs::remove_file(&lockfile_path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

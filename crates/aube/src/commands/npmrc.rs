@@ -13,7 +13,6 @@
 
 use aube_registry::config::{NpmConfig, normalize_registry_url_pub, registry_uri_key_pub};
 use miette::{Context, IntoDiagnostic, miette};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Re-export of [`registry_uri_key_pub`] under the name used elsewhere
@@ -111,11 +110,6 @@ impl NpmrcEdit {
     /// original `~/.npmrc` intact rather than truncated (which would
     /// silently wipe every stored auth token).
     pub fn save(&self, path: &Path) -> miette::Result<()> {
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent)
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
-
         let mut out = String::new();
         for line in &self.lines {
             match line {
@@ -129,14 +123,9 @@ impl NpmrcEdit {
             out.push('\n');
         }
 
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        aube_util::fs_atomic::atomic_write(path, out.as_bytes())
             .into_diagnostic()
-            .wrap_err_with(|| format!("failed to create temp file in {}", parent.display()))?;
-        tmp.write_all(out.as_bytes())
-            .into_diagnostic()
-            .wrap_err("failed to write temp npmrc")?;
-        tmp.persist(path)
-            .map_err(|e| miette!("failed to persist {}: {}", path.display(), e.error))?;
+            .wrap_err_with(|| format!("failed to write {}", path.display()))?;
         // .npmrc commonly holds _authToken values. Default umask
         // leaves the file at 0644 after the rename, readable by every
         // other user on a shared host. Force 0600 so only the owner

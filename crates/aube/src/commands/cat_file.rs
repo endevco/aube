@@ -27,7 +27,7 @@ pub async fn run(args: CatFileArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root_or_cwd()?;
     let store = open_store(&cwd)?;
 
-    let path = if args.hash.starts_with("sha512-") {
+    let path = if args.hash.starts_with(aube_store::SHA512_INTEGRITY_PREFIX) {
         store
             .file_path_from_integrity(&args.hash)
             .ok_or_else(|| miette!("invalid integrity hash: {}", args.hash))?

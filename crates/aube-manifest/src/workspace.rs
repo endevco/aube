@@ -607,7 +607,8 @@ pub fn add_to_only_built_dependencies(
     // serde_yaml's block style always starts sequence items at the parent's
     // column; bumping every sequence line by two is a consistent transform.
     let indented = indent_block_sequences(&raw);
-    std::fs::write(&path, indented).map_err(|e| crate::Error::Io(path.clone(), e))?;
+    aube_util::fs_atomic::atomic_write(&path, indented.as_bytes())
+        .map_err(|e| crate::Error::Io(path.clone(), e))?;
     Ok(path)
 }
 

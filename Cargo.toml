@@ -17,7 +17,7 @@ repository = "https://github.com/endevco/aube"
 homepage = "https://github.com/endevco/aube"
 
 [workspace.dependencies]
-# Async runtime
+aube-util = { path = "crates/aube-util" }
 tokio = { version = "1", features = ["full"] }
 
 # Serialization

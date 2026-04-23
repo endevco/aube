@@ -2532,7 +2532,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 // so the aggregate file-system pressure matches what
                 // the post-fetch link step would have generated.
                 let permits = materialize_link_concurrency
-                    .unwrap_or(if cfg!(target_os = "macos") { 4 } else { 16 });
+                    .unwrap_or_else(aube_linker::default_linker_parallelism);
                 let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
                 let mut in_flight: Vec<
                     tokio::task::JoinHandle<miette::Result<aube_linker::LinkStats>>,

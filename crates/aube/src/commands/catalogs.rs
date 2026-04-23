@@ -236,7 +236,7 @@ pub(crate) fn prune_unused_catalog_entries(
     let new_text = serde_yaml::to_string(&value)
         .into_diagnostic()
         .wrap_err("failed to serialize workspace yaml after cleanupUnusedCatalogs")?;
-    std::fs::write(workspace_path, new_text)
+    aube_util::fs_atomic::atomic_write(workspace_path, new_text.as_bytes())
         .into_diagnostic()
         .wrap_err_with(|| {
             format!(

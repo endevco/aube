@@ -61,7 +61,7 @@ struct Match {
 pub async fn run(args: FindHashArgs) -> miette::Result<()> {
     // Normalize input: integrity → hex, or validate raw hex up front so
     // we don't compare nonsense strings against every cached index.
-    let target_hex = if args.hash.starts_with("sha512-") {
+    let target_hex = if args.hash.starts_with(aube_store::SHA512_INTEGRITY_PREFIX) {
         aube_store::integrity_to_hex(&args.hash)
             .ok_or_else(|| miette!("invalid integrity hash: {}", args.hash))?
     } else {

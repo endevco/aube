@@ -206,6 +206,7 @@ dependencies = [
  "aube-scripts",
  "aube-settings",
  "aube-store",
+ "aube-util",
  "aube-workspace",
  "base64",
  "blake3",
@@ -253,11 +254,11 @@ version = "1.0.0"
 dependencies = [
  "aube-lockfile",
  "aube-store",
+ "aube-util",
  "diffy",
  "glob",
  "hex",
  "junction",
- "log",
  "pathdiff",
  "rayon",
  "reflink-copy",
@@ -266,6 +267,7 @@ dependencies = [
  "strum 0.28.0",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
  "xx",
 ]
 
@@ -275,6 +277,7 @@ version = "1.0.0"
 dependencies = [
  "aube-manifest",
  "aube-settings",
+ "aube-util",
  "glob",
  "hex",
  "miette",
@@ -294,6 +297,7 @@ dependencies = [
 name = "aube-manifest"
 version = "1.0.0"
 dependencies = [
+ "aube-util",
  "miette",
  "serde",
  "serde_json",
@@ -309,6 +313,7 @@ dependencies = [
  "aube-manifest",
  "aube-settings",
  "aube-store",
+ "aube-util",
  "base64",
  "bytes",
  "flate2",
@@ -333,6 +338,7 @@ dependencies = [
  "aube-manifest",
  "aube-registry",
  "aube-store",
+ "aube-util",
  "base64",
  "flate2",
  "miette",
@@ -371,6 +377,7 @@ dependencies = [
 name = "aube-store"
 version = "1.0.0"
 dependencies = [
+ "aube-util",
  "base64",
  "blake3",
  "flate2",
@@ -383,6 +390,15 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "xx",
+]
+
+[[package]]
+name = "aube-util"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "rustc-hash",
+ "serde_json",
 ]
 
 [[package]]

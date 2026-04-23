@@ -1,5 +1,4 @@
-#[macro_use]
-extern crate log;
+use tracing::{debug, trace, warn};
 
 use aube_lockfile::dep_path_filename::{
     DEFAULT_VIRTUAL_STORE_DIR_MAX_LENGTH, dep_path_to_filename,
@@ -431,7 +430,7 @@ pub struct Linker {
 /// patch-commit` (or any compatible tool).
 pub type Patches = std::collections::BTreeMap<String, String>;
 
-fn default_linker_parallelism() -> usize {
+pub fn default_linker_parallelism() -> usize {
     let default_limit = if cfg!(target_os = "macos") { 4 } else { 16 };
 
     std::thread::available_parallelism()
@@ -440,17 +439,36 @@ fn default_linker_parallelism() -> usize {
         .min(default_limit)
 }
 
-fn with_link_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
+type LinkPoolCache = std::sync::Mutex<Vec<(usize, std::sync::Arc<rayon::ThreadPool>)>>;
+static LINK_POOL_CACHE: std::sync::OnceLock<LinkPoolCache> = std::sync::OnceLock::new();
+
+fn link_pool(threads: usize) -> Option<std::sync::Arc<rayon::ThreadPool>> {
+    let cache = LINK_POOL_CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut guard = cache.lock().ok()?;
+    if let Some((_, pool)) = guard.iter().find(|(t, _)| *t == threads) {
+        return Some(pool.clone());
+    }
     match rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|i| format!("aube-linker-{i}"))
         .build()
     {
-        Ok(pool) => pool.install(f),
+        Ok(pool) => {
+            let pool = std::sync::Arc::new(pool);
+            guard.push((threads, pool.clone()));
+            Some(pool)
+        }
         Err(err) => {
             warn!("failed to build aube linker thread pool: {err}; falling back to caller thread");
-            f()
+            None
         }
+    }
+}
+
+fn with_link_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
+    match link_pool(threads) {
+        Some(pool) => pool.install(f),
+        None => f(),
     }
 }
 
@@ -467,8 +485,7 @@ pub enum LinkStrategy {
 
 impl Linker {
     pub fn new(store: &Store, strategy: LinkStrategy) -> Self {
-        // Disable global virtual store in CI (cold cache makes it slower)
-        let use_global_virtual_store = std::env::var("CI").is_err();
+        let use_global_virtual_store = !aube_util::env::is_ci();
         Self {
             virtual_store: store.virtual_store_dir(),
             store: store.clone(),
@@ -1113,7 +1130,7 @@ impl Linker {
                 stats.packages_cached += local_stats.packages_cached;
                 stats.files_linked += local_stats.files_linked;
             }
-            log::debug!("link:step1 (gvs populate) {:.1?}", step1_timer.elapsed());
+            tracing::debug!("link:step1 (gvs populate) {:.1?}", step1_timer.elapsed());
         } else {
             use rayon::prelude::*;
 
@@ -1204,7 +1221,7 @@ impl Linker {
         if self.virtual_store_only {
             self.link_hidden_hoist(&aube_dir, graph)?;
             if let Err(e) = write_applied_patches(&nm, &curr_applied) {
-                log::error!(
+                tracing::error!(
                     "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
                 );
             }
@@ -1289,7 +1306,7 @@ impl Linker {
                 stats.top_level_linked += 1;
             }
         }
-        log::debug!(
+        tracing::debug!(
             "link:step2 (top-level symlinks) {:.1?}",
             step2_timer.elapsed()
         );
@@ -1322,7 +1339,7 @@ impl Linker {
         self.link_hidden_hoist(&aube_dir, graph)?;
 
         if let Err(e) = write_applied_patches(&nm, &curr_applied) {
-            log::error!(
+            tracing::error!(
                 "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
             );
         }
@@ -1542,7 +1559,7 @@ impl Linker {
                 stats.packages_cached += local_stats.packages_cached;
                 stats.files_linked += local_stats.files_linked;
             }
-            log::debug!(
+            tracing::debug!(
                 "link_workspace:step1 (gvs populate) {:.1?}",
                 step1_timer.elapsed()
             );
@@ -1641,7 +1658,7 @@ impl Linker {
             }
             self.link_hidden_hoist(&aube_dir, graph)?;
             if let Err(e) = write_applied_patches(&root_nm, &curr_applied) {
-                log::error!(
+                tracing::error!(
                     "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
                 );
             }
@@ -1842,7 +1859,7 @@ impl Linker {
                 stats.top_level_linked += 1;
             }
         }
-        log::debug!(
+        tracing::debug!(
             "link_workspace:step2 (top-level symlinks) {:.1?}",
             step2_timer.elapsed()
         );
@@ -1879,7 +1896,7 @@ impl Linker {
         self.link_hidden_hoist(&aube_dir, graph)?;
 
         if let Err(e) = write_applied_patches(&root_nm, &curr_applied) {
-            log::error!(
+            tracing::error!(
                 "failed to write .aube-applied-patches.json: {e}. next install may miss stale patched entries"
             );
         }
@@ -2116,7 +2133,7 @@ impl Linker {
             mkdirp(parent)?;
         }
 
-        match std::fs::rename(&tmp_entry, &final_entry) {
+        match aube_util::fs_atomic::rename_with_retry(&tmp_entry, &final_entry) {
             Ok(()) => {
                 trace!("atomically placed {subdir} in virtual store");
             }
@@ -2186,6 +2203,15 @@ impl Linker {
             self.aube_dir_entry_name(dep_path)
         };
         let pkg_nm_dir = base_dir.join(&subdir).join("node_modules").join(&pkg.name);
+
+        let sentinel_path = pkg_nm_dir.join(".aube-initialized");
+        if aube_util::fs_atomic::sentinel::present(&sentinel_path)
+            && let Some(existing) = aube_util::fs_atomic::sentinel::read_tag(&sentinel_path)
+            && existing.as_slice() == dep_path.as_bytes()
+        {
+            stats.dirs_skipped += 1;
+            return Ok(());
+        }
 
         // Pre-compute the set of unique parent directories across
         // every file in the index AND every scoped transitive-dep
@@ -2332,6 +2358,10 @@ impl Linker {
                 .map_err(|e| Error::Io(symlink_path.clone(), e))?;
         }
 
+        if let Err(e) = aube_util::fs_atomic::sentinel::mark(&sentinel_path, dep_path) {
+            trace!("failed to write .aube-initialized sentinel for {dep_path}: {e}");
+        }
+
         stats.packages_linked += 1;
         trace!("materialized {dep_path} ({} files)", index.len());
         Ok(())
@@ -2375,6 +2405,7 @@ pub struct LinkStats {
     pub packages_cached: usize,
     pub files_linked: usize,
     pub top_level_linked: usize,
+    pub dirs_skipped: usize,
     /// Populated only when the linker ran in `NodeLinker::Hoisted`
     /// mode. Maps lockfile `dep_path` → list of on-disk directories
     /// where that package was materialized (most entries have one
@@ -2592,28 +2623,7 @@ fn write_applied_patches(
     let path = nm_dir.join(".aube-applied-patches.json");
     let out = serde_json::to_string(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // Atomic write via tempfile + rename. Old fs::write truncated
-    // in place. Kill aube mid write (Ctrl+C, power loss, AV
-    // quarantine), sidecar ends up empty or partial JSON. Next
-    // install treats it as "no previous patches" and skips the
-    // diff, leaving stale patched entries materialized in
-    // node_modules that should have been re-linked.
-    if !nm_dir.exists() {
-        std::fs::create_dir_all(nm_dir)?;
-    }
-    let tmp = tempfile::Builder::new()
-        .prefix(".aube-applied-patches-")
-        .suffix(".tmp")
-        .tempfile_in(nm_dir)?;
-    {
-        use std::io::Write as _;
-        let mut f = tmp.as_file();
-        f.write_all(out.as_bytes())?;
-        f.sync_all()?;
-    }
-    tmp.persist(&path)
-        .map_err(|e| std::io::Error::other(format!("persist applied-patches: {e}")))?;
-    Ok(())
+    aube_util::fs_atomic::atomic_write(&path, out.as_bytes())
 }
 
 /// Wipe `.aube/<dep_path>` for any package whose patch fingerprint
@@ -2726,13 +2736,6 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
         // the exact TOCTOU window the rename is supposed to close.
         // Windows `MoveFileExW` fails when the destination exists,
         // so the unlink is gated behind `cfg(windows)`.
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-        }
-        let tmp = target.with_extension(format!("aube-patch.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, patched.as_bytes())
-            .map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
         #[cfg(windows)]
         {
             if target.exists() {
@@ -2740,10 +2743,9 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
                     .map_err(|e| format!("failed to unlink {}: {e}", target.display()))?;
             }
         }
-        std::fs::rename(&tmp, &target).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
+        aube_util::fs_atomic::atomic_write(&target, patched.as_bytes()).map_err(|e| {
             format!(
-                "failed to rename patched file into place {}: {e}",
+                "failed to write patched file into place {}: {e}",
                 target.display()
             )
         })?;

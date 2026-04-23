@@ -102,7 +102,7 @@ impl FrozenMode {
 
     /// pnpm's default: `frozen-lockfile=true` in CI, `prefer-frozen-lockfile=true` otherwise.
     fn default_for_env() -> Self {
-        if std::env::var_os("CI").is_some() {
+        if aube_util::env::is_ci() {
             Self::Frozen
         } else {
             Self::Prefer

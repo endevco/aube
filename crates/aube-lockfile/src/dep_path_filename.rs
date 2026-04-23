@@ -29,10 +29,22 @@ pub fn dep_path_to_filename(dep_path: &str, max_length: usize) -> String {
         if filename.ends_with(')') {
             filename.pop();
         }
-        filename = filename.replace(")(", "_").replace(['(', ')'], "_");
+        let mut out = String::with_capacity(filename.len());
+        let mut chars = filename.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                ')' if chars.peek() == Some(&'(') => {
+                    chars.next();
+                    out.push('_');
+                }
+                '(' | ')' => out.push('_'),
+                other => out.push(other),
+            }
+        }
+        filename = out;
     }
 
-    let has_upper = filename.chars().any(|c| c.is_ascii_uppercase());
+    let has_upper = filename.bytes().any(|b| b.is_ascii_uppercase());
     let needs_hash = filename.len() > max_length || (has_upper && !filename.starts_with("file+"));
 
     if needs_hash {

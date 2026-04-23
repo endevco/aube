@@ -33,6 +33,7 @@ test = false
 aube-lockfile = { workspace = true }
 aube-manifest = { workspace = true }
 aube-registry = { workspace = true }
+aube-util = { workspace = true }
 aube-resolver = { workspace = true }
 aube-settings = { workspace = true }
 aube-store = { workspace = true }

@@ -1153,23 +1153,7 @@ fn normalize_registry_url(url: &str) -> String {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    // HOME wins if set. Covers every Unix plus POSIX-compat Windows
-    // shells (Git Bash, MSYS, WSL invoked from Windows) that set it.
-    // USERPROFILE is the native Windows fallback. Old code was HOME
-    // only which meant vanilla `cmd.exe` / PowerShell users had their
-    // `%USERPROFILE%\.npmrc` auth tokens silently ignored, so any
-    // aube install against a private registry returned 401 with no
-    // hint why.
-    if let Ok(h) = std::env::var("HOME") {
-        return Some(PathBuf::from(h));
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(p) = std::env::var("USERPROFILE") {
-            return Some(PathBuf::from(p));
-        }
-    }
-    None
+    aube_util::env::home_dir()
 }
 
 /// Resolve the path to pnpm's global auth file. When an explicit
