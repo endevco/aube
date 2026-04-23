@@ -3772,6 +3772,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             shim_opts,
             has_bin_metadata,
         )?;
+        // Root importer's own `bin` (discussion #228). Runs after
+        // `link_bins` so a self-bin overrides a same-named dep bin.
+        if let Some(bin) = manifest.extra.get("bin") {
+            let root_bin_dir = cwd.join(&modules_dir_name).join(".bin");
+            link_bin_entries(
+                &root_bin_dir,
+                &cwd,
+                manifest.name.as_deref(),
+                bin,
+                shim_opts,
+            )?;
+        }
         if has_workspace {
             for (importer_path, deps) in &graph_for_link.importers {
                 if importer_path == "." {
@@ -3801,6 +3813,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         placements_ref,
                         shim_opts,
                         has_bin_metadata,
+                    )?;
+                }
+                // Workspace member's own `bin` (discussion #228). `manifests`
+                // was parsed once upstream and keys by importer relpath.
+                if let Some((_, member_manifest)) =
+                    manifests.iter().find(|(p, _)| p == importer_path)
+                    && let Some(bin) = member_manifest.extra.get("bin")
+                {
+                    link_bin_entries(
+                        &bin_dir,
+                        &pkg_dir,
+                        member_manifest.name.as_deref(),
+                        bin,
+                        shim_opts,
                     )?;
                 }
             }
@@ -4511,27 +4537,7 @@ fn link_bins_for_dep(
         placements,
     )? && let Some(bin) = pkg_json.get("bin")
     {
-        match bin {
-            serde_json::Value::String(bin_path) => {
-                let bin_name = name.split('/').next_back().unwrap_or(name);
-                if aube_linker::validate_bin_name(bin_name).is_ok()
-                    && aube_linker::validate_bin_target(bin_path).is_ok()
-                {
-                    create_bin_link(bin_dir, bin_name, &pkg_dir.join(bin_path), shim_opts)?;
-                }
-            }
-            serde_json::Value::Object(bins) => {
-                for (bin_name, path) in bins {
-                    if let Some(path_str) = path.as_str()
-                        && aube_linker::validate_bin_name(bin_name).is_ok()
-                        && aube_linker::validate_bin_target(path_str).is_ok()
-                    {
-                        create_bin_link(bin_dir, bin_name, &pkg_dir.join(path_str), shim_opts)?;
-                    }
-                }
-            }
-            _ => {}
-        }
+        link_bin_entries(bin_dir, &pkg_dir, Some(name), bin, shim_opts)?;
     }
     link_bundled_bins(bin_dir, &pkg_dir, graph, dep_path, shim_opts)?;
     Ok(())
@@ -4703,27 +4709,54 @@ fn link_bundled_bins(
         let Some(bin) = bundled_pkg_json.get("bin") else {
             continue;
         };
-        match bin {
-            serde_json::Value::String(bin_path) => {
-                let bin_name = bundled.split('/').next_back().unwrap_or(bundled);
-                if aube_linker::validate_bin_name(bin_name).is_ok()
-                    && aube_linker::validate_bin_target(bin_path).is_ok()
-                {
-                    create_bin_link(bin_dir, bin_name, &bundled_dir.join(bin_path), shim_opts)?;
-                }
+        link_bin_entries(bin_dir, &bundled_dir, Some(bundled), bin, shim_opts)?;
+    }
+    Ok(())
+}
+
+/// Shim each entry of a package.json `bin` field into `bin_dir`,
+/// resolving relative targets against `pkg_dir`. Shared by the
+/// dep-bin pass (`link_bins_for_dep`), bundled-deps pass
+/// (`link_bundled_bins`), and importer self-bin pass (root + each
+/// workspace member, discussion #228).
+///
+/// String-form `bin: "./x.js"` uses the basename of `pkg_name` as the
+/// shim name (scope `@a/b` → `b`); the entry is silently skipped when
+/// `pkg_name` is `None`. Object-form `bin: { foo: "./f" }` uses each
+/// key as-is. Entries whose name or target fail
+/// [`aube_linker::validate_bin_name`] / [`aube_linker::validate_bin_target`]
+/// are dropped without error, matching the pnpm/npm "silently ignore
+/// invalid bin" behavior.
+fn link_bin_entries(
+    bin_dir: &std::path::Path,
+    pkg_dir: &std::path::Path,
+    pkg_name: Option<&str>,
+    bin: &serde_json::Value,
+    shim_opts: aube_linker::BinShimOptions,
+) -> miette::Result<()> {
+    match bin {
+        serde_json::Value::String(bin_path) => {
+            let Some(name) = pkg_name else {
+                return Ok(());
+            };
+            let bin_name = name.split('/').next_back().unwrap_or(name);
+            if aube_linker::validate_bin_name(bin_name).is_ok()
+                && aube_linker::validate_bin_target(bin_path).is_ok()
+            {
+                create_bin_link(bin_dir, bin_name, &pkg_dir.join(bin_path), shim_opts)?;
             }
-            serde_json::Value::Object(bins) => {
-                for (name, path) in bins {
-                    if let Some(path_str) = path.as_str()
-                        && aube_linker::validate_bin_name(name).is_ok()
-                        && aube_linker::validate_bin_target(path_str).is_ok()
-                    {
-                        create_bin_link(bin_dir, name, &bundled_dir.join(path_str), shim_opts)?;
-                    }
-                }
-            }
-            _ => {}
         }
+        serde_json::Value::Object(bins) => {
+            for (bin_name, path) in bins {
+                if let Some(path_str) = path.as_str()
+                    && aube_linker::validate_bin_name(bin_name).is_ok()
+                    && aube_linker::validate_bin_target(path_str).is_ok()
+                {
+                    create_bin_link(bin_dir, bin_name, &pkg_dir.join(path_str), shim_opts)?;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
