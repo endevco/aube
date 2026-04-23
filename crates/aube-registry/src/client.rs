@@ -112,10 +112,11 @@ fn parse_cache_control_max_age(resp: &reqwest::Response) -> Option<u64> {
         .and_then(|v| v.to_str().ok())?;
     let mut max_age = None;
     let mut s_maxage = None;
+    let mut force_revalidate = false;
     for directive in raw.split(',').map(str::trim) {
         let directive_lc = directive.to_ascii_lowercase();
         match directive_lc.as_str() {
-            "no-store" | "no-cache" | "must-revalidate" | "private" => return Some(0),
+            "no-store" | "no-cache" | "private" => force_revalidate = true,
             _ => {}
         }
         if let Some(val) = directive_lc.strip_prefix("s-maxage=") {
@@ -123,6 +124,9 @@ fn parse_cache_control_max_age(resp: &reqwest::Response) -> Option<u64> {
         } else if let Some(val) = directive_lc.strip_prefix("max-age=") {
             max_age = val.parse::<u64>().ok();
         }
+    }
+    if force_revalidate {
+        return Some(0);
     }
     s_maxage.or(max_age)
 }
