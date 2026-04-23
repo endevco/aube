@@ -29,6 +29,12 @@ pub struct ApproveBuildsArgs {
     /// Operate on globally-installed packages instead of the current project.
     #[arg(short = 'g', long)]
     pub global: bool,
+
+    /// Packages to approve directly, skipping the picker. Each name
+    /// must match a currently-ignored build. Unknown names are rejected
+    /// so a typo cannot silently no-op.
+    #[arg(value_name = "PKG")]
+    pub packages: Vec<String>,
 }
 
 pub async fn run(args: ApproveBuildsArgs) -> miette::Result<()> {
@@ -48,11 +54,32 @@ pub async fn run(args: ApproveBuildsArgs) -> miette::Result<()> {
     }
 
     let selected: Vec<String> = if args.all {
+        if !args.packages.is_empty() {
+            return Err(miette!(
+                "`--all` and positional package names are mutually exclusive"
+            ));
+        }
         ignored.iter().map(|e| e.name.clone()).collect()
+    } else if !args.packages.is_empty() {
+        let known: std::collections::HashSet<&str> =
+            ignored.iter().map(|e| e.name.as_str()).collect();
+        let unknown: Vec<&str> = args
+            .packages
+            .iter()
+            .filter(|p| !known.contains(p.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !unknown.is_empty() {
+            return Err(miette!(
+                "not in the ignored-builds set: {}. Run `aube ignored-builds` to see candidates.",
+                unknown.join(", ")
+            ));
+        }
+        args.packages
     } else {
         if !std::io::stdin().is_terminal() {
             return Err(miette!(
-                "approve-builds needs a TTY for the interactive picker; pass `--all` to approve everything non-interactively"
+                "approve-builds needs a TTY for the interactive picker; pass `--all` or name packages positionally to approve non-interactively"
             ));
         }
         pick_interactively(&ignored)?
