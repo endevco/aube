@@ -188,13 +188,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
+      # MISE_LOCKED=1 makes `mise install` fail if the committed
+      # mise.lock doesn't already pin the current platform's URL, instead
+      # of silently re-resolving `"latest"` pins and rewriting mise.lock.
+      # release-plz refuses to run against a dirty tree, and intentional
+      # lockfile bumps should land via their own PR.
       - uses: jdx/mise-action@v2
-      # mise-action resolves `"latest"` pins in mise.toml and can rewrite
-      # mise.lock when upstream ships a new version between commits.
-      # release-plz refuses to run against a dirty tree, so restore the
-      # committed lockfile before any release-plz step.
-      - name: Restore mise.lock
-        run: git checkout -- mise.lock
+        env:
+          MISE_LOCKED: "1"
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
