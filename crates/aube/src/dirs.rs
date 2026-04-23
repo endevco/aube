@@ -159,6 +159,42 @@ pub fn set_cwd(path: &Path) -> miette::Result<()> {
     Ok(())
 }
 
+/// Canonicalize a path to its on-disk form using a "native" (non-verbatim)
+/// Windows path.
+///
+/// On Windows, `std::fs::canonicalize` returns the UNC / extended-length
+/// form (`\\?\C:\foo\bar`). That prefix breaks every downstream step that
+/// concatenates the result with another path, which is exactly what the
+/// global-install bin-shim path builder does — `%~dp0\{rel}` where `{rel}`
+/// starts with `\\?\C:\...` produces a path that neither `cmd.exe` nor
+/// Node.js can dereference, and the installed bin silently fails with
+/// `Cannot find module '<bin_dir>\?\<target>'`.
+///
+/// This helper gives the same behavior as `dunce::canonicalize` without
+/// adding the dep: canonicalize, then strip the `\\?\` prefix when it
+/// didn't turn into a genuine UNC share path. `CreateDirectoryW` also
+/// returns `ERROR_INVALID_NAME` (os 123) on verbatim-prefixed paths that
+/// contain a `.`-relative leaf, so downstream `create_dir_all` calls on
+/// the result likewise stay clean.
+///
+/// No-op on non-Windows.
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    let canon = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        let s = canon.to_string_lossy();
+        // Only strip the plain verbatim-drive prefix (`\\?\C:\…`). Leave
+        // `\\?\UNC\…` alone — that's a real network share and callers
+        // can't use a non-verbatim form for it.
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && !rest.starts_with("UNC\\")
+        {
+            return Ok(PathBuf::from(rest));
+        }
+    }
+    Ok(canon)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +293,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("package.json"), r#"{"name":"solo"}"#);
         assert!(find_workspace_root(dir.path()).is_none());
+    }
+
+    #[test]
+    fn canonicalize_round_trips_an_existing_path() {
+        // Smoke test on every platform: the helper should resolve an
+        // existing path the same way `std::fs::canonicalize` does on
+        // POSIX, and additionally strip the `\\?\` verbatim prefix on
+        // Windows. The latter is exercised in `canonicalize_strips_…`
+        // below.
+        let dir = tempfile::tempdir().unwrap();
+        let canon = canonicalize(dir.path()).unwrap();
+        assert!(canon.is_absolute());
+        assert!(canon.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonicalize_strips_verbatim_drive_prefix() {
+        // `std::fs::canonicalize` on Windows always returns
+        // `\\?\C:\…`. The helper must hand callers the plain drive
+        // form, otherwise downstream `%~dp0\{rel}` shim concatenation
+        // produces the `<bin>\?\C:\…` path that `cmd.exe` and Node
+        // both fail to dereference.
+        let dir = tempfile::tempdir().unwrap();
+        let canon = canonicalize(dir.path()).unwrap();
+        let s = canon.to_string_lossy();
+        assert!(
+            !s.starts_with(r"\\?\"),
+            "expected non-verbatim path, got {s}"
+        );
+        assert!(
+            s.chars().nth(1) == Some(':'),
+            "expected drive form, got {s}"
+        );
     }
 }

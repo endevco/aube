@@ -895,7 +895,13 @@ async fn run_global(packages: &[String]) -> miette::Result<()> {
     // the hash-symlink targets — so without normalizing our side the
     // `!=` / `starts_with` checks all come out wrong and we either leak
     // orphan install dirs or leave duplicate hash pointers behind.
-    let install_dir = std::fs::canonicalize(&install_dir_raw)
+    // Use `dirs::canonicalize` (not `std::fs::canonicalize`) so the
+    // result on Windows is a plain drive path, not the `\\?\C:\…`
+    // verbatim form. `link_bin_entries` later concatenates this dir
+    // into the relative bin-shim target via `%~dp0\{rel}`; a verbatim
+    // prefix in `{rel}` produces a path neither `cmd.exe` nor Node can
+    // resolve and surfaces as `Cannot find module '<bin>\?\<target>'`.
+    let install_dir = crate::dirs::canonicalize(&install_dir_raw)
         .into_diagnostic()
         .wrap_err_with(|| {
             format!(
@@ -903,7 +909,7 @@ async fn run_global(packages: &[String]) -> miette::Result<()> {
                 install_dir_raw.display()
             )
         })?;
-    if let Ok(canon) = std::fs::canonicalize(&layout.pkg_dir) {
+    if let Ok(canon) = crate::dirs::canonicalize(&layout.pkg_dir) {
         layout.pkg_dir = canon;
     }
 
@@ -935,7 +941,10 @@ async fn run_global(packages: &[String]) -> miette::Result<()> {
                 }
                 // Only unlink pointers that resolved to our install dir —
                 // don't touch pointers for other live global installs.
-                if let Ok(target) = std::fs::canonicalize(&path)
+                // Use `dirs::canonicalize` so the equality check against
+                // `install_dir` (also stripped of any Windows `\\?\`
+                // verbatim prefix) actually matches.
+                if let Ok(target) = crate::dirs::canonicalize(&path)
                     && target == install_dir
                 {
                     let _ = std::fs::remove_file(&path);
@@ -1047,7 +1056,9 @@ async fn run_global_inner(
     let hash = global::cache_key(&aliases, &registries);
     let hash_ptr = global::hash_link(&layout.pkg_dir, &hash);
     let mut priors: Vec<global::GlobalPackageInfo> = Vec::new();
-    if let Ok(existing_target) = std::fs::canonicalize(&hash_ptr)
+    // `dirs::canonicalize` for the same Windows-prefix reason as above —
+    // we compare against `install_dir`, which is itself stripped.
+    if let Ok(existing_target) = crate::dirs::canonicalize(&hash_ptr)
         && existing_target != install_dir
     {
         priors.extend(
