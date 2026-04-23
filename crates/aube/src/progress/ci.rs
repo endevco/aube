@@ -12,7 +12,7 @@
 use clx::style;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,12 @@ pub(super) struct CiState {
     pub(super) downloaded: AtomicUsize,
     pub(super) downloaded_bytes: AtomicU64,
     start: Instant,
+    /// Captured the first time `set_phase("fetching")` is called. Used
+    /// as the denominator for the transfer rate so it measures network
+    /// throughput during the fetch window, not `bytes / (resolve_time +
+    /// fetch_time)`. `OnceLock` makes the first-writer-wins semantics
+    /// explicit without a mutex.
+    fetch_start: OnceLock<Instant>,
     /// The last rendered line we actually wrote. Dedup on the rendered
     /// string (not the raw counter tuple) so changes that round to the
     /// same display — e.g. a byte delta that stays in the same MB
@@ -59,7 +65,7 @@ pub(super) struct CiState {
     /// line. Stays `false` for fast installs that finish before the
     /// first 2s tick — those stay completely silent, including in the
     /// final summary.
-    shown: AtomicBool,
+    pub(super) shown: AtomicBool,
     done: AtomicBool,
     /// Live `InstallProgress` clone count. Incremented in `Clone`,
     /// decremented in `Drop`. When it hits zero the last clone is gone
@@ -104,6 +110,7 @@ impl CiState {
             downloaded: AtomicUsize::new(0),
             downloaded_bytes: AtomicU64::new(0),
             start: Instant::now(),
+            fetch_start: OnceLock::new(),
             last_printed: Mutex::new(String::new()),
             shown: AtomicBool::new(false),
             done: AtomicBool::new(false),
@@ -114,7 +121,16 @@ impl CiState {
         }
     }
 
-    fn snapshot(&self) -> (usize, usize, usize, usize, u64, u64) {
+    fn snapshot(&self) -> (usize, usize, usize, usize, u64, u64, u64) {
+        // `fetch_elapsed_ms` is 0 until fetching has started, and
+        // frozen at the elapsed-so-far value once it does — so after
+        // fetching ends the rate no longer decays, and before it
+        // begins we never divide.
+        let fetch_elapsed_ms = self
+            .fetch_start
+            .get()
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
         (
             self.phase.load(Ordering::Relaxed),
             self.resolved.load(Ordering::Relaxed),
@@ -122,11 +138,12 @@ impl CiState {
             self.downloaded.load(Ordering::Relaxed),
             self.downloaded_bytes.load(Ordering::Relaxed),
             self.start.elapsed().as_millis() as u64,
+            fetch_elapsed_ms,
         )
     }
 
-    fn render(snap: (usize, usize, usize, usize, u64, u64)) -> String {
-        let (phase, resolved, reused, downloaded, bytes, elapsed_ms) = snap;
+    fn render(snap: (usize, usize, usize, usize, u64, u64, u64)) -> String {
+        let (phase, resolved, reused, downloaded, bytes, elapsed_ms, fetch_elapsed_ms) = snap;
         let completed = reused + downloaded;
         let phase_str = if phase > 0 {
             format!(" [{phase}/3]")
@@ -137,9 +154,11 @@ impl CiState {
         // at least one byte has landed. Before fetch starts it's always 0;
         // after fetch finishes it becomes stale (decaying toward 0 as
         // elapsed grows with no new bytes). Gating to phase == 2 keeps it
-        // meaningful.
-        let rate_str = if phase == 2 && bytes > 0 && elapsed_ms > 0 {
-            let rate = bytes.saturating_mul(1000) / elapsed_ms;
+        // meaningful. Denominator is `fetch_elapsed_ms` (time since the
+        // fetching transition), not total install time — otherwise
+        // multi-second resolves would deflate the displayed rate.
+        let rate_str = if phase == 2 && bytes > 0 && fetch_elapsed_ms > 0 {
+            let rate = bytes.saturating_mul(1000) / fetch_elapsed_ms;
             format!(" · {}/s", format_bytes(rate))
         } else {
             String::new()
@@ -225,6 +244,11 @@ impl CiState {
             "linking" => 3,
             _ => return,
         };
+        if n == 2 {
+            // First-writer-wins; a second "fetching" transition (shouldn't
+            // happen but defend against it) doesn't reset the rate window.
+            let _ = self.fetch_start.set(Instant::now());
+        }
         if self.phase.swap(n, Ordering::Relaxed) != n {
             self.wake.notify_all();
         }
@@ -274,7 +298,7 @@ impl CiState {
         // coherent unit. Each segment is labeled so the numbers are
         // self-describing in a CI log weeks later without needing
         // context about aube's vocabulary.
-        let (_phase, resolved, reused, downloaded, bytes, _elapsed_ms) = snap;
+        let (_phase, resolved, reused, downloaded, bytes, _elapsed_ms, _fetch_elapsed_ms) = snap;
         let elapsed = self.start.elapsed();
         let summary = format!(
             "{} {} · resolved {} · reused {} · downloaded {} ({})",

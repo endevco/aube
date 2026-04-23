@@ -33,7 +33,7 @@ use clx::progress::{
 use clx::style;
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 /// Cap on the number of simultaneously-visible per-package fetch rows
@@ -69,8 +69,11 @@ enum Mode {
         /// Cumulative downloaded bytes. Fed into the transfer-rate
         /// calculation displayed in the TTY bar's `rate` prop.
         downloaded_bytes: Arc<AtomicU64>,
-        /// Start of the install, for rate = bytes / elapsed.
-        start: Instant,
+        /// Captured the first time `set_phase("fetching")` is called.
+        /// Used as the rate denominator so the displayed throughput
+        /// measures the fetch window only, not `bytes / (resolve_time +
+        /// fetch_time)`.
+        fetch_start: Arc<OnceLock<Instant>>,
         /// Bounded visible-fetch-row bookkeeping. `visible` is the count
         /// of live per-package child rows (capped at
         /// `TTY_MAX_VISIBLE_FETCH_ROWS`); `overflow` is the count of
@@ -157,7 +160,7 @@ impl InstallProgress {
                 total: Arc::new(AtomicUsize::new(0)),
                 phase_num: Arc::new(AtomicUsize::new(0)),
                 downloaded_bytes: Arc::new(AtomicU64::new(0)),
-                start: Instant::now(),
+                fetch_start: Arc::new(OnceLock::new()),
                 fetch_state: Arc::new(Mutex::new(FetchState {
                     visible: 0,
                     overflow: 0,
@@ -212,7 +215,10 @@ impl InstallProgress {
     pub fn set_phase(&self, phase: &str) {
         match &self.mode {
             Mode::Tty {
-                root, phase_num, ..
+                root,
+                phase_num,
+                fetch_start,
+                ..
             } => {
                 if phase.is_empty() {
                     root.prop("phase", "");
@@ -226,10 +232,14 @@ impl InstallProgress {
                     _ => 0,
                 };
                 phase_num.store(n, Ordering::Relaxed);
-                // Transfer rate is only meaningful *during* fetching — clear
-                // the prop when we leave the phase so the label doesn't
-                // carry a stale number into `linking`.
-                if n != 2 {
+                if n == 2 {
+                    // Seed the rate denominator on the fetching transition.
+                    // First-writer-wins; repeated calls are no-ops.
+                    let _ = fetch_start.set(Instant::now());
+                } else {
+                    // Transfer rate is only meaningful *during* fetching — clear
+                    // the prop when we leave the phase so the label doesn't
+                    // carry a stale number into `linking`.
                     root.prop("rate", "");
                 }
             }
@@ -264,14 +274,21 @@ impl InstallProgress {
                 root,
                 phase_num,
                 downloaded_bytes,
-                start,
+                fetch_start,
                 ..
             } => {
                 let total = downloaded_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
                 if phase_num.load(Ordering::Relaxed) != 2 || total == 0 {
                     return;
                 }
-                let elapsed_ms = start.elapsed().as_millis() as u64;
+                // `fetch_start` is seeded by `set_phase("fetching")`; if
+                // bytes land before that (shouldn't happen but defend
+                // against it), skip the update instead of computing against
+                // install start time.
+                let Some(fetch_start) = fetch_start.get() else {
+                    return;
+                };
+                let elapsed_ms = fetch_start.elapsed().as_millis() as u64;
                 if elapsed_ms == 0 {
                     return;
                 }
@@ -418,26 +435,29 @@ impl InstallProgress {
                     pluralizer::pluralize("package", total_packages as isize, true)
                 )
             };
-            // In CI mode the framed `aube VERSION by en.dev` header already
-            // prints above the bar, so repeating the prefix in the summary
-            // is noise. Use the same bracketed frame as the bar and the
-            // normal-path `[ ✓ resolved … ]` summary so the no-op line
-            // slots into the existing CI block. TTY mode has no persistent
-            // header (the bar was cleared by `finish()`), so keep the
-            // full `aube VERSION · …` form there.
-            let line = match &self.mode {
-                Mode::Tty { .. } => format!(
+            // In CI mode the framed `aube VERSION by en.dev` header prints
+            // above the bar on the first heartbeat tick, so repeating the
+            // prefix in the summary is noise — use the bracketed frame
+            // instead, matching the `[ ✓ resolved … ]` summary from the
+            // non-empty path. *But* if the install finished before the
+            // first heartbeat tick (`shown == false`), the framed header
+            // was never printed; a framed summary would then appear as an
+            // orphaned bracketed block with no context. Fall back to the
+            // unframed `aube VERSION · …` shape in that case so the
+            // no-op line still identifies itself.
+            let framed_ci = matches!(&self.mode, Mode::Ci(s) if s.shown.load(Ordering::Relaxed));
+            let line = if framed_ci {
+                let inner = format!("{} {}", style::egreen("✓"), style::egreen(&msg).bold());
+                ci::render_centered_line(&inner, ci::term_width())
+            } else {
+                format!(
                     "{} {} {} {} {}",
                     style::emagenta("aube").bold(),
                     style::edim(crate::version::VERSION.as_str()),
                     style::edim("by en.dev"),
                     style::edim("·"),
                     style::egreen(&msg).bold(),
-                ),
-                Mode::Ci(_) => {
-                    let inner = format!("{} {}", style::egreen("✓"), style::egreen(&msg).bold());
-                    ci::render_centered_line(&inner, ci::term_width())
-                }
+                )
             };
             let _ = writeln!(std::io::stderr(), "{line}");
             return;
