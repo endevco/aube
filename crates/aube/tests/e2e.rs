@@ -8,6 +8,7 @@
 
 use assert_cmd::Command;
 use std::fs;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
 
 /// Build an isolated project root plus private `HOME` / aube store /
@@ -60,8 +61,17 @@ impl Sandbox {
     }
 }
 
+fn e2e_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    match LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 #[test]
 fn version_flag_reports_binary_version() {
+    let _guard = e2e_lock();
     let sbx = Sandbox::new();
     sbx.cmd()
         .arg("--version")
@@ -72,6 +82,7 @@ fn version_flag_reports_binary_version() {
 
 #[test]
 fn help_flag_lists_install_command() {
+    let _guard = e2e_lock();
     let sbx = Sandbox::new();
     sbx.cmd()
         .arg("--help")
@@ -82,6 +93,7 @@ fn help_flag_lists_install_command() {
 
 #[test]
 fn install_on_manifest_without_deps_creates_state_file() {
+    let _guard = e2e_lock();
     let sbx = Sandbox::new();
     sbx.write_manifest(r#"{"name":"e2e-empty","version":"0.0.0"}"#);
 
@@ -95,6 +107,7 @@ fn install_on_manifest_without_deps_creates_state_file() {
 
 #[test]
 fn run_executes_a_simple_script() {
+    let _guard = e2e_lock();
     let sbx = Sandbox::new();
     sbx.write_manifest(
         r#"{
