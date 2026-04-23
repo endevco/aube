@@ -5,6 +5,7 @@ import AubeSocialLinks from "./AubeSocialLinks.vue";
 import BenchChart from "./BenchChart.vue";
 import EndevFooter from "./EndevFooter.vue";
 import HomeLanding from "./HomeLanding.vue";
+import { initBanner } from "./banner";
 import "./custom.css";
 
 export default {
@@ -19,5 +20,6 @@ export default {
   enhanceApp({ app }) {
     app.component("BenchChart", BenchChart);
     app.component("HomeLanding", HomeLanding);
+    initBanner();
   },
 } satisfies Theme;
