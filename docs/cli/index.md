@@ -170,7 +170,7 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 ## Subcommands
 
 - [`aube add [FLAGS] [PACKAGES]…`](/cli/add.md)
-- [`aube approve-builds [--all] [-g --global]`](/cli/approve-builds.md)
+- [`aube approve-builds [--all] [-g --global] [PKG]…`](/cli/approve-builds.md)
 - [`aube audit [FLAGS]`](/cli/audit.md)
 - [`aube bin [-g --global]`](/cli/bin.md)
 - [`aube cache <SUBCOMMAND>`](/cli/cache.md)

@@ -105,6 +105,7 @@ cmd add help="Add a dependency" {
 cmd approve-builds help="Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`" {
     flag --all help="Approve every pending ignored build without prompting"
     flag "-g --global" help="Operate on globally-installed packages instead of the current project"
+    arg "[PKG]…" help="Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op" required=#false var=#true
 }
 cmd audit help="Check installed packages against the registry advisory DB" {
     after_long_help "Examples:\n\n  $ aube audit\n  Severity  Package    Vulnerable  Title\n  moderate  minimatch  <3.0.5      Regular Expression Denial of Service\n                                   https://github.com/advisories/GHSA-f8q6-p94x\n\n  1 vulnerability found\n\n  # Only fail on high and above\n  $ aube audit --audit-level high\n\n  # Skip optional deps and dev deps\n  $ aube audit --prod --no-optional\n\n  # Pipe into jq\n  $ aube audit --json | jq '.advisories | length'\n\n  # Clean\n  $ aube audit\n  No known vulnerabilities found\n"

@@ -162,9 +162,20 @@
         "full_cmd": [
           "approve-builds"
         ],
-        "usage": "approve-builds [--all] [-g --global]",
+        "usage": "approve-builds [--all] [-g --global] [PKG]…",
         "subcommands": {},
-        "args": [],
+        "args": [
+          {
+            "name": "PKG",
+            "usage": "[PKG]…",
+            "help": "Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op",
+            "help_first_line": "Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op",
+            "required": false,
+            "double_dash": "Optional",
+            "var": true,
+            "hide": false
+          }
+        ],
         "flags": [
           {
             "name": "all",
