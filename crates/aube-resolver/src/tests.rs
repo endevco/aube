@@ -1,0 +1,2745 @@
+use super::*;
+use aube_registry::{Dist, Packument, VersionMetadata};
+use miette::Diagnostic;
+
+#[test]
+fn no_match_help_renders_context() {
+    let err = Error::NoMatch(Box::new(NoMatchDetails {
+        name: "bisection".into(),
+        range: "^9.9.9".into(),
+        importer: "packages/app".into(),
+        ancestors: vec![("parent-pkg".into(), "1.2.3".into())],
+        original_spec: Some("catalog:evens".into()),
+        available: vec!["1.0.1".into(), "1.0.0".into(), "0.1.0".into()],
+        total_versions: 3,
+        only_prereleases: false,
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("importer: packages/app"));
+    assert!(help.contains("chain: parent-pkg@1.2.3 > bisection"));
+    assert!(help.contains("original spec: `catalog:evens`"));
+    assert!(help.contains("available versions: 1.0.1, 1.0.0, 0.1.0"));
+}
+
+#[test]
+fn no_match_help_flags_empty_packument() {
+    let err = Error::NoMatch(Box::new(NoMatchDetails {
+        name: "ghost".into(),
+        range: "^1".into(),
+        importer: ".".into(),
+        ancestors: vec![],
+        original_spec: None,
+        available: vec![],
+        total_versions: 0,
+        only_prereleases: false,
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("packument has no versions"));
+    assert!(!help.contains("importer:"));
+}
+
+#[test]
+fn no_match_help_flags_prerelease_only_packument() {
+    let err = Error::NoMatch(Box::new(NoMatchDetails {
+        name: "bleeding".into(),
+        range: "^1".into(),
+        importer: ".".into(),
+        ancestors: vec![],
+        original_spec: None,
+        available: vec!["2.0.0-rc.3".into(), "2.0.0-rc.2".into()],
+        total_versions: 2,
+        only_prereleases: true,
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("no stable versions published"));
+    assert!(help.contains("2.0.0-rc.3"));
+    assert!(help.contains("bleeding@2.0.0-rc.3"));
+    assert!(help.contains("`next` dist-tag"));
+}
+
+#[test]
+fn build_age_gate_resolves_dist_tag_range() {
+    let packument = make_packument("foo", &["1.0.0", "2.0.0", "3.0.0"], "3.0.0");
+    let task = ResolveTask {
+        name: "foo".into(),
+        range: "latest".into(),
+        dep_type: DepType::Production,
+        is_root: true,
+        parent: None,
+        importer: ".".into(),
+        original_specifier: None,
+        real_name: None,
+        ancestors: Vec::new(),
+    };
+    let d = build_age_gate(&task, &packument, 60);
+    // `latest` → 3.0.0; the exact-version range only matches 3.0.0.
+    assert_eq!(d.gated, vec!["3.0.0".to_string()]);
+}
+
+#[test]
+fn build_no_match_falls_back_to_prereleases() {
+    let packument = make_packument(
+        "alpha",
+        &["1.0.0-alpha.1", "1.0.0-alpha.2"],
+        "1.0.0-alpha.2",
+    );
+    let task = ResolveTask {
+        name: "alpha".into(),
+        range: "^2".into(),
+        dep_type: DepType::Production,
+        is_root: true,
+        parent: None,
+        importer: ".".into(),
+        original_specifier: None,
+        real_name: None,
+        ancestors: Vec::new(),
+    };
+    let d = build_no_match(&task, &packument);
+    assert!(d.only_prereleases);
+    assert_eq!(d.total_versions, 2);
+    assert_eq!(
+        d.available,
+        vec!["1.0.0-alpha.2".to_string(), "1.0.0-alpha.1".to_string()]
+    );
+}
+
+#[test]
+fn classify_registry_error_is_case_insensitive() {
+    assert!(matches!(
+        classify_registry_error("fetch https://reg.example: HTTP 403"),
+        RegistryErrorKind::Fetch
+    ));
+    assert!(matches!(
+        classify_registry_error("fetch https://reg.example: http 403"),
+        RegistryErrorKind::Fetch
+    ));
+    assert!(matches!(
+        classify_registry_error("tarball https://x/y.tgz: Integrity mismatch"),
+        RegistryErrorKind::Tarball
+    ));
+    assert!(matches!(
+        classify_registry_error("readPackage hook: TypeError"),
+        RegistryErrorKind::Hook
+    ));
+    assert!(matches!(
+        classify_registry_error("READPACKAGE hook: error"),
+        RegistryErrorKind::Hook
+    ));
+}
+
+#[test]
+fn classify_registry_error_prefers_hook_over_http_url() {
+    // `readPackage hook:` messages can embed an HTTPS URL from the
+    // hook's own error payload — must land in Hook, not Fetch.
+    assert!(matches!(
+        classify_registry_error(
+            "readPackage hook: Error: failed to fetch https://internal.example/thing"
+        ),
+        RegistryErrorKind::Hook
+    ));
+    assert!(matches!(
+        classify_registry_error("readPackage hook: TypeError: Cannot read property"),
+        RegistryErrorKind::Hook
+    ));
+}
+
+#[test]
+fn unknown_catalog_entry_help_explains_chained_value() {
+    // Chained-catalog case: the help path suggests a concrete semver
+    // range instead of listing siblings (which would match the user's
+    // own input and produce a bogus "did you mean `react`?").
+    let err = Error::UnknownCatalogEntry(Box::new(CatalogDetails {
+        name: "react".into(),
+        spec: "catalog:".into(),
+        catalog: "default (value catalog:other is itself a catalog: reference, catalogs \
+                 cannot chain)"
+            .into(),
+        available: Vec::new(),
+        chained_value: Some("catalog:other".into()),
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(!help.contains("did you mean"));
+    assert!(!help.contains("is empty"));
+    assert!(help.contains("catalogs cannot chain"));
+    assert!(help.contains("catalog:other"));
+    assert!(help.contains("concrete semver range"));
+}
+
+#[test]
+fn classify_registry_error_prefers_git_over_http_url() {
+    // `git resolve {range}: ...` with an https:// or git+https:// range
+    // must land in Git, not Fetch — the substring `http` inside the URL
+    // would otherwise steal it into the Fetch bucket.
+    assert!(matches!(
+        classify_registry_error("git resolve https://github.com/foo/bar.git#v1: auth failed"),
+        RegistryErrorKind::Git
+    ));
+    assert!(matches!(
+        classify_registry_error("git resolve git+https://host/x.git: ref not found"),
+        RegistryErrorKind::Git
+    ));
+    assert!(matches!(
+        classify_registry_error("git task panicked: join error"),
+        RegistryErrorKind::Git
+    ));
+    assert!(matches!(
+        classify_registry_error("git dep https://github.com/...: nested install failed"),
+        RegistryErrorKind::Git
+    ));
+}
+
+#[test]
+fn age_gate_help_lists_gated_versions_and_bypass() {
+    let err = Error::AgeGate(Box::new(AgeGateDetails {
+        name: "lodash".into(),
+        range: "^4".into(),
+        minutes: 60,
+        importer: "packages/app".into(),
+        ancestors: vec![("parent".into(), "1.0.0".into())],
+        gated: vec!["4.17.21".into(), "4.17.20".into()],
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("importer: packages/app"));
+    assert!(help.contains("chain: parent@1.0.0 > lodash"));
+    assert!(help.contains("blocked by age gate: 4.17.21, 4.17.20"));
+    assert!(help.contains("minimumReleaseAgeStrict=false"));
+    assert!(help.contains("minimumReleaseAgeExclude"));
+}
+
+#[test]
+fn registry_help_classifies_common_subtypes() {
+    let tarball = format_registry_help("lodash", "tarball https://x/y.tgz: eof");
+    assert!(tarball.contains("aube store prune"));
+    let fetch = format_registry_help("lodash", "fetch https://registry.npmjs.org: 403");
+    assert!(fetch.contains("registry URL"));
+    let git = format_registry_help("some-pkg", "git resolve git+ssh://...: auth");
+    assert!(git.contains("git dep"));
+    let local = format_registry_help("pkg", "unparseable local specifier: file:../x");
+    assert!(local.contains("local specifier"));
+    let hook = format_registry_help("pkg", "readPackage hook: TypeError");
+    assert!(hook.contains("readPackage"));
+    let bug = format_registry_help("(resolver)", "3 transitives still deferred");
+    assert!(bug.contains("report at"));
+}
+
+#[test]
+fn unknown_catalog_help_lists_defined() {
+    let err = Error::UnknownCatalog(Box::new(CatalogDetails {
+        name: "react".into(),
+        spec: "catalog:missing".into(),
+        catalog: "missing".into(),
+        available: vec!["default".into(), "evens".into()],
+        chained_value: None,
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("defined catalogs: default, evens"));
+}
+
+#[test]
+fn unknown_catalog_help_when_none_defined() {
+    let err = Error::UnknownCatalog(Box::new(CatalogDetails {
+        name: "react".into(),
+        spec: "catalog:".into(),
+        catalog: "default".into(),
+        available: vec![],
+        chained_value: None,
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("no catalogs are defined"));
+}
+
+#[test]
+fn unknown_catalog_entry_help_suggests_similar() {
+    let err = Error::UnknownCatalogEntry(Box::new(CatalogDetails {
+        name: "reactt".into(),
+        spec: "catalog:".into(),
+        catalog: "default".into(),
+        available: vec!["react".into(), "react-dom".into()],
+        chained_value: None,
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("defines: react, react-dom"));
+    assert!(help.contains("did you mean `react`"));
+}
+
+#[test]
+fn exotic_subdep_help_shows_chain_and_fix() {
+    let err = Error::BlockedExoticSubdep(Box::new(ExoticSubdepDetails {
+        name: "xlsx".into(),
+        spec: "https://cdn.sheetjs.com/xlsx-0.20.3.tgz".into(),
+        parent: "some-pkg@1.0.0".into(),
+        ancestors: vec![("some-pkg".into(), "1.0.0".into())],
+        importer: ".".into(),
+    }));
+    let help = err.help().expect("help set").to_string();
+    assert!(help.contains("chain: some-pkg@1.0.0 > xlsx"));
+    assert!(help.contains("pin `xlsx`"));
+    assert!(help.contains("blockExoticSubdeps=false"));
+}
+
+#[test]
+fn test_version_satisfies() {
+    assert!(version_satisfies("4.17.21", "^4.17.0"));
+    assert!(version_satisfies("4.17.21", "^4.0.0"));
+    assert!(!version_satisfies("3.10.0", "^4.0.0"));
+    assert!(version_satisfies("1.0.0", ">=1.0.0"));
+    assert!(version_satisfies("2.0.0", ">=1.0.0 <3.0.0"));
+}
+
+#[test]
+fn test_version_satisfies_exact() {
+    assert!(version_satisfies("1.0.0", "1.0.0"));
+    assert!(!version_satisfies("1.0.1", "1.0.0"));
+}
+
+#[test]
+fn test_version_satisfies_tilde() {
+    assert!(version_satisfies("1.2.3", "~1.2.0"));
+    assert!(version_satisfies("1.2.9", "~1.2.0"));
+    assert!(!version_satisfies("1.3.0", "~1.2.0"));
+}
+
+#[test]
+fn test_version_satisfies_star() {
+    assert!(version_satisfies("1.0.0", "*"));
+    assert!(version_satisfies("99.99.99", "*"));
+}
+
+#[test]
+fn test_version_satisfies_invalid() {
+    assert!(!version_satisfies("notaversion", "^1.0.0"));
+    assert!(!version_satisfies("1.0.0", "notarange"));
+}
+
+#[test]
+fn test_version_satisfies_empty_range_is_any() {
+    // `hashring@0.0.8` in the wild declares `"bisection": ""`.
+    // npm / pnpm / yarn treat empty and whitespace-only ranges as
+    // `"*"`; aube must match.
+    assert!(version_satisfies("0.0.3", ""));
+    assert!(version_satisfies("99.99.99", ""));
+    assert!(version_satisfies("1.2.3", "   "));
+}
+
+#[test]
+fn dependency_policy_default_blocks_exotic_subdeps() {
+    assert!(DependencyPolicy::default().block_exotic_subdeps);
+}
+
+#[test]
+fn exotic_subdeps_from_local_parents_are_allowed() {
+    let task = ResolveTask {
+        name: "xlsx".to_string(),
+        range: "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz".to_string(),
+        dep_type: DepType::Production,
+        is_root: false,
+        parent: Some("pi-web-ui@file+abc123".to_string()),
+        importer: ".".to_string(),
+        original_specifier: None,
+        real_name: None,
+        ancestors: Vec::new(),
+    };
+    let mut resolved = BTreeMap::new();
+    resolved.insert(
+        "pi-web-ui@file+abc123".to_string(),
+        LockedPackage {
+            name: "pi-web-ui".to_string(),
+            version: "0.68.1".to_string(),
+            dep_path: "pi-web-ui@file+abc123".to_string(),
+            local_source: Some(LocalSource::Directory(PathBuf::from("packages/web-ui"))),
+            ..Default::default()
+        },
+    );
+
+    assert!(!should_block_exotic_subdep(&task, &resolved, true));
+}
+
+#[test]
+fn exotic_subdeps_from_unknown_parents_stay_blocked() {
+    let task = ResolveTask {
+        name: "xlsx".to_string(),
+        range: "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz".to_string(),
+        dep_type: DepType::Production,
+        is_root: false,
+        parent: Some("pi-web-ui@file+missing".to_string()),
+        importer: ".".to_string(),
+        original_specifier: None,
+        real_name: None,
+        ancestors: Vec::new(),
+    };
+
+    assert!(should_block_exotic_subdep(&task, &BTreeMap::new(), true));
+}
+
+#[test]
+fn exotic_subdeps_from_registry_parents_stay_blocked() {
+    let task = ResolveTask {
+        name: "xlsx".to_string(),
+        range: "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz".to_string(),
+        dep_type: DepType::Production,
+        is_root: false,
+        parent: Some("pi-web-ui@0.68.1".to_string()),
+        importer: ".".to_string(),
+        original_specifier: None,
+        real_name: None,
+        ancestors: Vec::new(),
+    };
+    let mut resolved = BTreeMap::new();
+    resolved.insert(
+        "pi-web-ui@0.68.1".to_string(),
+        LockedPackage {
+            name: "pi-web-ui".to_string(),
+            version: "0.68.1".to_string(),
+            dep_path: "pi-web-ui@0.68.1".to_string(),
+            ..Default::default()
+        },
+    );
+
+    assert!(should_block_exotic_subdep(&task, &resolved, true));
+}
+
+#[test]
+fn strip_alias_prefix_extracts_version_tail() {
+    assert_eq!(strip_alias_prefix("npm:bar@1.2.3"), "1.2.3");
+    assert_eq!(
+        strip_alias_prefix("npm:@descript/immer@6.0.9-patched.1"),
+        "6.0.9-patched.1"
+    );
+    assert_eq!(strip_alias_prefix("jsr:@std/fmt@1.0.0"), "1.0.0");
+    assert_eq!(strip_alias_prefix("^1.2.3"), "^1.2.3");
+    // Edge cases: alias without a version tail falls through.
+    assert_eq!(strip_alias_prefix("npm:bar"), "bar");
+    assert_eq!(strip_alias_prefix("jsr:^1.0.0"), "^1.0.0");
+}
+
+#[test]
+fn pick_override_spec_respects_aliased_version_tail() {
+    use override_rule::compile;
+    // Override `immer@>=7.0.0 <9.0.6`, real dep is
+    // `npm:@descript/immer@6.0.9-patched.1`. The version tail is
+    // outside the selector's range, so the override must NOT fire
+    // (pnpm parity). Regression for #174.
+    let mut raw = BTreeMap::new();
+    raw.insert("immer@>=7.0.0 <9.0.6".to_string(), "11.1.4".to_string());
+    let rules = compile(&raw);
+    assert_eq!(
+        pick_override_spec(&rules, "immer", "npm:@descript/immer@6.0.9-patched.1", &[]),
+        None,
+    );
+    // A matching version tail still fires.
+    assert_eq!(
+        pick_override_spec(&rules, "immer", "npm:@descript/immer@8.0.0", &[]),
+        Some("11.1.4".to_string()),
+    );
+}
+
+#[test]
+fn package_extension_selector_matches_scoped_and_versioned_names() {
+    assert!(package_selector_matches(
+        "@scope/pkg@^1",
+        "@scope/pkg",
+        "1.2.3"
+    ));
+    assert!(package_selector_matches("plain", "plain", "9.0.0"));
+    assert!(!package_selector_matches(
+        "@scope/pkg@^2",
+        "@scope/pkg",
+        "1.2.3"
+    ));
+}
+
+#[test]
+fn package_extensions_merge_dependency_maps() {
+    let mut pkg = make_version("host", "1.0.0");
+    let extension = PackageExtension {
+        selector: "host@1".to_string(),
+        dependencies: [("missing".to_string(), "^2.0.0".to_string())]
+            .into_iter()
+            .collect(),
+        optional_dependencies: BTreeMap::new(),
+        peer_dependencies: [("peer".to_string(), "^3.0.0".to_string())]
+            .into_iter()
+            .collect(),
+        peer_dependencies_meta: [(
+            "peer".to_string(),
+            aube_registry::PeerDepMeta { optional: true },
+        )]
+        .into_iter()
+        .collect(),
+    };
+
+    apply_package_extensions(&mut pkg, &[extension]);
+
+    assert_eq!(pkg.dependencies.get("missing").unwrap(), "^2.0.0");
+    assert_eq!(pkg.peer_dependencies.get("peer").unwrap(), "^3.0.0");
+    assert!(pkg.peer_dependencies_meta.get("peer").unwrap().optional);
+}
+
+#[test]
+fn package_extensions_do_not_overwrite_existing_dependency_maps() {
+    let mut pkg = make_version("host", "1.0.0");
+    pkg.dependencies
+        .insert("dep".to_string(), "^1.0.0".to_string());
+    pkg.optional_dependencies
+        .insert("optional".to_string(), "^2.0.0".to_string());
+    pkg.peer_dependencies
+        .insert("peer".to_string(), "^3.0.0".to_string());
+    pkg.peer_dependencies_meta.insert(
+        "peer".to_string(),
+        aube_registry::PeerDepMeta { optional: false },
+    );
+
+    let extension = PackageExtension {
+        selector: "host".to_string(),
+        dependencies: [
+            ("dep".to_string(), "^9.0.0".to_string()),
+            ("missing".to_string(), "^4.0.0".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        optional_dependencies: [
+            ("optional".to_string(), "^9.0.0".to_string()),
+            ("missing-optional".to_string(), "^5.0.0".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        peer_dependencies: [
+            ("peer".to_string(), "^9.0.0".to_string()),
+            ("missing-peer".to_string(), "^6.0.0".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        peer_dependencies_meta: [
+            (
+                "peer".to_string(),
+                aube_registry::PeerDepMeta { optional: true },
+            ),
+            (
+                "missing-peer".to_string(),
+                aube_registry::PeerDepMeta { optional: true },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+
+    apply_package_extensions(&mut pkg, &[extension]);
+
+    assert_eq!(pkg.dependencies.get("dep").unwrap(), "^1.0.0");
+    assert_eq!(pkg.dependencies.get("missing").unwrap(), "^4.0.0");
+    assert_eq!(pkg.optional_dependencies.get("optional").unwrap(), "^2.0.0");
+    assert_eq!(
+        pkg.optional_dependencies.get("missing-optional").unwrap(),
+        "^5.0.0"
+    );
+    assert_eq!(pkg.peer_dependencies.get("peer").unwrap(), "^3.0.0");
+    assert_eq!(pkg.peer_dependencies.get("missing-peer").unwrap(), "^6.0.0");
+    assert!(!pkg.peer_dependencies_meta.get("peer").unwrap().optional);
+    assert!(
+        pkg.peer_dependencies_meta
+            .get("missing-peer")
+            .unwrap()
+            .optional
+    );
+}
+
+#[test]
+fn allowed_deprecated_versions_match_package_ranges() {
+    let allowed = [("old".to_string(), "<2".to_string())]
+        .into_iter()
+        .collect();
+
+    assert!(is_deprecation_allowed("old", "1.9.0", &allowed));
+    assert!(!is_deprecation_allowed("old", "2.0.0", &allowed));
+    assert!(!is_deprecation_allowed("other", "1.0.0", &allowed));
+}
+
+#[test]
+fn test_dep_path_for() {
+    assert_eq!(dep_path_for("lodash", "4.17.21"), "lodash@4.17.21");
+    assert_eq!(dep_path_for("@babel/core", "7.24.0"), "@babel/core@7.24.0");
+}
+
+fn make_version(name: &str, version: &str) -> VersionMetadata {
+    VersionMetadata {
+        name: name.to_string(),
+        version: version.to_string(),
+        dependencies: BTreeMap::new(),
+        dev_dependencies: BTreeMap::new(),
+        peer_dependencies: BTreeMap::new(),
+        peer_dependencies_meta: BTreeMap::new(),
+        optional_dependencies: BTreeMap::new(),
+        bundled_dependencies: None,
+        dist: Some(Dist {
+            tarball: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
+            integrity: Some(format!("sha512-fake-{name}-{version}")),
+            shasum: None,
+        }),
+        os: vec![],
+        cpu: vec![],
+        libc: vec![],
+        engines: BTreeMap::new(),
+        license: None,
+        funding_url: None,
+        bin: BTreeMap::new(),
+        has_install_script: false,
+        deprecated: None,
+    }
+}
+
+fn make_packument(name: &str, versions: &[&str], latest: &str) -> Packument {
+    let mut ver_map = BTreeMap::new();
+    for v in versions {
+        ver_map.insert(v.to_string(), make_version(name, v));
+    }
+    let mut dist_tags = BTreeMap::new();
+    dist_tags.insert("latest".to_string(), latest.to_string());
+    Packument {
+        name: name.to_string(),
+        versions: ver_map,
+        dist_tags,
+        time: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn test_pick_version_highest_match() {
+    let packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0", "2.0.0"], "2.0.0");
+    let result = pick_version(&packument, "^1.0.0", None, false, None, false).unwrap();
+    assert_eq!(result.version, "1.2.0");
+}
+
+#[test]
+fn test_pick_version_exact() {
+    let packument = make_packument("foo", &["1.0.0", "1.1.0"], "1.1.0");
+    let result = pick_version(&packument, "1.0.0", None, false, None, false).unwrap();
+    assert_eq!(result.version, "1.0.0");
+}
+
+#[test]
+fn test_pick_version_no_match() {
+    let packument = make_packument("foo", &["1.0.0", "1.1.0"], "1.1.0");
+    let result = pick_version(&packument, "^2.0.0", None, false, None, false);
+    assert!(matches!(result, PickResult::NoMatch));
+}
+
+#[test]
+fn test_pick_version_strict_distinguishes_age_gate_from_no_match() {
+    // A version satisfies the range but is filtered by the cutoff.
+    // Strict mode should report `AgeGated`, not `NoMatch`, so the
+    // caller can surface a meaningful error message.
+    let mut packument = make_packument("foo", &["1.0.0", "1.1.0"], "1.1.0");
+    packument
+        .time
+        .insert("1.0.0".into(), "2024-01-01T00:00:00.000Z".into());
+    packument
+        .time
+        .insert("1.1.0".into(), "2024-06-01T00:00:00.000Z".into());
+    let cutoff = "2020-01-01T00:00:00.000Z";
+    let result = pick_version(&packument, "^1.0.0", None, false, Some(cutoff), true);
+    assert!(matches!(result, PickResult::AgeGated));
+
+    // No version satisfies the range at all → still NoMatch even
+    // in strict mode.
+    let result = pick_version(&packument, "^9.0.0", None, false, Some(cutoff), true);
+    assert!(matches!(result, PickResult::NoMatch));
+}
+
+#[test]
+fn test_pick_version_prefers_locked() {
+    let packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0"], "1.2.0");
+    let result = pick_version(&packument, "^1.0.0", Some("1.1.0"), false, None, false).unwrap();
+    assert_eq!(result.version, "1.1.0");
+}
+
+#[test]
+fn test_pick_version_locked_out_of_range() {
+    let packument = make_packument("foo", &["1.0.0", "2.0.0"], "2.0.0");
+    // Locked version doesn't satisfy range, should pick highest match
+    let result = pick_version(&packument, "^2.0.0", Some("1.0.0"), false, None, false).unwrap();
+    assert_eq!(result.version, "2.0.0");
+}
+
+#[test]
+fn test_pick_version_dist_tag() {
+    let packument = make_packument("foo", &["1.0.0", "2.0.0-beta.1"], "1.0.0");
+    let result = pick_version(&packument, "latest", None, false, None, false).unwrap();
+    assert_eq!(result.version, "1.0.0");
+}
+
+#[test]
+fn test_pick_version_lowest_picks_smallest_satisfying() {
+    let packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0", "2.0.0"], "2.0.0");
+    let result = pick_version(&packument, "^1.0.0", None, true, None, false).unwrap();
+    assert_eq!(result.version, "1.0.0");
+}
+
+#[test]
+fn test_pick_version_cutoff_filters_future_versions() {
+    let mut packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0"], "1.2.0");
+    packument
+        .time
+        .insert("1.0.0".into(), "2020-01-01T00:00:00.000Z".into());
+    packument
+        .time
+        .insert("1.1.0".into(), "2021-01-01T00:00:00.000Z".into());
+    packument
+        .time
+        .insert("1.2.0".into(), "2023-01-01T00:00:00.000Z".into());
+    // Highest pick, but cutoff forbids 1.2.0 → fall back to 1.1.0.
+    let cutoff = "2022-06-01T00:00:00.000Z";
+    let result = pick_version(&packument, "^1.0.0", None, false, Some(cutoff), false).unwrap();
+    assert_eq!(result.version, "1.1.0");
+}
+
+#[test]
+fn test_pick_version_lenient_falls_back_to_lowest_when_cutoff_excludes_all() {
+    // Mirrors pnpm's lenient `pickPackageFromMetaUsingTime`: when
+    // every satisfying version is younger than the cutoff, fall
+    // back to the lowest satisfying version (ignoring the cutoff).
+    let mut packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0"], "1.2.0");
+    packument
+        .time
+        .insert("1.0.0".into(), "2024-01-01T00:00:00.000Z".into());
+    packument
+        .time
+        .insert("1.1.0".into(), "2024-06-01T00:00:00.000Z".into());
+    packument
+        .time
+        .insert("1.2.0".into(), "2025-01-01T00:00:00.000Z".into());
+    let cutoff = "2020-01-01T00:00:00.000Z";
+    let result = pick_version(&packument, "^1.0.0", None, false, Some(cutoff), false).unwrap();
+    assert_eq!(result.version, "1.0.0");
+}
+
+#[test]
+fn test_pick_version_strict_returns_age_gated_when_cutoff_excludes_all() {
+    let mut packument = make_packument("foo", &["1.0.0", "1.1.0"], "1.1.0");
+    packument
+        .time
+        .insert("1.0.0".into(), "2024-01-01T00:00:00.000Z".into());
+    packument
+        .time
+        .insert("1.1.0".into(), "2024-06-01T00:00:00.000Z".into());
+    let cutoff = "2020-01-01T00:00:00.000Z";
+    let result = pick_version(&packument, "^1.0.0", None, false, Some(cutoff), true);
+    assert!(matches!(result, PickResult::AgeGated));
+}
+
+#[test]
+fn test_minimum_release_age_cutoff_format() {
+    let mra = MinimumReleaseAge {
+        minutes: 60,
+        ..Default::default()
+    };
+    let cutoff = mra.cutoff().expect("non-zero minutes produces a cutoff");
+    // Sanity-check the shape; the actual instant depends on now().
+    assert_eq!(cutoff.len(), 24, "ISO-8601 with millis is 24 chars");
+    assert!(cutoff.ends_with("Z"));
+    assert_eq!(&cutoff[4..5], "-");
+    assert_eq!(&cutoff[10..11], "T");
+}
+
+#[test]
+fn test_minimum_release_age_zero_disables() {
+    let mra = MinimumReleaseAge::default();
+    assert!(mra.cutoff().is_none());
+}
+
+#[test]
+fn test_format_iso8601_known_epoch() {
+    // 2024-01-01T00:00:00Z = 1704067200
+    assert_eq!(
+        format_iso8601_utc(1_704_067_200),
+        "2024-01-01T00:00:00.000Z"
+    );
+    // 1970-01-01T00:00:00Z = 0
+    assert_eq!(format_iso8601_utc(0), "1970-01-01T00:00:00.000Z");
+}
+
+#[test]
+fn test_pick_version_cutoff_allows_missing_time_entries() {
+    let packument = make_packument("foo", &["1.0.0", "1.1.0"], "1.1.0");
+    // Packument has no `time` entries at all — cutoff must not
+    // remove every candidate, or the resolver can never make
+    // progress on abbreviated-packument registries.
+    let cutoff = "2000-01-01T00:00:00.000Z";
+    let result = pick_version(&packument, "^1.0.0", None, false, Some(cutoff), false).unwrap();
+    assert_eq!(result.version, "1.1.0");
+}
+
+#[test]
+fn test_pick_version_with_deps() {
+    let mut packument = make_packument("foo", &["1.0.0"], "1.0.0");
+    packument
+        .versions
+        .get_mut("1.0.0")
+        .unwrap()
+        .dependencies
+        .insert("bar".to_string(), "^2.0.0".to_string());
+
+    let result = pick_version(&packument, "^1.0.0", None, false, None, false).unwrap();
+    assert_eq!(result.dependencies.get("bar").unwrap(), "^2.0.0");
+}
+
+fn mk_locked(
+    name: &str,
+    version: &str,
+    deps: &[(&str, &str)],
+    peer_deps: &[(&str, &str)],
+) -> LockedPackage {
+    let mut dependencies = BTreeMap::new();
+    for (n, v) in deps {
+        dependencies.insert((*n).to_string(), (*v).to_string());
+    }
+    let mut peer_dependencies = BTreeMap::new();
+    for (n, r) in peer_deps {
+        peer_dependencies.insert((*n).to_string(), (*r).to_string());
+    }
+    LockedPackage {
+        name: name.to_string(),
+        version: version.to_string(),
+        integrity: None,
+        dependencies,
+        peer_dependencies,
+        peer_dependencies_meta: BTreeMap::new(),
+        dep_path: format!("{name}@{version}"),
+        ..Default::default()
+    }
+}
+
+fn graph_has_package(graph: &LockfileGraph, name: &str, version: &str) -> bool {
+    graph
+        .packages
+        .values()
+        .any(|pkg| pkg.name == name && pkg.version == version)
+}
+
+// Regression guard for the cycle-break branch in `visit_peer_context`
+// flagged by greptile on #40. Two packages peer-depend on each other:
+//
+//     a@1.0.0 -> dep=b@1.0.0, peer=b@^1
+//     b@1.0.0 -> dep=a@1.0.0, peer=a@^1
+//
+// Starting the DFS from importer root `a`, we should:
+//   1. Visit `a`, recurse into `b`
+//   2. Visit `b`, recurse into `a` (cycle hit — `visiting` guard fires)
+//   3. Cycle branch returns `a`'s contextualized dep_path WITHOUT
+//      waiting for the in-progress insertion to land
+//   4. `b` completes, gets inserted
+//   5. `a` completes, gets inserted
+//
+// By the time the function returns, every dep_path referenced from
+// any `dependencies` tail must exist as a key in `out_packages`.
+#[test]
+fn apply_peer_contexts_handles_mutual_peer_cycle() {
+    let a = mk_locked("a", "1.0.0", &[("b", "1.0.0")], &[("b", "^1")]);
+    let b = mk_locked("b", "1.0.0", &[("a", "1.0.0")], &[("a", "^1")]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("a@1.0.0".to_string(), a);
+    packages.insert("b@1.0.0".to_string(), b);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "a".to_string(),
+            dep_path: "a@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let canonical = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(canonical, &PeerContextOptions::default());
+
+    // Both packages got contextualized dep_paths with each other's
+    // resolved version baked in.
+    let a_key = "a@1.0.0(b@1.0.0)";
+    let b_key = "b@1.0.0(a@1.0.0)";
+    assert!(
+        out.packages.contains_key(a_key),
+        "expected {a_key} in {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        out.packages.contains_key(b_key),
+        "expected {b_key} in {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+
+    // Every referenced dependency tail resolves to a real entry in
+    // out_packages — the cycle-break branch didn't leak a dangling
+    // reference.
+    for pkg in out.packages.values() {
+        for (child_name, child_tail) in &pkg.dependencies {
+            let child_key = format!("{child_name}@{child_tail}");
+            assert!(
+                out.packages.contains_key(&child_key),
+                "dangling dep_path {child_key} referenced from {}",
+                pkg.dep_path
+            );
+        }
+    }
+
+    // Importer's direct dep now points at the contextualized `a`.
+    let root = out.importers.get(".").unwrap();
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].dep_path, a_key);
+}
+
+// When a declared peer has its own resolved peers, the outer
+// package's suffix must carry the *nested* form — this is what
+// pnpm writes for React ecosystem projects where
+// `@testing-library/react` peers on both `react` and `react-dom`,
+// and `react-dom` itself peers on `react`. The expected snapshot
+// key is `@testing-library/react@14(react@18)(react-dom@18(react@18))`.
+//
+// This test uses a simplified three-package fixture
+// (consumer → adapter → core) where `core` is only a peer and
+// `adapter` peers on `core`. The `consumer` peers on both and
+// should serialize the `adapter` entry in its suffix with the
+// nested `(core@...)` tail.
+#[test]
+fn apply_peer_contexts_produces_nested_peer_suffixes() {
+    // consumer declares peers [adapter, core]. adapter declares
+    // peer [core]. core has no deps or peers.
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("adapter", "1.0.0"), ("core", "1.0.0")],
+        &[("adapter", "^1"), ("core", "^1")],
+    );
+    consumer.dep_path = "consumer@1.0.0".to_string();
+
+    let mut adapter = mk_locked("adapter", "1.0.0", &[("core", "1.0.0")], &[("core", "^1")]);
+    adapter.dep_path = "adapter@1.0.0".to_string();
+
+    let core = mk_locked("core", "1.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("adapter@1.0.0".to_string(), adapter);
+    packages.insert("core@1.0.0".to_string(), core);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+
+    // adapter's standalone key should have just its own peer (core).
+    assert!(
+        out.packages.contains_key("adapter@1.0.0(core@1.0.0)"),
+        "expected nested adapter variant: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+
+    // consumer's key should reference adapter's NESTED tail, i.e.
+    // `(adapter@1.0.0(core@1.0.0))(core@1.0.0)` — that's the pnpm
+    // byte-identical shape.
+    let consumer_key = "consumer@1.0.0(adapter@1.0.0(core@1.0.0))(core@1.0.0)";
+    assert!(
+        out.packages.contains_key(consumer_key),
+        "expected nested consumer key {consumer_key} in {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+
+    // Every referenced dependency tail must resolve to a real entry.
+    for pkg in out.packages.values() {
+        for (child_name, child_tail) in &pkg.dependencies {
+            let child_key = format!("{child_name}@{child_tail}");
+            assert!(
+                out.packages.contains_key(&child_key),
+                "dangling dep_path {child_key} referenced from {}",
+                pkg.dep_path
+            );
+        }
+    }
+}
+
+// Per-peer-range cross-subtree satisfaction: two sibling packages
+// that declare peer react with INCOMPATIBLE ranges should each
+// end up pinned to the version satisfying their own range, even
+// if an ancestor scope carries the wrong version. This is pnpm's
+// "duplicate package per peer context" behavior.
+//
+// The fixture mirrors the real React/Testing-Library case: the
+// user pins `react@17` at the root (which is what the hoist
+// propagates into every child's ancestor scope), but a sibling
+// dep declares `peer react: ^18`. That sibling must resolve to
+// `react@18.x`, not `react@17`.
+#[test]
+fn apply_peer_contexts_per_range_satisfaction() {
+    // consumer17 wants react@^17. consumer18 wants react@^18.
+    // Both peer on react. The graph has BOTH versions in play
+    // (the BFS resolver already emits both when the ranges
+    // conflict — see `resolved_versions` dedupe logic).
+    let mut consumer17 = mk_locked(
+        "consumer17",
+        "1.0.0",
+        &[("react", "17.0.2")],
+        &[("react", "^17")],
+    );
+    consumer17.dep_path = "consumer17@1.0.0".to_string();
+
+    let mut consumer18 = mk_locked(
+        "consumer18",
+        "1.0.0",
+        &[("react", "18.2.0")],
+        &[("react", "^18")],
+    );
+    consumer18.dep_path = "consumer18@1.0.0".to_string();
+
+    let react17 = mk_locked("react", "17.0.2", &[], &[]);
+    let react18 = mk_locked("react", "18.2.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer17@1.0.0".to_string(), consumer17);
+    packages.insert("consumer18@1.0.0".to_string(), consumer18);
+    packages.insert("react@17.0.2".to_string(), react17);
+    packages.insert("react@18.2.0".to_string(), react18);
+
+    // Importer has BOTH consumers plus react@17 hoisted (the hoist
+    // pass picks the first-encountered version, matching what
+    // happens live when a user pins the older version).
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![
+            DirectDep {
+                name: "consumer17".to_string(),
+                dep_path: "consumer17@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            },
+            DirectDep {
+                name: "consumer18".to_string(),
+                dep_path: "consumer18@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            },
+            DirectDep {
+                name: "react".to_string(),
+                dep_path: "react@17.0.2".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^17".to_string()),
+            },
+        ],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+
+    // consumer17 should be suffixed with react@17 (satisfies ^17).
+    assert!(
+        out.packages.contains_key("consumer17@1.0.0(react@17.0.2)"),
+        "consumer17 must pick react@17: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    // consumer18 must NOT reuse the root's react@17.0.2 — its own
+    // declared range `^18` rejects it, so the peer-context pass
+    // should fall back to the BFS-resolved react@18.2.0.
+    assert!(
+        out.packages.contains_key("consumer18@1.0.0(react@18.2.0)"),
+        "consumer18 must fall back to react@18: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    // And specifically must NOT have been glued to react@17 just
+    // because the ancestor scope happened to have it.
+    assert!(
+        !out.packages.contains_key("consumer18@1.0.0(react@17.0.2)"),
+        "consumer18 was incorrectly pinned to react@17: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+}
+
+// Regression for greptile feedback on #67: the `from_graph_scan`
+// fallback in `visit_peer_context` must return the full dep_path
+// TAIL, not just `p.version`. On Pass 2+ of the fixed-point loop
+// the input graph's keys carry peer suffixes — e.g. `react-dom`
+// lives at `react-dom@18.2.0(react@18.2.0)` — and downstream
+// lookups that reconstruct `format!("{name}@{tail}")` need the
+// tail to match the actual key. Returning `p.version` would give
+// `react-dom@18.2.0`, which Pass 2 lookups would miss, silently
+// dropping the peer from `new_dependencies`.
+//
+// The scenario: consumer peers on a package (helper) whose own
+// peer context already exists in the graph's suffixed form.
+// Neither ancestor scope nor the consumer's own `pkg.dependencies`
+// has helper (so the scan path is actually reached), forcing
+// `from_graph_scan` to be the resolution source. The resulting
+// `consumer` entry must reference the suffixed `helper` tail.
+#[test]
+fn from_graph_scan_returns_full_dep_path_tail() {
+    // helper@1.0.0 has its own peer `core`. `consumer` peers on
+    // helper but has no entry for it in its `pkg.dependencies`,
+    // so the scan is the only resolution source.
+    let mut consumer = mk_locked("consumer", "1.0.0", &[], &[("helper", "^1")]);
+    consumer.dep_path = "consumer@1.0.0".to_string();
+
+    // `helper@1.0.0(core@1.0.0)` — already contextualized as it
+    // would be after one iteration of the fixed-point loop.
+    let mut helper = mk_locked("helper", "1.0.0", &[("core", "1.0.0")], &[("core", "^1")]);
+    helper.dep_path = "helper@1.0.0(core@1.0.0)".to_string();
+
+    let mut core = mk_locked("core", "1.0.0", &[], &[]);
+    core.dep_path = "core@1.0.0".to_string();
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("helper@1.0.0(core@1.0.0)".to_string(), helper);
+    packages.insert("core@1.0.0".to_string(), core);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+
+    // consumer's key must reference helper with its CONTEXTUALIZED
+    // tail. Returning `p.version` would have produced
+    // `consumer@1.0.0(helper@1.0.0)` and then silently dropped
+    // `helper` from new_dependencies when the lookup missed.
+    assert!(
+        out.packages
+            .contains_key("consumer@1.0.0(helper@1.0.0(core@1.0.0))"),
+        "consumer must reference helper's contextualized tail: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+
+    // And consumer.new_dependencies[helper] must be a non-dangling
+    // reference into out_packages.
+    let consumer_out = out
+        .packages
+        .get("consumer@1.0.0(helper@1.0.0(core@1.0.0))")
+        .unwrap();
+    let helper_tail = consumer_out
+        .dependencies
+        .get("helper")
+        .expect("consumer must wire helper as a dep");
+    assert_eq!(helper_tail, "1.0.0(core@1.0.0)");
+    let helper_key = format!("helper@{helper_tail}");
+    assert!(
+        out.packages.contains_key(&helper_key),
+        "consumer.dependencies[helper] must resolve to an existing package key"
+    );
+}
+
+// `dedupe-peer-dependents=true` (the pnpm default) should collapse
+// two importer dependents that peer on the same name and resolve
+// to the same peer version into a single variant. Here two
+// consumers (consumer-a, consumer-b) both peer on react and both
+// end up with react@18.0.0 — the peer-context pass should emit a
+// single canonical consumer-a key and a single canonical
+// consumer-b key, but crucially when two *different ancestor
+// subtrees* pin the same peer version we still collapse to one
+// variant rather than keeping one per subtree.
+#[test]
+fn dedupe_peer_dependents_merges_equivalent_subtrees() {
+    // Two sibling middle packages that each peer on react. The
+    // importer has react@18.0.0 available, and the middle
+    // packages' shared declared peer range (^18) would match.
+    // Without dedupe-peer-dependents, the outer fixed-point loop
+    // can emit duplicate variants for the same peer resolution
+    // when the middle packages are reached via different sibling
+    // paths. With the flag on, `dedupe_peer_variants` merges them.
+    let mut consumer_a = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "18.0.0")],
+        &[("react", "^18")],
+    );
+    consumer_a.dep_path = "consumer@1.0.0".to_string();
+    let react = mk_locked("react", "18.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    // Seed two peer-suffixed keys manually to simulate mid-fixpoint
+    // state where distinct subtrees produced the same peer
+    // resolution. The dedupe pass should merge them.
+    packages.insert(
+        "consumer@1.0.0(react@18.0.0)".to_string(),
+        LockedPackage {
+            dep_path: "consumer@1.0.0(react@18.0.0)".to_string(),
+            dependencies: {
+                let mut m = BTreeMap::new();
+                m.insert("react".to_string(), "18.0.0".to_string());
+                m
+            },
+            ..consumer_a.clone()
+        },
+    );
+    // A second variant with identical peer resolution but a
+    // different suffix encoding — simulating a stale subtree from
+    // an earlier fixpoint iteration.
+    let mut variant = consumer_a.clone();
+    variant.dep_path = "consumer@1.0.0(react@18.0.0)(react@18.0.0)".to_string();
+    variant
+        .dependencies
+        .insert("react".to_string(), "18.0.0".to_string());
+    packages.insert(
+        "consumer@1.0.0(react@18.0.0)(react@18.0.0)".to_string(),
+        variant,
+    );
+    packages.insert("react@18.0.0".to_string(), react);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0(react@18.0.0)(react@18.0.0)".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = dedupe_peer_variants(graph);
+
+    // Only one consumer variant should survive — the
+    // lexicographically smallest key.
+    let consumer_keys: Vec<_> = out
+        .packages
+        .keys()
+        .filter(|k| k.starts_with("consumer@"))
+        .collect();
+    assert_eq!(
+        consumer_keys.len(),
+        1,
+        "expected single canonical consumer variant after dedupe, got: {:?}",
+        consumer_keys
+    );
+    assert_eq!(
+        consumer_keys[0], "consumer@1.0.0(react@18.0.0)",
+        "canonical should be lex-smallest key"
+    );
+
+    // Importer reference was rewritten to the canonical dep_path.
+    let root = out.importers.get(".").unwrap();
+    assert_eq!(root[0].dep_path, "consumer@1.0.0(react@18.0.0)");
+}
+
+// `dedupe-peer-dependents=false` should preserve every distinct
+// peer-suffixed variant, even when they would merge under the
+// default `true` setting. `apply_peer_contexts` is the only call
+// gated by the flag, so the meaningful assertion is that calling
+// `dedupe_peer_variants` explicitly merges the two variants, and
+// skipping the call (the flag-off codepath) leaves both intact.
+#[test]
+fn dedupe_peer_dependents_disabled_keeps_variants() {
+    let consumer_a = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "18.0.0")],
+        &[("react", "^18")],
+    );
+    let react = mk_locked("react", "18.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        "consumer@1.0.0(react@18.0.0)".to_string(),
+        LockedPackage {
+            dep_path: "consumer@1.0.0(react@18.0.0)".to_string(),
+            dependencies: {
+                let mut m = BTreeMap::new();
+                m.insert("react".to_string(), "18.0.0".to_string());
+                m
+            },
+            ..consumer_a.clone()
+        },
+    );
+    let mut variant = consumer_a.clone();
+    variant.dep_path = "consumer@1.0.0(react@18.0.0)(react@18.0.0)".to_string();
+    variant
+        .dependencies
+        .insert("react".to_string(), "18.0.0".to_string());
+    packages.insert(
+        "consumer@1.0.0(react@18.0.0)(react@18.0.0)".to_string(),
+        variant,
+    );
+    packages.insert("react@18.0.0".to_string(), react);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0(react@18.0.0)".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+
+    // Flag-off codepath: dedupe_peer_variants is never called,
+    // so both variants survive untouched.
+    let consumer_keys_off: Vec<_> = graph
+        .packages
+        .keys()
+        .filter(|k| k.starts_with("consumer@"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        consumer_keys_off.len(),
+        2,
+        "expected both variants to survive with dedupe_peer_dependents=false, got: {:?}",
+        consumer_keys_off
+    );
+
+    // Flag-on codepath (for comparison): dedupe_peer_variants
+    // collapses the two peer-equivalent variants into one.
+    let merged = dedupe_peer_variants(graph);
+    let consumer_keys_on: Vec<_> = merged
+        .packages
+        .keys()
+        .filter(|k| k.starts_with("consumer@"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        consumer_keys_on.len(),
+        1,
+        "expected single canonical variant with dedupe_peer_dependents=true, got: {:?}",
+        consumer_keys_on
+    );
+}
+
+// `dedupe-peers=true` should emit suffixes as `(version)` instead
+// of `(name@version)`. The `parse_dep_path` function in
+// aube-lockfile handles both forms (splits on the first `(`), so
+// round-tripping the key still gives back the package name and
+// canonical version.
+#[test]
+fn dedupe_peers_suffix_is_version_only() {
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "18.2.0")],
+        &[("react", "^18")],
+    );
+    consumer.dep_path = "consumer@1.0.0".to_string();
+    let react = mk_locked("react", "18.2.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("react@18.2.0".to_string(), react);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let options = PeerContextOptions {
+        dedupe_peers: true,
+        ..PeerContextOptions::default()
+    };
+    let out = apply_peer_contexts(graph, &options);
+
+    // Suffix should be `(18.2.0)`, not `(react@18.2.0)`.
+    assert!(
+        out.packages.contains_key("consumer@1.0.0(18.2.0)"),
+        "expected version-only suffix: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !out.packages.contains_key("consumer@1.0.0(react@18.2.0)"),
+        "name-based suffix should not appear under dedupe-peers=true"
+    );
+}
+
+// `resolve-peers-from-workspace-root=true` should satisfy an
+// unresolved peer from the root importer's direct deps BEFORE the
+// graph-wide scan tier. Fixture: workspace importer `packages/app`
+// directly depends on `consumer`, which peers on react@>=17.
+// `packages/app` itself has no react in its deps. Root importer
+// pins `react@17.0.2`; the graph also contains `react@18.2.0`
+// reachable via some other path. Because ancestor_scope for
+// consumer is built from `packages/app`'s direct deps (NOT root's),
+// react is missing from the ancestor chain — so only the
+// root-tier and graph-scan tiers can satisfy it, and they resolve
+// to different versions. Paired on/off assertions distinguish
+// which tier ran.
+#[test]
+fn resolve_peers_from_workspace_root_prefers_root() {
+    let build_graph = || {
+        let mut consumer = mk_locked("consumer", "1.0.0", &[], &[("react", ">=17")]);
+        consumer.dep_path = "consumer@1.0.0".to_string();
+        let react17 = mk_locked("react", "17.0.2", &[], &[]);
+        let react18 = mk_locked("react", "18.2.0", &[], &[]);
+
+        let mut packages = BTreeMap::new();
+        packages.insert("consumer@1.0.0".to_string(), consumer);
+        packages.insert("react@17.0.2".to_string(), react17);
+        packages.insert("react@18.2.0".to_string(), react18);
+
+        let mut importers = BTreeMap::new();
+        // Root importer: pins react@17.0.2. Feeds root_scope.
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "react".to_string(),
+                dep_path: "react@17.0.2".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^17".to_string()),
+            }],
+        );
+        // Workspace importer: depends on consumer, but does NOT
+        // have react in its own direct deps. Consumer's
+        // ancestor_scope therefore does not include react, forcing
+        // peer resolution down to the root-or-scan tiers.
+        importers.insert(
+            "packages/app".to_string(),
+            vec![DirectDep {
+                name: "consumer".to_string(),
+                dep_path: "consumer@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            }],
+        );
+
+        LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        }
+    };
+
+    let options_on = PeerContextOptions {
+        resolve_from_workspace_root: true,
+        ..PeerContextOptions::default()
+    };
+    let out_on = apply_peer_contexts(build_graph(), &options_on);
+    assert!(
+        out_on.packages.contains_key("consumer@1.0.0(react@17.0.2)"),
+        "with flag on, consumer should resolve peer from workspace root (17.0.2): {:?}",
+        out_on.packages.keys().collect::<Vec<_>>()
+    );
+
+    let options_off = PeerContextOptions {
+        resolve_from_workspace_root: false,
+        ..PeerContextOptions::default()
+    };
+    let out_off = apply_peer_contexts(build_graph(), &options_off);
+    assert!(
+        out_off
+            .packages
+            .contains_key("consumer@1.0.0(react@18.2.0)"),
+        "with flag off, consumer should fall through to graph-wide scan (18.2.0): {:?}",
+        out_off.packages.keys().collect::<Vec<_>>()
+    );
+}
+
+// Mutual-peer cycle fixture with `dedupe-peers=true` should still
+// converge without hitting MAX_ITERATIONS. The cycle-break
+// handling in `contains_canonical_back_ref` uses the `name@version`
+// form of the canonical base, but when `dedupe_peers=true` the
+// suffix uses just `version` — the check still succeeds because
+// nested tails reach back to the same `canonical_base` computed
+// from the input key (which is still `name@version`).
+#[test]
+fn dedupe_peers_cycle_break_still_converges() {
+    let a = mk_locked("a", "1.0.0", &[("b", "1.0.0")], &[("b", "^1")]);
+    let b = mk_locked("b", "1.0.0", &[("a", "1.0.0")], &[("a", "^1")]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("a@1.0.0".to_string(), a);
+    packages.insert("b@1.0.0".to_string(), b);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "a".to_string(),
+            dep_path: "a@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let canonical = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let options = PeerContextOptions {
+        dedupe_peers: true,
+        ..PeerContextOptions::default()
+    };
+    let out = apply_peer_contexts(canonical, &options);
+
+    // Under dedupe_peers=true the keys collapse to version-only
+    // suffixes.
+    let a_key = "a@1.0.0(1.0.0)";
+    let b_key = "b@1.0.0(1.0.0)";
+    assert!(
+        out.packages.contains_key(a_key),
+        "expected {a_key} in {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        out.packages.contains_key(b_key),
+        "expected {b_key} in {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+
+    // Every referenced dependency tail resolves to a real entry
+    // — proves the cycle break didn't strand references.
+    for pkg in out.packages.values() {
+        for (child_name, child_tail) in &pkg.dependencies {
+            let child_key = format!("{child_name}@{child_tail}");
+            assert!(
+                out.packages.contains_key(&child_key),
+                "dangling dep_path {child_key} referenced from {}",
+                pkg.dep_path
+            );
+        }
+    }
+}
+
+// Regression: under `dedupe-peers=true`, a package whose canonical
+// version coincidentally matches a nested peer's version in an
+// unrelated subtree must NOT collide. Cycle detection runs against
+// the full `name@version` form during the fixed-point loop, and
+// `dedupe_peer_suffixes` rewrites the suffix to version-only as a
+// purely cosmetic post-pass — so A@1.0.0's cycle check against
+// B's tail `2.0.0(c@1.0.0)` distinguishes "C at 1.0.0" from
+// "back-ref to A at 1.0.0".
+#[test]
+fn dedupe_peers_no_false_positive_on_version_collision() {
+    // A@1.0.0 peers on B. B@2.0.0 peers on C. C@1.0.0 has no peers.
+    // A and C share version 1.0.0 but are otherwise unrelated.
+    // Under `dedupe_peers=true` B's deduped tail is `(2.0.0(1.0.0))`
+    // — the inner `1.0.0` is C's peer, not a back-ref to A.
+    let a = mk_locked("a", "1.0.0", &[("b", "2.0.0")], &[("b", "^2")]);
+    let b = mk_locked("b", "2.0.0", &[("c", "1.0.0")], &[("c", "^1")]);
+    let c = mk_locked("c", "1.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("a@1.0.0".to_string(), a);
+    packages.insert("b@2.0.0".to_string(), b);
+    packages.insert("c@1.0.0".to_string(), c);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "a".to_string(),
+            dep_path: "a@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let options = PeerContextOptions {
+        dedupe_peers: true,
+        ..PeerContextOptions::default()
+    };
+    let out = apply_peer_contexts(graph, &options);
+
+    // A's key must carry B's full nested tail including C's peer.
+    // If cycle detection false-positived on the bare version, B's
+    // tail would collapse to `(2.0.0)` (dropping `(1.0.0)`) and
+    // we'd see `a@1.0.0(2.0.0)` instead.
+    assert!(
+        out.packages.contains_key("a@1.0.0(2.0.0(1.0.0))"),
+        "expected A's key to preserve B's nested peer chain: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !out.packages.contains_key("a@1.0.0(2.0.0)"),
+        "false-positive cycle break would produce the truncated form"
+    );
+}
+
+// Unit test for the dedupe-peers post-pass: given a key with
+// `name@version` suffix segments, produce the version-only form.
+#[test]
+fn apply_dedupe_peers_to_key_strips_names_in_suffix() {
+    assert_eq!(
+        apply_dedupe_peers_to_key("react-dom@18.2.0(react@18.2.0)"),
+        "react-dom@18.2.0(18.2.0)"
+    );
+    assert_eq!(
+        apply_dedupe_peers_to_key("a@1.0.0(b@2.0.0(c@3.0.0))"),
+        "a@1.0.0(2.0.0(3.0.0))"
+    );
+    // No parens = no change.
+    assert_eq!(apply_dedupe_peers_to_key("react@18.2.0"), "react@18.2.0");
+    // Already deduped (no `name@` inside parens) = no change.
+    assert_eq!(
+        apply_dedupe_peers_to_key("a@1.0.0(18.2.0)"),
+        "a@1.0.0(18.2.0)"
+    );
+}
+
+// Regression: two peer-variant keys that differ only in which peer
+// NAME they declared (but whose peer versions coincide) must not
+// silently collapse into each other when `dedupe_peers=true`.
+// `apply_dedupe_peers_to_key` strips peer names, so naive insertion
+// into a `BTreeMap` would drop one variant. `dedupe_peer_suffixes`
+// detects the collision and keeps both sides in full form.
+#[test]
+fn dedupe_peer_suffixes_preserves_full_form_on_name_collision() {
+    // Construct two distinct variants that would collide after
+    // naive suffix rewriting:
+    //   consumer@1.0.0(foo@1.0.0)  and  consumer@1.0.0(bar@1.0.0)
+    let consumer_foo = {
+        let mut pkg = mk_locked("consumer", "1.0.0", &[("foo", "1.0.0")], &[("foo", "^1")]);
+        pkg.dep_path = "consumer@1.0.0(foo@1.0.0)".to_string();
+        pkg
+    };
+    let consumer_bar = {
+        let mut pkg = mk_locked("consumer", "1.0.0", &[("bar", "1.0.0")], &[("bar", "^1")]);
+        pkg.dep_path = "consumer@1.0.0(bar@1.0.0)".to_string();
+        pkg
+    };
+    let foo = mk_locked("foo", "1.0.0", &[], &[]);
+    let bar = mk_locked("bar", "1.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0(foo@1.0.0)".to_string(), consumer_foo);
+    packages.insert("consumer@1.0.0(bar@1.0.0)".to_string(), consumer_bar);
+    packages.insert("foo@1.0.0".to_string(), foo);
+    packages.insert("bar@1.0.0".to_string(), bar);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![
+            DirectDep {
+                name: "consumer".to_string(),
+                dep_path: "consumer@1.0.0(foo@1.0.0)".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            },
+            DirectDep {
+                name: "consumer".to_string(),
+                dep_path: "consumer@1.0.0(bar@1.0.0)".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            },
+        ],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+
+    let out = dedupe_peer_suffixes(graph);
+
+    // Both variants must survive: colliding keys fall back to the
+    // original full-form keys instead of silently overwriting each
+    // other.
+    let consumer_keys: BTreeSet<_> = out
+        .packages
+        .keys()
+        .filter(|k| k.starts_with("consumer@"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        consumer_keys.len(),
+        2,
+        "both consumer variants must survive collision: {consumer_keys:?}"
+    );
+    assert!(consumer_keys.contains("consumer@1.0.0(foo@1.0.0)"));
+    assert!(consumer_keys.contains("consumer@1.0.0(bar@1.0.0)"));
+
+    // Importer references to the full-form keys must stay pointing
+    // at the preserved variants.
+    let importer_keys: BTreeSet<_> = out
+        .importers
+        .get(".")
+        .unwrap()
+        .iter()
+        .map(|d| d.dep_path.clone())
+        .collect();
+    assert!(importer_keys.contains("consumer@1.0.0(foo@1.0.0)"));
+    assert!(importer_keys.contains("consumer@1.0.0(bar@1.0.0)"));
+}
+
+// Scoped packages have two `@` chars (scope prefix + version
+// separator); the version separator is the rightmost one, so the
+// suffix-stripper must use `rfind('@')`. Regression for a bug
+// where `find('@')` returned the scope's leading `@` and produced
+// malformed keys like `(types/react@18.2.0)`.
+#[test]
+fn apply_dedupe_peers_to_key_handles_scoped_packages() {
+    assert_eq!(
+        apply_dedupe_peers_to_key("consumer@1.0.0(@types/react@18.2.0)"),
+        "consumer@1.0.0(18.2.0)"
+    );
+    // Scoped head and scoped peer.
+    assert_eq!(
+        apply_dedupe_peers_to_key("@foo/bar@1.0.0(@types/react@18.2.0)"),
+        "@foo/bar@1.0.0(18.2.0)"
+    );
+    // Nested scoped peers.
+    assert_eq!(
+        apply_dedupe_peers_to_key("a@1.0.0(@types/react@18.2.0(@babel/core@7.0.0))"),
+        "a@1.0.0(18.2.0(7.0.0))"
+    );
+}
+
+// Cycle helper sanity check: a value that contains the canonical
+// back-ref should be recognized only at proper boundaries, not
+// inside longer version strings.
+#[test]
+fn contains_canonical_back_ref_respects_boundaries() {
+    assert!(contains_canonical_back_ref("1.0.0(a@1.0.0)", "a@1.0.0"));
+    assert!(contains_canonical_back_ref(
+        "1.0.0(a@1.0.0(b@1.0.0))",
+        "a@1.0.0"
+    ));
+    // False positive guard: "a@1.0" should NOT match inside
+    // "a@1.0.5" because the following char ('.') is not a boundary.
+    assert!(!contains_canonical_back_ref("1.0.0(a@1.0.5)", "a@1.0"));
+    // No match when the canonical isn't inside a peer suffix at all.
+    assert!(!contains_canonical_back_ref("1.0.0", "a@1.0.0"));
+}
+
+// A package whose only dep is another package that declares a peer
+// should hoist that peer to the importer — matching pnpm's
+// `auto-install-peers=true` default. The hoisted DirectDep carries
+// the declared peer range as its specifier.
+#[test]
+fn hoist_auto_installed_peers_hoists_unmet_peers_to_importer() {
+    // consumer declares `peer react: ^17 || ^18` and already has
+    // `react@18.2.0` wired via its auto-install dependencies map.
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "18.2.0")],
+        &[("react", "^17 || ^18")],
+    );
+    consumer.dep_path = "consumer@1.0.0".to_string();
+
+    let react = mk_locked("react", "18.2.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("react@18.2.0".to_string(), react);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let hoisted = hoist_auto_installed_peers(graph);
+    let root = hoisted.importers.get(".").unwrap();
+
+    // Sorted by name → [consumer, react].
+    assert_eq!(root.len(), 2);
+    assert_eq!(root[0].name, "consumer");
+    assert_eq!(root[1].name, "react");
+    assert_eq!(root[1].dep_path, "react@18.2.0");
+    assert_eq!(root[1].dep_type, DepType::Production);
+    // Specifier carries the declared peer range verbatim.
+    assert_eq!(root[1].specifier.as_deref(), Some("^17 || ^18"));
+}
+
+// If the peer is already in the importer's direct deps, hoist is a
+// no-op — we don't duplicate or shadow the user's own specifier.
+#[test]
+fn hoist_auto_installed_peers_leaves_already_satisfied_peers_alone() {
+    let consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "17.0.2")],
+        &[("react", "^17 || ^18")],
+    );
+    let react = mk_locked("react", "17.0.2", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("react@17.0.2".to_string(), react);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![
+            DirectDep {
+                name: "consumer".to_string(),
+                dep_path: "consumer@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            },
+            DirectDep {
+                name: "react".to_string(),
+                dep_path: "react@17.0.2".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("17.0.2".to_string()),
+            },
+        ],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let hoisted = hoist_auto_installed_peers(graph);
+    let root = hoisted.importers.get(".").unwrap();
+
+    // Still just the two original entries — no extra react snuck in.
+    assert_eq!(root.len(), 2);
+    let react_dep = root.iter().find(|d| d.name == "react").unwrap();
+    // The user's own pin (17.0.2) survives — not clobbered by the
+    // peer range.
+    assert_eq!(react_dep.specifier.as_deref(), Some("17.0.2"));
+}
+
+// `detect_unmet_peers` should flag a package whose declared peer
+// range isn't satisfied by whatever the graph ends up providing.
+// This is the core case: user pins `react@15.7.0`, a consumer
+// declares `peer react: ^18`, and we need a warning so the user
+// knows their runtime will break.
+#[test]
+fn detect_unmet_peers_flags_version_mismatch() {
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "15.7.0")],
+        &[("react", "^18")],
+    );
+    consumer.dep_path = "consumer@1.0.0(react@15.7.0)".to_string();
+
+    let mut packages = BTreeMap::new();
+    packages.insert(consumer.dep_path.clone(), consumer);
+
+    let graph = LockfileGraph {
+        importers: BTreeMap::new(),
+        packages,
+        ..Default::default()
+    };
+
+    let unmet = detect_unmet_peers(&graph);
+    assert_eq!(unmet.len(), 1, "expected one unmet peer, got {unmet:?}");
+    let u = &unmet[0];
+    assert_eq!(u.from_name, "consumer");
+    assert_eq!(u.peer_name, "react");
+    assert_eq!(u.declared, "^18");
+    assert_eq!(u.found.as_deref(), Some("15.7.0"));
+}
+
+// When the resolved version *does* satisfy the declared range, no
+// warning should fire.
+#[test]
+fn detect_unmet_peers_silent_when_satisfied() {
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "18.2.0")],
+        &[("react", "^17 || ^18")],
+    );
+    consumer.dep_path = "consumer@1.0.0(react@18.2.0)".to_string();
+
+    let mut packages = BTreeMap::new();
+    packages.insert(consumer.dep_path.clone(), consumer);
+
+    let graph = LockfileGraph {
+        importers: BTreeMap::new(),
+        packages,
+        ..Default::default()
+    };
+    assert!(detect_unmet_peers(&graph).is_empty());
+}
+
+// Peer declared but completely absent from `pkg.dependencies` —
+// exercises the `found: None` branch that drives the "missing
+// required peer" display path in `check_unmet_peers`. Rare in
+// practice because the BFS peer walk usually drags *some* version
+// in, but possible for corner cases (registry fetch failure, etc).
+#[test]
+fn detect_unmet_peers_flags_completely_missing_peer() {
+    let mut consumer = mk_locked("consumer", "1.0.0", &[], &[("react", "^18")]);
+    consumer.dep_path = "consumer@1.0.0".to_string();
+
+    let mut packages = BTreeMap::new();
+    packages.insert(consumer.dep_path.clone(), consumer);
+
+    let graph = LockfileGraph {
+        importers: BTreeMap::new(),
+        packages,
+        ..Default::default()
+    };
+
+    let unmet = detect_unmet_peers(&graph);
+    assert_eq!(unmet.len(), 1);
+    let u = &unmet[0];
+    assert_eq!(u.from_name, "consumer");
+    assert_eq!(u.peer_name, "react");
+    assert_eq!(u.declared, "^18");
+    assert_eq!(u.found, None);
+}
+
+// Optional peers are suppressed even when they would otherwise be
+// flagged — matches pnpm's `peerDependenciesMeta.optional` behavior
+// with `auto-install-peers=true`.
+#[test]
+fn detect_unmet_peers_skips_optional_peers() {
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "15.7.0")],
+        &[("react", "^18")],
+    );
+    consumer.dep_path = "consumer@1.0.0(react@15.7.0)".to_string();
+    consumer.peer_dependencies_meta.insert(
+        "react".to_string(),
+        aube_lockfile::PeerDepMeta { optional: true },
+    );
+
+    let mut packages = BTreeMap::new();
+    packages.insert(consumer.dep_path.clone(), consumer);
+
+    let graph = LockfileGraph {
+        importers: BTreeMap::new(),
+        packages,
+        ..Default::default()
+    };
+    assert!(detect_unmet_peers(&graph).is_empty());
+}
+
+// Mutual dependency cycles must not hang the BFS resolver. The
+// walker dedupes on `name@version`, so the second time the cycle
+// brings us back to a package we already resolved, we wire the
+// parent edge but skip recursing into its transitives.
+//
+//     cycle-a@1.0.0 -> cycle-b@1.0.0
+//     cycle-b@1.0.0 -> cycle-a@1.0.0
+#[tokio::test]
+async fn resolve_terminates_on_dependency_cycle() {
+    let mut a = make_packument("cycle-a", &["1.0.0"], "1.0.0");
+    a.versions
+        .get_mut("1.0.0")
+        .unwrap()
+        .dependencies
+        .insert("cycle-b".to_string(), "1.0.0".to_string());
+    let mut b = make_packument("cycle-b", &["1.0.0"], "1.0.0");
+    b.versions
+        .get_mut("1.0.0")
+        .unwrap()
+        .dependencies
+        .insert("cycle-a".to_string(), "1.0.0".to_string());
+
+    // The RegistryClient is never hit because we pre-seed the cache.
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("cycle-a".to_string(), a);
+    resolver.cache.insert("cycle-b".to_string(), b);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("cycle-a".to_string(), "1.0.0".to_string());
+
+    let graph = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        resolver.resolve(&manifest, None),
+    )
+    .await
+    .expect("resolver hung on dependency cycle")
+    .expect("resolve failed");
+
+    assert!(graph.packages.contains_key("cycle-a@1.0.0"));
+    assert!(graph.packages.contains_key("cycle-b@1.0.0"));
+    assert_eq!(
+        graph.packages["cycle-a@1.0.0"].dependencies.get("cycle-b"),
+        Some(&"1.0.0".to_string())
+    );
+    assert_eq!(
+        graph.packages["cycle-b@1.0.0"].dependencies.get("cycle-a"),
+        Some(&"1.0.0".to_string())
+    );
+}
+
+#[tokio::test]
+async fn auto_install_peers_installs_missing_required_peer() {
+    let mut consumer = make_packument("consumer", &["1.0.0"], "1.0.0");
+    consumer
+        .versions
+        .get_mut("1.0.0")
+        .unwrap()
+        .peer_dependencies
+        .insert("react".to_string(), "^18".to_string());
+    let react = make_packument("react", &["18.2.0"], "18.2.0");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("consumer".to_string(), consumer);
+    resolver.cache.insert("react".to_string(), react);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("consumer".to_string(), "1.0.0".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("resolve failed");
+
+    assert!(graph_has_package(&graph, "consumer", "1.0.0"));
+    assert!(
+        graph_has_package(&graph, "react", "18.2.0"),
+        "missing required peer should be auto-installed"
+    );
+}
+
+#[tokio::test]
+async fn auto_install_peers_uses_importer_declared_peer_name_without_extra_version() {
+    let mut plugin = make_packument("plugin", &["1.0.0"], "1.0.0");
+    plugin
+        .versions
+        .get_mut("1.0.0")
+        .unwrap()
+        .peer_dependencies
+        .insert("eslint".to_string(), "^8.56.0".to_string());
+    let eslint = make_packument("eslint", &["8.57.1", "9.0.0"], "9.0.0");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("plugin".to_string(), plugin);
+    resolver.cache.insert("eslint".to_string(), eslint);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("eslint".to_string(), "^9".to_string());
+    manifest
+        .dependencies
+        .insert("plugin".to_string(), "1.0.0".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("resolve failed");
+
+    assert!(graph_has_package(&graph, "eslint", "9.0.0"));
+    assert!(graph_has_package(&graph, "plugin", "1.0.0"));
+    assert!(
+        !graph_has_package(&graph, "eslint", "8.57.1"),
+        "importer-declared peer name should not pull a second compatible peer tree"
+    );
+    let unmet = detect_unmet_peers(&graph);
+    assert!(
+        unmet.iter().any(|unmet| unmet.from_name == "plugin"
+            && unmet.peer_name == "eslint"
+            && unmet.declared == "^8.56.0"
+            && unmet.found.as_deref() == Some("9.0.0")),
+        "incompatible importer peer should surface as a version-mismatch warning"
+    );
+}
+
+#[tokio::test]
+async fn auto_install_peers_skips_unrequested_optional_peer_alternatives() {
+    let mut loader = make_packument("loader", &["1.0.0"], "1.0.0");
+    let loader_meta = loader.versions.get_mut("1.0.0").unwrap();
+    loader_meta
+        .peer_dependencies
+        .insert("sass".to_string(), "^1".to_string());
+    loader_meta
+        .peer_dependencies
+        .insert("webpack".to_string(), "^5".to_string());
+    loader_meta
+        .peer_dependencies
+        .insert("@rspack/core".to_string(), "^1".to_string());
+    loader_meta
+        .peer_dependencies
+        .insert("node-sass".to_string(), "^9".to_string());
+    loader_meta.peer_dependencies_meta.insert(
+        "@rspack/core".to_string(),
+        aube_registry::PeerDepMeta { optional: true },
+    );
+    loader_meta.peer_dependencies_meta.insert(
+        "node-sass".to_string(),
+        aube_registry::PeerDepMeta { optional: true },
+    );
+
+    let sass = make_packument("sass", &["1.69.0"], "1.69.0");
+    let webpack = make_packument("webpack", &["5.0.0"], "5.0.0");
+    let rspack = make_packument("@rspack/core", &["1.0.0"], "1.0.0");
+    let node_sass = make_packument("node-sass", &["9.0.0"], "9.0.0");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("loader".to_string(), loader);
+    resolver.cache.insert("sass".to_string(), sass);
+    resolver.cache.insert("webpack".to_string(), webpack);
+    resolver.cache.insert("@rspack/core".to_string(), rspack);
+    resolver.cache.insert("node-sass".to_string(), node_sass);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("loader".to_string(), "1.0.0".to_string());
+    manifest
+        .dependencies
+        .insert("sass".to_string(), "^1".to_string());
+    manifest
+        .dependencies
+        .insert("webpack".to_string(), "^5".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("resolve failed");
+
+    assert!(graph_has_package(&graph, "loader", "1.0.0"));
+    assert!(graph_has_package(&graph, "sass", "1.69.0"));
+    assert!(graph_has_package(&graph, "webpack", "5.0.0"));
+    assert!(
+        !graph_has_package(&graph, "@rspack/core", "1.0.0"),
+        "optional peer alternative should not be auto-installed"
+    );
+    assert!(
+        !graph_has_package(&graph, "node-sass", "9.0.0"),
+        "optional peer alternative should not be auto-installed"
+    );
+}
+
+// Scenario test for the bug Cursor Bugbot flagged on #142:
+// lockfile has `dep-a@1.0.0`; manifest wants both `dep-a@^1`
+// (matches lockfile) AND `other-a@^2` (fresh); `other-a@2.0.0`
+// declares a transitive `dep-a@^2` that no lockfile entry
+// satisfies.
+//
+// Correct behavior: resolver picks dep-a@1.0.0 for the direct
+// dep (via lockfile reuse) and dep-a@2.0.0 for the transitive
+// (via the fetch path).
+//
+// The original bug: `ensure_fetch!` wrongly skipped the spawn
+// when `resolved_versions[dep-a]` was non-empty, regardless of
+// whether the packument was actually in `self.cache`. The
+// lockfile-reuse path populates `resolved_versions` without
+// ever caching the packument, so the transitive dep-a@^2 task
+// fell through to the fetch-wait loop, called `ensure_fetch!`,
+// got skipped, and panicked with "packument fetch disappeared
+// before completing". The fix removes the `resolved_versions`
+// guard from `ensure_fetch!` — the macro now checks only
+// in-flight + cache, and prefetch gating on lockfile-covered
+// names is done by callers via an explicit `existing_names`
+// check.
+//
+// Note: this test pre-seeds the resolver cache with both
+// packuments, so the wait-for-fetch loop exits immediately
+// without actually calling `ensure_fetch!` — which means the
+// test passes with or without the fix. It's kept as an
+// end-to-end scenario assertion (resolver produces the
+// expected two-version graph) rather than a direct regression
+// test for the `ensure_fetch!` bug itself. Triggering the
+// actual bug requires a real registry mock that returns the
+// packument during the wait loop, which the unit-test harness
+// doesn't have; the BATS suite covers the end-to-end path
+// through a local Verdaccio registry.
+#[tokio::test]
+async fn resolve_handles_lockfile_reused_name_with_incompatible_transitive_range() {
+    // Packument for `dep-a` has both a 1.x and a 2.x line; only
+    // 1.0.0 is in the (fake) lockfile, so the fetch path has to
+    // cover the 2.x case.
+    let dep_a = make_packument("dep-a", &["1.0.0", "2.0.0"], "2.0.0");
+    // `other-a@2.0.0` is the package that triggers the
+    // transitive `dep-a@^2` task.
+    let mut other_a = make_packument("other-a", &["2.0.0"], "2.0.0");
+    other_a
+        .versions
+        .get_mut("2.0.0")
+        .unwrap()
+        .dependencies
+        .insert("dep-a".to_string(), "^2".to_string());
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    // Pre-seed the in-memory packument cache so the resolver
+    // never needs to touch the fake registry URL.
+    resolver.cache.insert("dep-a".to_string(), dep_a);
+    resolver.cache.insert("other-a".to_string(), other_a);
+
+    // Existing lockfile: has `dep-a@1.0.0` (the lockfile-reuse
+    // hit) but nothing else. `other-a@^2` is a fresh dep that
+    // won't lockfile-reuse.
+    let mut existing_pkgs: BTreeMap<String, LockedPackage> = BTreeMap::new();
+    existing_pkgs.insert(
+        "dep-a@1.0.0".to_string(),
+        LockedPackage {
+            name: "dep-a".to_string(),
+            version: "1.0.0".to_string(),
+            dep_path: "dep-a@1.0.0".to_string(),
+            ..Default::default()
+        },
+    );
+    let existing = LockfileGraph {
+        packages: existing_pkgs,
+        importers: BTreeMap::new(),
+        settings: Default::default(),
+        overrides: BTreeMap::new(),
+        ignored_optional_dependencies: BTreeSet::new(),
+        times: BTreeMap::new(),
+        skipped_optional_dependencies: BTreeMap::new(),
+        catalogs: BTreeMap::new(),
+        bun_config_version: None,
+    };
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("dep-a".to_string(), "^1".to_string());
+    manifest
+        .dependencies
+        .insert("other-a".to_string(), "^2".to_string());
+
+    let graph = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        resolver.resolve(&manifest, Some(&existing)),
+    )
+    .await
+    .expect("resolver hung")
+    .expect("resolve failed");
+
+    // Both versions of dep-a should be in the resolved graph:
+    // 1.0.0 from lockfile-reuse, 2.0.0 from the fetch path.
+    assert!(
+        graph.packages.contains_key("dep-a@1.0.0"),
+        "dep-a@1.0.0 missing (lockfile reuse)"
+    );
+    assert!(
+        graph.packages.contains_key("dep-a@2.0.0"),
+        "dep-a@2.0.0 missing (transitive fetch fell through the ensure_fetch guard)"
+    );
+    assert!(graph.packages.contains_key("other-a@2.0.0"));
+}
+
+#[tokio::test]
+async fn lockfile_reuse_preserves_transitive_optional_edges() {
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+
+    let mut existing_pkgs: BTreeMap<String, LockedPackage> = BTreeMap::new();
+    existing_pkgs.insert(
+        "host@1.0.0".to_string(),
+        LockedPackage {
+            name: "host".to_string(),
+            version: "1.0.0".to_string(),
+            dep_path: "host@1.0.0".to_string(),
+            dependencies: [("native".to_string(), "1.0.0".to_string())].into(),
+            optional_dependencies: [("native".to_string(), "1.0.0".to_string())].into(),
+            ..Default::default()
+        },
+    );
+    existing_pkgs.insert(
+        "native@1.0.0".to_string(),
+        LockedPackage {
+            name: "native".to_string(),
+            version: "1.0.0".to_string(),
+            dep_path: "native@1.0.0".to_string(),
+            ..Default::default()
+        },
+    );
+    let existing = LockfileGraph {
+        packages: existing_pkgs,
+        importers: BTreeMap::new(),
+        settings: Default::default(),
+        overrides: BTreeMap::new(),
+        ignored_optional_dependencies: BTreeSet::new(),
+        times: BTreeMap::new(),
+        skipped_optional_dependencies: BTreeMap::new(),
+        catalogs: BTreeMap::new(),
+        bun_config_version: None,
+    };
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("host".to_string(), "1.0.0".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, Some(&existing))
+        .await
+        .expect("resolve failed");
+
+    let host = graph.packages.get("host@1.0.0").unwrap();
+    assert_eq!(host.dependencies.get("native").unwrap(), "1.0.0");
+    assert_eq!(
+        host.optional_dependencies.get("native").unwrap(),
+        "1.0.0",
+        "lockfile reuse must keep the optional edge metadata for write()"
+    );
+}
+
+// ===== peersSuffixMaxLength =====
+//
+// Helpers exercised directly: `hash_peer_suffix` for the format
+// invariant; `apply_peer_contexts` for the integration path that
+// reads the cap and decides whether to swap the suffix.
+
+#[test]
+fn hash_peer_suffix_matches_expected_format() {
+    let out = hash_peer_suffix("(react@18.2.0)");
+    // `_` prefix, 10 hex chars, nothing else.
+    assert!(out.starts_with('_'), "expected `_` prefix: {out:?}");
+    assert_eq!(out.len(), 11, "expected `_` + 10 hex chars: {out:?}");
+    assert!(
+        out[1..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "expected lowercase hex after `_`: {out:?}"
+    );
+    // Stable output — regression guard against accidental format changes.
+    assert_eq!(hash_peer_suffix("(react@18.2.0)"), out);
+}
+
+// Small cap forces the suffix to collapse to `_<hex>`. Uses the
+// nested-peer fixture that already proves correct behavior at the
+// default cap — same fixture, different cap, different output.
+#[test]
+fn peer_suffix_is_hashed_when_exceeding_cap() {
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("adapter", "1.0.0"), ("core", "1.0.0")],
+        &[("adapter", "^1"), ("core", "^1")],
+    );
+    consumer.dep_path = "consumer@1.0.0".to_string();
+    let mut adapter = mk_locked("adapter", "1.0.0", &[("core", "1.0.0")], &[("core", "^1")]);
+    adapter.dep_path = "adapter@1.0.0".to_string();
+    let core = mk_locked("core", "1.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("adapter@1.0.0".to_string(), adapter);
+    packages.insert("core@1.0.0".to_string(), core);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+
+    // Cap of 10 bytes is smaller than any realistic suffix.
+    let options = PeerContextOptions {
+        peers_suffix_max_length: 10,
+        ..PeerContextOptions::default()
+    };
+    let out = apply_peer_contexts(graph, &options);
+
+    // At least one package should have a hashed suffix. The outer
+    // `consumer` package is the one most likely to overflow (nested
+    // suffix `(adapter@1.0.0(core@1.0.0))(core@1.0.0)` = 42 bytes).
+    let consumer_key = out
+        .packages
+        .keys()
+        .find(|k| k.starts_with("consumer@1.0.0"))
+        .cloned()
+        .expect("consumer@1.0.0 variant missing");
+    let suffix = consumer_key.strip_prefix("consumer@1.0.0").unwrap();
+    assert!(
+        suffix.starts_with('_') && suffix.len() == 11,
+        "expected hashed suffix _<10-hex>, got {suffix:?} from {consumer_key:?}"
+    );
+}
+
+// Default cap leaves the nested form byte-identical to pre-cap output.
+// Regression guard: the wiring must not change behavior when the cap
+// isn't hit — which is the overwhelmingly common case.
+#[test]
+fn peer_suffix_unchanged_when_within_cap() {
+    let mut consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("adapter", "1.0.0"), ("core", "1.0.0")],
+        &[("adapter", "^1"), ("core", "^1")],
+    );
+    consumer.dep_path = "consumer@1.0.0".to_string();
+    let mut adapter = mk_locked("adapter", "1.0.0", &[("core", "1.0.0")], &[("core", "^1")]);
+    adapter.dep_path = "adapter@1.0.0".to_string();
+    let core = mk_locked("core", "1.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("adapter@1.0.0".to_string(), adapter);
+    packages.insert("core@1.0.0".to_string(), core);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+
+    // The nested-peer test's expected key must still be produced.
+    assert!(
+        out.packages
+            .contains_key("consumer@1.0.0(adapter@1.0.0(core@1.0.0))(core@1.0.0)"),
+        "default cap corrupted output: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+}
+
+// Fresh resolve: when the root manifest carries
+// `"odd-alias": "npm:is-odd@3.0.1"`, the resolver must emit the
+// graph keyed by the *alias* and stash the real registry name in
+// `alias_of`. Before this fix, `task.name` was clobbered to
+// `is-odd` at the `npm:` rewrite site, which collapsed
+// `node_modules/odd-alias/` to `node_modules/is-odd/` and broke
+// `require("odd-alias")` at runtime.
+#[tokio::test]
+async fn fresh_resolve_preserves_npm_alias_as_folder_name() {
+    let is_odd = make_packument("is-odd", &["3.0.1"], "3.0.1");
+
+    // Pre-seed the cache under the *real* package name — the
+    // whole point of the fix is that the registry fetch keys by
+    // the real name (`is-odd`), not the alias-qualified
+    // `odd-alias` that would 404 the registry.
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("is-odd".to_string(), is_odd);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("odd-alias".to_string(), "npm:is-odd@3.0.1".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("alias resolve failed");
+
+    // Graph key and `LockedPackage.name` both carry the alias —
+    // that's what the linker drops into `node_modules/` and what
+    // any `require("odd-alias")` walks to.
+    let pkg = graph
+        .packages
+        .get("odd-alias@3.0.1")
+        .expect("aliased package must be keyed by the alias dep_path");
+    assert_eq!(pkg.name, "odd-alias");
+    assert_eq!(pkg.version, "3.0.1");
+    assert_eq!(pkg.alias_of.as_deref(), Some("is-odd"));
+    assert_eq!(pkg.registry_name(), "is-odd");
+
+    // No stray `is-odd@3.0.1` entry from the rewrite leaking the
+    // real name past the alias boundary.
+    assert!(!graph.packages.contains_key("is-odd@3.0.1"));
+
+    let root = graph.importers.get(".").unwrap();
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].name, "odd-alias");
+    assert_eq!(root[0].dep_path, "odd-alias@3.0.1");
+}
+
+// Catalog-aliased dep + selector override targeting the original
+// (alias) name with a bare-range replacement. Reproduces the
+// pnpm/pnpm `js-yaml: npm:@zkochan/js-yaml@0.0.11` + `js-yaml@<3.14.2:
+// ^3.14.2` shape: the catalog rewrites js-yaml to the @zkochan
+// package, then the override fires by user-facing name and
+// replaces the range with `^3.14.2`. Without clearing
+// `task.real_name` in the override path, the resolver kept fetching
+// `@zkochan/js-yaml`'s packument and bailed with "no version of
+// js-yaml matches range ^3.14.2".
+#[tokio::test]
+async fn override_with_bare_range_undoes_prior_catalog_alias() {
+    let real_js_yaml = make_packument("js-yaml", &["3.14.2"], "3.14.2");
+    let aliased = make_packument("@zkochan/js-yaml", &["0.0.11"], "0.0.11");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut catalogs: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    catalogs.entry("default".to_string()).or_default().insert(
+        "js-yaml".to_string(),
+        "npm:@zkochan/js-yaml@0.0.11".to_string(),
+    );
+    let mut overrides: BTreeMap<String, String> = BTreeMap::new();
+    overrides.insert("js-yaml@<3.14.2".to_string(), "^3.14.2".to_string());
+
+    let mut resolver = Resolver::new(client)
+        .with_catalogs(catalogs)
+        .with_overrides(overrides);
+    resolver.cache.insert("js-yaml".to_string(), real_js_yaml);
+    resolver
+        .cache
+        .insert("@zkochan/js-yaml".to_string(), aliased);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("js-yaml".to_string(), "catalog:".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("override should redirect back to real js-yaml");
+
+    let pkg = graph
+        .packages
+        .get("js-yaml@3.14.2")
+        .expect("override target must resolve to real js-yaml@3.14.2");
+    assert_eq!(pkg.name, "js-yaml");
+    assert_eq!(pkg.version, "3.14.2");
+    assert!(
+        pkg.alias_of.is_none(),
+        "bare-range override must clear the prior npm: alias, got alias_of={:?}",
+        pkg.alias_of,
+    );
+    assert!(!graph.packages.contains_key("js-yaml@0.0.11"));
+    assert!(!graph.packages.contains_key("@zkochan/js-yaml@0.0.11"));
+}
+
+#[tokio::test]
+async fn fresh_resolve_preserves_jsr_name_as_folder_name() {
+    let jsr_collections = make_packument("@jsr/std__collections", &["1.1.6"], "1.1.6");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver
+        .cache
+        .insert("@jsr/std__collections".to_string(), jsr_collections);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("@std/collections".to_string(), "jsr:^1.1.6".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("jsr resolve failed");
+
+    let pkg = graph
+        .packages
+        .get("@std/collections@1.1.6")
+        .expect("jsr package must be keyed by the user-facing dep_path");
+    assert_eq!(pkg.name, "@std/collections");
+    assert_eq!(pkg.version, "1.1.6");
+    assert_eq!(pkg.alias_of.as_deref(), Some("@jsr/std__collections"));
+    assert_eq!(pkg.registry_name(), "@jsr/std__collections");
+    assert!(
+        pkg.tarball_url
+            .as_deref()
+            .is_some_and(|url| url.contains("@jsr/std__collections")),
+        "JSR resolver output must preserve dist.tarball"
+    );
+    assert!(!graph.packages.contains_key("@jsr/std__collections@1.1.6"));
+
+    let root = graph.importers.get(".").unwrap();
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].name, "@std/collections");
+    assert_eq!(root[0].dep_path, "@std/collections@1.1.6");
+}
+
+// A package listed in both `dependencies` and `devDependencies`
+// must appear in the resolved importer's direct-dep list exactly
+// once, with `dep_type = Production` (matches pnpm: production
+// wins, dev entry is silently dropped). Without dedupe the linker
+// sees the same name twice and parallel step 2 races to create
+// the shared `node_modules/<name>` symlink, producing EEXIST.
+#[tokio::test]
+async fn same_dep_in_dependencies_and_dev_dependencies_dedupes() {
+    let pmap = make_packument("p-map", &["7.0.4"], "7.0.4");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("p-map".to_string(), pmap);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("p-map".to_string(), "7.0.4".to_string());
+    manifest
+        .dev_dependencies
+        .insert("p-map".to_string(), "7.0.4".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("resolve failed");
+
+    let root = graph.importers.get(".").unwrap();
+    assert_eq!(
+        root.len(),
+        1,
+        "p-map must appear once in root deps, got {root:?}"
+    );
+    assert_eq!(root[0].name, "p-map");
+    assert_eq!(root[0].dep_type, DepType::Production);
+}
+
+// `dependencies` also wins over `optionalDependencies` when the
+// same name appears in both — same race hazard, same fix.
+#[tokio::test]
+async fn same_dep_in_dependencies_and_optional_dependencies_dedupes() {
+    let pmap = make_packument("p-map", &["7.0.4"], "7.0.4");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("p-map".to_string(), pmap);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("p-map".to_string(), "7.0.4".to_string());
+    manifest
+        .optional_dependencies
+        .insert("p-map".to_string(), "7.0.4".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("resolve failed");
+
+    let root = graph.importers.get(".").unwrap();
+    assert_eq!(
+        root.len(),
+        1,
+        "p-map must appear once in root deps, got {root:?}"
+    );
+    assert_eq!(root[0].name, "p-map");
+    assert_eq!(root[0].dep_type, DepType::Production);
+}
+
+// With no `dependencies` entry, `devDependencies` wins over
+// `optionalDependencies`. Covers the remaining overlap branch.
+#[tokio::test]
+async fn same_dep_in_dev_and_optional_dependencies_dedupes() {
+    let pmap = make_packument("p-map", &["7.0.4"], "7.0.4");
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("p-map".to_string(), pmap);
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dev_dependencies
+        .insert("p-map".to_string(), "7.0.4".to_string());
+    manifest
+        .optional_dependencies
+        .insert("p-map".to_string(), "7.0.4".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("resolve failed");
+
+    let root = graph.importers.get(".").unwrap();
+    assert_eq!(
+        root.len(),
+        1,
+        "p-map must appear once in root deps, got {root:?}"
+    );
+    assert_eq!(root[0].name, "p-map");
+    assert_eq!(root[0].dep_type, DepType::Dev);
+}
