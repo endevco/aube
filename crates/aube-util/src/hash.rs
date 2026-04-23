@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-pub fn keyset_hash<I, T>(iter: I) -> u64
+pub fn ordered_seq_hash<I, T>(iter: I) -> u64
 where
     I: IntoIterator<Item = T>,
     T: Hash,
@@ -128,16 +128,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keyset_hash_is_order_sensitive() {
-        let a = keyset_hash(["a", "b", "c"].iter().copied());
-        let b = keyset_hash(["c", "b", "a"].iter().copied());
+    fn ordered_seq_hash_is_order_sensitive() {
+        let a = ordered_seq_hash(["a", "b", "c"].iter().copied());
+        let b = ordered_seq_hash(["c", "b", "a"].iter().copied());
         assert_ne!(a, b);
     }
 
     #[test]
-    fn keyset_hash_detects_count_changes() {
-        let short = keyset_hash(["a", "b"].iter().copied());
-        let long = keyset_hash(["a", "b", "c"].iter().copied());
+    fn ordered_seq_hash_detects_count_changes() {
+        let short = ordered_seq_hash(["a", "b"].iter().copied());
+        let long = ordered_seq_hash(["a", "b", "c"].iter().copied());
         assert_ne!(short, long);
     }
 

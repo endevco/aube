@@ -357,7 +357,7 @@ pub fn apply_peer_contexts(
     let mut current = canonical;
     let mut converged = false;
     let key_set_hash = |g: &LockfileGraph| -> u64 {
-        aube_util::hash::keyset_hash(g.packages.keys().map(String::as_str))
+        aube_util::hash::ordered_seq_hash(g.packages.keys().map(String::as_str))
     };
     for i in 0..MAX_ITERATIONS {
         let before = key_set_hash(&current);
