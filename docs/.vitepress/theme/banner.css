@@ -9,14 +9,14 @@
   align-items: center;
   justify-content: center;
   padding: 0.5rem 2.75rem;
-  background: var(--vp-c-brand-1, #f0a584);
-  color: #000;
+  background: var(--aube-coral-dark, #9e4a2a);
+  color: #fff;
   font-size: 0.9rem;
   line-height: 1.4;
   text-align: center;
 }
 .jdx-banner a {
-  color: #000;
+  color: #fff;
   text-decoration: underline;
   font-weight: 600;
 }
