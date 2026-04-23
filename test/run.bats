@@ -213,3 +213,82 @@ JSON
 	assert_output --partial "true"
 	assert_file_exists shell.log
 }
+
+# discussion #228: a package's own `bin` should resolve from its own
+# scripts without `npx`, matching yarn/pnpm behavior.
+@test "aube run resolves package's own bin (string form)" {
+	cat >bin.js <<'EOF'
+#!/usr/bin/env node
+console.log("self-bin:", process.argv.slice(2).join(" "))
+EOF
+	chmod +x bin.js
+	cat >package.json <<'JSON'
+{
+  "name": "my-cli-app",
+  "version": "1.0.0",
+  "bin": "./bin.js",
+  "scripts": { "self": "my-cli-app hello" }
+}
+JSON
+	aube install
+	assert_file_exists node_modules/.bin/my-cli-app
+	run aube run self
+	assert_success
+	assert_output --partial "self-bin: hello"
+}
+
+@test "aube run resolves package's own bin (object form)" {
+	cat >foo.js <<'EOF'
+#!/usr/bin/env node
+console.log("foo!")
+EOF
+	cat >bar.js <<'EOF'
+#!/usr/bin/env node
+console.log("bar!")
+EOF
+	chmod +x foo.js bar.js
+	cat >package.json <<'JSON'
+{
+  "name": "multi-bin",
+  "version": "1.0.0",
+  "bin": { "foo": "./foo.js", "bar": "./bar.js" },
+  "scripts": { "run-both": "foo && bar" }
+}
+JSON
+	aube install
+	assert_file_exists node_modules/.bin/foo
+	assert_file_exists node_modules/.bin/bar
+	run aube run run-both
+	assert_success
+	assert_output --partial "foo!"
+	assert_output --partial "bar!"
+}
+
+@test "aube run resolves workspace member's own bin" {
+	cat >package.json <<'JSON'
+{ "name": "root", "version": "1.0.0" }
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "packages/*"
+YAML
+	mkdir -p packages/cli
+	cat >packages/cli/bin.js <<'EOF'
+#!/usr/bin/env node
+console.log("cli-bin")
+EOF
+	chmod +x packages/cli/bin.js
+	cat >packages/cli/package.json <<'JSON'
+{
+  "name": "my-cli",
+  "version": "1.0.0",
+  "bin": "./bin.js",
+  "scripts": { "self": "my-cli" }
+}
+JSON
+	aube install
+	assert_file_exists packages/cli/node_modules/.bin/my-cli
+	run aube -C packages/cli run self
+	assert_success
+	assert_output --partial "cli-bin"
+}

@@ -3766,6 +3766,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             shim_opts,
             has_bin_metadata,
         )?;
+        // Root importer's own `bin` (discussion #228). Runs after
+        // `link_bins` so a self-bin overrides a same-named dep bin.
+        if let Some(bin) = manifest.extra.get("bin") {
+            let root_bin_dir = cwd.join(&modules_dir_name).join(".bin");
+            link_self_bins(
+                &root_bin_dir,
+                &cwd,
+                manifest.name.as_deref(),
+                bin,
+                shim_opts,
+            )?;
+        }
         if has_workspace {
             for (importer_path, deps) in &graph_for_link.importers {
                 if importer_path == "." {
@@ -3795,6 +3807,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         placements_ref,
                         shim_opts,
                         has_bin_metadata,
+                    )?;
+                }
+                // Workspace member's own `bin` (discussion #228). `manifests`
+                // was parsed once upstream and keys by importer relpath.
+                if let Some((_, member_manifest)) =
+                    manifests.iter().find(|(p, _)| p == importer_path)
+                    && let Some(bin) = member_manifest.extra.get("bin")
+                {
+                    link_self_bins(
+                        &bin_dir,
+                        &pkg_dir,
+                        member_manifest.name.as_deref(),
+                        bin,
+                        shim_opts,
                     )?;
                 }
             }
@@ -4711,6 +4737,48 @@ fn link_bundled_bins(
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// Link an importer's *own* `bin` entries into its own
+/// `node_modules/.bin/`. Without this, scripts that invoke the package
+/// by its own name (`"scripts": {"test": "my-cli-app"}`) can't find it
+/// on PATH — npm requires `npx my-cli-app`, yarn and pnpm shim the
+/// self-bin so the bare name works. Runs after dep-bin linking at each
+/// call site so a self-bin wins a name collision with a same-named
+/// dep bin (the user explicitly named this package; its own bin owns
+/// the identifier).
+fn link_self_bins(
+    bin_dir: &std::path::Path,
+    pkg_dir: &std::path::Path,
+    pkg_name: Option<&str>,
+    bin: &serde_json::Value,
+    shim_opts: aube_linker::BinShimOptions,
+) -> miette::Result<()> {
+    match bin {
+        serde_json::Value::String(bin_path) => {
+            let Some(name) = pkg_name else {
+                return Ok(());
+            };
+            let bin_name = name.split('/').next_back().unwrap_or(name);
+            if aube_linker::validate_bin_name(bin_name).is_ok()
+                && aube_linker::validate_bin_target(bin_path).is_ok()
+            {
+                create_bin_link(bin_dir, bin_name, &pkg_dir.join(bin_path), shim_opts)?;
+            }
+        }
+        serde_json::Value::Object(bins) => {
+            for (bin_name, path) in bins {
+                if let Some(path_str) = path.as_str()
+                    && aube_linker::validate_bin_name(bin_name).is_ok()
+                    && aube_linker::validate_bin_target(path_str).is_ok()
+                {
+                    create_bin_link(bin_dir, bin_name, &pkg_dir.join(path_str), shim_opts)?;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
