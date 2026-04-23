@@ -75,7 +75,14 @@ pub async fn run(args: ApproveBuildsArgs) -> miette::Result<()> {
                 unknown.join(", ")
             ));
         }
+        // Dedupe so `aube approve-builds esbuild esbuild` never writes
+        // the same entry twice. Preserves first-seen order for stable
+        // `pnpm-workspace.yaml` diffs across repeated invocations.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         args.packages
+            .into_iter()
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
     } else {
         if !std::io::stdin().is_terminal() {
             return Err(miette!(
