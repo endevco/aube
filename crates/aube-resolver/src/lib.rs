@@ -1,12 +1,16 @@
+mod builder;
+mod catalog;
 mod error;
 mod local_source;
 pub mod override_rule;
+mod package_ext;
 mod peer_context;
 pub mod platform;
 mod semver_util;
 mod types;
 
 pub use error::{AgeGateDetails, CatalogDetails, Error, ExoticSubdepDetails, NoMatchDetails};
+pub use package_ext::is_deprecation_allowed;
 pub use peer_context::{
     PeerContextOptions, UnmetPeer, apply_peer_contexts, detect_unmet_peers,
     hoist_auto_installed_peers,
@@ -17,11 +21,19 @@ pub use types::{
     ResolvedPackage, TrustPolicy,
 };
 
+use package_ext::{apply_package_extensions, pick_override_spec};
+
+#[cfg(test)]
+use package_ext::package_selector_matches;
+
 use local_source::{
     dep_path_for, is_non_registry_specifier, read_local_manifest, rebase_local, resolve_git_source,
     resolve_remote_tarball, should_block_exotic_subdep,
 };
-use semver_util::{PickResult, pick_version, strip_alias_prefix, version_satisfies};
+use semver_util::{PickResult, pick_version, version_satisfies};
+
+#[cfg(test)]
+use semver_util::strip_alias_prefix;
 
 #[cfg(test)]
 use error::{
@@ -264,329 +276,6 @@ impl ResolveTask {
 }
 
 impl Resolver {
-    pub fn new(client: Arc<RegistryClient>) -> Self {
-        Self {
-            client,
-            cache: FxHashMap::default(),
-            resolved_tx: None,
-            packument_cache_dir: None,
-            packument_full_cache_dir: None,
-            auto_install_peers: true,
-            exclude_links_from_lockfile: false,
-            supported_architectures: SupportedArchitectures::default(),
-            overrides: BTreeMap::new(),
-            override_rules: Vec::new(),
-            ignored_optional_dependencies: BTreeSet::new(),
-            resolution_mode: ResolutionMode::Highest,
-            project_root: PathBuf::from("."),
-            minimum_release_age: None,
-            catalogs: BTreeMap::new(),
-            read_package_hook: None,
-            dependency_policy: DependencyPolicy::default(),
-            git_shallow_hosts: Vec::new(),
-            peers_suffix_max_length: 1000,
-            dedupe_peer_dependents: true,
-            dedupe_peers: false,
-            resolve_peers_from_workspace_root: true,
-            registry_supports_time_field: false,
-        }
-    }
-
-    /// Create a resolver that streams resolved packages through a channel.
-    /// Returns `(resolver, receiver)`. The receiver yields packages as they're
-    /// discovered, allowing tarball fetches to start during resolution.
-    pub fn with_stream(
-        client: Arc<RegistryClient>,
-    ) -> (Self, mpsc::UnboundedReceiver<ResolvedPackage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (
-            Self {
-                client,
-                cache: FxHashMap::default(),
-                resolved_tx: Some(tx),
-                packument_cache_dir: None,
-                packument_full_cache_dir: None,
-                auto_install_peers: true,
-                exclude_links_from_lockfile: false,
-                supported_architectures: SupportedArchitectures::default(),
-                overrides: BTreeMap::new(),
-                override_rules: Vec::new(),
-                ignored_optional_dependencies: BTreeSet::new(),
-                resolution_mode: ResolutionMode::Highest,
-                project_root: PathBuf::from("."),
-                minimum_release_age: None,
-                catalogs: BTreeMap::new(),
-                read_package_hook: None,
-                dependency_policy: DependencyPolicy::default(),
-                git_shallow_hosts: Vec::new(),
-                peers_suffix_max_length: 1000,
-                dedupe_peer_dependents: true,
-                dedupe_peers: false,
-                resolve_peers_from_workspace_root: true,
-                registry_supports_time_field: false,
-            },
-            rx,
-        )
-    }
-
-    /// Enable disk-backed packument caching with ETag/Last-Modified revalidation.
-    pub fn with_packument_cache(mut self, cache_dir: std::path::PathBuf) -> Self {
-        self.packument_cache_dir = Some(cache_dir);
-        self
-    }
-
-    /// Disk cache for full (non-corgi) packuments, used in
-    /// `ResolutionMode::TimeBased` so we can read the `time:` map.
-    pub fn with_packument_full_cache(mut self, cache_dir: std::path::PathBuf) -> Self {
-        self.packument_full_cache_dir = Some(cache_dir);
-        self
-    }
-
-    /// Set the resolution mode. Defaults to `Highest` (pnpm's classic
-    /// behavior). `TimeBased` switches direct deps to lowest-satisfying
-    /// and constrains transitives by a publish-date cutoff.
-    pub fn with_resolution_mode(mut self, mode: ResolutionMode) -> Self {
-        self.resolution_mode = mode;
-        self
-    }
-
-    /// Configure pnpm v11's `minimumReleaseAge` family of settings.
-    /// Pass `None` (or a config with `minutes == 0`) to disable.
-    pub fn with_minimum_release_age(mut self, mra: Option<MinimumReleaseAge>) -> Self {
-        self.minimum_release_age = mra.filter(|m| m.minutes > 0);
-        self
-    }
-
-    /// Whether the resolver should round-trip registry `time:` entries
-    /// into the output graph. pnpm only writes `time:` to its lockfile
-    /// when one of `resolution-mode=time-based` / `minimumReleaseAge`
-    /// is active — otherwise the field is dead weight and, worse, shows
-    /// up as churn in a pnpm ↔ aube diff. Gate the insertion at the
-    /// two `resolved_times.insert` call sites on this predicate so
-    /// Highest-mode installs never populate the map.
-    fn should_record_times(&self) -> bool {
-        self.resolution_mode == ResolutionMode::TimeBased || self.minimum_release_age.is_some()
-    }
-
-    /// Override the default `auto-install-peers=true` behavior. pnpm reads
-    /// this from `.npmrc` or `pnpm-workspace.yaml`; aube's install command
-    /// plumbs the resolved value through here before running resolution.
-    pub fn with_auto_install_peers(mut self, auto_install_peers: bool) -> Self {
-        self.auto_install_peers = auto_install_peers;
-        self
-    }
-
-    /// Configure pnpm's `peersSuffixMaxLength`. When the peer suffix on a
-    /// `dep_path` would exceed this many bytes, the post-pass replaces it
-    /// with `_<10-char-sha256-hex>`. Default 1000 (pnpm's default).
-    pub fn with_peers_suffix_max_length(mut self, max_length: usize) -> Self {
-        self.peers_suffix_max_length = max_length;
-        self
-    }
-
-    /// Override the default `dedupe-peer-dependents=true` behavior. When
-    /// false, the peer-context pass keeps every distinct ancestor-scope
-    /// variant of a package instead of collapsing peer-equivalent ones
-    /// into a single dep_path. Plumbed from `.npmrc` /
-    /// `pnpm-workspace.yaml` via the install command.
-    pub fn with_dedupe_peer_dependents(mut self, value: bool) -> Self {
-        self.dedupe_peer_dependents = value;
-        self
-    }
-
-    /// Override the default `dedupe-peers=false` behavior. When true,
-    /// peer suffixes in the lockfile drop the peer name and emit only
-    /// the resolved version — `(18.2.0)` instead of `(react@18.2.0)`.
-    /// Plumbed from `.npmrc` / `pnpm-workspace.yaml` via the install
-    /// command.
-    pub fn with_dedupe_peers(mut self, value: bool) -> Self {
-        self.dedupe_peers = value;
-        self
-    }
-
-    /// Override the default `resolve-peers-from-workspace-root=true`
-    /// behavior. When false, peer resolution stops at the importer's
-    /// own scope + BFS-auto-installed transitives instead of consulting
-    /// the workspace root's direct deps as a fallback tier. Plumbed
-    /// from `.npmrc` / `pnpm-workspace.yaml` via the install command.
-    pub fn with_resolve_peers_from_workspace_root(mut self, value: bool) -> Self {
-        self.resolve_peers_from_workspace_root = value;
-        self
-    }
-
-    /// Configure pnpm's `registry-supports-time-field`. When true,
-    /// the resolver keeps using the abbreviated (corgi) packument
-    /// path even when `time:` is needed, saving one full-packument
-    /// fetch per distinct package. Safe for registries that embed
-    /// `time` in their abbreviated responses (Verdaccio 5.15.1+, JSR,
-    /// most in-house mirrors); leave at the default `false` for
-    /// npmjs.org.
-    pub fn with_registry_supports_time_field(mut self, value: bool) -> Self {
-        self.registry_supports_time_field = value;
-        self
-    }
-
-    /// Configure pnpm's `exclude-links-from-lockfile` setting. Only
-    /// affects lockfile serialization — the resolver still builds the
-    /// same graph either way, but the value is stamped into
-    /// `LockfileGraph::settings` so the pnpm writer can filter `link:`
-    /// importer entries on write.
-    pub fn with_exclude_links_from_lockfile(mut self, value: bool) -> Self {
-        self.exclude_links_from_lockfile = value;
-        self
-    }
-
-    /// Override the host platform triple used when filtering optional
-    /// dependencies. See [`platform::SupportedArchitectures`].
-    pub fn with_supported_architectures(mut self, value: SupportedArchitectures) -> Self {
-        self.supported_architectures = value;
-        self
-    }
-
-    /// Provide dependency overrides. The map's keys are selector
-    /// strings — bare name, `parent>child`, `foo@<2`, `**/foo`, or any
-    /// combination thereof — and values are version specifiers (or
-    /// `npm:` aliases). Keys are compiled into `override_rule`
-    /// structures; unparseable keys are dropped. Whenever the resolver
-    /// encounters a task matching a rule (by name + ancestor chain +
-    /// optional version constraints), the requested range is replaced
-    /// with the rule's replacement before any packument fetch or
-    /// version pick. Workspace + manifest sources are merged by the
-    /// caller.
-    pub fn with_overrides(mut self, overrides: BTreeMap<String, String>) -> Self {
-        self.override_rules = override_rule::compile(&overrides);
-        self.overrides = overrides;
-        self
-    }
-
-    /// Provide workspace catalog ranges. Outer key is the catalog name
-    /// (`default` for the unnamed `catalog:` field in
-    /// `pnpm-workspace.yaml`); inner key is the package name. The
-    /// resolver rewrites `catalog:` and `catalog:<name>` task ranges
-    /// against this map before the override / npm-alias passes, and
-    /// records the picks in the output graph's `catalogs` field.
-    pub fn with_catalogs(mut self, catalogs: BTreeMap<String, BTreeMap<String, String>>) -> Self {
-        self.catalogs = catalogs;
-        self
-    }
-
-    /// Set the project root used to resolve `file:` / `link:` paths.
-    /// `file:./vendor/foo` resolves against this directory, and a
-    /// matching directory / tarball is read to drive resolution of the
-    /// local package's transitive deps.
-    pub fn with_project_root(mut self, project_root: PathBuf) -> Self {
-        self.project_root = project_root;
-        self
-    }
-
-    /// Names to strip from every `optionalDependencies` map before
-    /// enqueueing (pnpm's `pnpm.ignoredOptionalDependencies`). Applied
-    /// to both root and transitive optional deps. Empty by default.
-    pub fn with_ignored_optional_dependencies(mut self, ignored: BTreeSet<String>) -> Self {
-        self.ignored_optional_dependencies = ignored;
-        self
-    }
-
-    /// Install a `readPackage` hook. The resolver calls it once per
-    /// version-picked packument before enqueueing transitives; see
-    /// [`ReadPackageHook`] for what mutations are honored.
-    pub fn with_read_package_hook(mut self, hook: Box<dyn ReadPackageHook>) -> Self {
-        self.read_package_hook = Some(hook);
-        self
-    }
-
-    /// Configure dependency resolution policy settings such as
-    /// `packageExtensions`, `allowedDeprecatedVersions`, `trustPolicy*`,
-    /// and `blockExoticSubdeps`.
-    pub fn with_dependency_policy(mut self, policy: DependencyPolicy) -> Self {
-        self.dependency_policy = policy;
-        self
-    }
-
-    /// Set the `git-shallow-hosts` list used when cloning git deps.
-    /// When a git URL's host matches an entry here (exact match,
-    /// same as pnpm), aube attempts a shallow fetch by SHA; other
-    /// hosts get a plain `git fetch origin`. An empty list forces
-    /// every git dep through the full-fetch path.
-    pub fn with_git_shallow_hosts(mut self, hosts: Vec<String>) -> Self {
-        self.git_shallow_hosts = hosts;
-        self
-    }
-
-    /// Resolve a `catalog:[<name>]` specifier to its pinned range. Returns
-    /// `None` when `spec` isn't a catalog reference, or
-    /// `Some((catalog_name, real_range))` when it is. The catalog name is
-    /// normalized — the bare `catalog:` form maps to the `default` catalog.
-    /// Errors on an unknown catalog or missing entry.
-    ///
-    /// Shared between the pre-override catalog rewrite (directly-declared
-    /// `catalog:` deps) and the override handler (`"overrides":
-    /// {"pkg": "catalog:"}`), so both paths stay in lockstep.
-    fn resolve_catalog_spec(
-        &self,
-        task_name: &str,
-        spec: &str,
-    ) -> Result<Option<(String, String)>, Error> {
-        let Some(catalog_name) = spec.strip_prefix("catalog:").map(|n| {
-            if n.is_empty() {
-                "default".to_string()
-            } else {
-                n.to_string()
-            }
-        }) else {
-            return Ok(None);
-        };
-        match self.catalogs.get(&catalog_name) {
-            Some(catalog) => match catalog.get(task_name) {
-                Some(real_range) => {
-                    // Catch `catalog:` pointing at another `catalog:`
-                    // value. Before this guard, the rewrite ran once
-                    // then the outer loop treated `catalog:other` as
-                    // a literal semver range. User got a confusing
-                    // "range does not satisfy" from the registry
-                    // instead of "catalog is not a level of
-                    // indirection". pnpm disallows the same. No
-                    // cycle detection needed beyond depth-one since
-                    // we refuse the chain outright.
-                    if real_range.starts_with("catalog:") {
-                        // Preserve the chain explanation in the catalog
-                        // field so the top-level `#[error]` template still
-                        // tells the user *why* the entry "doesn't resolve",
-                        // and set `chained_value` so the help formatter
-                        // skips the suggestion path (which would otherwise
-                        // match the user's own input back at them since
-                        // the entry exists, its value is just invalid).
-                        return Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
-                            name: task_name.to_string(),
-                            spec: spec.to_string(),
-                            catalog: format!(
-                                "{catalog_name} (value {real_range} is itself a catalog: \
-                                 reference, catalogs cannot chain)"
-                            ),
-                            available: Vec::new(),
-                            chained_value: Some(real_range.clone()),
-                        })));
-                    }
-                    Ok(Some((catalog_name, real_range.clone())))
-                }
-                None => Err(Error::UnknownCatalogEntry(Box::new(CatalogDetails {
-                    name: task_name.to_string(),
-                    spec: spec.to_string(),
-                    catalog: catalog_name,
-                    available: catalog.keys().cloned().collect(),
-                    chained_value: None,
-                }))),
-            },
-            None => Err(Error::UnknownCatalog(Box::new(CatalogDetails {
-                name: task_name.to_string(),
-                spec: spec.to_string(),
-                catalog: catalog_name,
-                available: self.catalogs.keys().cloned().collect(),
-                chained_value: None,
-            }))),
-        }
-    }
-
     /// Resolve all dependencies from a package.json.
     ///
     /// Uses batch-parallel BFS: each "wave" drains the queue, identifies
@@ -2341,38 +2030,8 @@ impl Resolver {
             resolved.len()
         );
 
-        // Materialize catalog picks into the output graph. The version
-        // for each pick comes from `resolved_versions` — normally the
-        // satisfying pick, but when an override redirects a catalog
-        // dep the only resolved version may not satisfy the original
-        // catalog range. In that case fall back to whatever version
-        // the BFS *did* lock (the override target), since that's the
-        // version actually installed for this importer. The pure
-        // string fallback (`spec.clone()`) is reserved for the
-        // unreachable case where the BFS didn't lock the package at
-        // all — keeping it avoids a panic on a malformed run.
-        let mut resolved_catalogs: BTreeMap<String, BTreeMap<String, aube_lockfile::CatalogEntry>> =
-            BTreeMap::new();
-        for (cat_name, entries) in catalog_picks {
-            let mut out: BTreeMap<String, aube_lockfile::CatalogEntry> = BTreeMap::new();
-            for (pkg, spec) in entries {
-                let resolved_for_pkg = resolved_versions.get(&pkg);
-                let version = resolved_for_pkg
-                    .and_then(|vs| vs.iter().find(|v| version_satisfies(v, &spec)).cloned())
-                    .or_else(|| resolved_for_pkg.and_then(|vs| vs.first().cloned()))
-                    .unwrap_or_else(|| spec.clone());
-                out.insert(
-                    pkg,
-                    aube_lockfile::CatalogEntry {
-                        specifier: spec,
-                        version,
-                    },
-                );
-            }
-            if !out.is_empty() {
-                resolved_catalogs.insert(cat_name, out);
-            }
-        }
+        let resolved_catalogs =
+            catalog::materialize_catalog_picks(catalog_picks, &resolved_versions);
 
         let canonical = LockfileGraph {
             importers,
@@ -2426,119 +2085,6 @@ impl Resolver {
         );
         Ok(contextualized)
     }
-}
-
-/// Find the best-matching override rule for a task and return its
-/// replacement spec (cloned). "Best" means most specific: we score
-/// each matching rule by `non_wildcard_parents * 2 +
-/// (target_version_req ? 1 : 0)` and take the max, so `a>b>c` beats
-/// `b>c` beats `c`, and a version-qualified `c@<2` beats a bare `c`.
-/// Wildcard `**` parent segments don't inflate the score — `**/foo`
-/// is semantically equivalent to a bare `foo` and shouldn't
-/// out-rank a more specific `foo@<2`. Ties break on rule insertion
-/// order (stable `iter()` over a `Vec`), which reflects the
-/// manifest's BTreeMap ordering after pnpm/yarn precedence merging.
-fn pick_override_spec(
-    rules: &[override_rule::OverrideRule],
-    task_name: &str,
-    task_range: &str,
-    ancestors: &[(String, String)],
-) -> Option<String> {
-    // When the task range is an `npm:`/`jsr:` alias, the trailing
-    // `@<version>` — not the raw alias string — is what should
-    // participate in a selector's version-range check. Without this
-    // normalization, the matcher's `range_could_satisfy` never
-    // parses the raw `npm:@scope/pkg@6.0.9-patched.1` as a semver,
-    // hits its "probably matches" fallback, and fires overrides
-    // whose version req (`>=7 <9`) the real version doesn't satisfy.
-    // Reported in #174.
-    let effective_range = strip_alias_prefix(task_range);
-    let frames: Vec<override_rule::AncestorFrame<'_>> = ancestors
-        .iter()
-        .map(|(n, v)| override_rule::AncestorFrame {
-            name: n,
-            version: v,
-        })
-        .collect();
-    rules
-        .iter()
-        .filter(|r| override_rule::matches(r, task_name, effective_range, &frames))
-        .max_by_key(|r| {
-            let named_parents = r.parents.iter().filter(|p| !p.is_wildcard()).count();
-            named_parents * 2 + usize::from(r.target.version_req.is_some())
-        })
-        .map(|r| r.replacement.clone())
-}
-
-fn apply_package_extensions(
-    pkg: &mut aube_registry::VersionMetadata,
-    extensions: &[PackageExtension],
-) {
-    for extension in extensions {
-        if !package_selector_matches(&extension.selector, &pkg.name, &pkg.version) {
-            continue;
-        }
-        extend_missing(&mut pkg.dependencies, &extension.dependencies);
-        extend_missing(
-            &mut pkg.optional_dependencies,
-            &extension.optional_dependencies,
-        );
-        extend_missing(&mut pkg.peer_dependencies, &extension.peer_dependencies);
-        extend_missing(
-            &mut pkg.peer_dependencies_meta,
-            &extension.peer_dependencies_meta,
-        );
-    }
-}
-
-fn extend_missing<K, V>(target: &mut BTreeMap<K, V>, additions: &BTreeMap<K, V>)
-where
-    K: Ord + Clone,
-    V: Clone,
-{
-    for (key, value) in additions {
-        target.entry(key.clone()).or_insert_with(|| value.clone());
-    }
-}
-
-fn package_selector_matches(selector: &str, name: &str, version: &str) -> bool {
-    let selector = selector.trim();
-    if selector == name {
-        return true;
-    }
-    let Some((selector_name, range)) = split_package_selector(selector) else {
-        return false;
-    };
-    selector_name == name && version_satisfies(version, range)
-}
-
-fn split_package_selector(selector: &str) -> Option<(&str, &str)> {
-    let at = selector.rfind('@')?;
-    if at == 0 {
-        return None;
-    }
-    if selector.starts_with('@') {
-        let slash = selector.find('/')?;
-        if at <= slash {
-            return None;
-        }
-    }
-    let (name, range) = selector.split_at(at);
-    let range = &range[1..];
-    (!name.is_empty() && !range.is_empty()).then_some((name, range))
-}
-
-/// Honor `allowedDeprecatedVersions`: does the pinned range (keyed by
-/// package name) mute the deprecation warning for this specific version?
-/// Used by the resolver's fresh-resolve path and by `aube deprecations`.
-pub fn is_deprecation_allowed(
-    name: &str,
-    version: &str,
-    allowed: &BTreeMap<String, String>,
-) -> bool {
-    allowed
-        .get(name)
-        .is_some_and(|range| version_satisfies(version, range))
 }
 
 #[cfg(test)]

@@ -1,0 +1,261 @@
+use crate::{
+    DependencyPolicy, MinimumReleaseAge, ReadPackageHook, ResolutionMode, ResolvedPackage,
+    Resolver, SupportedArchitectures, override_rule,
+};
+use aube_registry::client::RegistryClient;
+use rustc_hash::FxHashMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+impl Resolver {
+    pub fn new(client: Arc<RegistryClient>) -> Self {
+        Self {
+            client,
+            cache: FxHashMap::default(),
+            resolved_tx: None,
+            packument_cache_dir: None,
+            packument_full_cache_dir: None,
+            auto_install_peers: true,
+            exclude_links_from_lockfile: false,
+            supported_architectures: SupportedArchitectures::default(),
+            overrides: BTreeMap::new(),
+            override_rules: Vec::new(),
+            ignored_optional_dependencies: BTreeSet::new(),
+            resolution_mode: ResolutionMode::Highest,
+            project_root: PathBuf::from("."),
+            minimum_release_age: None,
+            catalogs: BTreeMap::new(),
+            read_package_hook: None,
+            dependency_policy: DependencyPolicy::default(),
+            git_shallow_hosts: Vec::new(),
+            peers_suffix_max_length: 1000,
+            dedupe_peer_dependents: true,
+            dedupe_peers: false,
+            resolve_peers_from_workspace_root: true,
+            registry_supports_time_field: false,
+        }
+    }
+
+    /// Create a resolver that streams resolved packages through a channel.
+    /// Returns `(resolver, receiver)`. The receiver yields packages as they're
+    /// discovered, allowing tarball fetches to start during resolution.
+    pub fn with_stream(
+        client: Arc<RegistryClient>,
+    ) -> (Self, mpsc::UnboundedReceiver<ResolvedPackage>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                client,
+                cache: FxHashMap::default(),
+                resolved_tx: Some(tx),
+                packument_cache_dir: None,
+                packument_full_cache_dir: None,
+                auto_install_peers: true,
+                exclude_links_from_lockfile: false,
+                supported_architectures: SupportedArchitectures::default(),
+                overrides: BTreeMap::new(),
+                override_rules: Vec::new(),
+                ignored_optional_dependencies: BTreeSet::new(),
+                resolution_mode: ResolutionMode::Highest,
+                project_root: PathBuf::from("."),
+                minimum_release_age: None,
+                catalogs: BTreeMap::new(),
+                read_package_hook: None,
+                dependency_policy: DependencyPolicy::default(),
+                git_shallow_hosts: Vec::new(),
+                peers_suffix_max_length: 1000,
+                dedupe_peer_dependents: true,
+                dedupe_peers: false,
+                resolve_peers_from_workspace_root: true,
+                registry_supports_time_field: false,
+            },
+            rx,
+        )
+    }
+
+    /// Enable disk-backed packument caching with ETag/Last-Modified revalidation.
+    pub fn with_packument_cache(mut self, cache_dir: std::path::PathBuf) -> Self {
+        self.packument_cache_dir = Some(cache_dir);
+        self
+    }
+
+    /// Disk cache for full (non-corgi) packuments, used in
+    /// `ResolutionMode::TimeBased` so we can read the `time:` map.
+    pub fn with_packument_full_cache(mut self, cache_dir: std::path::PathBuf) -> Self {
+        self.packument_full_cache_dir = Some(cache_dir);
+        self
+    }
+
+    /// Set the resolution mode. Defaults to `Highest` (pnpm's classic
+    /// behavior). `TimeBased` switches direct deps to lowest-satisfying
+    /// and constrains transitives by a publish-date cutoff.
+    pub fn with_resolution_mode(mut self, mode: ResolutionMode) -> Self {
+        self.resolution_mode = mode;
+        self
+    }
+
+    /// Configure pnpm v11's `minimumReleaseAge` family of settings.
+    /// Pass `None` (or a config with `minutes == 0`) to disable.
+    pub fn with_minimum_release_age(mut self, mra: Option<MinimumReleaseAge>) -> Self {
+        self.minimum_release_age = mra.filter(|m| m.minutes > 0);
+        self
+    }
+
+    /// Whether the resolver should round-trip registry `time:` entries
+    /// into the output graph. pnpm only writes `time:` to its lockfile
+    /// when one of `resolution-mode=time-based` / `minimumReleaseAge`
+    /// is active — otherwise the field is dead weight and, worse, shows
+    /// up as churn in a pnpm ↔ aube diff. Gate the insertion at the
+    /// two `resolved_times.insert` call sites on this predicate so
+    /// Highest-mode installs never populate the map.
+    pub(crate) fn should_record_times(&self) -> bool {
+        self.resolution_mode == ResolutionMode::TimeBased || self.minimum_release_age.is_some()
+    }
+
+    /// Override the default `auto-install-peers=true` behavior. pnpm reads
+    /// this from `.npmrc` or `pnpm-workspace.yaml`; aube's install command
+    /// plumbs the resolved value through here before running resolution.
+    pub fn with_auto_install_peers(mut self, auto_install_peers: bool) -> Self {
+        self.auto_install_peers = auto_install_peers;
+        self
+    }
+
+    /// Configure pnpm's `peersSuffixMaxLength`. When the peer suffix on a
+    /// `dep_path` would exceed this many bytes, the post-pass replaces it
+    /// with `_<10-char-sha256-hex>`. Default 1000 (pnpm's default).
+    pub fn with_peers_suffix_max_length(mut self, max_length: usize) -> Self {
+        self.peers_suffix_max_length = max_length;
+        self
+    }
+
+    /// Override the default `dedupe-peer-dependents=true` behavior. When
+    /// false, the peer-context pass keeps every distinct ancestor-scope
+    /// variant of a package instead of collapsing peer-equivalent ones
+    /// into a single dep_path. Plumbed from `.npmrc` /
+    /// `pnpm-workspace.yaml` via the install command.
+    pub fn with_dedupe_peer_dependents(mut self, value: bool) -> Self {
+        self.dedupe_peer_dependents = value;
+        self
+    }
+
+    /// Override the default `dedupe-peers=false` behavior. When true,
+    /// peer suffixes in the lockfile drop the peer name and emit only
+    /// the resolved version — `(18.2.0)` instead of `(react@18.2.0)`.
+    /// Plumbed from `.npmrc` / `pnpm-workspace.yaml` via the install
+    /// command.
+    pub fn with_dedupe_peers(mut self, value: bool) -> Self {
+        self.dedupe_peers = value;
+        self
+    }
+
+    /// Override the default `resolve-peers-from-workspace-root=true`
+    /// behavior. When false, peer resolution stops at the importer's
+    /// own scope + BFS-auto-installed transitives instead of consulting
+    /// the workspace root's direct deps as a fallback tier. Plumbed
+    /// from `.npmrc` / `pnpm-workspace.yaml` via the install command.
+    pub fn with_resolve_peers_from_workspace_root(mut self, value: bool) -> Self {
+        self.resolve_peers_from_workspace_root = value;
+        self
+    }
+
+    /// Configure pnpm's `registry-supports-time-field`. When true,
+    /// the resolver keeps using the abbreviated (corgi) packument
+    /// path even when `time:` is needed, saving one full-packument
+    /// fetch per distinct package. Safe for registries that embed
+    /// `time` in their abbreviated responses (Verdaccio 5.15.1+, JSR,
+    /// most in-house mirrors); leave at the default `false` for
+    /// npmjs.org.
+    pub fn with_registry_supports_time_field(mut self, value: bool) -> Self {
+        self.registry_supports_time_field = value;
+        self
+    }
+
+    /// Configure pnpm's `exclude-links-from-lockfile` setting. Only
+    /// affects lockfile serialization — the resolver still builds the
+    /// same graph either way, but the value is stamped into
+    /// `LockfileGraph::settings` so the pnpm writer can filter `link:`
+    /// importer entries on write.
+    pub fn with_exclude_links_from_lockfile(mut self, value: bool) -> Self {
+        self.exclude_links_from_lockfile = value;
+        self
+    }
+
+    /// Override the host platform triple used when filtering optional
+    /// dependencies. See [`platform::SupportedArchitectures`].
+    pub fn with_supported_architectures(mut self, value: SupportedArchitectures) -> Self {
+        self.supported_architectures = value;
+        self
+    }
+
+    /// Provide dependency overrides. The map's keys are selector
+    /// strings — bare name, `parent>child`, `foo@<2`, `**/foo`, or any
+    /// combination thereof — and values are version specifiers (or
+    /// `npm:` aliases). Keys are compiled into `override_rule`
+    /// structures; unparseable keys are dropped. Whenever the resolver
+    /// encounters a task matching a rule (by name + ancestor chain +
+    /// optional version constraints), the requested range is replaced
+    /// with the rule's replacement before any packument fetch or
+    /// version pick. Workspace + manifest sources are merged by the
+    /// caller.
+    pub fn with_overrides(mut self, overrides: BTreeMap<String, String>) -> Self {
+        self.override_rules = override_rule::compile(&overrides);
+        self.overrides = overrides;
+        self
+    }
+
+    /// Provide workspace catalog ranges. Outer key is the catalog name
+    /// (`default` for the unnamed `catalog:` field in
+    /// `pnpm-workspace.yaml`); inner key is the package name. The
+    /// resolver rewrites `catalog:` and `catalog:<name>` task ranges
+    /// against this map before the override / npm-alias passes, and
+    /// records the picks in the output graph's `catalogs` field.
+    pub fn with_catalogs(mut self, catalogs: BTreeMap<String, BTreeMap<String, String>>) -> Self {
+        self.catalogs = catalogs;
+        self
+    }
+
+    /// Set the project root used to resolve `file:` / `link:` paths.
+    /// `file:./vendor/foo` resolves against this directory, and a
+    /// matching directory / tarball is read to drive resolution of the
+    /// local package's transitive deps.
+    pub fn with_project_root(mut self, project_root: PathBuf) -> Self {
+        self.project_root = project_root;
+        self
+    }
+
+    /// Names to strip from every `optionalDependencies` map before
+    /// enqueueing (pnpm's `pnpm.ignoredOptionalDependencies`). Applied
+    /// to both root and transitive optional deps. Empty by default.
+    pub fn with_ignored_optional_dependencies(mut self, ignored: BTreeSet<String>) -> Self {
+        self.ignored_optional_dependencies = ignored;
+        self
+    }
+
+    /// Install a `readPackage` hook. The resolver calls it once per
+    /// version-picked packument before enqueueing transitives; see
+    /// [`ReadPackageHook`] for what mutations are honored.
+    pub fn with_read_package_hook(mut self, hook: Box<dyn ReadPackageHook>) -> Self {
+        self.read_package_hook = Some(hook);
+        self
+    }
+
+    /// Configure dependency resolution policy settings such as
+    /// `packageExtensions`, `allowedDeprecatedVersions`, `trustPolicy*`,
+    /// and `blockExoticSubdeps`.
+    pub fn with_dependency_policy(mut self, policy: DependencyPolicy) -> Self {
+        self.dependency_policy = policy;
+        self
+    }
+
+    /// Set the `git-shallow-hosts` list used when cloning git deps.
+    /// When a git URL's host matches an entry here (exact match,
+    /// same as pnpm), aube attempts a shallow fetch by SHA; other
+    /// hosts get a plain `git fetch origin`. An empty list forces
+    /// every git dep through the full-fetch path.
+    pub fn with_git_shallow_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.git_shallow_hosts = hosts;
+        self
+    }
+}
