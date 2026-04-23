@@ -159,6 +159,23 @@ jobs:
           TAG: ${{ needs.release-plz-release.outputs.tag }}
         run: |
           communique generate "$TAG" --github-release
+      - name: Append en.dev sponsor blurb
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          TAG: ${{ needs.release-plz-release.outputs.tag }}
+        run: |
+          {
+            gh release view "$TAG" --json body --jq .body
+            cat <<'EOF'
+
+          ## 💚 Sponsor aube
+
+          aube is part of [**en.dev**](https://en.dev) — an independent developer-tooling studio run by [@jdx](https://github.com/jdx), also behind [mise](https://mise.jdx.dev/). Work on aube is funded entirely by sponsors.
+
+          If aube is saving your team install time or CI minutes, please consider [sponsoring at en.dev](https://en.dev). Individual and company sponsorships are what keep the project fast, free, and independent.
+          EOF
+          } > /tmp/release-notes.md
+          gh release edit "$TAG" --notes-file /tmp/release-notes.md
 
   # On every push to main: keep a running "chore: release" PR open with
   # the next version bump + regenerated CHANGELOG. Merging the PR is
