@@ -15,6 +15,10 @@
 //!
 //! In both cases `package.json`, `README*`, `LICENSE*`/`LICENCE*`, and the
 //! `main` entry are always included — matching npm's "always-on" list.
+//! `CHANGELOG*` is intentionally excluded (npm dropped it in
+//! npm/npm-packlist#61): changelogs grow forever and few consumers read
+//! them out of `node_modules`. Users who want it shipped can list it in
+//! the `files` field.
 
 use aube_manifest::PackageJson;
 use clap::Args;
@@ -401,7 +405,8 @@ fn is_npm_ignored(name: &str) -> bool {
 fn always_included_files(project_dir: &Path, manifest: &PackageJson) -> Vec<String> {
     let mut out = vec!["package.json".to_string()];
 
-    // README, LICENSE, LICENCE, CHANGELOG — any extension.
+    // README, LICENSE, LICENCE — any extension. CHANGELOG is intentionally
+    // omitted to match npm's behavior (npm/npm-packlist#61).
     let Ok(entries) = std::fs::read_dir(project_dir) else {
         return out;
     };
@@ -412,10 +417,7 @@ fn always_included_files(project_dir: &Path, manifest: &PackageJson) -> Vec<Stri
             .rsplit_once('.')
             .map(|(s, _)| s.to_string())
             .unwrap_or(upper);
-        if matches!(
-            stem.as_str(),
-            "README" | "LICENSE" | "LICENCE" | "CHANGELOG"
-        ) {
+        if matches!(stem.as_str(), "README" | "LICENSE" | "LICENCE") {
             out.push(name);
         }
     }
