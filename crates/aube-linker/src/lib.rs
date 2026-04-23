@@ -1115,41 +1115,80 @@ impl Linker {
             }
             log::debug!("link:step1 (gvs populate) {:.1?}", step1_timer.elapsed());
         } else {
+            use rayon::prelude::*;
+
             // `wipe_changed_patched_entries` above already removed any
             // `.aube/<dep_path>` whose patch fingerprint changed since
             // the last install, so the existence check below will fall
             // through to `materialize_into` for those packages and
-            // pick up the current patch state.
-            for (dep_path, pkg) in &graph.packages {
-                if pkg.local_source.is_some() {
-                    continue;
-                }
-                let aube_entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
-                if aube_entry.exists() {
-                    // Already in place from a previous run — count as
-                    // cached. `install.rs` deliberately omits this
-                    // dep_path from `package_indices` on the fast
-                    // path, so do the existence check first.
-                    stats.packages_cached += 1;
-                    continue;
-                }
-                // Entry missing — load the index. Fast path in
-                // `install.rs` skips `load_index` when `aube_entry`
-                // already exists; lazy-load here for the case where a
-                // patch / allowBuilds change invalidated the entry
-                // since.
-                let owned_index;
-                let index = match package_indices.get(dep_path) {
-                    Some(idx) => idx,
-                    None => {
-                        owned_index = self
-                            .store
-                            .load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
-                            .ok_or_else(|| Error::MissingPackageIndex(dep_path.to_string()))?;
-                        &owned_index
-                    }
-                };
-                self.materialize_into(&aube_dir, dep_path, pkg, index, &mut stats, false)?;
+            // pick up the current patch state. In per-project mode the
+            // dep paths are already isolated, so we can materialize
+            // them independently on the same rayon pool the gvs path
+            // uses instead of rebuilding the whole tree serially.
+            let link_parallelism = self.link_parallelism();
+            let step1_results: Vec<Result<LinkStats, Error>> =
+                with_link_pool(link_parallelism, || {
+                    graph
+                        .packages
+                        .par_iter()
+                        .filter_map(|(dep_path, pkg)| {
+                            if pkg.local_source.is_some() {
+                                return None;
+                            }
+                            Some((dep_path, pkg))
+                        })
+                        .map(|(dep_path, pkg)| {
+                            let mut local_stats = LinkStats::default();
+                            let aube_entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
+                            if aube_entry.exists() {
+                                // Already in place from a previous run —
+                                // count as cached. `install.rs`
+                                // deliberately omits this dep_path from
+                                // `package_indices` on the fast path, so
+                                // do the existence check first.
+                                local_stats.packages_cached += 1;
+                                return Ok(local_stats);
+                            }
+                            // Entry missing — load the index. Fast path in
+                            // `install.rs` skips `load_index` when
+                            // `aube_entry` already exists; lazy-load here
+                            // for the case where a patch / allowBuilds
+                            // change invalidated the entry since.
+                            let owned_index;
+                            let index = match package_indices.get(dep_path) {
+                                Some(idx) => idx,
+                                None => {
+                                    owned_index = self
+                                        .store
+                                        .load_index(
+                                            pkg.registry_name(),
+                                            &pkg.version,
+                                            pkg.integrity.as_deref(),
+                                        )
+                                        .ok_or_else(|| {
+                                            Error::MissingPackageIndex(dep_path.to_string())
+                                        })?;
+                                    &owned_index
+                                }
+                            };
+                            self.materialize_into(
+                                &aube_dir,
+                                dep_path,
+                                pkg,
+                                index,
+                                &mut local_stats,
+                                false,
+                            )?;
+                            Ok(local_stats)
+                        })
+                        .collect()
+                });
+
+            for result in step1_results {
+                let local_stats = result?;
+                stats.packages_linked += local_stats.packages_linked;
+                stats.packages_cached += local_stats.packages_cached;
+                stats.files_linked += local_stats.files_linked;
             }
         }
 
@@ -1508,27 +1547,62 @@ impl Linker {
                 step1_timer.elapsed()
             );
         } else {
-            for (dep_path, pkg) in &graph.packages {
-                if pkg.local_source.is_some() {
-                    continue;
-                }
-                let aube_entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
-                if aube_entry.exists() {
-                    stats.packages_cached += 1;
-                    continue;
-                }
-                let owned_index;
-                let index = match package_indices.get(dep_path) {
-                    Some(idx) => idx,
-                    None => {
-                        owned_index = self
-                            .store
-                            .load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
-                            .ok_or_else(|| Error::MissingPackageIndex(dep_path.to_string()))?;
-                        &owned_index
-                    }
-                };
-                self.materialize_into(&aube_dir, dep_path, pkg, index, &mut stats, false)?;
+            use rayon::prelude::*;
+
+            let link_parallelism = self.link_parallelism();
+            let step1_results: Vec<Result<LinkStats, Error>> =
+                with_link_pool(link_parallelism, || {
+                    graph
+                        .packages
+                        .par_iter()
+                        .filter_map(|(dep_path, pkg)| {
+                            if pkg.local_source.is_some() {
+                                return None;
+                            }
+                            Some((dep_path, pkg))
+                        })
+                        .map(|(dep_path, pkg)| {
+                            let mut local_stats = LinkStats::default();
+                            let aube_entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
+                            if aube_entry.exists() {
+                                local_stats.packages_cached += 1;
+                                return Ok(local_stats);
+                            }
+                            let owned_index;
+                            let index = match package_indices.get(dep_path) {
+                                Some(idx) => idx,
+                                None => {
+                                    owned_index = self
+                                        .store
+                                        .load_index(
+                                            pkg.registry_name(),
+                                            &pkg.version,
+                                            pkg.integrity.as_deref(),
+                                        )
+                                        .ok_or_else(|| {
+                                            Error::MissingPackageIndex(dep_path.to_string())
+                                        })?;
+                                    &owned_index
+                                }
+                            };
+                            self.materialize_into(
+                                &aube_dir,
+                                dep_path,
+                                pkg,
+                                index,
+                                &mut local_stats,
+                                false,
+                            )?;
+                            Ok(local_stats)
+                        })
+                        .collect()
+                });
+
+            for result in step1_results {
+                let local_stats = result?;
+                stats.packages_linked += local_stats.packages_linked;
+                stats.packages_cached += local_stats.packages_cached;
+                stats.files_linked += local_stats.files_linked;
             }
         }
 

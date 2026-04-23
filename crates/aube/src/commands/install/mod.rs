@@ -3919,6 +3919,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         let package_content_hashes = delta::compute_package_hashes(&graph);
         let package_subtree_hashes = delta::compute_subtree_hashes(&graph);
         let graph_lthash = hex::encode(delta::lthash_of(&package_content_hashes).digest());
+        let package_json_hashes =
+            state::collect_package_json_hashes_from_manifests(&cwd, &manifests);
         // Diff against the previous install. Logs delta counts at
         // debug so `-v` installs surface what actually moved. A
         // later pass feeds the plan into fetch and link as a
@@ -4012,6 +4014,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         state::write_state(
             &cwd,
             opts.dep_selection.prod_or_dev_axis(),
+            package_json_hashes,
             &opts.cli_flags,
             package_content_hashes,
             graph_lthash,
