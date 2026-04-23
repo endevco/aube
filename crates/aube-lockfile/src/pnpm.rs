@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Parse a pnpm-lock.yaml file into a LockfileGraph.
 pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
-    let content = std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    let content = crate::read_lockfile(path)?;
     let raw = parse_raw_lockfile(&content)
         .map_err(|e| Error::parse_yaml_err(path, content.clone(), &e))?;
 

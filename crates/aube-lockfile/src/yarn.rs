@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 /// The manifest is needed to identify direct dependencies (yarn.lock has
 /// no notion of direct vs transitive).
 pub fn parse(path: &Path, manifest: &aube_manifest::PackageJson) -> Result<LockfileGraph, Error> {
-    let content = std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    let content = crate::read_lockfile(path)?;
     if is_berry(&content) {
         parse_berry_str(path, &content, manifest)
     } else {

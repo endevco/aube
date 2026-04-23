@@ -164,8 +164,7 @@ struct RawBunMeta {
 
 /// Parse a bun.lock file into a LockfileGraph.
 pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
-    let raw_content =
-        std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    let raw_content = crate::read_lockfile(path)?;
     let cleaned = strip_jsonc(&raw_content);
     // `strip_jsonc` preserves byte offsets, so a serde_json error on
     // `cleaned` points at the same byte in `raw_content`. Feed the

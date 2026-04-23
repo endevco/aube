@@ -1652,6 +1652,11 @@ pub enum Error {
     ParseDiag(Box<aube_manifest::ParseError>),
 }
 
+/// Read a lockfile from disk, mapping I/O errors to `Error::Io`.
+pub fn read_lockfile(path: &std::path::Path) -> Result<String, Error> {
+    std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))
+}
+
 /// Parse a JSON lockfile document, attaching a miette source span on
 /// failure so the fancy handler can point at the offending byte.
 pub fn parse_json<T: serde::de::DeserializeOwned>(

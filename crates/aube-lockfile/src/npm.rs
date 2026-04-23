@@ -197,7 +197,7 @@ struct RawNpmPeerDepMeta {
 
 /// Parse a package-lock.json or npm-shrinkwrap.json file into a LockfileGraph.
 pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
-    let content = std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    let content = crate::read_lockfile(path)?;
     let raw: RawNpmLockfile = crate::parse_json(path, content)?;
 
     if raw.lockfile_version < 2 {
