@@ -69,10 +69,6 @@ function versionFromTag(tag) {
 }
 
 function defaultNpmTag(version) {
-    // During the 1.0.0 beta series, npm is still one of the documented
-    // install paths, so `npm install -g @endevco/aube` should track the
-    // current beta. Future prerelease trains can use `next` again.
-    if (version.startsWith('1.0.0-')) return 'latest';
     return version.includes('-') ? 'next' : 'latest';
 }
 

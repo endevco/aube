@@ -48,7 +48,7 @@ Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
 
 aube reads pnpm v11 YAML files for compatibility. `aube-lock.yaml` and
 `aube-workspace.yaml` use pnpm-compatible shapes today but are the long-term
-contract and may diverge after the beta compatibility push.
+contract and may diverge over time.
 
 aube never touches pnpm's `node_modules/.pnpm/` or `~/.pnpm-store/`. The two
 virtual stores can coexist under `node_modules`. For the lockfile and

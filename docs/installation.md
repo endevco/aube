@@ -27,8 +27,7 @@ same dependency versions CI built against. The compiled binary lands in
 
 ## From Homebrew
 
-Homebrew/core does not accept beta releases, so aube is published from
-the Endev tap for now:
+aube is published from the Endev tap until it lands in homebrew-core:
 
 ```sh
 brew install endevco/tap/aube

@@ -1,7 +1,7 @@
 name: publish-homebrew
 
-# Homebrew/core does not accept beta releases, so releases are published
-# to the Endev tap until aube is stable enough for the main formula index.
+# Releases are published to the Endev tap until aube is submitted to and
+# accepted by homebrew-core.
 
 on:
   release:
