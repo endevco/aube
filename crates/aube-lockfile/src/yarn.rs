@@ -578,9 +578,9 @@ fn parse_berry_str(
     // headers, `resolution:` / `checksum:`) hasn't changed across
     // those versions.
     let meta_version = map
-        .get(serde_yaml::Value::String("__metadata".to_string()))
+        .get("__metadata")
         .and_then(|m| m.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::String("version".to_string())))
+        .and_then(|m| m.get("version"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     if meta_version < 3 {
@@ -628,7 +628,7 @@ fn parse_berry_str(
         // reporting "has no version" against a spec that obviously
         // does.
         let version = block
-            .get(serde_yaml::Value::String("version".to_string()))
+            .get("version")
             .and_then(yaml_scalar_as_string)
             .ok_or_else(|| {
                 Error::Parse(
@@ -638,7 +638,7 @@ fn parse_berry_str(
             })?;
 
         let resolution = block
-            .get(serde_yaml::Value::String("resolution".to_string()))
+            .get("resolution")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 Error::Parse(
@@ -756,7 +756,7 @@ fn parse_berry_str(
             .collect();
 
         let checksum = block
-            .get(serde_yaml::Value::String("checksum".to_string()))
+            .get("checksum")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -947,7 +947,7 @@ fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
 /// recording `"5"` as the range.
 fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, String> {
     block
-        .get(serde_yaml::Value::String(key.to_string()))
+        .get(key)
         .and_then(|v| v.as_mapping())
         .map(|m| {
             m.iter()
@@ -962,9 +962,7 @@ fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, S
 /// the meta block (if any) are ignored.
 fn collect_peer_meta(block: &serde_yaml::Mapping) -> BTreeMap<String, crate::PeerDepMeta> {
     block
-        .get(serde_yaml::Value::String(
-            "peerDependenciesMeta".to_string(),
-        ))
+        .get("peerDependenciesMeta")
         .and_then(|v| v.as_mapping())
         .map(|m| {
             m.iter()
@@ -972,7 +970,7 @@ fn collect_peer_meta(block: &serde_yaml::Mapping) -> BTreeMap<String, crate::Pee
                     let name = k.as_str()?.to_string();
                     let meta = v.as_mapping()?;
                     let optional = meta
-                        .get(serde_yaml::Value::String("optional".to_string()))
+                        .get("optional")
                         .and_then(|o| o.as_bool())
                         .unwrap_or(false);
                     Some((name, crate::PeerDepMeta { optional }))
