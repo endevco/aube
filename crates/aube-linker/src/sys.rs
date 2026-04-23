@@ -166,11 +166,24 @@ pub fn create_bin_shim(
     {
         let link_path = bin_dir.join(name);
         let link_parent = link_path.parent().unwrap_or(bin_dir);
-        // Remove any stale files (previous shims or legacy symlinks).
+        // Clear stale shims or legacy symlinks. Old aube versions wrote
+        // these as junctions. `remove_file` fails on a junction, so
+        // fall through to `remove_dir` to avoid leaving a stale entry
+        // that later `fs::write` cannot overwrite (ERROR_ALREADY_EXISTS).
         for p in win_shim_paths(bin_dir, name) {
-            let _ = std::fs::remove_file(&p);
+            if std::fs::remove_file(&p).is_err() {
+                let _ = std::fs::remove_dir(&p);
+            }
         }
-        std::fs::create_dir_all(link_parent)?;
+        // Tolerate `AlreadyExists` from the parent mkdir. Rayon-parallel
+        // callers race on the same `.bin/`. Windows also returns os 183
+        // spuriously when the dir sits behind a junction, even when the
+        // dir is visible.
+        if let Err(e) = std::fs::create_dir_all(link_parent)
+            && e.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(e);
+        }
 
         let rel = relative_bin_target(link_parent, target);
         let node_path_rel = relative_bin_target(link_parent, node_modules_dir_for_bin(bin_dir));
@@ -185,22 +198,17 @@ pub fn create_bin_shim(
             .then_some(node_path_backslash.as_str());
         let node_path_fwdslash = opts.extend_node_path.then_some(node_path_fwdslash.as_str());
 
-        // .cmd (cmd.exe)
-        std::fs::write(
-            bin_dir.join(format!("{name}.cmd")),
-            generate_cmd_shim(&prog, &rel_backslash, node_path_backslash),
+        write_shim_file(
+            &bin_dir.join(format!("{name}.cmd")),
+            generate_cmd_shim(&prog, &rel_backslash, node_path_backslash).as_bytes(),
         )?;
-
-        // .ps1 (PowerShell)
-        std::fs::write(
-            bin_dir.join(format!("{name}.ps1")),
-            generate_ps1_shim(&prog, &rel_fwdslash, node_path_fwdslash),
+        write_shim_file(
+            &bin_dir.join(format!("{name}.ps1")),
+            generate_ps1_shim(&prog, &rel_fwdslash, node_path_fwdslash).as_bytes(),
         )?;
-
-        // extensionless (Git Bash / MSYS2)
-        std::fs::write(
-            bin_dir.join(name),
-            generate_sh_shim(&prog, &rel_fwdslash, node_path_fwdslash),
+        write_shim_file(
+            &bin_dir.join(name),
+            generate_sh_shim(&prog, &rel_fwdslash, node_path_fwdslash).as_bytes(),
         )?;
     }
     #[cfg(not(any(unix, windows)))]
@@ -344,6 +352,23 @@ pub fn remove_bin_shim(bin_dir: &Path, name: &str) {
         && parent != bin_dir
     {
         let _ = std::fs::remove_dir(parent);
+    }
+}
+
+/// Atomic shim write. Stale dir or junction at `dst` makes `fs::write`
+/// fail with `ERROR_ALREADY_EXISTS` (os 183). Try direct write first.
+/// On that error, wipe whatever blocks the path (file, dir, junction)
+/// and retry once. Fast path stays allocation-free.
+#[cfg(windows)]
+fn write_shim_file(dst: &Path, contents: &[u8]) -> io::Result<()> {
+    match std::fs::write(dst, contents) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists || e.raw_os_error() == Some(183) => {
+            let _ = std::fs::remove_file(dst);
+            let _ = std::fs::remove_dir_all(dst);
+            std::fs::write(dst, contents)
+        }
+        Err(e) => Err(e),
     }
 }
 
