@@ -112,7 +112,11 @@ fn glob_workspace_pattern(project_dir: &Path, pattern: &str) -> Vec<PathBuf> {
 fn workspace_pattern_root(project_dir: &Path, pattern: &str) -> PathBuf {
     let wildcard_idx = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
     let literal_prefix = &pattern[..wildcard_idx];
-    project_dir.join(literal_prefix.trim_end_matches('/'))
+    let root = literal_prefix
+        .trim_end_matches('/')
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    project_dir.join(root)
 }
 
 /// Read the `workspaces` field from `<project_dir>/package.json`. Returns
@@ -312,6 +316,27 @@ mod tests {
         assert_eq!(
             names(found),
             ["a", "b"].iter().map(|s| s.to_string()).collect()
+        );
+    }
+
+    #[test]
+    fn recursive_glob_with_mid_component_wildcard_uses_parent_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/prefix-*/**/*'\n",
+        );
+        write(&dir.path().join("packages/prefix-a/pkg/package.json"), "{}");
+        write(
+            &dir.path().join("packages/prefix-b/nested/app/package.json"),
+            "{}",
+        );
+        write(&dir.path().join("packages/other/nope/package.json"), "{}");
+
+        let found = find_workspace_packages(dir.path()).unwrap();
+        assert_eq!(
+            names(found),
+            ["app", "pkg"].iter().map(|s| s.to_string()).collect()
         );
     }
 }
