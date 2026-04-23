@@ -271,7 +271,22 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         layout.placements,
     );
 
-    let package_json_shape_digests: BTreeMap<String, String> = BTreeMap::new();
+    let package_json_shape_digests: BTreeMap<String, String> = package_json_hashes
+        .keys()
+        .filter_map(|rel| {
+            let path = if rel == "." {
+                project_dir.join("package.json")
+            } else {
+                project_dir.join(rel)
+            };
+            let bytes = std::fs::read(&path).ok()?;
+            let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            Some((
+                rel.clone(),
+                hex::encode(aube_util::hash::manifest_install_shape_digest(&parsed)),
+            ))
+        })
+        .collect();
 
     let state = InstallState {
         lockfile_hash,
