@@ -244,6 +244,22 @@ pub fn compute_subtree_hashes(graph: &LockfileGraph) -> BTreeMap<String, String>
         .collect()
 }
 
+/// Return the current dep_paths whose subtree hash changed since the
+/// previous install. This is the minimal invalidation set for
+/// per-project `.aube/<dep_path>` directories: if a child changed,
+/// every ancestor's internal sibling links must be rebuilt even when
+/// the ancestor's own leaf fingerprint is identical.
+pub fn changed_subtree_roots(
+    stored: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> Vec<String> {
+    current
+        .iter()
+        .filter(|(dep_path, hash)| stored.get(*dep_path) != Some(*hash))
+        .map(|(dep_path, _)| dep_path.clone())
+        .collect()
+}
+
 /// Iterative Tarjan SCC over `graph.packages`. Returns each SCC as
 /// a `Vec` of `dep_path` keys. Acyclic nodes show up as one-member
 /// SCCs. Iterative because deep peer-suffix chains blew the stack
@@ -461,6 +477,15 @@ mod tests {
         }
     }
 
+    fn pkg_with_deps(name: &str, version: &str, deps: &[(&str, &str)]) -> LockedPackage {
+        let mut pkg = pkg(name, version);
+        for (dep_name, dep_version) in deps {
+            pkg.dependencies
+                .insert((*dep_name).to_string(), format!("{dep_name}@{dep_version}"));
+        }
+        pkg
+    }
+
     fn graph_of(pkgs: &[LockedPackage]) -> LockfileGraph {
         let mut graph = LockfileGraph::default();
         for p in pkgs {
@@ -588,6 +613,24 @@ mod tests {
         g2.packages.insert("a@1".into(), pkg("a", "1"));
         let plan = diff(&compute_package_hashes(&g1), &compute_package_hashes(&g2));
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn changed_subtree_roots_includes_changed_ancestors() {
+        let before = compute_subtree_hashes(&graph_of(&[
+            pkg_with_deps("app", "1", &[("dep", "1")]),
+            pkg("dep", "1"),
+            pkg("peer", "1"),
+        ]));
+        let after = compute_subtree_hashes(&graph_of(&[
+            pkg_with_deps("app", "1", &[("dep", "2")]),
+            pkg("dep", "2"),
+            pkg("peer", "1"),
+        ]));
+
+        let changed = changed_subtree_roots(&before, &after);
+
+        assert_eq!(changed, vec!["app@1".to_string(), "dep@2".to_string()]);
     }
 
     #[test]

@@ -3635,6 +3635,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         linker = linker.with_use_global_virtual_store(enabled);
     }
 
+    let current_subtree_hashes = (!virtual_store_only
+        && matches!(node_linker, aube_linker::NodeLinker::Isolated)
+        && !opts.dep_selection.is_filtered()
+        && opts.workspace_filter.is_empty())
+    .then(|| delta::compute_subtree_hashes(&graph_for_link));
+    if !linker.uses_global_virtual_store()
+        && let Some(current_subtree_hashes) = current_subtree_hashes.as_ref()
+        && let Some(prior_subtrees) = state::read_state_subtree_hashes(&cwd)
+    {
+        let touched = delta::changed_subtree_roots(&prior_subtrees, current_subtree_hashes);
+        let invalidated =
+            invalidate_changed_aube_entries(&aube_dir, &touched, virtual_store_dir_max_length);
+        if invalidated > 0 {
+            tracing::debug!("delta: invalidated {invalidated} changed .aube entry/entries");
+        }
+    }
+
     // 6a. Pre-compute content-addressed virtual-store hashes.
     //     Only necessary when linking into the shared global virtual
     //     store — in per-project mode (`CI=1`) the `.aube/<dep_path>`
@@ -4187,6 +4204,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     }
 
     Ok(())
+}
+
+fn invalidate_changed_aube_entries(
+    aube_dir: &std::path::Path,
+    dep_paths: &[String],
+    virtual_store_dir_max_length: usize,
+) -> usize {
+    let mut removed = 0usize;
+    for dep_path in dep_paths {
+        let path = aube_dir.join(dep_path_to_filename(dep_path, virtual_store_dir_max_length));
+        let result = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
+        match result {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::debug!("delta: failed to invalidate {}: {e}", path.display()),
+        }
+    }
+    removed
 }
 
 /// Remove `node_modules/.aube/<encoded_dep_path>` entries that aren't
