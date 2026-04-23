@@ -4734,17 +4734,38 @@ fn create_bin_link(
     target: &std::path::Path,
     shim_opts: aube_linker::BinShimOptions,
 ) -> miette::Result<()> {
-    // `link_dep_bins` intentionally skips the eager `create_dir_all`
-    // on per-dep `.bin/` so deps whose children contribute nothing
-    // don't leave empty dirs behind. Materialize on demand here — the
-    // first shim write is the signal that we actually need the dir.
-    // Idempotent and cheap on already-existing paths, so the other
-    // callers (root / workspace bin dirs, which still pre-create) pay
-    // at most one redundant stat per shim.
-    std::fs::create_dir_all(bin_dir)
-        .into_diagnostic()
-        .wrap_err_with(|| format!("failed to create bin directory {}", bin_dir.display()))?;
-    aube_linker::create_bin_shim(bin_dir, name, target, shim_opts)
+    // `link_dep_bins` skips eager `create_dir_all` on per-dep `.bin/`.
+    // Deps whose children ship no bins stay empty on disk. First shim
+    // write materializes the dir on demand.
+    //
+    // Windows `CreateDirectoryW` returns `ERROR_ALREADY_EXISTS` (os 183)
+    // when the leaf sits behind a junction in the path, even when the
+    // leaf is absent. The isolated layout's `.aube/<dep_path>` is a
+    // junction into the global virtual store, so every `.bin/` under it
+    // hits the quirk. Fix: canonicalize the parent, strip the `\\?\`
+    // UNC prefix (which trips its own CreateDirectoryW quirk, os 123),
+    // create the leaf on the plain drive path. No-op on Unix.
+    #[cfg(windows)]
+    let target_for_mkdir_owned = bin_dir.parent().and_then(|parent| {
+        let leaf = bin_dir.file_name()?;
+        let canon = std::fs::canonicalize(parent).ok()?;
+        let s = canon.to_string_lossy();
+        let cleaned = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        Some(std::path::PathBuf::from(cleaned).join(leaf))
+    });
+    #[cfg(windows)]
+    let target_for_mkdir: &std::path::Path = target_for_mkdir_owned.as_deref().unwrap_or(bin_dir);
+    #[cfg(not(windows))]
+    let target_for_mkdir = bin_dir;
+    if let Err(e) = std::fs::create_dir_all(target_for_mkdir) {
+        let tolerated = e.kind() == std::io::ErrorKind::AlreadyExists && target_for_mkdir.is_dir();
+        if !tolerated {
+            return Err(e)
+                .into_diagnostic()
+                .wrap_err_with(|| format!("failed to create bin directory {}", bin_dir.display()));
+        }
+    }
+    aube_linker::create_bin_shim(target_for_mkdir, name, target, shim_opts)
         .into_diagnostic()
         .wrap_err_with(|| {
             format!(
