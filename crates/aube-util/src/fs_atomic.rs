@@ -103,10 +103,7 @@ pub mod sentinel {
     }
 
     fn write_sentinel(path: &Path, tag: &str) -> io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, tag)
+        super::atomic_write(path, tag.as_bytes())
     }
 }
 
