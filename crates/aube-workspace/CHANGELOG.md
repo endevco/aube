@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0](https://github.com/endevco/aube/compare/aube-workspace-v1.0.0-beta.12...aube-workspace-v1.0.0) - 2026-04-23
+
+### Other
+
+- skip node_modules in recursive glob discovery ([#236](https://github.com/endevco/aube/pull/236))
+
 ## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-workspace-v1.0.0-beta.11...aube-workspace-v1.0.0-beta.12) - 2026-04-22
 
 ### Other
