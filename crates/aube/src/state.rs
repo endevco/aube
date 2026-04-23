@@ -550,7 +550,12 @@ pub fn collect_package_json_hashes_from_manifests(
             if !pkg_json.is_file() {
                 return None;
             }
-            Some((rel.clone(), hash_file(&pkg_json)))
+            let key = if rel == "." {
+                ".".to_string()
+            } else {
+                relative_path_or_original(&pkg_json, project_dir)
+            };
+            Some((key, hash_file(&pkg_json)))
         })
         .collect()
 }
@@ -738,7 +743,8 @@ fn empty_blake3_hash() -> &'static str {
 mod tests {
     use super::{
         InstallLayoutMode, InstallLayoutState, InstallState, InstalledPackageState,
-        empty_blake3_hash, relative_path_or_original, verify_install_layout,
+        collect_package_json_hashes_from_manifests, empty_blake3_hash, hash_file,
+        relative_path_or_original, verify_install_layout,
     };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -789,6 +795,33 @@ mod tests {
                 "installed package metadata missing: node_modules/.aube/missing/node_modules/is-odd/package.json"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn collect_package_json_hashes_from_manifests_uses_file_paths_for_workspaces() {
+        let project_dir = temp_project_dir("manifest-hash-keys");
+        let root_pkg = project_dir.join("package.json");
+        let ws_pkg = project_dir.join("packages/foo/package.json");
+        std::fs::create_dir_all(ws_pkg.parent().expect("workspace dir"))
+            .expect("workspace dir should be creatable");
+        std::fs::write(&root_pkg, "{\"name\":\"root\"}").expect("root package.json should write");
+        std::fs::write(&ws_pkg, "{\"name\":\"foo\"}").expect("workspace package.json should write");
+
+        let manifests = vec![
+            (".".to_string(), aube_manifest::PackageJson::default()),
+            (
+                "packages/foo".to_string(),
+                aube_manifest::PackageJson::default(),
+            ),
+        ];
+
+        let hashes = collect_package_json_hashes_from_manifests(&project_dir, &manifests);
+
+        assert_eq!(hashes.get("."), Some(&hash_file(&root_pkg)));
+        assert_eq!(
+            hashes.get("packages/foo/package.json"),
+            Some(&hash_file(&ws_pkg))
         );
     }
 
