@@ -46,31 +46,73 @@ pub fn find_workspace_packages(project_dir: &Path) -> Result<Vec<PathBuf>, Error
     let mut seen = std::collections::HashSet::new();
     let mut packages = Vec::new();
     for pattern in &patterns {
-        let full_pattern = project_dir.join(pattern).join("package.json");
-        if let Ok(entries) = glob::glob(full_pattern.to_str().unwrap_or_default()) {
-            for entry in entries.flatten() {
-                // Skip paths under any node_modules/ segment. Raw
-                // `packages/**` glob otherwise picks up installed
-                // deps' package.json files and registers them as
-                // workspace members. Pollutes importer iteration,
-                // state hash, validate_required_scripts, everything
-                // downstream. npm and pnpm implicitly exclude the
-                // same. Check every path component, not just leading
-                // segment, since workspace could be `apps/*/packages`
-                // with node_modules nested arbitrarily deep.
-                if entry.components().any(|c| c.as_os_str() == "node_modules") {
-                    continue;
-                }
-                if let Some(parent) = entry.parent()
-                    && seen.insert(parent.to_path_buf())
-                {
-                    packages.push(parent.to_path_buf());
-                }
+        for pkg_dir in expand_workspace_pattern(project_dir, pattern)? {
+            if seen.insert(pkg_dir.clone()) {
+                packages.push(pkg_dir);
             }
         }
     }
 
+    packages.sort_unstable();
     Ok(packages)
+}
+
+fn expand_workspace_pattern(project_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, Error> {
+    let matcher = glob::Pattern::new(pattern)
+        .map_err(|e| Error::Parse(project_dir.join("pnpm-workspace.yaml"), e.to_string()))?;
+    if !pattern.contains("**") {
+        return Ok(glob_workspace_pattern(project_dir, pattern));
+    }
+
+    let mut packages = Vec::new();
+    let mut stack = vec![workspace_pattern_root(project_dir, pattern)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            if entry.file_name() == "node_modules" {
+                continue;
+            }
+            stack.push(path.clone());
+            let Ok(rel_path) = path.strip_prefix(project_dir) else {
+                continue;
+            };
+            if matcher.matches_path(rel_path) && path.join("package.json").is_file() {
+                packages.push(path);
+            }
+        }
+    }
+    Ok(packages)
+}
+
+fn glob_workspace_pattern(project_dir: &Path, pattern: &str) -> Vec<PathBuf> {
+    let full_pattern = project_dir.join(pattern).join("package.json");
+    let mut packages = Vec::new();
+    if let Ok(entries) = glob::glob(full_pattern.to_str().unwrap_or_default()) {
+        for entry in entries.flatten() {
+            if entry.components().any(|c| c.as_os_str() == "node_modules") {
+                continue;
+            }
+            if let Some(parent) = entry.parent() {
+                packages.push(parent.to_path_buf());
+            }
+        }
+    }
+    packages
+}
+
+fn workspace_pattern_root(project_dir: &Path, pattern: &str) -> PathBuf {
+    let wildcard_idx = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
+    let literal_prefix = &pattern[..wildcard_idx];
+    project_dir.join(literal_prefix.trim_end_matches('/'))
 }
 
 /// Read the `workspaces` field from `<project_dir>/package.json`. Returns
@@ -248,6 +290,28 @@ mod tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+        );
+    }
+
+    #[test]
+    fn recursive_glob_skips_node_modules_subtrees() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/**/*'\n",
+        );
+        write(&dir.path().join("packages/a/package.json"), "{}");
+        write(&dir.path().join("packages/nested/b/package.json"), "{}");
+        write(
+            &dir.path()
+                .join("packages/a/node_modules/not-a-workspace/package.json"),
+            "{}",
+        );
+
+        let found = find_workspace_packages(dir.path()).unwrap();
+        assert_eq!(
+            names(found),
+            ["a", "b"].iter().map(|s| s.to_string()).collect()
         );
     }
 }
