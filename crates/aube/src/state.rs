@@ -216,16 +216,27 @@ pub struct WriteStateLayout<'a> {
     pub placements: Option<&'a aube_linker::HoistedPlacements>,
 }
 
-pub fn write_state(
-    project_dir: &Path,
-    section_filtered: bool,
-    package_json_hashes: BTreeMap<String, String>,
-    cli_flags: &[(String, String)],
-    package_content_hashes: BTreeMap<String, String>,
-    graph_lthash: String,
-    package_subtree_hashes: BTreeMap<String, String>,
-    layout: WriteStateLayout<'_>,
-) -> Result<(), std::io::Error> {
+pub struct WriteStateInput<'a> {
+    pub section_filtered: bool,
+    pub package_json_hashes: BTreeMap<String, String>,
+    pub cli_flags: &'a [(String, String)],
+    pub package_content_hashes: BTreeMap<String, String>,
+    pub graph_lthash: String,
+    pub package_subtree_hashes: BTreeMap<String, String>,
+    pub layout: WriteStateLayout<'a>,
+}
+
+pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(), std::io::Error> {
+    let WriteStateInput {
+        section_filtered,
+        package_json_hashes,
+        cli_flags,
+        package_content_hashes,
+        graph_lthash,
+        package_subtree_hashes,
+        layout,
+    } = input;
+
     let lockfile_hash = match active_lockfile(project_dir).1 {
         Some(path) => hash_file(&path),
         None => String::new(),
