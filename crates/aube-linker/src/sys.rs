@@ -364,8 +364,12 @@ fn write_shim_file(dst: &Path, contents: &[u8]) -> io::Result<()> {
     match std::fs::write(dst, contents) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists || e.raw_os_error() == Some(183) => {
+            // `remove_dir` (non-recursive) clears an empty dir or a
+            // junction. A populated dir at a shim path is a real
+            // conflict. Let the retry write surface that error instead
+            // of silently wiping the subtree with `remove_dir_all`.
             let _ = std::fs::remove_file(dst);
-            let _ = std::fs::remove_dir_all(dst);
+            let _ = std::fs::remove_dir(dst);
             std::fs::write(dst, contents)
         }
         Err(e) => Err(e),
