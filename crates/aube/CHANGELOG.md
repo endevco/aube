@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.13](https://github.com/endevco/aube/compare/v1.0.0-beta.12...v1.0.0-beta.13) - 2026-04-23
+
+### Other
+
+- split lib.rs into focused modules ([#235](https://github.com/endevco/aube/pull/235))
+- split mod.rs into bin_linking/git_prepare/lifecycle submodules ([#237](https://github.com/endevco/aube/pull/237))
+- *(delta)* invalidate changed no-gvs subtrees ([#233](https://github.com/endevco/aube/pull/233))
+- link importer's own bin into node_modules/.bin ([#230](https://github.com/endevco/aube/pull/230))
+- windows install correctness + workspace filter fixes ([#229](https://github.com/endevco/aube/pull/229))
+- *(pack)* drop CHANGELOG from always-included files ([#227](https://github.com/endevco/aube/pull/227))
+- *(install)* show transfer rate + elapsed timer in progress bars ([#225](https://github.com/endevco/aube/pull/225))
+- speed up babylon warm reinstalls ([#224](https://github.com/endevco/aube/pull/224))
+- *(install)* fix node-gyp bootstrap walkup causing bats parallel hang ([#220](https://github.com/endevco/aube/pull/220))
+
 ## [1.0.0-beta.12](https://github.com/endevco/aube/compare/v1.0.0-beta.11...v1.0.0-beta.12) - 2026-04-22
 
 ### Other

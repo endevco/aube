@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.13](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.12...aube-lockfile-v1.0.0-beta.13) - 2026-04-23
+
+### Other
+
+- *(yarn)* drop per-lookup String allocs in berry parser ([#234](https://github.com/endevco/aube/pull/234))
+- extract read_lockfile helper to dedupe parser I/O ([#232](https://github.com/endevco/aube/pull/232))
+
 ## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0-beta.11...aube-lockfile-v1.0.0-beta.12) - 2026-04-22
 
 ### Other
