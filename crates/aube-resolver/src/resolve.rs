@@ -1010,6 +1010,7 @@ impl Resolver {
                                     declared_dependencies: locked_pkg.declared_dependencies.clone(),
                                     license: locked_pkg.license.clone(),
                                     funding_url: locked_pkg.funding_url.clone(),
+                                    extra_meta: locked_pkg.extra_meta.clone(),
                                 },
                             );
 
@@ -1529,6 +1530,7 @@ impl Resolver {
                         },
                         license: version_meta.license.clone(),
                         funding_url: version_meta.funding_url.clone(),
+                        extra_meta: BTreeMap::new(),
                     },
                 );
 
@@ -1750,6 +1752,13 @@ impl Resolver {
             // defaults `configVersion` to 1 when emitting a fresh
             // lockfile.
             bun_config_version: None,
+            // Fresh resolves don't carry over unknown blocks; the
+            // install-side merge (`overlay_metadata_from`) copies
+            // them back from the prior lockfile when round-tripping.
+            patched_dependencies: BTreeMap::new(),
+            trusted_dependencies: BTreeSet::new(),
+            extra_fields: BTreeMap::new(),
+            workspace_extra_fields: BTreeMap::new(),
         };
 
         // Second pass: hoist every auto-installed peer to its importer's

@@ -4,7 +4,7 @@ use crate::{
 };
 use aube_manifest::PackageJson;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Parse a pnpm-lock.yaml file into a LockfileGraph.
@@ -419,6 +419,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 // `None`.
                 license: None,
                 funding_url: None,
+                extra_meta: BTreeMap::new(),
             },
         );
     }
@@ -459,6 +460,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         })
         .collect();
 
+    let patched_dependencies: BTreeMap<String, String> = raw
+        .patched_dependencies
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (k, v.into_path()))
+        .collect();
+
     Ok(LockfileGraph {
         importers,
         packages,
@@ -473,6 +481,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         skipped_optional_dependencies,
         catalogs,
         bun_config_version: None,
+        patched_dependencies,
+        trusted_dependencies: BTreeSet::new(),
+        extra_fields: BTreeMap::new(),
+        workspace_extra_fields: BTreeMap::new(),
     })
 }
 
@@ -859,6 +871,15 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                     .collect(),
             )
         },
+        // pnpm v9 emits patched deps as `{ path, hash }`. We don't
+        // track the patch hash on the graph (install-time concern),
+        // so write the path form which pnpm still accepts. Skipped
+        // when empty to keep parity with no-patch installs.
+        patched_dependencies: if graph.patched_dependencies.is_empty() {
+            None
+        } else {
+            Some(graph.patched_dependencies.clone())
+        },
         time,
         importers,
         packages,
@@ -1036,6 +1057,11 @@ struct WritablePnpmLockfile {
     /// identical to pnpm's output.
     #[serde(skip_serializing_if = "Option::is_none")]
     ignored_optional_dependencies: Option<Vec<String>>,
+    /// pnpm v9+ top-level `patchedDependencies:` — preserved so a
+    /// bun→aube-lock conversion keeps the user's patches and a
+    /// re-emit doesn't strip the block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patched_dependencies: Option<BTreeMap<String, String>>,
     snapshots: BTreeMap<String, WritableSnapshot>,
 }
 
@@ -1275,6 +1301,13 @@ struct RawPnpmLockfile {
     overrides: Option<BTreeMap<String, String>>,
     #[serde(default)]
     catalogs: Option<BTreeMap<String, BTreeMap<String, RawCatalogEntry>>>,
+    /// pnpm v9+ top-level `patchedDependencies:` block. Map of
+    /// `pkg@version` selector → patch entry (pnpm uses a nested
+    /// `{ path, hash }` object, but we only model the path string
+    /// on the shared graph). Round-tripped verbatim so a parse/
+    /// write cycle doesn't drop user patches.
+    #[serde(default)]
+    patched_dependencies: Option<BTreeMap<String, RawPatchedDependency>>,
     #[serde(default)]
     ignored_optional_dependencies: Option<Vec<String>>,
     #[serde(default)]
@@ -1285,6 +1318,31 @@ struct RawPnpmLockfile {
     snapshots: BTreeMap<String, RawSnapshot>,
     #[serde(default)]
     time: Option<BTreeMap<String, String>>,
+}
+
+/// pnpm writes `patchedDependencies` as either a bare path string
+/// (v8 style) or a nested `{ path, hash }` object (v9+). We accept
+/// both via an untagged enum and collapse to the path string on the
+/// shared graph.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawPatchedDependency {
+    Path(String),
+    Object {
+        path: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        hash: Option<String>,
+    },
+}
+
+impl RawPatchedDependency {
+    fn into_path(self) -> String {
+        match self {
+            RawPatchedDependency::Path(p) => p,
+            RawPatchedDependency::Object { path, .. } => path,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

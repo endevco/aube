@@ -529,6 +529,10 @@ pub(crate) fn dedupe_peer_variants(graph: LockfileGraph) -> LockfileGraph {
         skipped_optional_dependencies,
         catalogs,
         bun_config_version,
+        patched_dependencies,
+        trusted_dependencies,
+        extra_fields,
+        workspace_extra_fields,
     } = graph;
 
     let mut new_packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
@@ -571,6 +575,10 @@ pub(crate) fn dedupe_peer_variants(graph: LockfileGraph) -> LockfileGraph {
         skipped_optional_dependencies,
         catalogs,
         bun_config_version,
+        patched_dependencies,
+        trusted_dependencies,
+        extra_fields,
+        workspace_extra_fields,
     }
 }
 
@@ -691,6 +699,10 @@ fn apply_peer_contexts_once(
         skipped_optional_dependencies: canonical.skipped_optional_dependencies,
         catalogs: canonical.catalogs,
         bun_config_version: canonical.bun_config_version,
+        patched_dependencies: canonical.patched_dependencies,
+        trusted_dependencies: canonical.trusted_dependencies,
+        extra_fields: canonical.extra_fields,
+        workspace_extra_fields: canonical.workspace_extra_fields,
     }
 }
 
@@ -914,6 +926,7 @@ pub(crate) fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
                 declared_dependencies: pkg.declared_dependencies,
                 license: pkg.license,
                 funding_url: pkg.funding_url,
+                extra_meta: pkg.extra_meta,
             },
         );
     }
@@ -951,6 +964,10 @@ pub(crate) fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
         skipped_optional_dependencies: graph.skipped_optional_dependencies,
         catalogs: graph.catalogs,
         bun_config_version: graph.bun_config_version,
+        patched_dependencies: graph.patched_dependencies,
+        trusted_dependencies: graph.trusted_dependencies,
+        extra_fields: graph.extra_fields,
+        workspace_extra_fields: graph.workspace_extra_fields,
     }
 }
 
@@ -1321,6 +1338,7 @@ fn visit_peer_context<'g>(
             declared_dependencies: pkg.declared_dependencies.clone(),
             license: pkg.license.clone(),
             funding_url: pkg.funding_url.clone(),
+            extra_meta: pkg.extra_meta.clone(),
         },
     );
     Some(contextualized)
