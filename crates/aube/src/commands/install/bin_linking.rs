@@ -398,16 +398,16 @@ fn create_bin_link(
     // when the leaf sits behind a junction in the path, even when the
     // leaf is absent. The isolated layout's `.aube/<dep_path>` is a
     // junction into the global virtual store, so every `.bin/` under it
-    // hits the quirk. Fix: canonicalize the parent, strip the `\\?\`
-    // UNC prefix (which trips its own CreateDirectoryW quirk, os 123),
-    // create the leaf on the plain drive path. No-op on Unix.
+    // hits the quirk. Fix: canonicalize the parent (`crate::dirs::canonicalize`
+    // already strips the `\\?\` verbatim prefix, which would otherwise
+    // trip CreateDirectoryW's own os-123 quirk, while keeping real
+    // `\\?\UNC\…` share paths intact), then create the leaf on the
+    // resulting plain drive path. No-op on Unix.
     #[cfg(windows)]
     let target_for_mkdir_owned = bin_dir.parent().and_then(|parent| {
         let leaf = bin_dir.file_name()?;
-        let canon = std::fs::canonicalize(parent).ok()?;
-        let s = canon.to_string_lossy();
-        let cleaned = s.strip_prefix(r"\\?\").unwrap_or(&s);
-        Some(std::path::PathBuf::from(cleaned).join(leaf))
+        let canon = crate::dirs::canonicalize(parent).ok()?;
+        Some(canon.join(leaf))
     });
     #[cfg(windows)]
     let target_for_mkdir: &std::path::Path = target_for_mkdir_owned.as_deref().unwrap_or(bin_dir);

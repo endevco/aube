@@ -168,7 +168,13 @@ pub fn scan_packages(pkg_dir: &Path) -> Vec<GlobalPackageInfo> {
             continue;
         }
         let link_path = entry.path();
-        let Ok(install_dir) = std::fs::canonicalize(&link_path) else {
+        // `crate::dirs::canonicalize` strips the Windows `\\?\` verbatim
+        // prefix so the `install_dir` we hand back can be compared with
+        // `==` / `starts_with` against paths produced by `run_global` (also
+        // routed through the same helper). Without this, the prior-cleanup
+        // branch in `run_global_inner` never matches on Windows and stale
+        // hash pointers / install dirs accumulate.
+        let Ok(install_dir) = crate::dirs::canonicalize(&link_path) else {
             continue;
         };
         let manifest_path = install_dir.join("package.json");
@@ -466,8 +472,12 @@ pub fn remove_package(info: &GlobalPackageInfo, layout: &GlobalLayout) -> miette
         }
     }
 
+    // `crate::dirs::canonicalize` so `pkg_canon` is comparable with the
+    // `info.install_dir` `scan_packages` produced — both must be in the
+    // same Windows form (no `\\?\` prefix) or the `starts_with` check
+    // fails and the install dir leaks.
     let pkg_canon =
-        std::fs::canonicalize(&layout.pkg_dir).unwrap_or_else(|_| layout.pkg_dir.clone());
+        crate::dirs::canonicalize(&layout.pkg_dir).unwrap_or_else(|_| layout.pkg_dir.clone());
     if info.install_dir.starts_with(&pkg_canon) {
         match std::fs::remove_dir_all(&info.install_dir) {
             Ok(_) => {}
