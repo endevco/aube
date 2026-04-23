@@ -32,9 +32,9 @@ use clx::progress::{
 };
 use clx::style;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Cap on the number of simultaneously-visible per-package fetch rows
 /// in TTY mode. Bursts above this are collapsed into a single overflow
@@ -61,6 +61,16 @@ enum Mode {
         /// fetch-add without racing a concurrent reader/writer through clx's
         /// separate `overall_progress()` / `progress_total()` calls.
         total: Arc<AtomicUsize>,
+        /// Phase number: 0=init, 1=resolving, 2=fetching, 3=linking. Used
+        /// by `inc_downloaded_bytes` to gate the transfer-rate prop to the
+        /// fetching window — before/after that the rate is either zero or
+        /// stale.
+        phase_num: Arc<AtomicUsize>,
+        /// Cumulative downloaded bytes. Fed into the transfer-rate
+        /// calculation displayed in the TTY bar's `rate` prop.
+        downloaded_bytes: Arc<AtomicU64>,
+        /// Start of the install, for rate = bytes / elapsed.
+        start: Instant,
         /// Bounded visible-fetch-row bookkeeping. `visible` is the count
         /// of live per-package child rows (capped at
         /// `TTY_MAX_VISIBLE_FETCH_ROWS`); `overflow` is the count of
@@ -128,10 +138,15 @@ impl InstallProgress {
             style::edim("by en.dev"),
         );
         let root = ProgressJobBuilder::new()
-            .body("{{aube}}{{phase}}  {{progress_bar(flex=true)}} {{cur}}/{{total}}")
-            .body_text(Some("{{aube}}{{phase}} {{cur}}/{{total}}"))
+            .body(
+                "{{aube}}{{phase}}  {{progress_bar(flex=true)}} {{cur}}/{{total}}{{rate}} · {{ elapsed() }}",
+            )
+            .body_text(Some(
+                "{{aube}}{{phase}} {{cur}}/{{total}}{{rate}} · {{ elapsed() }}",
+            ))
             .prop("aube", &header)
             .prop("phase", "")
+            .prop("rate", "")
             .progress_current(0)
             .progress_total(0)
             .on_done(ProgressJobDoneBehavior::Hide)
@@ -140,6 +155,9 @@ impl InstallProgress {
             mode: Mode::Tty {
                 root,
                 total: Arc::new(AtomicUsize::new(0)),
+                phase_num: Arc::new(AtomicUsize::new(0)),
+                downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                start: Instant::now(),
                 fetch_state: Arc::new(Mutex::new(FetchState {
                     visible: 0,
                     overflow: 0,
@@ -193,11 +211,26 @@ impl InstallProgress {
     /// bumps the `[N/3]` phase counter shown on the status line.
     pub fn set_phase(&self, phase: &str) {
         match &self.mode {
-            Mode::Tty { root, .. } => {
+            Mode::Tty {
+                root, phase_num, ..
+            } => {
                 if phase.is_empty() {
                     root.prop("phase", "");
                 } else {
                     root.prop("phase", &format!("{}", style::edim(format!(" — {phase}"))));
+                }
+                let n = match phase {
+                    "resolving" => 1,
+                    "fetching" => 2,
+                    "linking" => 3,
+                    _ => 0,
+                };
+                phase_num.store(n, Ordering::Relaxed);
+                // Transfer rate is only meaningful *during* fetching — clear
+                // the prop when we leave the phase so the label doesn't
+                // carry a stale number into `linking`.
+                if n != 2 {
+                    root.prop("rate", "");
                 }
             }
             Mode::Ci(s) => s.set_phase(phase),
@@ -216,13 +249,44 @@ impl InstallProgress {
         }
     }
 
-    /// Credit `bytes` to the CI-mode downloaded-bytes total. Called once per
+    /// Credit `bytes` to the downloaded-bytes total. Called once per
     /// tarball after the registry fetch completes, on top of the per-package
     /// increment that `FetchRow::drop` contributes to the downloaded count.
-    /// No-op in TTY mode (the animated bar has no room for a byte counter).
+    ///
+    /// In TTY mode this updates the transfer-rate prop rendered to the right
+    /// of `cur/total` — gated to `phase == fetching && bytes > 0` so the
+    /// label stays clean before/after the fetch window. In CI mode the
+    /// heartbeat re-renders the rate from the cumulative byte counter on
+    /// each tick; here we just bump that counter.
     pub fn inc_downloaded_bytes(&self, bytes: u64) {
-        if let Mode::Ci(s) = &self.mode {
-            s.downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
+        match &self.mode {
+            Mode::Tty {
+                root,
+                phase_num,
+                downloaded_bytes,
+                start,
+                ..
+            } => {
+                let total = downloaded_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
+                if phase_num.load(Ordering::Relaxed) != 2 || total == 0 {
+                    return;
+                }
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                if elapsed_ms == 0 {
+                    return;
+                }
+                let rate = total.saturating_mul(1000) / elapsed_ms;
+                root.prop(
+                    "rate",
+                    &format!(
+                        " · {}",
+                        style::edim(format!("{}/s", ci::format_bytes(rate)))
+                    ),
+                );
+            }
+            Mode::Ci(s) => {
+                s.downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
         }
     }
 
@@ -354,18 +418,27 @@ impl InstallProgress {
                     pluralizer::pluralize("package", total_packages as isize, true)
                 )
             };
-            // Same `aube VERSION by en.dev · …` shape in both TTY and
-            // CI modes so the no-op line reads as part of the install
-            // UI family. `style::e*` respects `NO_COLOR` / `--no-color`,
-            // so CI environments that strip styling get plain text.
-            let line = format!(
-                "{} {} {} {} {}",
-                style::emagenta("aube").bold(),
-                style::edim(crate::version::VERSION.as_str()),
-                style::edim("by en.dev"),
-                style::edim("·"),
-                style::egreen(msg).bold(),
-            );
+            // In CI mode the framed `aube VERSION by en.dev` header already
+            // prints above the bar, so repeating the prefix in the summary
+            // is noise. Use the same bracketed frame as the bar and the
+            // normal-path `[ ✓ resolved … ]` summary so the no-op line
+            // slots into the existing CI block. TTY mode has no persistent
+            // header (the bar was cleared by `finish()`), so keep the
+            // full `aube VERSION · …` form there.
+            let line = match &self.mode {
+                Mode::Tty { .. } => format!(
+                    "{} {} {} {} {}",
+                    style::emagenta("aube").bold(),
+                    style::edim(crate::version::VERSION.as_str()),
+                    style::edim("by en.dev"),
+                    style::edim("·"),
+                    style::egreen(&msg).bold(),
+                ),
+                Mode::Ci(_) => {
+                    let inner = format!("{} {}", style::egreen("✓"), style::egreen(&msg).bold());
+                    ci::render_centered_line(&inner, ci::term_width())
+                }
+            };
             let _ = writeln!(std::io::stderr(), "{line}");
             return;
         }

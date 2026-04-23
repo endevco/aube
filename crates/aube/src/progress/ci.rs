@@ -81,7 +81,7 @@ pub(super) struct CiState {
 /// GitHub Actions), then falls back to `console::Term::stderr().size()`
 /// (works when stderr is a TTY), then a sensible 80-column default.
 /// Clamped into `[MIN_BAR_WIDTH, MAX_BAR_WIDTH]`.
-fn term_width() -> usize {
+pub(super) fn term_width() -> usize {
     let raw = std::env::var("COLUMNS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -114,26 +114,39 @@ impl CiState {
         }
     }
 
-    fn snapshot(&self) -> (usize, usize, usize, usize, u64) {
+    fn snapshot(&self) -> (usize, usize, usize, usize, u64, u64) {
         (
             self.phase.load(Ordering::Relaxed),
             self.resolved.load(Ordering::Relaxed),
             self.reused.load(Ordering::Relaxed),
             self.downloaded.load(Ordering::Relaxed),
             self.downloaded_bytes.load(Ordering::Relaxed),
+            self.start.elapsed().as_millis() as u64,
         )
     }
 
-    fn render(snap: (usize, usize, usize, usize, u64)) -> String {
-        let (phase, resolved, reused, downloaded, bytes) = snap;
+    fn render(snap: (usize, usize, usize, usize, u64, u64)) -> String {
+        let (phase, resolved, reused, downloaded, bytes, elapsed_ms) = snap;
         let completed = reused + downloaded;
         let phase_str = if phase > 0 {
             format!(" [{phase}/3]")
         } else {
             String::new()
         };
+        // Only show transfer rate during the fetching phase, and only when
+        // at least one byte has landed. Before fetch starts it's always 0;
+        // after fetch finishes it becomes stale (decaying toward 0 as
+        // elapsed grows with no new bytes). Gating to phase == 2 keeps it
+        // meaningful.
+        let rate_str = if phase == 2 && bytes > 0 && elapsed_ms > 0 {
+            let rate = bytes.saturating_mul(1000) / elapsed_ms;
+            format!(" · {}/s", format_bytes(rate))
+        } else {
+            String::new()
+        };
+        let elapsed_str = format!(" · {}", format_duration(Duration::from_millis(elapsed_ms)));
         let label = format!(
-            "{completed}/{resolved} pkgs{phase_str} · {}",
+            "{completed}/{resolved} pkgs{phase_str} · {}{rate_str}{elapsed_str}",
             format_bytes(bytes)
         );
         render_bar_with_label(completed, resolved, term_width(), &label)
@@ -261,7 +274,7 @@ impl CiState {
         // coherent unit. Each segment is labeled so the numbers are
         // self-describing in a CI log weeks later without needing
         // context about aube's vocabulary.
-        let (_phase, resolved, reused, downloaded, bytes) = snap;
+        let (_phase, resolved, reused, downloaded, bytes, _elapsed_ms) = snap;
         let elapsed = self.start.elapsed();
         let summary = format!(
             "{} {} · resolved {} · reused {} · downloaded {} ({})",
@@ -303,7 +316,7 @@ pub(super) fn format_duration(d: Duration) -> String {
 /// bold styling); width is measured with `console::measure_text_width`
 /// so escapes are excluded from the layout math. Text longer than the
 /// inner width is returned as-is inside the brackets with no padding.
-fn render_centered_line(text: &str, outer_width: usize) -> String {
+pub(super) fn render_centered_line(text: &str, outer_width: usize) -> String {
     let outer_width = outer_width.max(MIN_BAR_WIDTH);
     let inner_width = outer_width.saturating_sub(2);
     let text_width = console::measure_text_width(text);
@@ -360,7 +373,7 @@ fn render_bar_with_label(current: usize, total: usize, outer_width: usize, label
 /// `MB`, `GB`. Decimal (1000-based) because that's what every package
 /// manager uses for on-the-wire sizes — closer to what the registry
 /// `Content-Length` reports.
-fn format_bytes(bytes: u64) -> String {
+pub(super) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1_000;
     const MB: u64 = 1_000_000;
     const GB: u64 = 1_000_000_000;
