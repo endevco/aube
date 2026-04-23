@@ -881,6 +881,14 @@ impl LockfileGraph {
     /// check has to see the same union or a freshly-written lockfile
     /// immediately reads as stale.
     ///
+    /// `workspace_catalogs` is the `catalog:` / `catalogs:` block from
+    /// `pnpm-workspace.yaml`. pnpm resolves `catalog:` references in
+    /// override values against this map before writing the lockfile
+    /// and before comparing on re-install, so both sides of the drift
+    /// check have to see the catalog-resolved form — otherwise a
+    /// `"lodash": "catalog:"` override reads as stale against a
+    /// lockfile that recorded the resolved `"lodash": "4.17.21"`.
+    ///
     /// Lockfile formats that don't record specifiers (npm, yarn, bun) always
     /// return `Fresh` since we have no way to detect drift without re-resolving.
     ///
@@ -890,9 +898,14 @@ impl LockfileGraph {
         manifest: &aube_manifest::PackageJson,
         workspace_overrides: &BTreeMap<String, String>,
         workspace_ignored_optional: &[String],
+        workspace_catalogs: &BTreeMap<String, BTreeMap<String, String>>,
     ) -> DriftStatus {
-        let effective = merge_manifest_and_workspace_overrides(manifest, workspace_overrides);
-        if let Some(reason) = overrides_drift_reason(&self.overrides, &effective) {
+        let effective = resolve_catalog_refs_in_overrides(
+            &merge_manifest_and_workspace_overrides(manifest, workspace_overrides),
+            workspace_catalogs,
+        );
+        let locked = resolve_catalog_refs_in_overrides(&self.overrides, workspace_catalogs);
+        if let Some(reason) = overrides_drift_reason(&locked, &effective) {
             return DriftStatus::Stale { reason };
         }
         let mut effective_ignored = manifest.pnpm_ignored_optional_dependencies();
@@ -902,7 +915,7 @@ impl LockfileGraph {
         {
             return DriftStatus::Stale { reason };
         }
-        self.check_drift_for_importer(".", manifest)
+        self.check_drift_for_importer(".", manifest, &effective)
     }
 
     /// Workspace-aware drift check.
@@ -920,28 +933,36 @@ impl LockfileGraph {
         manifests: &[(String, aube_manifest::PackageJson)],
         workspace_overrides: &BTreeMap<String, String>,
         workspace_ignored_optional: &[String],
+        workspace_catalogs: &BTreeMap<String, BTreeMap<String, String>>,
     ) -> DriftStatus {
         // Override drift is checked once at the workspace level, against
         // the root manifest. Workspace-package manifests may declare
         // their own `overrides` blocks but pnpm only honors the root's,
         // so we mirror that here.
-        if let Some((_, root_manifest)) = manifests.iter().find(|(p, _)| p == ".") {
-            let effective =
-                merge_manifest_and_workspace_overrides(root_manifest, workspace_overrides);
-            if let Some(reason) = overrides_drift_reason(&self.overrides, &effective) {
-                return DriftStatus::Stale { reason };
+        let effective_overrides = match manifests.iter().find(|(p, _)| p == ".") {
+            Some((_, root_manifest)) => {
+                let effective = resolve_catalog_refs_in_overrides(
+                    &merge_manifest_and_workspace_overrides(root_manifest, workspace_overrides),
+                    workspace_catalogs,
+                );
+                let locked = resolve_catalog_refs_in_overrides(&self.overrides, workspace_catalogs);
+                if let Some(reason) = overrides_drift_reason(&locked, &effective) {
+                    return DriftStatus::Stale { reason };
+                }
+                let mut effective_ignored = root_manifest.pnpm_ignored_optional_dependencies();
+                effective_ignored.extend(workspace_ignored_optional.iter().cloned());
+                if let Some(reason) = ignored_optional_drift_reason(
+                    &self.ignored_optional_dependencies,
+                    &effective_ignored,
+                ) {
+                    return DriftStatus::Stale { reason };
+                }
+                effective
             }
-            let mut effective_ignored = root_manifest.pnpm_ignored_optional_dependencies();
-            effective_ignored.extend(workspace_ignored_optional.iter().cloned());
-            if let Some(reason) = ignored_optional_drift_reason(
-                &self.ignored_optional_dependencies,
-                &effective_ignored,
-            ) {
-                return DriftStatus::Stale { reason };
-            }
-        }
+            None => BTreeMap::new(),
+        };
         for (importer_path, manifest) in manifests {
-            match self.check_drift_for_importer(importer_path, manifest) {
+            match self.check_drift_for_importer(importer_path, manifest, &effective_overrides) {
                 DriftStatus::Fresh => continue,
                 stale => return stale,
             }
@@ -1013,6 +1034,7 @@ impl LockfileGraph {
         &self,
         importer_path: &str,
         manifest: &aube_manifest::PackageJson,
+        effective_overrides: &BTreeMap<String, String>,
     ) -> DriftStatus {
         let label = if importer_path == "." {
             String::new()
@@ -1100,6 +1122,20 @@ impl LockfileGraph {
                     };
                 }
                 Some(locked_spec) if *locked_spec != spec => {
+                    // pnpm rewrites the importer specifier to the
+                    // override-applied value when a bare-name override
+                    // fires, so a pnpm-generated lockfile shows
+                    // `specifier: 4.17.21` even though `package.json`
+                    // still reads `^4.17.0`. Accept that as fresh when
+                    // the effective override for this name matches the
+                    // lockfile's recorded spec — otherwise any
+                    // pnpm-written lockfile with overrides reads stale
+                    // on every frozen install.
+                    if let Some(override_spec) = effective_overrides.get(name.as_str())
+                        && override_spec == locked_spec
+                    {
+                        continue;
+                    }
                     return DriftStatus::Stale {
                         reason: format!(
                             "{label}{name}: manifest says {spec}, lockfile says {locked_spec}"
@@ -1181,6 +1217,55 @@ fn merge_manifest_and_workspace_overrides(
         out.insert(k.clone(), v.clone());
     }
     out
+}
+
+/// Rewrite `catalog:` / `catalog:<name>` override values to the catalog's
+/// resolved range. pnpm writes resolved override values into the lockfile
+/// and compares against the resolved form on re-install, so both sides
+/// of the drift check have to see the catalog-substituted map — otherwise
+/// a `"lodash": "catalog:"` workspace-yaml override reads as stale against
+/// a lockfile that recorded `"lodash": "4.17.21"`. Unresolvable references
+/// (missing catalog or missing entry) pass through untouched; the caller
+/// would have errored at resolve time if this ever reached a real install,
+/// so a drift-mismatch here is fine.
+fn resolve_catalog_refs_in_overrides(
+    overrides: &BTreeMap<String, String>,
+    workspace_catalogs: &BTreeMap<String, BTreeMap<String, String>>,
+) -> BTreeMap<String, String> {
+    overrides
+        .iter()
+        .map(|(k, v)| {
+            let resolved = v
+                .strip_prefix("catalog:")
+                .map(|tail| if tail.is_empty() { "default" } else { tail })
+                .and_then(|cat_name| workspace_catalogs.get(cat_name))
+                .and_then(|cat| cat.get(override_key_package_name(k)))
+                .cloned()
+                .unwrap_or_else(|| v.clone());
+            (k.clone(), resolved)
+        })
+        .collect()
+}
+
+/// Extract the package name from an override selector key so the catalog
+/// can be looked up by pkg name. Handles bare (`lodash`), scoped
+/// (`@babel/core`), ranged (`lodash@<5`), ancestor-chained
+/// (`parent>lodash`), and combinations. Unparseable keys return the
+/// input unchanged; the catalog lookup will then miss and leave the
+/// value as-is.
+fn override_key_package_name(key: &str) -> &str {
+    let last = key.rsplit('>').next().unwrap_or(key);
+    if let Some(after_scope) = last.strip_prefix('@') {
+        match after_scope.find('@') {
+            Some(idx) => &last[..idx + 1],
+            None => last,
+        }
+    } else {
+        match last.find('@') {
+            Some(idx) => &last[..idx],
+            None => last,
+        }
+    }
 }
 
 /// Compare two override maps and return a human-readable reason
@@ -1971,7 +2056,7 @@ mod drift_tests {
         let manifest = make_manifest(&[("lodash", "^4.17.0")]);
         let graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -1980,7 +2065,7 @@ mod drift_tests {
     fn stale_when_specifier_changes() {
         let manifest = make_manifest(&[("lodash", "^4.18.0")]);
         let graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("lodash")),
             DriftStatus::Fresh => panic!("expected Stale"),
         }
@@ -1990,7 +2075,7 @@ mod drift_tests {
     fn stale_when_manifest_adds_dep() {
         let manifest = make_manifest(&[("lodash", "^4.17.0"), ("express", "^4.18.0")]);
         let graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("express")),
             DriftStatus::Fresh => panic!("expected Stale"),
         }
@@ -2003,7 +2088,7 @@ mod drift_tests {
             ("lodash", "^4.17.0", "lodash@4.17.21"),
             ("express", "^4.18.0", "express@4.18.0"),
         ]);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("express")),
             DriftStatus::Fresh => panic!("expected Stale"),
         }
@@ -2042,7 +2127,7 @@ mod drift_tests {
             .insert("use-sync-external-store@1.2.0".into(), declaring_pkg);
 
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -2085,7 +2170,7 @@ mod drift_tests {
             .packages
             .insert("use-sync-external-store@1.2.0".into(), consumer);
 
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("react")),
             DriftStatus::Fresh => panic!(
                 "drift check should flag a removed user-pinned dep as stale, \
@@ -2103,7 +2188,7 @@ mod drift_tests {
             ("lodash", "^4.17.0", "lodash@4.17.21"),
             ("chalk", "^5.0.0", "chalk@5.0.0"),
         ]);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("chalk")),
             DriftStatus::Fresh => panic!("expected Stale"),
         }
@@ -2132,7 +2217,7 @@ mod drift_tests {
             ..Default::default()
         };
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -2147,7 +2232,7 @@ mod drift_tests {
             .extra
             .insert("overrides".into(), serde_json::json!({"lodash": "4.17.21"}));
         let graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("overrides")),
             DriftStatus::Fresh => panic!("expected Stale"),
         }
@@ -2164,7 +2249,7 @@ mod drift_tests {
             .insert("overrides".into(), serde_json::json!({"lodash": "5.0.0"}));
         let mut graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
         graph.overrides.insert("lodash".into(), "4.17.21".into());
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => {
                 assert!(reason.contains("lodash"), "expected key in: {reason}");
                 assert!(
@@ -2182,7 +2267,7 @@ mod drift_tests {
         let manifest = make_manifest(&[("lodash", "^4.17.0")]);
         let mut graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
         graph.overrides.insert("lodash".into(), "4.17.21".into());
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => {
                 assert!(reason.contains("removes"));
                 assert!(reason.contains("lodash"));
@@ -2200,7 +2285,7 @@ mod drift_tests {
         let mut graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
         graph.overrides.insert("lodash".into(), "4.17.21".into());
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -2218,7 +2303,7 @@ mod drift_tests {
         let mut ws_overrides = BTreeMap::new();
         ws_overrides.insert("semver".into(), "7.7.1".into());
         assert_eq!(
-            graph.check_drift(&manifest, &ws_overrides, &[]),
+            graph.check_drift(&manifest, &ws_overrides, &[], &BTreeMap::new()),
             DriftStatus::Fresh,
         );
     }
@@ -2238,7 +2323,100 @@ mod drift_tests {
         let mut ws_overrides = BTreeMap::new();
         ws_overrides.insert("semver".into(), "7.7.1".into());
         assert_eq!(
-            graph.check_drift(&manifest, &ws_overrides, &[]),
+            graph.check_drift(&manifest, &ws_overrides, &[], &BTreeMap::new()),
+            DriftStatus::Fresh,
+        );
+    }
+
+    #[test]
+    fn fresh_when_override_catalog_ref_matches_lockfile_resolved() {
+        // pnpm-workspace.yaml: `overrides: { lodash: "catalog:" }` with
+        // `catalog: { lodash: 4.17.21 }`. pnpm writes the lockfile with
+        // the resolved override value (`lodash: 4.17.21`), so a frozen
+        // install comparing the raw `catalog:` string against the
+        // resolved form would always read stale (discussion #174).
+        let manifest = make_manifest(&[("lodash", "^4.17.0")]);
+        let mut graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
+        graph.overrides.insert("lodash".into(), "4.17.21".into());
+        let mut ws_overrides = BTreeMap::new();
+        ws_overrides.insert("lodash".into(), "catalog:".into());
+        let mut catalogs = BTreeMap::new();
+        let mut default_cat = BTreeMap::new();
+        default_cat.insert("lodash".into(), "4.17.21".into());
+        catalogs.insert("default".into(), default_cat);
+        assert_eq!(
+            graph.check_drift(&manifest, &ws_overrides, &[], &catalogs),
+            DriftStatus::Fresh,
+        );
+    }
+
+    #[test]
+    fn fresh_when_override_named_catalog_ref_matches_lockfile_resolved() {
+        // Named catalog variant: `overrides: { lodash: "catalog:evens" }`
+        // resolves against `catalogs.evens.lodash`.
+        let manifest = make_manifest(&[("lodash", "^4.17.0")]);
+        let mut graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
+        graph.overrides.insert("lodash".into(), "4.17.21".into());
+        let mut ws_overrides = BTreeMap::new();
+        ws_overrides.insert("lodash".into(), "catalog:evens".into());
+        let mut catalogs = BTreeMap::new();
+        let mut evens = BTreeMap::new();
+        evens.insert("lodash".into(), "4.17.21".into());
+        catalogs.insert("evens".into(), evens);
+        assert_eq!(
+            graph.check_drift(&manifest, &ws_overrides, &[], &catalogs),
+            DriftStatus::Fresh,
+        );
+    }
+
+    #[test]
+    fn stale_when_override_catalog_ref_diverges_from_lockfile() {
+        // If the catalog moves to a new version, the resolved override
+        // no longer matches the lockfile — drift must fire, not silently
+        // accept.
+        let manifest = make_manifest(&[("lodash", "^4.17.0")]);
+        let mut graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
+        graph.overrides.insert("lodash".into(), "4.17.21".into());
+        let mut ws_overrides = BTreeMap::new();
+        ws_overrides.insert("lodash".into(), "catalog:".into());
+        let mut catalogs = BTreeMap::new();
+        let mut default_cat = BTreeMap::new();
+        default_cat.insert("lodash".into(), "4.17.22".into());
+        catalogs.insert("default".into(), default_cat);
+        match graph.check_drift(&manifest, &ws_overrides, &[], &catalogs) {
+            DriftStatus::Stale { reason } => assert!(reason.contains("lodash")),
+            other => panic!("expected stale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fresh_when_pnpm_wrote_override_rewritten_importer_spec() {
+        // pnpm rewrites the importer `specifier:` to the post-override
+        // value when a bare-name override applies, so a pnpm-generated
+        // lockfile records `specifier: 4.17.21` even though
+        // `package.json` still reads `^4.17.0`. Without override-aware
+        // drift, every frozen install against a pnpm lockfile with
+        // overrides reads stale (discussion #174).
+        let manifest = make_manifest(&[("lodash", "^4.17.0")]);
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "lodash".into(),
+                dep_path: "lodash@4.17.21".into(),
+                dep_type: DepType::Production,
+                specifier: Some("4.17.21".into()),
+            }],
+        );
+        let mut graph = LockfileGraph {
+            importers,
+            ..Default::default()
+        };
+        graph.overrides.insert("lodash".into(), "4.17.21".into());
+        let mut ws_overrides = BTreeMap::new();
+        ws_overrides.insert("lodash".into(), "4.17.21".into());
+        assert_eq!(
+            graph.check_drift(&manifest, &ws_overrides, &[], &BTreeMap::new()),
             DriftStatus::Fresh,
         );
     }
@@ -2258,7 +2436,7 @@ mod drift_tests {
             .insert("fsevents".to_string());
         let ws_ignored = vec!["fsevents".to_string()];
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &ws_ignored),
+            graph.check_drift(&manifest, &BTreeMap::new(), &ws_ignored, &BTreeMap::new()),
             DriftStatus::Fresh,
         );
     }
@@ -2280,7 +2458,7 @@ mod drift_tests {
             .skipped_optional_dependencies
             .insert(".".to_string(), inner);
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -2297,7 +2475,7 @@ mod drift_tests {
             .optional_dependencies
             .insert("fsevents".into(), "^2.3.0".into());
         let graph = make_graph(&[("lodash", "^4.17.0", "lodash@4.17.21")]);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("fsevents"), "{reason}"),
             DriftStatus::Fresh => panic!("expected Stale on new optional dep"),
         }
@@ -2318,7 +2496,7 @@ mod drift_tests {
         graph
             .skipped_optional_dependencies
             .insert(".".to_string(), inner);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("fsevents"), "{reason}"),
             DriftStatus::Fresh => panic!("expected Stale on skipped optional spec change"),
         }
@@ -2341,7 +2519,7 @@ mod drift_tests {
         graph
             .skipped_optional_dependencies
             .insert(".".to_string(), inner);
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("fsevents"), "{reason}"),
             DriftStatus::Fresh => {
                 panic!("expected Stale: skipped-optional exemption must not apply to required deps")
@@ -2364,7 +2542,7 @@ mod drift_tests {
             dep_type: DepType::Optional,
             specifier: Some("^2.3.0".into()),
         });
-        match graph.check_drift(&manifest, &BTreeMap::new(), &[]) {
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
             DriftStatus::Stale { reason } => assert!(reason.contains("fsevents"), "{reason}"),
             DriftStatus::Fresh => panic!("expected Stale on optional spec change"),
         }
@@ -2375,7 +2553,7 @@ mod drift_tests {
         let manifest = make_manifest(&[]);
         let graph = make_graph(&[]);
         assert_eq!(
-            graph.check_drift(&manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -2412,7 +2590,12 @@ mod drift_tests {
             (".".to_string(), root_manifest.clone()),
             ("packages/app".to_string(), app_manifest),
         ];
-        match graph.check_drift_workspace(&workspace_manifests, &BTreeMap::new(), &[]) {
+        match graph.check_drift_workspace(
+            &workspace_manifests,
+            &BTreeMap::new(),
+            &[],
+            &BTreeMap::new(),
+        ) {
             DriftStatus::Stale { reason } => {
                 assert!(reason.contains("packages/app"));
                 assert!(reason.contains("express"));
@@ -2422,7 +2605,7 @@ mod drift_tests {
 
         // Single-importer check_drift on root only would say Fresh.
         assert_eq!(
-            graph.check_drift(&root_manifest, &BTreeMap::new(), &[]),
+            graph.check_drift(&root_manifest, &BTreeMap::new(), &[], &BTreeMap::new()),
             DriftStatus::Fresh
         );
     }
@@ -2838,7 +3021,12 @@ mod drift_tests {
             ),
         ];
         assert_eq!(
-            graph.check_drift_workspace(&workspace_manifests, &BTreeMap::new(), &[]),
+            graph.check_drift_workspace(
+                &workspace_manifests,
+                &BTreeMap::new(),
+                &[],
+                &BTreeMap::new()
+            ),
             DriftStatus::Fresh
         );
     }
