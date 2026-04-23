@@ -3916,8 +3916,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //    Skipped under `virtualStoreOnly` — the state sidecar is
     //    keyed off a materialized node_modules tree that doesn't
     //    exist, and writing it would lie on the next auto-install
-    //    freshness check.
-    if !virtual_store_only {
+    //    freshness check. Same skip when a workspace filter scoped the
+    //    run to a subset of importers. State hash is derived from full
+    //    manifest + lockfile inputs, so writing it after a partial
+    //    materialize would let the next unfiltered `aube install` hit
+    //    the warm path while unfiltered importers are still empty.
+    //    Observed via `aube add <pkg> --filter <ws>` leaving the new
+    //    dep unmaterialized.
+    let filtered_install = !opts.workspace_filter.is_empty() || opts.dep_selection.is_filtered();
+    if !virtual_store_only && !filtered_install {
         // Fingerprint every package in the final graph so the next
         // install can diff and skip unchanged entries. Missing or
         // stale fingerprints fall back to a full install on the
