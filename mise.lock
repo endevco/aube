@@ -89,6 +89,7 @@ url_api = "https://api.github.com/repos/jdx/communique/releases/assets/401268923
 checksum = "sha256:0b1fc485a8a388b8fa6f3bf198e5053ce7c7f47418e9a31893a369a95d411dbc"
 url = "https://github.com/jdx/communique/releases/download/v1.0.2/communique-x86_64-unknown-linux-gnu.tar.gz"
 url_api = "https://api.github.com/repos/jdx/communique/releases/assets/401268760"
+provenance = "github-attestations"
 
 [tools.communique."platforms.linux-x64-musl"]
 checksum = "sha256:0b1fc485a8a388b8fa6f3bf198e5053ce7c7f47418e9a31893a369a95d411dbc"
@@ -175,32 +176,32 @@ url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.3/cargo-
 url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/380851496"
 
 [[tools.hk]]
-version = "1.42.0"
+version = "1.44.0"
 backend = "aqua:jdx/hk"
 
 [tools.hk."platforms.linux-arm64"]
-checksum = "sha256:291ed6215703fc3aa6a9fcbb96a72b88751c50888a00a6a73140ae0fbc3eef70"
-url = "https://github.com/jdx/hk/releases/download/v1.42.0/hk-aarch64-unknown-linux-gnu.tar.gz"
+checksum = "sha256:0dbca69b6d2141bf60aa9b5cd54e59232ba5b10855a9c7b52426a9645211809f"
+url = "https://github.com/jdx/hk/releases/download/v1.44.0/hk-aarch64-unknown-linux-gnu.tar.gz"
 
 [tools.hk."platforms.linux-arm64-musl"]
-checksum = "sha256:291ed6215703fc3aa6a9fcbb96a72b88751c50888a00a6a73140ae0fbc3eef70"
-url = "https://github.com/jdx/hk/releases/download/v1.42.0/hk-aarch64-unknown-linux-gnu.tar.gz"
+checksum = "sha256:0dbca69b6d2141bf60aa9b5cd54e59232ba5b10855a9c7b52426a9645211809f"
+url = "https://github.com/jdx/hk/releases/download/v1.44.0/hk-aarch64-unknown-linux-gnu.tar.gz"
 
 [tools.hk."platforms.linux-x64"]
-checksum = "sha256:a4f8898a83c1521c3e184b8af613ddf8d121df21a4026c679b18b54e8b5953db"
-url = "https://github.com/jdx/hk/releases/download/v1.42.0/hk-x86_64-unknown-linux-gnu.tar.gz"
+checksum = "sha256:cb093bf2d31f0d21c3166b143fe671ddb22cd2cad5069596bfa22d7a541f2270"
+url = "https://github.com/jdx/hk/releases/download/v1.44.0/hk-x86_64-unknown-linux-gnu.tar.gz"
 
 [tools.hk."platforms.linux-x64-musl"]
-checksum = "sha256:a4f8898a83c1521c3e184b8af613ddf8d121df21a4026c679b18b54e8b5953db"
-url = "https://github.com/jdx/hk/releases/download/v1.42.0/hk-x86_64-unknown-linux-gnu.tar.gz"
+checksum = "sha256:cb093bf2d31f0d21c3166b143fe671ddb22cd2cad5069596bfa22d7a541f2270"
+url = "https://github.com/jdx/hk/releases/download/v1.44.0/hk-x86_64-unknown-linux-gnu.tar.gz"
 
 [tools.hk."platforms.macos-arm64"]
-checksum = "sha256:29c4d4aabda87ed8e0a3bcd97cffe288a6932f22ae0a49d77f8a1bb9430afdbe"
-url = "https://github.com/jdx/hk/releases/download/v1.42.0/hk-aarch64-apple-darwin.tar.gz"
+checksum = "sha256:6a1de3c576487983e46d0458b3c9f20af51c4c785d22b96e3396be5c164a1e04"
+url = "https://github.com/jdx/hk/releases/download/v1.44.0/hk-aarch64-apple-darwin.tar.gz"
 
 [tools.hk."platforms.windows-x64"]
-checksum = "sha256:9706dab06f3ed468bb1247ce540dad677acea7bc9a023e8cdbdc5f79b2e4015a"
-url = "https://github.com/jdx/hk/releases/download/v1.42.0/hk-x86_64-pc-windows-msvc.zip"
+checksum = "sha256:8a0fb733ccae1e83234be60998e1de7df64c728cc9d1e4ebd40c9642fc8b0b3c"
+url = "https://github.com/jdx/hk/releases/download/v1.44.0/hk-x86_64-pc-windows-msvc.zip"
 
 [[tools.node]]
 version = "24.14.0"
