@@ -2100,11 +2100,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 .map_err(miette::Report::new)
                 .wrap_err_with(|| format!("failed to read {}/package.json", pkg_dir.display()))?;
 
+            // Importer key uses forward slash. pnpm lockfile convention
+            // is always `/`. `workspace_importer_path` also returns `/`,
+            // so a Windows `\` key here would never match filter lookups
+            // and silently drop the importer from `--filter` installs.
+            // Second risk: Linux CI reading a Windows-written lockfile
+            // sees unknown keys and forces a re-resolve drift.
             let rel_path = pkg_dir
                 .strip_prefix(&cwd)
                 .unwrap_or(pkg_dir)
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
 
             if let Some(ref name) = pkg_manifest.name {
                 // Workspace members MUST carry a version. Old code
