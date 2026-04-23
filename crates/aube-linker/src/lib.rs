@@ -2306,6 +2306,28 @@ impl Linker {
             let target = pathdiff::diff_paths(&sibling_abs, link_parent)
                 .unwrap_or_else(|| sibling_abs.clone());
 
+            // GVS materialize writes into `.tmp-<pid>-<subdir>/`, then
+            // atomic-renames into `self.virtual_store/<subdir>/`. POSIX
+            // symlinks store the relative offset verbatim. Offset stays
+            // invariant under the wrapper rename, so the link resolves
+            // correctly after the move. Windows junctions resolve the
+            // target against `link.parent()` at create time and persist
+            // an absolute path, which binds the junction to the tmp
+            // wrapper. After rename every sibling link dangles into a
+            // gone `.tmp-<pid>-...` path. Fix: on Windows GVS path
+            // (`apply_hashes = true`) rewrite the target to point at
+            // the final virtual store root so the stored absolute path
+            // survives the rename.
+            #[cfg(windows)]
+            let target = if apply_hashes {
+                self.virtual_store
+                    .join(&sibling_subdir)
+                    .join("node_modules")
+                    .join(dep_name)
+            } else {
+                target
+            };
+
             sys::create_dir_link(&target, &symlink_path)
                 .map_err(|e| Error::Io(symlink_path.clone(), e))?;
         }
