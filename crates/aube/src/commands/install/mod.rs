@@ -3973,7 +3973,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // stale fingerprints fall back to a full install on the
         // read side. Safe for older readers that ignore the field.
         let package_content_hashes = delta::compute_package_hashes(&graph);
-        let package_subtree_hashes = delta::compute_subtree_hashes(&graph);
+        let package_subtree_hashes =
+            current_subtree_hashes.unwrap_or_else(|| delta::compute_subtree_hashes(&graph));
         let graph_lthash = hex::encode(delta::lthash_of(&package_content_hashes).digest());
         let package_json_hashes =
             state::collect_package_json_hashes_from_manifests(&cwd, &manifests);
@@ -4218,7 +4219,7 @@ fn invalidate_changed_aube_entries(
         match result {
             Ok(()) => removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::debug!("delta: failed to invalidate {}: {e}", path.display()),
+            Err(e) => tracing::warn!("delta: failed to invalidate {}: {e}", path.display()),
         }
     }
     removed
