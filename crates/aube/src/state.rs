@@ -104,6 +104,25 @@ pub struct InstalledPackageState {
 
 /// Check if install is needed. Returns None if up-to-date, or Some(reason) if stale.
 pub fn check_needs_install(project_dir: &Path) -> Option<String> {
+    check_needs_install_inner(project_dir, None)
+}
+
+/// Variant of [`check_needs_install`] that also checks `settings_hash`
+/// with the caller's `cli_flags` bag. Use from `install::run`'s warm
+/// path short circuit so `--node-linker=hoisted` and friends also feed
+/// the hash. `ensure_installed` (from `aube run`) uses the plain
+/// [`check_needs_install`] on purpose, see the note there.
+pub fn check_needs_install_with_flags(
+    project_dir: &Path,
+    cli_flags: &[(String, String)],
+) -> Option<String> {
+    check_needs_install_inner(project_dir, Some(cli_flags))
+}
+
+fn check_needs_install_inner(
+    project_dir: &Path,
+    cli_flags: Option<&[(String, String)]>,
+) -> Option<String> {
     let (modules_dir, state_path) = resolve_paths(project_dir);
 
     // No state file = never installed (or `rm -rf <modulesDir>` wiped it).
@@ -187,36 +206,21 @@ pub fn check_needs_install(project_dir: &Path) -> Option<String> {
         return Some(reason);
     }
 
-    // no settings_hash check here. this path feeds ensure_installed
-    // (aube run / exec / test). those commands do not care about
-    // install-shape settings changing because the tree is still the tree
-    // built by the last install. also skipping this check avoids the
-    // asymmetry bug where `aube install --node-linker=hoisted` writes
-    // hash with cli_flag set, then bare `aube run` reads without the
-    // flag, mismatches, triggers spurious auto-install.
-    None
-}
+    if let Some(cli_flags) = cli_flags {
+        let current_settings_hash = hash_settings(project_dir, cli_flags);
+        if current_settings_hash != state.settings_hash {
+            return Some(".npmrc or workspace config has changed".into());
+        }
+    }
 
-/// Variant of [`check_needs_install`] that also checks `settings_hash`
-/// with the caller's `cli_flags` bag. Use from `install::run`'s warm
-/// path short circuit so `--node-linker=hoisted` and friends also feed
-/// the hash. `ensure_installed` (from `aube run`) uses the plain
-/// [`check_needs_install`] on purpose, see the note there.
-pub fn check_needs_install_with_flags(
-    project_dir: &Path,
-    cli_flags: &[(String, String)],
-) -> Option<String> {
-    if let Some(reason) = check_needs_install(project_dir) {
-        return Some(reason);
-    }
-    let state_path = resolve_paths(project_dir).1;
-    let Some(state) = read_state(&state_path) else {
-        return Some("install state not found".into());
-    };
-    let current_settings_hash = hash_settings(project_dir, cli_flags);
-    if current_settings_hash != state.settings_hash {
-        return Some(".npmrc or workspace config has changed".into());
-    }
+    // No settings_hash check when cli_flags is None. That path feeds
+    // ensure_installed (aube run / exec / test). Those commands do not
+    // care about install-shape settings changing because the tree is
+    // still the tree built by the last install. Skipping this check
+    // also avoids the asymmetry bug where `aube install
+    // --node-linker=hoisted` writes a hash with cli_flags set, then
+    // bare `aube run` reads without the flag, mismatches, and triggers
+    // a spurious auto-install.
     None
 }
 
