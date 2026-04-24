@@ -327,37 +327,39 @@ impl Store {
         Ok(())
     }
 
-    /// Atomically create `path` via `create_new` (O_CREAT|O_EXCL) and
-    /// optionally write + fsync `content`. `AlreadyExists` is a no-op —
-    /// in a CAS, same path = same bytes by construction. `NotFound`
-    /// means a concurrent prune or a missed `ensure_shards_exist`
-    /// removed the parent shard; recreate it and retry exactly once
-    /// before surfacing. Truncating fallbacks (`xx::file::write`) are
-    /// intentionally avoided so a crash can't leave a torn CAS file.
+    /// Atomically create `path` without overwriting an existing CAS entry.
+    /// `AlreadyExists` is a no-op — in a CAS, same path = same bytes by
+    /// construction. Non-empty files are written through a sibling temp file
+    /// and persisted with no-clobber semantics so an interrupted import cannot
+    /// leave a torn file at the content-addressed path. `NotFound` means a
+    /// concurrent prune or a missed `ensure_shards_exist` removed the parent
+    /// shard; recreate it and retry exactly once before surfacing.
     fn create_cas_file(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
         fn do_create_and_write(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
+            if let Some(bytes) = content {
+                let parent = path.parent().ok_or_else(|| {
+                    Error::Io(path.to_path_buf(), std::io::ErrorKind::NotFound.into())
+                })?;
+                let mut tmp = tempfile::Builder::new()
+                    .prefix(".aube-cas-")
+                    .tempfile_in(parent)
+                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                use std::io::Write;
+                tmp.write_all(bytes)
+                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                return match tmp.persist_noclobber(path) {
+                    Ok(_) => Ok(()),
+                    Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                    Err(e) => Err(Error::Io(path.to_path_buf(), e.error)),
+                };
+            }
+
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(path)
             {
-                Ok(mut file) => {
-                    if let Some(bytes) = content {
-                        use std::io::Write;
-                        file.write_all(bytes)
-                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
-                        // fsync before closing. write_all returning
-                        // success only gets the bytes into the kernel
-                        // page cache, not stable storage; a power-loss
-                        // between here and the next checkpoint can
-                        // leave a hardlink pointing at zero-byte
-                        // content that downstream installs happily
-                        // reuse via the AlreadyExists fast path.
-                        file.sync_all()
-                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
-                    }
-                    Ok(())
-                }
+                Ok(_) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
                 Err(e) => Err(Error::Io(path.to_path_buf(), e)),
             }
