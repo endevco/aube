@@ -253,21 +253,13 @@ jobs:
       # Step 2: regenerate `aube.usage.kdl` + docs against the current
       # workspace version. `render` depends on `build`, so cargo builds
       # here.
+      #
+      # Benchmarks are NOT refreshed here — `bench:bump` is a 10-minute
+      # build+run that used to dominate this job. It now lives in its
+      # own `bench-refresh` workflow (daily cron, version-gated, opens
+      # its own reviewable PR). See `.github/workflows/bench-refresh.yml`.
       - name: Regenerate CLI docs
         run: "mise run render ::: lint-fix"
-
-      # Refresh benchmarks/results.json and the README ratios. Hermetic
-      # Verdaccio + throttle proxy (wired in the mise task), so numbers
-      # are reproducible across runners. The registry cache is
-      # persisted so only the first run per cache key has to fetch
-      # packages from npmjs.
-      - name: Restore hermetic bench registry cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/aube-bench/registry
-          key: aube-bench-registry-${{ runner.os }}-v1
-      - name: Refresh benchmarks
-        run: mise run bench:bump
 
       # Bump release.json so the docs homepage's "Released at" line
       # tracks the new version. Only runs on real version bumps — on a
