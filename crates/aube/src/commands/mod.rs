@@ -1051,14 +1051,14 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
 
     let initial_cwd = crate::dirs::cwd()?;
     // Prefer the workspace root as the freshness anchor. A monorepo
-    // install writes exactly one `.aube-state` file, at the workspace
-    // root — subpackages get symlinked `node_modules/` with no state
-    // file of their own. Walking up only to the nearest `package.json`
-    // (the subpackage itself) would miss that state file and report
-    // "install state not found" on every `aube run`/`exec`/`start`
-    // from a subpackage even when the root install is fresh. Fall
-    // back to the nearest `package.json` for non-workspace projects,
-    // and finally to the cwd itself so we never panic resolving it.
+    // install writes its state files at the workspace root —
+    // subpackages get symlinked `node_modules/` with no state file of
+    // their own. Walking up only to the nearest `package.json` (the
+    // subpackage itself) would miss that state and report "install
+    // state not found" on every `aube run`/`exec`/`start` from a
+    // subpackage even when the root install is fresh. Fall back to the
+    // nearest `package.json` for non-workspace projects, and finally
+    // to the cwd itself so we never panic resolving it.
     let cwd = crate::dirs::find_workspace_root(&initial_cwd)
         .or_else(|| crate::dirs::find_project_root(&initial_cwd))
         .unwrap_or(initial_cwd);
