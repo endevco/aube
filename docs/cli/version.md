@@ -19,6 +19,10 @@ When omitted, prints the current version.
 
 Allow setting the version to its current value without erroring
 
+### `--ignore-scripts`
+
+Skip `preversion` / `version` / `postversion` lifecycle scripts
+
 ### `--json`
 
 Emit the result as JSON instead of `v<version>` text

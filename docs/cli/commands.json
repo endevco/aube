@@ -3305,6 +3305,18 @@
             "global": false
           },
           {
+            "name": "ignore-scripts",
+            "usage": "--ignore-scripts",
+            "help": "Skip `prepack` / `prepare` / `postpack` lifecycle scripts",
+            "help_first_line": "Skip `prepack` / `prepare` / `postpack` lifecycle scripts",
+            "short": [],
+            "long": [
+              "ignore-scripts"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "json",
             "usage": "--json",
             "help": "Print the result as a JSON object",
@@ -3661,9 +3673,8 @@
           {
             "name": "ignore-scripts",
             "usage": "--ignore-scripts",
-            "help": "Skip `prepublishOnly` / `prepack` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish",
-            "help_long": "Skip `prepublishOnly` / `prepack` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish.\n\nAccepted for pnpm parity; aube's publish path does not run those scripts today, so this is a no-op kept for wrapper compatibility.",
-            "help_first_line": "Skip `prepublishOnly` / `prepack` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish",
+            "help": "Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish",
+            "help_first_line": "Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish",
             "short": [],
             "long": [
               "ignore-scripts"
@@ -5056,6 +5067,18 @@
             "short": [],
             "long": [
               "allow-same-version"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "ignore-scripts",
+            "usage": "--ignore-scripts",
+            "help": "Skip `preversion` / `version` / `postversion` lifecycle scripts",
+            "help_first_line": "Skip `preversion` / `version` / `postversion` lifecycle scripts",
+            "short": [],
+            "long": [
+              "ignore-scripts"
             ],
             "hide": false,
             "global": false

@@ -554,6 +554,7 @@ cmd owner hide=#true help="Manage package owners (not implemented — use `npm o
 }
 cmd pack help="Create a publishable `.tgz` tarball from the current project" {
     flag --dry-run help="Don't write the tarball; print what would be packed"
+    flag --ignore-scripts help="Skip `prepack` / `prepare` / `postpack` lifecycle scripts"
     flag --json help="Print the result as a JSON object"
     flag --pack-destination help="Directory to write the tarball into (default: current directory)" {
         arg <DIR>
@@ -602,9 +603,7 @@ cmd publish help="Publish the current package to the registry" {
     flag --force help="Republish `name@version` even when that version is already on the target registry" {
         long_help "Republish `name@version` even when that version is already on the target registry.\n\nBy default `aube publish` issues a GET before the PUT and refuses to proceed when the version exists, surfacing a clear error instead of relying on the registry to return 409. In `--recursive` / `--filter` mode, `--force` overrides the silent \"already-published\" skip so every selected workspace package is re-PUT. The registry must still accept the republish — npm's public registry rejects re-publishes outright; Verdaccio and most private mirrors allow them."
     }
-    flag --ignore-scripts help="Skip `prepublishOnly` / `prepack` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish" {
-        long_help "Skip `prepublishOnly` / `prepack` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish.\n\nAccepted for pnpm parity; aube's publish path does not run those scripts today, so this is a no-op kept for wrapper compatibility."
-    }
+    flag --ignore-scripts help="Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish"
     flag --json help="Emit the publish result as JSON: an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`"
     flag --no-git-checks help="Skip the \"working tree must be clean\" check" {
         long_help "Skip the \"working tree must be clean\" check.\n\nWhen unset, aube refuses to publish from a dirty git checkout (uncommitted tracked changes) or from a detached / non-release branch."
@@ -795,6 +794,7 @@ cmd update help="Update dependencies" {
 cmd usage hide=#true help="Print a usage.jdx.dev KDL spec for the CLI (internal)"
 cmd version help="Bump the version in package.json (and optionally create a git commit + tag)" {
     flag --allow-same-version help="Allow setting the version to its current value without erroring"
+    flag --ignore-scripts help="Skip `preversion` / `version` / `postversion` lifecycle scripts"
     flag --json help="Emit the result as JSON instead of `v<version>` text"
     flag "-m --message" help="Commit message template" {
         long_help "Commit message template.\n\n`%s` is replaced with the new version. Defaults to `v%s`."

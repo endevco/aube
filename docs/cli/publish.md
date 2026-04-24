@@ -25,9 +25,7 @@ By default `aube publish` issues a GET before the PUT and refuses to proceed whe
 
 ### `--ignore-scripts`
 
-Skip `prepublishOnly` / `prepack` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish.
-
-Accepted for pnpm parity; aube's publish path does not run those scripts today, so this is a no-op kept for wrapper compatibility.
+Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish
 
 ### `--json`
 

@@ -11,6 +11,10 @@ Create a publishable `.tgz` tarball from the current project
 
 Don't write the tarball; print what would be packed
 
+### `--ignore-scripts`
+
+Skip `prepack` / `prepare` / `postpack` lifecycle scripts
+
 ### `--json`
 
 Print the result as a JSON object
