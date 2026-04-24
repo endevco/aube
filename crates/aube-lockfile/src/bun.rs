@@ -92,15 +92,12 @@ struct RawBunWorkspace {
     dev_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
-    /// bun's workspaces carry these verbatim; preserving them on
-    /// round-trip is load-bearing when the lockfile is the
-    /// authoritative source for peer metadata (bun treats it as such
-    /// for non-root workspaces).
-    #[serde(default)]
-    peer_dependencies: BTreeMap<String, String>,
     /// Unknown per-workspace fields (`name`, `version`, `bin`,
-    /// `optionalPeers`, and anything else bun adds in a future
-    /// release) preserved verbatim.
+    /// `peerDependencies`, `optionalPeers`, and anything else bun
+    /// adds in a future release) preserved verbatim. The writer's
+    /// ws-extras fallback re-emits them so bun-authored workspace
+    /// peer data round-trips even when the manifest isn't
+    /// authoritative for the importer.
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -720,7 +717,6 @@ impl Clone for RawBunWorkspace {
             dependencies: self.dependencies.clone(),
             dev_dependencies: self.dev_dependencies.clone(),
             optional_dependencies: self.optional_dependencies.clone(),
-            peer_dependencies: self.peer_dependencies.clone(),
             extra: self.extra.clone(),
         }
     }
@@ -2618,5 +2614,73 @@ mod tests {
         assert_eq!(foo2.os, foo.os);
         assert_eq!(foo2.cpu, foo.cpu);
         assert_eq!(foo2.libc, foo.libc);
+    }
+
+    /// Workspace-level `peerDependencies` must survive round-trip
+    /// through the serde-flatten `extra` map even though aube's
+    /// typed workspace model doesn't claim the field directly. The
+    /// prior revision had a typed slot that silently drained bun's
+    /// peer block without plumbing it anywhere — regression guard.
+    #[test]
+    fn test_roundtrip_workspace_peer_dependencies() {
+        use tempfile::TempDir;
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        // Non-root workspace's package.json deliberately omits
+        // peerDependencies; the lockfile is the only place they live.
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","version":"2.0.0"}"#,
+        )
+        .unwrap();
+
+        let lock_path = project_dir.join("bun.lock");
+        std::fs::write(
+            &lock_path,
+            r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root" },
+    "packages/app": {
+      "name": "app",
+      "version": "2.0.0",
+      "peerDependencies": { "react": "^18.0.0" }
+    }
+  },
+  "packages": {}
+}"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lock_path).unwrap();
+        let app_extras = graph
+            .workspace_extra_fields
+            .get("packages/app")
+            .expect("packages/app workspace_extra_fields entry");
+        let peers = app_extras
+            .get("peerDependencies")
+            .and_then(serde_json::Value::as_object)
+            .expect("peerDependencies captured in extras");
+        assert_eq!(peers.get("react").and_then(|v| v.as_str()), Some("^18.0.0"));
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        write(&lock_path, &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(&lock_path).unwrap();
+        assert!(
+            written.contains("\"peerDependencies\""),
+            "workspace peerDependencies dropped on re-emit:\n{written}"
+        );
+        assert!(
+            written.contains("\"react\""),
+            "workspace peerDependencies.react dropped on re-emit:\n{written}"
+        );
     }
 }
