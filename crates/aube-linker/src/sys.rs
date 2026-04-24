@@ -392,11 +392,40 @@ fn win_shim_paths(bin_dir: &Path, name: &str) -> [PathBuf; 3] {
 
 /// Compute the relative path from `base_dir` to `target`, using
 /// forward slashes.
+///
+/// On Windows, strip any `\\?\` verbatim drive prefix from both inputs
+/// before diffing. Mixing a plain `C:\…` base with a verbatim
+/// `\\?\C:\…` target makes `pathdiff` treat the two `Component::Prefix`
+/// values as distinct (`Disk` != `VerbatimDisk`) and fall back to
+/// returning the raw absolute target. The raw target then gets
+/// interpolated into the `.cmd` shim as `"%~dp0\\\\?\\<target>"`, which
+/// `cmd.exe` + Node surface as the classic `Cannot find module
+/// '<bin>\\?\\<target>'` error. Stripping on both sides keeps the
+/// prefix components equal so `pathdiff` produces the expected
+/// `..\\…` form. No-op on Unix.
 fn relative_bin_target(base_dir: &Path, target: &Path) -> String {
-    pathdiff::diff_paths(target, base_dir)
-        .unwrap_or_else(|| PathBuf::from(target))
+    let base = strip_verbatim(base_dir);
+    let target = strip_verbatim(target);
+    pathdiff::diff_paths(&target, &base)
+        .unwrap_or(target)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+#[cfg(windows)]
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\")
+        && !rest.starts_with("UNC\\")
+    {
+        return PathBuf::from(rest);
+    }
+    p.to_path_buf()
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim(p: &Path) -> PathBuf {
+    p.to_path_buf()
 }
 
 fn node_modules_dir_for_bin(bin_dir: &Path) -> &Path {
@@ -819,6 +848,44 @@ mod tests {
             Path::new("/project/node_modules/.aube/is-odd@3.0.1/node_modules/is-odd/cli.js");
         let rel = relative_bin_target(bin_dir, target);
         assert_eq!(rel, "../.aube/is-odd@3.0.1/node_modules/is-odd/cli.js");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_bin_target_strips_verbatim_prefix_from_target() {
+        // `std::fs::canonicalize` on Windows returns `\\?\C:\…`. If a
+        // canonicalized `target` flows in next to a plain-drive
+        // `base_dir`, `pathdiff` sees `Disk` vs `VerbatimDisk` prefix
+        // components and falls back to the absolute target — which
+        // then gets spliced into the `.cmd` shim as
+        // `%~dp0\\?\<target>` and surfaces as Node's
+        // `Cannot find module '<bin>\?\<target>'`.
+        let base = Path::new(r"C:\pkg\bin");
+        let target = Path::new(r"\\?\C:\pkg\global-aube\abc\node_modules\p\bin\p.cjs");
+        let rel = relative_bin_target(base, target);
+        assert_eq!(rel, "../global-aube/abc/node_modules/p/bin/p.cjs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_bin_target_strips_verbatim_prefix_from_base() {
+        let base = Path::new(r"\\?\C:\pkg\bin");
+        let target = Path::new(r"C:\pkg\global-aube\abc\node_modules\p\bin\p.cjs");
+        let rel = relative_bin_target(base, target);
+        assert_eq!(rel, "../global-aube/abc/node_modules/p/bin/p.cjs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_bin_target_preserves_unc_share_prefix() {
+        // `\\?\UNC\…` identifies a real network share and has no
+        // non-verbatim equivalent — strip_verbatim must leave it
+        // alone so the shim points at the share, not at a bogus
+        // drive-rooted path.
+        let base = Path::new(r"\\?\UNC\server\share\pkg\bin");
+        let target = Path::new(r"\\?\UNC\server\share\pkg\lib\cli.js");
+        let rel = relative_bin_target(base, target);
+        assert_eq!(rel, "../lib/cli.js");
     }
 
     #[cfg(windows)]
