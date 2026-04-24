@@ -347,6 +347,89 @@ _stop_publish_server() {
 	assert_failure
 }
 
+@test "aube publish re-reads package.json after pre-pack hooks so registry metadata matches tarball" {
+	# Regression test for Cursor Bugbot issue: if a `prepublishOnly`
+	# script mutates package.json (e.g. stamping a git SHA into the
+	# version, stripping devDependencies), `build_publish_body` must
+	# see the post-hook manifest so `versions.<v>` metadata agrees
+	# with what's in the tarball. Previously we serialized the
+	# pre-hook snapshot and consumers saw a mismatch.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "publish-mutated",
+		  "version": "0.1.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "devDependencies": {
+		    "should-be-stripped": "1.0.0"
+		  },
+		  "scripts": {
+		    "prepublishOnly": "node ./rewrite.mjs"
+		  }
+		}
+	EOF
+	echo "module.exports = 1" >index.js
+	cat >rewrite.mjs <<'NODE'
+import fs from 'node:fs';
+const m = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+delete m.devDependencies;
+m.publishedBy = 'prepublishOnly';
+fs.writeFileSync('package.json', JSON.stringify(m, null, 2));
+NODE
+
+	cat >record-server.mjs <<'NODE'
+import http from 'node:http';
+import fs from 'node:fs';
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/publish-mutated') {
+    res.statusCode = 404;
+    res.end('{}');
+    return;
+  }
+  if (req.method === 'PUT' && req.url === '/publish-mutated') {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      fs.writeFileSync('put-body.json', Buffer.concat(chunks));
+      res.statusCode = 201;
+      res.end('{"ok":true}');
+    });
+    return;
+  }
+  res.statusCode = 404;
+  res.end('{}');
+});
+server.listen(0, '127.0.0.1', () => {
+  fs.writeFileSync('record-server-port', String(server.address().port));
+});
+NODE
+	node record-server.mjs &
+	local pid=$!
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		[ -f record-server-port ] && break
+		sleep 0.1
+	done
+	port="$(cat record-server-port)"
+	echo "//127.0.0.1:${port}/:_authToken=fake" >.npmrc
+
+	run aube publish --no-git-checks --registry "http://127.0.0.1:${port}/"
+	rc=$status
+	kill "$pid" 2>/dev/null || true
+	wait "$pid" 2>/dev/null || true
+	[ "$rc" -eq 0 ]
+
+	# The PUT body's `versions["0.1.0"]` must reflect the post-hook
+	# manifest — `devDependencies` stripped, `publishedBy` added.
+	run jq -r '.versions."0.1.0".publishedBy' put-body.json
+	assert_success
+	assert_output "prepublishOnly"
+
+	run jq '.versions."0.1.0".devDependencies' put-body.json
+	assert_success
+	assert_output "null"
+}
+
 @test "aube publish --dry-run --json emits a pnpm-compatible array" {
 	_write_publishable_pkg
 

@@ -469,6 +469,17 @@ async fn publish_one(
     let archive = build_archive(pkg_dir)?;
     super::pack::run_pack_lifecycle_post(pkg_dir, args.ignore_scripts).await?;
 
+    // Re-read the manifest *after* the pre-pack chain. Publish-time
+    // hooks often rewrite `package.json` on the fly — `clean-package`
+    // strips `devDependencies`, build tools inject `exports`, a
+    // `prepublishOnly` might stamp a git SHA into the version. The
+    // tarball always reflects the on-disk state (`build_archive`
+    // reads it fresh), so the registry-visible metadata at
+    // `versions.<v>.*` and the env seen by `publish` / `postpublish`
+    // must agree with it or consumers get a mismatch between
+    // `npm info` output and the tarball they actually download.
+    let manifest = super::pack::read_root_manifest(pkg_dir)?;
+
     // Sigstore signing is the one step here that can take seconds
     // (Fulcio + Rekor + optional TSA round-trips), so we do it *before*
     // serializing the publish body rather than after — a signing
@@ -492,8 +503,12 @@ async fn publish_one(
     // Without this, a first-time `@scope/pkg` publish with
     // `publishConfig.access=public` in package.json would fail with
     // 402 unless the user also passed `--access public` on every
-    // publish invocation.
-    let pc_access = publish_config
+    // publish invocation. Re-derive from the post-hook manifest so
+    // `prepublishOnly`-injected publishConfig entries are honored.
+    let pc_access = manifest
+        .extra
+        .get("publishConfig")
+        .and_then(|v| v.as_object())
         .and_then(|p| p.get("access"))
         .and_then(|v| v.as_str());
     let effective_access = args.access.as_deref().or(pc_access);
