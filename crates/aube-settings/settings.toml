@@ -1263,20 +1263,22 @@ examples = []
 [packumentMaxBytes]
 description = "Hard cap on a packument response body size in bytes."
 type = "int"
-default = "67108864"
+default = "209715200"
 docs = """
 Refuses any packument response whose `Content-Length` exceeds this
 many bytes. Primarily a hardening knob: a hostile or misconfigured
 registry (including a MITM on a compromised mirror) could otherwise
 stream gigabytes of JSON into the resolver and OOM the install.
 
-The default (64 MiB) is ~10x larger than the biggest packument on
-`registry.npmjs.org` at the time of writing (`@types/node`, `lodash`,
-`chalk` all land well under 6 MiB), but a few packages with long
-release histories (e.g. `drizzle-orm` at ~97 MiB) already exceed it
-and fail to resolve under the hardcoded cap. Raise this setting on
-projects that depend on such packages; set to `0` to disable the cap
-entirely (not recommended for untrusted registries).
+The default (200 MiB) sits above the largest packuments on
+`registry.npmjs.org` known at the time of writing — `drizzle-orm`
+sits around 97 MiB with room for continued release growth, while
+the common-case metadata files (`@types/node`, `lodash`, `chalk`)
+all land under 6 MiB — so normal installs never see the cap but a
+runaway registry response still fails loudly. Raise this setting if
+a package with an even longer release history hits the new ceiling;
+set to `0` to disable the cap entirely (not recommended for
+untrusted registries).
 
 Applies to every packument fetch: corgi and non-corgi variants, the
 cached-resolve path, and the fresh-read path used by `deprecate` /

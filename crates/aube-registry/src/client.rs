@@ -62,14 +62,12 @@ const PACKUMENT_ACCEPT: &str =
 /// `PACKUMENT_ACCEPT` — some proxies won't serve JSON unless it's in the list.
 const PACKUMENT_FULL_ACCEPT: &str = "application/json; q=1.0, */*";
 
-// Packument body cap — now configurable via the `packumentMaxBytes`
-// setting. Default lives in `FetchPolicy::default()`. See the
-// corresponding settings.toml entry for the full rationale; in short,
-// this prevents a hostile registry (or MITM on a compromised mirror)
-// from streaming gigabytes of JSON into the resolver and OOMing the
-// install, while letting projects that depend on packages with long
-// release histories (e.g. drizzle-orm, which already exceeds 64 MiB)
-// raise the cap rather than hardcode it out of the way.
+// Packument body cap — configurable via the `packumentMaxBytes`
+// setting. Default (200 MiB) lives in `FetchPolicy::default()` and is
+// sized to sit comfortably above the largest real-world packument
+// known today (`drizzle-orm` at ~97 MiB) while still bounding a
+// runaway registry response. `packumentMaxBytes=0` disables the cap
+// entirely for users who accept that exposure.
 
 /// Hard cap on a tarball response body (still compressed on the wire).
 /// The decompressed cap in `aube-store` (1 GiB) only fires after the

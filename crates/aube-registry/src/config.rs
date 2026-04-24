@@ -527,8 +527,11 @@ impl Default for FetchPolicy {
             retry_max_timeout_ms: 60_000,
             warn_timeout_ms: 10_000,
             min_speed_kibps: 50,
-            // 64 MiB — also the default declared in settings.toml.
-            packument_max_bytes: 64 << 20,
+            // 200 MiB — also the default declared in settings.toml.
+            // Chosen to sit comfortably above real-world packument sizes
+            // (the largest known today, `drizzle-orm`, is ~97 MiB) while
+            // still bounding a runaway registry response.
+            packument_max_bytes: 200 << 20,
         }
     }
 }
