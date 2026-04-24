@@ -42,6 +42,19 @@ teardown() {
 	assert_output --partial "Already up to date"
 }
 
+@test "aube install restores missing lockfile from warm state" {
+	_setup_basic_fixture
+	run aube install
+	assert_success
+
+	rm aube-lock.yaml
+
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+	assert_file_exists aube-lock.yaml
+}
+
 @test "aube install does not print 'Already up to date' when it does real work" {
 	# Guard against regression: a fresh install (or one that had to
 	# recreate node_modules) must not claim the tree was already up
