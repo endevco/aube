@@ -89,17 +89,17 @@ pub(super) fn resolve_link_strategy(
     let package_import_method_cli =
         aube_settings::values::string_from_cli("packageImportMethod", ctx.cli);
     // Shared probe used by both the CLI and resolved-setting paths
-    // below. Probe across store dir and project modules dir. Single
-    // dir probe reports reflink but real link ops across a mount
-    // boundary hit EXDEV and silently fall back to per-file copy.
-    // Catches the cross-FS case at probe time.
+    // below. Probe across store dir and project dir. Single-dir probe
+    // reports reflink but real link ops across a mount boundary hit
+    // EXDEV and silently fall back to per-file copy. Catches the
+    // cross-FS case at probe time without requiring node_modules to
+    // exist yet.
     let auto_probe = || {
         let store_dir = super::super::open_store(cwd)
             .map(|s| s.root().to_path_buf())
             .ok();
-        let modules_dir = cwd.join("node_modules");
         match store_dir.as_deref() {
-            Some(sd) => aube_linker::Linker::detect_strategy_cross(sd, &modules_dir),
+            Some(sd) => aube_linker::Linker::detect_strategy_cross(sd, cwd),
             None => aube_linker::Linker::detect_strategy(cwd),
         }
     };
