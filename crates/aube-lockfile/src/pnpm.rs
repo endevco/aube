@@ -1463,7 +1463,10 @@ struct Resolution {
 }
 
 /// Strip the leading `/` from pnpm's `path:` field so the value lines
-/// up with how `parse_git_fragment` stores it.
+/// up with how `parse_git_fragment` stores it. Mirror the same
+/// `..`/`.`/empty-component guard as the in-URL parser so a crafted
+/// lockfile cannot direct the resolver to read a `package.json`
+/// outside the clone dir.
 fn deserialize_subpath<'de, D>(de: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1471,7 +1474,11 @@ where
     let raw: Option<String> = serde::Deserialize::deserialize(de)?;
     Ok(raw.and_then(|s| {
         let trimmed = s.trim_start_matches('/');
-        if trimmed.is_empty() {
+        if trimmed.is_empty()
+            || trimmed
+                .split('/')
+                .any(|c| c.is_empty() || c == "." || c == "..")
+        {
             None
         } else {
             Some(trimmed.to_string())
