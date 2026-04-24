@@ -20,7 +20,7 @@
 
 ## Why Try It
 
-**[Fast installs](https://aube.en.dev/benchmarks).** Warm CI is about 6x faster than pnpm and 2x faster than Bun in the current benchmarks. Repeat test commands run up to ~45x faster than pnpm and up to 3x faster than Bun.
+**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs with the global virtual store are about 5x faster than pnpm and 2x faster than Bun in the current benchmarks. Repeat test commands run up to ~49x faster than pnpm and up to 3x faster than Bun.
 
 **[Existing lockfiles](https://aube.en.dev/package-manager/lockfiles).** Reads and writes `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock` in place.
 

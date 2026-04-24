@@ -291,34 +291,41 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # and `COLD_WIPE` wouldn't find it to clean up between iterations.
 AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
 
-# Scenario keys describe what's on disk before the run. Every scenario
-# assumes a committed lockfile is present (the intended CI workflow);
-# the only axis is cache/store warmth. Plus an "add" scenario that
-# exercises the incremental add path and an "install-test" scenario
-# that measures install + script dispatch end-to-end.
+# Scenario keys describe what's on disk before the run. Every install
+# scenario assumes a committed lockfile is present; the axes are
+# cache/store warmth and whether aube's global virtual store is enabled.
+# Plus an "add" scenario that exercises the incremental add path and an
+# "install-test" scenario that measures install + script dispatch end-to-end.
 
-# Scenario 1: CI install, warm cache (frozen lockfile, warm store+cache) ----
-CMDS["ci-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+# Scenario 1: Fresh install, warm cache (aube GVS enabled) ------------------
+CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["gvs-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
+CMDS["gvs-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
+CMDS["gvs-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
+CMDS["gvs-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
+
+# Scenario 2: Fresh install, cold cache (aube GVS enabled) ------------------
+CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["gvs-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
+CMDS["gvs-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
+CMDS["gvs-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
+CMDS["gvs-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
+
+# Scenario 3: CI install, warm cache (aube GVS disabled by CI=1) ------------
+CMDS["ci-warm:aube"]="cd {project} && CI=1 $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["ci-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["ci-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
-# Scenario 2: add a dependency (warm store+cache, existing lockfile) --------
-CMDS["add:aube"]="cd {project} && $AUBE_ENV {bin} add is-odd >/dev/null 2>&1"
-CMDS["add:bun"]="cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
-CMDS["add:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
-CMDS["add:pnpm"]="cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
-CMDS["add:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} add is-odd --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
-
-# Scenario 3: CI install, cold cache (frozen lockfile, empty store+cache) --
-CMDS["ci-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+# Scenario 4: CI install, cold cache (aube GVS disabled by CI=1) ------------
+CMDS["ci-cold:aube"]="cd {project} && CI=1 $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["ci-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["ci-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
 
-# Scenario 4: install + run test (warm store+cache, wiped node_modules) -----
+# Scenario 5: install + run test (warm store+cache, wiped node_modules) -----
 # Each tool does "install then run the `test` script" via its own idiomatic
 # command. aube has no install-test alias because `aube test` auto-installs
 # before running the script; pnpm and npm ship `install-test`; bun and yarn
@@ -333,6 +340,13 @@ CMDS["install-test:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null
 CMDS["install-test:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install-test --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["install-test:pnpm"]="cd {project} && HOME={home} {bin} install-test --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["install-test:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1 && HOME={home} YARN_CACHE_FOLDER={cache} {bin} test >/dev/null 2>&1"
+
+# Scenario 6: add a dependency (warm store+cache, existing lockfile) --------
+CMDS["add:aube"]="cd {project} && $AUBE_ENV {bin} add is-odd >/dev/null 2>&1"
+CMDS["add:bun"]="cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
+CMDS["add:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
+CMDS["add:pnpm"]="cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
+CMDS["add:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} add is-odd --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
 
 run_bench() {
 	local bench_name=$1
@@ -382,7 +396,8 @@ run_bench() {
 #
 # Used by the install-test scenario to measure the "I've installed,
 # now I just want to re-run my tests" developer loop rather than the
-# "fresh CI checkout" loop (which `ci-warm` already covers).
+# "fresh checkout + install" loop (which `gvs-warm` and `ci-warm`
+# already cover).
 run_bench_preinstall() {
 	local bench_name=$1
 
@@ -440,24 +455,42 @@ COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.local/share/aube {home}/.n
 # `lockfile_dest` placeholder so each pm gets its native filename.
 WARM_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb && cp {lockfile} {lockfile_dest}"
 
-# ── Benchmark 1: CI install, warm cache ────────────────────────────────────
+# ── Benchmark 1: Fresh install, warm cache, GVS enabled ────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
-# The common "CI install" or "fresh clone + install" path.
+# Measures aube's default local-install path with the global virtual
+# store enabled.
 
 echo ""
-echo "━━━ Benchmark 1: CI install (with lockfile, warm cache) ━━━"
+echo "━━━ Benchmark 1: Fresh install (warm cache, GVS) ━━━"
+run_bench "gvs-warm" "$WARM_PREP"
+
+# ── Benchmark 2: Fresh install, cold cache, GVS enabled ────────────────────
+# Lockfile present, but store and cache are empty.
+# Measures fetch-from-registry + import + GVS link path.
+
+echo ""
+echo "━━━ Benchmark 2: Fresh install (cold cache, GVS) ━━━"
+run_bench "gvs-cold" \
+	"rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
+
+# ── Benchmark 3: CI install, warm cache ────────────────────────────────────
+# Lockfile present, node_modules deleted, store and cache warm.
+# CI=1 disables aube's global virtual store to match real CI defaults.
+
+echo ""
+echo "━━━ Benchmark 3: CI install (warm cache, GVS disabled) ━━━"
 run_bench "ci-warm" "$WARM_PREP"
 
-# ── Benchmark 2: CI install, cold cache ────────────────────────────────────
+# ── Benchmark 4: CI install, cold cache ────────────────────────────────────
 # Lockfile present, but store and cache are empty.
-# Tests fetch-from-registry + link path guided by a lockfile.
+# CI=1 disables aube's global virtual store to match real CI defaults.
 
 echo ""
-echo "━━━ Benchmark 2: CI install (with lockfile, cold cache) ━━━"
+echo "━━━ Benchmark 4: CI install (cold cache, GVS disabled) ━━━"
 run_bench "ci-cold" \
 	"rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
 
-# ── Benchmark 3: install + run test (developer loop) ─────────────────────
+# ── Benchmark 5: install + run test (developer loop) ───────────────────────
 # Warm store+cache, lockfile present, node_modules *already* populated.
 # Models the developer-loop case: "I've installed, now I keep re-running
 # my tests." Each iteration's prepare runs the full install-test command
@@ -467,10 +500,10 @@ run_bench "ci-cold" \
 # on the timed run; tools without one still pay for lockfile revalidation.
 
 echo ""
-echo "━━━ Benchmark 3: install + run test (already installed) ━━━"
+echo "━━━ Benchmark 5: install + run test (already installed) ━━━"
 run_bench_preinstall "install-test"
 
-# ── Benchmark 4: Add dependency ────────────────────────────────────────────
+# ── Benchmark 6: Add dependency ────────────────────────────────────────────
 # Lockfile present, add a new dependency to trigger re-resolution.
 # Store and cache warm. Exercises the incremental resolution path.
 # Kept last because the other scenarios are install-shaped and this
@@ -478,7 +511,7 @@ run_bench_preinstall "install-test"
 # warmth levels" progression above.
 
 echo ""
-echo "━━━ Benchmark 4: Add dependency ━━━"
+echo "━━━ Benchmark 6: Add dependency ━━━"
 run_bench "add" \
 	"$WARM_PREP && cp $BENCH_DIR/original-package.json {project}/package.json"
 
