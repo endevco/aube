@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/endevco/aube/compare/aube-manifest-v1.0.0...aube-manifest-v1.1.0) - 2026-04-24
+
+### Other
+
+- dedup pass + registry/store perf wave ([#254](https://github.com/endevco/aube/pull/254))
+- shared helpers + migrate hardcoded sites ([#245](https://github.com/endevco/aube/pull/245))
+
 ## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-manifest-v1.0.0-beta.11...aube-manifest-v1.0.0-beta.12) - 2026-04-22
 
 ### Other

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0...aube-scripts-v1.1.0) - 2026-04-24
+
+### Added
+
+- *(scripts)* run pack/publish/version lifecycle hooks ([#262](https://github.com/endevco/aube/pull/262))
+
+### Other
+
+- shared helpers + migrate hardcoded sites ([#245](https://github.com/endevco/aube/pull/245))
+
 ## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0-beta.11...aube-scripts-v1.0.0-beta.12) - 2026-04-22
 
 ### Other

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/endevco/aube/compare/v1.0.0...v1.1.0) - 2026-04-24
+
+### Added
+
+- *(resolver)* support pnpm `&path:/<sub>` git dep selector ([#273](https://github.com/endevco/aube/pull/273))
+- *(install)* support global approve-builds ([#274](https://github.com/endevco/aube/pull/274))
+- *(scripts)* run pack/publish/version lifecycle hooks ([#262](https://github.com/endevco/aube/pull/262))
+
+### Fixed
+
+- *(store)* speed up cold installs ([#267](https://github.com/endevco/aube/pull/267))
+- *(linker)* strip windows verbatim prefix before diffing bin-shim paths ([#275](https://github.com/endevco/aube/pull/275))
+- *(publish)* report post-hook name/version in PublishOutcome ([#272](https://github.com/endevco/aube/pull/272))
+- *(global)* strip Windows \\?\\ verbatim prefix from canonicalized install dir ([#243](https://github.com/endevco/aube/pull/243))
+
+### Other
+
+- *(install)* split warm freshness state ([#271](https://github.com/endevco/aube/pull/271))
+- avoid duplicate warm state reads ([#266](https://github.com/endevco/aube/pull/266))
+- use warm path in frozen mode ([#264](https://github.com/endevco/aube/pull/264))
+- always shim self-bin so CI artifact round-trips work ([#259](https://github.com/endevco/aube/pull/259))
+- dedup pass + registry/store perf wave ([#254](https://github.com/endevco/aube/pull/254))
+- resolve catalog: in overrides + honor override-rewritten importer specs ([#249](https://github.com/endevco/aube/pull/249))
+- shared helpers + migrate hardcoded sites ([#245](https://github.com/endevco/aube/pull/245))
+
 ## [1.0.0](https://github.com/endevco/aube/compare/v1.0.0-beta.12...v1.0.0) - 2026-04-23
 
 ### Other
