@@ -467,7 +467,8 @@ and `*prettier-plugin-*` hoist Prettier plugins. Setting this option in
 `.npmrc` or `pnpm-workspace.yaml` replaces the defaults entirely.
 
 Matching is case-insensitive; direct deps always win on name clashes,
-and the pattern pass runs before `shamefullyHoist`.
+and the pattern pass runs before `shamefullyHoist`. Use sparingly --
+anything hoisted becomes a phantom dep at the root.
 
 ### `shamefullyHoist` {#setting-shamefullyhoist}
 
