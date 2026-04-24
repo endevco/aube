@@ -96,6 +96,16 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
         super::pack::run_root_lifecycle_script(&cwd, &manifest, "preversion").await?;
     }
 
+    // Re-read the raw file *after* preversion: a common idiom is
+    // `preversion: 'npm test && git add CHANGELOG.md'`, but hooks
+    // can also mutate the manifest directly (formatting, touching
+    // related fields, …). Using the pre-hook `raw` for
+    // `replace_version` would silently discard those edits on the
+    // atomic write.
+    let raw = std::fs::read_to_string(&manifest_path)
+        .into_diagnostic()
+        .wrap_err("failed to read package.json")?;
+
     let updated = replace_version(&raw, &new_version)
         .ok_or_else(|| miette!("failed to locate version string in package.json"))?;
     aube_util::fs_atomic::atomic_write(&manifest_path, updated.as_bytes())
