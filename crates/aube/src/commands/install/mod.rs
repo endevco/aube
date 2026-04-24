@@ -1085,7 +1085,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // is effectively a no-op on a state-matched warm install (no
     // orphans accumulate when deps are unchanged), so we keep the
     // fast path only when the setting is at its default.
-    let warm_path_eligible = matches!(opts.mode, FrozenMode::Prefer)
+    let warm_path_eligible = matches!(opts.mode, FrozenMode::Frozen | FrozenMode::Prefer)
         && !opts.force
         && !opts.lockfile_only
         && !opts.dep_selection.is_filtered()
