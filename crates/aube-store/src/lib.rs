@@ -474,7 +474,8 @@ impl Store {
         // truncate into a partial index.
         let gz = flate2::read::GzDecoder::new(tarball_bytes);
         let capped = CappedReader::new(gz, MAX_TARBALL_DECOMPRESSED_BYTES);
-        let mut archive = tar::Archive::new(capped);
+        let buffered = std::io::BufReader::with_capacity(256 * 1024, capped);
+        let mut archive = tar::Archive::new(buffered);
         let mut index = BTreeMap::new();
         let mut entries_seen: usize = 0;
 
