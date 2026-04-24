@@ -98,6 +98,24 @@ pub struct StoredFile {
 /// Index of all files in a package, keyed by relative path within the package.
 pub type PackageIndex = BTreeMap<String, StoredFile>;
 
+fn index_files_match_metadata(index: &PackageIndex, verify_all: bool) -> bool {
+    let mut files = index.values();
+    if verify_all {
+        return files.all(stored_file_matches_metadata);
+    }
+    // Hot install path: one metadata check catches the common crash
+    // residue class (zero-byte/missing CAS files) without turning every
+    // warm lockfile install into a full store walk.
+    files.next().is_none_or(stored_file_matches_metadata)
+}
+
+fn stored_file_matches_metadata(file: &StoredFile) -> bool {
+    let Ok(metadata) = file.store_path.metadata() else {
+        return false;
+    };
+    file.size.is_none_or(|size| metadata.len() == size)
+}
+
 impl Store {
     /// Open the store at the default location (see [`dirs::store_dir`]).
     pub fn default_location() -> Result<Self, Error> {
@@ -216,21 +234,10 @@ impl Store {
         let index_path = self.index_path(name, version, integrity)?;
         let mut buf = xx::file::read(&index_path).ok()?;
         let index: PackageIndex = simd_json::serde::from_slice(&mut buf).ok()?;
-        if verify_files {
-            if !index.values().all(|f| f.store_path.exists()) {
-                trace!("cache stale: {name}@{version}");
-                let _ = xx::file::remove_file(&index_path);
-                return None;
-            }
-        } else {
-            // Quick sanity check: verify at least one file exists in the store
-            if let Some(f) = index.values().next()
-                && !f.store_path.exists()
-            {
-                trace!("cache stale: {name}@{version}");
-                let _ = xx::file::remove_file(&index_path);
-                return None;
-            }
+        if !index_files_match_metadata(&index, verify_files) {
+            trace!("cache stale: {name}@{version}");
+            let _ = xx::file::remove_file(&index_path);
+            return None;
         }
         trace!("cache hit: {name}@{version}");
         Some(index)
@@ -331,9 +338,12 @@ impl Store {
     /// `AlreadyExists` is a no-op — in a CAS, same path = same bytes by
     /// construction. Non-empty files are written through a sibling temp file
     /// and persisted with no-clobber semantics so an interrupted import cannot
-    /// leave a torn file at the content-addressed path. `NotFound` means a
-    /// concurrent prune or a missed `ensure_shards_exist` removed the parent
-    /// shard; recreate it and retry exactly once before surfacing.
+    /// leave a torn file at the content-addressed path. We intentionally do
+    /// not fsync every CAS file: cold installs import tens of thousands of
+    /// files, and package-index loading rejects missing/truncated entries so
+    /// they can be fetched again. `NotFound` means a concurrent prune or a
+    /// missed `ensure_shards_exist` removed the parent shard; recreate it and
+    /// retry exactly once before surfacing.
     fn create_cas_file(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
         fn do_create_and_write(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
             if let Some(bytes) = content {
@@ -347,6 +357,13 @@ impl Store {
                 use std::io::Write;
                 tmp.write_all(bytes)
                     .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    tmp.as_file()
+                        .set_permissions(std::fs::Permissions::from_mode(0o644))
+                        .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                }
                 return match tmp.persist_noclobber(path) {
                     Ok(_) => Ok(()),
                     Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
@@ -1832,6 +1849,46 @@ mod tests {
                 .load_index_verified("pkg", "1.0.0", Some(TEST_INTEGRITY))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_index_cache_rejects_size_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let stored = store.import_bytes(b"content", false).unwrap();
+        let store_path = stored.store_path.clone();
+        let mut index = BTreeMap::new();
+        index.insert("index.js".to_string(), stored);
+
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+        std::fs::write(&store_path, b"").unwrap();
+
+        assert!(
+            store
+                .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_import_bytes_uses_world_readable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let stored = store.import_bytes(b"content", false).unwrap();
+        let mode = std::fs::metadata(&stored.store_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode, 0o644);
     }
 
     #[test]
