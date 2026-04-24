@@ -41,6 +41,7 @@ impl<'a> PickResult<'a> {
 /// cutoff. The lowest-satisfying fallback is pnpm's deliberate choice
 /// — the oldest version in the range is least likely to be the freshly
 /// pushed compromise that triggered the filter in the first place.
+#[inline]
 pub(crate) fn pick_version<'a>(
     packument: &'a Packument,
     range_str: &str,
@@ -158,6 +159,7 @@ pub(crate) fn pick_version<'a>(
 /// private mirrors and mid-publish races drop the tag briefly
 /// and returning NoMatch there would break `aube install foo` for
 /// no real reason. npm and pnpm both fall back to highest stable.
+#[inline]
 pub(crate) fn highest_stable_version(packument: &Packument) -> Option<String> {
     let mut best: Option<(node_semver::Version, String)> = None;
     for key in packument.versions.keys() {
@@ -181,6 +183,7 @@ pub(crate) fn highest_stable_version(packument: &Packument) -> Option<String> {
 /// Extract the trailing `@<version>` from an `npm:<name>@<version>`
 /// or `jsr:<name>@<version>` alias spec. Returns the input unchanged
 /// when the spec isn't an alias or doesn't carry a version tail.
+#[inline]
 pub(crate) fn strip_alias_prefix(range: &str) -> &str {
     for prefix in ["npm:", "jsr:"] {
         if let Some(rest) = range.strip_prefix(prefix) {
@@ -193,6 +196,7 @@ pub(crate) fn strip_alias_prefix(range: &str) -> &str {
     range
 }
 
+#[inline]
 pub(crate) fn version_satisfies(version: &str, range_str: &str) -> bool {
     let Ok(v) = node_semver::Version::parse(version) else {
         return false;

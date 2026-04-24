@@ -233,6 +233,7 @@ pub(crate) fn sweep_stale_top_level_entries(
 /// install on the medium fixture. Fresh means "points at expected
 /// AND the target still exists"; everything else is Missing or
 /// Stale. The fast path returns without touching disk a second time.
+#[inline]
 pub(crate) fn classify_entry_state(link_path: &Path, expected: &Path) -> EntryState {
     match std::fs::read_link(link_path) {
         Ok(existing) if existing == expected => {

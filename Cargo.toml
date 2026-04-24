@@ -8,6 +8,15 @@ codegen-units = 1
 strip = "debuginfo"
 panic = "abort"
 
+[profile.release-native]
+inherits = "release"
+lto = "fat"
+
+[profile.release-pgo]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 [workspace.package]
 version = "1.0.0"
 edition = "2024"

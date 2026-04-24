@@ -1238,7 +1238,11 @@ fn build_http_client(
         .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
         .http2_keep_alive_while_idle(true)
         .http2_adaptive_window(true)
+        .http2_initial_stream_window_size(Some(16 * 1024 * 1024))
+        .http2_initial_connection_window_size(Some(16 * 1024 * 1024))
+        .http2_max_frame_size(Some(16 * 1024 * 1024 - 1))
         .tcp_nodelay(true)
+        .tcp_keepalive(std::time::Duration::from_secs(60))
         // `strict-ssl=false` disables cert validation entirely. This
         // is a security hole on purpose: corporate registries should
         // prefer per-registry `ca` / `cafile` so validation stays on.
