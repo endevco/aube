@@ -619,7 +619,7 @@ impl RegistryClient {
                     let max_age_secs = parse_cache_control_max_age(&resp);
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
-                    match resp.json::<serde_json::Value>().await {
+                    match parse_full_response::<serde_json::Value>(resp).await {
                         Ok(packument) => {
                             let to_cache = CachedFullPackument {
                                 etag,
@@ -649,7 +649,7 @@ impl RegistryClient {
                             );
                             tokio::time::sleep(wait).await;
                         }
-                        Err(err) => return Err(err.into()),
+                        Err(err) => return Err(err),
                     }
                 }
                 Err(err) if !is_last => {
@@ -752,25 +752,27 @@ impl RegistryClient {
                     self.maybe_warn_slow_metadata(&label, started);
                     return Err(Error::NotFound(name.to_string()));
                 }
-                Ok(resp) => match resp.error_for_status()?.json().await {
-                    Ok(packument) => {
-                        self.maybe_warn_slow_metadata(&label, started);
-                        return Ok(packument);
+                Ok(resp) => {
+                    match parse_full_response::<Packument>(resp.error_for_status()?).await {
+                        Ok(packument) => {
+                            self.maybe_warn_slow_metadata(&label, started);
+                            return Ok(packument);
+                        }
+                        Err(err) if !is_last => {
+                            let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                            tracing::debug!(
+                                attempt = attempt + 1,
+                                max_attempts,
+                                backoff_ms = wait.as_millis() as u64,
+                                error = %err,
+                                label,
+                                "retrying HTTP request after response body decode error",
+                            );
+                            tokio::time::sleep(wait).await;
+                        }
+                        Err(err) => return Err(err),
                     }
-                    Err(err) if !is_last => {
-                        let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                        tracing::debug!(
-                            attempt = attempt + 1,
-                            max_attempts,
-                            backoff_ms = wait.as_millis() as u64,
-                            error = %err,
-                            label,
-                            "retrying HTTP request after response body decode error",
-                        );
-                        tokio::time::sleep(wait).await;
-                    }
-                    Err(err) => return Err(err.into()),
-                },
+                }
                 Err(err) if !is_last => {
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                     tracing::debug!(
@@ -900,7 +902,7 @@ impl RegistryClient {
 
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
-                    match resp.json::<Packument>().await {
+                    match parse_full_response::<Packument>(resp).await {
                         Ok(packument) => {
                             let to_cache = CachedPackument {
                                 etag,
@@ -930,7 +932,7 @@ impl RegistryClient {
                             );
                             tokio::time::sleep(wait).await;
                         }
-                        Err(err) => return Err(err.into()),
+                        Err(err) => return Err(err),
                     }
                 }
                 Err(err) if !is_last => {
@@ -1427,6 +1429,16 @@ fn check_dist_tag_status(resp: &reqwest::Response, name: &str) -> Result<(), Err
         }
         _ => Ok(()),
     }
+}
+
+async fn parse_full_response<T>(resp: reqwest::Response) -> Result<T, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let bytes = resp.bytes().await?;
+    let mut buf = bytes.to_vec();
+    simd_json::serde::from_slice::<T>(&mut buf)
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
 }
 
 fn read_cached_packument(path: &Path) -> Option<CachedPackument> {
