@@ -19,6 +19,7 @@ flate2 = { workspace = true }
 tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+simd-json = { workspace = true }
 xx = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }

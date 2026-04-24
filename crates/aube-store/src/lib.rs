@@ -176,8 +176,8 @@ impl Store {
         verify_files: bool,
     ) -> Option<PackageIndex> {
         let index_path = self.index_path(name, version, integrity)?;
-        let content = xx::file::read_to_string(&index_path).ok()?;
-        let index: PackageIndex = serde_json::from_str(&content).ok()?;
+        let mut buf = xx::file::read(&index_path).ok()?;
+        let index: PackageIndex = simd_json::serde::from_slice(&mut buf).ok()?;
         if verify_files {
             if !index.values().all(|f| f.store_path.exists()) {
                 trace!("cache stale: {name}@{version}");
@@ -996,9 +996,9 @@ pub fn validate_pkg_content(
     let stored = index
         .get("package.json")
         .ok_or_else(|| Error::Tar("package.json missing from tarball".to_string()))?;
-    let bytes =
+    let mut bytes =
         std::fs::read(&stored.store_path).map_err(|e| Error::Io(stored.store_path.clone(), e))?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
+    let v: serde_json::Value = simd_json::serde::from_slice(&mut bytes)
         .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?;
     let actual_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let actual_version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");

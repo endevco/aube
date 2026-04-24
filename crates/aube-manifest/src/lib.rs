@@ -935,15 +935,13 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     } else {
         content
     };
+    let mut buf = content.clone().into_bytes();
+    if let Ok(v) = simd_json::serde::from_slice(&mut buf) {
+        return Ok(v);
+    }
     match serde_json::from_str(&content) {
         Ok(v) => Ok(v),
         Err(e) => {
-            // Helpful targeted message when the file looks like
-            // JSONC. VS Code and other editors happily write `//`
-            // and `/* */` into package.json and the user gets a
-            // raw serde "expected `,` or `}`" pointing at a
-            // random byte. Detect the common comment markers up
-            // front so the error tells the user what is wrong.
             let trimmed = content.trim_start();
             if trimmed.starts_with("//") || trimmed.starts_with("/*") {
                 return Err(Error::parse_msg(

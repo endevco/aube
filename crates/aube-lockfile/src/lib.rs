@@ -1690,9 +1690,13 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     path: &std::path::Path,
     content: String,
 ) -> Result<T, Error> {
-    match serde_json::from_str(&content) {
+    let mut buf = content.clone().into_bytes();
+    match simd_json::serde::from_slice(&mut buf) {
         Ok(v) => Ok(v),
-        Err(e) => Err(Error::parse_json_err(path, content, &e)),
+        Err(_) => match serde_json::from_str(&content) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(Error::parse_json_err(path, content, &e)),
+        },
     }
 }
 
