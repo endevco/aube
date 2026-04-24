@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/endevco/aube/compare/aube-settings-v1.0.0...aube-settings-v1.1.0) - 2026-04-24
+
+### Other
+
+- accept legacy sha1/sha256/sha384 integrity in verify_integrity ([#263](https://github.com/endevco/aube/pull/263))
+- default publicHoistPattern to match pnpm ([#258](https://github.com/endevco/aube/pull/258))
+
 ## [1.0.0-beta.12](https://github.com/endevco/aube/compare/aube-settings-v1.0.0-beta.11...aube-settings-v1.0.0-beta.12) - 2026-04-22
 
 ### Other

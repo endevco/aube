@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0...aube-resolver-v1.1.0) - 2026-04-24
+
+### Added
+
+- *(resolver)* support pnpm `&path:/<sub>` git dep selector ([#273](https://github.com/endevco/aube/pull/273))
+
+### Fixed
+
+- *(resolver)* wire transitive url/git subdeps into parent snapshot ([#276](https://github.com/endevco/aube/pull/276))
+
+### Other
+
+- *(bun)* preserve top-level + per-entry metadata on roundtrip ([#250](https://github.com/endevco/aube/pull/250))
+- dedup pass + registry/store perf wave ([#254](https://github.com/endevco/aube/pull/254))
+- shared helpers + migrate hardcoded sites ([#245](https://github.com/endevco/aube/pull/245))
+
 ## [1.0.0](https://github.com/endevco/aube/compare/aube-resolver-v1.0.0-beta.12...aube-resolver-v1.0.0) - 2026-04-23
 
 ### Other

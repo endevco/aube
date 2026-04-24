@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/endevco/aube/compare/aube-linker-v1.0.0...aube-linker-v1.1.0) - 2026-04-24
+
+### Fixed
+
+- *(store)* speed up cold installs ([#267](https://github.com/endevco/aube/pull/267))
+- *(linker)* strip windows verbatim prefix before diffing bin-shim paths ([#275](https://github.com/endevco/aube/pull/275))
+
+### Other
+
+- dedup pass + registry/store perf wave ([#254](https://github.com/endevco/aube/pull/254))
+- copy small files instead of reflinking ([#251](https://github.com/endevco/aube/pull/251))
+- shared helpers + migrate hardcoded sites ([#245](https://github.com/endevco/aube/pull/245))
+
 ## [1.0.0](https://github.com/endevco/aube/compare/aube-linker-v1.0.0-beta.12...aube-linker-v1.0.0) - 2026-04-23
 
 ### Other
