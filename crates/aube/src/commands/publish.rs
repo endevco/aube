@@ -66,12 +66,9 @@ pub struct PublishArgs {
     /// outright; Verdaccio and most private mirrors allow them.
     #[arg(long)]
     pub force: bool,
-    /// Skip `prepublishOnly` / `prepack` / `postpack` / `publish` /
-    /// `postpublish` lifecycle scripts for this publish.
-    ///
-    /// Accepted for pnpm parity; aube's publish path does not run
-    /// those scripts today, so this is a no-op kept for wrapper
-    /// compatibility.
+    /// Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` /
+    /// `postpack` / `publish` / `postpublish` lifecycle scripts for
+    /// this publish.
     #[arg(long)]
     pub ignore_scripts: bool,
     /// Emit the publish result as JSON: an array with one
@@ -112,7 +109,6 @@ pub async fn run(
     filter: aube_workspace::selector::EffectiveFilter,
     registry_override: Option<&str>,
 ) -> miette::Result<()> {
-    let _ = args.ignore_scripts; // parity no-op: aube's publish path doesn't run lifecycle scripts yet
     let cwd = crate::dirs::project_root()?;
 
     if !args.no_git_checks {
@@ -413,9 +409,13 @@ async fn publish_one(
         .to_string();
 
     if args.dry_run {
-        // Dry-run still builds the archive: the whole point is to show
-        // the user what *would* be uploaded, including the file list.
+        // Dry-run still runs the pre-publish chain so users can smoke-test
+        // their `prepublishOnly` / `prepack` / `prepare` scripts without
+        // hitting the registry, matching pnpm. `publish` / `postpublish`
+        // are skipped — nothing was actually uploaded.
+        run_publish_lifecycle_pre(pkg_dir, args.ignore_scripts).await?;
         let archive = build_archive(pkg_dir)?;
+        run_publish_lifecycle_postpack(pkg_dir, args.ignore_scripts).await?;
         // `--dry-run --provenance` is a common "does my CI actually have
         // OIDC wired up?" smoke test. Silently skipping the OIDC probe
         // here would give a false green light — so we run the ambient
@@ -461,11 +461,13 @@ async fn publish_one(
         ));
     }
 
-    // Build the tarball + publish body only now that we know we're
-    // actually going to PUT. For a re-run of `-r publish` where every
-    // package is already on the registry, the loop never reaches this
-    // point and the whole fanout is gzip-free.
+    // Lifecycle hooks + tarball build only happen now that we know
+    // we're actually going to PUT. For a re-run of `-r publish` where
+    // every package is already on the registry, the loop never reaches
+    // this point and the whole fanout is script-free and gzip-free.
+    run_publish_lifecycle_pre(pkg_dir, args.ignore_scripts).await?;
     let archive = build_archive(pkg_dir)?;
+    run_publish_lifecycle_postpack(pkg_dir, args.ignore_scripts).await?;
 
     // Sigstore signing is the one step here that can take seconds
     // (Fulcio + Rekor + optional TSA round-trips), so we do it *before*
@@ -525,6 +527,8 @@ async fn publish_one(
         return Err(miette!("publish failed: {status}: {}", body.trim()));
     }
 
+    run_publish_lifecycle_post(pkg_dir, args.ignore_scripts).await?;
+
     Ok(PublishOutcome {
         name,
         version,
@@ -532,6 +536,43 @@ async fn publish_one(
         archive: Some(archive),
         status: PublishStatus::Published,
     })
+}
+
+/// Pre-pack chain for publish: `prepublishOnly` → `prepublish` →
+/// `prepack` → `prepare`. Runs only for packages that are actually
+/// being uploaded — the "already on registry" skip path avoids all of
+/// this so `aube -r publish` remains idempotent. `prepublish` is
+/// deprecated by npm but pnpm still runs it on publish, so we match
+/// pnpm for the common case the discussion in #253 flagged.
+async fn run_publish_lifecycle_pre(pkg_dir: &Path, ignore_scripts: bool) -> miette::Result<()> {
+    if ignore_scripts {
+        return Ok(());
+    }
+    super::pack::run_root_lifecycle_script(pkg_dir, "prepublishOnly").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, "prepublish").await?;
+    super::pack::run_pack_lifecycle_pre(pkg_dir, false).await
+}
+
+/// `postpack` hook — fires after the tarball is built but before the
+/// upload, matching npm docs ("after the tarball has been generated
+/// but before it is moved to its final destination").
+async fn run_publish_lifecycle_postpack(
+    pkg_dir: &Path,
+    ignore_scripts: bool,
+) -> miette::Result<()> {
+    super::pack::run_pack_lifecycle_post(pkg_dir, ignore_scripts).await
+}
+
+/// Post-upload chain for publish: `publish` → `postpublish`. These
+/// run only after a successful PUT — a non-2xx response short-circuits
+/// out before we get here, matching pnpm.
+async fn run_publish_lifecycle_post(pkg_dir: &Path, ignore_scripts: bool) -> miette::Result<()> {
+    if ignore_scripts {
+        return Ok(());
+    }
+    super::pack::run_root_lifecycle_script(pkg_dir, "publish").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, "postpublish").await?;
+    Ok(())
 }
 
 /// GET `{registry}/{name}` and check whether `versions[version]` is

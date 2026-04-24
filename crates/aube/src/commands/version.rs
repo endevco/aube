@@ -24,6 +24,10 @@ pub struct VersionArgs {
     #[arg(long)]
     pub allow_same_version: bool,
 
+    /// Skip `preversion` / `version` / `postversion` lifecycle scripts.
+    #[arg(long)]
+    pub ignore_scripts: bool,
+
     /// Emit the result as JSON instead of `v<version>` text.
     #[arg(long)]
     pub json: bool,
@@ -81,11 +85,26 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
         ));
     }
 
+    // npm/pnpm order: `preversion` fires BEFORE the manifest is
+    // rewritten so the script sees the outgoing version and can
+    // abort the bump (e.g. "refuse to bump while tests are red").
+    if !args.ignore_scripts {
+        super::pack::run_root_lifecycle_script(&cwd, "preversion").await?;
+    }
+
     let updated = replace_version(&raw, &new_version)
         .ok_or_else(|| miette!("failed to locate version string in package.json"))?;
     aube_util::fs_atomic::atomic_write(&manifest_path, updated.as_bytes())
         .into_diagnostic()
         .wrap_err("failed to write package.json")?;
+
+    // `version` fires AFTER the manifest edit but BEFORE the git
+    // commit. Scripts usually regenerate derived files here (e.g.
+    // `version: 'git add CHANGELOG.md'`) so they're included in the
+    // version tag's tree. Matches npm docs.
+    if !args.ignore_scripts {
+        super::pack::run_root_lifecycle_script(&cwd, "version").await?;
+    }
 
     // Skip git ops when the version hasn't actually changed (e.g.
     // `--allow-same-version` bumping to the current version) — otherwise
@@ -105,6 +124,12 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
             args.no_commit_hooks,
             args.sign_git_tag,
         )?;
+    }
+
+    // `postversion` fires last — after the tag is pushed into the git
+    // history. Common idiom is `postversion: 'git push && git push --tags'`.
+    if !args.ignore_scripts {
+        super::pack::run_root_lifecycle_script(&cwd, "postversion").await?;
     }
 
     if args.json {

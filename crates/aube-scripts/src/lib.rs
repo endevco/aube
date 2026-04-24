@@ -401,7 +401,21 @@ pub async fn run_root_hook(
     manifest: &PackageJson,
     hook: LifecycleHook,
 ) -> Result<bool, Error> {
-    let name = hook.script_name();
+    run_root_script_by_name(project_dir, modules_dir_name, manifest, hook.script_name()).await
+}
+
+/// Run a named root-package script if it's defined. Used by commands
+/// (pack, publish, version) that need to run lifecycle hooks outside
+/// the install-focused [`LifecycleHook`] enum. Returns `Ok(false)` if
+/// the script isn't defined.
+///
+/// The caller is responsible for gating on `--ignore-scripts`.
+pub async fn run_root_script_by_name(
+    project_dir: &Path,
+    modules_dir_name: &str,
+    manifest: &PackageJson,
+    name: &str,
+) -> Result<bool, Error> {
     let Some(script_cmd) = manifest.scripts.get(name) else {
         return Ok(false);
     };

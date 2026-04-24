@@ -188,6 +188,26 @@ pub(crate) fn configure_script_settings(ctx: &aube_settings::ResolveCtx<'_>) {
     });
 }
 
+/// Load `.npmrc` + workspace settings for `cwd` and push them into the
+/// process-wide script settings snapshot. Used by commands that run
+/// lifecycle hooks (pack/publish/version) outside the install path,
+/// which already does this via `configure_script_settings` directly.
+pub(crate) fn configure_script_settings_for_cwd(cwd: &Path) -> miette::Result<()> {
+    let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
+    let (_, raw_workspace) = aube_manifest::workspace::load_both(cwd)
+        .into_diagnostic()
+        .wrap_err("failed to load workspace config")?;
+    let env_snapshot = aube_settings::values::capture_env();
+    let ctx = aube_settings::ResolveCtx {
+        npmrc: &npmrc_entries,
+        workspace_yaml: &raw_workspace,
+        env: &env_snapshot,
+        cli: &[],
+    };
+    configure_script_settings(&ctx);
+    Ok(())
+}
+
 fn non_empty_string(value: String) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())

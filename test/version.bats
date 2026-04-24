@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 
 setup() {
 	load 'test_helper/common_setup'
@@ -140,4 +141,74 @@ _write_pkg() {
 	assert_output "init"
 	run git tag --list
 	assert_output ""
+}
+
+@test "aube version runs preversion, version, postversion in order" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "version-hooks",
+		  "version": "1.0.0",
+		  "scripts": {
+		    "preversion": "echo preversion >>$HOOK_LOG",
+		    "version": "echo version >>$HOOK_LOG",
+		    "postversion": "echo postversion >>$HOOK_LOG"
+		  }
+		}
+	EOF
+
+	export HOOK_LOG="$PWD/hooks.log"
+	: >"$HOOK_LOG"
+
+	run aube version patch --no-git-tag-version
+	assert_success
+	assert_output "v1.0.1"
+
+	run cat "$HOOK_LOG"
+	assert_success
+	assert_line --index 0 "preversion"
+	assert_line --index 1 "version"
+	assert_line --index 2 "postversion"
+}
+
+@test "aube version --ignore-scripts skips lifecycle hooks" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "version-hooks",
+		  "version": "1.0.0",
+		  "scripts": {
+		    "preversion": "echo preversion >>$HOOK_LOG",
+		    "version": "echo version >>$HOOK_LOG",
+		    "postversion": "echo postversion >>$HOOK_LOG"
+		  }
+		}
+	EOF
+
+	export HOOK_LOG="$PWD/hooks.log"
+	: >"$HOOK_LOG"
+
+	run aube version patch --no-git-tag-version --ignore-scripts
+	assert_success
+
+	run cat "$HOOK_LOG"
+	assert_success
+	assert_output ""
+}
+
+@test "aube version aborts bump when preversion fails" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "version-hooks",
+		  "version": "1.0.0",
+		  "scripts": {
+		    "preversion": "exit 7"
+		  }
+		}
+	EOF
+
+	run aube version patch --no-git-tag-version
+	assert_failure
+
+	# Manifest should be untouched since preversion fires BEFORE the edit.
+	run cat package.json
+	assert_output --partial '"version": "1.0.0"'
 }

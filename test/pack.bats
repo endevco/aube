@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 
 setup() {
 	load 'test_helper/common_setup'
@@ -123,4 +124,86 @@ _write_pkg_with_files() {
 	assert_success
 	assert_line "package/package.json"
 	assert_line "package/index.js"
+}
+
+@test "aube pack runs prepack, prepare, postpack in order" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "pack-hooks",
+		  "version": "1.0.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepack": "echo prepack >>$HOOK_LOG",
+		    "prepare": "echo prepare >>$HOOK_LOG",
+		    "postpack": "echo postpack >>$HOOK_LOG"
+		  }
+		}
+	EOF
+	cat >index.js <<-'EOF'
+		module.exports = 1
+	EOF
+
+	export HOOK_LOG="$PWD/hooks.log"
+	: >"$HOOK_LOG"
+
+	run aube pack
+	assert_success
+
+	run cat "$HOOK_LOG"
+	assert_success
+	assert_line --index 0 "prepack"
+	assert_line --index 1 "prepare"
+	assert_line --index 2 "postpack"
+}
+
+@test "aube pack --ignore-scripts skips lifecycle hooks" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "pack-hooks",
+		  "version": "1.0.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepack": "echo prepack >>$HOOK_LOG",
+		    "prepare": "echo prepare >>$HOOK_LOG",
+		    "postpack": "echo postpack >>$HOOK_LOG"
+		  }
+		}
+	EOF
+	cat >index.js <<-'EOF'
+		module.exports = 1
+	EOF
+
+	export HOOK_LOG="$PWD/hooks.log"
+	: >"$HOOK_LOG"
+
+	run aube pack --ignore-scripts
+	assert_success
+
+	# Log should still exist but be empty — no hook fired.
+	run cat "$HOOK_LOG"
+	assert_success
+	assert_output ""
+}
+
+@test "aube pack propagates a failing prepack" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "pack-hooks",
+		  "version": "1.0.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepack": "exit 3"
+		  }
+		}
+	EOF
+	cat >index.js <<-'EOF'
+		module.exports = 1
+	EOF
+
+	run aube pack
+	assert_failure
+	[ ! -f pack-hooks-1.0.0.tgz ]
 }

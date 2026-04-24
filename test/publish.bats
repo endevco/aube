@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 
 setup() {
 	load 'test_helper/common_setup'
@@ -260,6 +261,90 @@ _stop_publish_server() {
 	run grep -c "^/publish-smoke " publish-server-put.log
 	assert_success
 	[ "$output" = "1" ]
+}
+
+@test "aube publish --dry-run runs prepublishOnly, prepublish, prepack, prepare, postpack" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "publish-hooks",
+		  "version": "0.1.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepublishOnly": "echo prepublishOnly >>$HOOK_LOG",
+		    "prepublish": "echo prepublish >>$HOOK_LOG",
+		    "prepack": "echo prepack >>$HOOK_LOG",
+		    "prepare": "echo prepare >>$HOOK_LOG",
+		    "postpack": "echo postpack >>$HOOK_LOG",
+		    "publish": "echo publish >>$HOOK_LOG",
+		    "postpublish": "echo postpublish >>$HOOK_LOG"
+		  }
+		}
+	EOF
+	echo "module.exports = 1" >index.js
+
+	export HOOK_LOG="$PWD/hooks.log"
+	: >"$HOOK_LOG"
+
+	run aube publish --dry-run --registry=https://r.example.com/
+	assert_success
+
+	# Dry-run: pre-pack chain fires, post-upload hooks don't.
+	run cat "$HOOK_LOG"
+	assert_success
+	assert_line --index 0 "prepublishOnly"
+	assert_line --index 1 "prepublish"
+	assert_line --index 2 "prepack"
+	assert_line --index 3 "prepare"
+	assert_line --index 4 "postpack"
+	refute_line "publish"
+	refute_line "postpublish"
+}
+
+@test "aube publish --dry-run --ignore-scripts skips lifecycle hooks" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "publish-hooks",
+		  "version": "0.1.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepublishOnly": "echo prepublishOnly >>$HOOK_LOG",
+		    "prepack": "echo prepack >>$HOOK_LOG",
+		    "prepare": "echo prepare >>$HOOK_LOG",
+		    "postpack": "echo postpack >>$HOOK_LOG"
+		  }
+		}
+	EOF
+	echo "module.exports = 1" >index.js
+
+	export HOOK_LOG="$PWD/hooks.log"
+	: >"$HOOK_LOG"
+
+	run aube publish --dry-run --ignore-scripts --registry=https://r.example.com/
+	assert_success
+
+	run cat "$HOOK_LOG"
+	assert_success
+	assert_output ""
+}
+
+@test "aube publish --dry-run aborts when prepublishOnly fails" {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "publish-hooks",
+		  "version": "0.1.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepublishOnly": "exit 5"
+		  }
+		}
+	EOF
+	echo "module.exports = 1" >index.js
+
+	run aube publish --dry-run --registry=https://r.example.com/
+	assert_failure
 }
 
 @test "aube publish --dry-run --json emits a pnpm-compatible array" {
