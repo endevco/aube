@@ -1234,6 +1234,11 @@ fn build_http_client(
         // requests over a single connection so this mostly matters for fallback HTTP/1.1.
         .pool_max_idle_per_host(pool_max_idle)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
+        .http2_keep_alive_while_idle(true)
+        .http2_adaptive_window(true)
+        .tcp_nodelay(true)
         // `strict-ssl=false` disables cert validation entirely. This
         // is a security hole on purpose: corporate registries should
         // prefer per-registry `ca` / `cafile` so validation stays on.
