@@ -6,7 +6,7 @@ use aube_lockfile::dep_path_filename::{
 };
 use aube_lockfile::graph_hash::GraphHashes;
 use aube_lockfile::{LocalSource, LockedPackage, LockfileGraph};
-use aube_store::{PackageIndex, Store};
+use aube_store::{PackageIndex, Store, StoredFile};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -2238,7 +2238,7 @@ impl Linker {
             // above. The index is immutable between the two loops.
             let target = pkg_nm_dir.join(rel_path);
 
-            self.link_file_fresh(&stored.store_path, &target)?;
+            self.link_file_fresh(stored, &target)?;
             stats.files_linked += 1;
 
             if stored.executable {
@@ -2344,24 +2344,34 @@ impl Linker {
     /// `remove_file(dst)` an idempotent variant would need is skipped.
     /// Eliminates one syscall per linked file (~45k on the medium
     /// benchmark fixture).
-    pub(crate) fn link_file_fresh(&self, src: &Path, dst: &Path) -> Result<(), Error> {
+    pub(crate) fn link_file_fresh(&self, stored: &StoredFile, dst: &Path) -> Result<(), Error> {
+        const SMALL_FILE_COPY_MAX: u64 = 16 * 1024;
         match self.strategy {
             LinkStrategy::Reflink => {
-                if let Err(e) = reflink_copy::reflink(src, dst) {
+                #[cfg(target_os = "macos")]
+                if matches!(stored.size, Some(size) if size <= SMALL_FILE_COPY_MAX) {
+                    std::fs::copy(&stored.store_path, dst)
+                        .map_err(|e| Error::Io(dst.to_path_buf(), e))?;
+                    return Ok(());
+                }
+                if let Err(e) = reflink_copy::reflink(&stored.store_path, dst) {
                     // Fall back to copy on cross-filesystem errors
                     trace!("reflink failed, falling back to copy: {e}");
-                    std::fs::copy(src, dst).map_err(|e| Error::Io(dst.to_path_buf(), e))?;
+                    std::fs::copy(&stored.store_path, dst)
+                        .map_err(|e| Error::Io(dst.to_path_buf(), e))?;
                 }
             }
             LinkStrategy::Hardlink => {
-                if let Err(e) = std::fs::hard_link(src, dst) {
+                if let Err(e) = std::fs::hard_link(&stored.store_path, dst) {
                     // Fall back to copy on cross-filesystem errors (EXDEV)
                     trace!("hardlink failed, falling back to copy: {e}");
-                    std::fs::copy(src, dst).map_err(|e| Error::Io(dst.to_path_buf(), e))?;
+                    std::fs::copy(&stored.store_path, dst)
+                        .map_err(|e| Error::Io(dst.to_path_buf(), e))?;
                 }
             }
             LinkStrategy::Copy => {
-                std::fs::copy(src, dst).map_err(|e| Error::Io(dst.to_path_buf(), e))?;
+                std::fs::copy(&stored.store_path, dst)
+                    .map_err(|e| Error::Io(dst.to_path_buf(), e))?;
             }
         }
 

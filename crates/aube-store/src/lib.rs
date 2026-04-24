@@ -30,6 +30,9 @@ pub struct StoredFile {
     pub store_path: PathBuf,
     /// Whether the file is executable.
     pub executable: bool,
+    /// File size in bytes when the entry was imported.
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 /// Index of all files in a package, keyed by relative path within the package.
@@ -365,6 +368,7 @@ impl Store {
             hex_hash,
             store_path,
             executable,
+            size: Some(content.len() as u64),
         })
     }
 
