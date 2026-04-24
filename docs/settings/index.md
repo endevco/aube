@@ -814,8 +814,9 @@ Check store file integrity before linking.
 - .npmrc keys: `verify-store-integrity`, `verifyStoreIntegrity`
 - Workspace YAML keys: `verifyStoreIntegrity`
 
-aube verifies each package's `integrity` (SHA-512) against the tarball
-bytes at import time in `aube_store::verify_integrity`, before extraction.
+aube verifies each package's SRI `integrity` (sha512, or legacy
+sha1/sha256/sha384) against the tarball bytes at import time in
+`aube_store::verify_integrity`, before extraction.
 Set to `false` via `.npmrc`, env, or `--no-verify-store-integrity` to
 skip the check — useful in trusted CI environments where the registry
 is already known-good and the tarball bytes have been vetted upstream.

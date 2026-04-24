@@ -4,12 +4,49 @@ extern crate log;
 pub mod dirs;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha512};
+use sha1::Sha1;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const SHA512_INTEGRITY_PREFIX: &str = "sha512-";
+
+/// Subresource Integrity (SRI) algorithm prefixes aube accepts in
+/// `dist.integrity`. sha512 is what modern registries emit; sha1 is
+/// kept for legacy packages (e.g. `co@4.6.0`) that were published
+/// before npm's 2017 SRI rollout and never had their metadata rewritten.
+const SRI_PREFIXES: &[(&str, IntegrityAlgo)] = &[
+    ("sha512-", IntegrityAlgo::Sha512),
+    ("sha384-", IntegrityAlgo::Sha384),
+    ("sha256-", IntegrityAlgo::Sha256),
+    ("sha1-", IntegrityAlgo::Sha1),
+];
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum IntegrityAlgo {
+    Sha1,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl IntegrityAlgo {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Sha1 => "sha1-",
+            Self::Sha256 => "sha256-",
+            Self::Sha384 => "sha384-",
+            Self::Sha512 => "sha512-",
+        }
+    }
+}
+
+fn parse_sri(expected: &str) -> Option<(IntegrityAlgo, &str)> {
+    SRI_PREFIXES
+        .iter()
+        .find_map(|(prefix, algo)| expected.strip_prefix(prefix).map(|rest| (*algo, rest)))
+}
 
 pub const CACHE_DIR_NAME: &str = "aube-cache";
 pub const INDEX_SUBDIR: &str = "index";
@@ -138,8 +175,9 @@ impl Store {
 
     /// Load a cached package index, if it exists.
     ///
-    /// `integrity`, when `Some`, is the registry-advertised
-    /// `sha512-<base64>` of the tarball these cache files came from —
+    /// `integrity`, when `Some`, is the registry-advertised SRI
+    /// digest (`sha512-`, or legacy `sha1-` / `sha256-` / `sha384-`)
+    /// of the tarball these cache files came from —
     /// part of the cache key so the same `(name, version)` resolved
     /// from different sources (npm registry vs. github codeload vs. a
     /// proxy that served different bytes) can't alias on disk and
@@ -932,35 +970,63 @@ pub fn validate_version(version: &str) -> bool {
     true
 }
 
-/// Verify that data matches an integrity hash (e.g., "sha512-<base64>").
-/// Returns Ok(()) if valid, Err with details if mismatch.
+/// Verify that data matches an SRI integrity hash. Accepts any of
+/// `sha512-` / `sha384-` / `sha256-` / `sha1-` prefixed base64 digests
+/// — the set npm and pnpm accept in `dist.integrity`. Returns `Ok(())`
+/// on match, `Err(Error::Integrity)` on mismatch or unknown algorithm.
 pub fn verify_integrity(data: &[u8], expected: &str) -> Result<(), Error> {
-    let Some(expected_b64) = expected.strip_prefix(SHA512_INTEGRITY_PREFIX) else {
+    let Some((algo, expected_b64)) = parse_sri(expected) else {
         return Err(Error::Integrity(format!(
-            "unsupported integrity format (expected sha512-...): {expected}"
+            "unsupported integrity format (expected sha1/sha256/sha384/sha512-...): {expected}"
         )));
     };
 
-    let actual_bytes = SHA512_HASHER.with(|cell| {
-        let mut hasher = cell.borrow_mut();
-        hasher.reset();
-        hasher.update(data);
-        hasher.finalize_reset()
-    });
+    // Stack-buffer the actual digest (max sha512 = 64 bytes) so the
+    // hot path stays allocation-free. sha512 reuses the thread-local
+    // hasher because it's the common case by 3+ orders of magnitude;
+    // the legacy algorithms one-shot a fresh hasher.
+    let mut actual_buf = [0u8; 64];
+    let actual_len = match algo {
+        IntegrityAlgo::Sha1 => {
+            let d = Sha1::digest(data);
+            actual_buf[..d.len()].copy_from_slice(&d);
+            d.len()
+        }
+        IntegrityAlgo::Sha256 => {
+            let d = Sha256::digest(data);
+            actual_buf[..d.len()].copy_from_slice(&d);
+            d.len()
+        }
+        IntegrityAlgo::Sha384 => {
+            let d = Sha384::digest(data);
+            actual_buf[..d.len()].copy_from_slice(&d);
+            d.len()
+        }
+        IntegrityAlgo::Sha512 => SHA512_HASHER.with(|cell| {
+            let mut hasher = cell.borrow_mut();
+            hasher.reset();
+            hasher.update(data);
+            let d = hasher.finalize_reset();
+            actual_buf[..d.len()].copy_from_slice(&d);
+            d.len()
+        }),
+    };
+    let actual = &actual_buf[..actual_len];
 
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
-    let mut expected_buf = [0u8; 64];
+    let mut expected_digest = [0u8; 64];
     let matched = engine
-        .decode_slice(expected_b64, &mut expected_buf)
-        .map(|n| n == 64 && expected_buf[..] == actual_bytes[..])
+        .decode_slice(expected_b64, &mut expected_digest)
+        .map(|n| n == actual_len && expected_digest[..n] == actual[..])
         .unwrap_or(false);
     if matched {
         Ok(())
     } else {
-        let actual_b64 = engine.encode(actual_bytes);
+        let actual_b64 = engine.encode(actual);
         Err(Error::Integrity(format!(
-            "integrity mismatch: expected sha512-{expected_b64}, got sha512-{actual_b64}"
+            "integrity mismatch: expected {expected}, got {prefix}{actual_b64}",
+            prefix = algo.prefix(),
         )))
     }
 }
@@ -1040,12 +1106,14 @@ pub fn validate_pkg_content(
     Ok(())
 }
 
-/// Decode a pnpm-style `sha512-<base64>` integrity string into its raw
-/// hex SHA-512 digest. Used by introspection commands that accept the
-/// registry integrity format as an ergonomic input. Returns `None` if
-/// the input isn't a well-formed integrity string.
+/// Decode a pnpm-style SRI integrity string (`sha512-` / `sha384-` /
+/// `sha256-` / `sha1-` + base64) into its raw hex digest. Used by
+/// introspection commands that accept the registry integrity format
+/// as an ergonomic input, and by `index_path` to shard the cache
+/// directory by integrity prefix. Returns `None` if the input isn't a
+/// well-formed SRI integrity string.
 pub fn integrity_to_hex(integrity: &str) -> Option<String> {
-    let b64 = integrity.strip_prefix(SHA512_INTEGRITY_PREFIX)?;
+    let (_, b64) = parse_sri(integrity)?;
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     Some(hex::encode(bytes))
@@ -1539,8 +1607,21 @@ mod tests {
     fn test_integrity_to_hex_invalid() {
         assert!(integrity_to_hex("md5-abc").is_none());
         assert!(integrity_to_hex("notahash").is_none());
-        assert!(integrity_to_hex("sha256-abc").is_none());
         assert!(integrity_to_hex("").is_none());
+    }
+
+    #[test]
+    fn test_integrity_to_hex_sha1() {
+        // `co@4.6.0`'s real registry integrity.
+        let hex = integrity_to_hex("sha1-bqa989hTrlTMuOR7+gvz+QMfsYQ=").unwrap();
+        assert_eq!(hex.len(), 40);
+        assert_eq!(hex, "6ea6bdf3d853ae54ccb8e47bfa0bf3f9031fb184");
+    }
+
+    #[test]
+    fn test_integrity_to_hex_sha256() {
+        let hex = integrity_to_hex("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=").unwrap();
+        assert_eq!(hex.len(), 64);
     }
 
     #[test]
@@ -1606,6 +1687,43 @@ mod tests {
         let result = verify_integrity(b"test", "md5-abc123");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn test_verify_integrity_sha1_valid() {
+        // SRI sha1- tarballs exist for legacy packages like co@4.6.0;
+        // aube must still install them, so this is a regression guard.
+        let data = b"hello world";
+        let hash = Sha1::digest(data);
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hash);
+        assert!(verify_integrity(data, &format!("sha1-{b64}")).is_ok());
+    }
+
+    #[test]
+    fn test_verify_integrity_sha1_mismatch() {
+        let result = verify_integrity(b"hello world", "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("integrity mismatch"));
+        assert!(err.contains("sha1-"));
+    }
+
+    #[test]
+    fn test_verify_integrity_sha256_valid() {
+        let data = b"hello world";
+        let hash = Sha256::digest(data);
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hash);
+        assert!(verify_integrity(data, &format!("sha256-{b64}")).is_ok());
+    }
+
+    #[test]
+    fn test_verify_integrity_sha384_valid() {
+        let data = b"hello world";
+        let hash = Sha384::digest(data);
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hash);
+        assert!(verify_integrity(data, &format!("sha384-{b64}")).is_ok());
     }
 
     #[test]
