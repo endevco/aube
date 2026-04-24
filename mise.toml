@@ -51,12 +51,15 @@ run = [
 # the repo in-place. Commit the updated JSON and the chart on the
 # VitePress benchmarks page picks it up automatically — the page's
 # data loader at `docs/benchmarks.data.ts` reads it at build time.
+# The final step rewrites the BENCH_RATIOS block in README.md so the
+# landing-page ratios stay in sync with the JSON.
 [tasks."bench:bump"]
 dir = "{{config_root}}"
 env = { RUNS = "10", WARMUP = "3", RESULTS_JSON = "{{config_root}}/benchmarks/results.json", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit" }
 run = [
   "cargo build --release",
   "mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
+  "node benchmarks/update-readme.mjs",
 ]
 
 [tasks.render]

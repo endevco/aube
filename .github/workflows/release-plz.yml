@@ -251,6 +251,23 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         run: "mise run render ::: lint-fix"
 
+      # Refresh benchmarks/results.json and the README ratios against
+      # the freshly bumped version. Hermetic Verdaccio + throttle proxy
+      # (wired in the mise task), so numbers are reproducible across
+      # runners. The registry cache is persisted so only the first run
+      # per cache key has to fetch packages from npmjs. Gated by
+      # `changed == 'true'` so we don't spend 6+ minutes per push when
+      # there's no release PR to update.
+      - name: Restore hermetic bench registry cache
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/aube-bench/registry
+          key: aube-bench-registry-${{ runner.os }}-v1
+      - name: Refresh benchmarks
+        if: steps.update.outputs.changed == 'true'
+        run: mise run bench:bump
+
       # Bump release.json so the docs homepage's "Released at" line
       # tracks the new version. `releasedAt` is set to "now" on every
       # PR regeneration, and since this workflow re-runs on every push
