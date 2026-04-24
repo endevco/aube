@@ -87,9 +87,13 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
 
     // npm/pnpm order: `preversion` fires BEFORE the manifest is
     // rewritten so the script sees the outgoing version and can
-    // abort the bump (e.g. "refuse to bump while tests are red").
+    // abort the bump (e.g. "refuse to bump while tests are red"). We
+    // re-read the manifest between each hook so `npm_package_version`
+    // reflects the right state of the world — preversion sees the
+    // old version, version/postversion see the new one.
     if !args.ignore_scripts {
-        super::pack::run_root_lifecycle_script(&cwd, "preversion").await?;
+        let manifest = super::pack::read_root_manifest(&cwd)?;
+        super::pack::run_root_lifecycle_script(&cwd, &manifest, "preversion").await?;
     }
 
     let updated = replace_version(&raw, &new_version)
@@ -103,7 +107,8 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
     // `version: 'git add CHANGELOG.md'`) so they're included in the
     // version tag's tree. Matches npm docs.
     if !args.ignore_scripts {
-        super::pack::run_root_lifecycle_script(&cwd, "version").await?;
+        let manifest = super::pack::read_root_manifest(&cwd)?;
+        super::pack::run_root_lifecycle_script(&cwd, &manifest, "version").await?;
     }
 
     // Skip git ops when the version hasn't actually changed (e.g.
@@ -126,10 +131,14 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
         )?;
     }
 
-    // `postversion` fires last — after the tag is pushed into the git
-    // history. Common idiom is `postversion: 'git push && git push --tags'`.
+    // `postversion` fires last — after the git commit + tag (if any;
+    // `--no-git-tag-version` or a clean-same-version run skips that
+    // step, in which case postversion just fires after the manifest
+    // write). Common idiom when tagging is enabled is
+    // `postversion: 'git push && git push --tags'`.
     if !args.ignore_scripts {
-        super::pack::run_root_lifecycle_script(&cwd, "postversion").await?;
+        let manifest = super::pack::read_root_manifest(&cwd)?;
+        super::pack::run_root_lifecycle_script(&cwd, &manifest, "postversion").await?;
     }
 
     if args.json {

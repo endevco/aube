@@ -127,7 +127,9 @@ pub async fn run(args: PackArgs) -> miette::Result<()> {
 /// Run `prepack` then `prepare` against the root manifest, in npm's
 /// documented order. No-op under `--ignore-scripts`, and silently
 /// skips scripts that aren't defined. Shared with `aube publish` so
-/// the two commands can't drift on the pack-time lifecycle.
+/// the two commands can't drift on the pack-time lifecycle. The
+/// manifest is read once here so callers that chain multiple hooks
+/// don't re-parse `package.json` on every call.
 pub(crate) async fn run_pack_lifecycle_pre(
     project_root: &Path,
     ignore_scripts: bool,
@@ -135,8 +137,9 @@ pub(crate) async fn run_pack_lifecycle_pre(
     if ignore_scripts {
         return Ok(());
     }
-    run_root_lifecycle_script(project_root, "prepack").await?;
-    run_root_lifecycle_script(project_root, "prepare").await?;
+    let manifest = read_root_manifest(project_root)?;
+    run_root_lifecycle_script(project_root, &manifest, "prepack").await?;
+    run_root_lifecycle_script(project_root, &manifest, "prepare").await?;
     Ok(())
 }
 
@@ -149,29 +152,38 @@ pub(crate) async fn run_pack_lifecycle_post(
     if ignore_scripts {
         return Ok(());
     }
-    run_root_lifecycle_script(project_root, "postpack").await?;
+    let manifest = read_root_manifest(project_root)?;
+    run_root_lifecycle_script(project_root, &manifest, "postpack").await?;
     Ok(())
+}
+
+/// Read and parse the root `package.json`. Shared helper so the
+/// lifecycle paths (pack/publish/version) all surface the same error
+/// context when the manifest is missing or malformed.
+pub(crate) fn read_root_manifest(project_root: &Path) -> miette::Result<PackageJson> {
+    PackageJson::from_path(&project_root.join("package.json"))
+        .map_err(miette::Report::new)
+        .wrap_err("failed to read package.json")
 }
 
 /// Run a single named root-package lifecycle script. Wraps
 /// `aube_scripts::run_root_script_by_name` with our standard
 /// `modulesDir` + error mapping, and ensures the process-wide
 /// `ScriptSettings` are populated from the project's npmrc/workspace
-/// config before we spawn.
+/// config before we spawn. The manifest is passed in so callers that
+/// chain multiple hooks can share a single parse.
 pub(crate) async fn run_root_lifecycle_script(
     project_root: &Path,
+    manifest: &PackageJson,
     script_name: &str,
 ) -> miette::Result<()> {
-    let manifest = PackageJson::from_path(&project_root.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
     if !manifest.scripts.contains_key(script_name) {
         return Ok(());
     }
     super::configure_script_settings_for_cwd(project_root)?;
     let modules_dir_name = super::resolve_modules_dir_name_for_cwd(project_root);
     tracing::debug!("lifecycle: {script_name}");
-    aube_scripts::run_root_script_by_name(project_root, &modules_dir_name, &manifest, script_name)
+    aube_scripts::run_root_script_by_name(project_root, &modules_dir_name, manifest, script_name)
         .await
         .map_err(|e| miette!("root `{script_name}` script failed: {e}"))?;
     Ok(())

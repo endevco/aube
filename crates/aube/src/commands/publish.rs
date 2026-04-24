@@ -413,9 +413,9 @@ async fn publish_one(
         // their `prepublishOnly` / `prepack` / `prepare` scripts without
         // hitting the registry, matching pnpm. `publish` / `postpublish`
         // are skipped — nothing was actually uploaded.
-        run_publish_lifecycle_pre(pkg_dir, args.ignore_scripts).await?;
+        run_publish_lifecycle_pre(pkg_dir, &manifest, args.ignore_scripts).await?;
         let archive = build_archive(pkg_dir)?;
-        run_publish_lifecycle_postpack(pkg_dir, args.ignore_scripts).await?;
+        super::pack::run_pack_lifecycle_post(pkg_dir, args.ignore_scripts).await?;
         // `--dry-run --provenance` is a common "does my CI actually have
         // OIDC wired up?" smoke test. Silently skipping the OIDC probe
         // here would give a false green light — so we run the ambient
@@ -465,9 +465,9 @@ async fn publish_one(
     // we're actually going to PUT. For a re-run of `-r publish` where
     // every package is already on the registry, the loop never reaches
     // this point and the whole fanout is script-free and gzip-free.
-    run_publish_lifecycle_pre(pkg_dir, args.ignore_scripts).await?;
+    run_publish_lifecycle_pre(pkg_dir, &manifest, args.ignore_scripts).await?;
     let archive = build_archive(pkg_dir)?;
-    run_publish_lifecycle_postpack(pkg_dir, args.ignore_scripts).await?;
+    super::pack::run_pack_lifecycle_post(pkg_dir, args.ignore_scripts).await?;
 
     // Sigstore signing is the one step here that can take seconds
     // (Fulcio + Rekor + optional TSA round-trips), so we do it *before*
@@ -527,7 +527,7 @@ async fn publish_one(
         return Err(miette!("publish failed: {status}: {}", body.trim()));
     }
 
-    run_publish_lifecycle_post(pkg_dir, args.ignore_scripts).await?;
+    run_publish_lifecycle_post(pkg_dir, &manifest, args.ignore_scripts).await?;
 
     Ok(PublishOutcome {
         name,
@@ -543,35 +543,37 @@ async fn publish_one(
 /// being uploaded — the "already on registry" skip path avoids all of
 /// this so `aube -r publish` remains idempotent. `prepublish` is
 /// deprecated by npm but pnpm still runs it on publish, so we match
-/// pnpm for the common case the discussion in #253 flagged.
-async fn run_publish_lifecycle_pre(pkg_dir: &Path, ignore_scripts: bool) -> miette::Result<()> {
+/// pnpm for the common case the discussion in #253 flagged. The
+/// manifest is threaded through so the whole chain shares a single
+/// parse of `package.json`.
+async fn run_publish_lifecycle_pre(
+    pkg_dir: &Path,
+    manifest: &PackageJson,
+    ignore_scripts: bool,
+) -> miette::Result<()> {
     if ignore_scripts {
         return Ok(());
     }
-    super::pack::run_root_lifecycle_script(pkg_dir, "prepublishOnly").await?;
-    super::pack::run_root_lifecycle_script(pkg_dir, "prepublish").await?;
-    super::pack::run_pack_lifecycle_pre(pkg_dir, false).await
-}
-
-/// `postpack` hook — fires after the tarball is built but before the
-/// upload, matching npm docs ("after the tarball has been generated
-/// but before it is moved to its final destination").
-async fn run_publish_lifecycle_postpack(
-    pkg_dir: &Path,
-    ignore_scripts: bool,
-) -> miette::Result<()> {
-    super::pack::run_pack_lifecycle_post(pkg_dir, ignore_scripts).await
+    super::pack::run_root_lifecycle_script(pkg_dir, manifest, "prepublishOnly").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, manifest, "prepublish").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, manifest, "prepack").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, manifest, "prepare").await?;
+    Ok(())
 }
 
 /// Post-upload chain for publish: `publish` → `postpublish`. These
 /// run only after a successful PUT — a non-2xx response short-circuits
 /// out before we get here, matching pnpm.
-async fn run_publish_lifecycle_post(pkg_dir: &Path, ignore_scripts: bool) -> miette::Result<()> {
+async fn run_publish_lifecycle_post(
+    pkg_dir: &Path,
+    manifest: &PackageJson,
+    ignore_scripts: bool,
+) -> miette::Result<()> {
     if ignore_scripts {
         return Ok(());
     }
-    super::pack::run_root_lifecycle_script(pkg_dir, "publish").await?;
-    super::pack::run_root_lifecycle_script(pkg_dir, "postpublish").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, manifest, "publish").await?;
+    super::pack::run_root_lifecycle_script(pkg_dir, manifest, "postpublish").await?;
     Ok(())
 }
 
