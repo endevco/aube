@@ -85,26 +85,31 @@ when_to_use_release:
     - shipping release-only asserts that don't exist in debug — keep invariants consistent across profiles
 
 commits:
-  format: <area>(<subscope>): <description>
-  style: lowercase after colon, imperative mood, concise, subject typically <=80 chars (p95 in history is 73), usually no body
-  areas_crates[10]: cli, resolver, registry, lockfile, store, linker, manifest, scripts, workspace, settings
-  areas_features[12]: install, add, publish, dlx, audit, login, logout, deprecate, unpublish, fetch, import, catalog
-  areas_infra[8]: ci, docs, bench, test, packaging, release, chore, refactor
-  subscopes_examples[5]: lockfile(yarn), bench(hermetic), ci(release-plz), docs(home), fix(dlx)
-  fallback: feat, fix (accepted history uses feat(cli) and fix(dlx) freely, subsystem prefix still preferred when it fits)
+  format: <type>(<scope>): <description>
+  style: conventional commits — lowercase after colon, imperative mood, concise, subject typically <=80 chars (p95 in history is 73), usually no body
+  why: PR titles drive release-plz version bumps (feat→minor, fix→patch, BREAKING CHANGE/`!` →major, others→no bump). enforced by .github/workflows/semantic-pr-lint.yml on PR title via amannn/action-semantic-pull-request
+  types[12]: fix, feat, refactor, chore, docs, style, test, perf, build, ci, revert, security
+  scope_optional: true (omit for repo-wide changes like `chore: release v1.2.0`)
+  scope_enforcement: advisory — the lint workflow only validates `type`, not `scope`. lists below are the conventional set, but new crates/features can introduce new scopes without a workflow change. release-plz keys off `type` only
+  scopes_crates[10]: cli, resolver, registry, lockfile, store, linker, manifest, scripts, workspace, settings
+  scopes_features[12]: install, add, publish, dlx, audit, login, logout, deprecate, unpublish, fetch, import, catalog
+  scopes_infra[5]: bench, packaging, release, deps, release-plz
+  breaking: append `!` after type/scope (e.g. `feat(resolver)!: drop yarn classic`) or include `BREAKING CHANGE:` footer in body. release-plz will cut a major bump
   body_rules: reserve body for breaking changes, security fixes, benchmark tables, non-obvious WHY. wrap 72, use - not *
   pr_numbers: never type (#NN) yourself, GitHub squash-merge appends them automatically
+  pr_titles: must match the same `<type>(<scope>): <desc>` format — the lint workflow blocks merges that don't
   forbidden[2]:
     - "[codex]" or tool-branding prefix in subject
     - emoji in commit subject
   trailers_accepted: Co-authored-by (agents + bots are normal aube history, 50+ commits use them)
-  examples[6]:
-    - cli: add aubr/aubx multicall shims for run and dlx
-    - resolver: preserve npm-alias as folder name on fresh resolve
-    - store: swap CAS hash from SHA-512 to BLAKE3
-    - lockfile(yarn): add yarn berry (v2+) parse + write support
-    - bench(hermetic): warm registry with every PM, pin via .npmrc
+  examples[7]:
+    - feat(cli): add aubr/aubx multicall shims for run and dlx
+    - fix(resolver): preserve npm-alias as folder name on fresh resolve
+    - refactor(store): swap CAS hash from SHA-512 to BLAKE3
+    - feat(lockfile): add yarn berry (v2+) parse + write support
+    - perf(bench): warm registry with every PM, pin via .npmrc
     - chore: release v1.0.0-beta.4
+    - feat(resolver)!: drop yarn classic lockfile support
 
 progress_ui:
   lib: clx::progress
