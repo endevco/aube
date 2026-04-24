@@ -103,6 +103,7 @@ jobs:
           token: ${{ secrets.AUBE_GH_TOKEN }}
       - name: Resolve uploaded archive
         id: archive
+        shell: bash
         env:
           MACOS_TAR: ${{ steps.upload-macos.outputs.tar }}
           UNIX_TAR: ${{ steps.upload-non-macos.outputs.tar }}
