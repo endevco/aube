@@ -3115,14 +3115,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         )?;
         // Root importer's own `bin` (discussion #228). Runs after
         // `link_bins` so a self-bin overrides a same-named dep bin.
+        // Self-bin targets are files in the importer's own tree — often
+        // build outputs that don't exist at install time, or are
+        // later restored from an `actions/upload-artifact` round-trip
+        // that strips the POSIX exec bit. A POSIX shim (shell script
+        // that invokes `node`) is itself `+x` and does not rely on
+        // the target's exec bit, so `aube run` works in both flows.
         if let Some(bin) = manifest.extra.get("bin") {
             let root_bin_dir = cwd.join(&modules_dir_name).join(".bin");
+            let self_shim_opts = aube_linker::BinShimOptions {
+                prefer_symlinked_executables: Some(false),
+                ..shim_opts
+            };
             link_bin_entries(
                 &root_bin_dir,
                 &cwd,
                 manifest.name.as_deref(),
                 bin,
-                shim_opts,
+                self_shim_opts,
             )?;
         }
         if has_workspace {
@@ -3158,16 +3168,22 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 }
                 // Workspace member's own `bin` (discussion #228). `manifests`
                 // was parsed once upstream and keys by importer relpath.
+                // See the root self-bin call site for why this forces a
+                // POSIX shim instead of a symlink.
                 if let Some((_, member_manifest)) =
                     manifests.iter().find(|(p, _)| p == importer_path)
                     && let Some(bin) = member_manifest.extra.get("bin")
                 {
+                    let self_shim_opts = aube_linker::BinShimOptions {
+                        prefer_symlinked_executables: Some(false),
+                        ..shim_opts
+                    };
                     link_bin_entries(
                         &bin_dir,
                         &pkg_dir,
                         member_manifest.name.as_deref(),
                         bin,
-                        shim_opts,
+                        self_shim_opts,
                     )?;
                 }
             }

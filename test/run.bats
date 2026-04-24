@@ -264,6 +264,56 @@ JSON
 	assert_output --partial "bar!"
 }
 
+# discussion #228 follow-up: the bin target is often a build output
+# restored from `actions/upload-artifact` / `download-artifact`, which
+# strips the POSIX exec bit. A symlink-based self-bin would then hit
+# `Permission denied` at exec time. Writing a POSIX shim makes the
+# target's exec bit irrelevant.
+@test "aube run self-bin works when target lacks exec bit" {
+	mkdir -p dist
+	cat >dist/bin.js <<'EOF'
+#!/usr/bin/env node
+console.log("built-bin")
+EOF
+	chmod -x dist/bin.js
+	cat >package.json <<'JSON'
+{
+  "name": "built-cli",
+  "version": "1.0.0",
+  "bin": "./dist/bin.js",
+  "scripts": { "self": "built-cli" }
+}
+JSON
+	aube install
+	run aube run self
+	assert_success
+	assert_output --partial "built-bin"
+}
+
+# Matches the tstyche CI flow: `aube ci` runs before `dist/` is
+# materialized (later downloaded from an artifact), so the self-bin
+# target does not exist at install time.
+@test "aube run self-bin works when target is absent at install time" {
+	cat >package.json <<'JSON'
+{
+  "name": "artifact-cli",
+  "version": "1.0.0",
+  "bin": "./dist/bin.js",
+  "scripts": { "self": "artifact-cli" }
+}
+JSON
+	aube install
+	mkdir -p dist
+	cat >dist/bin.js <<'EOF'
+#!/usr/bin/env node
+console.log("late-bin")
+EOF
+	chmod -x dist/bin.js
+	run aube run self
+	assert_success
+	assert_output --partial "late-bin"
+}
+
 @test "aube run resolves workspace member's own bin" {
 	cat >package.json <<'JSON'
 { "name": "root", "version": "1.0.0" }
