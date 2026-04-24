@@ -120,9 +120,6 @@ fn run_global(args: ApproveBuildsArgs) -> miette::Result<()> {
     let mut approved = 0usize;
     let mut written_dirs = 0usize;
     for (install_dir, names) in selected {
-        if names.is_empty() {
-            continue;
-        }
         let written =
             aube_manifest::workspace::add_to_only_built_dependencies(&install_dir, &names)
                 .into_diagnostic()
@@ -139,10 +136,6 @@ fn run_global(args: ApproveBuildsArgs) -> miette::Result<()> {
         }
     }
 
-    if approved == 0 {
-        println!("No packages selected.");
-        return Ok(());
-    }
     println!("Approved {approved} package(s) across {written_dirs} global install(s).");
     println!("Run `aube -C <global-install-dir> install` (or `rebuild`) to execute their scripts.");
     Ok(())
@@ -286,6 +279,8 @@ fn pick_global_interactively(
     for (idx, entry) in global_ignored.iter().enumerate() {
         let aliases = entry.aliases.join(", ");
         for ignored in &entry.ignored {
+            // split_once below keeps the full package name even if a
+            // private registry allows ':' inside it.
             let value = format!("{idx}:{}", ignored.name);
             let label = format!("{aliases}: {}@{}", ignored.name, ignored.version);
             picker = picker.option(demand::DemandOption::new(value).label(&label));
