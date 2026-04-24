@@ -26,7 +26,6 @@ repository = "https://github.com/endevco/aube"
 homepage = "https://github.com/endevco/aube"
 
 [workspace.dependencies]
-aube-util = { path = "crates/aube-util" }
 tokio = { version = "1", features = ["full"] }
 
 # Serialization
@@ -122,3 +121,4 @@ aube-lockfile = { path = "crates/aube-lockfile", version = "1.1.0" }
 aube-manifest = { path = "crates/aube-manifest", version = "1.1.0" }
 aube-scripts = { path = "crates/aube-scripts", version = "1.1.0" }
 aube-workspace = { path = "crates/aube-workspace", version = "1.1.0" }
+aube-util = { path = "crates/aube-util", version = "1.1.0" }
