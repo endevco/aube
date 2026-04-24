@@ -62,13 +62,14 @@ const PACKUMENT_ACCEPT: &str =
 /// `PACKUMENT_ACCEPT` — some proxies won't serve JSON unless it's in the list.
 const PACKUMENT_FULL_ACCEPT: &str = "application/json; q=1.0, */*";
 
-/// Hard cap on a packument response body, compressed or not. A hostile
-/// registry (or MITM with a valid cert on a compromised mirror) could
-/// otherwise stream gigabytes of JSON into the resolver and OOM the
-/// whole install. 64 MiB is ~10x the largest packument on npmjs today
-/// (`@types/node`, `lodash`, `chalk` all land well under 6 MiB) so the
-/// cap is a loud failure if reality ever tries to exceed it.
-const PACKUMENT_BODY_CAP: u64 = 64 << 20;
+// Packument body cap — now configurable via the `packumentMaxBytes`
+// setting. Default lives in `FetchPolicy::default()`. See the
+// corresponding settings.toml entry for the full rationale; in short,
+// this prevents a hostile registry (or MITM on a compromised mirror)
+// from streaming gigabytes of JSON into the resolver and OOMing the
+// install, while letting projects that depend on packages with long
+// release histories (e.g. drizzle-orm, which already exceeds 64 MiB)
+// raise the cap rather than hardcode it out of the way.
 
 /// Hard cap on a tarball response body (still compressed on the wire).
 /// The decompressed cap in `aube-store` (1 GiB) only fires after the
@@ -618,7 +619,7 @@ impl RegistryClient {
                     let (etag, last_modified) = extract_cache_headers(&resp);
                     let max_age_secs = parse_cache_control_max_age(&resp);
                     let resp = resp.error_for_status()?;
-                    check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
+                    check_body_cap(&resp, self.fetch_policy.packument_max_bytes, &label)?;
                     match parse_full_response::<serde_json::Value>(resp).await {
                         Ok(packument) => {
                             let to_cache = CachedFullPackument {
@@ -901,7 +902,7 @@ impl RegistryClient {
                     let max_age_secs = parse_cache_control_max_age(&resp);
 
                     let resp = resp.error_for_status()?;
-                    check_body_cap(&resp, PACKUMENT_BODY_CAP, &label)?;
+                    check_body_cap(&resp, self.fetch_policy.packument_max_bytes, &label)?;
                     match parse_full_response::<Packument>(resp).await {
                         Ok(packument) => {
                             let to_cache = CachedPackument {
@@ -1046,7 +1047,7 @@ impl RegistryClient {
             return Err(Error::NotFound(name.to_string()));
         }
         let resp = resp.error_for_status()?;
-        check_body_cap(&resp, PACKUMENT_BODY_CAP, "packument")?;
+        check_body_cap(&resp, self.fetch_policy.packument_max_bytes, "packument")?;
         let value: serde_json::Value = resp.json().await?;
         Ok(value)
     }
@@ -1376,7 +1377,15 @@ fn force_full_packument() -> bool {
 /// cap-while-reading variant is left for a follow-up, since it needs
 /// a `futures` / `tokio-stream` dep that the crate does not yet pull
 /// in.
+///
+/// A `cap` of `0` disables the check entirely — an escape hatch for
+/// users who need to pull packuments that exceed the default (e.g.
+/// packages with very long release histories) and accept the DoS
+/// exposure on the trusted-registry side.
 fn check_body_cap(resp: &reqwest::Response, cap: u64, label: &str) -> Result<(), Error> {
+    if cap == 0 {
+        return Ok(());
+    }
     if let Some(len) = resp.content_length()
         && len > cap
     {
@@ -1833,6 +1842,7 @@ mod retry_tests {
             retry_max_timeout_ms: 1,
             warn_timeout_ms: 1,
             min_speed_kibps: 0,
+            ..FetchPolicy::default()
         };
         let client = client_with(&server, policy);
         let packument = client

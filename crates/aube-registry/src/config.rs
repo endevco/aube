@@ -504,6 +504,14 @@ pub struct FetchPolicy {
     /// this value (KiB/s). `0` disables the warning. As with
     /// `warn_timeout_ms`, we only warn — we never abort the transfer.
     pub min_speed_kibps: u64,
+    /// `packumentMaxBytes` — hard cap on a packument response body.
+    /// Primarily a hardening knob against hostile or misconfigured
+    /// registries. The default (64 MiB) is well above real-world
+    /// packument sizes on npmjs.org, but a few packages with long
+    /// release histories exceed it; raise this setting on projects that
+    /// depend on them. `0` disables the cap entirely (not recommended
+    /// for untrusted registries).
+    pub packument_max_bytes: u64,
 }
 
 impl Default for FetchPolicy {
@@ -519,6 +527,8 @@ impl Default for FetchPolicy {
             retry_max_timeout_ms: 60_000,
             warn_timeout_ms: 10_000,
             min_speed_kibps: 50,
+            // 64 MiB — also the default declared in settings.toml.
+            packument_max_bytes: 64 << 20,
         }
     }
 }
@@ -537,6 +547,7 @@ impl FetchPolicy {
             retry_max_timeout_ms: aube_settings::resolved::fetch_retry_maxtimeout(ctx),
             warn_timeout_ms: aube_settings::resolved::fetch_warn_timeout_ms(ctx),
             min_speed_kibps: aube_settings::resolved::fetch_min_speed_ki_bps(ctx),
+            packument_max_bytes: aube_settings::resolved::packument_max_bytes(ctx),
         }
     }
 

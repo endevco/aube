@@ -1260,6 +1260,34 @@ sources.env = []
 sources.npmrc = ["fetchMinSpeedKiBps"]
 examples = []
 
+[packumentMaxBytes]
+description = "Hard cap on a packument response body size in bytes."
+type = "int"
+default = "67108864"
+docs = """
+Refuses any packument response whose `Content-Length` exceeds this
+many bytes. Primarily a hardening knob: a hostile or misconfigured
+registry (including a MITM on a compromised mirror) could otherwise
+stream gigabytes of JSON into the resolver and OOM the install.
+
+The default (64 MiB) is ~10x larger than the biggest packument on
+`registry.npmjs.org` at the time of writing (`@types/node`, `lodash`,
+`chalk` all land well under 6 MiB), but a few packages with long
+release histories (e.g. `drizzle-orm` at ~97 MiB) already exceed it
+and fail to resolve under the hardcoded cap. Raise this setting on
+projects that depend on such packages; set to `0` to disable the cap
+entirely (not recommended for untrusted registries).
+
+Applies to every packument fetch: corgi and non-corgi variants, the
+cached-resolve path, and the fresh-read path used by `deprecate` /
+`undeprecate`. Tarball downloads are capped separately by a
+hardcoded 1 GiB ceiling in `aube-registry`.
+"""
+sources.cli = []
+sources.env = []
+sources.npmrc = ["packumentMaxBytes"]
+examples = []
+
 # ========================================= Peer Dependencies =========================================
 
 [autoInstallPeers]
