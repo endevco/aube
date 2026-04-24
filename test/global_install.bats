@@ -138,6 +138,41 @@ teardown() {
 	assert_output --partial "semver 7.7.4"
 }
 
+@test "aube ignored-builds -g lists skipped global dependency builds" {
+	run aube add -g aube-test-builds-marker@1.0.0
+	assert_success
+	assert_output --partial "ignored build scripts"
+
+	run aube ignored-builds -g
+	assert_success
+	assert_output --partial "The following global builds were ignored"
+	assert_output --partial "aube-test-builds-marker@1.0.0"
+}
+
+@test "aube approve-builds -g --all writes approvals into global installs" {
+	run aube add -g aube-test-builds-marker@1.0.0
+	assert_success
+
+	pkg_dir="$AUBE_HOME/global-aube"
+	install_dir="$(find "$pkg_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+	assert_file_not_exists "$install_dir/aube-builds-marker.txt"
+
+	run aube approve-builds -g --all
+	assert_success
+	assert_output --partial "aube-test-builds-marker"
+	assert_output --partial "global install"
+
+	assert_file_exists "$install_dir/pnpm-workspace.yaml"
+	run grep -q '^onlyBuiltDependencies:' "$install_dir/pnpm-workspace.yaml"
+	assert_success
+	run grep -q '  - aube-test-builds-marker' "$install_dir/pnpm-workspace.yaml"
+	assert_success
+
+	run aube -C "$install_dir" rebuild
+	assert_success
+	assert_file_exists "$install_dir/aube-builds-marker.txt"
+}
+
 @test "aube remove -g on a missing package errors" {
 	run aube remove -g nonexistent-pkg
 	assert_failure

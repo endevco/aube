@@ -10,7 +10,7 @@
 //! Pure read — no network, no writes, no project lock.
 
 use clap::Args;
-use miette::{Context, IntoDiagnostic, miette};
+use miette::{Context, IntoDiagnostic};
 use std::collections::BTreeSet;
 
 pub const AFTER_LONG_HELP: &str = "\
@@ -38,9 +38,7 @@ pub struct IgnoredBuildsArgs {
 
 pub async fn run(args: IgnoredBuildsArgs) -> miette::Result<()> {
     if args.global {
-        return Err(miette!(
-            "`--global` is not yet implemented for `ignored-builds`"
-        ));
+        return run_global();
     }
 
     let cwd = crate::dirs::project_root()?;
@@ -54,6 +52,41 @@ pub async fn run(args: IgnoredBuildsArgs) -> miette::Result<()> {
     println!("The following builds were ignored during install:");
     for entry in &ignored {
         println!("  {}@{}", entry.name, entry.version);
+    }
+    Ok(())
+}
+
+fn run_global() -> miette::Result<()> {
+    let layout = super::global::GlobalLayout::resolve()?;
+    let mut installs = super::global::scan_packages(&layout.pkg_dir);
+    installs.sort_by(|a, b| a.install_dir.cmp(&b.install_dir));
+
+    let mut printed = false;
+    let mut seen = std::collections::BTreeSet::new();
+    for info in installs {
+        if !seen.insert(info.install_dir.clone()) {
+            continue;
+        }
+        let ignored = collect_ignored(&info.install_dir)?;
+        if ignored.is_empty() {
+            continue;
+        }
+        if !printed {
+            println!("The following global builds were ignored during install:");
+            printed = true;
+        }
+        println!(
+            "  {} ({})",
+            info.aliases.join(", "),
+            info.install_dir.display()
+        );
+        for entry in &ignored {
+            println!("    {}@{}", entry.name, entry.version);
+        }
+    }
+
+    if !printed {
+        println!("No ignored builds.");
     }
     Ok(())
 }

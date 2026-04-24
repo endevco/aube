@@ -18,7 +18,9 @@
 
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::IsTerminal;
+use std::path::Path;
 
 #[derive(Debug, Args)]
 pub struct ApproveBuildsArgs {
@@ -39,32 +41,129 @@ pub struct ApproveBuildsArgs {
 
 pub async fn run(args: ApproveBuildsArgs) -> miette::Result<()> {
     if args.global {
-        return Err(miette!(
-            "`--global` is not yet implemented for `approve-builds`"
-        ));
+        return run_global(args);
     }
 
     let cwd = crate::dirs::project_root()?;
     let _lock = super::take_project_lock(&cwd)?;
+    run_project(&cwd, args.all, args.packages)
+}
 
-    let ignored = super::ignored_builds::collect_ignored(&cwd)?;
+fn run_project(cwd: &Path, all: bool, packages: Vec<String>) -> miette::Result<()> {
+    let ignored = super::ignored_builds::collect_ignored(cwd)?;
     if ignored.is_empty() {
         println!("No ignored builds to approve.");
         return Ok(());
     }
 
-    let selected: Vec<String> = if args.all {
+    let selected = select_project(&ignored, all, packages)?;
+
+    if selected.is_empty() {
+        println!("No packages selected.");
+        return Ok(());
+    }
+
+    let written = aube_manifest::workspace::add_to_only_built_dependencies(cwd, &selected)
+        .into_diagnostic()
+        .wrap_err("failed to update workspace yaml")?;
+
+    let rel = written
+        .strip_prefix(cwd)
+        .unwrap_or(written.as_path())
+        .display();
+    println!("Approved {} package(s) in {rel}:", selected.len());
+    for name in &selected {
+        println!("  {name}");
+    }
+    println!("Run `aube install` (or `aube rebuild`) to execute their scripts.");
+    Ok(())
+}
+
+fn run_global(args: ApproveBuildsArgs) -> miette::Result<()> {
+    let global_ignored = collect_global_ignored()?;
+    if global_ignored.is_empty() {
+        println!("No ignored builds to approve.");
+        return Ok(());
+    }
+
+    let selected = if args.all {
         if !args.packages.is_empty() {
             return Err(miette!(
                 "`--all` and positional package names are mutually exclusive"
             ));
         }
-        ignored.iter().map(|e| e.name.clone()).collect()
+        global_ignored
+            .iter()
+            .map(|entry| {
+                (
+                    entry.install_dir.clone(),
+                    entry.ignored.iter().map(|i| i.name.clone()).collect(),
+                )
+            })
+            .collect()
     } else if !args.packages.is_empty() {
-        let known: std::collections::HashSet<&str> =
-            ignored.iter().map(|e| e.name.as_str()).collect();
-        let unknown: Vec<&str> = args
-            .packages
+        select_global_packages(&global_ignored, args.packages)?
+    } else {
+        if !std::io::stdin().is_terminal() {
+            return Err(miette!(
+                "approve-builds needs a TTY for the interactive picker; pass `--all` or name packages positionally to approve non-interactively"
+            ));
+        }
+        pick_global_interactively(&global_ignored)?
+    };
+
+    if selected.is_empty() {
+        println!("No packages selected.");
+        return Ok(());
+    }
+
+    let mut approved = 0usize;
+    let mut written_dirs = 0usize;
+    for (install_dir, names) in selected {
+        if names.is_empty() {
+            continue;
+        }
+        let written =
+            aube_manifest::workspace::add_to_only_built_dependencies(&install_dir, &names)
+                .into_diagnostic()
+                .wrap_err("failed to update global install workspace yaml")?;
+        written_dirs += 1;
+        approved += names.len();
+        println!(
+            "Approved {} package(s) in {}:",
+            names.len(),
+            written.display()
+        );
+        for name in &names {
+            println!("  {name}");
+        }
+    }
+
+    if approved == 0 {
+        println!("No packages selected.");
+        return Ok(());
+    }
+    println!("Approved {approved} package(s) across {written_dirs} global install(s).");
+    println!("Run `aube -C <global-install-dir> install` (or `rebuild`) to execute their scripts.");
+    Ok(())
+}
+
+fn select_project(
+    ignored: &[super::ignored_builds::IgnoredEntry],
+    all: bool,
+    packages: Vec<String>,
+) -> miette::Result<Vec<String>> {
+    if all {
+        if !packages.is_empty() {
+            return Err(miette!(
+                "`--all` and positional package names are mutually exclusive"
+            ));
+        }
+        return Ok(ignored.iter().map(|e| e.name.clone()).collect());
+    }
+    if !packages.is_empty() {
+        let known: HashSet<&str> = ignored.iter().map(|e| e.name.as_str()).collect();
+        let unknown: Vec<&str> = packages
             .iter()
             .filter(|p| !known.contains(p.as_str()))
             .map(String::as_str)
@@ -75,42 +174,88 @@ pub async fn run(args: ApproveBuildsArgs) -> miette::Result<()> {
                 unknown.join(", ")
             ));
         }
-        // Dedupe so `aube approve-builds esbuild esbuild` never writes
-        // the same entry twice. Preserves first-seen order for stable
-        // `pnpm-workspace.yaml` diffs across repeated invocations.
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        args.packages
-            .into_iter()
-            .filter(|p| seen.insert(p.clone()))
-            .collect()
-    } else {
-        if !std::io::stdin().is_terminal() {
-            return Err(miette!(
-                "approve-builds needs a TTY for the interactive picker; pass `--all` or name packages positionally to approve non-interactively"
-            ));
+        return Ok(dedupe(packages));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(miette!(
+            "approve-builds needs a TTY for the interactive picker; pass `--all` or name packages positionally to approve non-interactively"
+        ));
+    }
+    pick_interactively(ignored)
+}
+
+#[derive(Debug)]
+struct GlobalIgnored {
+    install_dir: std::path::PathBuf,
+    aliases: Vec<String>,
+    ignored: Vec<super::ignored_builds::IgnoredEntry>,
+}
+
+fn collect_global_ignored() -> miette::Result<Vec<GlobalIgnored>> {
+    let layout = super::global::GlobalLayout::resolve()?;
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for info in super::global::scan_packages(&layout.pkg_dir) {
+        if !seen.insert(info.install_dir.clone()) {
+            continue;
         }
-        pick_interactively(&ignored)?
-    };
+        let ignored = super::ignored_builds::collect_ignored(&info.install_dir)?;
+        if ignored.is_empty() {
+            continue;
+        }
+        out.push(GlobalIgnored {
+            install_dir: info.install_dir,
+            aliases: info.aliases,
+            ignored,
+        });
+    }
+    out.sort_by(|a, b| a.install_dir.cmp(&b.install_dir));
+    Ok(out)
+}
 
-    if selected.is_empty() {
-        println!("No packages selected.");
-        return Ok(());
+fn select_global_packages(
+    global_ignored: &[GlobalIgnored],
+    packages: Vec<String>,
+) -> miette::Result<BTreeMap<std::path::PathBuf, Vec<String>>> {
+    let wanted = dedupe(packages);
+    let known: HashSet<&str> = global_ignored
+        .iter()
+        .flat_map(|entry| entry.ignored.iter().map(|ignored| ignored.name.as_str()))
+        .collect();
+    let unknown: Vec<&str> = wanted
+        .iter()
+        .filter(|name| !known.contains(name.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(miette!(
+            "not in the ignored-builds set: {}. Run `aube ignored-builds -g` to see candidates.",
+            unknown.join(", ")
+        ));
     }
 
-    let written = aube_manifest::workspace::add_to_only_built_dependencies(&cwd, &selected)
-        .into_diagnostic()
-        .wrap_err("failed to update workspace yaml")?;
-
-    let rel = written
-        .strip_prefix(&cwd)
-        .unwrap_or(written.as_path())
-        .display();
-    println!("Approved {} package(s) in {rel}:", selected.len());
-    for name in &selected {
-        println!("  {name}");
+    let wanted: HashSet<&str> = wanted.iter().map(String::as_str).collect();
+    let mut selected = BTreeMap::new();
+    for entry in global_ignored {
+        let names: Vec<String> = entry
+            .ignored
+            .iter()
+            .filter(|ignored| wanted.contains(ignored.name.as_str()))
+            .map(|ignored| ignored.name.clone())
+            .collect();
+        if !names.is_empty() {
+            selected.insert(entry.install_dir.clone(), names);
+        }
     }
-    println!("Run `aube install` (or `aube rebuild`) to execute their scripts.");
-    Ok(())
+    Ok(selected)
+}
+
+fn dedupe(packages: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    packages
+        .into_iter()
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
 }
 
 /// Show a `demand::MultiSelect` picker seeded with every ignored package
@@ -131,4 +276,41 @@ fn pick_interactively(
         .run()
         .into_diagnostic()
         .wrap_err("failed to read approve-builds selection")
+}
+
+fn pick_global_interactively(
+    global_ignored: &[GlobalIgnored],
+) -> miette::Result<BTreeMap<std::path::PathBuf, Vec<String>>> {
+    let mut picker = demand::MultiSelect::new("Choose which global packages to allow building")
+        .description("Space to toggle, Enter to confirm");
+    for (idx, entry) in global_ignored.iter().enumerate() {
+        let aliases = entry.aliases.join(", ");
+        for ignored in &entry.ignored {
+            let value = format!("{idx}:{}", ignored.name);
+            let label = format!("{aliases}: {}@{}", ignored.name, ignored.version);
+            picker = picker.option(demand::DemandOption::new(value).label(&label));
+        }
+    }
+
+    let picked: Vec<String> = picker
+        .run()
+        .into_diagnostic()
+        .wrap_err("failed to read approve-builds selection")?;
+    let mut selected: BTreeMap<std::path::PathBuf, Vec<String>> = BTreeMap::new();
+    for item in picked {
+        let Some((idx, name)) = item.split_once(':') else {
+            continue;
+        };
+        let Ok(idx) = idx.parse::<usize>() else {
+            continue;
+        };
+        let Some(entry) = global_ignored.get(idx) else {
+            continue;
+        };
+        selected
+            .entry(entry.install_dir.clone())
+            .or_default()
+            .push(name.to_string());
+    }
+    Ok(selected)
 }
