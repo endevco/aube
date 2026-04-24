@@ -214,10 +214,20 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                         Some(LocalSource::Directory(std::path::PathBuf::from(dir)));
                 } else if let (Some(repo), Some(commit)) = (res.repo.as_ref(), res.commit.as_ref())
                 {
+                    // Preserve any `path:` selector that was already
+                    // captured from the importer's `version:` URL —
+                    // the resolution block doesn't always echo it
+                    // (pnpm v9 also encodes the subpath in the
+                    // snapshot key).
+                    let prior_subpath = match &local_pkg.local_source {
+                        Some(LocalSource::Git(g)) => g.subpath.clone(),
+                        _ => None,
+                    };
                     local_pkg.local_source = Some(LocalSource::Git(GitSource {
                         url: repo.clone(),
                         committish: None,
                         resolved: commit.clone(),
+                        subpath: res.path.clone().or(prior_subpath),
                     }));
                 }
             }
@@ -686,6 +696,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 commit: None,
                 repo: None,
                 type_: Some("directory".to_string()),
+                path: None,
             }),
             Some(local @ LocalSource::Tarball(_)) => Some(WritableResolution {
                 integrity: None,
@@ -694,6 +705,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 commit: None,
                 repo: None,
                 type_: None,
+                path: None,
             }),
             Some(LocalSource::Link(_)) => None,
             Some(LocalSource::Git(g)) => Some(WritableResolution {
@@ -703,6 +715,11 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 commit: Some(g.resolved.clone()),
                 repo: Some(g.url.clone()),
                 type_: Some("git".to_string()),
+                // pnpm v9 emits `path: /<sub>` (with leading `/`) on
+                // the resolution block when a git dep was installed
+                // with a `&path:/<sub>` selector. Keep the same shape
+                // so byte-identical round-trips survive.
+                path: g.subpath.as_ref().map(|s| format!("/{s}")),
             }),
             Some(LocalSource::RemoteTarball(t)) => Some(WritableResolution {
                 integrity: if t.integrity.is_empty() {
@@ -715,6 +732,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 commit: None,
                 repo: None,
                 type_: None,
+                path: None,
             }),
             None if url_keyed => {
                 // URL-keyed transitive entries (github overrides, etc.)
@@ -729,6 +747,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                     commit: None,
                     repo: None,
                     type_: None,
+                    path: None,
                 })
             }
             None => pkg.integrity.as_ref().map(|i| WritableResolution {
@@ -748,6 +767,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 commit: None,
                 repo: None,
                 type_: None,
+                path: None,
             }),
         };
         // Mirror pnpm: emit `version:` alongside the resolution block
@@ -1127,6 +1147,10 @@ struct WritableResolution {
     repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
     type_: Option<String>,
+    /// pnpm `&path:/<sub>` selector — emitted with leading `/` to
+    /// match pnpm's own writer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1431,6 +1455,28 @@ struct Resolution {
     #[serde(default, rename = "type")]
     #[allow(dead_code)]
     type_: Option<String>,
+    /// pnpm `&path:/<sub>` selector for git deps. Newer pnpm
+    /// (>= v9.x) emits this on the resolution block in addition to
+    /// encoding it in the snapshot key.
+    #[serde(default, deserialize_with = "deserialize_subpath")]
+    path: Option<String>,
+}
+
+/// Strip the leading `/` from pnpm's `path:` field so the value lines
+/// up with how `parse_git_fragment` stores it.
+fn deserialize_subpath<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = serde::Deserialize::deserialize(de)?;
+    Ok(raw.and_then(|s| {
+        let trimmed = s.trim_start_matches('/');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }))
 }
 
 #[derive(Debug, Deserialize)]

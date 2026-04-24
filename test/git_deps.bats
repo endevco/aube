@@ -168,6 +168,79 @@ EOF
 	[ "$first_lockfile" = "$second_lockfile" ]
 }
 
+# Build a bare git repo whose tree has a `packages/<sub>/package.json`
+# instead of one at the root. Used to exercise the pnpm `&path:/<sub>`
+# selector that narrows a git dep to a subdirectory of the clone.
+_make_git_repo_with_subpath() {
+	local bare="$1" subdir="$2" name="$3" version="$4"
+	local work
+	work="$(temp_make)"
+	(
+		cd "$work" || exit 1
+		git init -q
+		git config commit.gpgsign false
+		# Root-level package.json with a name that does NOT match
+		# what the consumer asks for — so a wrong implementation
+		# (importing the repo root) is detectable as the wrong
+		# `index.js` being missing in the consumer's node_modules.
+		cat >package.json <<EOF
+{"name":"monorepo-root","version":"0.0.0","private":true}
+EOF
+		mkdir -p "$subdir"
+		cat >"$subdir/package.json" <<EOF
+{"name":"$name","version":"$version","main":"index.js"}
+EOF
+		cat >"$subdir/index.js" <<EOF
+module.exports = "from $name subdir";
+EOF
+		git add -A
+		git commit -q -m "init"
+	)
+	git init -q --bare "$bare"
+	(cd "$work" && git push -q "$bare" HEAD:refs/heads/main)
+	(cd "$work" && git rev-parse HEAD)
+}
+
+@test "aube install handles git dep with &path: subpath selector" {
+	sha="$(_make_git_repo_with_subpath "$TEST_TEMP_DIR/git-sub.git" packages/foo gitsubpkg 1.2.3)"
+
+	mkdir -p app
+	cd app
+	cat >package.json <<EOF
+{"name":"app","version":"0.0.0","dependencies":{"gitsubpkg":"git+file://$TEST_TEMP_DIR/git-sub.git#main&path:/packages/foo"}}
+EOF
+
+	run aube install
+	assert_success
+
+	# The dep we get must come from the subdir, not the repo root.
+	# Root's package.json has name "monorepo-root" — if aube ignored
+	# the &path: selector, the consumer's node_modules entry would
+	# be missing index.js (root tree has no index.js).
+	assert_file_exists node_modules/gitsubpkg/package.json
+	assert_file_exists node_modules/gitsubpkg/index.js
+	run cat node_modules/gitsubpkg/package.json
+	assert_output --partial '"name":"gitsubpkg"'
+	assert_output --partial '"version":"1.2.3"'
+	run cat node_modules/gitsubpkg/index.js
+	assert_output --partial 'from gitsubpkg subdir'
+
+	# Lockfile pins the commit AND records the subpath so a
+	# second install (from lockfile alone) reaches the same dir.
+	run cat aube-lock.yaml
+	assert_output --partial "commit: $sha"
+	assert_output --partial "path: /packages/foo"
+
+	# Round-trip: wipe node_modules and install from the existing
+	# lockfile. The subpath must survive parse + re-resolve.
+	rm -rf node_modules
+	run aube install
+	assert_success
+	assert_file_exists node_modules/gitsubpkg/index.js
+	run cat node_modules/gitsubpkg/package.json
+	assert_output --partial '"name":"gitsubpkg"'
+}
+
 @test "git dep with prepare script builds before linking" {
 	sha="$(_make_git_repo_with_prepare "$TEST_TEMP_DIR/git-prep.git" gitprep 1.2.3)"
 

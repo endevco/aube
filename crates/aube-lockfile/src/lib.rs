@@ -222,6 +222,12 @@ pub struct GitSource {
     pub url: String,
     pub committish: Option<String>,
     pub resolved: String,
+    /// pnpm `&path:/sub/dir` selector — when set, only this
+    /// subdirectory of the cloned repo is treated as the package
+    /// root. Stored without leading slash so dep_path hashes are
+    /// stable regardless of whether the user wrote `path:/x` or
+    /// `path:x`.
+    pub subpath: Option<String>,
 }
 
 impl LocalSource {
@@ -267,7 +273,10 @@ impl LocalSource {
     /// separators so the resulting lockfile is portable.
     pub fn specifier(&self) -> String {
         match self {
-            LocalSource::Git(g) => format!("{}#{}", g.url, g.resolved),
+            LocalSource::Git(g) => match &g.subpath {
+                Some(sub) => format!("{}#{}&path:/{}", g.url, g.resolved, sub),
+                None => format!("{}#{}", g.url, g.resolved),
+            },
             LocalSource::RemoteTarball(t) => t.url.clone(),
             _ => format!("{}:{}", self.kind_str(), self.path_posix()),
         }
@@ -296,6 +305,10 @@ impl LocalSource {
                 hasher.update(g.url.as_bytes());
                 hasher.update(b"#");
                 hasher.update(g.resolved.as_bytes());
+                if let Some(sub) = &g.subpath {
+                    hasher.update(b"&path:/");
+                    hasher.update(sub.as_bytes());
+                }
             }
             LocalSource::RemoteTarball(t) => {
                 hasher.update(t.url.as_bytes());
@@ -316,7 +329,7 @@ impl LocalSource {
         // Check git first so URLs like `https://host/user/repo.git`
         // aren't swallowed by the broader bare-http tarball check
         // below.
-        if let Some((url, committish)) = parse_git_spec(spec) {
+        if let Some((url, committish, subpath)) = parse_git_spec(spec) {
             // `resolved` is filled in by the resolver after running
             // `git ls-remote`. A lockfile round-trip that never
             // re-resolves will leave this empty, which is the sentinel
@@ -325,6 +338,7 @@ impl LocalSource {
                 url,
                 committish,
                 resolved: String::new(),
+                subpath,
             }));
         }
         // Any remaining bare `http(s)://` URL is a remote tarball.
@@ -391,10 +405,13 @@ impl LocalSource {
 ///
 /// Returns `None` for any specifier that doesn't look like a git URL,
 /// so the caller can fall through to other protocol parsers.
-pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>)> {
-    let (body, committish) = match spec.find('#') {
-        Some(idx) => (&spec[..idx], normalize_git_fragment(&spec[idx + 1..])),
-        None => (spec, None),
+pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let (body, committish, subpath) = match spec.find('#') {
+        Some(idx) => {
+            let (c, s) = parse_git_fragment(&spec[idx + 1..]);
+            (&spec[..idx], c, s)
+        }
+        None => (spec, None, None),
     };
     let is_bare_transport = body.starts_with("https://")
         || body.starts_with("http://")
@@ -427,7 +444,7 @@ pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>)> {
     } else {
         return None;
     };
-    Some((url, committish))
+    Some((url, committish, subpath))
 }
 
 /// Normalize git URL fragments used by npm-compatible lockfiles.
@@ -438,33 +455,60 @@ pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>)> {
 /// `git checkout`, so strip the selector key here and keep only the
 /// actual ref name or SHA.
 pub(crate) fn normalize_git_fragment(fragment: &str) -> Option<String> {
+    parse_git_fragment(fragment).0
+}
+
+/// Parse a git URL fragment into `(committish, subpath)`. Handles the
+/// pnpm/hosted-git-info form `<ref>&path:/sub/dir` (the `path:` key
+/// uses a colon, not `=`, by historical convention) as well as the
+/// `key=value` form npm/Yarn Berry write. Unknown selectors are
+/// ignored. Subpath is returned without leading slash so the caller
+/// can join it with a clone dir without tripping the absolute-path
+/// branch of `Path::join`.
+pub(crate) fn parse_git_fragment(fragment: &str) -> (Option<String>, Option<String>) {
     if fragment.is_empty() {
-        return None;
+        return (None, None);
     }
 
     let mut fallback: Option<&str> = None;
     let mut preferred: Option<&str> = None;
+    let mut subpath: Option<String> = None;
     for part in fragment.split('&') {
         if part.is_empty() {
             continue;
         }
-        let (key, value) = part.split_once('=').unwrap_or(("", part));
+        // Try `key=value` first; fall back to `key:value` only for
+        // the small set of well-known selectors so a tag name that
+        // happens to contain a colon (e.g. `release:2026-01`) is not
+        // misparsed as a key.
+        let split = part.split_once('=').or_else(|| {
+            part.split_once(':').filter(|(k, _)| {
+                matches!(*k, "commit" | "tag" | "head" | "branch" | "path" | "semver")
+            })
+        });
+        let (key, value) = split.unwrap_or(("", part));
         if value.is_empty() {
             continue;
         }
         match key {
-            "commit" => {
-                preferred = Some(value);
-                break;
+            "commit" => preferred = Some(value),
+            "tag" | "head" | "branch" => {
+                fallback.get_or_insert(value);
             }
-            "tag" | "head" | "branch" | "" => {
+            "path" => {
+                let trimmed = value.trim_start_matches('/');
+                if !trimmed.is_empty() {
+                    subpath = Some(trimmed.to_string());
+                }
+            }
+            "" => {
                 fallback.get_or_insert(value);
             }
             _ => {}
         }
     }
 
-    preferred.or(fallback).map(ToString::to_string)
+    (preferred.or(fallback).map(ToString::to_string), subpath)
 }
 
 /// A single resolved package in the lockfile.
@@ -2023,9 +2067,10 @@ mod git_spec_tests {
     #[test]
     fn git_plus_https_without_dot_git_roundtrips_via_lockfile_form() {
         // Initial parse: `git+https://…/repo` (no `.git`).
-        let (url, committish) = parse_git_spec("git+https://host/user/repo").unwrap();
+        let (url, committish, subpath) = parse_git_spec("git+https://host/user/repo").unwrap();
         assert_eq!(url, "https://host/user/repo");
         assert_eq!(committish, None);
+        assert_eq!(subpath, None);
 
         // After resolving, the serializer writes `<url>#<sha>` into
         // the lockfile's importer `version:` field.
@@ -2034,15 +2079,18 @@ mod git_spec_tests {
             url: url.clone(),
             committish: None,
             resolved: sha.to_string(),
+            subpath: None,
         });
         let lockfile_version = source.specifier();
         assert_eq!(lockfile_version, format!("https://host/user/repo#{sha}"));
 
         // Re-parse must recognize the bare URL because the 40-hex
         // committish suffix unambiguously tags it as git.
-        let (round_url, round_committish) = parse_git_spec(&lockfile_version).unwrap();
+        let (round_url, round_committish, round_subpath) =
+            parse_git_spec(&lockfile_version).unwrap();
         assert_eq!(round_url, "https://host/user/repo");
         assert_eq!(round_committish.as_deref(), Some(sha));
+        assert_eq!(round_subpath, None);
     }
 
     #[test]
@@ -2054,14 +2102,14 @@ mod git_spec_tests {
 
     #[test]
     fn github_shorthand_expands_and_roundtrips() {
-        let (url, _) = parse_git_spec("github:user/repo").unwrap();
+        let (url, _, _) = parse_git_spec("github:user/repo").unwrap();
         assert_eq!(url, "https://github.com/user/repo.git");
     }
 
     #[test]
     fn commit_selector_fragment_normalizes_to_sha() {
         let sha = "abcdef0123456789abcdef0123456789abcdef01";
-        let (url, committish) =
+        let (url, committish, _) =
             parse_git_spec(&format!("https://host/user/repo.git#commit={sha}")).unwrap();
         assert_eq!(url, "https://host/user/repo.git");
         assert_eq!(committish.as_deref(), Some(sha));
@@ -2069,9 +2117,61 @@ mod git_spec_tests {
 
     #[test]
     fn named_selector_fragment_normalizes_to_ref() {
-        let (url, committish) = parse_git_spec("git+https://host/user/repo#tag=v1.2.3").unwrap();
+        let (url, committish, _) = parse_git_spec("git+https://host/user/repo#tag=v1.2.3").unwrap();
         assert_eq!(url, "https://host/user/repo");
         assert_eq!(committish.as_deref(), Some("v1.2.3"));
+    }
+
+    #[test]
+    fn pnpm_path_subpath_extracted_from_fragment() {
+        // pnpm syntax: `<url>#<ref>&path:/<subdir>` selects a
+        // subdirectory of the cloned repo as the package root.
+        let (url, committish, subpath) =
+            parse_git_spec("github:org/dep#v0.1.4&path:/packages/special").unwrap();
+        assert_eq!(url, "https://github.com/org/dep.git");
+        assert_eq!(committish.as_deref(), Some("v0.1.4"));
+        assert_eq!(subpath.as_deref(), Some("packages/special"));
+    }
+
+    #[test]
+    fn path_subpath_roundtrips_via_specifier() {
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let source = LocalSource::Git(GitSource {
+            url: "https://github.com/org/dep.git".to_string(),
+            committish: None,
+            resolved: sha.to_string(),
+            subpath: Some("packages/special".to_string()),
+        });
+        let spec = source.specifier();
+        assert_eq!(
+            spec,
+            format!("https://github.com/org/dep.git#{sha}&path:/packages/special")
+        );
+        let (url, committish, subpath) = parse_git_spec(&spec).unwrap();
+        assert_eq!(url, "https://github.com/org/dep.git");
+        assert_eq!(committish.as_deref(), Some(sha));
+        assert_eq!(subpath.as_deref(), Some("packages/special"));
+    }
+
+    #[test]
+    fn dep_path_distinguishes_subpaths_under_same_commit() {
+        // Two packages from the same repo+commit but different
+        // subdirs must hash to distinct dep_paths so the linker
+        // doesn't collapse them.
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let a = LocalSource::Git(GitSource {
+            url: "https://example.com/r.git".to_string(),
+            committish: None,
+            resolved: sha.to_string(),
+            subpath: Some("packages/a".to_string()),
+        });
+        let b = LocalSource::Git(GitSource {
+            url: "https://example.com/r.git".to_string(),
+            committish: None,
+            resolved: sha.to_string(),
+            subpath: Some("packages/b".to_string()),
+        });
+        assert_ne!(a.dep_path("dep"), b.dep_path("dep"));
     }
 }
 

@@ -221,16 +221,29 @@ pub(crate) async fn resolve_git_source(
     // thread via `spawn_blocking`.
     let url = git.url.clone();
     let committish = git.committish.clone();
+    let subpath = git.subpath.clone();
     let name_owned = name.to_string();
     let (local, version, deps) = tokio::task::spawn_blocking(move || -> Result<_, Error> {
         let resolved = aube_store::git_resolve_ref(&url, committish.as_deref())
             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
         let clone_dir = aube_store::git_shallow_clone(&url, &resolved, shallow)
             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-        let manifest_bytes = std::fs::read(clone_dir.join("package.json")).map_err(|e| {
+        // `&path:/<sub>` narrows the package root to a subdirectory
+        // of the cloned repo (pnpm-compatible). The manifest, version,
+        // and transitive deps all come from the subdir's
+        // `package.json`, not the repo root's.
+        let pkg_root = match &subpath {
+            Some(sub) => clone_dir.join(sub),
+            None => clone_dir.clone(),
+        };
+        let manifest_bytes = std::fs::read(pkg_root.join("package.json")).map_err(|e| {
+            let where_ = subpath
+                .as_deref()
+                .map(|s| format!(" at /{s}"))
+                .unwrap_or_default();
             Error::Registry(
                 name_owned.clone(),
-                format!("read package.json in clone: {e}"),
+                format!("read package.json in clone{where_}: {e}"),
             )
         })?;
         let pj: aube_manifest::PackageJson = serde_json::from_slice(&manifest_bytes)
@@ -242,6 +255,7 @@ pub(crate) async fn resolve_git_source(
                 url,
                 committish,
                 resolved,
+                subpath,
             }),
             version,
             deps,

@@ -698,6 +698,7 @@ fn parse_berry_str(
                     url: strip_commit_hash(&url),
                     committish: None,
                     resolved: extract_commit_hash(&url).unwrap_or_default(),
+                    subpath: None,
                 }))
             }
             _ => {
@@ -1017,6 +1018,7 @@ fn classify_remote(url: &str, _block: &serde_yaml::Mapping) -> Option<LocalSourc
             url: strip_commit_hash(url),
             committish: None,
             resolved: extract_commit_hash(url).unwrap_or_default(),
+            subpath: None,
         }))
     } else {
         Some(LocalSource::RemoteTarball(RemoteTarballSource {
