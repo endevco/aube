@@ -478,28 +478,42 @@ pub(crate) fn parse_git_fragment(fragment: &str) -> (Option<String>, Option<Stri
             continue;
         }
         // Try `key=value` first; fall back to `key:value` only for
-        // the small set of well-known selectors so a tag name that
-        // happens to contain a colon (e.g. `release:2026-01`) is not
-        // misparsed as a key.
+        // the small set of selectors we actually handle below. A tag
+        // name with a colon (e.g. `release:2026-01`) is left alone —
+        // and `semver:^1.0.0` stays as a literal ref so `ls-remote`
+        // surfaces an explicit error rather than silently HEAD-ing.
         let split = part.split_once('=').or_else(|| {
-            part.split_once(':').filter(|(k, _)| {
-                matches!(*k, "commit" | "tag" | "head" | "branch" | "path" | "semver")
-            })
+            part.split_once(':')
+                .filter(|(k, _)| matches!(*k, "commit" | "tag" | "head" | "branch" | "path"))
         });
         let (key, value) = split.unwrap_or(("", part));
         if value.is_empty() {
             continue;
         }
         match key {
-            "commit" => preferred = Some(value),
+            "commit" => {
+                preferred.get_or_insert(value);
+            }
             "tag" | "head" | "branch" => {
                 fallback.get_or_insert(value);
             }
             "path" => {
+                // Strip leading slashes (pnpm writes `path:/sub`) and
+                // reject any `..` / `.` component. Without this, a
+                // crafted spec like `&path:/../../etc` would let the
+                // resolver and installer escape the clone dir and
+                // import an arbitrary host directory into the store.
                 let trimmed = value.trim_start_matches('/');
-                if !trimmed.is_empty() {
-                    subpath = Some(trimmed.to_string());
+                if trimmed.is_empty() {
+                    continue;
                 }
+                if trimmed
+                    .split('/')
+                    .any(|c| c.is_empty() || c == "." || c == "..")
+                {
+                    continue;
+                }
+                subpath = Some(trimmed.to_string());
             }
             "" => {
                 fallback.get_or_insert(value);
@@ -2151,6 +2165,23 @@ mod git_spec_tests {
         assert_eq!(url, "https://github.com/org/dep.git");
         assert_eq!(committish.as_deref(), Some(sha));
         assert_eq!(subpath.as_deref(), Some("packages/special"));
+    }
+
+    #[test]
+    fn path_traversal_components_in_subpath_are_rejected() {
+        // `..` and `.` components would let a crafted spec escape the
+        // clone dir at install time. The parser drops them so the
+        // resolver/installer never see a traversal-laden subpath.
+        let cases = [
+            "github:org/dep#main&path:/../../etc",
+            "github:org/dep#main&path:/packages/../../../etc",
+            "github:org/dep#main&path:/./packages/foo",
+            "github:org/dep#main&path:/packages//foo",
+        ];
+        for spec in cases {
+            let (_, _, subpath) = parse_git_spec(spec).unwrap();
+            assert_eq!(subpath, None, "spec should drop subpath: {spec}");
+        }
     }
 
     #[test]

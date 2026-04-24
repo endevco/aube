@@ -479,6 +479,12 @@ pub(super) async fn import_local_source(
             // Everything below this line — manifest read, prepare
             // scratch copy, archive build, plain directory import —
             // operates on the subdir rather than the whole clone.
+            //
+            // Defense in depth against a `..`-laden subpath: the
+            // parser already rejects them, but we also canonicalize
+            // and assert the result stays under `clone_dir` so a
+            // future code path that fills `subpath` from a different
+            // source can't bypass the check.
             let pkg_root = match &g.subpath {
                 Some(sub) => clone_dir.join(sub),
                 None => clone_dir.clone(),
@@ -488,6 +494,23 @@ pub(super) async fn import_local_source(
                     "git dep {spec}: subpath {} not found in clone",
                     pkg_root.display()
                 ));
+            }
+            if g.subpath.is_some() {
+                let canonical_clone = clone_dir
+                    .canonicalize()
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("canonicalize clone dir for {spec}"))?;
+                let canonical_pkg = pkg_root
+                    .canonicalize()
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("canonicalize subpath for {spec}"))?;
+                if !canonical_pkg.starts_with(&canonical_clone) {
+                    return Err(miette!(
+                        "git dep {spec}: subpath {} escapes clone root {}",
+                        canonical_pkg.display(),
+                        canonical_clone.display()
+                    ));
+                }
             }
 
             // If the cloned repo defines a `prepare` script, treat

@@ -627,6 +627,7 @@ fn classify_bun_ident(
                 url: format!("https://github.com/{url}.git"),
                 committish: committish.clone(),
                 resolved: committish.unwrap_or_default(),
+                subpath: None,
             })),
             alias_of,
         ));
@@ -634,7 +635,7 @@ fn classify_bun_ident(
     if (raw_version.starts_with("git+")
         || raw_version.starts_with("git://")
         || raw_version.starts_with("git@"))
-        && let Some((url, committish)) = crate::parse_git_spec(raw_version)
+        && let Some((url, committish, subpath)) = crate::parse_git_spec(raw_version)
     {
         return Ok((
             name,
@@ -643,6 +644,7 @@ fn classify_bun_ident(
                 url,
                 committish: committish.clone(),
                 resolved: committish.unwrap_or_default(),
+                subpath,
             })),
             alias_of,
         ));
