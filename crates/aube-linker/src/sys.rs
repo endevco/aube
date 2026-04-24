@@ -402,30 +402,14 @@ fn win_shim_paths(bin_dir: &Path, name: &str) -> [PathBuf; 3] {
 /// `cmd.exe` + Node surface as the classic `Cannot find module
 /// '<bin>\\?\\<target>'` error. Stripping on both sides keeps the
 /// prefix components equal so `pathdiff` produces the expected
-/// `..\\…` form. No-op on Unix.
+/// `..\\…` form.
 fn relative_bin_target(base_dir: &Path, target: &Path) -> String {
-    let base = strip_verbatim(base_dir);
-    let target = strip_verbatim(target);
+    let base = aube_util::path::strip_verbatim_prefix(base_dir);
+    let target = aube_util::path::strip_verbatim_prefix(target);
     pathdiff::diff_paths(&target, &base)
         .unwrap_or(target)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-#[cfg(windows)]
-fn strip_verbatim(p: &Path) -> PathBuf {
-    let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\")
-        && !rest.starts_with("UNC\\")
-    {
-        return PathBuf::from(rest);
-    }
-    p.to_path_buf()
-}
-
-#[cfg(not(windows))]
-fn strip_verbatim(p: &Path) -> PathBuf {
-    p.to_path_buf()
 }
 
 fn node_modules_dir_for_bin(bin_dir: &Path) -> &Path {

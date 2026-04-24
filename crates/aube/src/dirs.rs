@@ -173,19 +173,7 @@ pub fn set_cwd(path: &Path) -> miette::Result<()> {
 /// No-op on non-Windows.
 pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     let canon = std::fs::canonicalize(path)?;
-    #[cfg(windows)]
-    {
-        let s = canon.to_string_lossy();
-        // Only strip the plain verbatim-drive prefix (`\\?\C:\…`). Leave
-        // `\\?\UNC\…` alone — that's a real network share and callers
-        // can't use a non-verbatim form for it.
-        if let Some(rest) = s.strip_prefix(r"\\?\")
-            && !rest.starts_with("UNC\\")
-        {
-            return Ok(PathBuf::from(rest));
-        }
-    }
-    Ok(canon)
+    Ok(aube_util::path::strip_verbatim_prefix(&canon))
 }
 
 #[cfg(test)]
