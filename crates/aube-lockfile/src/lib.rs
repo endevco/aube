@@ -503,6 +503,10 @@ pub(crate) fn parse_git_fragment(fragment: &str) -> (Option<String>, Option<Stri
                 // crafted spec like `&path:/../../etc` would let the
                 // resolver and installer escape the clone dir and
                 // import an arbitrary host directory into the store.
+                if subpath.is_some() {
+                    // First-wins, matching the other selectors above.
+                    continue;
+                }
                 let trimmed = value.trim_start_matches('/');
                 if trimmed.is_empty() {
                     continue;
