@@ -57,12 +57,7 @@ impl Resolver {
         let mut resolved_versions: FxHashMap<String, Vec<String>> = FxHashMap::default();
         let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
         let mut queue: VecDeque<ResolveTask> = VecDeque::new();
-        let mut visited: FxHashSet<u64> = FxHashSet::default();
-        #[inline]
-        fn visit_key(s: &str) -> u64 {
-            use std::hash::BuildHasher;
-            rustc_hash::FxBuildHasher.hash_one(s)
-        }
+        let mut visited: FxHashSet<std::sync::Arc<str>> = FxHashSet::default();
         // Round-tripped to the lockfile's top-level `time:` block so
         // subsequent installs can reuse them for the cutoff computation.
         // Populated opportunistically from whatever packuments we fetch:
@@ -692,7 +687,7 @@ impl Resolver {
                         });
                     }
 
-                    if visited.insert(visit_key(&dep_path)) {
+                    if visited.insert(std::sync::Arc::from(dep_path.as_str())) {
                         resolved.insert(
                             dep_path.clone(),
                             LockedPackage {
@@ -936,7 +931,7 @@ impl Resolver {
                                     .insert(task.name.clone(), version.clone());
                             }
                         }
-                        if visited.insert(visit_key(&dep_path)) {
+                        if visited.insert(std::sync::Arc::from(dep_path.as_str())) {
                             resolved_versions
                                 .entry(task.name.clone())
                                 .or_default()
@@ -1219,7 +1214,7 @@ impl Resolver {
                 // later in this iteration — so running the hook here would
                 // just burn an IPC round-trip whose result is discarded.
                 let prehook_dep_path = dep_path_for(&task.name, &picked_ref.version);
-                let already_visited = visited.contains(&visit_key(&prehook_dep_path));
+                let already_visited = visited.contains(prehook_dep_path.as_str());
 
                 if !already_visited {
                     apply_package_extensions(
@@ -1360,13 +1355,13 @@ impl Resolver {
                 }
 
                 // Skip if already fully processed this exact version
-                if visited.contains(&visit_key(&dep_path)) {
+                if visited.contains(dep_path.as_str()) {
                     if task.is_root {
                         note_root_done!();
                     }
                     continue;
                 }
-                visited.insert(visit_key(&dep_path));
+                visited.insert(std::sync::Arc::from(dep_path.as_str()));
 
                 tracing::trace!("resolved {}@{}", task.name, version);
 

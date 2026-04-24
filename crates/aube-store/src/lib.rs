@@ -996,10 +996,14 @@ pub fn validate_pkg_content(
     let stored = index
         .get("package.json")
         .ok_or_else(|| Error::Tar("package.json missing from tarball".to_string()))?;
-    let mut bytes =
+    let bytes =
         std::fs::read(&stored.store_path).map_err(|e| Error::Io(stored.store_path.clone(), e))?;
-    let v: serde_json::Value = simd_json::serde::from_slice(&mut bytes)
-        .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?;
+    let v: serde_json::Value = {
+        let mut buf = bytes.clone();
+        simd_json::serde::from_slice(&mut buf)
+            .or_else(|_| serde_json::from_slice(&bytes))
+            .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?
+    };
     let actual_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let actual_version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
     // Tolerate a leading `v` on the tarball's version (e.g. "v2.0.8").

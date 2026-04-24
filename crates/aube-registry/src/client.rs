@@ -1446,7 +1446,10 @@ where
 {
     let bytes = resp.bytes().await?;
     let mut buf = bytes.to_vec();
-    simd_json::serde::from_slice::<T>(&mut buf)
+    if let Ok(v) = simd_json::serde::from_slice::<T>(&mut buf) {
+        return Ok(v);
+    }
+    serde_json::from_slice::<T>(&bytes)
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
 }
 
