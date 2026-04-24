@@ -503,22 +503,25 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 continue;
             }
             // Specifier sources, in priority order:
-            //   1. The manifest entry for this dep (what the user wrote
-            //      in their own package.json — authoritative for user-
-            //      declared deps).
-            //   2. The specifier recorded on the DirectDep — used for
-            //      hoisted auto-installed peers, where the manifest has
-            //      nothing and the resolver synthesized the DirectDep
-            //      using the peer's declared range.
+            //   1. The specifier recorded on the DirectDep. For workspace
+            //      importers this is the only manifest-local specifier the
+            //      writer has, because `manifest` is the root package.json.
+            //      Hoisted auto-installed peers also use this path.
+            //   2. The root manifest entry for old hand-built graphs that
+            //      omitted DirectDep.specifier.
             //   3. Fall back to `*` as a last resort.
-            let manifest_specifier = match dep.dep_type {
-                DepType::Production => manifest.dependencies.get(&dep.name),
-                DepType::Dev => manifest.dev_dependencies.get(&dep.name),
-                DepType::Optional => manifest.optional_dependencies.get(&dep.name),
-            }
-            .map(|s| s.as_str());
-            let specifier = manifest_specifier
-                .or(dep.specifier.as_deref())
+            let root_manifest_specifier = (importer_path == ".")
+                .then(|| match dep.dep_type {
+                    DepType::Production => manifest.dependencies.get(&dep.name),
+                    DepType::Dev => manifest.dev_dependencies.get(&dep.name),
+                    DepType::Optional => manifest.optional_dependencies.get(&dep.name),
+                })
+                .flatten()
+                .map(|s| s.as_str());
+            let specifier = dep
+                .specifier
+                .as_deref()
+                .or(root_manifest_specifier)
                 .unwrap_or("*");
 
             // Local deps render with the canonical `file:<path>` /
@@ -2007,6 +2010,75 @@ snapshots:
         assert_eq!(root_deps.len(), 1);
         assert_eq!(root_deps[0].name, "foo");
         assert_eq!(root_deps[0].dep_type, DepType::Production);
+    }
+
+    #[test]
+    fn writer_preserves_workspace_importer_specifiers() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "@dev/build-tools@1.0.0".to_string(),
+            LockedPackage {
+                name: "@dev/build-tools".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: "@dev/build-tools@1.0.0".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "@dev/build-tools".to_string(),
+                dep_path: "@dev/build-tools@1.0.0".to_string(),
+                dep_type: DepType::Dev,
+                specifier: Some("^1.0.0".to_string()),
+            }],
+        );
+        importers.insert(
+            "packages/public/umd/babylonjs".to_string(),
+            vec![DirectDep {
+                name: "@dev/build-tools".to_string(),
+                dep_path: "@dev/build-tools@1.0.0".to_string(),
+                dep_type: DepType::Dev,
+                specifier: Some("1.0.0".to_string()),
+            }],
+        );
+
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        let mut root_dev_dependencies = BTreeMap::new();
+        root_dev_dependencies.insert("@dev/build-tools".to_string(), "^1.0.0".to_string());
+        let manifest = PackageJson {
+            name: Some("root".to_string()),
+            version: Some("0.0.0".to_string()),
+            dependencies: BTreeMap::new(),
+            dev_dependencies: root_dev_dependencies,
+            peer_dependencies: BTreeMap::new(),
+            optional_dependencies: BTreeMap::new(),
+            update_config: None,
+            scripts: BTreeMap::new(),
+            engines: BTreeMap::new(),
+            workspaces: None,
+            bundled_dependencies: None,
+            extra: BTreeMap::new(),
+        };
+
+        write(&lockfile_path, &graph, &manifest).unwrap();
+
+        let reparsed = parse(&lockfile_path).unwrap();
+        let workspace_deps = reparsed
+            .importers
+            .get("packages/public/umd/babylonjs")
+            .unwrap();
+        assert_eq!(workspace_deps[0].specifier.as_deref(), Some("1.0.0"));
     }
 
     #[test]
