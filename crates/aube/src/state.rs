@@ -4,33 +4,35 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_STATE_DIR: &str = "node_modules";
-const STATE_FILE_NAME: &str = ".aube-state";
+const STATE_DIR_NAME: &str = ".aube-state";
+const INSTALL_STATE_FILE_NAME: &str = "state.json";
+const FRESH_STATE_FILE_NAME: &str = "fresh.json";
 
-/// Resolve the modules dir and state file path for `project_dir` in a
+/// Resolve the modules dir and state directory path for `project_dir` in a
 /// single settings-context load. `check_needs_install` and `write_state`
 /// both need both values, and this is on the hot path for every
 /// `aube run` / `exec` / `test` / `start` / `restart`.
 ///
 /// The default `stateDir` falls back to the resolved `modulesDir` so the
-/// state file lives alongside the install tree — otherwise a
+/// state directory lives alongside the install tree — otherwise a
 /// `modulesDir` override would create a phantom `node_modules/`
-/// directory just to hold the state file.
+/// directory just to hold the state directory.
 fn resolve_paths(project_dir: &Path) -> (PathBuf, PathBuf) {
     crate::commands::with_settings_ctx(project_dir, |ctx| {
         let modules_dir = project_dir.join(aube_settings::resolved::modules_dir(ctx));
         let raw_state = aube_settings::resolved::state_dir(ctx);
-        let state_dir = if raw_state == DEFAULT_STATE_DIR {
+        let state_parent = if raw_state == DEFAULT_STATE_DIR {
             modules_dir.clone()
         } else {
             crate::commands::expand_setting_path(&raw_state, project_dir)
                 .unwrap_or_else(|| modules_dir.clone())
         };
-        let state_file = state_dir.join(STATE_FILE_NAME);
-        (modules_dir, state_file)
+        let state_dir = state_parent.join(STATE_DIR_NAME);
+        (modules_dir, state_dir)
     })
 }
 
-fn state_file(project_dir: &Path) -> PathBuf {
+fn state_dir(project_dir: &Path) -> PathBuf {
     resolve_paths(project_dir).1
 }
 
@@ -79,6 +81,33 @@ pub struct InstallState {
     pub layout: Option<InstallLayoutState>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct FreshnessState {
+    lockfile_hash: String,
+    package_json_hashes: BTreeMap<String, String>,
+    #[serde(default, rename = "prod")]
+    section_filtered: bool,
+    #[serde(default)]
+    settings_hash: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    package_json_shape_digests: BTreeMap<String, String>,
+    #[serde(default)]
+    layout: Option<InstallLayoutState>,
+}
+
+impl From<&InstallState> for FreshnessState {
+    fn from(state: &InstallState) -> Self {
+        Self {
+            lockfile_hash: state.lockfile_hash.clone(),
+            package_json_hashes: state.package_json_hashes.clone(),
+            section_filtered: state.section_filtered,
+            settings_hash: state.settings_hash.clone(),
+            package_json_shape_digests: state.package_json_shape_digests.clone(),
+            layout: state.layout.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallLayoutState {
     pub linker: InstallLayoutMode,
@@ -125,8 +154,8 @@ fn check_needs_install_inner(
 ) -> Option<String> {
     let (modules_dir, state_path) = resolve_paths(project_dir);
 
-    // No state file = never installed (or `rm -rf <modulesDir>` wiped it).
-    let state = match read_state(&state_path) {
+    // No state directory = never installed (or `rm -rf <modulesDir>` wiped it).
+    let state = match read_or_migrate_fresh_state(&state_path) {
         Some(s) => s,
         None => return Some("install state not found".into()),
     };
@@ -202,7 +231,7 @@ fn check_needs_install_inner(
         );
     }
 
-    if let Some(reason) = verify_install_layout(project_dir, &state) {
+    if let Some(reason) = verify_install_layout(project_dir, state.layout.as_ref()) {
         return Some(reason);
     }
 
@@ -305,20 +334,23 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         layout: Some(install_layout),
     };
 
-    let state_path = state_file(project_dir);
+    let fresh_state = FreshnessState::from(&state);
+    let state_path = state_dir(project_dir);
     let json = serde_json::to_string_pretty(&state)?;
-    aube_util::fs_atomic::atomic_write(&state_path, json.as_bytes())?;
+    remove_legacy_state_file(&state_path)?;
+    aube_util::fs_atomic::atomic_write(&install_state_file(&state_path), json.as_bytes())?;
+    write_fresh_state(&state_path, &fresh_state)?;
 
     Ok(())
 }
 
-/// Read per-package fingerprints from a project's state file.
+/// Read per-package fingerprints from a project's state directory.
 /// Returns `None` on any failure path (file missing, malformed
 /// JSON, pre-delta aube). Caller treats that as "no prior
 /// fingerprints, full install". Never surfaces an error because
 /// delta is additive. A miss just lands on the full-install path.
 pub fn read_state_package_content_hashes(project_dir: &Path) -> Option<BTreeMap<String, String>> {
-    let state = read_state(&state_file(project_dir))?;
+    let state = read_state(&state_dir(project_dir))?;
     if state.package_content_hashes.is_empty() {
         return None;
     }
@@ -328,7 +360,7 @@ pub fn read_state_package_content_hashes(project_dir: &Path) -> Option<BTreeMap<
 /// Read the LtHash accumulator digest the last install wrote, if
 /// any. Empty string on fresh state or pre-lthash aube versions.
 pub fn read_state_graph_lthash(project_dir: &Path) -> Option<String> {
-    let state = read_state(&state_file(project_dir))?;
+    let state = read_state(&state_dir(project_dir))?;
     if state.graph_lthash.is_empty() {
         return None;
     }
@@ -339,16 +371,22 @@ pub fn read_state_graph_lthash(project_dir: &Path) -> Option<String> {
 /// prune at the subtree granularity rather than the leaf
 /// granularity. Absent field cascades to the leaf diff path.
 pub fn read_state_subtree_hashes(project_dir: &Path) -> Option<BTreeMap<String, String>> {
-    let state = read_state(&state_file(project_dir))?;
+    let state = read_state(&state_dir(project_dir))?;
     if state.package_subtree_hashes.is_empty() {
         return None;
     }
     Some(state.package_subtree_hashes)
 }
 
-/// Remove the install state file. Missing state is not an error.
+/// Remove the install state directory. Missing state is not an error.
 pub fn remove_state(project_dir: &Path) -> Result<(), std::io::Error> {
-    match std::fs::remove_file(state_file(project_dir)) {
+    let state_path = state_dir(project_dir);
+    let result = if state_path.is_dir() {
+        std::fs::remove_dir_all(state_path)
+    } else {
+        std::fs::remove_file(state_path)
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
@@ -415,9 +453,51 @@ fn active_lockfile(project_dir: &Path) -> (String, Option<PathBuf>) {
     (preferred, None)
 }
 
-fn read_state(path: &PathBuf) -> Option<InstallState> {
-    let content = std::fs::read_to_string(path).ok()?;
+fn read_state(state_path: &Path) -> Option<InstallState> {
+    if state_path.is_file() {
+        let _ = std::fs::remove_file(state_path);
+        return None;
+    }
+    let content = std::fs::read_to_string(install_state_file(state_path)).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+fn install_state_file(state_path: &Path) -> PathBuf {
+    state_path.join(INSTALL_STATE_FILE_NAME)
+}
+
+fn fresh_state_file(state_path: &Path) -> PathBuf {
+    state_path.join(FRESH_STATE_FILE_NAME)
+}
+
+fn read_fresh_state(state_path: &Path) -> Option<FreshnessState> {
+    if state_path.is_file() {
+        let _ = std::fs::remove_file(state_path);
+        return None;
+    }
+    let content = std::fs::read_to_string(fresh_state_file(state_path)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn read_or_migrate_fresh_state(state_path: &Path) -> Option<FreshnessState> {
+    if let Some(state) = read_fresh_state(state_path) {
+        return Some(state);
+    }
+    let state = FreshnessState::from(&read_state(state_path)?);
+    let _ = write_fresh_state(state_path, &state);
+    Some(state)
+}
+
+fn write_fresh_state(state_path: &Path, state: &FreshnessState) -> Result<(), std::io::Error> {
+    let json = serde_json::to_string_pretty(state)?;
+    aube_util::fs_atomic::atomic_write(&fresh_state_file(state_path), json.as_bytes())
+}
+
+fn remove_legacy_state_file(state_path: &Path) -> Result<(), std::io::Error> {
+    if state_path.is_file() {
+        std::fs::remove_file(state_path)?;
+    }
+    Ok(())
 }
 
 impl InstallLayoutState {
@@ -492,9 +572,11 @@ impl InstallLayoutState {
     }
 }
 
-fn verify_install_layout(project_dir: &Path, state: &InstallState) -> Option<String> {
-    let layout = state.layout.as_ref()?;
-
+fn verify_install_layout(
+    project_dir: &Path,
+    layout: Option<&InstallLayoutState>,
+) -> Option<String> {
+    let layout = layout?;
     for entries in layout.direct_entries.values() {
         for rel in entries {
             let path = project_dir.join(rel);
@@ -769,8 +851,9 @@ fn empty_blake3_hash() -> &'static str {
 mod tests {
     use super::{
         InstallLayoutMode, InstallLayoutState, InstallState, InstalledPackageState,
-        collect_package_json_hashes_from_manifests, empty_blake3_hash, hash_file,
-        relative_path_or_original, verify_install_layout,
+        collect_package_json_hashes_from_manifests, empty_blake3_hash, fresh_state_file, hash_file,
+        install_state_file, read_or_migrate_fresh_state, relative_path_or_original, remove_state,
+        verify_install_layout,
     };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -817,7 +900,7 @@ mod tests {
         };
 
         assert_eq!(
-            verify_install_layout(&project_dir, &state),
+            verify_install_layout(&project_dir, state.layout.as_ref()),
             Some(
                 "installed package metadata missing: node_modules/.aube/missing/node_modules/is-odd/package.json"
                     .to_string()
@@ -850,6 +933,73 @@ mod tests {
             hashes.get("packages/foo/package.json"),
             Some(&hash_file(&ws_pkg))
         );
+    }
+
+    #[test]
+    fn state_json_migrates_fresh_state_without_delta_maps() {
+        let project_dir = temp_project_dir("fresh-migration");
+        let state_path = project_dir.join(".aube-state");
+        std::fs::create_dir_all(&state_path).expect("state dir should write");
+        let state = InstallState {
+            lockfile_hash: "blake3:lock".to_string(),
+            package_json_hashes: BTreeMap::from([(".".to_string(), "blake3:pkg".to_string())]),
+            aube_version: env!("CARGO_PKG_VERSION").to_string(),
+            section_filtered: false,
+            settings_hash: "blake3:settings".to_string(),
+            package_content_hashes: BTreeMap::from([(
+                "is-odd@3.0.1".to_string(),
+                "blake3:content".to_string(),
+            )]),
+            graph_lthash: "abcdef".to_string(),
+            package_subtree_hashes: BTreeMap::from([(
+                "is-odd@3.0.1".to_string(),
+                "blake3:subtree".to_string(),
+            )]),
+            package_json_shape_digests: BTreeMap::from([(".".to_string(), "shape".to_string())]),
+            layout: Some(InstallLayoutState {
+                linker: InstallLayoutMode::Isolated,
+                direct_entries: BTreeMap::new(),
+                packages: BTreeMap::new(),
+            }),
+        };
+        let json = serde_json::to_string(&state).expect("state should serialize");
+        std::fs::write(install_state_file(&state_path), json).expect("state should write");
+
+        let migrated = read_or_migrate_fresh_state(&state_path).expect("fresh state should load");
+        assert_eq!(migrated.lockfile_hash, "blake3:lock");
+        let fresh_json = std::fs::read_to_string(fresh_state_file(&state_path))
+            .expect("fresh state should write");
+        assert!(fresh_json.contains("package_json_hashes"));
+        assert!(!fresh_json.contains("package_content_hashes"));
+        assert!(!fresh_json.contains("package_subtree_hashes"));
+    }
+
+    #[test]
+    fn legacy_state_file_is_deleted_instead_of_migrated() {
+        let project_dir = temp_project_dir("legacy-file-delete");
+        let state_path = project_dir.join(".aube-state");
+        std::fs::write(&state_path, "{}").expect("legacy state file should write");
+
+        assert!(read_or_migrate_fresh_state(&state_path).is_none());
+        assert!(!state_path.exists());
+    }
+
+    #[test]
+    fn remove_state_deletes_directory_and_legacy_file() {
+        let project_dir = temp_project_dir("remove-state");
+        let state_path = project_dir.join("node_modules/.aube-state");
+        std::fs::create_dir_all(&state_path).expect("state dir should write");
+        std::fs::write(install_state_file(&state_path), "{}").expect("state json should write");
+
+        remove_state(&project_dir).expect("state directory should remove");
+        assert!(!state_path.exists());
+
+        std::fs::create_dir_all(state_path.parent().expect("state parent"))
+            .expect("state parent should write");
+        std::fs::write(&state_path, "{}").expect("legacy state file should write");
+
+        remove_state(&project_dir).expect("legacy state file should remove");
+        assert!(!state_path.exists());
     }
 
     fn temp_project_dir(name: &str) -> PathBuf {

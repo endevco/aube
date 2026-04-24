@@ -61,14 +61,15 @@ _setup_minimal_workspace() {
 	assert_success
 	assert_file_exists aube-lock.yaml
 	assert_dir_exists node_modules/.aube
-	assert_file_exists node_modules/.aube-state
+	assert_dir_exists node_modules/.aube-state
+	assert_file_exists node_modules/.aube-state/state.json
 	assert_link_exists packages/a/node_modules/is-odd
 
 	# Snapshot the root install state. A correct member install must
 	# resolve back up to this same root and short-circuit on the warm
 	# fast path — the root state must be byte-identical afterward.
 	local root_state_before
-	root_state_before="$(cat node_modules/.aube-state)"
+	root_state_before="$(cat node_modules/.aube-state/state.json)"
 
 	cd packages/a
 	run aube install
@@ -91,7 +92,7 @@ _setup_minimal_workspace() {
 
 	# The root install state is byte-identical — the only correct
 	# warm path is "do nothing", and "do nothing" can't write any
-	# state file. `assert_equal` (not `[`) so a regression prints
+	# state directory. `assert_equal` (not `[`) so a regression prints
 	# both snapshots and we can diff what changed.
-	assert_equal "$(cat node_modules/.aube-state)" "$root_state_before"
+	assert_equal "$(cat node_modules/.aube-state/state.json)" "$root_state_before"
 }

@@ -224,10 +224,16 @@ JSON
 
 	run aube install
 	assert_success
-	assert_file_exists node_modules/.aube-state
-	run cat node_modules/.aube-state
+	assert_dir_exists node_modules/.aube-state
+	assert_file_exists node_modules/.aube-state/state.json
+	assert_file_exists node_modules/.aube-state/fresh.json
+	run cat node_modules/.aube-state/state.json
+	assert_output --partial "lockfile_hash"
+	assert_output --partial "package_content_hashes"
+	run cat node_modules/.aube-state/fresh.json
 	assert_output --partial "lockfile_hash"
 	assert_output --partial "package_json_hashes"
+	refute_output --partial "package_content_hashes"
 	assert_output --partial "\"layout\""
 	assert_output --partial "\"direct_entries\""
 	assert_output --partial "\"packages\""
