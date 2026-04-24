@@ -19,19 +19,16 @@ set -euo pipefail
 #   RESULTS_JSON — override the structured JSON output path
 #
 #   BENCH_HERMETIC=1 — route all registry traffic through a local
-#                      Verdaccio instance pre-populated from npmjs. Makes
-#                      cold-cache numbers deterministic (no npmjs CDN
-#                      jitter). First hermetic run warms the cache at
+#                      Verdaccio instance pre-populated from npmjs. This
+#                      is the default for mise tasks; leave it on so
+#                      cold-cache numbers are not npmjs/CDN latency tests.
+#                      First hermetic run warms the cache at
 #                      ~/.cache/aube-bench/registry/; subsequent runs
 #                      are fully offline. See benchmarks/hermetic.bash.
 #   BENCH_BANDWIDTH  — optional throttle (e.g. `50mbit`, `6mbit`, bare
-#                      integer bytes/s). Only meaningful with
-#                      BENCH_HERMETIC=1; routes traffic through a tiny
-#                      Node.js token-bucket proxy in front of Verdaccio.
-#
-# Do NOT combine BENCH_HERMETIC or BENCH_BANDWIDTH with `bench:bump` —
-# results.json is the published "real internet" baseline and must not
-# be overwritten from a hermetic run.
+#                      integer bytes/s). Defaults to `500mbit` in mise
+#                      tasks; routes traffic through a tiny token-bucket
+#                      proxy in front of Verdaccio.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
