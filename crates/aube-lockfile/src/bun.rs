@@ -31,7 +31,10 @@
 //! allowed. We pre-process the content to strip those before handing it
 //! to `serde_json`.
 
-use crate::{DepType, DirectDep, Error, LocalSource, LockedPackage, LockfileGraph};
+use crate::{
+    DepType, DirectDep, Error, GitSource, LocalSource, LockedPackage, LockfileGraph, PeerDepMeta,
+    RemoteTarballSource,
+};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -50,6 +53,30 @@ struct RawBunLockfile {
     workspaces: BTreeMap<String, RawBunWorkspace>,
     #[serde(default)]
     packages: BTreeMap<String, Vec<serde_json::Value>>,
+    /// bun 1.1+ top-level `overrides:` block (mirrors the key under
+    /// the same name in package.json). Map of selector → version.
+    #[serde(default)]
+    overrides: BTreeMap<String, String>,
+    /// bun 1.1+ top-level `patchedDependencies:` block. Map of
+    /// `pkg@version` selector → relative patch file path.
+    #[serde(default, rename = "patchedDependencies")]
+    patched_dependencies: BTreeMap<String, String>,
+    /// bun 1.1+ top-level `trustedDependencies:` — a package-name
+    /// allowlist for lifecycle script execution.
+    #[serde(default, rename = "trustedDependencies")]
+    trusted_dependencies: Vec<String>,
+    /// bun 1.2+ unnamed catalog (`catalog: { foo: "^1.0.0" }`).
+    /// Pairs with pnpm's `catalog:` in `pnpm-workspace.yaml`.
+    #[serde(default)]
+    catalog: BTreeMap<String, String>,
+    /// bun 1.2+ named catalogs (`catalogs: { evens: { foo: "^2" } }`).
+    #[serde(default)]
+    catalogs: BTreeMap<String, BTreeMap<String, String>>,
+    /// Unknown top-level fields preserved verbatim so a future bun
+    /// bump (or anything hand-authored we don't model) round-trips
+    /// without getting silently stripped.
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 fn default_config_version() -> u32 {
@@ -65,6 +92,14 @@ struct RawBunWorkspace {
     dev_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
+    /// Unknown per-workspace fields (`name`, `version`, `bin`,
+    /// `peerDependencies`, `optionalPeers`, and anything else bun
+    /// adds in a future release) preserved verbatim. The writer's
+    /// ws-extras fallback re-emits them so bun-authored workspace
+    /// peer data round-trips even when the manifest isn't
+    /// authoritative for the importer.
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Decoded view of one bun.lock package entry.
@@ -153,13 +188,35 @@ struct RawBunMeta {
     dependencies: BTreeMap<String, String>,
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
+    /// bun records peer declarations on the meta block in the same
+    /// shape as `dependencies`. Keeping them typed lets the writer
+    /// emit them back in bun's native field order; anything we don't
+    /// have an explicit slot for drops through to `extra` below.
+    #[serde(default)]
+    peer_dependencies: BTreeMap<String, String>,
+    /// Compact list form of `peerDependenciesMeta[name].optional:
+    /// true` — bun's preferred representation on per-entry meta.
+    #[serde(default)]
+    optional_peers: Vec<String>,
     /// `bin:` map — bun records executables by name on each package's
     /// meta block (`{ "bin": { "semver": "bin/semver.js" } }`). Round-
     /// tripping it is what keeps `aube install --no-frozen-lockfile`
     /// from silently dropping the `bin:` line and drifting against
     /// bun's own output.
     #[serde(default)]
-    bin: BTreeMap<String, String>,
+    bin: serde_json::Value,
+    /// Platform filters — bun writes arrays of `os` / `cpu` / `libc`
+    /// entries on meta blocks for optional platform packages.
+    #[serde(default)]
+    os: Vec<String>,
+    #[serde(default)]
+    cpu: Vec<String>,
+    #[serde(default)]
+    libc: Vec<String>,
+    /// Unknown per-entry meta fields preserved for round-trip
+    /// (`deprecated`, `hasInstallScript`, anything new bun adds).
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Parse a bun.lock file into a LockfileGraph.
@@ -202,7 +259,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let mut packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
 
     for (key, entry) in &entries {
-        let Some((name, version)) = split_ident(&entry.ident) else {
+        let Some((raw_name, raw_version)) = split_ident(&entry.ident) else {
             return Err(Error::parse(
                 path,
                 format!(
@@ -211,6 +268,24 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 ),
             ));
         };
+
+        // Detect non-registry specifiers embedded in bun's ident form
+        // (`foo@github:user/repo#sha`, `foo@file:./vendor`,
+        // `foo@https://…/pkg.tgz`, `foo@workspace:*`, …). The bun key
+        // is always the alias-side name; the ident carries the
+        // registry identity when bun wrote an npm-alias entry
+        // (`foo@npm:real@1.2.3`). Reconstructing a `LocalSource`
+        // here keeps the installer from re-routing every such entry
+        // through the default registry and either 404-ing or
+        // downloading the wrong tarball.
+        let alias_name = bun_key_to_alias_name(key);
+        let (name, version, local_source, alias_of) = classify_bun_ident(
+            &alias_name,
+            &raw_name,
+            &raw_version,
+            entry.integrity.as_deref(),
+            path,
+        )?;
         key_info.insert(key.clone(), (name.clone(), version.clone()));
 
         let dep_path = format!("{name}@{version}");
@@ -249,6 +324,39 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             declared.insert(k.clone(), v.clone());
         }
 
+        // Normalize bun's `bin` meta into the typed BTreeMap while
+        // preserving the raw shape (string vs object) on `extra_meta`
+        // so the writer can echo the original representation back.
+        let bin_map = bin_value_to_map(&name, &entry.meta.bin);
+        let mut extra_meta = entry.meta.extra.clone();
+        if !matches!(&entry.meta.bin, serde_json::Value::Null) {
+            extra_meta.insert("bin".to_string(), entry.meta.bin.clone());
+        }
+        if !entry.meta.optional_peers.is_empty() {
+            extra_meta.insert(
+                "optionalPeers".to_string(),
+                serde_json::Value::Array(
+                    entry
+                        .meta
+                        .optional_peers
+                        .iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect(),
+                ),
+            );
+        }
+
+        // Peer declarations survive on their typed slot so drift
+        // detection sees them; the meta map round-trip survives
+        // through `extra_meta` for anything we don't model.
+        let peer_dependencies = entry.meta.peer_dependencies.clone();
+        let peer_dependencies_meta: BTreeMap<String, PeerDepMeta> = entry
+            .meta
+            .optional_peers
+            .iter()
+            .map(|n| (n.clone(), PeerDepMeta { optional: true }))
+            .collect();
+
         packages.insert(
             dep_path.clone(),
             LockedPackage {
@@ -257,9 +365,17 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 integrity: entry.integrity.clone().filter(|s| !s.is_empty()),
                 dependencies: deps,
                 optional_dependencies: optional_deps,
+                peer_dependencies,
+                peer_dependencies_meta,
                 dep_path,
+                local_source,
+                alias_of,
+                os: entry.meta.os.iter().cloned().collect(),
+                cpu: entry.meta.cpu.iter().cloned().collect(),
+                libc: entry.meta.libc.iter().cloned().collect(),
                 declared_dependencies: declared,
-                bin: entry.meta.bin.clone(),
+                bin: bin_map,
+                extra_meta,
                 ..Default::default()
             },
         );
@@ -328,6 +444,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // partial walk could wrongly match a literal npm package named
     // `packages` that has its own nested `foo` entry.
     let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
+    let mut workspace_extra_fields: BTreeMap<String, BTreeMap<String, serde_json::Value>> =
+        BTreeMap::new();
     for (ws_path, ws_raw) in &raw.workspaces {
         let importer_path = if ws_path.is_empty() {
             ".".to_string()
@@ -335,40 +453,262 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             ws_path.clone()
         };
         let mut direct: Vec<DirectDep> = Vec::new();
-        let push_dep = |name: &str, dep_type: DepType, direct: &mut Vec<DirectDep>| {
-            if let Some(target_key) = resolve_workspace_dep(ws_path, name, &key_info)
-                && let Some((dname, dver)) = key_info.get(&target_key)
-            {
-                direct.push(DirectDep {
-                    name: dname.clone(),
-                    dep_path: format!("{dname}@{dver}"),
-                    dep_type,
-                    specifier: None,
-                });
-            }
-        };
-        for n in ws_raw.dependencies.keys() {
-            push_dep(n, DepType::Production, &mut direct);
+        let push_dep =
+            |name: &str, specifier: &str, dep_type: DepType, direct: &mut Vec<DirectDep>| {
+                if let Some(target_key) = resolve_workspace_dep(ws_path, name, &key_info)
+                    && let Some((dname, dver)) = key_info.get(&target_key)
+                {
+                    direct.push(DirectDep {
+                        name: dname.clone(),
+                        dep_path: format!("{dname}@{dver}"),
+                        dep_type,
+                        specifier: Some(specifier.to_string()),
+                    });
+                }
+            };
+        for (n, spec) in &ws_raw.dependencies {
+            push_dep(n, spec, DepType::Production, &mut direct);
         }
-        for n in ws_raw.dev_dependencies.keys() {
-            push_dep(n, DepType::Dev, &mut direct);
+        for (n, spec) in &ws_raw.dev_dependencies {
+            push_dep(n, spec, DepType::Dev, &mut direct);
         }
-        for n in ws_raw.optional_dependencies.keys() {
-            push_dep(n, DepType::Optional, &mut direct);
+        for (n, spec) in &ws_raw.optional_dependencies {
+            push_dep(n, spec, DepType::Optional, &mut direct);
         }
-        importers.insert(importer_path, direct);
+        importers.insert(importer_path.clone(), direct);
+        if !ws_raw.extra.is_empty() {
+            workspace_extra_fields.insert(importer_path, ws_raw.extra.clone());
+        }
     }
     // The `importers` map always needs a `.` entry even when the
     // lockfile omits the `""` workspace entirely (hand-authored
     // fixtures sometimes do).
     importers.entry(".".to_string()).or_default();
 
+    // Translate bun's unnamed `catalog:` / named `catalogs:` blocks
+    // into the shared `LockfileGraph.catalogs` shape — outer key is
+    // the catalog name (`default` for the unnamed one), inner key is
+    // the package name. We don't have a separate resolved version on
+    // bun's side, so the `specifier` and `version` track the same
+    // value (the declared range); refreshing the catalog at resolve
+    // time rewrites `version` to the picked pin.
+    let mut catalogs_map: BTreeMap<String, BTreeMap<String, crate::CatalogEntry>> = BTreeMap::new();
+    if !raw.catalog.is_empty() {
+        let inner = raw
+            .catalog
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    crate::CatalogEntry {
+                        specifier: v.clone(),
+                        version: v.clone(),
+                    },
+                )
+            })
+            .collect();
+        catalogs_map.insert("default".to_string(), inner);
+    }
+    for (catalog_name, entries) in &raw.catalogs {
+        let inner = entries
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    crate::CatalogEntry {
+                        specifier: v.clone(),
+                        version: v.clone(),
+                    },
+                )
+            })
+            .collect();
+        catalogs_map.insert(catalog_name.clone(), inner);
+    }
+
     Ok(LockfileGraph {
         importers,
         packages,
         bun_config_version: Some(raw.config_version),
+        overrides: raw.overrides,
+        patched_dependencies: raw.patched_dependencies,
+        // Preserve bun's insertion order verbatim — dedupe to guard
+        // against a hand-authored lockfile with repeats but never
+        // reorder, so a re-emit is byte-identical to bun's own output.
+        trusted_dependencies: {
+            let mut seen = BTreeSet::new();
+            let mut out: Vec<String> = Vec::with_capacity(raw.trusted_dependencies.len());
+            for name in raw.trusted_dependencies {
+                if seen.insert(name.clone()) {
+                    out.push(name);
+                }
+            }
+            out
+        },
+        catalogs: catalogs_map,
+        extra_fields: raw.extra,
+        workspace_extra_fields,
         ..Default::default()
     })
+}
+
+/// Extract the alias name bun uses as the hoist key. bun's `packages`
+/// key is `<alias_name>` hoisted or `<parent>/<alias_name>` nested,
+/// where `alias_name` matches `package.json`'s dep key verbatim.
+fn bun_key_to_alias_name(key: &str) -> String {
+    if let Some(last_slash) = key.rfind('/') {
+        // Scoped names like `@scope/name` are a single unit — if the
+        // slice before the last slash is itself `@scope`, keep the
+        // whole suffix.
+        let tail_start = key[..last_slash].rfind('/').map(|i| i + 1).unwrap_or(0);
+        if key[tail_start..last_slash].starts_with('@') {
+            key[tail_start..].to_string()
+        } else {
+            key[last_slash + 1..].to_string()
+        }
+    } else {
+        key.to_string()
+    }
+}
+
+/// Classify a bun ident's version tail as a registry pin, an npm alias
+/// target, or a non-registry source (git, file, link, workspace, http
+/// tarball). Returns `(name, version, local_source, alias_of)`.
+///
+/// - `alias_name` is the hoist key (bun's left-hand side).
+/// - `raw_name` / `raw_version` come from `split_ident()` on the ident
+///   (the right-hand side of the tuple's position 0).
+///
+/// The alias name wins as `LockedPackage.name` whenever it differs
+/// from the ident's name (npm-alias case). `alias_of` records the
+/// registry-side name only then.
+fn classify_bun_ident(
+    alias_name: &str,
+    raw_name: &str,
+    raw_version: &str,
+    integrity: Option<&str>,
+    _path: &Path,
+) -> Result<(String, String, Option<LocalSource>, Option<String>), Error> {
+    // npm-alias tail: bun writes the registry identity into the ident,
+    // so the raw name is the real registry name and the alias key is
+    // the hoist name.
+    let alias_of = if alias_name != raw_name {
+        Some(raw_name.to_string())
+    } else {
+        None
+    };
+    let name = alias_name.to_string();
+
+    // Non-registry tails.
+    if raw_version.starts_with("workspace:") {
+        let rel = raw_version.strip_prefix("workspace:").unwrap_or("");
+        // `workspace:*` / `workspace:^` / `workspace:~` are version-
+        // range selectors, not directory paths — a `PathBuf::from("*")`
+        // would silently become `{project_root}/*` under any caller
+        // that does `project_root.join(link.path())`. Only treat the
+        // tail as a path when it looks like one (leading `.` or `/`);
+        // otherwise fall back to `.` so the link points at the
+        // workspace root and the caller resolves the actual location
+        // from the graph's workspace map.
+        let is_path = rel.starts_with('.') || rel.starts_with('/');
+        let path_buf = std::path::PathBuf::from(if rel.is_empty() || !is_path { "." } else { rel });
+        return Ok((
+            name,
+            raw_version.to_string(),
+            Some(LocalSource::Link(path_buf)),
+            alias_of,
+        ));
+    }
+    if let Some(rest) = raw_version.strip_prefix("github:") {
+        let (url, committish) = split_committish(rest);
+        return Ok((
+            name,
+            raw_version.to_string(),
+            Some(LocalSource::Git(GitSource {
+                url: format!("https://github.com/{url}.git"),
+                committish: committish.clone(),
+                resolved: committish.unwrap_or_default(),
+            })),
+            alias_of,
+        ));
+    }
+    if (raw_version.starts_with("git+")
+        || raw_version.starts_with("git://")
+        || raw_version.starts_with("git@"))
+        && let Some((url, committish)) = crate::parse_git_spec(raw_version)
+    {
+        return Ok((
+            name,
+            raw_version.to_string(),
+            Some(LocalSource::Git(GitSource {
+                url,
+                committish: committish.clone(),
+                resolved: committish.unwrap_or_default(),
+            })),
+            alias_of,
+        ));
+    }
+    if raw_version.starts_with("http://") || raw_version.starts_with("https://") {
+        // Mirror the sibling `LockedPackage.integrity` hash onto the
+        // `RemoteTarballSource` so consumers of
+        // `local_source.specifier()` or integrity-verification paths
+        // see the same value — leaving it empty would make the two
+        // fields drift apart for the same entry.
+        return Ok((
+            name,
+            raw_version.to_string(),
+            Some(LocalSource::RemoteTarball(RemoteTarballSource {
+                url: raw_version.to_string(),
+                integrity: integrity.map(str::to_string).unwrap_or_default(),
+            })),
+            alias_of,
+        ));
+    }
+    if let Some(rest) = raw_version.strip_prefix("file:") {
+        let rel = std::path::PathBuf::from(rest);
+        let kind = if LocalSource::path_looks_like_tarball(&rel) {
+            LocalSource::Tarball(rel)
+        } else {
+            LocalSource::Directory(rel)
+        };
+        return Ok((name, raw_version.to_string(), Some(kind), alias_of));
+    }
+    if let Some(rest) = raw_version.strip_prefix("link:") {
+        return Ok((
+            name,
+            raw_version.to_string(),
+            Some(LocalSource::Link(std::path::PathBuf::from(rest))),
+            alias_of,
+        ));
+    }
+    // Plain registry pin.
+    Ok((name, raw_version.to_string(), None, alias_of))
+}
+
+fn split_committish(spec: &str) -> (String, Option<String>) {
+    match spec.rfind('#') {
+        Some(i) => (spec[..i].to_string(), Some(spec[i + 1..].to_string())),
+        None => (spec.to_string(), None),
+    }
+}
+
+/// Normalize bun's `bin` meta (either a single-string form or a
+/// `{name: path}` object) into the typed BTreeMap LockedPackage uses.
+/// String form defaults the bin name to `default_name` (the package
+/// name), matching npm's own fallback when `package.json` writes
+/// `"bin": "./foo.js"` shorthand.
+fn bin_value_to_map(default_name: &str, value: &serde_json::Value) -> BTreeMap<String, String> {
+    match value {
+        serde_json::Value::String(s) => {
+            let mut map = BTreeMap::new();
+            map.insert(default_name.to_string(), s.clone());
+            map
+        }
+        serde_json::Value::Object(obj) => obj
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect(),
+        _ => BTreeMap::new(),
+    }
 }
 
 impl Clone for RawBunWorkspace {
@@ -377,6 +717,7 @@ impl Clone for RawBunWorkspace {
             dependencies: self.dependencies.clone(),
             dev_dependencies: self.dev_dependencies.clone(),
             optional_dependencies: self.optional_dependencies.clone(),
+            extra: self.extra.clone(),
         }
     }
 }
@@ -675,30 +1016,34 @@ pub fn write(
     fn build_workspace_pairs(
         pj: &aube_manifest::PackageJson,
         is_root: bool,
-    ) -> Vec<(&'static str, Value)> {
-        let mut pairs: Vec<(&'static str, Value)> = Vec::new();
+        ws_extras: Option<&BTreeMap<String, Value>>,
+    ) -> Vec<(String, Value)> {
+        let mut pairs: Vec<(String, Value)> = Vec::new();
         if let Some(name) = &pj.name {
-            pairs.push(("name", json!(name)));
+            pairs.push(("name".to_string(), json!(name)));
         }
         if !is_root {
             if let Some(version) = &pj.version {
-                pairs.push(("version", json!(version)));
+                pairs.push(("version".to_string(), json!(version)));
             }
             if let Some(bin) = pj.extra.get("bin") {
-                pairs.push(("bin", bin.clone()));
+                pairs.push(("bin".to_string(), bin.clone()));
             }
         }
         if !pj.dependencies.is_empty() {
-            pairs.push(("dependencies", json!(pj.dependencies)));
+            pairs.push(("dependencies".to_string(), json!(pj.dependencies)));
         }
         if !pj.dev_dependencies.is_empty() {
-            pairs.push(("devDependencies", json!(pj.dev_dependencies)));
+            pairs.push(("devDependencies".to_string(), json!(pj.dev_dependencies)));
         }
         if !pj.optional_dependencies.is_empty() {
-            pairs.push(("optionalDependencies", json!(pj.optional_dependencies)));
+            pairs.push((
+                "optionalDependencies".to_string(),
+                json!(pj.optional_dependencies),
+            ));
         }
         if !pj.peer_dependencies.is_empty() {
-            pairs.push(("peerDependencies", json!(pj.peer_dependencies)));
+            pairs.push(("peerDependencies".to_string(), json!(pj.peer_dependencies)));
         }
         if !is_root
             && let Some(meta) = pj
@@ -723,16 +1068,36 @@ pub fn write(
                     .into_iter()
                     .map(|k| Value::String(k.clone()))
                     .collect();
-                pairs.push(("optionalPeers", Value::Array(optional_peers)));
+                pairs.push(("optionalPeers".to_string(), Value::Array(optional_peers)));
+            }
+        }
+        // Re-emit unknown workspace fields (anything bun writes that
+        // we don't model above) so a bun-side roundtrip preserves
+        // them verbatim. Skip keys we've already rendered to avoid
+        // duplicating the serde-flatten collision with typed fields.
+        if let Some(extras) = ws_extras {
+            let already: BTreeSet<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+            for (k, v) in extras {
+                if already.contains(k) {
+                    continue;
+                }
+                pairs.push((k.clone(), v.clone()));
             }
         }
         pairs
     }
 
-    let mut workspace_pairs: Vec<(String, Vec<(&'static str, Value)>)> = Vec::new();
-    workspace_pairs.push(("".to_string(), build_workspace_pairs(manifest, true)));
+    let mut workspace_pairs: Vec<(String, Vec<(String, Value)>)> = Vec::new();
+    workspace_pairs.push((
+        "".to_string(),
+        build_workspace_pairs(manifest, true, graph.workspace_extra_fields.get(".")),
+    ));
     for (importer_path, pj) in &workspace_manifests {
-        workspace_pairs.push((importer_path.clone(), build_workspace_pairs(pj, false)));
+        let extras = graph.workspace_extra_fields.get(importer_path);
+        workspace_pairs.push((
+            importer_path.clone(),
+            build_workspace_pairs(pj, false, extras),
+        ));
     }
 
     let mut package_entries: Vec<(String, Value)> = Vec::new();
@@ -788,6 +1153,33 @@ pub fn write(
                 Value::Object(opt_deps_obj),
             );
         }
+        // Peer declarations survive on bun's per-entry meta.
+        // Collapsing them into `dependencies` on re-emit is one of
+        // the reported parity bugs, so round-trip through the typed
+        // slot.
+        if !pkg.peer_dependencies.is_empty() {
+            let map: serde_json::Map<String, Value> = pkg
+                .peer_dependencies
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            meta.insert("peerDependencies".to_string(), Value::Object(map));
+        }
+        // `optionalPeers` is bun's compact list form — derive from
+        // `peer_dependencies_meta` when present, fall back to any
+        // original extra_meta["optionalPeers"] array.
+        let optional_peer_names: Vec<String> = pkg
+            .peer_dependencies_meta
+            .iter()
+            .filter(|(_, v)| v.optional)
+            .map(|(k, _)| k.clone())
+            .collect();
+        if !optional_peer_names.is_empty() {
+            let mut sorted = optional_peer_names.clone();
+            sorted.sort();
+            let arr: Vec<Value> = sorted.into_iter().map(Value::String).collect();
+            meta.insert("optionalPeers".to_string(), Value::Array(arr));
+        }
         // Preserve the full `bin:` map — bun's meta block records
         // executables by name so `bun install --frozen-lockfile` can
         // recreate the `.bin` shims without re-reading each tarball's
@@ -795,21 +1187,72 @@ pub fn write(
         // both representations on `LockedPackage.bin` so either
         // writer can render byte-identical output.
         //
+        // Prefer the original shape captured in `extra_meta["bin"]`
+        // (string vs object) so a bun-authored lockfile that wrote
+        // `"bin": "./foo"` doesn't round-trip to `"bin": {"foo": "./foo"}`.
         // Skip empty-key entries — those are the placeholder bins
         // pnpm's lockfile synthesizes when it knows `hasBin: true`
-        // but has no paths. Emitting them would produce a
-        // `{"bin": {"": ""}}` block bun wouldn't accept.
-        let real_bins: serde_json::Map<String, Value> = pkg
-            .bin
-            .iter()
-            .filter(|(k, _)| !k.is_empty())
-            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-            .collect();
-        if !real_bins.is_empty() {
-            meta.insert("bin".to_string(), Value::Object(real_bins));
+        // but has no paths.
+        if let Some(raw_bin) = pkg.extra_meta.get("bin")
+            && !matches!(raw_bin, Value::Null)
+        {
+            meta.insert("bin".to_string(), raw_bin.clone());
+        } else {
+            let real_bins: serde_json::Map<String, Value> = pkg
+                .bin
+                .iter()
+                .filter(|(k, _)| !k.is_empty())
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            if !real_bins.is_empty() {
+                meta.insert("bin".to_string(), Value::Object(real_bins));
+            }
+        }
+        // Preserve optional-platform packages' filter metadata so
+        // bun's platform-aware resolution still has what it needs
+        // on the next install.
+        if !pkg.os.is_empty() {
+            let arr: Vec<Value> = pkg.os.iter().map(|s| Value::String(s.clone())).collect();
+            meta.insert("os".to_string(), Value::Array(arr));
+        }
+        if !pkg.cpu.is_empty() {
+            let arr: Vec<Value> = pkg.cpu.iter().map(|s| Value::String(s.clone())).collect();
+            meta.insert("cpu".to_string(), Value::Array(arr));
+        }
+        if !pkg.libc.is_empty() {
+            let arr: Vec<Value> = pkg.libc.iter().map(|s| Value::String(s.clone())).collect();
+            meta.insert("libc".to_string(), Value::Array(arr));
+        }
+        // Extras: anything bun wrote on the meta block that we don't
+        // model on `LockedPackage` (e.g. `deprecated`,
+        // `hasInstallScript`). Skip keys we've already rendered to
+        // avoid duplicate slots — the serde-flatten capture would
+        // include them only if the typed slot was missing.
+        const MODELED_META_KEYS: &[&str] = &[
+            "dependencies",
+            "optionalDependencies",
+            "peerDependencies",
+            "optionalPeers",
+            "bin",
+            "os",
+            "cpu",
+            "libc",
+        ];
+        for (k, v) in &pkg.extra_meta {
+            if MODELED_META_KEYS.contains(&k.as_str()) {
+                continue;
+            }
+            meta.insert(k.clone(), v.clone());
         }
 
-        let ident = pkg.spec_key();
+        // npm-alias identity: bun writes the *registry* name and
+        // resolved version as the ident when the hoist key is an
+        // alias (`foo-alias: [bar@1.2.3, ...]`), not the alias name.
+        // Aube's earlier writer emitted `{name}@{version}` which
+        // collapsed to the alias name and produced a gratuitous diff
+        // against bun's own output.
+        let ident_name = pkg.alias_of.as_deref().unwrap_or(&pkg.name);
+        let ident = format!("{}@{}", ident_name, pkg.version);
         let integrity = pkg.integrity.clone().unwrap_or_default();
         let entry = Value::Array(vec![
             Value::String(ident),
@@ -824,7 +1267,85 @@ pub fn write(
     // lockfiles that predate the field) so a bun-bumped value round-
     // trips instead of silently downgrading on re-emit.
     let config_version = graph.bun_config_version.unwrap_or(1);
-    let body = format_bun_lockfile(&workspace_pairs, &package_entries, config_version);
+
+    // Collect top-level blocks bun understands natively. Overrides /
+    // catalog / catalogs / patchedDependencies / trustedDependencies
+    // are all round-tripped from the parsed graph; anything else the
+    // lockfile carried drops through `graph.extra_fields`.
+    let mut top_level_extras: Vec<(String, Value)> = Vec::new();
+    if !graph.overrides.is_empty() {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in &graph.overrides {
+            obj.insert(k.clone(), Value::String(v.clone()));
+        }
+        top_level_extras.push(("overrides".to_string(), Value::Object(obj)));
+    }
+    if !graph.patched_dependencies.is_empty() {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in &graph.patched_dependencies {
+            obj.insert(k.clone(), Value::String(v.clone()));
+        }
+        top_level_extras.push(("patchedDependencies".to_string(), Value::Object(obj)));
+    }
+    if !graph.trusted_dependencies.is_empty() {
+        let arr: Vec<Value> = graph
+            .trusted_dependencies
+            .iter()
+            .map(|s| Value::String(s.clone()))
+            .collect();
+        top_level_extras.push(("trustedDependencies".to_string(), Value::Array(arr)));
+    }
+    if let Some(default_catalog) = graph.catalogs.get("default") {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in default_catalog {
+            obj.insert(k.clone(), Value::String(v.specifier.clone()));
+        }
+        if !obj.is_empty() {
+            top_level_extras.push(("catalog".to_string(), Value::Object(obj)));
+        }
+    }
+    let named_catalogs: BTreeMap<&String, &BTreeMap<String, crate::CatalogEntry>> = graph
+        .catalogs
+        .iter()
+        .filter(|(k, _)| k.as_str() != "default")
+        .collect();
+    if !named_catalogs.is_empty() {
+        let mut outer = serde_json::Map::new();
+        for (name, entries) in named_catalogs {
+            let mut inner = serde_json::Map::new();
+            for (k, v) in entries {
+                inner.insert(k.clone(), Value::String(v.specifier.clone()));
+            }
+            outer.insert(name.clone(), Value::Object(inner));
+        }
+        top_level_extras.push(("catalogs".to_string(), Value::Object(outer)));
+    }
+    // Finally, anything else the parser stashed in `extra_fields`
+    // (future bun bumps or hand-authored blocks we don't model).
+    const MODELED_TOP_KEYS: &[&str] = &[
+        "lockfileVersion",
+        "configVersion",
+        "workspaces",
+        "packages",
+        "overrides",
+        "patchedDependencies",
+        "trustedDependencies",
+        "catalog",
+        "catalogs",
+    ];
+    for (k, v) in &graph.extra_fields {
+        if MODELED_TOP_KEYS.contains(&k.as_str()) {
+            continue;
+        }
+        top_level_extras.push((k.clone(), v.clone()));
+    }
+
+    let body = format_bun_lockfile(
+        &workspace_pairs,
+        &package_entries,
+        config_version,
+        &top_level_extras,
+    );
     crate::atomic_write_lockfile(path, body.as_bytes())?;
     Ok(())
 }
@@ -849,9 +1370,10 @@ pub fn write(
 /// `config_version` is echoed back into the output as bun itself does —
 /// hardcoding would silently downgrade the field when bun bumps it.
 fn format_bun_lockfile(
-    workspaces: &[(String, Vec<(&'static str, serde_json::Value)>)],
+    workspaces: &[(String, Vec<(String, serde_json::Value)>)],
     package_entries: &[(String, serde_json::Value)],
     config_version: u32,
+    top_level_extras: &[(String, serde_json::Value)],
 ) -> String {
     let mut out = String::with_capacity(8192);
     out.push_str("{\n");
@@ -880,7 +1402,9 @@ fn format_bun_lockfile(
             // bun emits a trailing comma after every workspace-level
             // field, including the last one — `},` closes the block.
             match v {
-                serde_json::Value::Object(map) if !map.is_empty() && MULTILINE_KEYS.contains(k) => {
+                serde_json::Value::Object(map)
+                    if !map.is_empty() && MULTILINE_KEYS.contains(&k.as_str()) =>
+                {
                     out.push_str(&format!("      {key_str}: {{\n"));
                     for (dk, dv) in map {
                         out.push_str(&format!(
@@ -902,6 +1426,31 @@ fn format_bun_lockfile(
         out.push_str("    },\n");
     }
     out.push_str("  },\n");
+
+    // Top-level extras (`overrides`, `catalog`, `catalogs`,
+    // `patchedDependencies`, `trustedDependencies`, plus anything
+    // the parser captured in `extra_fields`). Emit in the order the
+    // caller supplied so a bun-first write preserves bun's own
+    // field order on re-read.
+    for (k, v) in top_level_extras {
+        let key_str = serde_json::to_string(k).unwrap();
+        match v {
+            serde_json::Value::Object(map) if !map.is_empty() => {
+                out.push_str(&format!("  {key_str}: {{\n"));
+                for (dk, dv) in map {
+                    out.push_str(&format!(
+                        "    {}: {},\n",
+                        serde_json::to_string(dk).unwrap(),
+                        inline_json(dv, 0)
+                    ));
+                }
+                out.push_str("  },\n");
+            }
+            _ => {
+                out.push_str(&format!("  {key_str}: {},\n", inline_json(v, 0)));
+            }
+        }
+    }
 
     // Packages block. Each entry is its own line; bun separates
     // entries with a blank line (an empty line between every
@@ -1754,6 +2303,384 @@ mod tests {
         assert_eq!(
             bar.dep_path, "bar@1.0.0",
             "workspace `bar` must resolve to hoisted 1.0.0, not packages/bar@9.9.9"
+        );
+    }
+
+    /// Top-level `overrides` / `patchedDependencies` / `trustedDependencies`
+    /// and the unnamed `catalog` / named `catalogs` blocks must round-trip
+    /// verbatim — bun preserves all five on re-emit, so aube dropping any
+    /// of them is a real-repo churn source on every install. Keep this
+    /// test format-agnostic (no SRI hashes, no packages) so it only
+    /// exercises the metadata-preservation path.
+    #[test]
+    fn test_roundtrip_top_level_metadata() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root" }
+  },
+  "overrides": {
+    "lodash": "^4.17.21",
+    "lodash>debug": "^4.0.0"
+  },
+  "patchedDependencies": {
+    "lodash@4.17.21": "patches/lodash@4.17.21.patch"
+  },
+  "trustedDependencies": ["sharp", "esbuild"],
+  "catalog": {
+    "react": "^18.2.0"
+  },
+  "catalogs": {
+    "evens": { "date-fns": "^2.30.0" }
+  },
+  "packages": {}
+}"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        assert_eq!(
+            graph.overrides.get("lodash").map(String::as_str),
+            Some("^4.17.21")
+        );
+        assert_eq!(
+            graph.overrides.get("lodash>debug").map(String::as_str),
+            Some("^4.0.0")
+        );
+        assert_eq!(
+            graph
+                .patched_dependencies
+                .get("lodash@4.17.21")
+                .map(String::as_str),
+            Some("patches/lodash@4.17.21.patch")
+        );
+        assert_eq!(
+            graph.trusted_dependencies,
+            vec!["sharp".to_string(), "esbuild".to_string()],
+            "trustedDependencies must preserve bun's original order on parse"
+        );
+        assert_eq!(graph.catalogs["default"]["react"].specifier, "^18.2.0");
+        assert_eq!(graph.catalogs["evens"]["date-fns"].specifier, "^2.30.0");
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("root".to_string()),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(out.path()).unwrap();
+
+        // Every round-tripped block must appear in the re-emitted
+        // lockfile — the exact rendering is implementation-defined
+        // but a substring check is enough to catch regression.
+        assert!(
+            written.contains("\"overrides\""),
+            "overrides dropped:\n{written}"
+        );
+        assert!(
+            written.contains("\"patchedDependencies\""),
+            "patchedDependencies dropped:\n{written}"
+        );
+        assert!(
+            written.contains("\"trustedDependencies\""),
+            "trustedDependencies dropped:\n{written}"
+        );
+        // trustedDependencies must round-trip in insertion order
+        // (bun writes [sharp, esbuild] — alphabetized emit would
+        // produce a gratuitous diff against bun's own output).
+        let sharp_at = written
+            .find("\"sharp\"")
+            .expect("sharp in trustedDependencies");
+        let esbuild_at = written
+            .find("\"esbuild\"")
+            .expect("esbuild in trustedDependencies");
+        assert!(
+            sharp_at < esbuild_at,
+            "trustedDependencies reordered on write — expected sharp before esbuild:\n{written}"
+        );
+        assert!(
+            written.contains("\"catalog\""),
+            "catalog dropped:\n{written}"
+        );
+        assert!(
+            written.contains("\"catalogs\""),
+            "catalogs dropped:\n{written}"
+        );
+
+        let reparsed = parse(out.path()).unwrap();
+        assert_eq!(reparsed.overrides, graph.overrides);
+        assert_eq!(reparsed.patched_dependencies, graph.patched_dependencies);
+        assert_eq!(reparsed.trusted_dependencies, graph.trusted_dependencies);
+        assert_eq!(reparsed.catalogs["default"]["react"].specifier, "^18.2.0");
+    }
+
+    /// Non-registry specifier classes (github:, file:, link:, https:,
+    /// workspace:) must parse into `LocalSource` rather than fall
+    /// through as registry pins. The installer routes by
+    /// `LocalSource`, so mis-classification here sends the package
+    /// through the default registry and either 404s or downloads the
+    /// wrong tarball — bug class #1 in the parity report.
+    #[test]
+    fn test_parse_routes_non_registry_specs_to_localsource() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "vfs": "github:collinstevens/vfs#0b6ea53",
+        "localdir": "file:./vendor/localdir",
+        "localtgz": "file:./vendor/thing.tgz",
+        "sibling": "link:../sibling",
+        "remote": "https://example.com/thing.tgz"
+      }
+    }
+  },
+  "packages": {
+    "vfs": ["vfs@github:collinstevens/vfs#0b6ea53abcdef", {}, "collinstevens-vfs-0b6ea53abcdef"],
+    "localdir": ["localdir@file:./vendor/localdir", {}],
+    "localtgz": ["localtgz@file:./vendor/thing.tgz", {}],
+    "sibling": ["sibling@link:../sibling", {}],
+    "remote": ["remote@https://example.com/thing.tgz", {}]
+  }
+}"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        let vfs = graph
+            .packages
+            .values()
+            .find(|p| p.name == "vfs")
+            .expect("vfs package");
+        assert!(
+            matches!(vfs.local_source, Some(LocalSource::Git(_))),
+            "github dep must be LocalSource::Git, got {:?}",
+            vfs.local_source
+        );
+
+        let localdir = graph
+            .packages
+            .values()
+            .find(|p| p.name == "localdir")
+            .expect("localdir package");
+        assert!(
+            matches!(localdir.local_source, Some(LocalSource::Directory(_))),
+            "file:./dir must be LocalSource::Directory, got {:?}",
+            localdir.local_source
+        );
+
+        let localtgz = graph
+            .packages
+            .values()
+            .find(|p| p.name == "localtgz")
+            .expect("localtgz package");
+        assert!(
+            matches!(localtgz.local_source, Some(LocalSource::Tarball(_))),
+            "file:./*.tgz must be LocalSource::Tarball, got {:?}",
+            localtgz.local_source
+        );
+
+        let sibling = graph
+            .packages
+            .values()
+            .find(|p| p.name == "sibling")
+            .expect("sibling package");
+        assert!(
+            matches!(sibling.local_source, Some(LocalSource::Link(_))),
+            "link: must be LocalSource::Link, got {:?}",
+            sibling.local_source
+        );
+
+        let remote = graph
+            .packages
+            .values()
+            .find(|p| p.name == "remote")
+            .expect("remote package");
+        assert!(
+            matches!(remote.local_source, Some(LocalSource::RemoteTarball(_))),
+            "https://*.tgz must be LocalSource::RemoteTarball, got {:?}",
+            remote.local_source
+        );
+    }
+
+    /// npm-alias ident: bun writes `<real>@<version>` as the ident
+    /// string while using the alias name as the `packages[]` hoist
+    /// key. Aube's earlier writer emitted `<alias>@<version>` and
+    /// produced a gratuitous diff against bun's own output. Cover
+    /// both parse (populates `alias_of`) and write (emits real name
+    /// in ident).
+    #[test]
+    fn test_parse_and_write_npm_alias() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('a');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "dependencies": { "h3-v2": "npm:h3@2.0.1" } }
+  },
+  "packages": {
+    "h3-v2": ["h3@2.0.1", "", {}, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+        let h3 = graph
+            .packages
+            .values()
+            .find(|p| p.name == "h3-v2")
+            .expect("h3-v2 package");
+        assert_eq!(h3.alias_of.as_deref(), Some("h3"));
+        assert_eq!(h3.version, "2.0.1");
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("root".to_string()),
+            dependencies: [("h3-v2".to_string(), "npm:h3@2.0.1".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(out.path()).unwrap();
+
+        // Ident reads `h3@2.0.1` (registry identity), not `h3-v2@...`.
+        assert!(
+            written.contains("\"h3@2.0.1\""),
+            "expected ident `h3@2.0.1`, got:\n{written}"
+        );
+        assert!(
+            !written.contains("\"h3-v2@2.0.1\""),
+            "alias-name ident leaked into packages entry:\n{written}"
+        );
+    }
+
+    /// Per-entry meta blocks bun preserves that aube historically
+    /// dropped: `peerDependencies`, `optionalPeers`, `os`, `cpu`,
+    /// `libc`. Round-trip through a single package entry and confirm
+    /// every field survives re-parse.
+    #[test]
+    fn test_roundtrip_peer_and_platform_metadata() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('a');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": { "": { "dependencies": { "foo": "^1.0.0" } } },
+  "packages": {
+    "foo": ["foo@1.0.0", "", {
+      "peerDependencies": { "react": "^18.0.0" },
+      "optionalPeers": ["react"],
+      "os": ["darwin", "linux"],
+      "cpu": ["arm64", "x64"],
+      "libc": ["glibc"]
+    }, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+        let foo = &graph.packages["foo@1.0.0"];
+        assert_eq!(
+            foo.peer_dependencies.get("react").map(String::as_str),
+            Some("^18.0.0")
+        );
+        assert!(
+            foo.peer_dependencies_meta
+                .get("react")
+                .is_some_and(|m| m.optional)
+        );
+        assert_eq!(
+            foo.os.as_slice(),
+            &["darwin".to_string(), "linux".to_string()]
+        );
+        assert_eq!(
+            foo.cpu.as_slice(),
+            &["arm64".to_string(), "x64".to_string()]
+        );
+        assert_eq!(foo.libc.as_slice(), &["glibc".to_string()]);
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("root".to_string()),
+            dependencies: [("foo".to_string(), "^1.0.0".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+        let reparsed = parse(out.path()).unwrap();
+        let foo2 = &reparsed.packages["foo@1.0.0"];
+        assert_eq!(foo2.peer_dependencies, foo.peer_dependencies);
+        assert_eq!(foo2.os, foo.os);
+        assert_eq!(foo2.cpu, foo.cpu);
+        assert_eq!(foo2.libc, foo.libc);
+    }
+
+    /// Workspace-level `peerDependencies` must survive round-trip
+    /// through the serde-flatten `extra` map even though aube's
+    /// typed workspace model doesn't claim the field directly. The
+    /// prior revision had a typed slot that silently drained bun's
+    /// peer block without plumbing it anywhere — regression guard.
+    #[test]
+    fn test_roundtrip_workspace_peer_dependencies() {
+        use tempfile::TempDir;
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        // Non-root workspace's package.json deliberately omits
+        // peerDependencies; the lockfile is the only place they live.
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","version":"2.0.0"}"#,
+        )
+        .unwrap();
+
+        let lock_path = project_dir.join("bun.lock");
+        std::fs::write(
+            &lock_path,
+            r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root" },
+    "packages/app": {
+      "name": "app",
+      "version": "2.0.0",
+      "peerDependencies": { "react": "^18.0.0" }
+    }
+  },
+  "packages": {}
+}"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lock_path).unwrap();
+        let app_extras = graph
+            .workspace_extra_fields
+            .get("packages/app")
+            .expect("packages/app workspace_extra_fields entry");
+        let peers = app_extras
+            .get("peerDependencies")
+            .and_then(serde_json::Value::as_object)
+            .expect("peerDependencies captured in extras");
+        assert_eq!(peers.get("react").and_then(|v| v.as_str()), Some("^18.0.0"));
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        write(&lock_path, &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(&lock_path).unwrap();
+        assert!(
+            written.contains("\"peerDependencies\""),
+            "workspace peerDependencies dropped on re-emit:\n{written}"
+        );
+        assert!(
+            written.contains("\"react\""),
+            "workspace peerDependencies.react dropped on re-emit:\n{written}"
         );
     }
 }

@@ -419,6 +419,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 // `None`.
                 license: None,
                 funding_url: None,
+                extra_meta: BTreeMap::new(),
             },
         );
     }
@@ -459,6 +460,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         })
         .collect();
 
+    let patched_dependencies: BTreeMap<String, String> = raw
+        .patched_dependencies
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (k, v.into_path()))
+        .collect();
+
     Ok(LockfileGraph {
         importers,
         packages,
@@ -473,6 +481,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         skipped_optional_dependencies,
         catalogs,
         bun_config_version: None,
+        patched_dependencies,
+        trusted_dependencies: Vec::new(),
+        extra_fields: BTreeMap::new(),
+        workspace_extra_fields: BTreeMap::new(),
     })
 }
 
@@ -862,6 +874,15 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                     .collect(),
             )
         },
+        // pnpm v9 emits patched deps as `{ path, hash }`. We don't
+        // track the patch hash on the graph (install-time concern),
+        // so write the path form which pnpm still accepts. Skipped
+        // when empty to keep parity with no-patch installs.
+        patched_dependencies: if graph.patched_dependencies.is_empty() {
+            None
+        } else {
+            Some(graph.patched_dependencies.clone())
+        },
         time,
         importers,
         packages,
@@ -1016,6 +1037,13 @@ struct WritablePnpmLockfile {
     // for the no-overrides case (the field is skipped when empty).
     #[serde(skip_serializing_if = "Option::is_none")]
     overrides: Option<BTreeMap<String, String>>,
+    /// pnpm v9+ top-level `patchedDependencies:` — preserved so a
+    /// bun→aube-lock conversion keeps the user's patches and a
+    /// re-emit doesn't strip the block. pnpm emits this block right
+    /// after `overrides:` and before `catalogs:`, so the field order
+    /// here follows the same sequence for byte-identical output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patched_dependencies: Option<BTreeMap<String, String>>,
     /// pnpm v9 emits a top-level `catalogs:` map after
     /// `overrides:` and before `importers:` when `pnpm-workspace.yaml`
     /// declares any referenced catalog entries.
@@ -1278,6 +1306,13 @@ struct RawPnpmLockfile {
     overrides: Option<BTreeMap<String, String>>,
     #[serde(default)]
     catalogs: Option<BTreeMap<String, BTreeMap<String, RawCatalogEntry>>>,
+    /// pnpm v9+ top-level `patchedDependencies:` block. Map of
+    /// `pkg@version` selector → patch entry (pnpm uses a nested
+    /// `{ path, hash }` object, but we only model the path string
+    /// on the shared graph). Round-tripped verbatim so a parse/
+    /// write cycle doesn't drop user patches.
+    #[serde(default)]
+    patched_dependencies: Option<BTreeMap<String, RawPatchedDependency>>,
     #[serde(default)]
     ignored_optional_dependencies: Option<Vec<String>>,
     #[serde(default)]
@@ -1288,6 +1323,31 @@ struct RawPnpmLockfile {
     snapshots: BTreeMap<String, RawSnapshot>,
     #[serde(default)]
     time: Option<BTreeMap<String, String>>,
+}
+
+/// pnpm writes `patchedDependencies` as either a bare path string
+/// (v8 style) or a nested `{ path, hash }` object (v9+). We accept
+/// both via an untagged enum and collapse to the path string on the
+/// shared graph.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawPatchedDependency {
+    Path(String),
+    Object {
+        path: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        hash: Option<String>,
+    },
+}
+
+impl RawPatchedDependency {
+    fn into_path(self) -> String {
+        match self {
+            RawPatchedDependency::Path(p) => p,
+            RawPatchedDependency::Object { path, .. } => path,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2126,6 +2186,59 @@ snapshots:
         assert_eq!(reparsed.overrides.len(), 2);
         assert_eq!(reparsed.overrides.get("lodash").unwrap(), "4.17.21");
         assert_eq!(reparsed.overrides.get("foo").unwrap(), "npm:bar@^2");
+    }
+
+    /// `patchedDependencies:` must land between `overrides:` and
+    /// `catalogs:` in the emitted YAML — that's where pnpm itself
+    /// writes it, and any other position produces a gratuitous diff
+    /// against pnpm's output on every install.
+    #[test]
+    fn patched_dependencies_emitted_after_overrides_before_catalogs() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("lodash".to_string(), "4.17.21".to_string());
+        let mut patched_dependencies = BTreeMap::new();
+        patched_dependencies.insert(
+            "lodash@4.17.21".to_string(),
+            "patches/lodash@4.17.21.patch".to_string(),
+        );
+        let mut default_catalog = BTreeMap::new();
+        default_catalog.insert(
+            "react".to_string(),
+            CatalogEntry {
+                specifier: "^18.2.0".to_string(),
+                version: "18.2.0".to_string(),
+            },
+        );
+        let mut catalogs = BTreeMap::new();
+        catalogs.insert("default".to_string(), default_catalog);
+
+        let graph = LockfileGraph {
+            overrides,
+            patched_dependencies,
+            catalogs,
+            ..Default::default()
+        };
+
+        let manifest = PackageJson {
+            name: Some("test".to_string()),
+            ..Default::default()
+        };
+
+        write(&lockfile_path, &graph, &manifest).unwrap();
+        let yaml = std::fs::read_to_string(&lockfile_path).unwrap();
+
+        let overrides_at = yaml.find("overrides:").expect("overrides:");
+        let patched_at = yaml
+            .find("patchedDependencies:")
+            .expect("patchedDependencies:");
+        let catalogs_at = yaml.find("catalogs:").expect("catalogs:");
+        assert!(
+            overrides_at < patched_at && patched_at < catalogs_at,
+            "expected order: overrides < patchedDependencies < catalogs, got\n{yaml}"
+        );
     }
 
     #[test]

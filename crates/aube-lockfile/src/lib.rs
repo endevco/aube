@@ -82,6 +82,36 @@ pub struct LockfileGraph {
     /// (e.g. from `2` back to `1`) when bun bumps it in a future
     /// release.
     pub bun_config_version: Option<u32>,
+    /// Top-level `patchedDependencies:` block mirrored by bun 1.1+ and
+    /// pnpm 9+. Key: selector (`lodash@4.17.21`), value: relative patch
+    /// file path (`patches/lodash@4.17.21.patch`). Round-tripped
+    /// verbatim so a parse/write cycle doesn't silently drop user
+    /// patches from the lockfile.
+    pub patched_dependencies: BTreeMap<String, String>,
+    /// Top-level `trustedDependencies:` block (bun) — a package-name
+    /// allowlist for lifecycle script execution. Preserved so
+    /// re-emitting a bun.lock doesn't strip the allowlist and cause
+    /// subsequent installs to skip scripts the user explicitly
+    /// approved.
+    ///
+    /// Kept as a `Vec` (not a set) so bun's original order round-trips
+    /// byte-identically; bun emits the list in insertion order. The
+    /// parser is responsible for deduping if the source lockfile
+    /// carried a duplicate.
+    pub trusted_dependencies: Vec<String>,
+    /// Top-level lockfile fields that aren't explicitly modeled on
+    /// `LockfileGraph`. Populated by per-format parsers on best-effort
+    /// basis so the writer can re-emit blocks a future lockfile
+    /// version might add (or ones we haven't promoted to typed fields
+    /// yet) without silently stripping them on round-trip. Each
+    /// parser/writer is responsible for emitting values in its
+    /// format's native serialization.
+    pub extra_fields: BTreeMap<String, serde_json::Value>,
+    /// Per-workspace-importer extras keyed by importer path (`""` for
+    /// root in bun, `"."` for others). Stores anything in the
+    /// workspace entry the typed model doesn't capture so a parse/
+    /// write cycle doesn't drop fields the user (or bun) wrote there.
+    pub workspace_extra_fields: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
 
 /// One entry in a lockfile catalog: the workspace-declared range and the
@@ -567,6 +597,14 @@ pub struct LockedPackage {
     /// Round-tripped so npm's lockfile keeps its per-entry
     /// `"funding": {"url": "…"}` block.
     pub funding_url: Option<String>,
+    /// Per-package-meta extras preserved verbatim from the source
+    /// lockfile. Captures fields the typed model doesn't yet cover
+    /// (`deprecated`, `hasInstallScript`, bun's `optionalPeers`, and
+    /// anything a future lockfile bump adds) so a parse/write cycle
+    /// doesn't drop them. Each format's writer re-emits what makes
+    /// sense there — bun inlines the extras back on the package-entry
+    /// meta object, pnpm / yarn / npm currently ignore them.
+    pub extra_meta: BTreeMap<String, serde_json::Value>,
 }
 
 impl LockedPackage {
@@ -762,6 +800,10 @@ impl LockfileGraph {
             skipped_optional_dependencies: self.skipped_optional_dependencies.clone(),
             catalogs: self.catalogs.clone(),
             bun_config_version: self.bun_config_version,
+            patched_dependencies: self.patched_dependencies.clone(),
+            trusted_dependencies: self.trusted_dependencies.clone(),
+            extra_fields: self.extra_fields.clone(),
+            workspace_extra_fields: self.workspace_extra_fields.clone(),
         }
     }
 
@@ -818,6 +860,10 @@ impl LockfileGraph {
             skipped_optional_dependencies,
             catalogs: self.catalogs.clone(),
             bun_config_version: self.bun_config_version,
+            patched_dependencies: self.patched_dependencies.clone(),
+            trusted_dependencies: self.trusted_dependencies.clone(),
+            extra_fields: self.extra_fields.clone(),
+            workspace_extra_fields: self.workspace_extra_fields.clone(),
         })
     }
 
@@ -850,9 +896,29 @@ impl LockfileGraph {
             if pkg.funding_url.is_none() && prior_pkg.funding_url.is_some() {
                 pkg.funding_url = prior_pkg.funding_url.clone();
             }
+            // Per-entry extras (`deprecated`, `optionalPeers`,
+            // format-specific fields bun/npm/yarn wrote into the
+            // meta block) can't be recovered from a fresh resolve,
+            // so carry them forward when the newer graph doesn't
+            // already carry its own. `self`-side keys always win.
+            for (k, v) in &prior_pkg.extra_meta {
+                pkg.extra_meta.entry(k.clone()).or_insert_with(|| v.clone());
+            }
         }
         if self.bun_config_version.is_none() {
             self.bun_config_version = prior.bun_config_version;
+        }
+        if self.patched_dependencies.is_empty() {
+            self.patched_dependencies = prior.patched_dependencies.clone();
+        }
+        if self.trusted_dependencies.is_empty() {
+            self.trusted_dependencies = prior.trusted_dependencies.clone();
+        }
+        if self.extra_fields.is_empty() {
+            self.extra_fields = prior.extra_fields.clone();
+        }
+        if self.workspace_extra_fields.is_empty() {
+            self.workspace_extra_fields = prior.workspace_extra_fields.clone();
         }
     }
 
