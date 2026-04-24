@@ -86,6 +86,36 @@ teardown() {
 	refute_output --partial "no lockfile found"
 }
 
+@test "gitBranchLockfile missing lockfile restore respects current branch name" {
+	git init -q
+	git config user.email "t@t"
+	git config user.name "t"
+	git checkout -q -b main
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-gbl-restore",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" }
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		gitBranchLockfile: true
+	EOF
+	git add package.json pnpm-workspace.yaml
+	git commit -q -m "init"
+
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_file_exists aube-lock.main.yaml
+	assert_file_exists node_modules/.aube-state/lockfile
+
+	git checkout -q -b dev
+	rm aube-lock.main.yaml
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_file_exists aube-lock.dev.yaml
+}
+
 # ===================================================================
 # mergeGitBranchLockfilesBranchPattern / --merge-git-branch-lockfiles
 # ===================================================================

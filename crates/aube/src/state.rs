@@ -7,6 +7,7 @@ const DEFAULT_STATE_DIR: &str = "node_modules";
 const STATE_DIR_NAME: &str = ".aube-state";
 const INSTALL_STATE_FILE_NAME: &str = "state.json";
 const FRESH_STATE_FILE_NAME: &str = "fresh.json";
+const LOCKFILE_SNAPSHOT_FILE_NAME: &str = "lockfile";
 
 /// Resolve the modules dir and state directory path for `project_dir` in a
 /// single settings-context load. `check_needs_install` and `write_state`
@@ -46,6 +47,8 @@ fn relative_path_or_original(path: &Path, base: &Path) -> String {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallState {
     pub lockfile_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lockfile_snapshot_name: Option<String>,
     pub package_json_hashes: BTreeMap<String, String>,
     pub aube_version: String,
     #[serde(default, rename = "prod")]
@@ -84,6 +87,8 @@ pub struct InstallState {
 #[derive(Debug, Serialize, Deserialize)]
 struct FreshnessState {
     lockfile_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lockfile_snapshot_name: Option<String>,
     package_json_hashes: BTreeMap<String, String>,
     #[serde(default, rename = "prod")]
     section_filtered: bool,
@@ -99,6 +104,7 @@ impl From<&InstallState> for FreshnessState {
     fn from(state: &InstallState) -> Self {
         Self {
             lockfile_hash: state.lockfile_hash.clone(),
+            lockfile_snapshot_name: state.lockfile_snapshot_name.clone(),
             package_json_hashes: state.package_json_hashes.clone(),
             section_filtered: state.section_filtered,
             settings_hash: state.settings_hash.clone(),
@@ -180,16 +186,76 @@ fn check_needs_install_inner(
     // "no lockfile found" — see `active_lockfile` for the full resolution
     // order.
     let (lockfile_name, lockfile_path) = active_lockfile(project_dir);
+    let mut lockfile_missing = false;
     if let Some(path) = lockfile_path {
         let current_hash = hash_file(&path);
         if current_hash != state.lockfile_hash {
             return Some(format!("{lockfile_name} has changed"));
         }
     } else {
-        return Some("no lockfile found".into());
+        lockfile_missing = true;
     }
 
-    // Check root + workspace package.json hashes.
+    if let Some(reason) = package_jsons_stale(project_dir, &state) {
+        return Some(reason);
+    }
+
+    if state.section_filtered {
+        return Some(
+            "previous install omitted dependency sections; auto-installing full graph".into(),
+        );
+    }
+
+    if let Some(reason) = verify_install_layout(project_dir, state.layout.as_ref()) {
+        return Some(reason);
+    }
+
+    if let Some(cli_flags) = cli_flags {
+        let current_settings_hash = hash_settings(project_dir, cli_flags);
+        if current_settings_hash != state.settings_hash {
+            return Some(".npmrc or workspace config has changed".into());
+        }
+    }
+
+    // No settings_hash check when cli_flags is None. That path feeds
+    // ensure_installed (aube run / exec / test). Those commands do not
+    // care about install-shape settings changing because the tree is
+    // still the tree built by the last install. Skipping this check
+    // also avoids the asymmetry bug where `aube install
+    // --node-linker=hoisted` writes a hash with cli_flags set, then
+    // bare `aube run` reads without the flag, mismatches, and triggers
+    // a spurious auto-install.
+    if lockfile_missing
+        && restore_lockfile_snapshot(project_dir, &state_path, &state, &lockfile_name).is_none()
+    {
+        return Some("no lockfile found".into());
+    }
+    None
+}
+
+pub fn restore_missing_lockfile_if_fresh(
+    project_dir: &Path,
+    cli_flags: &[(String, String)],
+) -> bool {
+    let (modules_dir, state_path) = resolve_paths(project_dir);
+    let (lockfile_name, lockfile_path) = active_lockfile(project_dir);
+    if lockfile_path.is_some() || !modules_dir.exists() {
+        return false;
+    }
+    let Some(state) = read_or_migrate_fresh_state(&state_path) else {
+        return false;
+    };
+    if package_jsons_stale(project_dir, &state).is_some()
+        || state.section_filtered
+        || verify_install_layout(project_dir, state.layout.as_ref()).is_some()
+        || hash_settings(project_dir, cli_flags) != state.settings_hash
+    {
+        return false;
+    }
+    restore_lockfile_snapshot(project_dir, &state_path, &state, &lockfile_name).is_some()
+}
+
+fn package_jsons_stale(project_dir: &Path, state: &FreshnessState) -> Option<String> {
     for (rel, stored_hash) in &state.package_json_hashes {
         let path = if rel == "." {
             project_dir.join("package.json")
@@ -224,32 +290,6 @@ fn check_needs_install_inner(
             return Some(stale_reason());
         }
     }
-
-    if state.section_filtered {
-        return Some(
-            "previous install omitted dependency sections; auto-installing full graph".into(),
-        );
-    }
-
-    if let Some(reason) = verify_install_layout(project_dir, state.layout.as_ref()) {
-        return Some(reason);
-    }
-
-    if let Some(cli_flags) = cli_flags {
-        let current_settings_hash = hash_settings(project_dir, cli_flags);
-        if current_settings_hash != state.settings_hash {
-            return Some(".npmrc or workspace config has changed".into());
-        }
-    }
-
-    // No settings_hash check when cli_flags is None. That path feeds
-    // ensure_installed (aube run / exec / test). Those commands do not
-    // care about install-shape settings changing because the tree is
-    // still the tree built by the last install. Skipping this check
-    // also avoids the asymmetry bug where `aube install
-    // --node-linker=hoisted` writes a hash with cli_flags set, then
-    // bare `aube run` reads without the flag, mismatches, and triggers
-    // a spurious auto-install.
     None
 }
 
@@ -289,10 +329,10 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         layout,
     } = input;
 
-    let lockfile_hash = match active_lockfile(project_dir).1 {
-        Some(path) => hash_file(&path),
-        None => String::new(),
-    };
+    let state_path = state_dir(project_dir);
+    remove_legacy_state_file(&state_path)?;
+    let (lockfile_hash, lockfile_snapshot_name) =
+        snapshot_active_lockfile(project_dir, &state_path)?;
     let settings_hash = hash_settings(project_dir, cli_flags);
     let install_layout = InstallLayoutState::from_graph(
         project_dir,
@@ -323,6 +363,7 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
 
     let state = InstallState {
         lockfile_hash,
+        lockfile_snapshot_name,
         package_json_hashes,
         aube_version: env!("CARGO_PKG_VERSION").to_string(),
         section_filtered,
@@ -335,13 +376,28 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
     };
 
     let fresh_state = FreshnessState::from(&state);
-    let state_path = state_dir(project_dir);
     let json = serde_json::to_string_pretty(&state)?;
-    remove_legacy_state_file(&state_path)?;
     aube_util::fs_atomic::atomic_write(&install_state_file(&state_path), json.as_bytes())?;
     write_fresh_state(&state_path, &fresh_state)?;
 
     Ok(())
+}
+
+fn snapshot_active_lockfile(
+    project_dir: &Path,
+    state_path: &Path,
+) -> Result<(String, Option<String>), std::io::Error> {
+    let (name, path) = active_lockfile(project_dir);
+    let Some(path) = path else {
+        let _ = std::fs::remove_file(lockfile_snapshot_file(state_path));
+        return Ok((String::new(), None));
+    };
+    let Ok(content) = std::fs::read(&path) else {
+        let _ = std::fs::remove_file(lockfile_snapshot_file(state_path));
+        return Ok((String::new(), None));
+    };
+    aube_util::fs_atomic::atomic_write(&lockfile_snapshot_file(state_path), &content)?;
+    Ok((hash_bytes(&content), Some(name)))
 }
 
 /// Read per-package fingerprints from a project's state directory.
@@ -470,6 +526,10 @@ fn fresh_state_file(state_path: &Path) -> PathBuf {
     state_path.join(FRESH_STATE_FILE_NAME)
 }
 
+fn lockfile_snapshot_file(state_path: &Path) -> PathBuf {
+    state_path.join(LOCKFILE_SNAPSHOT_FILE_NAME)
+}
+
 fn read_fresh_state(state_path: &Path) -> Option<FreshnessState> {
     if state_path.is_file() {
         let _ = std::fs::remove_file(state_path);
@@ -491,6 +551,47 @@ fn read_or_migrate_fresh_state(state_path: &Path) -> Option<FreshnessState> {
 fn write_fresh_state(state_path: &Path, state: &FreshnessState) -> Result<(), std::io::Error> {
     let json = serde_json::to_string_pretty(state)?;
     aube_util::fs_atomic::atomic_write(&fresh_state_file(state_path), json.as_bytes())
+}
+
+fn restore_lockfile_snapshot(
+    project_dir: &Path,
+    state_path: &Path,
+    state: &FreshnessState,
+    expected_name: &str,
+) -> Option<PathBuf> {
+    let name = state.lockfile_snapshot_name.as_ref()?;
+    if !is_restorable_lockfile_name(name) {
+        return None;
+    }
+    if is_branch_lockfile_name(name) && name != expected_name {
+        return None;
+    }
+    let content = std::fs::read(lockfile_snapshot_file(state_path)).ok()?;
+    if hash_bytes(&content) != state.lockfile_hash {
+        return None;
+    }
+    let path = project_dir.join(name);
+    aube_util::fs_atomic::atomic_write(&path, &content).ok()?;
+    Some(path)
+}
+
+fn is_restorable_lockfile_name(name: &str) -> bool {
+    matches!(
+        name,
+        "aube-lock.yaml"
+            | "pnpm-lock.yaml"
+            | "bun.lock"
+            | "yarn.lock"
+            | "npm-shrinkwrap.json"
+            | "package-lock.json"
+    ) || is_branch_lockfile_name(name)
+}
+
+fn is_branch_lockfile_name(name: &str) -> bool {
+    (name.starts_with("aube-lock.") || name.starts_with("pnpm-lock."))
+        && name.ends_with(".yaml")
+        && name != "aube-lock.yaml"
+        && name != "pnpm-lock.yaml"
 }
 
 fn remove_legacy_state_file(state_path: &Path) -> Result<(), std::io::Error> {
@@ -836,6 +937,11 @@ fn hash_file(path: &Path) -> String {
     format!("blake3:{}", hash.to_hex())
 }
 
+fn hash_bytes(content: &[u8]) -> String {
+    let hash = blake3::hash(content);
+    format!("blake3:{}", hash.to_hex())
+}
+
 fn hash_file_if_exists(path: &Path) -> Option<String> {
     std::fs::read(path).ok().map(|content| {
         let hash = blake3::hash(&content);
@@ -874,6 +980,7 @@ mod tests {
         let project_dir = temp_project_dir("legacy-empty-hash");
         let state = InstallState {
             lockfile_hash: String::new(),
+            lockfile_snapshot_name: None,
             package_json_hashes: BTreeMap::new(),
             aube_version: String::new(),
             section_filtered: false,
@@ -942,6 +1049,7 @@ mod tests {
         std::fs::create_dir_all(&state_path).expect("state dir should write");
         let state = InstallState {
             lockfile_hash: "blake3:lock".to_string(),
+            lockfile_snapshot_name: None,
             package_json_hashes: BTreeMap::from([(".".to_string(), "blake3:pkg".to_string())]),
             aube_version: env!("CARGO_PKG_VERSION").to_string(),
             section_filtered: false,
@@ -1032,6 +1140,7 @@ mod tests {
         shapes.insert(".".to_string(), orig_shape);
         let state = InstallState {
             lockfile_hash: String::new(),
+            lockfile_snapshot_name: None,
             package_json_hashes: pjh,
             aube_version: env!("CARGO_PKG_VERSION").to_string(),
             section_filtered: false,
