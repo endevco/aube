@@ -90,6 +90,7 @@ commits:
   why: PR titles drive release-plz version bumps (feat→minor, fix→patch, BREAKING CHANGE/`!` →major, others→no bump). enforced by .github/workflows/semantic-pr-lint.yml on PR title via amannn/action-semantic-pull-request
   types[12]: fix, feat, refactor, chore, docs, style, test, perf, build, ci, revert, security
   scope_optional: true (omit for repo-wide changes like `chore: release v1.2.0`)
+  scope_enforcement: advisory — the lint workflow only validates `type`, not `scope`. lists below are the conventional set, but new crates/features can introduce new scopes without a workflow change. release-plz keys off `type` only
   scopes_crates[10]: cli, resolver, registry, lockfile, store, linker, manifest, scripts, workspace, settings
   scopes_features[12]: install, add, publish, dlx, audit, login, logout, deprecate, unpublish, fetch, import, catalog
   scopes_infra[5]: bench, packaging, release, deps, release-plz
