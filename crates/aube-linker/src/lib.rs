@@ -2345,6 +2345,7 @@ impl Linker {
     /// Eliminates one syscall per linked file (~45k on the medium
     /// benchmark fixture).
     pub(crate) fn link_file_fresh(&self, stored: &StoredFile, dst: &Path) -> Result<(), Error> {
+        #[cfg(target_os = "macos")]
         const SMALL_FILE_COPY_MAX: u64 = 16 * 1024;
         match self.strategy {
             LinkStrategy::Reflink => {
