@@ -62,22 +62,11 @@ const PACKUMENT_ACCEPT: &str =
 /// `PACKUMENT_ACCEPT` — some proxies won't serve JSON unless it's in the list.
 const PACKUMENT_FULL_ACCEPT: &str = "application/json; q=1.0, */*";
 
-// Packument body cap — configurable via the `packumentMaxBytes`
-// setting. Default (200 MiB) lives in `FetchPolicy::default()` and is
-// sized to sit comfortably above the largest real-world packument
-// known today (`drizzle-orm` at ~97 MiB) while still bounding a
-// runaway registry response. `packumentMaxBytes=0` disables the cap
-// entirely for users who accept that exposure.
-
-/// Hard cap on a tarball response body (still compressed on the wire).
-/// The decompressed cap in `aube-store` (1 GiB) only fires after the
-/// gzip reader runs, so without a wire-level cap a hostile mirror can
-/// still stream a multi-GiB compressed payload into memory before the
-/// decompressor ever sees a byte. 1 GiB compressed is comfortably
-/// above the biggest real npm tarball (a handful of packages like
-/// `playwright` cross 100 MiB compressed) while still stopping runaway
-/// streams.
-const TARBALL_BODY_CAP: u64 = 1 << 30;
+// Packument and tarball body caps are configurable via the
+// `packumentMaxBytes` / `tarballMaxBytes` settings. Defaults live in
+// `FetchPolicy::default()`; setting either to `0` disables the cap.
+// These are hardening knobs against hostile or misconfigured
+// registries streaming runaway bodies into the resolver.
 
 /// Hard cap for the `/-/npm/v1/security/advisories/bulk` response. The
 /// body scales with the number of distinct `<name>@<version>` pairs in
@@ -1017,7 +1006,9 @@ impl RegistryClient {
         // (e.g. `//host/artifactory/npm/`). Retries cover transient
         // 5xx / 429 / connection errors; see [`Self::send_with_retry`].
         let (bytes, body_elapsed) = self
-            .retry_bytes_body_read(url, TARBALL_BODY_CAP, || self.authed_get(url, url))
+            .retry_bytes_body_read(url, self.fetch_policy.tarball_max_bytes, || {
+                self.authed_get(url, url)
+            })
             .await?;
         warn_slow_tarball(
             self.fetch_policy.min_speed_kibps,

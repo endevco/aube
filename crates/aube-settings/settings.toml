@@ -1266,28 +1266,41 @@ type = "int"
 default = "209715200"
 docs = """
 Refuses any packument response whose `Content-Length` exceeds this
-many bytes. Primarily a hardening knob: a hostile or misconfigured
-registry (including a MITM on a compromised mirror) could otherwise
-stream gigabytes of JSON into the resolver and OOM the install.
+many bytes. A hostile or misconfigured registry (including a MITM on
+a compromised mirror) could otherwise stream gigabytes of JSON into
+the resolver and OOM the install; the cap makes that fail loudly.
 
-The default (200 MiB) sits above the largest packuments on
-`registry.npmjs.org` known at the time of writing — `drizzle-orm`
-sits around 97 MiB with room for continued release growth, while
-the common-case metadata files (`@types/node`, `lodash`, `chalk`)
-all land under 6 MiB — so normal installs never see the cap but a
-runaway registry response still fails loudly. Raise this setting if
-a package with an even longer release history hits the new ceiling;
-set to `0` to disable the cap entirely (not recommended for
-untrusted registries).
+Default: 200 MiB. Raise if you hit the cap, or set to `0` to disable
+it entirely (only reasonable against a registry you fully trust).
 
 Applies to every packument fetch: corgi and non-corgi variants, the
 cached-resolve path, and the fresh-read path used by `deprecate` /
-`undeprecate`. Tarball downloads are capped separately by a
-hardcoded 1 GiB ceiling in `aube-registry`.
+`undeprecate`. Tarball downloads are capped separately via
+`tarballMaxBytes`.
 """
 sources.cli = []
 sources.env = []
 sources.npmrc = ["packumentMaxBytes"]
+examples = []
+
+[tarballMaxBytes]
+description = "Hard cap on a tarball response body size in bytes (on-wire, still compressed)."
+type = "int"
+default = "1073741824"
+docs = """
+Refuses any tarball response whose `Content-Length` exceeds this many
+bytes before any decompression runs. Without a wire-level cap a
+hostile mirror could stream a multi-GiB compressed payload into
+memory before the gzip reader ever sees a byte; the separate
+decompressed ceiling in `aube-store` would only fire after that.
+
+Default: 1 GiB. Raise if a legitimate tarball exceeds it, or set to
+`0` to disable the cap entirely (only reasonable against a registry
+you fully trust).
+"""
+sources.cli = []
+sources.env = []
+sources.npmrc = ["tarballMaxBytes"]
 examples = []
 
 # ========================================= Peer Dependencies =========================================
