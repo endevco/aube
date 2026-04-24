@@ -470,6 +470,21 @@ JSON
 	assert_output --partial "No lockfile found"
 }
 
+@test "aube install --no-frozen-lockfile restores missing lockfile from fresh state" {
+	_setup_basic_fixture
+	run aube install
+	assert_success
+	cp aube-lock.yaml aube-lock.yaml.expected
+	assert_file_exists node_modules/.aube-state/lockfile
+
+	rm aube-lock.yaml
+	run aube -v install --no-frozen-lockfile
+	assert_success
+	refute_output --partial "No lockfile found"
+	assert_file_exists aube-lock.yaml
+	assert_equal "$(cat aube-lock.yaml)" "$(cat aube-lock.yaml.expected)"
+}
+
 @test "aube install --fix-lockfile is a no-op on a fresh lockfile" {
 	# Surgical heal: when nothing has drifted, the lockfile should round-trip
 	# byte-for-byte. Proves we're seeding the resolver with the existing
