@@ -687,6 +687,33 @@ impl Resolver {
                         });
                     }
 
+                    // Wire parent -> this exotic transitive. Without
+                    // this, the parent snapshot's `dependencies` map
+                    // omits the git/url/file subdep entirely, so the
+                    // linker never creates the sibling symlink inside
+                    // the parent's node_modules and the package fails
+                    // to resolve at runtime. The value is the dep_path
+                    // tail (e.g. `git+<hash>`) so the linker can
+                    // reconstruct the full dep_path by concatenating
+                    // `{name}@{value}` — matching the key format used
+                    // when inserting the resolved package below.
+                    if let Some(ref parent_dp) = task.parent
+                        && let Some(parent_pkg) = resolved.get_mut(parent_dp)
+                    {
+                        let dep_tail = dep_path
+                            .strip_prefix(&format!("{}@", task.name))
+                            .unwrap_or(&dep_path)
+                            .to_string();
+                        parent_pkg
+                            .dependencies
+                            .insert(task.name.clone(), dep_tail.clone());
+                        if task.dep_type == DepType::Optional {
+                            parent_pkg
+                                .optional_dependencies
+                                .insert(task.name.clone(), dep_tail);
+                        }
+                    }
+
                     if visited.insert(std::sync::Arc::from(dep_path.as_str())) {
                         resolved.insert(
                             dep_path.clone(),

@@ -395,6 +395,40 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // emitted value for aliased packages.
         let alias_of = pkg_info.and_then(|p| p.alias_of.clone());
 
+        // Mirror the local_packages reclassification (lines ~195-223)
+        // so transitive URL-keyed entries — github forks, pkg.pr.new,
+        // `file:` targets — round-trip with the right `local_source`.
+        // Without this, the install path sees `local_source: None` +
+        // a URL-form version and tries to fetch the dep from the npm
+        // registry (404).
+        let local_source = pkg_info
+            .and_then(|p| p.resolution.as_ref())
+            .and_then(|res| {
+                if let Some(ref tb) = res.tarball {
+                    if let Some(rel) = tb.strip_prefix("file:") {
+                        Some(LocalSource::Tarball(std::path::PathBuf::from(rel)))
+                    } else if tb.starts_with("http://") || tb.starts_with("https://") {
+                        Some(LocalSource::RemoteTarball(crate::RemoteTarballSource {
+                            url: tb.clone(),
+                            integrity: res.integrity.clone().unwrap_or_default(),
+                        }))
+                    } else {
+                        None
+                    }
+                } else if let Some(ref dir) = res.directory {
+                    Some(LocalSource::Directory(std::path::PathBuf::from(dir)))
+                } else if let (Some(repo), Some(commit)) = (res.repo.as_ref(), res.commit.as_ref())
+                {
+                    Some(LocalSource::Git(GitSource {
+                        url: repo.clone(),
+                        committish: None,
+                        resolved: commit.clone(),
+                    }))
+                } else {
+                    None
+                }
+            });
+
         packages.insert(
             dep_path.clone(),
             LockedPackage {
@@ -406,7 +440,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 peer_dependencies,
                 peer_dependencies_meta,
                 dep_path,
-                local_source: None,
+                local_source,
                 os: os.into(),
                 cpu: cpu.into(),
                 libc: libc.into(),
@@ -802,6 +836,27 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         );
     }
 
+    // Translate internal dep_path tails (`git+<hash>`, `url+<hash>`,
+    // `file+<hash>`) to the specifier form pnpm expects in snapshot
+    // dependency maps (`<url>#<sha>` for git, raw URL for tarball,
+    // `file:<path>` for local). Registry deps keep their plain semver
+    // values. The target package's `local_source` is authoritative:
+    // the tail alone doesn't encode the URL.
+    let rewrite_local_deps = |deps: BTreeMap<String, String>| -> BTreeMap<String, String> {
+        deps.into_iter()
+            .map(|(name, value)| {
+                let dp = format!("{name}@{value}");
+                if let Some(target) = graph.packages.get(&dp)
+                    && let Some(ref local) = target.local_source
+                    && !matches!(local, LocalSource::Link(_))
+                {
+                    (name, local.specifier())
+                } else {
+                    (name, value)
+                }
+            })
+            .collect()
+    };
     let mut snapshots = BTreeMap::new();
     for (dep_path, pkg) in &graph.packages {
         // `link:` deps are omitted from snapshots (pnpm parity); other
@@ -812,20 +867,22 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
             None => dep_path.clone(),
         };
+        let pkg_deps = rewrite_local_deps(pkg.dependencies.clone());
+        let pkg_opt_deps = rewrite_local_deps(pkg.optional_dependencies.clone());
         snapshots.insert(
             key,
             WritableSnapshot {
                 dependencies: {
-                    let mut deps = pkg.dependencies.clone();
-                    for name in pkg.optional_dependencies.keys() {
+                    let mut deps = pkg_deps;
+                    for name in pkg_opt_deps.keys() {
                         deps.remove(name);
                     }
                     if deps.is_empty() { None } else { Some(deps) }
                 },
-                optional_dependencies: if pkg.optional_dependencies.is_empty() {
+                optional_dependencies: if pkg_opt_deps.is_empty() {
                     None
                 } else {
-                    Some(pkg.optional_dependencies.clone())
+                    Some(pkg_opt_deps)
                 },
                 bundled_dependencies: if pkg.bundled_dependencies.is_empty() {
                     None
