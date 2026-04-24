@@ -30,6 +30,18 @@ teardown() {
 	assert_output --partial "Already up to date"
 }
 
+@test "aube install warm path works in CI frozen mode" {
+	_setup_basic_fixture
+	export CI=1
+
+	run aube install
+	assert_success
+
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+}
+
 @test "aube install does not print 'Already up to date' when it does real work" {
 	# Guard against regression: a fresh install (or one that had to
 	# recreate node_modules) must not claim the tree was already up
