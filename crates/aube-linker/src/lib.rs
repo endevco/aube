@@ -2205,15 +2205,6 @@ impl Linker {
         };
         let pkg_nm_dir = base_dir.join(&subdir).join("node_modules").join(&pkg.name);
 
-        let sentinel_path = pkg_nm_dir.join(".aube-initialized");
-        if aube_util::fs_atomic::sentinel::present(&sentinel_path)
-            && let Some(existing) = aube_util::fs_atomic::sentinel::read_tag(&sentinel_path)
-            && existing.as_slice() == dep_path.as_bytes()
-        {
-            stats.dirs_skipped += 1;
-            return Ok(());
-        }
-
         // Pre-compute the set of unique parent directories across
         // every file in the index AND every scoped transitive-dep
         // symlink we're about to create, then mkdir them in a single
@@ -2359,10 +2350,6 @@ impl Linker {
                 .map_err(|e| Error::Io(symlink_path.clone(), e))?;
         }
 
-        if let Err(e) = aube_util::fs_atomic::sentinel::mark(&sentinel_path, dep_path) {
-            trace!("failed to write .aube-initialized sentinel for {dep_path}: {e}");
-        }
-
         stats.packages_linked += 1;
         trace!("materialized {dep_path} ({} files)", index.len());
         Ok(())
@@ -2417,7 +2404,6 @@ pub struct LinkStats {
     pub packages_cached: usize,
     pub files_linked: usize,
     pub top_level_linked: usize,
-    pub dirs_skipped: usize,
     /// Populated only when the linker ran in `NodeLinker::Hoisted`
     /// mode. Maps lockfile `dep_path` → list of on-disk directories
     /// where that package was materialized (most entries have one
@@ -2635,7 +2621,7 @@ fn write_applied_patches(
     let path = nm_dir.join(".aube-applied-patches.json");
     let out = serde_json::to_string(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    aube_util::fs_atomic::atomic_write(&path, out.as_bytes())
+    std::fs::write(path, out)
 }
 
 /// Wipe `.aube/<dep_path>` for any package whose patch fingerprint
