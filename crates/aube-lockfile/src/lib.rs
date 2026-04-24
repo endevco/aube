@@ -93,7 +93,12 @@ pub struct LockfileGraph {
     /// re-emitting a bun.lock doesn't strip the allowlist and cause
     /// subsequent installs to skip scripts the user explicitly
     /// approved.
-    pub trusted_dependencies: BTreeSet<String>,
+    ///
+    /// Kept as a `Vec` (not a set) so bun's original order round-trips
+    /// byte-identically; bun emits the list in insertion order. The
+    /// parser is responsible for deduping if the source lockfile
+    /// carried a duplicate.
+    pub trusted_dependencies: Vec<String>,
     /// Top-level lockfile fields that aren't explicitly modeled on
     /// `LockfileGraph`. Populated by per-format parsers on best-effort
     /// basis so the writer can re-emit blocks a future lockfile

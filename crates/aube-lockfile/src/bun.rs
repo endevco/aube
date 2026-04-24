@@ -282,8 +282,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // through the default registry and either 404-ing or
         // downloading the wrong tarball.
         let alias_name = bun_key_to_alias_name(key);
-        let (name, version, local_source, alias_of) =
-            classify_bun_ident(&alias_name, &raw_name, &raw_version, path)?;
+        let (name, version, local_source, alias_of) = classify_bun_ident(
+            &alias_name,
+            &raw_name,
+            &raw_version,
+            entry.integrity.as_deref(),
+            path,
+        )?;
         key_info.insert(key.clone(), (name.clone(), version.clone()));
 
         let dep_path = format!("{name}@{version}");
@@ -529,7 +534,19 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         bun_config_version: Some(raw.config_version),
         overrides: raw.overrides,
         patched_dependencies: raw.patched_dependencies,
-        trusted_dependencies: raw.trusted_dependencies.into_iter().collect(),
+        // Preserve bun's insertion order verbatim — dedupe to guard
+        // against a hand-authored lockfile with repeats but never
+        // reorder, so a re-emit is byte-identical to bun's own output.
+        trusted_dependencies: {
+            let mut seen = BTreeSet::new();
+            let mut out: Vec<String> = Vec::with_capacity(raw.trusted_dependencies.len());
+            for name in raw.trusted_dependencies {
+                if seen.insert(name.clone()) {
+                    out.push(name);
+                }
+            }
+            out
+        },
         catalogs: catalogs_map,
         extra_fields: raw.extra,
         workspace_extra_fields,
@@ -571,6 +588,7 @@ fn classify_bun_ident(
     alias_name: &str,
     raw_name: &str,
     raw_version: &str,
+    integrity: Option<&str>,
     _path: &Path,
 ) -> Result<(String, String, Option<LocalSource>, Option<String>), Error> {
     // npm-alias tail: bun writes the registry identity into the ident,
@@ -585,11 +603,17 @@ fn classify_bun_ident(
 
     // Non-registry tails.
     if raw_version.starts_with("workspace:") {
-        let rel = raw_version
-            .strip_prefix("workspace:")
-            .unwrap_or("")
-            .to_string();
-        let path_buf = std::path::PathBuf::from(if rel.is_empty() { "." } else { rel.as_str() });
+        let rel = raw_version.strip_prefix("workspace:").unwrap_or("");
+        // `workspace:*` / `workspace:^` / `workspace:~` are version-
+        // range selectors, not directory paths — a `PathBuf::from("*")`
+        // would silently become `{project_root}/*` under any caller
+        // that does `project_root.join(link.path())`. Only treat the
+        // tail as a path when it looks like one (leading `.` or `/`);
+        // otherwise fall back to `.` so the link points at the
+        // workspace root and the caller resolves the actual location
+        // from the graph's workspace map.
+        let is_path = rel.starts_with('.') || rel.starts_with('/');
+        let path_buf = std::path::PathBuf::from(if rel.is_empty() || !is_path { "." } else { rel });
         return Ok((
             name,
             raw_version.to_string(),
@@ -627,12 +651,17 @@ fn classify_bun_ident(
         ));
     }
     if raw_version.starts_with("http://") || raw_version.starts_with("https://") {
+        // Mirror the sibling `LockedPackage.integrity` hash onto the
+        // `RemoteTarballSource` so consumers of
+        // `local_source.specifier()` or integrity-verification paths
+        // see the same value — leaving it empty would make the two
+        // fields drift apart for the same entry.
         return Ok((
             name,
             raw_version.to_string(),
             Some(LocalSource::RemoteTarball(RemoteTarballSource {
                 url: raw_version.to_string(),
-                integrity: String::new(),
+                integrity: integrity.map(str::to_string).unwrap_or_default(),
             })),
             alias_of,
         ));
@@ -2329,8 +2358,11 @@ mod tests {
                 .map(String::as_str),
             Some("patches/lodash@4.17.21.patch")
         );
-        assert!(graph.trusted_dependencies.contains("sharp"));
-        assert!(graph.trusted_dependencies.contains("esbuild"));
+        assert_eq!(
+            graph.trusted_dependencies,
+            vec!["sharp".to_string(), "esbuild".to_string()],
+            "trustedDependencies must preserve bun's original order on parse"
+        );
         assert_eq!(graph.catalogs["default"]["react"].specifier, "^18.2.0");
         assert_eq!(graph.catalogs["evens"]["date-fns"].specifier, "^2.30.0");
 
@@ -2356,6 +2388,19 @@ mod tests {
         assert!(
             written.contains("\"trustedDependencies\""),
             "trustedDependencies dropped:\n{written}"
+        );
+        // trustedDependencies must round-trip in insertion order
+        // (bun writes [sharp, esbuild] — alphabetized emit would
+        // produce a gratuitous diff against bun's own output).
+        let sharp_at = written
+            .find("\"sharp\"")
+            .expect("sharp in trustedDependencies");
+        let esbuild_at = written
+            .find("\"esbuild\"")
+            .expect("esbuild in trustedDependencies");
+        assert!(
+            sharp_at < esbuild_at,
+            "trustedDependencies reordered on write — expected sharp before esbuild:\n{written}"
         );
         assert!(
             written.contains("\"catalog\""),
