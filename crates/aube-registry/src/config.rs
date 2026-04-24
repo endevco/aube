@@ -186,11 +186,7 @@ impl NpmConfig {
         };
         // Feed tagged entries so `apply_tagged` can reject
         // high-privilege settings sourced from untrusted locations.
-        let xdg = std::env::var("XDG_CONFIG_HOME")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
+        let xdg = aube_util::env::xdg_config_home();
         let home = home_dir();
         // `NPM_CONFIG_USERCONFIG` / `npm_config_userconfig` move the
         // user-level `.npmrc` off the default `$HOME/.npmrc`. npm and
@@ -674,11 +670,7 @@ pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
     // read is confined here — the `_with_home` helper keeps taking an
     // explicit override so tests don't inherit the developer's real
     // `XDG_CONFIG_HOME` and pick up whatever auth tokens live there.
-    let xdg = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from);
+    let xdg = aube_util::env::xdg_config_home();
     let home = home_dir();
     // `NPM_CONFIG_USERCONFIG` / `npm_config_userconfig` relocate the
     // user-level `.npmrc` (XDG layouts, `~/.config/npm/npmrc`, etc.).

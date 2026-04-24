@@ -121,7 +121,7 @@ fn parse_classic_str(
     content: &str,
     manifest: &aube_manifest::PackageJson,
 ) -> Result<LockfileGraph, Error> {
-    let blocks = tokenize_blocks(content).map_err(|e| Error::Parse(path.to_path_buf(), e))?;
+    let blocks = tokenize_blocks(content).map_err(|e| Error::parse(path, e))?;
 
     // spec_to_dep_path maps each specifier (e.g. "is-odd@^3.0.0") to its
     // resolved dep_path ("is-odd@3.0.1"). Used for resolving direct deps
@@ -134,8 +134,8 @@ fn parse_classic_str(
             .fields
             .get("version")
             .ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
+                Error::parse(
+                    path,
                     format!("yarn.lock block {:?} has no version", block.specs),
                 )
             })?
@@ -144,8 +144,8 @@ fn parse_classic_str(
         // All specs in the key map to the same resolved package.
         // Extract the package name from the first spec.
         let name = parse_spec_name(&block.specs[0]).ok_or_else(|| {
-            Error::Parse(
-                path.to_path_buf(),
+            Error::parse(
+                path,
                 format!(
                     "could not parse package name from yarn.lock spec '{}'",
                     block.specs[0]
@@ -565,12 +565,9 @@ fn parse_berry_str(
 ) -> Result<LockfileGraph, Error> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)
         .map_err(|e| Error::parse_yaml_err(path, content.to_string(), &e))?;
-    let map = doc.as_mapping().ok_or_else(|| {
-        Error::Parse(
-            path.to_path_buf(),
-            "yarn berry lockfile root must be a mapping".to_string(),
-        )
-    })?;
+    let map = doc
+        .as_mapping()
+        .ok_or_else(|| Error::parse(path, "yarn berry lockfile root must be a mapping"))?;
 
     // Validate `__metadata.version` — berry has been at major
     // version 3 since yarn 2, 6 from yarn 3.x, and 8 from yarn 4.x.
@@ -584,8 +581,8 @@ fn parse_berry_str(
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     if meta_version < 3 {
-        return Err(Error::Parse(
-            path.to_path_buf(),
+        return Err(Error::parse(
+            path,
             format!(
                 "yarn berry lockfile has unexpected __metadata.version: {meta_version} (expected >= 3)"
             ),
@@ -609,8 +606,8 @@ fn parse_berry_str(
             continue;
         }
         let block = value.as_mapping().ok_or_else(|| {
-            Error::Parse(
-                path.to_path_buf(),
+            Error::parse(
+                path,
                 format!("yarn berry block '{key_str}' is not a mapping"),
             )
         })?;
@@ -631,24 +628,21 @@ fn parse_berry_str(
             .get("version")
             .and_then(yaml_scalar_as_string)
             .ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
-                    format!("yarn berry block '{key_str}' has no version"),
-                )
+                Error::parse(path, format!("yarn berry block '{key_str}' has no version"))
             })?;
 
         let resolution = block
             .get("resolution")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
+                Error::parse(
+                    path,
                     format!("yarn berry block '{key_str}' has no resolution"),
                 )
             })?;
         let (res_name, res_protocol, res_body) = parse_berry_spec(resolution).ok_or_else(|| {
-            Error::Parse(
-                path.to_path_buf(),
+            Error::parse(
+                path,
                 format!("yarn berry block '{key_str}' has malformed resolution '{resolution}'"),
             )
         })?;

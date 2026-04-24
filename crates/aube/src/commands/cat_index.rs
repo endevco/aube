@@ -153,18 +153,8 @@ fn scan_matches(
 /// front so the user gets the format hint instead of the misleading
 /// "cache cold, run aube fetch" error.
 fn split_name_version(input: &str) -> Option<(&str, &str)> {
-    let (name, version) = if let Some(rest) = input.strip_prefix('@') {
-        // Scoped: @scope/name@version — the first `@` is the scope sigil.
-        let slash = rest.find('/')?;
-        let after_slash = &rest[slash + 1..];
-        let at = after_slash.find('@')?;
-        let name_end = 1 + slash + 1 + at;
-        (&input[..name_end], &input[name_end + 1..])
-    } else {
-        let at = input.find('@')?;
-        (&input[..at], &input[at + 1..])
-    };
-
+    let (name, version) = aube_util::pkg::split_name_spec(input);
+    let version = version?;
     if version.is_empty() {
         return None;
     }

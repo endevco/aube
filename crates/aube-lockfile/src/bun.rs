@@ -178,8 +178,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     };
 
     if raw.lockfile_version != 1 {
-        return Err(Error::Parse(
-            path.to_path_buf(),
+        return Err(Error::parse(
+            path,
             format!(
                 "bun.lock lockfileVersion {} is not supported (expected 1)",
                 raw.lockfile_version
@@ -191,8 +191,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // have to think about bun's per-source-type tuple layouts.
     let mut entries: BTreeMap<String, BunEntry> = BTreeMap::new();
     for (key, value) in &raw.packages {
-        let entry =
-            BunEntry::from_array(key, value).map_err(|e| Error::Parse(path.to_path_buf(), e))?;
+        let entry = BunEntry::from_array(key, value).map_err(|e| Error::parse(path, e))?;
         entries.insert(key.clone(), entry);
     }
 
@@ -204,8 +203,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
     for (key, entry) in &entries {
         let Some((name, version)) = split_ident(&entry.ident) else {
-            return Err(Error::Parse(
-                path.to_path_buf(),
+            return Err(Error::parse(
+                path,
                 format!(
                     "could not parse ident '{}' for package '{}'",
                     entry.ident, key

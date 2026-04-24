@@ -84,14 +84,12 @@ fn resolve_home() -> miette::Result<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn platform_default() -> miette::Result<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("pnpm"));
+    if let Some(xdg) = aube_util::env::xdg_data_home() {
+        return Ok(xdg.join("pnpm"));
     }
-    let home = std::env::var("HOME")
-        .map_err(|_| miette!("HOME is not set; can't locate global directory"))?;
-    Ok(PathBuf::from(home).join(".local/share/pnpm"))
+    let home = aube_util::env::home_dir()
+        .ok_or_else(|| miette!("HOME is not set; can't locate global directory"))?;
+    Ok(home.join(".local/share/pnpm"))
 }
 
 #[cfg(target_os = "macos")]

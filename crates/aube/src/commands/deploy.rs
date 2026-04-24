@@ -651,7 +651,7 @@ fn rewrite_workspace_deps(
             let Some(spec) = spec_val.as_str() else {
                 continue;
             };
-            if !spec.starts_with("workspace:") {
+            if !aube_util::pkg::is_workspace_spec(spec) {
                 continue;
             }
             let (_, concrete_version) = ws_index.get(name).ok_or_else(|| {
@@ -667,7 +667,7 @@ fn rewrite_workspace_deps(
     let rewritten = serde_json::to_string_pretty(&doc)
         .into_diagnostic()
         .wrap_err("failed to serialize rewritten package.json")?;
-    std::fs::write(manifest_path, rewritten)
+    aube_util::fs_atomic::atomic_write(manifest_path, rewritten.as_bytes())
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to write {}", manifest_path.display()))?;
     Ok(())

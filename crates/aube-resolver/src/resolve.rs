@@ -278,10 +278,10 @@ impl Resolver {
                 let workspace_hit = workspace_packages
                     .get(n)
                     .is_some_and(|ws_v| version_satisfies(ws_v, r));
-                !r.starts_with("workspace:")
-                    && !r.starts_with("catalog:")
-                    && !r.starts_with("npm:")
-                    && !r.starts_with("jsr:")
+                !aube_util::pkg::is_workspace_spec(r)
+                    && !aube_util::pkg::is_catalog_spec(r)
+                    && !aube_util::pkg::is_npm_spec(r)
+                    && !aube_util::pkg::is_jsr_spec(r)
                     && !is_non_registry_specifier(r)
                     && !self.overrides.contains_key(n)
                     && !workspace_hit

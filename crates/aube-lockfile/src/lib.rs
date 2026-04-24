@@ -1394,10 +1394,7 @@ pub fn write_lockfile_as(
     let filename = match kind {
         LockfileKind::Aube => aube_lock_filename(project_dir),
         LockfileKind::Pnpm => pnpm_lock_filename(project_dir),
-        LockfileKind::Npm => "package-lock.json".to_string(),
-        LockfileKind::NpmShrinkwrap => "npm-shrinkwrap.json".to_string(),
-        LockfileKind::Yarn | LockfileKind::YarnBerry => "yarn.lock".to_string(),
-        LockfileKind::Bun => "bun.lock".to_string(),
+        other => other.filename().to_string(),
     };
     let path = project_dir.join(&filename);
     match kind {
@@ -1575,9 +1572,9 @@ fn reject_bun_binary(project_dir: &Path) -> Result<(), Error> {
     let lockb = project_dir.join("bun.lockb");
     let text = project_dir.join("bun.lock");
     if lockb.exists() && !text.exists() {
-        return Err(Error::Parse(
-            lockb,
-            "bun.lockb (binary format) is not supported — run `bun install --save-text-lockfile` to generate a bun.lock text file first, or upgrade to bun 1.2+ where text is the default".to_string(),
+        return Err(Error::parse(
+            &lockb,
+            "bun.lockb (binary format) is not supported — run `bun install --save-text-lockfile` to generate a bun.lock text file first, or upgrade to bun 1.2+ where text is the default",
         ));
     }
     Ok(())
@@ -1700,6 +1697,10 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
 }
 
 impl Error {
+    pub fn parse(path: &std::path::Path, msg: impl Into<String>) -> Self {
+        Error::Parse(path.to_path_buf(), msg.into())
+    }
+
     pub fn parse_json_err(
         path: &std::path::Path,
         content: String,

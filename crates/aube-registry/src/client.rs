@@ -44,6 +44,10 @@ fn cached_is_fresh(fetched_at: u64, max_age_secs: Option<u64>) -> bool {
 /// default staleness window.
 const PACKUMENT_TTL_SECS: u64 = 1800;
 
+fn is_retriable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
 /// Accept header for packument requests. `vnd.npm.install-v1+json` is the
 /// abbreviated (corgi) format npmjs emits for installs; the `application/json`
 /// fallback covers registries (Verdaccio, older Artifactory, private mirrors)
@@ -337,9 +341,7 @@ impl RegistryClient {
                     // Everything else — 2xx/3xx successes and 4xx
                     // client errors the caller needs to see (404,
                     // 401, 403) — is returned verbatim.
-                    let retriable = status.is_server_error()
-                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-                    if !retriable || is_last {
+                    if !is_retriable_status(status) || is_last {
                         return Ok((resp, started.elapsed()));
                     }
                     // 429 may carry a `Retry-After` header; honor it
@@ -452,11 +454,7 @@ impl RegistryClient {
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
             match build().send().await {
-                Ok(resp)
-                    if (resp.status().is_server_error()
-                        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS)
-                        && !is_last =>
-                {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
                     tracing::debug!(
@@ -576,11 +574,7 @@ impl RegistryClient {
             .send()
             .await
             {
-                Ok(resp)
-                    if (resp.status().is_server_error()
-                        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS)
-                        && !is_last =>
-                {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
                     tracing::debug!(
@@ -741,11 +735,7 @@ impl RegistryClient {
             .send()
             .await
             {
-                Ok(resp)
-                    if (resp.status().is_server_error()
-                        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS)
-                        && !is_last =>
-                {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
                     tracing::debug!(
@@ -866,11 +856,7 @@ impl RegistryClient {
             .send()
             .await
             {
-                Ok(resp)
-                    if (resp.status().is_server_error()
-                        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS)
-                        && !is_last =>
-                {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
                     tracing::debug!(

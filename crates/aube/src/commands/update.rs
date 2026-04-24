@@ -183,7 +183,7 @@ pub async fn run(
         for key in &manifest_keys_to_update {
             let real_name = resolve_real_name(key);
             let original = all_specifiers.get(key).map(String::as_str).unwrap_or("");
-            if original.starts_with("workspace:") {
+            if aube_util::pkg::is_workspace_spec(original) {
                 continue;
             }
             let new_spec = if original.starts_with("npm:") {
@@ -276,7 +276,7 @@ pub async fn run(
             for key in &manifest_keys_to_update {
                 let real_name = resolve_real_name(key);
                 let original = all_specifiers.get(key).cloned().unwrap_or_default();
-                if original.starts_with("workspace:") {
+                if aube_util::pkg::is_workspace_spec(&original) {
                     continue;
                 }
                 let Some(resolved) = graph

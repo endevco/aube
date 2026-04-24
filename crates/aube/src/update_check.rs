@@ -137,11 +137,8 @@ fn read_cache(path: &Path) -> Option<CacheEntry> {
 }
 
 fn write_cache(path: &Path, entry: &CacheEntry) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let bytes = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
-    std::fs::write(path, bytes)
+    aube_util::fs_atomic::atomic_write(path, &bytes)
 }
 
 fn unix_now() -> u64 {

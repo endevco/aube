@@ -201,8 +201,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let raw: RawNpmLockfile = crate::parse_json(path, content)?;
 
     if raw.lockfile_version < 2 {
-        return Err(Error::Parse(
-            path.to_path_buf(),
+        return Err(Error::parse(
+            path,
             format!(
                 "package-lock.json lockfileVersion {} is not supported (need v2 or v3)",
                 raw.lockfile_version
@@ -253,8 +253,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let install_name = package_name_from_install_path(install_path)
             .or_else(|| entry.name.clone())
             .ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
+                Error::parse(
+                    path,
                     format!("could not determine package name for '{install_path}'"),
                 )
             })?;
@@ -269,20 +269,20 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             .cloned();
         let (package_entry, version, dep_path, local_source) = if entry.link {
             let target = entry.resolved.as_ref().ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
+                Error::parse(
+                    path,
                     format!("linked package '{install_name}' has no resolved target"),
                 )
             })?;
             let target_entry = raw.packages.get(target).ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
+                Error::parse(
+                    path,
                     format!("linked package '{install_name}' points to missing target '{target}'"),
                 )
             })?;
             let version = target_entry.version.clone().ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
+                Error::parse(
+                    path,
                     format!("linked package '{install_name}' target '{target}' has no version"),
                 )
             })?;
@@ -295,10 +295,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             )
         } else {
             let version = entry.version.clone().ok_or_else(|| {
-                Error::Parse(
-                    path.to_path_buf(),
-                    format!("package '{install_name}' has no version"),
-                )
+                Error::parse(path, format!("package '{install_name}' has no version"))
             })?;
             (
                 entry,
@@ -890,8 +887,8 @@ pub fn write(
         packages,
     };
 
-    let mut body = serde_json::to_string_pretty(&doc)
-        .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
+    let mut body =
+        serde_json::to_string_pretty(&doc).map_err(|e| Error::parse(path, e.to_string()))?;
     // npm writes a trailing newline; match it so diffs stay clean.
     body.push('\n');
     crate::atomic_write_lockfile(path, body.as_bytes())?;

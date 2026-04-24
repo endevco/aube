@@ -935,21 +935,7 @@ pub(crate) fn resolve_version(packument: &serde_json::Value, spec: Option<&str>)
 /// Returns borrowed slices of the input. Callers that need owned `String`s
 /// or a default like `"latest"` can adapt the result at their call site.
 pub(crate) fn split_name_spec(input: &str) -> (&str, Option<&str>) {
-    if let Some(rest) = input.strip_prefix('@') {
-        // Scoped: @scope/name[@version]
-        if let Some(slash) = rest.find('/') {
-            let after_slash = &rest[slash + 1..];
-            if let Some(at) = after_slash.find('@') {
-                let name_end = 1 + slash + 1 + at;
-                return (&input[..name_end], Some(&input[name_end + 1..]));
-            }
-        }
-        return (input, None);
-    }
-    if let Some(at) = input.find('@') {
-        return (&input[..at], Some(&input[at + 1..]));
-    }
-    (input, None)
+    aube_util::pkg::split_name_spec(input)
 }
 
 /// Percent-encode a package name for npm registry path segments.

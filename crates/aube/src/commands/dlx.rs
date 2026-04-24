@@ -137,12 +137,10 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
         "private": true,
         "dependencies": deps,
     });
-    std::fs::write(
-        project_dir.join("package.json"),
-        serde_json::to_string_pretty(&manifest).into_diagnostic()?,
-    )
-    .into_diagnostic()
-    .wrap_err("failed to write dlx package.json")?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).into_diagnostic()?;
+    aube_util::fs_atomic::atomic_write(&project_dir.join("package.json"), &manifest_bytes)
+        .into_diagnostic()
+        .wrap_err("failed to write dlx package.json")?;
 
     // install::run pulls its project dir from std::env::current_dir(), which
     // is process-global state. The CwdGuard below captures the current dir,

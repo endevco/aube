@@ -3,16 +3,14 @@ use std::path::PathBuf;
 /// XDG-compliant cache directory for aube.
 /// Uses `$XDG_CACHE_HOME/aube`, `$HOME/.cache/aube`, or `%LOCALAPPDATA%\aube` on Windows.
 pub fn cache_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        return Some(PathBuf::from(xdg).join("aube"));
+    if let Some(xdg) = aube_util::env::xdg_cache_home() {
+        return Some(xdg.join("aube"));
     }
     #[cfg(windows)]
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         return Some(PathBuf::from(local).join("aube"));
     }
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".cache/aube"))
+    aube_util::env::home_dir().map(|h| h.join(".cache/aube"))
 }
 
 /// Global directory for linked packages.
@@ -33,9 +31,9 @@ pub fn store_dir() -> Option<PathBuf> {
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         return Some(PathBuf::from(local).join("aube/store/v1/files"));
     }
-    let data_home = match std::env::var("XDG_DATA_HOME") {
-        Ok(xdg) if !xdg.is_empty() => PathBuf::from(xdg),
-        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".local/share"),
+    let data_home = match aube_util::env::xdg_data_home() {
+        Some(xdg) => xdg,
+        None => aube_util::env::home_dir()?.join(".local/share"),
     };
     Some(data_home.join("aube/store/v1/files"))
 }

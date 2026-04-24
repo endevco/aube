@@ -746,10 +746,7 @@ fn lockfile_path_for_project(project_dir: &std::path::Path) -> std::path::PathBu
     let filename = match kind {
         LockfileKind::Aube => aube_lockfile::aube_lock_filename(project_dir),
         LockfileKind::Pnpm => aube_lockfile::pnpm_lock_filename(project_dir),
-        LockfileKind::Npm => "package-lock.json".to_string(),
-        LockfileKind::NpmShrinkwrap => "npm-shrinkwrap.json".to_string(),
-        LockfileKind::Yarn | LockfileKind::YarnBerry => "yarn.lock".to_string(),
-        LockfileKind::Bun => "bun.lock".to_string(),
+        other => other.filename().to_string(),
     };
     project_dir.join(filename)
 }
@@ -818,7 +815,7 @@ async fn run_filtered(
         let mut errors: Vec<miette::Report> = Vec::new();
         let restored = snapshots.len();
         for (manifest_path, manifest_bytes) in snapshots {
-            if let Err(e) = std::fs::write(&manifest_path, manifest_bytes) {
+            if let Err(e) = aube_util::fs_atomic::atomic_write(&manifest_path, &manifest_bytes) {
                 errors.push(
                     Result::<(), _>::Err(e)
                         .into_diagnostic()
@@ -833,7 +830,7 @@ async fn run_filtered(
             }
         }
         let lockfile_restore = match &root_lockfile_snapshot {
-            Some(bytes) => std::fs::write(&lockfile_path, bytes),
+            Some(bytes) => aube_util::fs_atomic::atomic_write(&lockfile_path, bytes),
             None => match std::fs::remove_file(&lockfile_path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -974,9 +971,12 @@ async fn run_global_inner(
     let seed_str = serde_json::to_string_pretty(&seed)
         .into_diagnostic()
         .wrap_err("failed to serialize seed package.json")?;
-    std::fs::write(install_dir.join("package.json"), format!("{seed_str}\n"))
-        .into_diagnostic()
-        .wrap_err("failed to write seed package.json")?;
+    aube_util::fs_atomic::atomic_write(
+        &install_dir.join("package.json"),
+        format!("{seed_str}\n").as_bytes(),
+    )
+    .into_diagnostic()
+    .wrap_err("failed to write seed package.json")?;
 
     // chdir into the install dir before anything reads `dirs::cwd()` so
     // the whole install pipeline targets the fresh directory. See the

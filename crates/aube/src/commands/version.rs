@@ -83,7 +83,7 @@ pub async fn run(args: VersionArgs) -> miette::Result<()> {
 
     let updated = replace_version(&raw, &new_version)
         .ok_or_else(|| miette!("failed to locate version string in package.json"))?;
-    std::fs::write(&manifest_path, updated)
+    aube_util::fs_atomic::atomic_write(&manifest_path, updated.as_bytes())
         .into_diagnostic()
         .wrap_err("failed to write package.json")?;
 

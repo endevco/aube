@@ -1,7 +1,21 @@
 use crate::UpdateConfig;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const WORKSPACE_YAML_NAMES: &[&str] = &["aube-workspace.yaml", "pnpm-workspace.yaml"];
+
+fn find_and_read(project_dir: &Path) -> Result<Option<(PathBuf, String)>, crate::Error> {
+    for name in WORKSPACE_YAML_NAMES {
+        let path = project_dir.join(name);
+        if path.exists() {
+            let content =
+                std::fs::read_to_string(&path).map_err(|e| crate::Error::Io(path.clone(), e))?;
+            return Ok(Some((path, content)));
+        }
+    }
+    Ok(None)
+}
 
 /// Configuration from `pnpm-workspace.yaml`.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -421,22 +435,13 @@ impl WorkspaceConfig {
     /// Returns `Default` if neither file exists. If both exist, the aube
     /// file wins and the pnpm file is ignored.
     pub fn load(project_dir: &Path) -> Result<Self, crate::Error> {
-        for name in ["aube-workspace.yaml", "pnpm-workspace.yaml"] {
-            let path = project_dir.join(name);
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)
-                    .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
-                // An empty workspace file deserializes to `null`, not
-                // an empty map, which trips serde — treat it as
-                // absent so callers don't see a spurious parse error
-                // on a legitimately-empty file. Matches `load_raw`.
-                if content.trim().is_empty() {
-                    return Ok(Self::default());
-                }
-                return crate::parse_yaml(&path, content);
-            }
+        let Some((path, content)) = find_and_read(project_dir)? else {
+            return Ok(Self::default());
+        };
+        if content.trim().is_empty() {
+            return Ok(Self::default());
         }
-        Ok(Self::default())
+        crate::parse_yaml(&path, content)
     }
 }
 
@@ -476,25 +481,17 @@ pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value
     if let Some(hit) = raw_cache_lookup(project_dir) {
         return Ok(hit);
     }
-    for name in ["aube-workspace.yaml", "pnpm-workspace.yaml"] {
-        let path = project_dir.join(name);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
-            // An empty file deserializes to `null`, not an empty map —
-            // handle that explicitly so callers don't see a spurious
-            // parse error on a legitimately-empty workspace file.
-            if content.trim().is_empty() {
-                raw_cache_insert(project_dir, BTreeMap::new());
-                return Ok(BTreeMap::new());
-            }
-            let parsed: BTreeMap<String, serde_yaml::Value> = crate::parse_yaml(&path, content)?;
-            raw_cache_insert(project_dir, parsed.clone());
-            return Ok(parsed);
-        }
+    let Some((path, content)) = find_and_read(project_dir)? else {
+        raw_cache_insert(project_dir, BTreeMap::new());
+        return Ok(BTreeMap::new());
+    };
+    if content.trim().is_empty() {
+        raw_cache_insert(project_dir, BTreeMap::new());
+        return Ok(BTreeMap::new());
     }
-    raw_cache_insert(project_dir, BTreeMap::new());
-    Ok(BTreeMap::new())
+    let parsed: BTreeMap<String, serde_yaml::Value> = crate::parse_yaml(&path, content)?;
+    raw_cache_insert(project_dir, parsed.clone());
+    Ok(parsed)
 }
 
 /// Load the workspace yaml once and return both the typed
@@ -507,26 +504,21 @@ pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value
 pub fn load_both(
     project_dir: &Path,
 ) -> Result<(WorkspaceConfig, BTreeMap<String, serde_yaml::Value>), crate::Error> {
-    for name in ["aube-workspace.yaml", "pnpm-workspace.yaml"] {
-        let path = project_dir.join(name);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
-            if content.trim().is_empty() {
-                raw_cache_insert(project_dir, BTreeMap::new());
-                return Ok((WorkspaceConfig::default(), BTreeMap::new()));
-            }
-            let value: serde_yaml::Value = crate::parse_yaml(&path, content.clone())?;
-            let typed: WorkspaceConfig = serde_yaml::from_value(value.clone())
-                .map_err(|e| crate::Error::parse_yaml_err(&path, content.clone(), &e))?;
-            let raw: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value)
-                .map_err(|e| crate::Error::parse_yaml_err(&path, content, &e))?;
-            raw_cache_insert(project_dir, raw.clone());
-            return Ok((typed, raw));
-        }
+    let Some((path, content)) = find_and_read(project_dir)? else {
+        raw_cache_insert(project_dir, BTreeMap::new());
+        return Ok((WorkspaceConfig::default(), BTreeMap::new()));
+    };
+    if content.trim().is_empty() {
+        raw_cache_insert(project_dir, BTreeMap::new());
+        return Ok((WorkspaceConfig::default(), BTreeMap::new()));
     }
-    raw_cache_insert(project_dir, BTreeMap::new());
-    Ok((WorkspaceConfig::default(), BTreeMap::new()))
+    let value: serde_yaml::Value = crate::parse_yaml(&path, content.clone())?;
+    let typed: WorkspaceConfig = serde_yaml::from_value(value.clone())
+        .map_err(|e| crate::Error::parse_yaml_err(&path, content.clone(), &e))?;
+    let raw: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value)
+        .map_err(|e| crate::Error::parse_yaml_err(&path, content, &e))?;
+    raw_cache_insert(project_dir, raw.clone());
+    Ok((typed, raw))
 }
 
 /// Resolve which workspace-yaml path `add_to_only_built_dependencies`

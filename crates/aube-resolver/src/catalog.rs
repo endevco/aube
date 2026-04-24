@@ -38,7 +38,7 @@ impl Resolver {
                     // indirection". pnpm disallows the same. No
                     // cycle detection needed beyond depth-one since
                     // we refuse the chain outright.
-                    if real_range.starts_with("catalog:") {
+                    if aube_util::pkg::is_catalog_spec(real_range) {
                         // Preserve the chain explanation in the catalog
                         // field so the top-level `#[error]` template still
                         // tells the user *why* the entry "doesn't resolve",

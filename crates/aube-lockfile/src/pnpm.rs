@@ -267,9 +267,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         if local_canonical_keys.contains(&dep_path) {
             continue;
         }
-        let (name, version) = parse_dep_path(&dep_path).ok_or_else(|| {
-            Error::Parse(path.to_path_buf(), format!("invalid dep path: {dep_path}"))
-        })?;
+        let (name, version) = parse_dep_path(&dep_path)
+            .ok_or_else(|| Error::parse(path, format!("invalid dep path: {dep_path}")))?;
         // URL-based direct deps are absorbed into `local_packages`
         // under the peer-stripped URL form (see `push_direct`), but the
         // snapshot key still carries any `(peer@ver)` suffix pnpm
@@ -866,8 +865,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         snapshots,
     };
 
-    let yaml = serde_yaml::to_string(&lockfile)
-        .map_err(|e| Error::Parse(path.to_path_buf(), e.to_string()))?;
+    let yaml = serde_yaml::to_string(&lockfile).map_err(|e| Error::parse(path, e.to_string()))?;
     let yaml = reformat_for_pnpm_parity(&yaml);
     // Atomic via tempfile + persist. Crash, Ctrl+C, or AV
     // quarantine during the write used to leave the user with a
