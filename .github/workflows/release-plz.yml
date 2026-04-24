@@ -225,7 +225,10 @@ jobs:
 
       # Step 1: let release-plz compute the next workspace version and
       # write Cargo.toml / Cargo.lock / CHANGELOG.md bumps into the
-      # working tree. No commit, no push yet.
+      # working tree. `bump=true` iff release-plz actually produced a
+      # version-bump diff; the downstream regen steps run on every push
+      # regardless so bench + docs refreshes flow through the release
+      # PR on any change to main, not just release-worthy ones.
       - name: Apply version bumps
         id: update
         env:
@@ -233,52 +236,42 @@ jobs:
         run: |
           release-plz update
           if git diff --quiet; then
-            echo "No version bumps needed."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "No version bumps needed; regen steps will still run."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
           VERSION=$(cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | select(.name == "aube") | .version')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
-      # Step 2: regenerate `aube.usage.kdl` + docs against the freshly
-      # bumped version, so the PR's initial commit already matches what
-      # the golden-file test expects. `render` depends on `build`, so
-      # cargo builds here.
+      # Step 2: regenerate `aube.usage.kdl` + docs against the current
+      # workspace version. `render` depends on `build`, so cargo builds
+      # here.
       - name: Regenerate CLI docs
-        if: steps.update.outputs.changed == 'true'
         run: "mise run render ::: lint-fix"
 
-      # Refresh benchmarks/results.json and the README ratios against
-      # the freshly bumped version. Hermetic Verdaccio + throttle proxy
-      # (wired in the mise task), so numbers are reproducible across
-      # runners. The registry cache is persisted so only the first run
-      # per cache key has to fetch packages from npmjs. Gated by
-      # `changed == 'true'` so we don't spend 6+ minutes per push when
-      # there's no release PR to update.
+      # Refresh benchmarks/results.json and the README ratios. Hermetic
+      # Verdaccio + throttle proxy (wired in the mise task), so numbers
+      # are reproducible across runners. The registry cache is
+      # persisted so only the first run per cache key has to fetch
+      # packages from npmjs.
       - name: Restore hermetic bench registry cache
-        if: steps.update.outputs.changed == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/aube-bench/registry
           key: aube-bench-registry-${{ runner.os }}-v1
       - name: Refresh benchmarks
-        if: steps.update.outputs.changed == 'true'
         run: mise run bench:bump
 
       # Bump release.json so the docs homepage's "Released at" line
-      # tracks the new version. `releasedAt` is set to "now" on every
-      # PR regeneration, and since this workflow re-runs on every push
-      # to main, the timestamp that actually lands is from the last run
-      # before merge — within one push-to-main of the real release,
-      # which is good enough for a display string. The vitepress config
-      # blanks the field when the version here doesn't match
-      # Cargo.toml, so an out-of-date release.json on a non-release
-      # branch can't render wrong.
+      # tracks the new version. Only runs on real version bumps — on a
+      # no-bump refresh the version is unchanged, and rewriting the
+      # file just to reset `releasedAt` would create spurious diffs on
+      # every push.
       - name: Bump release.json
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.bump == 'true'
         env:
           VERSION: ${{ steps.update.outputs.version }}
         run: |
@@ -287,12 +280,25 @@ jobs:
             '.version = $v | .releasedAt = $d' release.json > release.json.tmp
           mv release.json.tmp release.json
 
-      # Step 3: reuse an existing open release-plz PR's branch name (so
+      # Step 3: only proceed if at least one of the regen steps (or
+      # release-plz update itself) actually changed the tree. A clean
+      # tree means nothing is worth PR-ing.
+      - name: Check for regen diff
+        id: dirty
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing regenerated, skipping PR update."
+            echo "dirty=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "dirty=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Step 4: reuse an existing open release-plz PR's branch name (so
       # the PR number is preserved across runs), or mint a fresh
       # timestamped branch. Matches release-plz's own default branch
       # prefix of `release-plz-`.
       - name: Find existing release-plz PR
-        if: steps.update.outputs.changed == 'true'
+        if: steps.dirty.outputs.dirty == 'true'
         id: find_pr
         env:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
@@ -310,42 +316,62 @@ jobs:
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
-      # Step 4: one commit, one push.
+      # Step 5: one commit, one push. Commit subject tracks whether
+      # this PR carries a version bump or is a pure regen refresh.
       - name: Commit and push
-        if: steps.update.outputs.changed == 'true'
+        if: steps.dirty.outputs.dirty == 'true'
         env:
           BRANCH: ${{ steps.find_pr.outputs.branch }}
+          BUMP: ${{ steps.update.outputs.bump }}
           TAG: ${{ steps.update.outputs.tag }}
         run: |
+          if [ "$BUMP" = "true" ]; then
+            MSG="chore: release ${TAG}"
+          else
+            MSG="chore: refresh generated artifacts"
+          fi
           git checkout -B "$BRANCH"
           git add -A
-          git commit -m "chore: release ${TAG}"
+          git commit -m "$MSG"
           git push --force-with-lease -u origin "$BRANCH"
 
-      # Step 5: open the PR if it's new, or refresh its title if an
+      # Step 6: open the PR if it's new, or refresh its title if an
       # existing one is being reused. We keep the body minimal — the
       # diff tab and CHANGELOG.md show the full picture, and
       # communique-generated narrative notes run on the actual release
       # in `enhance-release` above, not here.
       - name: Create or update PR
-        if: steps.update.outputs.changed == 'true'
+        if: steps.dirty.outputs.dirty == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           BRANCH: ${{ steps.find_pr.outputs.branch }}
           PR_NUMBER: ${{ steps.find_pr.outputs.pr_number }}
+          BUMP: ${{ steps.update.outputs.bump }}
           TAG: ${{ steps.update.outputs.tag }}
         run: |
-          TITLE="chore: release ${TAG}"
-          cat > /tmp/pr_body.md <<EOF
+          if [ "$BUMP" = "true" ]; then
+            TITLE="chore: release ${TAG}"
+            cat > /tmp/pr_body.md <<EOF
           ## 🤖 New release: \`${TAG}\`
 
-          This PR bumps the workspace to \`${TAG}\` and regenerates CHANGELOG entries, \`aube.usage.kdl\`, and the CLI docs.
+          This PR bumps the workspace to \`${TAG}\` and regenerates CHANGELOG entries, \`aube.usage.kdl\`, the CLI docs, and the benchmark results.
 
           See the diff for the full set of changes, or the per-crate \`CHANGELOG.md\` files for the release notes that will ship.
 
           ---
           Generated by the \`release-plz-pr\` workflow.
           EOF
+          else
+            TITLE="chore: refresh generated artifacts"
+            cat > /tmp/pr_body.md <<EOF
+          ## 🤖 Refreshed generated artifacts
+
+          No version bump pending, but one or more regenerated files drifted against main (CLI docs, benchmark results, README ratios). This PR keeps them in sync.
+
+          ---
+          Generated by the \`release-plz-pr\` workflow.
+          EOF
+          fi
           if [ -n "$PR_NUMBER" ]; then
             gh pr edit "$PR_NUMBER" --title "$TITLE" --body-file /tmp/pr_body.md
           else
