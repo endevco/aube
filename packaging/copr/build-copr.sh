@@ -200,6 +200,9 @@ Source1:        %{name}-vendor-%{tarball_version}.tar.gz
 BuildRequires:  rust >= 1.93
 BuildRequires:  cargo
 BuildRequires:  gcc
+BuildRequires:  gcc-c++
+BuildRequires:  cmake
+BuildRequires:  perl-interpreter
 BuildRequires:  git
 BuildRequires:  openssl-devel
 BuildRequires:  pkgconf-pkg-config
