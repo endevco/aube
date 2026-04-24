@@ -700,8 +700,17 @@ impl Resolver {
                     if let Some(ref parent_dp) = task.parent
                         && let Some(parent_pkg) = resolved.get_mut(parent_dp)
                     {
+                        // `local.dep_path(name)` always returns
+                        // `{name}@{tail}`; if that invariant ever
+                        // breaks we'd silently store a malformed dep
+                        // value that the pnpm writer would emit as-is.
+                        let name_prefix = format!("{}@", task.name);
+                        debug_assert!(
+                            dep_path.starts_with(&name_prefix),
+                            "local.dep_path returned {dep_path:?} without expected prefix {name_prefix:?}"
+                        );
                         let dep_tail = dep_path
-                            .strip_prefix(&format!("{}@", task.name))
+                            .strip_prefix(&name_prefix)
                             .unwrap_or(&dep_path)
                             .to_string();
                         parent_pkg

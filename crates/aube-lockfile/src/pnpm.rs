@@ -192,44 +192,24 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 local_pkg.dependencies.extend(opt_deps.clone());
                 local_pkg.optional_dependencies = opt_deps;
             }
+            // Prefer the authoritative LocalSource classification
+            // from the `resolution:` block over the guess the
+            // importers loop made from the bare specifier. For git
+            // deps, preserve any `path:` selector already captured
+            // from the importer's `version:` URL — pnpm v9 encodes
+            // the subpath in the snapshot key and doesn't always
+            // echo it on the resolution block.
             if let Some(pkg_info) = raw.packages.get(&canonical)
                 && let Some(ref res) = pkg_info.resolution
+                && let Some(mut ls) = local_source_from_resolution(res)
             {
-                // Prefer the authoritative LocalSource classification
-                // from the `resolution:` block over the guess the
-                // importers loop made from the bare specifier.
-                if let Some(ref tb) = res.tarball {
-                    if let Some(rel) = tb.strip_prefix("file:") {
-                        local_pkg.local_source =
-                            Some(LocalSource::Tarball(std::path::PathBuf::from(rel)));
-                    } else if tb.starts_with("http://") || tb.starts_with("https://") {
-                        local_pkg.local_source =
-                            Some(LocalSource::RemoteTarball(crate::RemoteTarballSource {
-                                url: tb.clone(),
-                                integrity: res.integrity.clone().unwrap_or_default(),
-                            }));
-                    }
-                } else if let Some(ref dir) = res.directory {
-                    local_pkg.local_source =
-                        Some(LocalSource::Directory(std::path::PathBuf::from(dir)));
-                } else if let (Some(repo), Some(commit)) = (res.repo.as_ref(), res.commit.as_ref())
+                if let LocalSource::Git(ref mut g) = ls
+                    && g.subpath.is_none()
+                    && let Some(LocalSource::Git(prior)) = &local_pkg.local_source
                 {
-                    // Preserve any `path:` selector that was already
-                    // captured from the importer's `version:` URL —
-                    // the resolution block doesn't always echo it
-                    // (pnpm v9 also encodes the subpath in the
-                    // snapshot key).
-                    let prior_subpath = match &local_pkg.local_source {
-                        Some(LocalSource::Git(g)) => g.subpath.clone(),
-                        _ => None,
-                    };
-                    local_pkg.local_source = Some(LocalSource::Git(GitSource {
-                        url: repo.clone(),
-                        committish: None,
-                        resolved: commit.clone(),
-                        subpath: res.path.clone().or(prior_subpath),
-                    }));
+                    g.subpath = prior.subpath.clone();
                 }
+                local_pkg.local_source = Some(ls);
             }
         }
     }
@@ -395,39 +375,14 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         // emitted value for aliased packages.
         let alias_of = pkg_info.and_then(|p| p.alias_of.clone());
 
-        // Mirror the local_packages reclassification (lines ~195-223)
-        // so transitive URL-keyed entries — github forks, pkg.pr.new,
-        // `file:` targets — round-trip with the right `local_source`.
-        // Without this, the install path sees `local_source: None` +
-        // a URL-form version and tries to fetch the dep from the npm
-        // registry (404).
+        // Reclassify transitive URL-keyed entries — github forks,
+        // pkg.pr.new, `file:` targets — so they round-trip with the
+        // right `local_source`. Without this, the install path sees
+        // `local_source: None` + a URL-form version and tries to
+        // fetch the dep from the npm registry (404).
         let local_source = pkg_info
             .and_then(|p| p.resolution.as_ref())
-            .and_then(|res| {
-                if let Some(ref tb) = res.tarball {
-                    if let Some(rel) = tb.strip_prefix("file:") {
-                        Some(LocalSource::Tarball(std::path::PathBuf::from(rel)))
-                    } else if tb.starts_with("http://") || tb.starts_with("https://") {
-                        Some(LocalSource::RemoteTarball(crate::RemoteTarballSource {
-                            url: tb.clone(),
-                            integrity: res.integrity.clone().unwrap_or_default(),
-                        }))
-                    } else {
-                        None
-                    }
-                } else if let Some(ref dir) = res.directory {
-                    Some(LocalSource::Directory(std::path::PathBuf::from(dir)))
-                } else if let (Some(repo), Some(commit)) = (res.repo.as_ref(), res.commit.as_ref())
-                {
-                    Some(LocalSource::Git(GitSource {
-                        url: repo.clone(),
-                        committish: None,
-                        resolved: commit.clone(),
-                    }))
-                } else {
-                    None
-                }
-            });
+            .and_then(local_source_from_resolution);
 
         packages.insert(
             dep_path.clone(),
@@ -1541,6 +1496,38 @@ where
             Some(trimmed.to_string())
         }
     }))
+}
+
+/// Convert a pnpm `resolution:` block into a `LocalSource` classification.
+/// Returns `None` for registry-sourced packages (plain integrity with no
+/// tarball/directory/repo fields). Shared by the direct-dep and
+/// transitive-dep reader paths so both stay in lockstep when new
+/// resolution shapes are added.
+fn local_source_from_resolution(res: &Resolution) -> Option<LocalSource> {
+    if let Some(ref tb) = res.tarball {
+        if let Some(rel) = tb.strip_prefix("file:") {
+            return Some(LocalSource::Tarball(std::path::PathBuf::from(rel)));
+        }
+        if tb.starts_with("http://") || tb.starts_with("https://") {
+            return Some(LocalSource::RemoteTarball(crate::RemoteTarballSource {
+                url: tb.clone(),
+                integrity: res.integrity.clone().unwrap_or_default(),
+            }));
+        }
+        return None;
+    }
+    if let Some(ref dir) = res.directory {
+        return Some(LocalSource::Directory(std::path::PathBuf::from(dir)));
+    }
+    if let (Some(repo), Some(commit)) = (res.repo.as_ref(), res.commit.as_ref()) {
+        return Some(LocalSource::Git(GitSource {
+            url: repo.clone(),
+            committish: None,
+            resolved: commit.clone(),
+            subpath: res.path.clone(),
+        }));
+    }
+    None
 }
 
 #[derive(Debug, Deserialize)]
