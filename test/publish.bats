@@ -7,6 +7,13 @@ setup() {
 }
 
 teardown() {
+	# Safety net: every test in this file that spawns a background
+	# mock registry is expected to call `_stop_publish_server`
+	# inline, but a failing assertion between _start and _stop would
+	# leak the node process and keep the CI shard alive forever (the
+	# http.createServer event loop never exits on its own). Always
+	# kill here as a backstop.
+	_stop_publish_server
 	_common_teardown
 }
 
@@ -404,8 +411,10 @@ server.listen(0, '127.0.0.1', () => {
   fs.writeFileSync('record-server-port', String(server.address().port));
 });
 NODE
+	# Use PUBLISH_SERVER_PID so teardown's `_stop_publish_server`
+	# safety net catches it if the test aborts early.
 	node record-server.mjs &
-	local pid=$!
+	PUBLISH_SERVER_PID=$!
 	for _ in 1 2 3 4 5 6 7 8 9 10; do
 		[ -f record-server-port ] && break
 		sleep 0.1
@@ -415,8 +424,7 @@ NODE
 
 	run aube publish --no-git-checks --registry "http://127.0.0.1:${port}/"
 	rc=$status
-	kill "$pid" 2>/dev/null || true
-	wait "$pid" 2>/dev/null || true
+	_stop_publish_server
 	[ "$rc" -eq 0 ]
 
 	# The PUT body's `versions["0.1.0"]` must reflect the post-hook
