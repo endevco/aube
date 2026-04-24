@@ -11,6 +11,8 @@ name: release
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 on:
   workflow_call:
@@ -76,6 +78,7 @@ jobs:
       # already expect. On macOS we ask it to codesign with the Developer
       # ID cert we just imported; the prefix applies to all three bins.
       - name: Upload binary (macOS signed)
+        id: upload-macos
         if: startsWith(matrix.os, 'macos')
         uses: taiki-e/upload-rust-binary-action@v1
         with:
@@ -88,6 +91,7 @@ jobs:
           codesign: "Developer ID Application: Jeffrey Dickey (4993Y37DX6)"
           codesign_prefix: dev.jdx.
       - name: Upload binary (non-macOS)
+        id: upload-non-macos
         if: ${{ !startsWith(matrix.os, 'macos') }}
         uses: taiki-e/upload-rust-binary-action@v1
         with:
@@ -97,3 +101,20 @@ jobs:
           build-tool: ${{ matrix.build-tool }}
           ref: refs/tags/${{ inputs.tag }}
           token: ${{ secrets.AUBE_GH_TOKEN }}
+      - name: Resolve uploaded archive
+        id: archive
+        env:
+          MACOS_TAR: ${{ steps.upload-macos.outputs.tar }}
+          UNIX_TAR: ${{ steps.upload-non-macos.outputs.tar }}
+          WINDOWS_ZIP: ${{ steps.upload-non-macos.outputs.zip }}
+        run: |
+          archive="${MACOS_TAR}${UNIX_TAR}${WINDOWS_ZIP}"
+          if [ -z "$archive" ]; then
+            echo "::error::upload-rust-binary-action did not report an archive"
+            exit 1
+          fi
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.archive.outputs.path }}
