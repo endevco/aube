@@ -438,6 +438,37 @@ NODE
 	assert_output "null"
 }
 
+@test "aube publish --dry-run --json reports post-hook version when prepublishOnly bumps version" {
+	# Regression: PublishOutcome captured `name`/`version` from the
+	# pre-hook manifest, so if `prepublishOnly` stamped a git SHA into
+	# the version, the tarball (and registry) would carry the new
+	# version but the --json / user-facing line still reported the old
+	# one. Outcome now pulls from the built archive, which reads
+	# package.json fresh after hooks.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "publish-outcome-version",
+		  "version": "0.1.0",
+		  "main": "index.js",
+		  "files": ["index.js"],
+		  "scripts": {
+		    "prepublishOnly": "node ./bump.mjs"
+		  }
+		}
+	EOF
+	echo "module.exports = 1" >index.js
+	cat >bump.mjs <<'NODE'
+import fs from 'node:fs';
+const m = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+m.version = '0.1.0-sha.abc123';
+fs.writeFileSync('package.json', JSON.stringify(m, null, 2));
+NODE
+
+	run bash -c "aube publish --dry-run --json --registry=https://r.example.com/ | jq -r '.[0].version'"
+	assert_success
+	assert_output "0.1.0-sha.abc123"
+}
+
 @test "aube publish --dry-run --json emits a pnpm-compatible array" {
 	_write_publishable_pkg
 

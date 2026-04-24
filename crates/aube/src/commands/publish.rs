@@ -428,8 +428,8 @@ async fn publish_one(
                 .wrap_err("--dry-run --provenance: OIDC probe failed")?;
         }
         return Ok(PublishOutcome {
-            name,
-            version,
+            name: archive.name.clone(),
+            version: archive.version.clone(),
             registry_url,
             archive: Some(archive),
             status: PublishStatus::DryRun,
@@ -545,8 +545,8 @@ async fn publish_one(
     run_publish_lifecycle_post(pkg_dir, &manifest, args.ignore_scripts).await?;
 
     Ok(PublishOutcome {
-        name,
-        version,
+        name: archive.name.clone(),
+        version: archive.version.clone(),
         registry_url,
         archive: Some(archive),
         status: PublishStatus::Published,
