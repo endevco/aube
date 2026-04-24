@@ -107,3 +107,42 @@ JSON
 	assert_link_exists node_modules/is-odd
 	assert_not_exists node_modules/is-number
 }
+
+@test "default public-hoist-pattern hoists *types* transitives" {
+	cat >package.json <<'JSON'
+{
+  "name": "default-hoist-types",
+  "version": "1.0.0",
+  "dependencies": {
+    "@types/react": "18.3.28"
+  }
+}
+JSON
+	# No .npmrc override — the built-in default ["*types*", ...] applies.
+	# @types/react depends on @types/prop-types (matches *types*) and
+	# csstype (does NOT match *types*). Only the former should be hoisted.
+	run aube install
+	assert_success
+	assert_link_exists node_modules/@types/react
+	assert_link_exists node_modules/@types/prop-types
+	assert_not_exists node_modules/csstype
+}
+
+@test "explicit empty public-hoist-pattern overrides default" {
+	cat >package.json <<'JSON'
+{
+  "name": "empty-override",
+  "version": "1.0.0",
+  "dependencies": {
+    "@types/react": "18.3.28"
+  }
+}
+JSON
+	# Setting an explicit empty pattern in .npmrc replaces the default
+	# entirely — no transitive gets hoisted.
+	echo 'public-hoist-pattern=' >.npmrc
+	run aube install
+	assert_success
+	assert_link_exists node_modules/@types/react
+	assert_not_exists node_modules/@types/prop-types
+}
