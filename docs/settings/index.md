@@ -70,6 +70,8 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`fetchTimeout`](#setting-fetchtimeout) | `int` | Max time (ms) to wait for an HTTP request. |
 | [`fetchWarnTimeoutMs`](#setting-fetchwarntimeoutms) | `int` | Warn if a metadata request exceeds this threshold (ms). |
 | [`fetchMinSpeedKiBps`](#setting-fetchminspeedkibps) | `int` | Warn if download speed falls below this threshold (KiB/s). |
+| [`packumentMaxBytes`](#setting-packumentmaxbytes) | `int` | Hard cap on a packument response body size in bytes. |
+| [`tarballMaxBytes`](#setting-tarballmaxbytes) | `int` | Hard cap on a tarball response body size in bytes (on-wire, still compressed). |
 | [`autoInstallPeers`](#setting-autoinstallpeers) | `bool` | Automatically install missing peer dependencies. |
 | [`dedupePeerDependents`](#setting-dedupepeerdependents) | `bool` | Deduplicate packages that have peer dependencies. |
 | [`dedupePeers`](#setting-dedupepeers) | `bool` | Use version-only identifiers for peer suffixes in the lockfile. |
@@ -1306,6 +1308,47 @@ Warn if download speed falls below this threshold (KiB/s).
 
 Warn when a tarball's end-to-end average throughput falls below this
 many KiB/s. Set to `0` to disable.
+
+### `packumentMaxBytes` {#setting-packumentmaxbytes}
+
+Hard cap on a packument response body size in bytes.
+
+- Type: `int`
+- Default: `209715200`
+- Environment: `npm_config_packument_max_bytes`, `NPM_CONFIG_PACKUMENT_MAX_BYTES`
+- .npmrc keys: `packumentMaxBytes`, `packument-max-bytes`
+
+Refuses any packument response whose `Content-Length` exceeds this
+many bytes. A hostile or misconfigured registry (including a MITM on
+a compromised mirror) could otherwise stream gigabytes of JSON into
+the resolver and OOM the install; the cap makes that fail loudly.
+
+Default: 200 MiB. Raise if you hit the cap, or set to `0` to disable
+it entirely (only reasonable against a registry you fully trust).
+
+Applies to every packument fetch: corgi and non-corgi variants, the
+cached-resolve path, and the fresh-read path used by `deprecate` /
+`undeprecate`. Tarball downloads are capped separately via
+`tarballMaxBytes`.
+
+### `tarballMaxBytes` {#setting-tarballmaxbytes}
+
+Hard cap on a tarball response body size in bytes (on-wire, still compressed).
+
+- Type: `int`
+- Default: `1073741824`
+- Environment: `npm_config_tarball_max_bytes`, `NPM_CONFIG_TARBALL_MAX_BYTES`
+- .npmrc keys: `tarballMaxBytes`, `tarball-max-bytes`
+
+Refuses any tarball response whose `Content-Length` exceeds this many
+bytes before any decompression runs. Without a wire-level cap a
+hostile mirror could stream a multi-GiB compressed payload into
+memory before the gzip reader ever sees a byte; the separate
+decompressed ceiling in `aube-store` would only fire after that.
+
+Default: 1 GiB. Raise if a legitimate tarball exceeds it, or set to
+`0` to disable the cap entirely (only reasonable against a registry
+you fully trust).
 
 ## Peer Dependencies
 
