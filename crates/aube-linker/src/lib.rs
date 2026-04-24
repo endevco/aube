@@ -2621,7 +2621,7 @@ fn write_applied_patches(
     let path = nm_dir.join(".aube-applied-patches.json");
     let out = serde_json::to_string(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, out)
+    aube_util::fs_atomic::atomic_write(&path, out.as_bytes())
 }
 
 /// Wipe `.aube/<dep_path>` for any package whose patch fingerprint
