@@ -51,6 +51,8 @@ pub async fn run(args: DoctorArgs) -> miette::Result<()> {
         print_human(&report);
     }
 
+    crate::update_check::check_and_notify(&anchor).await;
+
     if !report.errors.is_empty() {
         std::process::exit(1);
     }

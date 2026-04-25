@@ -60,7 +60,11 @@ fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
 }
 
 #[derive(Parser)]
-#[command(name = "aube", about = "A fast Node.js package manager", version = version::VERSION.as_str())]
+#[command(
+    name = "aube",
+    about = "A fast Node.js package manager",
+    disable_version_flag = true
+)]
 pub(crate) struct Cli {
     /// Change to directory before running (like `make -C` or `mise --cd`)
     #[arg(short = 'C', long = "dir", visible_aliases = ["cd", "prefix"], global = true, value_name = "DIR")]
@@ -90,6 +94,14 @@ pub(crate) struct Cli {
     /// Enable verbose/debug logging (shortcut for `--loglevel debug`)
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Print version and check for updates.
+    ///
+    /// Manual flag so we can run the async update notifier alongside
+    /// the version print — clap's auto `Action::Version` exits inside
+    /// `parse_from`, before the tokio runtime is built.
+    #[arg(short = 'V', long = "version", global = true)]
+    version: bool,
 
     /// Group workspace command output after each package finishes.
     ///
@@ -628,6 +640,14 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             .wrap_err_with(|| format!("failed to change directory to {}", dir.display()))?;
     }
 
+    if cli.version {
+        println!("aube {}", crate::version::VERSION.as_str());
+        let cwd =
+            crate::dirs::project_root_or_cwd().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        update_check::check_and_notify(&cwd).await;
+        return Ok(None);
+    }
+
     if cli.workspace_root {
         let start = std::env::current_dir()
             .into_diagnostic()
@@ -688,7 +708,6 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     match cli.command {
         Some(Commands::Add(args)) => {
             commands::add::run(args, effective_filter.clone()).await?;
-            post_add_update_notify().await;
         }
         Some(Commands::ApproveBuilds(args)) => commands::approve_builds::run(args).await?,
         Some(Commands::Audit(args)) => commands::audit::run(args, cli.registry.as_deref()).await?,
@@ -796,7 +815,6 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             match nested.command {
                 Some(Commands::Add(args)) => {
                     commands::add::run(args, nested_filter).await?;
-                    post_add_update_notify().await;
                 }
                 Some(Commands::Deploy(args)) => commands::deploy::run(args, nested_filter).await?,
                 Some(Commands::Exec(args)) => commands::exec::run(args, nested_filter).await?,
@@ -861,7 +879,6 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 }
                 Some(Commands::Update(args)) => {
                     commands::update::run(args, nested_filter).await?;
-                    post_add_update_notify().await;
                 }
                 Some(Commands::Why(args)) => commands::why::run(args, nested_filter).await?,
                 Some(Commands::External(args)) => {
@@ -945,7 +962,6 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         }
         Some(Commands::Update(args)) => {
             commands::update::run(args, effective_filter.clone()).await?;
-            post_add_update_notify().await;
         }
         Some(Commands::Version(args)) => commands::version::run(args).await?,
         Some(Commands::View(args)) => commands::view::run(args).await?,
@@ -1564,30 +1580,10 @@ async fn run_install_command(
         cli: &cli_flags,
     };
     let yaml_prefer_frozen = aube_settings::resolved::prefer_frozen_lockfile(&ctx);
-    let offline = args.offline || args.prefer_offline;
     let mut opts = args.into_options(global_frozen, yaml_prefer_frozen, cli_flags, env);
     opts.workspace_filter = filter;
     commands::install::run(opts).await?;
-    update_check::check_and_notify(&cwd, offline).await;
     Ok(())
-}
-
-/// Fire the update notifier once per top-level `add` / `update`
-/// invocation, after the command has fully returned. Kept at the
-/// dispatch layer so that the workspace-recursive paths inside
-/// `add::run` / `update::run` (which re-enter `run` per matched
-/// package via `run_filtered`) don't each emit their own notice.
-///
-/// Settings resolution needs the project root, not the raw cwd —
-/// `load_npmrc_entries` only reads `<dir>/.npmrc` without walking up,
-/// so running `aube add` from a subdirectory must still pick up the
-/// project-root `.npmrc` (where `updateNotifier=false` would live).
-/// Falls back to the cached cwd when no ancestor has a `package.json`,
-/// so a command run outside a project doesn't lose the notifier.
-async fn post_add_update_notify() {
-    if let Ok(cwd) = crate::dirs::project_root_or_cwd() {
-        update_check::check_and_notify(&cwd, false).await;
-    }
 }
 
 #[cfg(test)]

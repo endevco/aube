@@ -1,16 +1,16 @@
 //! Update notifier.
 //!
-//! After a top-level `install` / `add` / `update` completes, fetch
-//! `https://aube.en.dev/VERSION` and print a one-line notice on stderr
-//! if the advertised version is newer than the running binary. The
-//! result is cached under `<cacheDir>/update-check.json` so only the
-//! first run in any 24h window touches the network.
+//! Invoked from `aube doctor` and the `aube --version` / `-V` flag —
+//! the version-asking commands. Fetches `https://aube.en.dev/VERSION`
+//! and prints a one-line notice on stderr if the advertised version is
+//! newer than the running binary. The result is cached under
+//! `<cacheDir>/update-check.json` so only the first run in any 24h
+//! window touches the network.
 //!
 //! Failures (DNS, timeout, non-200, unparseable) are swallowed silently
-//! — a hiccup on the update server must never disturb the install
-//! summary. The fetch also short-circuits when the user asked for an
-//! offline install, when `CI` / `AUBE_NO_UPDATE_CHECK` is set, or when
-//! the `updateNotifier` setting is `false`.
+//! — a hiccup on the update server must never disturb command output.
+//! The fetch also short-circuits when `CI` / `AUBE_NO_UPDATE_CHECK` is
+//! set or when the `updateNotifier` setting is `false`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -31,12 +31,8 @@ struct CacheEntry {
 }
 
 /// Run the update check and print a notice if a newer version exists.
-///
-/// `offline` comes from the calling command's resolved `--offline` /
-/// `--prefer-offline` flag — when the user explicitly asked to avoid
-/// the network for their install, we extend that to the notifier.
-pub async fn check_and_notify(cwd: &Path, offline: bool) {
-    if !should_check(offline) {
+pub async fn check_and_notify(cwd: &Path) {
+    if !should_check() {
         return;
     }
     let enabled = crate::commands::with_settings_ctx(cwd, aube_settings::resolved::update_notifier);
@@ -50,19 +46,12 @@ pub async fn check_and_notify(cwd: &Path, offline: bool) {
     if !is_newer(&latest, current) {
         return;
     }
-    // Single line on stderr — the install summary has already rendered
-    // (progress is torn down well before this call), so we're not
-    // racing the clx display. Leading blank line separates the notice
-    // from whatever the install printed last.
     eprintln!();
     eprintln!("  aube {latest} is available (current: {current})");
     eprintln!("  upgrade: https://aube.en.dev");
 }
 
-fn should_check(offline: bool) -> bool {
-    if offline {
-        return false;
-    }
+fn should_check() -> bool {
     if aube_util::env::is_ci() {
         return false;
     }

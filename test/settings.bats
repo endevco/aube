@@ -231,19 +231,17 @@ _make_env_probe_project() {
 	cat >"$cache_dir/update-check.json" <<-JSON
 		{"checked_at": $(date +%s), "latest": "999.0.0"}
 	JSON
-	run aube install
+	run aube --version
 	assert_success
 	refute_output --partial "is available"
 	refute_output --partial "upgrade:"
 }
 
-@test "aube add from subdirectory honors project-root updateNotifier=false" {
+@test "aube --version from subdirectory honors project-root updateNotifier=false" {
 	_setup_basic_fixture
-	# Project-root .npmrc (not $HOME) — the bug being covered is that
-	# the notifier's settings lookup was using raw cwd, so a .npmrc in
-	# the project root was missed when the command ran from a subdir.
+	# Project-root .npmrc (not $HOME) — settings resolution must walk up
+	# from cwd to find the project's .npmrc when invoked from a subdir.
 	echo 'updateNotifier=false' >.npmrc
-	aube install
 	unset AUBE_NO_UPDATE_CHECK
 	local cache_dir="$HOME/.cache/aube"
 	mkdir -p "$cache_dir"
@@ -252,7 +250,7 @@ _make_env_probe_project() {
 	JSON
 	mkdir -p sub
 	cd sub
-	run aube add is-number
+	run aube --version
 	assert_success
 	refute_output --partial "is available"
 	refute_output --partial "upgrade:"
