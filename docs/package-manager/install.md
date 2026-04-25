@@ -7,7 +7,7 @@ workspace manifests.
 aube install
 ```
 
-Most local work does not need a separate install command. `aubr <script>`,
+Most local work does not need a separate install command. `aube <script>`,
 `aube test`, and `aube exec <bin>` check install freshness first. If
 `package.json` or the lockfile changed, aube installs before running the
 script or binary. For one-off tools, `aubx <pkg>` installs into a throwaway
