@@ -522,52 +522,60 @@ pub fn load_both(
 }
 
 /// Resolve which workspace-yaml path `add_to_only_built_dependencies`
-/// would mutate in `project_dir`.
-///
-/// Precedence matches `load` / `load_raw`: if `aube-workspace.yaml`
-/// exists it wins; otherwise `pnpm-workspace.yaml` is used (creating
-/// it when neither file is present, since pnpm v10+ uses
-/// `pnpm-workspace.yaml` as the canonical home for these settings).
-pub fn workspace_yaml_target(project_dir: &Path) -> std::path::PathBuf {
-    let aube = project_dir.join("aube-workspace.yaml");
-    if aube.exists() {
-        return aube;
+/// would mutate in `project_dir`. Returns `None` when no yaml exists —
+/// callers fall back to `package.json` so a stray `aube approve-builds`
+/// in a plain npm/yarn project doesn't fabricate a `pnpm-workspace.yaml`.
+pub fn workspace_yaml_target(project_dir: &Path) -> Option<std::path::PathBuf> {
+    for name in WORKSPACE_YAML_NAMES {
+        let path = project_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
     }
-    project_dir.join("pnpm-workspace.yaml")
+    None
 }
 
-/// Merge `names` into the top-level `onlyBuiltDependencies` sequence
-/// of the workspace yaml at `workspace_yaml_target(project_dir)`,
-/// creating the file and/or the key if missing.
+/// Merge `names` into the workspace's `onlyBuiltDependencies` list.
 ///
-/// This is what `aube approve-builds` writes to. Matches pnpm v10+
-/// which moved build approvals out of `package.json`'s
-/// `pnpm.allowBuilds` and into `pnpm-workspace.yaml`'s
-/// `onlyBuiltDependencies`. Comments in the yaml are *not* preserved
-/// — we round-trip through `serde_yaml`, same trade-off as aube's
-/// `package.json` edits. Returns the path that was written.
+/// Write-target precedence:
+/// 1. `aube-workspace.yaml` if it exists — top-level `onlyBuiltDependencies`.
+/// 2. `pnpm-workspace.yaml` if it exists — top-level `onlyBuiltDependencies`.
+/// 3. Otherwise — `package.json` under `pnpm.onlyBuiltDependencies`.
+///
+/// The install-time build policy reads from all three sources (see
+/// `pnpm_only_built_dependencies` and `WorkspaceConfig::only_built_dependencies`),
+/// so the chosen target is honored regardless of which path the project
+/// uses. Returns the file that was written.
 pub fn add_to_only_built_dependencies(
     project_dir: &Path,
     names: &[String],
 ) -> Result<std::path::PathBuf, crate::Error> {
-    use serde_yaml::{Mapping, Value};
+    if let Some(path) = workspace_yaml_target(project_dir) {
+        return write_to_yaml(&path, names);
+    }
+    write_to_package_json(&project_dir.join("package.json"), names)
+}
 
-    let path = workspace_yaml_target(project_dir);
+fn write_to_yaml(path: &Path, names: &[String]) -> Result<std::path::PathBuf, crate::Error> {
+    use serde_yaml::{Mapping, Value};
 
     let mut doc: Value = if path.exists() {
         let content =
-            std::fs::read_to_string(&path).map_err(|e| crate::Error::Io(path.clone(), e))?;
+            std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
         if content.trim().is_empty() {
             Value::Mapping(Mapping::new())
         } else {
-            crate::parse_yaml(&path, content)?
+            crate::parse_yaml(path, content)?
         }
     } else {
         Value::Mapping(Mapping::new())
     };
 
     let map = doc.as_mapping_mut().ok_or_else(|| {
-        crate::Error::YamlParse(path.clone(), "top-level yaml must be a mapping".to_string())
+        crate::Error::YamlParse(
+            path.to_path_buf(),
+            "top-level yaml must be a mapping".to_string(),
+        )
     })?;
 
     let key = Value::String("onlyBuiltDependencies".to_string());
@@ -576,7 +584,7 @@ pub fn add_to_only_built_dependencies(
         .or_insert_with(|| Value::Sequence(Vec::new()));
     let seq = existing.as_sequence_mut().ok_or_else(|| {
         crate::Error::YamlParse(
-            path.clone(),
+            path.to_path_buf(),
             "`onlyBuiltDependencies` must be a sequence".to_string(),
         )
     })?;
@@ -592,16 +600,79 @@ pub fn add_to_only_built_dependencies(
     }
 
     let raw = serde_yaml::to_string(&doc)
-        .map_err(|e| crate::Error::YamlParse(path.clone(), e.to_string()))?;
+        .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
     // serde_yaml emits block sequences flush-left (`- foo`) while pnpm's
     // canonical workspace yaml indents them by two (`  - foo`). Reindent
     // so the output matches what a human or pnpm would write. Safe because
     // serde_yaml's block style always starts sequence items at the parent's
     // column; bumping every sequence line by two is a consistent transform.
     let indented = indent_block_sequences(&raw);
-    aube_util::fs_atomic::atomic_write(&path, indented.as_bytes())
-        .map_err(|e| crate::Error::Io(path.clone(), e))?;
-    Ok(path)
+    aube_util::fs_atomic::atomic_write(path, indented.as_bytes())
+        .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    Ok(path.to_path_buf())
+}
+
+fn write_to_package_json(
+    path: &Path,
+    names: &[String],
+) -> Result<std::path::PathBuf, crate::Error> {
+    use serde_json::{Map, Value};
+
+    let content =
+        std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    let mut doc: Value = crate::parse_json(path, content)?;
+
+    let obj = doc.as_object_mut().ok_or_else(|| {
+        crate::Error::parse_msg(
+            path,
+            String::new(),
+            "top-level package.json must be an object".to_string(),
+        )
+    })?;
+
+    let pnpm = obj
+        .entry("pnpm")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let pnpm_obj = pnpm.as_object_mut().ok_or_else(|| {
+        crate::Error::parse_msg(
+            path,
+            String::new(),
+            "`pnpm` in package.json must be an object".to_string(),
+        )
+    })?;
+
+    let arr = pnpm_obj
+        .entry("onlyBuiltDependencies")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| {
+            crate::Error::parse_msg(
+                path,
+                String::new(),
+                "`pnpm.onlyBuiltDependencies` in package.json must be an array".to_string(),
+            )
+        })?;
+
+    let mut have: std::collections::HashSet<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    for name in names {
+        if have.insert(name.clone()) {
+            arr.push(Value::String(name.clone()));
+        }
+    }
+
+    // serde_json::to_string_pretty on a Value built from string keys,
+    // arrays, and primitives can't fail — the only documented errors
+    // (non-string map keys, infinite floats) are unreachable here.
+    let body = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&doc).expect("well-formed Value never fails to serialize")
+    );
+    aube_util::fs_atomic::atomic_write(path, body.as_bytes())
+        .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    Ok(path.to_path_buf())
 }
 
 /// Bump every block-sequence item line (`- ...`) by two spaces. Leaves
@@ -797,16 +868,64 @@ patchedDependencies:
     }
 
     #[test]
-    fn add_to_only_built_deps_creates_file() {
+    fn add_to_only_built_deps_writes_to_package_json_when_no_yaml() {
+        // Approve-builds in a plain npm/yarn project (no workspace yaml)
+        // must NOT fabricate a pnpm-workspace.yaml. The same data lives
+        // happily under `pnpm.onlyBuiltDependencies` in package.json,
+        // which the install-time policy already reads.
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"solo","version":"0.0.0"}"#,
+        )
+        .unwrap();
         let path = add_to_only_built_dependencies(
             dir.path(),
             &["esbuild".to_string(), "sharp".to_string()],
         )
         .unwrap();
-        assert_eq!(path, dir.path().join("pnpm-workspace.yaml"));
-        let config = WorkspaceConfig::load(dir.path()).unwrap();
-        assert_eq!(config.only_built_dependencies, vec!["esbuild", "sharp"]);
+        assert_eq!(path, dir.path().join("package.json"));
+        assert!(
+            !dir.path().join("pnpm-workspace.yaml").exists(),
+            "approve-builds must not create pnpm-workspace.yaml in a non-pnpm project",
+        );
+        let manifest = crate::PackageJson::from_path(&path).unwrap();
+        assert_eq!(
+            manifest.pnpm_only_built_dependencies(),
+            vec!["esbuild", "sharp"]
+        );
+    }
+
+    #[test]
+    fn add_to_only_built_deps_appends_to_package_json_pnpm_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"solo","pnpm":{"onlyBuiltDependencies":["esbuild"]}}"#,
+        )
+        .unwrap();
+        add_to_only_built_dependencies(
+            dir.path(),
+            &["sharp".to_string(), "esbuild".to_string()],
+        )
+        .unwrap();
+        let manifest = crate::PackageJson::from_path(&dir.path().join("package.json")).unwrap();
+        assert_eq!(
+            manifest.pnpm_only_built_dependencies(),
+            vec!["esbuild", "sharp"]
+        );
+    }
+
+    #[test]
+    fn add_to_only_built_deps_errors_without_yaml_or_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = add_to_only_built_dependencies(dir.path(), &["esbuild".to_string()]).unwrap_err();
+        // No yaml + no package.json → I/O error reading package.json,
+        // not a silently-fabricated workspace yaml.
+        assert!(
+            matches!(err, crate::Error::Io(_, _)),
+            "expected Io error for missing package.json, got {err:?}"
+        );
     }
 
     #[test]

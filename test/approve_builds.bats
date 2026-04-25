@@ -4,7 +4,7 @@
 # same `aube-test-builds-marker` fixture package as `allow_builds.bats`:
 # it declares a `postinstall` that writes a marker file, so its
 # presence after a second install proves the approve-builds write
-# round-tripped into `pnpm-workspace.yaml`'s `onlyBuiltDependencies`.
+# round-tripped into the project's `onlyBuiltDependencies`.
 
 setup() {
 	load 'test_helper/common_setup'
@@ -108,7 +108,11 @@ JSON
 	assert_output --partial "No ignored builds"
 }
 
-@test "approve-builds --all writes onlyBuiltDependencies to pnpm-workspace.yaml" {
+@test "approve-builds --all writes onlyBuiltDependencies to package.json when no workspace yaml" {
+	# A plain npm/yarn project (no pnpm-workspace.yaml) must NOT have
+	# one fabricated by approve-builds. The same data lives under
+	# `pnpm.onlyBuiltDependencies` in package.json, which the
+	# install-time policy already reads.
 	cat >package.json <<'JSON'
 {
   "name": "approve-builds-all-test",
@@ -125,22 +129,58 @@ JSON
 	run aube approve-builds --all
 	assert_success
 	assert_output --partial "aube-test-builds-marker"
-	assert_output --partial "pnpm-workspace.yaml"
+	assert_output --partial "package.json"
 
-	# The entry should land in pnpm-workspace.yaml's onlyBuiltDependencies
-	# (pnpm v10 parity), NOT in package.json's pnpm.allowBuilds.
-	assert_file_exists pnpm-workspace.yaml
-	run grep -q '^onlyBuiltDependencies:' pnpm-workspace.yaml
+	# No yaml should be created.
+	assert_file_not_exists pnpm-workspace.yaml
+	assert_file_not_exists aube-workspace.yaml
+
+	# The entry should land under pnpm.onlyBuiltDependencies in package.json.
+	run grep -q 'onlyBuiltDependencies' package.json
 	assert_success
-	run grep -q '  - aube-test-builds-marker' pnpm-workspace.yaml
+	run grep -q 'aube-test-builds-marker' package.json
 	assert_success
-	run grep -q 'allowBuilds' package.json
-	assert_failure
 
 	# A re-install should run the previously-ignored postinstall.
 	run aube install
 	assert_success
 	assert_file_exists aube-builds-marker.txt
+}
+
+@test "approve-builds --all in npm-style monorepo doesn't fabricate pnpm-workspace.yaml" {
+	# An npm/yarn-style monorepo carries `workspaces` directly in
+	# package.json. approve-builds in that shape must not pollute
+	# the tree with a pnpm-workspace.yaml the user never asked for.
+	mkdir -p packages/app
+	cat >package.json <<'JSON'
+{
+  "name": "monorepo-root",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+JSON
+	cat >packages/app/package.json <<'JSON'
+{
+  "name": "app",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  }
+}
+JSON
+	run aube install
+	assert_success
+
+	run aube approve-builds --all
+	assert_success
+	assert_output --partial "aube-test-builds-marker"
+
+	assert_file_not_exists pnpm-workspace.yaml
+	assert_file_not_exists aube-workspace.yaml
+
+	run grep -q 'onlyBuiltDependencies' package.json
+	assert_success
 }
 
 @test "approve-builds merges into an existing pnpm-workspace.yaml" {
