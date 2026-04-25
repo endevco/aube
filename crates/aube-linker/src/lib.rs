@@ -2769,6 +2769,27 @@ struct PatchSection {
 /// out of the `b/...` half (post-edit name), and capture everything
 /// from the next `--- ` line until the following `diff --git ` (or
 /// EOF) as the diffy-compatible body.
+fn parse_diff_git_b_path(rest: &str) -> Option<&str> {
+    if let Some(after) = rest.strip_prefix("\"a/") {
+        let end_a = after.find("\" \"b/")?;
+        let after_b = &after[end_a + 5..];
+        let close = after_b.rfind('"')?;
+        return Some(&after_b[..close]);
+    }
+    let body = rest.strip_prefix("a/")?;
+    let mut search_from = 0;
+    while let Some(rel) = body[search_from..].find(" b/") {
+        let abs = search_from + rel;
+        let path_a = &body[..abs];
+        let path_b = &body[abs + 3..];
+        if path_a == path_b {
+            return Some(path_b);
+        }
+        search_from = abs + 1;
+    }
+    body.find(" b/").map(|i| &body[i + 3..])
+}
+
 fn split_patch_sections(text: &str) -> Vec<PatchSection> {
     let mut out: Vec<PatchSection> = Vec::new();
     let mut current_path: Option<String> = None;
@@ -2792,17 +2813,14 @@ fn split_patch_sections(text: &str) -> Vec<PatchSection> {
     };
 
     for line in text.split_inclusive('\n') {
-        let stripped = line.trim_end_matches('\n');
+        let stripped = line.trim_end_matches(['\n', '\r']);
         if let Some(rest) = stripped.strip_prefix("diff --git ") {
             // New file boundary — flush whatever we were collecting.
             flush(&mut out, &mut current_path, &mut body, &mut is_deletion);
             in_body = false;
             // Parse `a/<path> b/<path>` and prefer the post-edit
             // (`b/`) path so renames land on the new name.
-            if let Some(b_idx) = rest.find(" b/") {
-                let after_b = &rest[b_idx + 3..];
-                current_path = Some(after_b.to_string());
-            }
+            current_path = parse_diff_git_b_path(rest).map(String::from);
             continue;
         }
         if !in_body {
@@ -2817,7 +2835,8 @@ fn split_patch_sections(text: &str) -> Vec<PatchSection> {
                 {
                     body.push_str(&format!("--- a/{rel}\n"));
                 } else {
-                    body.push_str(line);
+                    body.push_str(stripped);
+                    body.push('\n');
                 }
             }
             // Skip git's `index ...` / `new file mode ...` /
@@ -2834,7 +2853,8 @@ fn split_patch_sections(text: &str) -> Vec<PatchSection> {
             is_deletion = true;
             continue;
         }
-        body.push_str(line);
+        body.push_str(stripped);
+        body.push('\n');
     }
     flush(&mut out, &mut current_path, &mut body, &mut is_deletion);
     out
@@ -2958,6 +2978,58 @@ mod patch_tests {
             std::fs::read_to_string(pkg.join("index.js")).unwrap(),
             "module.exports = 'new';\n"
         );
+    }
+
+    #[test]
+    fn crlf_patch_path_does_not_carry_carriage_return() {
+        let patch = "diff --git a/index.js b/index.js\r\n\
+                     --- a/index.js\r\n\
+                     +++ b/index.js\r\n\
+                     @@ -1 +1 @@\r\n\
+                     -module.exports = 'old';\r\n\
+                     +module.exports = 'new';\r\n";
+        let sections = split_patch_sections(patch);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].rel_path.as_deref(), Some("index.js"));
+    }
+
+    #[test]
+    fn crlf_deletion_patch_recognized() {
+        let patch = "diff --git a/removed.js b/removed.js\r\n\
+                     deleted file mode 100644\r\n\
+                     --- a/removed.js\r\n\
+                     +++ /dev/null\r\n\
+                     @@ -1 +0,0 @@\r\n\
+                     -gone\r\n";
+        let sections = split_patch_sections(patch);
+        assert_eq!(sections.len(), 1);
+        assert!(sections[0].is_deletion);
+    }
+
+    #[test]
+    fn diff_git_path_with_space_b_substring() {
+        let patch = "diff --git a/a b/c.js b/a b/c.js\n\
+                     --- a/a b/c.js\n\
+                     +++ b/a b/c.js\n\
+                     @@ -1 +1 @@\n\
+                     -x\n\
+                     +y\n";
+        let sections = split_patch_sections(patch);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].rel_path.as_deref(), Some("a b/c.js"));
+    }
+
+    #[test]
+    fn diff_git_quoted_path_form() {
+        let patch = "diff --git \"a/path with spaces.js\" \"b/path with spaces.js\"\n\
+                     --- a/path with spaces.js\n\
+                     +++ b/path with spaces.js\n\
+                     @@ -1 +1 @@\n\
+                     -x\n\
+                     +y\n";
+        let sections = split_patch_sections(patch);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].rel_path.as_deref(), Some("path with spaces.js"));
     }
 }
 
