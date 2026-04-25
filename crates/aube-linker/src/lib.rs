@@ -70,7 +70,11 @@ pub fn sweep_stale_tmp_dirs(virtual_store: &Path) {
 pub fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {
-        std::fs::remove_dir_all(path)
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
     }
     #[cfg(windows)]
     {
