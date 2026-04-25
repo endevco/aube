@@ -291,6 +291,17 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # and `COLD_WIPE` wouldn't find it to clean up between iterations.
 AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
 
+# Per-scenario AUBE_ENV variants that pin the global virtual store mode
+# via the `enableGlobalVirtualStore` setting's auto-synthesized env-var
+# alias (`npm_config_<snake_case>` — see `aube-settings/build.rs`).
+# Using an env var rather than `--enable-gvs` / `--disable-gvs` means
+# scenarios that go through `aube test` and `aube add` (which trigger
+# auto-install internally) get the same forcing as direct `aube install`
+# calls. The setting wins over `Linker::new`'s `CI` heuristic, so
+# GitHub Actions' inherited `CI=true` cannot silently flip the mode.
+AUBE_ENV_GVS_ON="$AUBE_ENV npm_config_enable_global_virtual_store=true"
+AUBE_ENV_GVS_OFF="$AUBE_ENV npm_config_enable_global_virtual_store=false"
+
 # Scenario keys describe what's on disk before the run. Every install
 # scenario assumes a committed lockfile is present; the axes are
 # cache/store warmth and whether aube's global virtual store is enabled.
@@ -298,28 +309,28 @@ AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
 # "install-test" scenario that measures install + script dispatch end-to-end.
 
 # Scenario 1: Fresh install, warm cache (aube GVS enabled) ------------------
-CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --enable-gvs >/dev/null 2>&1"
+CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["gvs-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["gvs-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
 # Scenario 2: Fresh install, cold cache (aube GVS enabled) ------------------
-CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --enable-gvs >/dev/null 2>&1"
+CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["gvs-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["gvs-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
 
 # Scenario 3: CI install, warm cache (aube GVS disabled) --------------------
-CMDS["ci-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --disable-gvs >/dev/null 2>&1"
+CMDS["ci-warm:aube"]="cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["ci-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["ci-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
 # Scenario 4: CI install, cold cache (aube GVS disabled) --------------------
-CMDS["ci-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --disable-gvs >/dev/null 2>&1"
+CMDS["ci-cold:aube"]="cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["ci-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
@@ -331,7 +342,7 @@ CMDS["ci-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin
 # before running the script; pnpm and npm ship `install-test`; bun and yarn
 # need an explicit chain. The fixture's `test` script is the POSIX shell
 # no-op `:`, so this measures install + script dispatch, not test-runtime work.
-CMDS["install-test:aube"]="cd {project} && $AUBE_ENV {bin} test >/dev/null 2>&1"
+CMDS["install-test:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} test >/dev/null 2>&1"
 CMDS["install-test:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1 && HOME={home} BUN_INSTALL={home}/.bun {bin} run test >/dev/null 2>&1"
 # `npm install-test` (the `install` variant, not `ci`) is the right
 # command for the "already installed" semantics this scenario uses —
@@ -342,7 +353,7 @@ CMDS["install-test:pnpm"]="cd {project} && HOME={home} {bin} install-test --froz
 CMDS["install-test:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1 && HOME={home} YARN_CACHE_FOLDER={cache} {bin} test >/dev/null 2>&1"
 
 # Scenario 6: add a dependency (warm store+cache, existing lockfile) --------
-CMDS["add:aube"]="cd {project} && $AUBE_ENV {bin} add is-odd >/dev/null 2>&1"
+CMDS["add:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
 CMDS["add:bun"]="cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
 CMDS["add:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
 CMDS["add:pnpm"]="cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
