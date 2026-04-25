@@ -1189,26 +1189,7 @@ fn redact_args(args: &[&str]) -> String {
     s
 }
 
-/// Strip `user:password@` out of git URLs before we put them into
-/// error output. Private workspace deps commonly pin
-/// `git+https://<token>@host/repo.git`, and any clone failure would
-/// otherwise dump that token straight into CI log archives and issue
-/// tracker paste-dumps.
-fn redact_url(url: &str) -> String {
-    let Some(scheme_end) = url.find("://") else {
-        return url.to_string();
-    };
-    let after = scheme_end + 3;
-    let tail = &url[after..];
-    let Some(at) = tail.find('@') else {
-        return url.to_string();
-    };
-    let slash = tail.find('/').unwrap_or(tail.len());
-    if at >= slash {
-        return url.to_string();
-    }
-    format!("{}***@{}", &url[..after], &tail[at + 1..])
-}
+use aube_util::url::redact_url;
 
 fn validate_git_positional(value: &str, kind: &str) -> Result<(), Error> {
     if value.starts_with('-') {
