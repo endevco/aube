@@ -17,11 +17,20 @@ fn main() {
 /// Capture the build host's UTC date as `YYYY-MM-DD` for the `aube
 /// --version` line. Shell-out keeps it dep-free; falls back to
 /// `unknown` if the host's `date` / `Get-Date` isn't reachable.
+///
+/// `Get-Date -UFormat` only controls the *format-specifier style*, not
+/// the timezone — so the Windows path explicitly converts to UTC via
+/// `.ToUniversalTime()` so build dates stay consistent with the
+/// Unix `date -u` path on either side of midnight.
 fn build_date() -> String {
     let (cmd, args): (&str, &[&str]) = if cfg!(windows) {
         (
             "powershell",
-            &["-NoProfile", "-Command", "Get-Date -UFormat '%Y-%m-%d'"],
+            &[
+                "-NoProfile",
+                "-Command",
+                "(Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')",
+            ],
         )
     } else {
         ("date", &["-u", "+%Y-%m-%d"])
