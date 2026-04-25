@@ -1310,6 +1310,7 @@ Hard cap on a packument response body size in bytes.
 
 - Type: `int`
 - Default: `209715200`
+- Environment: `AUBE_PACKUMENT_MAX_BYTES`, `npm_config_packument_max_bytes`, `NPM_CONFIG_PACKUMENT_MAX_BYTES`
 - .npmrc keys: `packumentMaxBytes`, `packument-max-bytes`
 
 Refuses any packument response whose `Content-Length` exceeds this
@@ -1331,6 +1332,7 @@ Hard cap on a tarball response body size in bytes (on-wire, still compressed).
 
 - Type: `int`
 - Default: `1073741824`
+- Environment: `AUBE_TARBALL_MAX_BYTES`, `npm_config_tarball_max_bytes`, `NPM_CONFIG_TARBALL_MAX_BYTES`
 - .npmrc keys: `tarballMaxBytes`, `tarball-max-bytes`
 
 Refuses any tarball response whose `Content-Length` exceeds this many

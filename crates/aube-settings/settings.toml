@@ -1285,7 +1285,7 @@ cached-resolve path, and the fresh-read path used by `deprecate` /
 `tarballMaxBytes`.
 """
 sources.cli = []
-sources.env = []
+sources.env = ["AUBE_PACKUMENT_MAX_BYTES", "npm_config_packument_max_bytes", "NPM_CONFIG_PACKUMENT_MAX_BYTES"]
 sources.npmrc = ["packumentMaxBytes"]
 examples = []
 
@@ -1305,7 +1305,7 @@ Default: 1 GiB. Raise if a legitimate tarball exceeds it, or set to
 you fully trust).
 """
 sources.cli = []
-sources.env = []
+sources.env = ["AUBE_TARBALL_MAX_BYTES", "npm_config_tarball_max_bytes", "NPM_CONFIG_TARBALL_MAX_BYTES"]
 sources.npmrc = ["tarballMaxBytes"]
 examples = []
 
