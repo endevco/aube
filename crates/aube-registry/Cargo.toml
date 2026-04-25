@@ -14,6 +14,7 @@ aube-manifest = { workspace = true }
 aube-settings = { workspace = true }
 aube-store = { workspace = true }
 aube-util = { workspace = true }
+blake3 = { workspace = true }
 reqwest = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"

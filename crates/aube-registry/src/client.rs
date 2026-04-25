@@ -459,7 +459,7 @@ impl RegistryClient {
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, cap, label)?;
                     let started = std::time::Instant::now();
-                    match resp.bytes().await {
+                    match read_body_capped(resp, cap, label).await {
                         Ok(bytes) => return Ok((bytes, started.elapsed())),
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
@@ -473,7 +473,7 @@ impl RegistryClient {
                             );
                             tokio::time::sleep(wait).await;
                         }
-                        Err(err) => return Err(Error::Http(err)),
+                        Err(err) => return Err(err),
                     }
                 }
                 Err(err) if !is_last => {
@@ -514,7 +514,8 @@ impl RegistryClient {
         name: &str,
         cache_dir: &Path,
     ) -> Result<serde_json::Value, Error> {
-        let cache_path = packument_full_cache_path(cache_dir, name)
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)
             .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let cached = read_cached_full_packument(&cache_path);
 
@@ -678,7 +679,8 @@ impl RegistryClient {
         // Fast path: try the warm-cache read first. Matches the
         // freshness window logic in `fetch_packument_full_cached`
         // exactly so the two APIs share revalidation behavior.
-        let cache_path = packument_full_cache_path(cache_dir, name)
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)
             .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let force_cache = matches!(
             self.network_mode,
@@ -790,7 +792,8 @@ impl RegistryClient {
         name: &str,
         cache_dir: &Path,
     ) -> Result<Packument, Error> {
-        let cache_path = packument_cache_path(cache_dir, name)
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_cache_path(cache_dir, name, &registry_url)
             .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let cached = read_cached_packument(&cache_path);
 
@@ -997,8 +1000,24 @@ impl RegistryClient {
     /// per its pnpm documentation, and the tarball-specific analogue
     /// is the min-speed warning.
     pub async fn fetch_tarball_bytes(&self, url: &str) -> Result<bytes::Bytes, Error> {
+        // Refuse non-http(s) tarball URLs at the aube boundary so
+        // attacker-controlled `dist.tarball` from a hostile mirror
+        // cannot reach `file:///` (local file disclosure) or the
+        // ssh / git transports inside reqwest. Belt-and-suspenders
+        // against transport-layer regressions.
+        let safe_url = aube_util::url::redact_url(url);
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("invalid tarball url: {e}"))))?;
+        match parsed.scheme() {
+            "https" | "http" => {}
+            scheme => {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "tarball {safe_url}: refusing scheme {scheme:?}",
+                ))));
+            }
+        }
         if self.network_mode == NetworkMode::Offline {
-            return Err(Error::Offline(format!("tarball {url}")));
+            return Err(Error::Offline(format!("tarball {safe_url}")));
         }
         // Tarball URLs may point to any registry, try to match auth.
         // Pass the full tarball URL through so longest-prefix matching
@@ -1087,7 +1106,8 @@ impl RegistryClient {
     /// and I/O errors are swallowed — the cache is advisory, not load
     /// bearing.
     pub fn invalidate_full_packument_cache(&self, name: &str, cache_dir: &Path) {
-        if let Some(path) = packument_full_cache_path(cache_dir, name) {
+        let registry_url = self.config.registry_for(name).to_string();
+        if let Some(path) = packument_full_cache_path(cache_dir, name, &registry_url) {
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -1371,6 +1391,39 @@ fn force_full_packument() -> bool {
 /// users who need to pull packuments that exceed the default (e.g.
 /// packages with very long release histories) and accept the DoS
 /// exposure on the trusted-registry side.
+/// Stream-and-count read of a response body that enforces `cap` even
+/// when the server omits `Content-Length` (chunked transfer encoding).
+/// `check_body_cap` only inspects the precheck header; this function
+/// is the runtime gate that closes the chunked-bypass primitive.
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    cap: u64,
+    label: &str,
+) -> Result<bytes::Bytes, Error> {
+    if cap == 0 {
+        return Ok(resp.bytes().await?);
+    }
+    // Pre-size to a small fixed window when Content-Length is absent
+    // so chunked-encoding bodies don't pay BytesMut's doubling-grow
+    // overhead all the way up to `cap`.
+    const STREAM_INITIAL: usize = 64 * 1024;
+    let initial = resp
+        .content_length()
+        .map(|len| len.min(cap) as usize)
+        .unwrap_or(STREAM_INITIAL);
+    let mut buf = bytes::BytesMut::with_capacity(initial);
+    while let Some(chunk) = resp.chunk().await? {
+        if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{label}: response body exceeds cap {cap}"),
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf.freeze())
+}
+
 fn check_body_cap(resp: &reqwest::Response, cap: u64, label: &str) -> Result<(), Error> {
     if cap == 0 {
         return Ok(());
@@ -1386,14 +1439,25 @@ fn check_body_cap(resp: &reqwest::Response, cap: u64, label: &str) -> Result<(),
     Ok(())
 }
 
-fn packument_cache_path(cache_dir: &Path, name: &str) -> Option<PathBuf> {
+fn packument_cache_path(cache_dir: &Path, name: &str, registry_url: &str) -> Option<PathBuf> {
     // `name` is derived from registry responses and user-written
     // manifests. `replace('/', "__")` alone would let `../../evil`
     // escape the cache directory and turn a first resolve into an
     // arbitrary-file-write primitive. Delegate to the store's
     // shared validator so the grammar never drifts across crates.
     let safe_name = aube_store::validate_and_encode_name(name)?;
-    Some(cache_dir.join(format!("{safe_name}.json")))
+    // Partition by registry origin: a packument fetched against
+    // registry A must never be returned to a request that resolves
+    // to registry B (CVE-2018-7167 class). Hash the URL so port,
+    // trailing-slash, and scheme variants share the same bucket only
+    // when literally identical bytes were configured.
+    let origin = registry_origin_segment(registry_url);
+    Some(cache_dir.join(origin).join(format!("{safe_name}.json")))
+}
+
+fn registry_origin_segment(registry_url: &str) -> String {
+    let digest = blake3::hash(registry_url.as_bytes()).to_hex();
+    format!("origin-{}", &digest.as_str()[..16])
 }
 
 /// URL-encode a package name for the `/-/package/<name>/...` path.
@@ -1463,9 +1527,10 @@ fn write_cached_packument(path: &Path, cached: &CachedPackument) -> std::io::Res
     aube_util::fs_atomic::atomic_write(path, &json)
 }
 
-fn packument_full_cache_path(cache_dir: &Path, name: &str) -> Option<PathBuf> {
+fn packument_full_cache_path(cache_dir: &Path, name: &str, registry_url: &str) -> Option<PathBuf> {
     let safe_name = aube_store::validate_and_encode_name(name)?;
-    Some(cache_dir.join(format!("{safe_name}.json")))
+    let origin = registry_origin_segment(registry_url);
+    Some(cache_dir.join(origin).join(format!("{safe_name}.json")))
 }
 
 fn read_cached_full_packument(path: &Path) -> Option<CachedFullPackument> {
@@ -1521,12 +1586,13 @@ fn warn_slow_tarball(threshold_kibps: u64, url: &str, len: usize, elapsed: std::
     // speed (KiB/s) = bytes / 1024 / seconds = bytes * 1000 / elapsed_ms / 1024
     let kibps = ((len as u64).saturating_mul(1000)) / elapsed_ms / 1024;
     if kibps < threshold_kibps {
+        let safe_url = aube_util::url::redact_url(url);
         tracing::warn!(
             kibps,
             threshold_kibps,
             bytes = len,
             elapsed_ms,
-            url,
+            url = %safe_url,
             "slow tarball download fell below fetchMinSpeedKiBps",
         );
     }
