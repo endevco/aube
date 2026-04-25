@@ -213,7 +213,7 @@ _setup_workspace_fixture() {
 
 @test "packageManagerStrictVersion accepts aube version with corepack hash" {
 	_make_script_project
-	current="$(aube --version | awk '{print $2}')"
+	current="$(aube --version | awk '{print $1}')"
 	node -e 'let p=require("./package.json"); p.packageManager=`aube@'"$current"'+sha512.abc123`; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	{
 		echo "packageManagerStrictVersion=true"
@@ -227,7 +227,7 @@ _setup_workspace_fixture() {
 
 @test "packageManagerStrictVersion accepts the clean version aube init writes on debug builds" {
 	_make_script_project
-	clean="$(aube --version | awk '{print $2}' | sed 's/-DEBUG$//')"
+	clean="$(aube --version | awk '{print $1}' | sed 's/-DEBUG$//')"
 	node -e 'let p=require("./package.json"); p.packageManager=`aube@'"$clean"'`; require("fs").writeFileSync("package.json", JSON.stringify(p))'
 	{
 		echo "packageManagerStrictVersion=true"
