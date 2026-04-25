@@ -64,6 +64,17 @@ pub(crate) fn pick_version<'a>(
     let range = match node_semver::Range::parse(normalize_range(range_str)) {
         Ok(r) => r,
         Err(_) => {
+            // Reject protocol-prefixed ranges that survived workspace /
+            // catalog / npm-alias preprocessing. An attacker can register
+            // a dist-tag literally named `workspace:*` or `catalog:` on
+            // a package they publish; without this gate the dist-tag
+            // fallback below would resolve the protocol spec to whatever
+            // version they pinned (dependency-confusion class). npm's
+            // own dist-tag rules forbid colon in tag names but the
+            // registry does not enforce that.
+            if looks_like_protocol_range(range_str) {
+                return PickResult::NoMatch;
+            }
             let effective_range = if let Some(tagged_version) = packument.dist_tags.get(range_str) {
                 tagged_version.clone()
             } else if range_str == "latest" {
@@ -163,6 +174,39 @@ pub(crate) fn pick_version<'a>(
 /// private mirrors and mid-publish races drop the tag briefly
 /// and returning NoMatch there would break `aube install foo` for
 /// no real reason. npm and pnpm both fall back to highest stable.
+#[inline]
+/// True when `range_str` looks like a non-registry protocol selector
+/// that should never reach the dist-tag fallback (workspace / catalog
+/// / file / link / npm-alias / jsr-alias / git / http(s)). Lowercased
+/// so an attacker dist-tag named `Workspace:*` cannot bypass the gate.
+fn looks_like_protocol_range(range_str: &str) -> bool {
+    let Some(idx) = range_str.find(':') else {
+        return false;
+    };
+    let prefix = range_str[..idx].to_ascii_lowercase();
+    matches!(
+        prefix.as_str(),
+        "workspace"
+            | "catalog"
+            | "npm"
+            | "jsr"
+            | "file"
+            | "link"
+            | "git"
+            | "git+ssh"
+            | "git+http"
+            | "git+https"
+            | "git+file"
+            | "ssh"
+            | "http"
+            | "https"
+            | "github"
+            | "gitlab"
+            | "bitbucket"
+            | "gist"
+    )
+}
+
 #[inline]
 pub(crate) fn highest_stable_version(packument: &Packument) -> Option<String> {
     let mut best: Option<(node_semver::Version, String)> = None;

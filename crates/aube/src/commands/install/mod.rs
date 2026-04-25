@@ -589,9 +589,14 @@ pub(super) async fn import_local_source(
                 .fetch_tarball_bytes(&t.url)
                 .await
                 .map_err(|e| miette!("failed to fetch {}: {e}", t.url))?;
-            if !t.integrity.is_empty() {
+            if t.integrity.is_empty() {
+                tracing::warn!(
+                    url = %aube_util::url::redact_url(&t.url),
+                    "remote tarball lockfile entry has no integrity field; importing fetched bytes without verification (run `aube install --no-frozen-lockfile` to refresh the lockfile)",
+                );
+            } else {
                 aube_store::verify_integrity(&bytes, &t.integrity)
-                    .map_err(|e| miette!("{}: {e}", t.url))?;
+                    .map_err(|e| miette!("{}: {e}", aube_util::url::redact_url(&t.url)))?;
             }
             let index = store
                 .import_tarball(&bytes)

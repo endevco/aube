@@ -184,8 +184,8 @@ async fn exec_bin(
     }
 
     let mut command = if shell_mode {
-        let line = std::iter::once(shell_quote(bin))
-            .chain(args.iter().map(|arg| shell_quote(arg)))
+        let line = std::iter::once(aube_scripts::shell_quote_arg(bin))
+            .chain(args.iter().map(|arg| aube_scripts::shell_quote_arg(arg)))
             .collect::<Vec<_>>()
             .join(" ");
         let bin_dir = super::project_modules_dir(cwd).join(".bin");
@@ -227,8 +227,8 @@ async fn exec_bin_status(
     }
 
     let mut command = if shell_mode {
-        let line = std::iter::once(shell_quote(bin))
-            .chain(args.iter().map(|arg| shell_quote(arg)))
+        let line = std::iter::once(aube_scripts::shell_quote_arg(bin))
+            .chain(args.iter().map(|arg| aube_scripts::shell_quote_arg(arg)))
             .collect::<Vec<_>>()
             .join(" ");
         let bin_dir = super::project_modules_dir(cwd).join(".bin");
@@ -248,53 +248,4 @@ async fn exec_bin_status(
         .await
         .into_diagnostic()
         .wrap_err("failed to execute binary")
-}
-
-fn shell_quote(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
-    }
-    if value.bytes().all(|byte| {
-        matches!(
-            byte,
-            b'A'..=b'Z'
-                | b'a'..=b'z'
-                | b'0'..=b'9'
-                | b'_'
-                | b'-'
-                | b'.'
-                | b'/'
-                | b':'
-                | b'@'
-                | b'%'
-                | b'+'
-                | b','
-                | b'='
-        )
-    }) {
-        return value.to_string();
-    }
-
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::shell_quote;
-
-    #[test]
-    fn shell_quote_leaves_safe_values_unquoted() {
-        assert_eq!(
-            shell_quote("/tmp/node_modules/.bin/vite"),
-            "/tmp/node_modules/.bin/vite"
-        );
-        assert_eq!(shell_quote("@scope/pkg-name"), "@scope/pkg-name");
-    }
-
-    #[test]
-    fn shell_quote_quotes_special_values() {
-        assert_eq!(shell_quote("two words"), "'two words'");
-        assert_eq!(shell_quote(""), "''");
-        assert_eq!(shell_quote("can't"), "'can'\\''t'");
-    }
 }
