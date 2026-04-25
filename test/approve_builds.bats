@@ -181,6 +181,13 @@ JSON
 
 	run grep -q 'onlyBuiltDependencies' package.json
 	assert_success
+
+	# Round-trip: a re-install must honor the policy stored under
+	# pnpm.onlyBuiltDependencies and run the previously-skipped
+	# postinstall.
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
 }
 
 @test "approve-builds merges into an existing pnpm-workspace.yaml" {

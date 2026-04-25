@@ -663,6 +663,13 @@ fn write_to_package_json(
         }
     }
 
+    // Workspace Cargo.toml enables serde_json's `preserve_order` feature,
+    // so `Value::Object` is backed by IndexMap and `to_string_pretty`
+    // emits keys in original file order. Newly-inserted keys (`pnpm`
+    // when absent) are appended at the end. Without that feature the
+    // round-trip would alphabetize every key in package.json — noisy
+    // diffs the user didn't ask for.
+    //
     // serde_json::to_string_pretty on a Value built from string keys,
     // arrays, and primitives can't fail — the only documented errors
     // (non-string map keys, infinite floats) are unreachable here.
