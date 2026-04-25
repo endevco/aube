@@ -124,11 +124,8 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     let deps: serde_json::Map<String, serde_json::Value> = install_specs
         .iter()
         .map(|spec| {
-            let (name, version) = split_spec(spec);
-            (
-                name.to_string(),
-                serde_json::Value::String(version.to_string()),
-            )
+            let (name, value) = synthesize_dlx_dep(spec);
+            (name, serde_json::Value::String(value))
         })
         .collect();
     let manifest = serde_json::json!({
@@ -293,10 +290,48 @@ fn split_spec(spec: &str) -> (&str, &str) {
     (name, version.unwrap_or("latest"))
 }
 
+fn is_non_registry_spec(s: &str) -> bool {
+    s.starts_with("github:")
+        || s.starts_with("gitlab:")
+        || s.starts_with("bitbucket:")
+        || s.starts_with("gist:")
+        || s.starts_with("git+")
+        || s.starts_with("git://")
+        || s.starts_with("git@")
+        || s.starts_with("https://")
+        || s.starts_with("http://")
+        || s.starts_with("ssh://")
+        || s.starts_with("file:")
+        || s.starts_with("link:")
+}
+
+fn derive_dlx_pkg_name(spec: &str) -> Option<String> {
+    let body = spec.split('#').next().unwrap_or(spec);
+    let after_colon = body.rsplit(':').next().unwrap_or(body);
+    let last = after_colon.rsplit('/').next().unwrap_or(after_colon);
+    let trimmed = last.strip_suffix(".git").unwrap_or(last);
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn synthesize_dlx_dep(spec: &str) -> (String, String) {
+    if is_non_registry_spec(spec) {
+        let name = derive_dlx_pkg_name(spec).unwrap_or_else(|| "aube-dlx-pkg".to_string());
+        return (name, spec.to_string());
+    }
+    let (name, version) = split_spec(spec);
+    (name.to_string(), version.to_string())
+}
+
 /// The binary name `aube dlx <cmd>` should resolve to — strip any version
 /// suffix and any `@scope/` prefix, since `node_modules/.bin/` is flat and
 /// scoped packages still land under their unscoped bin name.
 fn bin_name_for(command: &str) -> String {
+    if is_non_registry_spec(command) {
+        return derive_dlx_pkg_name(command).unwrap_or_else(|| "aube-dlx-pkg".to_string());
+    }
     let (name, _) = split_spec(command);
     name.rsplit('/').next().unwrap_or(name).to_string()
 }
@@ -469,5 +504,53 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_pkg_json(tmp.path(), "foo", serde_json::json!({"name": "foo"}));
         assert_eq!(resolve_bin_from_package(tmp.path(), "foo"), None);
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_handles_github_shorthand() {
+        let (name, value) = synthesize_dlx_dep("github:user/repo");
+        assert_eq!(name, "repo");
+        assert_eq!(value, "github:user/repo");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_handles_github_shorthand_with_ref() {
+        let (name, value) = synthesize_dlx_dep("github:user/repo#v1.2.3");
+        assert_eq!(name, "repo");
+        assert_eq!(value, "github:user/repo#v1.2.3");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_handles_scp_url() {
+        let (name, value) = synthesize_dlx_dep("git@github.com:user/repo.git");
+        assert_eq!(name, "repo");
+        assert_eq!(value, "git@github.com:user/repo.git");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_handles_git_plus_url() {
+        let (name, value) = synthesize_dlx_dep("git+https://host/u/r.git#v1");
+        assert_eq!(name, "r");
+        assert_eq!(value, "git+https://host/u/r.git#v1");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_registry_spec_unchanged() {
+        let (name, value) = synthesize_dlx_dep("lodash@4.17.0");
+        assert_eq!(name, "lodash");
+        assert_eq!(value, "4.17.0");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_scoped_registry_spec_unchanged() {
+        let (name, value) = synthesize_dlx_dep("@babel/core@7.0.0");
+        assert_eq!(name, "@babel/core");
+        assert_eq!(value, "7.0.0");
+    }
+
+    #[test]
+    fn bin_name_for_non_registry_spec_uses_repo_name() {
+        assert_eq!(bin_name_for("github:user/repo"), "repo");
+        assert_eq!(bin_name_for("git@github.com:user/repo.git"), "repo");
     }
 }
