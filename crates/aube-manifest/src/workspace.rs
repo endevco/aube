@@ -904,11 +904,8 @@ patchedDependencies:
             r#"{"name":"solo","pnpm":{"onlyBuiltDependencies":["esbuild"]}}"#,
         )
         .unwrap();
-        add_to_only_built_dependencies(
-            dir.path(),
-            &["sharp".to_string(), "esbuild".to_string()],
-        )
-        .unwrap();
+        add_to_only_built_dependencies(dir.path(), &["sharp".to_string(), "esbuild".to_string()])
+            .unwrap();
         let manifest = crate::PackageJson::from_path(&dir.path().join("package.json")).unwrap();
         assert_eq!(
             manifest.pnpm_only_built_dependencies(),
