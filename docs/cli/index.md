@@ -31,6 +31,12 @@ Equivalent to `--filter=*`; if `--filter` is also given, `--recursive` is a no-o
 
 Enable verbose/debug logging (shortcut for `--loglevel debug`)
 
+### `-V --version`
+
+Print version and check for updates.
+
+Manual flag so we can run the async update notifier alongside the version print — clap's auto `Action::Version` exits inside `parse_from`, before the tokio runtime is built.
+
 ### `--aggregate-output`
 
 Group workspace command output after each package finishes.

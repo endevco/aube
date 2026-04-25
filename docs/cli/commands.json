@@ -5443,6 +5443,21 @@
         "global": true
       },
       {
+        "name": "version",
+        "usage": "-V --version",
+        "help": "Print version and check for updates",
+        "help_long": "Print version and check for updates.\n\nManual flag so we can run the async update notifier alongside the version print — clap's auto `Action::Version` exits inside `parse_from`, before the tokio runtime is built.",
+        "help_first_line": "Print version and check for updates",
+        "short": [
+          "V"
+        ],
+        "long": [
+          "version"
+        ],
+        "hide": false,
+        "global": true
+      },
+      {
         "name": "aggregate-output",
         "usage": "--aggregate-output",
         "help": "Group workspace command output after each package finishes",
