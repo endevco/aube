@@ -18,14 +18,22 @@ function row(key) {
   return v
 }
 
-const ratio = (key, tool) => Math.round(row(key)[tool] / row(key).aube)
+function ratio(key, tool, { approximate = false } = {}) {
+  const speedup = row(key)[tool] / row(key).aube
+  const label = speedup < 2 ? `${speedup.toFixed(1)}x` : `${Math.round(speedup)}x`
+  return approximate && speedup < 2 ? `~${label}` : label
+}
 
-const gvsPnpm = ratio('gvs-warm', 'pnpm')
-const gvsBun = ratio('gvs-warm', 'bun')
+function about(label) {
+  return label.startsWith('~') ? label : `about ${label}`
+}
+
+const gvsPnpm = ratio('gvs-warm', 'pnpm', { approximate: true })
+const gvsBun = ratio('gvs-warm', 'bun', { approximate: true })
 const testPnpm = ratio('install-test', 'pnpm')
 const testBun = ratio('install-test', 'bun')
 
-const paragraph = `**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs with the global virtual store are about ${gvsPnpm}x faster than pnpm and ${gvsBun}x faster than Bun in the current benchmarks. Repeat test commands run up to ~${testPnpm}x faster than pnpm and up to ${testBun}x faster than Bun.`
+const paragraph = `**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs with the global virtual store are ${about(gvsPnpm)} faster than pnpm and ${about(gvsBun)} faster than Bun in the current benchmarks. Repeat test commands run up to ${testPnpm} faster than pnpm and up to ${testBun} faster than Bun.`
 
 const START = '<!-- BENCH_RATIOS:START -->'
 const END = '<!-- BENCH_RATIOS:END -->'
@@ -39,4 +47,4 @@ if (startIdx === -1 || endIdx === -1) {
 }
 
 writeFileSync(readmePath, readme.slice(0, startIdx) + `${START}\n${paragraph}\n${END}` + readme.slice(endIdx + END.length))
-console.log(`bench ratios: gvs-warm pnpm=${gvsPnpm}x bun=${gvsBun}x / install-test pnpm=${testPnpm}x bun=${testBun}x`)
+console.log(`bench ratios: gvs-warm pnpm=${gvsPnpm} bun=${gvsBun} / install-test pnpm=${testPnpm} bun=${testBun}`)

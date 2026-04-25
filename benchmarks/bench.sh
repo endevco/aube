@@ -298,28 +298,28 @@ AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
 # "install-test" scenario that measures install + script dispatch end-to-end.
 
 # Scenario 1: Fresh install, warm cache (aube GVS enabled) ------------------
-CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --enable-gvs >/dev/null 2>&1"
 CMDS["gvs-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["gvs-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["gvs-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
 # Scenario 2: Fresh install, cold cache (aube GVS enabled) ------------------
-CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --enable-gvs >/dev/null 2>&1"
 CMDS["gvs-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["gvs-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["gvs-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
 
-# Scenario 3: CI install, warm cache (aube GVS disabled by CI=1) ------------
-CMDS["ci-warm:aube"]="cd {project} && CI=1 $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+# Scenario 3: CI install, warm cache (aube GVS disabled) --------------------
+CMDS["ci-warm:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --disable-gvs >/dev/null 2>&1"
 CMDS["ci-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["ci-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["ci-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
-# Scenario 4: CI install, cold cache (aube GVS disabled by CI=1) ------------
-CMDS["ci-cold:aube"]="cd {project} && CI=1 $AUBE_ENV {bin} install --frozen-lockfile >/dev/null 2>&1"
+# Scenario 4: CI install, cold cache (aube GVS disabled) --------------------
+CMDS["ci-cold:aube"]="cd {project} && $AUBE_ENV {bin} install --frozen-lockfile --disable-gvs >/dev/null 2>&1"
 CMDS["ci-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["ci-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
 CMDS["ci-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
@@ -457,8 +457,8 @@ WARM_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube
 
 # ── Benchmark 1: Fresh install, warm cache, GVS enabled ────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
-# Measures aube's default local-install path with the global virtual
-# store enabled.
+# Forces aube's global virtual store on so GitHub Actions' inherited
+# CI=true environment cannot silently turn this into per-project mode.
 
 echo ""
 echo "━━━ Benchmark 1: Fresh install (warm cache, GVS) ━━━"
@@ -475,7 +475,8 @@ run_bench "gvs-cold" \
 
 # ── Benchmark 3: CI install, warm cache ────────────────────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
-# CI=1 disables aube's global virtual store to match real CI defaults.
+# Forces aube's global virtual store off to model real CI defaults without
+# relying on runner-provided environment variables.
 
 echo ""
 echo "━━━ Benchmark 3: CI install (warm cache, GVS disabled) ━━━"
@@ -483,7 +484,8 @@ run_bench "ci-warm" "$WARM_PREP"
 
 # ── Benchmark 4: CI install, cold cache ────────────────────────────────────
 # Lockfile present, but store and cache are empty.
-# CI=1 disables aube's global virtual store to match real CI defaults.
+# Forces aube's global virtual store off to model real CI defaults without
+# relying on runner-provided environment variables.
 
 echo ""
 echo "━━━ Benchmark 4: CI install (cold cache, GVS disabled) ━━━"
