@@ -28,11 +28,11 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // each alias here and synthesize an alias-keyed LockedPackage
     // after the canonical packages loop, mirroring the shape the
     // resolver-fresh path emits so the linker stays single-shape.
-    // Tuple: (alias_dep_path, real_dep_path, real_name).
-    let mut alias_remaps: Vec<(String, String, String)> = Vec::new();
+    // Tuple: (alias_dep_path, real_dep_path, alias_name, real_name).
+    let mut alias_remaps: Vec<(String, String, String, String)> = Vec::new();
 
     let mut push_direct = |deps: &mut Vec<DirectDep>,
-                           alias_remaps: &mut Vec<(String, String, String)>,
+                           alias_remaps: &mut Vec<(String, String, String, String)>,
                            name: &str,
                            info: &RawDepSpec,
                            dep_type: DepType| {
@@ -116,7 +116,12 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                     .unwrap_or("");
                 let alias_dep_path = format!("{name}@{resolved}{peer_suffix}");
                 let real_dep_path = info.version.clone();
-                alias_remaps.push((alias_dep_path.clone(), real_dep_path, real_name));
+                alias_remaps.push((
+                    alias_dep_path.clone(),
+                    real_dep_path,
+                    name.to_string(),
+                    real_name,
+                ));
                 alias_dep_path
             } else {
                 version_to_dep_path(name, &info.version)
@@ -469,7 +474,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // `name=alias` and `alias_of=Some(real)` so the linker — which
     // already supports this shape via the resolver-fresh path — can
     // create `node_modules/<alias>` symlinks correctly.
-    for (alias_dep_path, real_dep_path, real_name) in alias_remaps {
+    for (alias_dep_path, real_dep_path, alias_name, real_name) in alias_remaps {
         // Skip if the alias entry already exists (aube-written
         // lockfile that emitted both `aliasOf:` and an alias-keyed
         // packages entry).
@@ -484,9 +489,6 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 ),
             ));
         };
-        let (alias_name, _) = parse_dep_path(&alias_dep_path).ok_or_else(|| {
-            Error::parse(path, format!("invalid alias dep path: {alias_dep_path}"))
-        })?;
         let mut aliased = real_pkg.clone();
         aliased.name = alias_name;
         aliased.dep_path = alias_dep_path.clone();
@@ -2974,6 +2976,55 @@ snapshots:
         // needed for byte-identical round-trips back to pnpm format.
         let real = graph.packages.get("express@4.22.1").expect("real entry");
         assert_eq!(real.name, "express");
+        assert!(real.alias_of.is_none());
+    }
+
+    #[test]
+    fn parse_synthesizes_npm_alias_when_real_name_is_scoped() {
+        // Scoped real package + non-scoped alias: `parse_dep_path` must
+        // correctly split `@scope/pkg` from the version when the
+        // version field is `@scope/pkg@1.0.0`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      types-alias:
+        specifier: npm:@types/node@^20.0.0
+        version: '@types/node@20.11.0'
+
+packages:
+  '@types/node@20.11.0':
+    resolution: {integrity: sha512-fake}
+
+snapshots:
+  '@types/node@20.11.0': {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&path).unwrap();
+
+        let root = graph.importers.get(".").expect("root importer");
+        assert_eq!(root[0].name, "types-alias");
+        assert_eq!(root[0].dep_path, "types-alias@20.11.0");
+
+        let pkg = graph
+            .packages
+            .get("types-alias@20.11.0")
+            .expect("synthesized alias-keyed package");
+        assert_eq!(pkg.name, "types-alias");
+        assert_eq!(pkg.alias_of.as_deref(), Some("@types/node"));
+        let real = graph
+            .packages
+            .get("@types/node@20.11.0")
+            .expect("real entry");
+        assert_eq!(real.name, "@types/node");
         assert!(real.alias_of.is_none());
     }
 }
