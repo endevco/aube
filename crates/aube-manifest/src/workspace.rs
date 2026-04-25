@@ -306,6 +306,11 @@ pub struct WorkspaceConfig {
     #[serde(default, rename = "sideEffectsCache")]
     pub side_effects_cache: Option<bool>,
 
+    /// Run approved dependency lifecycle scripts in a restricted build
+    /// jail. Same typed/raw duality as `child_concurrency`.
+    #[serde(default, rename = "jailBuilds")]
+    pub jail_builds: Option<bool>,
+
     // -- Catalog Settings --
     /// Drop catalog entries that no importer references after resolve.
     /// Wired through `aube_settings::resolved::cleanup_unused_catalogs`;

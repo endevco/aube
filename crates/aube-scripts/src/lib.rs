@@ -28,6 +28,22 @@ pub struct ScriptSettings {
     pub shell_emulator: bool,
 }
 
+/// Native build jail applied to dependency lifecycle scripts.
+#[derive(Debug, Clone)]
+pub struct ScriptJail {
+    pub package_dir: PathBuf,
+    pub dep_modules_dir: PathBuf,
+}
+
+impl ScriptJail {
+    pub fn new(package_dir: impl Into<PathBuf>, dep_modules_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            package_dir: package_dir.into(),
+            dep_modules_dir: dep_modules_dir.into(),
+        }
+    }
+}
+
 static SCRIPT_SETTINGS: std::sync::OnceLock<std::sync::RwLock<ScriptSettings>> =
     std::sync::OnceLock::new();
 
@@ -81,6 +97,13 @@ pub fn prepend_path(bin_dir: &Path) -> std::ffi::OsString {
 /// `@npmcli/run-script` and `node-cross-spawn` use.
 pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
     let settings = script_settings();
+    spawn_shell_with_settings(script_cmd, &settings)
+}
+
+fn spawn_shell_with_settings(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+) -> tokio::process::Command {
     #[cfg(unix)]
     {
         let mut cmd = tokio::process::Command::new(
@@ -90,7 +113,7 @@ pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
                 .unwrap_or_else(|| Path::new("sh")),
         );
         cmd.arg("-c").arg(script_cmd);
-        apply_script_settings_env(&mut cmd, &settings);
+        apply_script_settings_env(&mut cmd, settings);
         cmd
     }
     #[cfg(windows)]
@@ -113,6 +136,78 @@ pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
         apply_script_settings_env(&mut cmd, &settings);
         cmd
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sbpl_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "macos")]
+fn jail_profile(jail: &ScriptJail, home: &Path, _path_env: &std::ffi::OsStr) -> String {
+    let mut rules = vec![
+        "(version 1)".to_string(),
+        "(allow default)".to_string(),
+        "(deny network*)".to_string(),
+        "(allow network* (local unix))".to_string(),
+        "(deny file-write*)".to_string(),
+    ];
+
+    for path in [
+        Path::new("/tmp"),
+        Path::new("/private/tmp"),
+        Path::new("/dev"),
+        home,
+    ] {
+        let path = sbpl_escape(&path.to_string_lossy());
+        rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+    }
+    for path in [&jail.package_dir, home] {
+        let path = sbpl_escape(&path.to_string_lossy());
+        rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+    }
+    for path in [&jail.package_dir, home] {
+        if let Ok(canonical) = path.canonicalize() {
+            let path = sbpl_escape(&canonical.to_string_lossy());
+            rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+        }
+    }
+    rules.join("\n")
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_jailed_shell(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+    jail: &ScriptJail,
+    home: &Path,
+    path_env: &std::ffi::OsStr,
+) -> tokio::process::Command {
+    let shell = settings
+        .script_shell
+        .as_deref()
+        .unwrap_or_else(|| Path::new("sh"));
+    let profile = jail_profile(jail, home, path_env);
+    let mut cmd = tokio::process::Command::new("sandbox-exec");
+    cmd.arg("-p")
+        .arg(profile)
+        .arg("--")
+        .arg(shell)
+        .arg("-c")
+        .arg(script_cmd);
+    apply_script_settings_env(&mut cmd, settings);
+    cmd
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_jailed_shell(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+    _jail: &ScriptJail,
+    _home: &Path,
+    _path_env: &std::ffi::OsStr,
+) -> tokio::process::Command {
+    spawn_shell_with_settings(script_cmd, settings)
 }
 
 /// Shell-quote one arg for safe splicing into a shell command line.
@@ -248,6 +343,84 @@ fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &Scrip
     }
 }
 
+fn safe_jail_env_key(key: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "PATH",
+        "HOME",
+        "TERM",
+        "LANG",
+        "LC_ALL",
+        "INIT_CWD",
+        "npm_lifecycle_event",
+        "npm_package_name",
+        "npm_package_version",
+    ];
+    if EXACT.contains(&key) {
+        return true;
+    }
+    let lower = key.to_ascii_lowercase();
+    if lower.contains("token")
+        || lower.contains("auth")
+        || lower.contains("password")
+        || lower.contains("credential")
+        || lower.contains("secret")
+    {
+        return false;
+    }
+    key.starts_with("npm_config_")
+}
+
+fn jail_home(package_dir: &Path) -> PathBuf {
+    let name = package_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("package")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    std::env::temp_dir()
+        .join("aube-jail")
+        .join(std::process::id().to_string())
+        .join(name)
+}
+
+fn apply_jail_env(
+    cmd: &mut tokio::process::Command,
+    path_env: &std::ffi::OsStr,
+    home: &Path,
+    project_root: &Path,
+    manifest: &PackageJson,
+    script_name: &str,
+) {
+    cmd.env_clear();
+    cmd.env("PATH", path_env)
+        .env("HOME", home)
+        .env("npm_lifecycle_event", script_name);
+    if std::env::var_os("INIT_CWD").is_none() {
+        cmd.env("INIT_CWD", project_root);
+    }
+    if let Some(ref name) = manifest.name {
+        cmd.env("npm_package_name", name);
+    }
+    if let Some(ref version) = manifest.version {
+        cmd.env("npm_package_version", version);
+    }
+    for (key, val) in std::env::vars_os() {
+        let Some(key_str) = key.to_str() else {
+            continue;
+        };
+        if safe_jail_env_key(key_str) && key_str != "PATH" && key_str != "HOME" {
+            cmd.env(key, val);
+        }
+    }
+}
+
 /// Lifecycle hooks that `aube install` runs against the root package's
 /// `scripts` field, in this order: `preinstall` → (dependencies link) →
 /// `install` → `postinstall` → `prepare`. Matches pnpm / npm.
@@ -347,6 +520,7 @@ pub fn child_stderr() -> std::process::Stdio {
 /// Inherits stdio from the parent so the user sees script output live.
 /// Returns Err on non-zero exit so install fails fast if a lifecycle
 /// script breaks, matching pnpm.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_script(
     script_dir: &Path,
     project_root: &Path,
@@ -355,6 +529,7 @@ pub async fn run_script(
     script_name: &str,
     script_cmd: &str,
     extra_bin_dirs: &[&Path],
+    jail: Option<&ScriptJail>,
 ) -> Result<(), Error> {
     // PATH prepends (most-local-first): `extra_bin_dirs` in caller
     // order, then the project root's `<modules_dir>/.bin`. For root
@@ -373,7 +548,18 @@ pub async fn run_script(
     entries.extend(std::env::split_paths(&path));
     let new_path = std::env::join_paths(entries).unwrap_or(path);
 
-    let mut cmd = spawn_shell(script_cmd);
+    let settings = script_settings();
+    let jail_home = jail.map(|j| jail_home(&j.package_dir));
+    if let Some(home) = &jail_home {
+        std::fs::create_dir_all(home)
+            .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+    }
+    let mut cmd = match (jail, jail_home.as_deref()) {
+        (Some(jail), Some(home)) => {
+            spawn_jailed_shell(script_cmd, &settings, jail, home, &new_path)
+        }
+        _ => spawn_shell_with_settings(script_cmd, &settings),
+    };
     cmd.current_dir(script_dir)
         .stderr(child_stderr())
         .env("PATH", &new_path)
@@ -394,6 +580,16 @@ pub async fn run_script(
     }
     if let Some(ref version) = manifest.version {
         cmd.env("npm_package_version", version);
+    }
+    if let (Some(_), Some(home)) = (jail, jail_home.as_deref()) {
+        apply_jail_env(
+            &mut cmd,
+            &new_path,
+            home,
+            project_root,
+            manifest,
+            script_name,
+        );
     }
 
     tracing::debug!("lifecycle: {script_name} → {script_cmd}");
@@ -449,6 +645,7 @@ pub async fn run_root_script_by_name(
         name,
         script_cmd,
         &[],
+        None,
     )
     .await?;
     Ok(true)
@@ -535,6 +732,7 @@ pub fn has_dep_lifecycle_work(package_dir: &Path, manifest: &PackageJson) -> boo
 ///
 /// The caller is responsible for gating on `BuildPolicy` and
 /// `--ignore-scripts`. Returns `Ok(false)` if the hook wasn't defined.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_dep_hook(
     package_dir: &Path,
     dep_modules_dir: &Path,
@@ -543,6 +741,7 @@ pub async fn run_dep_hook(
     manifest: &PackageJson,
     hook: LifecycleHook,
     tool_bin_dirs: &[&Path],
+    jail: Option<&ScriptJail>,
 ) -> Result<bool, Error> {
     let name = hook.script_name();
     let script_cmd: &str = match manifest.scripts.get(name) {
@@ -567,6 +766,7 @@ pub async fn run_dep_hook(
         name,
         script_cmd,
         &bin_dirs,
+        jail,
     )
     .await?;
     Ok(true)

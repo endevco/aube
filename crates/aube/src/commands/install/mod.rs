@@ -76,6 +76,9 @@ pub struct InstallArgs {
     /// Skip lifecycle scripts (no-op; aube already skips by default)
     #[arg(long)]
     pub ignore_scripts: bool,
+    /// Run approved dependency lifecycle scripts in a restricted build jail.
+    #[arg(long, overrides_with = "no_jail_builds")]
+    pub jail_builds: bool,
     /// Resolve dependencies and write the lockfile, but don't link
     /// `node_modules`.
     ///
@@ -99,6 +102,9 @@ pub struct InstallArgs {
     /// streaming path).
     #[arg(long, value_name = "N")]
     pub network_concurrency: Option<u64>,
+    /// Inverse of `--jail-builds`.
+    #[arg(long, overrides_with = "jail_builds")]
+    pub no_jail_builds: bool,
     /// Skip optionalDependencies; don't install optional native modules
     #[arg(long)]
     pub no_optional: bool,
@@ -220,6 +226,12 @@ impl InstallArgs {
         }
         if let Some(n) = self.network_concurrency {
             out.push(("network-concurrency".to_string(), n.to_string()));
+        }
+        if self.jail_builds {
+            out.push(("jail-builds".to_string(), "true".to_string()));
+        }
+        if self.no_jail_builds {
+            out.push(("jail-builds".to_string(), "false".to_string()));
         }
         if self.verify_store_integrity {
             out.push(("verify-store-integrity".to_string(), "true".to_string()));
@@ -2915,6 +2927,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // `run_dep_lifecycle_scripts` so a malformed config can't wedge
     // the install.
     let child_concurrency = aube_settings::resolved::child_concurrency(&settings_ctx) as usize;
+    let jail_builds = aube_settings::resolved::jail_builds(&settings_ctx);
     let node_version_override = aube_settings::resolved::node_version(&settings_ctx);
     let node_version = crate::engines::resolve_node_version(node_version_override.as_deref());
     crate::engines::run_checks(
@@ -3313,6 +3326,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             child_concurrency,
             placements_ref,
             side_effects_cache,
+            jail_builds,
         )
         .await?;
         if ran > 0 {

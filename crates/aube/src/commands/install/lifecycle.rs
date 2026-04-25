@@ -164,6 +164,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     child_concurrency: usize,
     placements: Option<&aube_linker::HoistedPlacements>,
     side_effects_cache: SideEffectsCacheConfig<'_>,
+    jail_builds: bool,
 ) -> miette::Result<usize> {
     // Pass 1 (serial, cheap): walk the graph, keep only the packages
     // the policy allows AND that actually define at least one dep
@@ -339,6 +340,8 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                 .as_deref()
                 .map(|p| vec![p])
                 .unwrap_or_default();
+            let jail = jail_builds
+                .then(|| aube_scripts::ScriptJail::new(&job.package_dir, &job.dep_modules_dir));
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
                 let did_run = aube_scripts::run_dep_hook(
@@ -349,6 +352,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                     &job.manifest,
                     hook,
                     &tool_dirs,
+                    jail.as_ref(),
                 )
                 .await
                 .map_err(|e| {

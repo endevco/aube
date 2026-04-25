@@ -93,6 +93,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`childConcurrency`](#setting-childconcurrency) | `int` | Maximum number of concurrent script-executing child processes. |
 | [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
 | [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | Only read from the side-effects cache; don't write. |
+| [`jailBuilds`](#setting-jailbuilds) | `bool` | Run approved dependency lifecycle scripts in a restricted build jail. |
 | [`unsafePerm`](#setting-unsafeperm) | `bool` | Drop to a non-root user when running scripts as root. |
 | [`nodeOptions`](#setting-nodeoptions) | `string` | Options passed to Node.js via NODE_OPTIONS. |
 | [`verifyDepsBeforeRun`](#setting-verifydepsbeforerun) | `"install" \| "warn" \| "error" \| "prompt" \| false` | Check dependencies before running scripts. |
@@ -1669,6 +1670,29 @@ Only read from the side-effects cache; don't write.
 
 When true, aube may restore allowlisted dependency build output from the
 side-effects cache but will not write new cache entries after scripts run.
+
+### `jailBuilds` {#setting-jailbuilds}
+
+Run approved dependency lifecycle scripts in a restricted build jail.
+
+- Type: `bool`
+- Default: `false`
+- CLI flags: `jail-builds`
+- Environment: `npm_config_jail_builds`, `NPM_CONFIG_JAIL_BUILDS`, `AUBE_JAIL_BUILDS`
+- .npmrc keys: `jail-builds`, `jailBuilds`
+- Workspace YAML keys: `jailBuilds`
+
+When enabled, dependency lifecycle scripts that pass the active
+`allowBuilds` / `onlyBuiltDependencies` policy run with a scrubbed
+environment and temporary HOME. On macOS, aube also wraps the script
+with a native Seatbelt profile that denies network access and limits
+filesystem writes to the package directory and temporary directories.
+Root lifecycle scripts are not jailed.
+
+Examples:
+
+- `aube install --jail-builds`
+- `jail-builds=true`
 
 ### `unsafePerm` {#setting-unsafeperm}
 

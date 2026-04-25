@@ -1655,6 +1655,27 @@ sources.env = ["npm_config_side_effects_cache_readonly", "NPM_CONFIG_SIDE_EFFECT
 sources.npmrc = ["sideEffectsCacheReadonly"]
 examples = []
 
+[jailBuilds]
+description = "Run approved dependency lifecycle scripts in a restricted build jail."
+type = "bool"
+default = "false"
+docs = """
+When enabled, dependency lifecycle scripts that pass the active
+`allowBuilds` / `onlyBuiltDependencies` policy run with a scrubbed
+environment and temporary HOME. On macOS, aube also wraps the script
+with a native Seatbelt profile that denies network access and limits
+filesystem writes to the package directory and temporary directories.
+Root lifecycle scripts are not jailed.
+"""
+sources.cli = ["jail-builds"]
+sources.env = ["npm_config_jail_builds", "NPM_CONFIG_JAIL_BUILDS", "AUBE_JAIL_BUILDS"]
+sources.npmrc = ["jail-builds", "jailBuilds"]
+sources.workspaceYaml = ["jailBuilds"]
+examples = [
+    "aube install --jail-builds",
+    "jail-builds=true",
+]
+
 [unsafePerm]
 description = "Drop to a non-root user when running scripts as root."
 type = "bool"

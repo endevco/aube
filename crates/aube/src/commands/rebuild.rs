@@ -66,6 +66,7 @@ pub async fn run(
         if policy.has_any_allow_rule() {
             let child_concurrency =
                 aube_settings::resolved::child_concurrency(&settings_ctx) as usize;
+            let jail_builds = aube_settings::resolved::jail_builds(&settings_ctx);
             // The generated accessor already reads `nodeLinker` from
             // `raw_workspace`, which is the same map `workspace.node_linker`
             // is parsed out of — no need for a separate fallback on the
@@ -131,6 +132,7 @@ pub async fn run(
                         }
                     })
                     .unwrap_or(super::install::SideEffectsCacheConfig::Disabled),
+                jail_builds,
             )
             .await?;
         }
