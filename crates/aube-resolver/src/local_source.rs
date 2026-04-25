@@ -84,12 +84,26 @@ pub(crate) fn rebase_local(
 /// identity in whatever error type it prefers — used by both the
 /// `file:` tarball path (`read_local_manifest`) and the remote
 /// tarball resolver (`resolve_remote_tarball`).
+/// Hard upper bound on the bytes read from the gzipped tarball stream
+/// while looking for `package.json`. A 64 MiB ceiling is far above any
+/// real npm package and keeps a hostile gzip bomb from amplifying into
+/// arbitrary RAM. Mirrors `aube-store::MAX_TARBALL_DECOMPRESSED_BYTES`
+/// in spirit — the resolver path was missed in the original cap pass.
+const MAX_RESOLVE_TARBALL_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_RESOLVE_PACKAGE_JSON_BYTES: u64 = 8 * 1024 * 1024;
+
 fn read_tarball_package_json(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Read;
+    // Cap on the DECOMPRESSED output of the gzip stream so a hostile
+    // tarball with large dummy entries before `package.json` cannot
+    // amplify the fixed compressed input window into arbitrary RAM.
+    // `bytes.take` would only bound the compressed read, which the
+    // decoder is free to expand without ceiling.
     let gz = flate2::read::GzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(gz);
+    let capped = gz.take(MAX_RESOLVE_TARBALL_DECOMPRESSED_BYTES);
+    let mut archive = tar::Archive::new(capped);
     for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
+        let entry = entry.map_err(|e| e.to_string())?;
         let entry_path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
         if entry_path
             .file_name()
@@ -98,7 +112,13 @@ fn read_tarball_package_json(bytes: &[u8]) -> Result<Vec<u8>, String> {
             && entry_path.components().count() == 2
         {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            entry
+                .take(MAX_RESOLVE_PACKAGE_JSON_BYTES + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
+            if buf.len() as u64 > MAX_RESOLVE_PACKAGE_JSON_BYTES {
+                return Err("package.json exceeds 8 MiB cap".to_string());
+            }
             return Ok(buf);
         }
     }
@@ -278,9 +298,14 @@ pub(crate) async fn resolve_remote_tarball(
     let bytes = client
         .fetch_tarball_bytes(&tarball.url)
         .await
-        .map_err(|e| Error::Registry(name.to_string(), format!("fetch {}: {e}", tarball.url)))?;
+        .map_err(|e| {
+            Error::Registry(
+                name.to_string(),
+                format!("fetch {}: {e}", aube_util::url::redact_url(&tarball.url)),
+            )
+        })?;
     let name_owned = name.to_string();
-    let url = tarball.url.clone();
+    let url = aube_util::url::redact_url(&tarball.url);
     let (integrity, version, deps) = tokio::task::spawn_blocking(move || -> Result<_, Error> {
         use sha2::{Digest, Sha512};
         let mut hasher = Sha512::new();
@@ -370,5 +395,93 @@ mod rebase_local_tests {
         assert_eq!(win.dep_path("foo"), unix.dep_path("foo"));
         assert_eq!(win.specifier(), "file:vendor/nested/dir");
         assert_eq!(unix.specifier(), "file:vendor/nested/dir");
+    }
+}
+
+#[cfg(test)]
+mod cve_audit_tarball_bomb {
+    use super::*;
+    use std::io::Write;
+
+    fn build_zero_tarball(uncompressed_size: usize) -> Vec<u8> {
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let payload = vec![0u8; uncompressed_size];
+            let mut header = tar::Header::new_gnu();
+            header.set_path("pkg/package.json").unwrap();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &payload[..]).unwrap();
+            builder.finish().unwrap();
+        }
+        let mut gz = Vec::new();
+        {
+            let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::best());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap();
+        }
+        gz
+    }
+
+    fn build_dummy_then_package_json(dummy_size: usize) -> Vec<u8> {
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let dummy = vec![0u8; dummy_size];
+            let mut h1 = tar::Header::new_gnu();
+            h1.set_path("pkg/dummy.bin").unwrap();
+            h1.set_size(dummy.len() as u64);
+            h1.set_mode(0o644);
+            h1.set_cksum();
+            builder.append(&h1, &dummy[..]).unwrap();
+            let manifest = b"{\"name\":\"x\",\"version\":\"0.0.1\"}";
+            let mut h2 = tar::Header::new_gnu();
+            h2.set_path("pkg/package.json").unwrap();
+            h2.set_size(manifest.len() as u64);
+            h2.set_mode(0o644);
+            h2.set_cksum();
+            builder.append(&h2, &manifest[..]).unwrap();
+            builder.finish().unwrap();
+        }
+        let mut gz = Vec::new();
+        {
+            let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::best());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap();
+        }
+        gz
+    }
+
+    #[test]
+    fn read_tarball_package_json_rejects_decompression_bomb() {
+        let bomb = build_zero_tarball(200 * 1024 * 1024);
+        assert!(
+            bomb.len() < 400 * 1024,
+            "compressed bomb too large to call this an amplification: {}",
+            bomb.len()
+        );
+        let result = read_tarball_package_json(&bomb);
+        assert!(
+            result.is_err(),
+            "200 MiB decompressed payload must be rejected by the cap, got {:?}",
+            result.as_ref().map(|b| b.len())
+        );
+    }
+
+    #[test]
+    fn read_tarball_package_json_rejects_dummy_entry_amplification() {
+        let bomb = build_dummy_then_package_json(200 * 1024 * 1024);
+        assert!(
+            bomb.len() < 400 * 1024,
+            "compressed multi-entry bomb too large: {}",
+            bomb.len()
+        );
+        let result = read_tarball_package_json(&bomb);
+        assert!(
+            result.is_err(),
+            "decompressed dummy entry preceding package.json must hit the output cap"
+        );
     }
 }

@@ -17,8 +17,8 @@ mod node_gyp_bootstrap;
 mod settings;
 mod side_effects_cache;
 
+pub(crate) use bin_linking::{PkgJsonCache, link_dep_bins, materialized_pkg_dir};
 use bin_linking::{link_bin_entries, link_bins, link_bins_for_dep};
-pub(crate) use bin_linking::{link_dep_bins, materialized_pkg_dir};
 pub use dep_selection::DepSelection;
 pub use frozen::{FrozenMode, FrozenOverride, GlobalVirtualStoreFlags};
 use git_prepare::{prepare_scratch_copy, run_git_dep_prepare};
@@ -589,9 +589,14 @@ pub(super) async fn import_local_source(
                 .fetch_tarball_bytes(&t.url)
                 .await
                 .map_err(|e| miette!("failed to fetch {}: {e}", t.url))?;
-            if !t.integrity.is_empty() {
+            if t.integrity.is_empty() {
+                tracing::warn!(
+                    url = %aube_util::url::redact_url(&t.url),
+                    "remote tarball lockfile entry has no integrity field; importing fetched bytes without verification (run `aube install --no-frozen-lockfile` to refresh the lockfile)",
+                );
+            } else {
                 aube_store::verify_integrity(&bytes, &t.integrity)
-                    .map_err(|e| miette!("{}: {e}", t.url))?;
+                    .map_err(|e| miette!("{}: {e}", aube_util::url::redact_url(&t.url)))?;
             }
             let index = store
                 .import_tarball(&bytes)
@@ -3142,12 +3147,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         prefer_symlinked_executables,
     };
     if !virtual_store_only {
-        // Computed once up front: scans the packages map (~1350 entries
-        // on the vlt `large` fixture) to see if any carry `bin` info.
-        // pnpm/bun/npm parsers and fresh resolves populate `bin`;
-        // yarn-classic leaves it empty. The bin-linking fast path
-        // trusts empty `bin` as "no bins" only when this flag is set.
-        let has_bin_metadata = graph_for_link.has_bin_metadata();
+        let mut pkg_json_cache = bin_linking::PkgJsonCache::new();
         link_bins(
             &cwd,
             &modules_dir_name,
@@ -3156,7 +3156,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             virtual_store_dir_max_length,
             placements_ref,
             shim_opts,
-            has_bin_metadata,
+            &mut pkg_json_cache,
         )?;
         // Root importer's own `bin` (discussion #228). Runs after
         // `link_bins` so a self-bin overrides a same-named dep bin.
@@ -3200,6 +3200,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 std::fs::create_dir_all(&bin_dir).into_diagnostic()?;
                 for dep in deps {
                     link_bins_for_dep(
+                        &mut pkg_json_cache,
                         &aube_dir,
                         &bin_dir,
                         &graph_for_link,
@@ -3208,7 +3209,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         virtual_store_dir_max_length,
                         placements_ref,
                         shim_opts,
-                        has_bin_metadata,
                     )?;
                 }
                 // Workspace member's own `bin` (discussion #228). `manifests`
@@ -3239,7 +3239,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             virtual_store_dir_max_length,
             placements_ref,
             shim_opts,
-            has_bin_metadata,
+            &mut pkg_json_cache,
         )?;
         tracing::debug!("phase:link_bins {:.1?}", phase_start.elapsed());
     }

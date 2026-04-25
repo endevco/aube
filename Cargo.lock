@@ -332,6 +332,7 @@ dependencies = [
  "aube-store",
  "aube-util",
  "base64",
+ "blake3",
  "bytes",
  "flate2",
  "reqwest 0.12.28",

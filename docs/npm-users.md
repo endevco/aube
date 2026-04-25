@@ -3,11 +3,16 @@
 aube can install directly from npm lockfiles. You do not need to delete
 `package-lock.json` or remove `node_modules` before trying aube.
 
-## Start from the npm lockfile
+## Try the npm lockfile
 
 ```sh
 aube install
 ```
+
+Run this once when you specifically want to verify that aube can read and
+write the existing npm lockfile. For normal local work, run the command you
+wanted instead: `aubr build`, `aube test`, and `aube exec <bin>` auto-install
+first when dependencies are stale; `aubx <pkg>` handles one-off tools.
 
 aube reads:
 

@@ -263,6 +263,37 @@ pub fn validate_bin_target(rel: &str) -> io::Result<()> {
             format!("invalid bin target: {rel:?}"),
         ));
     }
+    // Shell-metachar reject: the generated `.cmd` / `.ps1` / sh shims
+    // splice this string into double-quoted command lines that PowerShell
+    // (`$(...)`, `` ` ``, `$env:`) and cmd.exe (`%VAR%`) re-evaluate
+    // before invocation. npm / pnpm / yarn all reject these on `bin`
+    // targets too — no real package ships such a path.
+    for ch in rel.chars() {
+        if matches!(
+            ch,
+            '$' | '`'
+                | '%'
+                | '"'
+                | '\''
+                | '&'
+                | '|'
+                | '^'
+                | ';'
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '!'
+                | '*'
+                | '?'
+        ) || ch.is_control()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bin target contains shell metacharacter: {rel:?}"),
+            ));
+        }
+    }
     let path = Path::new(rel);
     if path.is_absolute()
         || path.has_root()
@@ -724,6 +755,29 @@ mod tests {
             "scope/foo",
         ] {
             assert!(validate_bin_name(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_bin_target_rejects_shell_metacharacters() {
+        for bad in [
+            "bin/$(calc).js",
+            "bin/$env:USERPROFILE.js",
+            "bin/`id`.js",
+            "bin/%PATH%.js",
+            "bin/foo&bar.js",
+            "bin/foo|bar.js",
+            "bin/foo;bar.js",
+            "bin/foo>bar.js",
+            "bin/foo<bar.js",
+            "bin/foo\"bar.js",
+            "bin/foo'bar.js",
+            "bin/foo!bar.js",
+        ] {
+            assert!(
+                validate_bin_target(bad).is_err(),
+                "must reject shell metachar payload {bad:?}"
+            );
         }
     }
 

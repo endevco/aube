@@ -2,6 +2,7 @@
 # `aube add`
 
 - **Usage**: `aube add [FLAGS] [PACKAGES]…`
+- **Aliases**: `a`
 
 Add a dependency
 

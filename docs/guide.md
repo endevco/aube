@@ -18,8 +18,12 @@ Existing projects keep their lockfile format. aube reads and writes
   source builds, and shell completions.
 - For existing projects, see the [pnpm](/pnpm-users), [npm](/npm-users),
   [yarn](/yarn-users), or [bun](/bun-users) guide.
-- [Install dependencies](/package-manager/install) covers the normal install
-  path, CI mode, production installs, offline installs, and lockfile modes.
+- [Run scripts and binaries](/package-manager/scripts) covers the normal local
+  workflow. `aubr <script>`, `aube test`, and `aube exec <bin>` install first
+  when dependencies are stale; `aubx <pkg>` handles one-off tools.
+- [Install dependencies](/package-manager/install) covers explicit install
+  work: setup-only installs, CI mode, production installs, offline installs,
+  and lockfile modes.
 - [Manage dependencies](/package-manager/dependencies) covers `add`, `remove`,
   `update`, `dedupe`, and `prune`.
 - [Workspaces](/package-manager/workspaces) covers `aube-workspace.yaml`,

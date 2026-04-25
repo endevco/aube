@@ -6,16 +6,16 @@ check before script execution.
 ## Scripts
 
 ```sh
-aube run build
+aubr build
 aube test
 aube start
 aube stop
 aube restart
 ```
 
-Before running a script, aube checks `node_modules/.aube-state`. If the
-manifest or lockfile changed, aube installs first. Use `--no-install` when you
-want to skip that check.
+`aubr` is shorthand for `aube run`. Before running a script, aube checks
+`node_modules/.aube-state`. If the manifest or lockfile changed, aube installs
+first. Use `--no-install` when you want to skip that check.
 
 ```sh
 aube run --no-install build
@@ -41,11 +41,12 @@ aube exec tsc -- --noEmit
 ## One-off binaries
 
 ```sh
-aube dlx cowsay hi
-aube dlx -p create-vite create-vite my-app
+aubx cowsay hi
+aubx -p create-vite create-vite my-app
 ```
 
-`dlx` installs into a throwaway project and runs the requested binary.
+`aubx` is shorthand for `aube dlx`. It installs into a throwaway project and
+runs the requested binary.
 
 ## Shortcuts: `aubr` and `aubx`
 

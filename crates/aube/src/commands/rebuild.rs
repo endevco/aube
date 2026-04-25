@@ -100,13 +100,14 @@ pub async fn run(
                     &settings_ctx,
                 ),
             };
+            let mut pkg_json_cache = super::install::PkgJsonCache::new();
             super::install::link_dep_bins(
                 &aube_dir,
                 &graph,
                 super::resolve_virtual_store_dir_max_length(&settings_ctx),
                 hoisted_placements.as_ref(),
                 shim_opts,
-                graph.has_bin_metadata(),
+                &mut pkg_json_cache,
             )?;
             super::install::run_dep_lifecycle_scripts(
                 &cwd,

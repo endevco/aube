@@ -332,6 +332,7 @@ impl Drop for SilentStderrGuard {
 #[derive(Subcommand)]
 enum Commands {
     /// Add a dependency
+    #[command(visible_alias = "a")]
     Add(commands::add::AddArgs),
     /// Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`
     ApproveBuilds(commands::approve_builds::ApproveBuildsArgs),
@@ -384,6 +385,7 @@ enum Commands {
     #[command(after_long_help = commands::doctor::AFTER_LONG_HELP)]
     Doctor(commands::doctor::DoctorArgs),
     /// Execute a locally installed binary
+    #[command(visible_alias = "x")]
     Exec(commands::exec::ExecArgs),
     /// Download lockfile dependencies into the store without linking node_modules
     Fetch(commands::fetch::FetchArgs),
@@ -517,7 +519,7 @@ enum Commands {
     #[command(hide = true)]
     Whoami(commands::npm_fallback::FallbackArgs),
     /// Print reverse dependency chains explaining why a package is installed
-    #[command(after_long_help = commands::why::AFTER_LONG_HELP)]
+    #[command(visible_alias = "w", after_long_help = commands::why::AFTER_LONG_HELP)]
     Why(commands::why::WhyArgs),
     /// Catch-all for implicit script execution (e.g., `aube dev` = `aube run dev`)
     #[command(external_subcommand)]
@@ -1607,6 +1609,23 @@ mod cli_spec_tests {
             Some("https://registry.example.com/")
         );
         assert!(matches!(cli.command, Some(Commands::Install(_))));
+    }
+
+    #[test]
+    fn short_command_aliases_parse() {
+        let cli = Cli::try_parse_from(["aube", "a", "react"]).expect("a should parse as add");
+        assert!(matches!(cli.command, Some(Commands::Add(_))));
+
+        let cli =
+            Cli::try_parse_from(["aube", "x", "vitest", "--run"]).expect("x should parse as exec");
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("x should dispatch to exec");
+        };
+        assert_eq!(args.bin, "vitest");
+        assert_eq!(args.args, vec!["--run"]);
+
+        let cli = Cli::try_parse_from(["aube", "w", "react"]).expect("w should parse as why");
+        assert!(matches!(cli.command, Some(Commands::Why(_))));
     }
 }
 

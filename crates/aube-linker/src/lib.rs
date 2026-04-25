@@ -2681,6 +2681,37 @@ fn is_safe_rel_component(rel: &str) -> bool {
     })
 }
 
+fn ensure_no_symlink_in_chain(pkg_dir: &Path, rel: &str) -> Result<(), String> {
+    let mut cursor = pkg_dir.to_path_buf();
+    for comp in Path::new(rel).components() {
+        cursor.push(comp);
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(format!("{}", cursor.display()));
+                }
+                // Junctions on Windows are `IO_REPARSE_TAG_MOUNT_POINT`
+                // reparse points, not `IO_REPARSE_TAG_SYMLINK`, and
+                // `FileType::is_symlink()` returns false for them.
+                // Catch every reparse point via the file-attribute
+                // bit so a junction can't sneak the patch out of the
+                // package directory.
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+                    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        return Err(format!("{}", cursor.display()));
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("stat {}: {e}", cursor.display())),
+        }
+    }
+    Ok(())
+}
+
 fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String> {
     let sections = split_patch_sections(patch_text);
     if sections.is_empty() {
@@ -2699,6 +2730,16 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
         // prefix, no `..`, no backslash, no NUL).
         if !is_safe_rel_component(rel) {
             return Err(format!("patch file path escapes package: {rel:?}"));
+        }
+        // Walk every parent component of the target on disk and refuse
+        // to follow any symlink or junction. Without this guard, a
+        // package that planted a directory link inside its own tree
+        // (or a workspace where the user has a symlinked dep dir)
+        // would let `pkg_dir.join(rel)` resolve through the link, and
+        // `atomic_write` would overwrite a file outside `pkg_dir`.
+        // CVE-2018-1000156 (GNU patch) class.
+        if let Err(e) = ensure_no_symlink_in_chain(pkg_dir, rel) {
+            return Err(format!("patch target contains symlink: {e}"));
         }
         let target = pkg_dir.join(rel);
         let original = if target.exists() {
@@ -3024,6 +3065,52 @@ mod public_hoist_tests {
 #[cfg(test)]
 mod patch_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn apply_multi_file_patch_refuses_to_follow_junction_outside_pkg() {
+        let outside = tempfile::tempdir().unwrap();
+        let pkg_root = tempfile::tempdir().unwrap();
+        let pkg = pkg_root.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let escape = pkg.join("escape");
+        junction::create(outside.path(), &escape).unwrap();
+        let target = outside.path().join("victim.txt");
+        std::fs::write(&target, "untouched\n").unwrap();
+        let patch = "diff --git a/escape/victim.txt b/escape/victim.txt\n\
+                     --- a/escape/victim.txt\n\
+                     +++ b/escape/victim.txt\n\
+                     @@ -1 +1 @@\n\
+                     -untouched\n\
+                     +PWNED\n";
+        let result = apply_multi_file_patch(&pkg, patch);
+        assert!(result.is_err(), "patch must refuse junction-bearing rel");
+        let after = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(after, "untouched\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_multi_file_patch_refuses_to_follow_symlink_outside_pkg() {
+        let outside = tempfile::tempdir().unwrap();
+        let pkg_root = tempfile::tempdir().unwrap();
+        let pkg = pkg_root.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let escape = pkg.join("escape");
+        std::os::unix::fs::symlink(outside.path(), &escape).unwrap();
+        let target = outside.path().join("victim.txt");
+        std::fs::write(&target, "untouched\n").unwrap();
+        let patch = "diff --git a/escape/victim.txt b/escape/victim.txt\n\
+                     --- a/escape/victim.txt\n\
+                     +++ b/escape/victim.txt\n\
+                     @@ -1 +1 @@\n\
+                     -untouched\n\
+                     +PWNED\n";
+        let result = apply_multi_file_patch(&pkg, patch);
+        assert!(result.is_err(), "patch must refuse symlink-bearing rel");
+        let after = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(after, "untouched\n");
+    }
 
     #[test]
     fn round_trips_simple_patch() {

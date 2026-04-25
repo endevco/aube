@@ -81,6 +81,7 @@ flag "-y --yes" help="Automatically answer yes to prompts" global=#true {
     long_help "Automatically answer yes to prompts.\n\nParsed for pnpm compatibility; aube does not currently prompt on these paths."
 }
 cmd add help="Add a dependency" {
+    alias a
     flag "-D --save-dev" help="Add as dev dependency"
     flag "-E --save-exact" help="Pin the exact resolved version (no `^` prefix)"
     flag "-g --global" help="Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory" {
@@ -296,6 +297,7 @@ cmd doctor help="Run broad install-health diagnostics" {
     flag "-J --json" help="Emit a machine-readable JSON report instead of the grouped text"
 }
 cmd exec help="Execute a locally installed binary" {
+    alias x
     flag --no-bail help="Continue recursive execution after a command fails" {
         long_help "Continue recursive execution after a command fails.\n\nParsed for pnpm compatibility; aube currently stops on the first failure."
     }
@@ -824,6 +826,7 @@ cmd whoami hide=#true help="Report the current registry user (not implemented �
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd why help="Print reverse dependency chains explaining why a package is installed" {
+    alias w
     after_long_help "Examples:\n\n  $ aube why debug\n  my-app@1.0.0 /home/user/project\n\n  dependencies:\n  express 4.19.2\n  └── debug 2.6.9\n  body-parser 1.20.2\n  └── debug 2.6.9\n\n  # Only follow chains starting at a devDependency\n  $ aube why --dev typescript\n\n  # Include each node's store path\n  $ aube why --long debug\n\n  # Tab-separated, one chain per line (pipe-friendly)\n  $ aube why --parseable debug\n\n  # JSON: an array of chain objects\n  $ aube why --json debug\n"
     flag "-D --dev" help="Only follow chains that start at a devDependency"
     flag "-P --prod --production" help="Only follow chains that start at a production (or optional) dependency"

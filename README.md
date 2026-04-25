@@ -21,12 +21,12 @@
 ## Why Try It
 
 <!-- BENCH_RATIOS:START -->
-**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs with the global virtual store are about 6x faster than pnpm and about 3x faster than Bun in the current benchmarks. Repeat test commands run up to 49x faster than pnpm and up to 3x faster than Bun.
+**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs with the global virtual store are about 10x faster than pnpm and about 3x faster than Bun in the current benchmarks. Repeat test commands run up to 101x faster than pnpm and up to 5x faster than Bun.
 <!-- BENCH_RATIOS:END -->
 
 **[Existing lockfiles](https://aube.en.dev/package-manager/lockfiles).** Reads and writes `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock` in place.
 
-**[Cheap repeat commands](https://aube.en.dev/package-manager/scripts).** `aube run test`, `aube test`, and `aube exec vitest` auto-install when dependencies are stale, then skip that work when nothing changed.
+**[Cheap repeat commands](https://aube.en.dev/package-manager/scripts).** `aubr test`, `aube test`, and `aube exec vitest` auto-install when dependencies are stale, then skip that work when nothing changed. `aubx` runs one-off tools in a throwaway environment.
 
 **[Less disk use](https://aube.en.dev/package-manager/node-modules).** A global content-addressable store lets projects share package files instead of keeping a full copy of the same dependencies in every checkout.
 
@@ -66,13 +66,32 @@ brew install endevco/tap/aube
 
 See [other install methods](https://aube.en.dev/installation).
 
-## First Install
+## First Run
 
 Run aube in an existing Node.js project:
 
 ```sh
-aube install
+aubr test
 ```
+
+`aubr` is shorthand for `aube run`. Before it starts the script, aube checks
+whether `node_modules` is fresh for the current `package.json` and lockfile.
+If dependencies are missing or stale, it installs them first; otherwise it
+goes straight to the script.
+
+You usually do not need a separate `aube install` in day-to-day work. Run the
+script or binary you actually wanted:
+
+```sh
+aubr build
+aube test
+aube exec vitest
+aubx cowsay hi
+```
+
+Use `aube install` when the install itself is the task: first local setup
+without running a script, updating a lockfile, Docker layers, production-only
+installs, or CI flows.
 
 If the project already has a supported lockfile, aube reads it and writes updates back to the same file. That makes it easy to try aube locally without forcing the rest of the team to switch package managers first.
 
@@ -81,15 +100,15 @@ For a new project with no lockfile, aube creates `aube-lock.yaml`.
 ## Daily Commands
 
 ```sh
-aube install              # install dependencies
 aube add react            # add a dependency
 aube add -D vitest        # add a dev dependency
 aube remove react         # remove a dependency
 aube update               # update dependencies within package.json ranges
-aube run build            # run a package.json script
+aubr build                # run a package.json script, auto-installing first if needed
 aube test                 # run the test script, auto-installing first if needed
-aube exec vitest          # run a local binary
-aube dlx cowsay hi        # run a package in a throwaway environment
+aube exec vitest          # run a local binary, auto-installing first if needed
+aubx cowsay hi            # run a package in a throwaway environment
+aube install              # install only, for setup or lockfile/install modes
 aube ci                   # clean, frozen install for CI
 ```
 
