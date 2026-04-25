@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/aube-scripts-v1.1.0...aube-scripts-v1.2.0) - 2026-04-25
+
+### Fixed
+
+- cross-platform install correctness pass ([#293](https://github.com/endevco/aube/pull/293))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/aube-scripts-v1.0.0...aube-scripts-v1.1.0) - 2026-04-24
 
 ### Added

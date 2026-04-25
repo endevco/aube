@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/aube-registry-v1.1.0...aube-registry-v1.2.0) - 2026-04-25
+
+### Added
+
+- *(registry)* make packument + tarball body caps configurable, raise packument default to 200 MiB ([#282](https://github.com/endevco/aube/pull/282))
+
+### Fixed
+
+- cross-platform install correctness pass ([#293](https://github.com/endevco/aube/pull/293))
+
+### Security
+
+- cve-class hardening across linker, registry, resolver, install ([#296](https://github.com/endevco/aube/pull/296))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/aube-registry-v1.0.0...aube-registry-v1.1.0) - 2026-04-24
 
 ### Other

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/v1.1.0...v1.2.0) - 2026-04-25
+
+### Added
+
+- *(cli)* mise-style --version + scope update notifier to version commands ([#301](https://github.com/endevco/aube/pull/301))
+- *(cli)* add short command aliases ([#299](https://github.com/endevco/aube/pull/299))
+
+### Fixed
+
+- support git url specs in dlx and parser ([#295](https://github.com/endevco/aube/pull/295))
+- *(install)* link bins with mixed metadata ([#300](https://github.com/endevco/aube/pull/300))
+- cross-platform install correctness pass ([#293](https://github.com/endevco/aube/pull/293))
+- *(install)* restore missing lockfile from install state ([#289](https://github.com/endevco/aube/pull/289))
+
+### Security
+
+- cve-class hardening across linker, registry, resolver, install ([#296](https://github.com/endevco/aube/pull/296))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/v1.0.0...v1.1.0) - 2026-04-24
 
 ### Added

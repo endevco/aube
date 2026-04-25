@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.1.0...aube-lockfile-v1.2.0) - 2026-04-25
+
+### Fixed
+
+- support git url specs in dlx and parser ([#295](https://github.com/endevco/aube/pull/295))
+- *(install)* link bins with mixed metadata ([#300](https://github.com/endevco/aube/pull/300))
+- lockfile and resolver correctness pass ([#291](https://github.com/endevco/aube/pull/291))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.0.0...aube-lockfile-v1.1.0) - 2026-04-24
 
 ### Added

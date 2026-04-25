@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/aube-store-v1.1.0...aube-store-v1.2.0) - 2026-04-25
+
+### Security
+
+- cve-class hardening across linker, registry, resolver, install ([#296](https://github.com/endevco/aube/pull/296))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/aube-store-v1.0.0...aube-store-v1.1.0) - 2026-04-24
 
 ### Fixed

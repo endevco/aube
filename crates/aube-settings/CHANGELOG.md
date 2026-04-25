@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/aube-settings-v1.1.0...aube-settings-v1.2.0) - 2026-04-25
+
+### Added
+
+- *(settings)* declare env aliases in registry ([#294](https://github.com/endevco/aube/pull/294))
+- *(registry)* make packument + tarball body caps configurable, raise packument default to 200 MiB ([#282](https://github.com/endevco/aube/pull/282))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/aube-settings-v1.0.0...aube-settings-v1.1.0) - 2026-04-24
 
 ### Other

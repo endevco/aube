@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/endevco/aube/compare/aube-manifest-v1.1.0...aube-manifest-v1.2.0) - 2026-04-25
+
+### Fixed
+
+- *(scripts)* don't fabricate pnpm-workspace.yaml on approve-builds ([#303](https://github.com/endevco/aube/pull/303))
+
 ## [1.1.0](https://github.com/endevco/aube/compare/aube-manifest-v1.0.0...aube-manifest-v1.1.0) - 2026-04-24
 
 ### Other
