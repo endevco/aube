@@ -271,7 +271,7 @@ impl NpmConfig {
     /// Get the registry URL for a given package name.
     pub fn registry_for(&self, package_name: &str) -> &str {
         if let Some(scope) = package_scope(package_name)
-            && let Some(url) = self.scoped_registries.get(scope)
+            && let Some(url) = self.scoped_registries.get(&scope.to_lowercase())
         {
             return url;
         }
@@ -408,7 +408,7 @@ impl NpmConfig {
             } else if let Some(scope) = key.strip_suffix(":registry") {
                 if scope.starts_with('@') {
                     self.scoped_registries
-                        .insert(scope.to_string(), normalize_registry_url(&value));
+                        .insert(scope.to_lowercase(), normalize_registry_url(&value));
                 }
             } else if key.starts_with("//") {
                 // URI-specific config: //registry.url/:_authToken=TOKEN
@@ -955,7 +955,8 @@ fn userconfig_override_from_env(env: &[(String, String)], home: Option<&Path>) -
 /// truncate the value at the first line break and reparse the
 /// continuation as a bogus key.
 fn parse_npmrc(path: &Path) -> Result<Vec<(String, String)>, std::io::Error> {
-    let content = std::fs::read_to_string(path)?;
+    let raw_content = std::fs::read_to_string(path)?;
+    let content = raw_content.strip_prefix('\u{feff}').unwrap_or(&raw_content);
     let mut entries = Vec::new();
 
     // Fold backslash-continuation before line iteration. Trailing
@@ -1242,6 +1243,30 @@ pub(crate) fn run_token_helper(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_npmrc_strips_utf8_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".npmrc");
+        std::fs::write(&rc, "\u{feff}registry=https://r.example.com\n").unwrap();
+        let entries = parse_npmrc(&rc).unwrap();
+        assert_eq!(
+            entries,
+            vec![("registry".to_string(), "https://r.example.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn scoped_registry_lookup_is_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".npmrc"),
+            "@MyOrg:registry=https://myorg.example.com/\n",
+        )
+        .unwrap();
+        let cfg = NpmConfig::load_isolated(dir.path());
+        assert_eq!(cfg.registry_for("@myorg/pkg"), "https://myorg.example.com/");
+    }
 
     #[test]
     fn test_parse_npmrc_basic() {
