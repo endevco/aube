@@ -84,7 +84,7 @@ pub fn capture_env() -> Vec<(String, String)> {
 
 /// Typed per-setting accessors generated at build time from
 /// `settings.toml`. One function per scalar setting (`bool`,
-/// `string`/`path`, quoted-union enum, `int`, `list<string>`). The
+/// `string`/`path`/`url`, quoted-union enum, `int`, `list<string>`). The
 /// function signature *is* the type check — `auto_install_peers`
 /// returns `bool`, `store_dir` returns `Option<String>`, and
 /// calling either on the wrong type is a compile error.
@@ -213,7 +213,7 @@ pub fn string_from_workspace_yaml(
 /// literal like `"highest" | "time-based"`. Mirrors the type set the
 /// build-time generator emits as `Option<String>` accessors.
 fn is_stringish(ty: &str) -> bool {
-    matches!(ty, "string" | "path") || ty.starts_with('"')
+    matches!(ty, "string" | "path" | "url") || ty.starts_with('"')
 }
 
 /// Resolve an `int` setting from `.npmrc` entries, parsed as `u64`.
@@ -727,11 +727,10 @@ mod tests {
     }
 
     #[test]
-    fn env_resolves_auto_install_peers_via_implicit_alias() {
-        // `sources.env` is empty for every setting today, but the
-        // build-time generator auto-synthesizes
-        // `npm_config_<snake>` (lowercase) and `NPM_CONFIG_<UPPER>`
-        // aliases. This test guards both.
+    fn env_resolves_auto_install_peers_via_declared_aliases() {
+        // `settings.toml` declares both npm-compatible env spellings.
+        // This test guards that the metadata-driven env resolver honors
+        // them without any generated alias synthesis.
         let env_lower = vec![(
             "npm_config_auto_install_peers".to_string(),
             "false".to_string(),

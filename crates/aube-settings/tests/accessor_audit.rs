@@ -104,10 +104,13 @@ fn snake_case(name: &str) -> String {
 /// A setting has a generated typed accessor iff its `type` is one of
 /// the scalar kinds the build script supports. Kept in lockstep with
 /// the match in `build.rs::generate_resolved_accessors` — types not
-/// listed here (`object`, `url`) produce no accessor, so there's
+/// listed here (`object`) produce no accessor, so there's
 /// nothing for the audit to check.
 fn has_typed_accessor(type_: &str) -> bool {
-    matches!(type_, "bool" | "string" | "path" | "int" | "list<string>") || type_.starts_with('"')
+    matches!(
+        type_,
+        "bool" | "string" | "path" | "url" | "int" | "list<string>"
+    ) || type_.starts_with('"')
 }
 
 /// Search `corpus` for a `resolved::<accessor>` call, treating the

@@ -5,9 +5,10 @@
 //!
 //! - `settings_meta_data.rs` — `pub const SETTINGS: &[SettingMeta]`,
 //!   consumed by `crate::meta`.
-//! - `settings_resolved.rs` — one typed accessor per bool/string
-//!   setting with at least one `sources.npmrc` or
-//!   `sources.workspaceYaml` entry, consumed by `crate::values::resolved`.
+//! - `settings_resolved.rs` — one typed accessor per supported scalar
+//!   setting (`bool`, `string`, `path`, `url`, `int`, `list<string>`,
+//!   and enum-style string unions), consumed by
+//!   `crate::values::resolved`.
 //!
 //! Output is built as a plain `String` via `writeln!` — no proc-macro
 //! dependencies, since the generated files are straightforward.
@@ -100,16 +101,7 @@ fn main() {
         writeln!(out, "        default: {},", lit(&def.default)).unwrap();
         writeln!(out, "        docs: {},", lit(&def.docs)).unwrap();
         writeln!(out, "        cli_flags: {},", slice_lit(&def.sources.cli)).unwrap();
-        // Env vars: always include the pnpm/npm-convention alias
-        // `npm_config_<snake>` (matching lowercase rc-file style) and
-        // `NPM_CONFIG_<SCREAMING_SNAKE>` on top of whatever the
-        // setting explicitly declared. Auto-synthesis keeps env
-        // support working for every setting without a per-setting
-        // `sources.env` edit. Explicit declarations are preserved so
-        // a setting can opt in to an additional alias (e.g.
-        // `AUBE_STORE_DIR`) alongside the implicit ones.
-        let env_vars = merged_env_vars(name, &def.sources.env);
-        writeln!(out, "        env_vars: {},", slice_lit(&env_vars)).unwrap();
+        writeln!(out, "        env_vars: {},", slice_lit(&def.sources.env)).unwrap();
         let npmrc_keys = merged_npmrc_keys(&def.sources.npmrc);
         writeln!(out, "        npmrc_keys: {},", slice_lit(&npmrc_keys)).unwrap();
         writeln!(
@@ -206,9 +198,9 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
     for (name, def) in settings {
         // Types supported by the generator:
         // - `bool` → `bool` or `Option<bool>`
-        // - `string` / `path` → `String` or `Option<String>` (paths are bytes on
-        //   disk that we never parse into a typed path here, so String
-        //   is the honest representation).
+        // - `string` / `path` / `url` → `String` or `Option<String>`.
+        //   Paths and URLs stay raw here because normalization is
+        //   setting-specific at call sites.
         // - `int` → `u64` or `Option<u64>`
         // - `list<string>` → `Vec<String>` or `Option<Vec<String>>`
         // - Clean enum-style unions like `"highest" | "time-based"` →
@@ -220,7 +212,7 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
         //   plumbing through.
         let (value_ty, kind): (String, Kind) = match def.type_.as_str() {
             "bool" => ("bool".into(), Kind::Bool),
-            "string" | "path" => ("String".into(), Kind::String),
+            "string" | "path" | "url" => ("String".into(), Kind::String),
             "int" => ("u64".into(), Kind::U64),
             "list<string>" => ("Vec<String>".into(), Kind::VecString),
             t if t.starts_with('"') => match parse_enum_variants(t) {
@@ -230,12 +222,6 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
             _ => continue,
         };
 
-        // No source guard: the auto-synthesized env aliases
-        // (`npm_config_<snake>` / `NPM_CONFIG_<UPPER>`) give every
-        // scalar-typed setting at least one source, so generating an
-        // accessor is always meaningful. Skipping any setting here
-        // would hide env-only and cli-only lookups behind a silent
-        // `continue`.
         let fn_name = snake_case(name);
         let default_expr = default_expr(name, def, kind, &value_ty);
         let return_ty = match &default_expr {
@@ -565,30 +551,6 @@ fn resolve_precedence(declared: &[String]) -> Vec<String> {
     }
     let mut out = vec!["cli".to_string(), "env".to_string()];
     out.extend(files);
-    out
-}
-
-/// Build the effective `env_vars` list for a setting by merging the
-/// explicit `sources.env` entries with auto-synthesized pnpm-compat
-/// aliases. Every setting implicitly accepts both
-/// `npm_config_<snake>` (lowercase, matching `.npmrc`-alike style)
-/// and `NPM_CONFIG_<SCREAMING>` so users get the same experience as
-/// pnpm/npm without each setting having to repeat the convention.
-fn merged_env_vars(name: &str, declared: &[String]) -> Vec<String> {
-    let snake = snake_case(name);
-    let lower = format!("npm_config_{snake}");
-    let upper = format!("NPM_CONFIG_{}", snake.to_ascii_uppercase());
-    let mut out: Vec<String> = Vec::with_capacity(declared.len() + 2);
-    for src in declared {
-        if !out.contains(src) {
-            out.push(src.clone());
-        }
-    }
-    for implicit in [lower, upper] {
-        if !out.contains(&implicit) {
-            out.push(implicit);
-        }
-    }
     out
 }
 

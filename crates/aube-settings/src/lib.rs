@@ -9,8 +9,8 @@
 //! - [`meta::SETTINGS`] — a `&'static [SettingMeta]` slice so other
 //!   crates can introspect the full settings surface (for
 //!   `aube config`, docs generation, parity audits).
-//! - [`values::resolved`] — one typed Rust function per bool/string
-//!   setting with an `.npmrc` or `workspaceYaml` source. The
+//! - [`values::resolved`] — one typed Rust function per supported
+//!   scalar setting. The
 //!   function signature *is* the type check — `auto_install_peers`
 //!   returns `Option<bool>`, `store_dir` returns `Option<String>`,
 //!   and calling either on the wrong type is a compile error.
