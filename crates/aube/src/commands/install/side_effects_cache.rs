@@ -432,12 +432,11 @@ mod tests {
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(pkg.join("package.json"), "{\"name\":\"p\"}\n").unwrap();
         let entry = SideEffectsCacheEntry::new(dir.path(), "p", "1.0.0", &pkg).unwrap();
-        let s = entry.path.to_string_lossy().to_lowercase();
-        let arch = std::env::consts::ARCH;
-        let os = std::env::consts::OS;
+        let s = entry.path.to_string_lossy().into_owned();
+        let segment = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         assert!(
-            s.contains(arch) || s.contains(os),
-            "cache path lacks platform marker: {s}"
+            s.contains(&segment),
+            "cache path lacks platform segment {segment}: {s}"
         );
     }
 
