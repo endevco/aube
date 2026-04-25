@@ -18,7 +18,8 @@
 #   default       = default value rendered as a string
 #   docs          = longer markdown explanation
 #   sources.cli   = CLI flags that set this setting (list, may be empty)
-#   sources.env   = env vars that set this setting (list, may be empty)
+#   sources.env   = env vars that set this setting (list, may be empty;
+#                   later aliases have higher priority)
 #   sources.npmrc = .npmrc keys (list, may be empty)
 #   sources.workspaceYaml = pnpm-workspace.yaml keys (list, may be empty)
 #   examples      = optional list of concrete invocations
@@ -870,7 +871,7 @@ Applies to both `httpsProxy` and `httpProxy`. Falls back to the
 standard `NO_PROXY` / `no_proxy` environment variables.
 """
 sources.cli = []
-sources.env = ["NO_PROXY", "no_proxy", "AUBE_NO_PROXY", "npm_config_noproxy", "NPM_CONFIG_NOPROXY"]
+sources.env = ["AUBE_NO_PROXY", "npm_config_noproxy", "NPM_CONFIG_NOPROXY", "npm_config_no_proxy", "NPM_CONFIG_NO_PROXY", "NO_PROXY", "no_proxy"]
 sources.npmrc = ["noproxy", "noProxy", "no-proxy"]
 examples = []
 # Consumed inside `aube_registry::config::NpmConfig::apply` via a
@@ -2156,7 +2157,7 @@ aube detects CI via `env::var("CI").is_ok()` in two places:
 `install::FrozenMode::default_for_env` (flips the default to `Frozen`).
 """
 sources.cli = []
-sources.env = ["CI", "AUBE_CI", "npm_config_ci", "NPM_CONFIG_CI"]
+sources.env = ["npm_config_ci", "NPM_CONFIG_CI", "AUBE_CI", "CI"]
 sources.npmrc = ["ci"]
 examples = ["CI=1 aube install"]
 # Read via a direct `std::env::var("CI")` check in `aube-linker` and

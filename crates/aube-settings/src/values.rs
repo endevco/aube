@@ -40,8 +40,8 @@ pub struct ResolveCtx<'a> {
     pub workspace_yaml: &'a std::collections::BTreeMap<String, serde_yaml::Value>,
     /// Captured environment variables relevant to settings. In
     /// production this is populated by [`capture_env`]; tests build a
-    /// literal slice. Lookups iterate from the end so later entries
-    /// win, matching the `.npmrc` convention.
+    /// literal slice. `sources.env` alias order defines priority; within
+    /// one alias, lookups iterate from the end so later entries win.
     pub env: &'a [(String, String)],
     /// Parsed CLI flag values for the command being executed. Each
     /// entry is a `(flag_name, value)` pair where `flag_name` matches
@@ -330,23 +330,26 @@ pub fn workspace_yaml_value<'a>(
     Some(value)
 }
 
+fn raw_from_env<'a>(meta: &meta::SettingMeta, env: &'a [(String, String)]) -> Option<&'a str> {
+    for alias in meta.env_vars.iter().rev() {
+        for (key, raw) in env.iter().rev() {
+            if key == alias {
+                return Some(raw);
+            }
+        }
+    }
+    None
+}
+
 /// Resolve a `bool` setting from a captured environment snapshot,
-/// walking the declared `sources.env` aliases in reverse order (later
-/// entries win, matching the `.npmrc` helper). Returns `None` on
-/// unknown setting, wrong type, or unparseable value.
+/// walking the declared `sources.env` aliases in reverse priority order.
+/// Returns `None` on unknown setting, wrong type, or unparseable value.
 pub(crate) fn bool_from_env(setting: &str, env: &[(String, String)]) -> Option<bool> {
     let meta = meta::find(setting)?;
     if meta.type_ != "bool" {
         return None;
     }
-    for (key, raw) in env.iter().rev() {
-        if meta.env_vars.contains(&key.as_str())
-            && let Some(v) = parse_bool(raw)
-        {
-            return Some(v);
-        }
-    }
-    None
+    raw_from_env(meta, env).and_then(parse_bool)
 }
 
 /// Resolve a `string` setting from a captured environment snapshot.
@@ -355,12 +358,7 @@ pub fn string_from_env(setting: &str, env: &[(String, String)]) -> Option<String
     if !is_stringish(meta.type_) {
         return None;
     }
-    for (key, raw) in env.iter().rev() {
-        if meta.env_vars.contains(&key.as_str()) {
-            return Some(raw.clone());
-        }
-    }
-    None
+    raw_from_env(meta, env).map(ToOwned::to_owned)
 }
 
 /// Resolve an `int` setting from a captured environment snapshot.
@@ -369,14 +367,7 @@ pub(crate) fn u64_from_env(setting: &str, env: &[(String, String)]) -> Option<u6
     if meta.type_ != "int" {
         return None;
     }
-    for (key, raw) in env.iter().rev() {
-        if meta.env_vars.contains(&key.as_str())
-            && let Ok(v) = raw.trim().parse::<u64>()
-        {
-            return Some(v);
-        }
-    }
-    None
+    raw_from_env(meta, env).and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
 /// Resolve a `list<string>` setting from a captured environment
@@ -386,12 +377,7 @@ pub(crate) fn string_list_from_env(setting: &str, env: &[(String, String)]) -> O
     if meta.type_ != "list<string>" {
         return None;
     }
-    for (key, raw) in env.iter().rev() {
-        if meta.env_vars.contains(&key.as_str()) {
-            return Some(parse_string_list(raw));
-        }
-    }
-    None
+    raw_from_env(meta, env).map(parse_string_list)
 }
 
 /// Resolve a `bool` setting from a parsed CLI flag bag. The bag
@@ -790,6 +776,20 @@ mod tests {
             cli: &[],
         };
         assert!(resolved::auto_install_peers(&ctx));
+    }
+
+    #[test]
+    fn env_alias_order_defines_priority() {
+        let env = entries(&[
+            ("CI", "true"),
+            ("NPM_CONFIG_CI", "false"),
+            ("npm_config_no_proxy", ".internal"),
+        ]);
+        assert_eq!(bool_from_env("ci", &env), Some(true));
+        assert_eq!(
+            string_from_env("noProxy", &env),
+            Some(".internal".to_string())
+        );
     }
 
     #[test]

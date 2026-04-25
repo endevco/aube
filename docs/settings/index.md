@@ -924,7 +924,7 @@ Comma-separated list of domains that bypass the proxy.
 
 - Type: `string`
 - Default: `null`
-- Environment: `NO_PROXY`, `no_proxy`, `AUBE_NO_PROXY`, `npm_config_noproxy`, `NPM_CONFIG_NOPROXY`
+- Environment: `AUBE_NO_PROXY`, `npm_config_noproxy`, `NPM_CONFIG_NOPROXY`, `npm_config_no_proxy`, `NPM_CONFIG_NO_PROXY`, `NO_PROXY`, `no_proxy`
 - .npmrc keys: `noproxy`, `noProxy`, `no-proxy`
 
 Passed through to `reqwest::NoProxy::from_string` verbatim, so
@@ -2154,7 +2154,7 @@ Explicitly mark the environment as CI.
 
 - Type: `bool`
 - Default: `auto-detected`
-- Environment: `CI`, `AUBE_CI`, `npm_config_ci`, `NPM_CONFIG_CI`
+- Environment: `npm_config_ci`, `NPM_CONFIG_CI`, `AUBE_CI`, `CI`
 - .npmrc keys: `ci`
 
 aube detects CI via `env::var("CI").is_ok()` in two places:
