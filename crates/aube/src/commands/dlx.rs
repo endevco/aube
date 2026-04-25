@@ -310,9 +310,12 @@ fn is_non_registry_spec(s: &str) -> bool {
     {
         return true;
     }
-    is_scp_form(s)
+    is_scp_form(s) || is_owner_repo_shorthand(s)
 }
 
+/// SCP-form `user@host:path` is only treated as Git for the three known
+/// providers, matching pnpm 11. Unknown hosts fall through (pnpm treats
+/// them as local paths).
 fn is_scp_form(s: &str) -> bool {
     if s.contains("://") {
         return false;
@@ -324,7 +327,31 @@ fn is_scp_form(s: &str) -> bool {
     let Some(at) = before.find('@') else {
         return false;
     };
-    !before[..at].is_empty() && !before[at + 1..].is_empty()
+    let user = &before[..at];
+    let host = &before[at + 1..];
+    if user.is_empty() || host.is_empty() {
+        return false;
+    }
+    matches!(host, "github.com" | "gitlab.com" | "bitbucket.org")
+}
+
+/// Pnpm 11: a bare `owner/repo[#ref]` with no provider prefix defaults
+/// to GitHub. Distinguished from registry specs (`name`, `@scope/name`,
+/// `name@version`) by: no leading `@`, no `@` anywhere (registry version
+/// separator), no `:` (URL/SCP), exactly one `/`, both halves non-empty.
+fn is_owner_repo_shorthand(s: &str) -> bool {
+    let body = s.split('#').next().unwrap_or(s);
+    if body.starts_with('@') || body.contains('@') || body.contains(':') {
+        return false;
+    }
+    let mut parts = body.splitn(2, '/');
+    let Some(owner) = parts.next() else {
+        return false;
+    };
+    let Some(repo) = parts.next() else {
+        return false;
+    };
+    !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
 }
 
 fn derive_dlx_pkg_name(spec: &str) -> Option<String> {
@@ -339,6 +366,12 @@ fn derive_dlx_pkg_name(spec: &str) -> Option<String> {
 }
 
 fn synthesize_dlx_dep(spec: &str) -> (String, String) {
+    if is_owner_repo_shorthand(spec) {
+        // Rewrite to the explicit `github:` form so the resolver picks
+        // it up via the same code path as `aube dlx github:owner/repo`.
+        let name = derive_dlx_pkg_name(spec).unwrap_or_else(|| "aube-dlx-pkg".to_string());
+        return (name, format!("github:{spec}"));
+    }
     if is_non_registry_spec(spec) {
         let name = derive_dlx_pkg_name(spec).unwrap_or_else(|| "aube-dlx-pkg".to_string());
         return (name, spec.to_string());
@@ -550,10 +583,33 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_dlx_dep_handles_scp_url_with_non_git_user() {
-        let (name, value) = synthesize_dlx_dep("alice@host.example.com:org/repo.git");
-        assert_eq!(name, "repo");
-        assert_eq!(value, "alice@host.example.com:org/repo.git");
+    fn synthesize_dlx_dep_handles_scp_url_bitbucket() {
+        let (name, value) = synthesize_dlx_dep("git@bitbucket.org:pnpmjs/git-resolver.git");
+        assert_eq!(name, "git-resolver");
+        assert_eq!(value, "git@bitbucket.org:pnpmjs/git-resolver.git");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_rejects_unknown_host_scp() {
+        // pnpm 11 treats `user@unknown-host:path` as a local path, not Git.
+        // Aube falls through to registry handling — the install will fail
+        // later with a clearer error than silently cloning an arbitrary host.
+        let (name, _) = synthesize_dlx_dep("alice@host.example.com:org/repo.git");
+        assert_ne!(name, "repo");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_handles_owner_repo_shorthand() {
+        let (name, value) = synthesize_dlx_dep("zkochan/is-negative");
+        assert_eq!(name, "is-negative");
+        assert_eq!(value, "github:zkochan/is-negative");
+    }
+
+    #[test]
+    fn synthesize_dlx_dep_handles_owner_repo_shorthand_with_ref() {
+        let (name, value) = synthesize_dlx_dep("zkochan/is-negative#2.0.1");
+        assert_eq!(name, "is-negative");
+        assert_eq!(value, "github:zkochan/is-negative#2.0.1");
     }
 
     #[test]
