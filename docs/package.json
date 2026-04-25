@@ -3,7 +3,8 @@
     "settings:gen": "cargo run --manifest-path ../Cargo.toml -p aube-settings --bin generate-settings-docs",
     "docs:dev": "npm run settings:gen && vitepress dev",
     "docs:build": "npm run settings:gen && vitepress build",
-    "docs:preview": "vitepress preview"
+    "docs:preview": "vitepress preview",
+    "icons:render": "node scripts/render-icons.mjs"
   },
   "pnpm": {
     "supportedArchitectures": {
@@ -13,6 +14,7 @@
     }
   },
   "devDependencies": {
+    "sharp": "^0.34.5",
     "vitepress": "^1.5.0"
   }
 }

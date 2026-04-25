@@ -2,6 +2,6 @@
   <title id="title">aube logo</title>
   <desc id="desc">A sunrise mark above a straight horizon line.</desc>
   <rect width="512" height="512" rx="112" fill="#0d0a09"/>
-  <path d="M116 326H396" stroke="#f4f0e8" stroke-width="32" stroke-linecap="round"/>
-  <path d="M174 326A82 82 0 0 1 338 326" stroke="#f4f0e8" stroke-width="32" stroke-linecap="round"/>
+  <path d="M116 300H396" stroke="#f4f0e8" stroke-width="32" stroke-linecap="round"/>
+  <path d="M174 300A82 82 0 0 1 338 300" stroke="#f4f0e8" stroke-width="32" stroke-linecap="round"/>
 </svg>
