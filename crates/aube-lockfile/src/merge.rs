@@ -242,6 +242,29 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
     for name in src.ignored_optional_dependencies {
         dst.ignored_optional_dependencies.insert(name);
     }
+    for (key, incoming) in src.patched_dependencies {
+        use std::collections::btree_map::Entry;
+        match dst.patched_dependencies.entry(key) {
+            Entry::Vacant(slot) => {
+                slot.insert(incoming);
+            }
+            Entry::Occupied(slot) => {
+                if slot.get() != &incoming {
+                    report.conflicts.push(format!(
+                        "patched dependency `{}`: kept {} over {}",
+                        slot.key(),
+                        slot.get(),
+                        incoming
+                    ));
+                }
+            }
+        }
+    }
+    for name in src.trusted_dependencies {
+        if !dst.trusted_dependencies.iter().any(|n| n == &name) {
+            dst.trusted_dependencies.push(name);
+        }
+    }
     for (importer_key, entries) in src.skipped_optional_dependencies {
         let merged = dst
             .skipped_optional_dependencies
@@ -509,5 +532,36 @@ mod tests {
         assert!(!prefer_higher_version("1.0.0", "2.0.0"));
         // Fallback: string compare for non-semver tails.
         assert!(prefer_higher_version("workspace:z", "workspace:a"));
+    }
+
+    #[test]
+    fn merge_into_preserves_patched_dependencies() {
+        let mut dst = LockfileGraph::default();
+        let mut src = LockfileGraph::default();
+        src.patched_dependencies.insert(
+            "lodash@4.17.21".into(),
+            "patches/lodash@4.17.21.patch".into(),
+        );
+        let mut report = MergeReport::default();
+        merge_into(&mut dst, src, &mut report);
+        assert!(
+            dst.patched_dependencies.contains_key("lodash@4.17.21"),
+            "patched_dependencies entry was dropped on merge: {:?}",
+            dst.patched_dependencies
+        );
+    }
+
+    #[test]
+    fn merge_into_preserves_trusted_dependencies() {
+        let mut dst = LockfileGraph::default();
+        let mut src = LockfileGraph::default();
+        src.trusted_dependencies.push("esbuild".into());
+        let mut report = MergeReport::default();
+        merge_into(&mut dst, src, &mut report);
+        assert!(
+            dst.trusted_dependencies.iter().any(|n| n == "esbuild"),
+            "trusted_dependencies was dropped on merge: {:?}",
+            dst.trusted_dependencies
+        );
     }
 }
