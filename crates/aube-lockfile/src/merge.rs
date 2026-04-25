@@ -260,8 +260,10 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
             }
         }
     }
+    let mut seen: rustc_hash::FxHashSet<String> =
+        dst.trusted_dependencies.iter().cloned().collect();
     for name in src.trusted_dependencies {
-        if !dst.trusted_dependencies.iter().any(|n| n == &name) {
+        if seen.insert(name.clone()) {
             dst.trusted_dependencies.push(name);
         }
     }

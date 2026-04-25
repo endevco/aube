@@ -61,18 +61,18 @@ pub(crate) fn pick_version<'a>(
     // npm and pnpm fall back to the highest non-prerelease version.
     // Do the same so `aube install foo` does not silently fail on a
     // packument that just happens to lack the tag.
-    let parses_as_range = node_semver::Range::parse(normalize_range(range_str)).is_ok();
-    let effective_range =
-        if !parses_as_range && let Some(tagged_version) = packument.dist_tags.get(range_str) {
-            tagged_version.clone()
-        } else if !parses_as_range && range_str == "latest" {
-            match highest_stable_version(packument) {
-                Some(v) => v,
-                None => return PickResult::NoMatch,
-            }
-        } else {
-            range_str.to_string()
-        };
+    let effective_range = if node_semver::Range::parse(normalize_range(range_str)).is_ok() {
+        range_str.to_string()
+    } else if let Some(tagged_version) = packument.dist_tags.get(range_str) {
+        tagged_version.clone()
+    } else if range_str == "latest" {
+        match highest_stable_version(packument) {
+            Some(v) => v,
+            None => return PickResult::NoMatch,
+        }
+    } else {
+        range_str.to_string()
+    };
 
     let range = match node_semver::Range::parse(normalize_range(&effective_range)) {
         Ok(r) => r,

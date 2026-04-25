@@ -832,10 +832,10 @@ fn strip_jsonc(input: &str) -> String {
 
         if in_string {
             out.push(c);
-            if c < 0x80 {
-                if escape {
-                    escape = false;
-                } else if c == b'\\' {
+            if escape {
+                escape = false;
+            } else if c < 0x80 {
+                if c == b'\\' {
                     escape = true;
                 } else if c == b'"' {
                     in_string = false;
