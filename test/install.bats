@@ -946,3 +946,71 @@ JSON
 	assert_link_exists node_modules/odd-alias
 	assert_not_exists node_modules/is-odd
 }
+
+@test "aube install handles npm-alias from a pnpm v9 lockfile" {
+	# Repro: https://github.com/rubnogueira/aube-exotic-bug
+	#
+	# pnpm v9 encodes npm-aliases implicitly — importer key is the
+	# alias, `version:` is `<real>@<resolved>`, no `aliasOf:` field
+	# on the package entry. Hand-write that exact shape so we exercise
+	# the lockfile-read path (not the resolver-fresh path the sibling
+	# test above covers).
+	cat >package.json <<'JSON'
+{
+  "name": "alias-frozen",
+  "version": "1.0.0",
+  "dependencies": {
+    "odd-renamed": "npm:is-odd@^3.0.1"
+  }
+}
+JSON
+	cat >pnpm-lock.yaml <<'YAML'
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      odd-renamed:
+        specifier: npm:is-odd@^3.0.1
+        version: is-odd@3.0.1
+
+packages:
+
+  is-number@6.0.0:
+    resolution: {integrity: sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg==}
+    engines: {node: '>=0.10.0'}
+
+  is-odd@3.0.1:
+    resolution: {integrity: sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==}
+    engines: {node: '>=4'}
+
+snapshots:
+
+  is-number@6.0.0: {}
+
+  is-odd@3.0.1:
+    dependencies:
+      is-number: 6.0.0
+YAML
+
+	run aube install --frozen-lockfile
+	assert_success
+
+	# The bug: aube was building dep_path `odd-renamed@is-odd@3.0.1`
+	# and the linker silently skipped it. With the fix, the alias
+	# folder must exist as a symlink in node_modules.
+	assert_link_exists node_modules/odd-renamed
+	assert_not_exists node_modules/is-odd
+
+	# Resolves to the real `is-odd` package.json — its `name:` field
+	# stays `is-odd` even though the symlink is `odd-renamed`. Node's
+	# resolver keys off the symlink path, not the package.json name.
+	run cat node_modules/odd-renamed/package.json
+	assert_success
+	assert_output --partial '"name": "is-odd"'
+}

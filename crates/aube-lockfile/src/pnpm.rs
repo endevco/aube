@@ -21,80 +21,114 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     let mut local_packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
     let mut skipped_optional_dependencies: BTreeMap<String, BTreeMap<String, String>> =
         BTreeMap::new();
+    // pnpm v9 encodes npm-aliases implicitly: the importer key is
+    // the alias (`express-fork`), `specifier:` carries `npm:<real>@<range>`,
+    // and `version:` is `<real>@<resolved>`. There is no `aliasOf:`
+    // field — that's an aube-specific writer extension. We record
+    // each alias here and synthesize an alias-keyed LockedPackage
+    // after the canonical packages loop, mirroring the shape the
+    // resolver-fresh path emits so the linker stays single-shape.
+    // Tuple: (alias_dep_path, real_dep_path, real_name).
+    let mut alias_remaps: Vec<(String, String, String)> = Vec::new();
 
-    let mut push_direct =
-        |deps: &mut Vec<DirectDep>, name: &str, info: &RawDepSpec, dep_type: DepType| {
-            // pnpm appends a `(peer@ver)` suffix to the importer
-            // `version:` of URL- and git-based direct deps when the
-            // resolved snapshot carries peer context, the same way it
-            // does for semver versions. `LocalSource::parse` treats the
-            // whole string as the URL, so a RemoteTarballSource built
-            // from the raw value fetches `…/tar.gz/SHA(peer@ver)` and
-            // 404s. Strip it here so the URL that reaches the fetcher
-            // and the dep_path hash are both peer-context-free —
-            // consistent with what `parse_dep_path` does for snapshot
-            // keys downstream.
-            let classify_version = info.version.split('(').next().unwrap_or(&info.version);
-            if let Some(local) = LocalSource::parse(classify_version, Path::new("")) {
-                // `Path::new("")` means tarball-vs-dir classification is
-                // skipped; we default to Directory and rely on the
-                // resolver's on-disk re-read for the authoritative source
-                // type during a subsequent `aube install` (lockfile-only
-                // path never materializes local deps anyway before the
-                // fetch step re-classifies).
-                //
-                // Re-classify Directory → Tarball if the path looks
-                // like a tarball filename, so `.tgz`/`.tar.gz`
-                // targets round-trip correctly even when the file
-                // isn't present at parse time. The filename
-                // heuristic lives on `LocalSource` so this stays in
-                // lockstep with `LocalSource::parse`.
-                let local = match local {
-                    LocalSource::Directory(p) if LocalSource::path_looks_like_tarball(&p) => {
-                        LocalSource::Tarball(p)
+    let mut push_direct = |deps: &mut Vec<DirectDep>,
+                           alias_remaps: &mut Vec<(String, String, String)>,
+                           name: &str,
+                           info: &RawDepSpec,
+                           dep_type: DepType| {
+        // pnpm appends a `(peer@ver)` suffix to the importer
+        // `version:` of URL- and git-based direct deps when the
+        // resolved snapshot carries peer context, the same way it
+        // does for semver versions. `LocalSource::parse` treats the
+        // whole string as the URL, so a RemoteTarballSource built
+        // from the raw value fetches `…/tar.gz/SHA(peer@ver)` and
+        // 404s. Strip it here so the URL that reaches the fetcher
+        // and the dep_path hash are both peer-context-free —
+        // consistent with what `parse_dep_path` does for snapshot
+        // keys downstream.
+        let classify_version = info.version.split('(').next().unwrap_or(&info.version);
+        if let Some(local) = LocalSource::parse(classify_version, Path::new("")) {
+            // `Path::new("")` means tarball-vs-dir classification is
+            // skipped; we default to Directory and rely on the
+            // resolver's on-disk re-read for the authoritative source
+            // type during a subsequent `aube install` (lockfile-only
+            // path never materializes local deps anyway before the
+            // fetch step re-classifies).
+            //
+            // Re-classify Directory → Tarball if the path looks
+            // like a tarball filename, so `.tgz`/`.tar.gz`
+            // targets round-trip correctly even when the file
+            // isn't present at parse time. The filename
+            // heuristic lives on `LocalSource` so this stays in
+            // lockstep with `LocalSource::parse`.
+            let local = match local {
+                LocalSource::Directory(p) if LocalSource::path_looks_like_tarball(&p) => {
+                    LocalSource::Tarball(p)
+                }
+                // Importer `version:` for git deps is the canonical
+                // `<url>#<commit>` form pnpm writes. The parser
+                // puts the `<commit>` into `committish`; since
+                // this is a lockfile round-trip (not a raw user
+                // spec), treat it as the pinned commit.
+                LocalSource::Git(mut g) if g.resolved.is_empty() => {
+                    if let Some(c) = g.committish.take() {
+                        g.resolved = c;
                     }
-                    // Importer `version:` for git deps is the canonical
-                    // `<url>#<commit>` form pnpm writes. The parser
-                    // puts the `<commit>` into `committish`; since
-                    // this is a lockfile round-trip (not a raw user
-                    // spec), treat it as the pinned commit.
-                    LocalSource::Git(mut g) if g.resolved.is_empty() => {
-                        if let Some(c) = g.committish.take() {
-                            g.resolved = c;
-                        }
-                        LocalSource::Git(g)
-                    }
-                    other => other,
-                };
-                let dep_path = local.dep_path(name);
-                deps.push(DirectDep {
+                    LocalSource::Git(g)
+                }
+                other => other,
+            };
+            let dep_path = local.dep_path(name);
+            deps.push(DirectDep {
+                name: name.to_string(),
+                dep_path: dep_path.clone(),
+                dep_type,
+                specifier: Some(info.specifier.clone()),
+            });
+            local_packages
+                .entry(dep_path.clone())
+                .or_insert_with(|| LockedPackage {
                     name: name.to_string(),
-                    dep_path: dep_path.clone(),
-                    dep_type,
-                    specifier: Some(info.specifier.clone()),
+                    version: "0.0.0".to_string(),
+                    integrity: None,
+                    dependencies: BTreeMap::new(),
+                    peer_dependencies: BTreeMap::new(),
+                    peer_dependencies_meta: BTreeMap::new(),
+                    dep_path,
+                    local_source: Some(local),
+                    ..Default::default()
                 });
-                local_packages
-                    .entry(dep_path.clone())
-                    .or_insert_with(|| LockedPackage {
-                        name: name.to_string(),
-                        version: "0.0.0".to_string(),
-                        integrity: None,
-                        dependencies: BTreeMap::new(),
-                        peer_dependencies: BTreeMap::new(),
-                        peer_dependencies_meta: BTreeMap::new(),
-                        dep_path,
-                        local_source: Some(local),
-                        ..Default::default()
-                    });
+        } else {
+            let dep_path = if info.specifier.starts_with("npm:")
+                && let Some((real_name, resolved)) = parse_dep_path(&info.version)
+                && real_name != name
+            {
+                // npm-alias: importer key is the alias, `version:`
+                // is `<real>@<resolved>`. Re-key the dep_path under
+                // the alias so it lines up with the resolver-fresh
+                // shape; record the remap so the canonical-packages
+                // loop can synthesize a matching LockedPackage with
+                // `alias_of: Some(real_name)`.
+                let peer_suffix = info
+                    .version
+                    .find('(')
+                    .map(|i| &info.version[i..])
+                    .unwrap_or("");
+                let alias_dep_path = format!("{name}@{resolved}{peer_suffix}");
+                let real_dep_path = info.version.clone();
+                alias_remaps.push((alias_dep_path.clone(), real_dep_path, real_name));
+                alias_dep_path
             } else {
-                deps.push(DirectDep {
-                    name: name.to_string(),
-                    dep_path: version_to_dep_path(name, &info.version),
-                    dep_type,
-                    specifier: Some(info.specifier.clone()),
-                });
-            }
-        };
+                version_to_dep_path(name, &info.version)
+            };
+            deps.push(DirectDep {
+                name: name.to_string(),
+                dep_path,
+                dep_type,
+                specifier: Some(info.specifier.clone()),
+            });
+        }
+    };
 
     for (importer_path, importer) in &raw.importers {
         // pnpm writes the workspace root as either `'.'` (most
@@ -123,17 +157,23 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
         if let Some(ref d) = importer.dependencies {
             for (name, info) in d {
-                push_direct(&mut deps, name, info, DepType::Production);
+                push_direct(
+                    &mut deps,
+                    &mut alias_remaps,
+                    name,
+                    info,
+                    DepType::Production,
+                );
             }
         }
         if let Some(ref d) = importer.dev_dependencies {
             for (name, info) in d {
-                push_direct(&mut deps, name, info, DepType::Dev);
+                push_direct(&mut deps, &mut alias_remaps, name, info, DepType::Dev);
             }
         }
         if let Some(ref d) = importer.optional_dependencies {
             for (name, info) in d {
-                push_direct(&mut deps, name, info, DepType::Optional);
+                push_direct(&mut deps, &mut alias_remaps, name, info, DepType::Optional);
             }
         }
 
@@ -421,6 +461,37 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 extra_meta: BTreeMap::new(),
             },
         );
+    }
+
+    // Synthesize alias-keyed LockedPackages for npm-aliased importer
+    // deps. pnpm v9 only writes the canonical (real-name-keyed) entry
+    // in `packages:`; we clone it under the alias dep_path with
+    // `name=alias` and `alias_of=Some(real)` so the linker — which
+    // already supports this shape via the resolver-fresh path — can
+    // create `node_modules/<alias>` symlinks correctly.
+    for (alias_dep_path, real_dep_path, real_name) in alias_remaps {
+        // Skip if the alias entry already exists (aube-written
+        // lockfile that emitted both `aliasOf:` and an alias-keyed
+        // packages entry).
+        if packages.contains_key(&alias_dep_path) {
+            continue;
+        }
+        let Some(real_pkg) = packages.get(&real_dep_path) else {
+            return Err(Error::parse(
+                path,
+                format!(
+                    "npm-alias importer references missing package {real_dep_path} (alias dep_path: {alias_dep_path})"
+                ),
+            ));
+        };
+        let (alias_name, _) = parse_dep_path(&alias_dep_path).ok_or_else(|| {
+            Error::parse(path, format!("invalid alias dep path: {alias_dep_path}"))
+        })?;
+        let mut aliased = real_pkg.clone();
+        aliased.name = alias_name;
+        aliased.dep_path = alias_dep_path.clone();
+        aliased.alias_of = Some(real_name);
+        packages.insert(alias_dep_path, aliased);
     }
 
     for (k, v) in local_packages {
@@ -2844,5 +2915,65 @@ snapshots:
             !names.contains(&"pnpm"),
             "bootstrap doc's packageManagerDependencies should not leak in, got {names:?}"
         );
+    }
+
+    #[test]
+    fn parse_synthesizes_npm_alias_from_pnpm_v9_lockfile() {
+        // pnpm v9 encodes npm-aliases implicitly (importer key is the
+        // alias, `version:` is `<real>@<resolved>`, no `aliasOf:`
+        // field on the package entry). The reader must reconstruct
+        // an alias-keyed LockedPackage with `alias_of=Some(real)` so
+        // the linker creates `node_modules/<alias>` correctly.
+        // Repro: https://github.com/rubnogueira/aube-exotic-bug
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      express-fork:
+        specifier: npm:express@^4.22.1
+        version: express@4.22.1
+
+packages:
+  express@4.22.1:
+    resolution: {integrity: sha512-fake}
+    engines: {node: '>= 0.10.0'}
+
+snapshots:
+  express@4.22.1: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&path).unwrap();
+
+        let root = graph.importers.get(".").expect("root importer");
+        assert_eq!(root.len(), 1);
+        let dep = &root[0];
+        assert_eq!(dep.name, "express-fork", "DirectDep keeps the alias name");
+        assert_eq!(
+            dep.dep_path, "express-fork@4.22.1",
+            "DirectDep dep_path is alias-keyed (not the malformed express-fork@express@4.22.1)"
+        );
+        assert_eq!(dep.specifier.as_deref(), Some("npm:express@^4.22.1"));
+
+        let pkg = graph
+            .packages
+            .get("express-fork@4.22.1")
+            .expect("synthesized alias-keyed package");
+        assert_eq!(pkg.name, "express-fork");
+        assert_eq!(pkg.alias_of.as_deref(), Some("express"));
+        assert_eq!(pkg.dep_path, "express-fork@4.22.1");
+        // Real-keyed entry stays in place — other importers may
+        // reference the package directly, and the canonical entry is
+        // needed for byte-identical round-trips back to pnpm format.
+        let real = graph.packages.get("express@4.22.1").expect("real entry");
+        assert_eq!(real.name, "express");
+        assert!(real.alias_of.is_none());
     }
 }
