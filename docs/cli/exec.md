@@ -2,6 +2,7 @@
 # `aube exec`
 
 - **Usage**: `aube exec [FLAGS] <BIN> [ARGS]…`
+- **Aliases**: `x`
 
 Execute a locally installed binary
 

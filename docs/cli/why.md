@@ -2,6 +2,7 @@
 # `aube why`
 
 - **Usage**: `aube why [FLAGS] <PACKAGE>`
+- **Aliases**: `w`
 
 Print reverse dependency chains explaining why a package is installed
 

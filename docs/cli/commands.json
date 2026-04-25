@@ -154,7 +154,9 @@
         "hide": false,
         "help": "Add a dependency",
         "name": "add",
-        "aliases": [],
+        "aliases": [
+          "a"
+        ],
         "hidden_aliases": [],
         "examples": []
       },
@@ -1743,7 +1745,9 @@
         "hide": false,
         "help": "Execute a locally installed binary",
         "name": "exec",
-        "aliases": [],
+        "aliases": [
+          "x"
+        ],
         "hidden_aliases": [],
         "examples": []
       },
@@ -5353,7 +5357,9 @@
         "hide": false,
         "help": "Print reverse dependency chains explaining why a package is installed",
         "name": "why",
-        "aliases": [],
+        "aliases": [
+          "w"
+        ],
         "hidden_aliases": [],
         "after_help_long": "Examples:\n\n  $ aube why debug\n  my-app@1.0.0 /home/user/project\n\n  dependencies:\n  express 4.19.2\n  └── debug 2.6.9\n  body-parser 1.20.2\n  └── debug 2.6.9\n\n  # Only follow chains starting at a devDependency\n  $ aube why --dev typescript\n\n  # Include each node's store path\n  $ aube why --long debug\n\n  # Tab-separated, one chain per line (pipe-friendly)\n  $ aube why --parseable debug\n\n  # JSON: an array of chain objects\n  $ aube why --json debug\n",
         "examples": []
