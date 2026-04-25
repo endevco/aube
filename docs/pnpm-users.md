@@ -20,6 +20,10 @@ Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
 
 ## Command map
 
+Do not translate every `pnpm install && pnpm run ...` habit literally.
+`aubr <script>`, `aube test`, and `aube exec <bin>` check install freshness
+and install first only when needed. Use `aubx <pkg>` for one-off tools.
+
 | pnpm | aube | Notes |
 | --- | --- | --- |
 | `pnpm install` | `aube install` | Reads and updates an existing `pnpm-lock.yaml` in place. Only new projects (no supported lockfile on disk yet) default to `aube-lock.yaml`. |
@@ -29,7 +33,7 @@ Everything else — `add`, `remove`, `update`, `dlx`, `list`, `why`, `pack`,
 | `pnpm run build` | `aube run build` | Runs scripts with an auto-install staleness check first. |
 | `pnpm test` | `aube test` | Shortcut for the `test` script; aube auto-installs first (equivalent to `pnpm install-test`). |
 | `pnpm exec vitest` | `aube exec vitest` | Runs local binaries with project `node_modules/.bin` on `PATH`. |
-| `pnpm dlx cowsay hi` | `aube dlx cowsay hi` | Installs into a throwaway environment and runs the binary. |
+| `pnpm dlx cowsay hi` | `aubx cowsay hi` | Installs into a throwaway environment and runs the binary. |
 | `pnpm list` | `aube list` | Supports depth, JSON, parseable, long, prod/dev, and global modes. |
 | `pnpm why debug` | `aube why debug` | Shows reverse dependency paths. |
 | `pnpm pack` | `aube pack` | Creates a publishable tarball with npm-style file selection. |

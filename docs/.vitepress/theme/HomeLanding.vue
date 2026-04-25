@@ -225,7 +225,7 @@ watch(progressBarEl, (el, previousEl) => {
         </p>
         <div class="aube-actions" aria-label="Primary links">
           <a class="aube-button aube-button-primary" href="/guide/">
-            Start installing
+            Start running
             <span aria-hidden="true">-></span>
           </a>
           <div class="aube-install-stack">
@@ -278,19 +278,19 @@ watch(progressBarEl, (el, previousEl) => {
         </dl>
       </div>
 
-      <div class="aube-stage" aria-label="Aube install preview">
-        <div class="aube-terminal" aria-label="Interactive install output">
+      <div class="aube-stage" aria-label="Aube script run preview">
+        <div class="aube-terminal" aria-label="Interactive script run output">
           <div class="aube-terminal-bar">
             <span></span>
             <span></span>
             <span></span>
-            <strong>aube install</strong>
+            <strong>aubr test</strong>
           </div>
           <div class="aube-clx" aria-hidden="true">
             <div class="aube-command">$ mise use aube</div>
             <div class="aube-mise-output">mise aube@{{ aubeVersion }}   ✓ installed</div>
             <div class="aube-mise-output">mise ./mise.toml tools: aube@{{ aubeVersion }}</div>
-            <div class="aube-command">$ aube install</div>
+            <div class="aube-command">$ aubr test</div>
             <template v-if="!done">
               <div class="aube-progress-root">
                 <span class="aube-name">aube</span>
@@ -318,6 +318,7 @@ watch(progressBarEl, (el, previousEl) => {
                 <span class="aube-done-check">✓</span>
                 <span>installed {{ installedPackageTotal }} packages in 3.7s</span>
               </div>
+              <div class="aube-run-ok">✓ ran 100 tests successfully</div>
               <div class="aube-command">$ <span class="aube-caret">▍</span></div>
             </template>
           </div>
@@ -379,14 +380,14 @@ watch(progressBarEl, (el, previousEl) => {
         <span class="aube-proof-number">03</span>
         <span class="aube-proof-tag">repeat</span>
         <span class="aube-proof-visual aube-proof-run" aria-hidden="true">
-          <span><b>$</b> aube run test</span>
-          <span class="aube-run-install">deps stale · aube install</span>
-          <span class="aube-run-ok">✓ test</span>
-          <span><b>$</b> aube run test</span>
-          <span class="aube-run-ok">deps fresh · test</span>
+          <span><b>$</b> aubr test</span>
+          <span class="aube-run-install">deps stale · install first</span>
+          <span class="aube-run-ok">✓ ran 100 tests successfully</span>
+          <span><b>$</b> aubr test</span>
+          <span class="aube-run-ok">deps fresh · ran 100 tests successfully</span>
         </span>
-        <strong>Run scripts before you install.</strong>
-        <span><code>aube run test</code> auto-installs first when dependencies changed, then skips that work on repeat runs.</span>
+        <strong>Run scripts instead of installing.</strong>
+        <span><code>aubr test</code> auto-installs first when dependencies changed, then skips that work on repeat runs. Use <code>aubx</code> for one-off tools.</span>
         <span class="aube-proof-link">Run scripts and binaries -></span>
       </a>
       <a class="aube-proof-item" href="/package-manager/node-modules">

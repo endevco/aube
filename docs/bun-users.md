@@ -3,11 +3,16 @@
 aube can install directly from Bun lockfiles. You do not need to delete
 `bun.lock` or remove `node_modules` before trying aube.
 
-## Start from the Bun lockfile
+## Try the Bun lockfile
 
 ```sh
 aube install
 ```
+
+Run this once when you specifically want to verify that aube can read and
+write the existing Bun lockfile. For normal local work, run the command you
+wanted instead: `aubr build`, `aube test`, and `aube exec <bin>` auto-install
+first when dependencies are stale; `aubx <pkg>` handles one-off tools.
 
 aube reads and updates the text-format `bun.lock` at `lockfileVersion: 1`
 in place and installs packages into `node_modules/.aube/`.

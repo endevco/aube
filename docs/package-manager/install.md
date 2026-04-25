@@ -1,12 +1,21 @@
 # Install dependencies
 
 `aube install` installs the dependencies declared in `package.json` and the
-workspace manifests. It is the command to use for local setup, CI, Docker
-layers, and lockfile updates.
+workspace manifests.
 
 ```sh
 aube install
 ```
+
+Most local work does not need a separate install command. `aubr <script>`,
+`aube test`, and `aube exec <bin>` check install freshness first. If
+`package.json` or the lockfile changed, aube installs before running the
+script or binary. For one-off tools, `aubx <pkg>` installs into a throwaway
+environment and runs the binary.
+
+Use `aube install` when the install itself is the task: first local setup
+without running a script, lockfile updates, Docker layers, production-only
+installs, offline installs, linker experiments, and CI flows.
 
 ## Lockfile modes
 
@@ -69,4 +78,3 @@ reflink, hardlink, then copy.
 - [Bun install](https://bun.com/docs/pm/cli/install)
 - [npm install](https://docs.npmjs.com/cli/v10/commands/npm-install)
 - [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)
-

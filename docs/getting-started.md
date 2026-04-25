@@ -12,24 +12,25 @@ See the [installation guide](/installation).
 ## Use it
 
 ```sh
-# install dependencies
-aube install
+# run a script from package.json
+aubr build
 
 # add a dependency
 aube add lodash
-
-# run a script from package.json
-aube run build
 
 # install + run the test script (equivalent to `pnpm install-test`)
 aube test
 ```
 
-::: tip Just run the script — aube handles install
-`aube run test`, `aube test`, and `aube exec vitest` all check install
-freshness before running. If `package.json` or the lockfile changed,
-aube installs first; otherwise it skips straight to the script. You
-rarely need a separate `aube install` step in day-to-day work.
+::: tip Just run the command you wanted
+`aubr build`, `aube test`, and `aube exec vitest` all check install freshness
+before running. If `package.json` or the lockfile changed, aube installs first;
+otherwise it skips straight to the script or binary. For one-off tools, use
+`aubx cowsay hi` instead of running an install step yourself.
+
+You rarely need a separate `aube install` step in day-to-day work. Use it when
+the install itself is the task: first local setup without running a script,
+lockfile updates, Docker layers, production-only installs, or CI flows.
 :::
 
 ::: tip Shortcut binaries: `aubr` and `aubx`

@@ -10,6 +10,11 @@ before trying aube.
 aube install
 ```
 
+Run this once when you specifically want to verify that aube can read and
+write the existing Yarn lockfile. For normal local work, run the command you
+wanted instead: `aubr build`, `aube test`, and `aube exec <bin>` auto-install
+first when dependencies are stale; `aubx <pkg>` handles one-off tools.
+
 aube reads and updates Yarn v1 `yarn.lock` in place and installs packages
 into `node_modules/.aube/`.
 
