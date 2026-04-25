@@ -63,6 +63,7 @@ fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
 #[command(
     name = "aube",
     about = "A fast Node.js package manager",
+    version = version::VERSION_LONG.as_str(),
     disable_version_flag = true
 )]
 pub(crate) struct Cli {
@@ -641,7 +642,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     }
 
     if cli.version {
-        println!("aube {}", crate::version::VERSION.as_str());
+        println!("{}", crate::version::VERSION_LONG.as_str());
         let cwd =
             crate::dirs::project_root_or_cwd().unwrap_or_else(|_| std::path::PathBuf::from("."));
         update_check::check_and_notify(&cwd).await;

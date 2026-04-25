@@ -77,7 +77,7 @@ fn version_flag_reports_binary_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains("aube"));
+        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

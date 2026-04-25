@@ -10,5 +10,29 @@ fn main() {
     {
         println!("cargo:rustc-link-arg-bins=/STACK:8388608");
     }
+    println!("cargo:rustc-env=AUBE_BUILD_DATE={}", build_date());
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// Capture the build host's UTC date as `YYYY-MM-DD` for the `aube
+/// --version` line. Shell-out keeps it dep-free; falls back to
+/// `unknown` if the host's `date` / `Get-Date` isn't reachable.
+fn build_date() -> String {
+    let (cmd, args): (&str, &[&str]) = if cfg!(windows) {
+        (
+            "powershell",
+            &["-NoProfile", "-Command", "Get-Date -UFormat '%Y-%m-%d'"],
+        )
+    } else {
+        ("date", &["-u", "+%Y-%m-%d"])
+    };
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
 }
