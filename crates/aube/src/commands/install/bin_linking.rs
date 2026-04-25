@@ -1,5 +1,8 @@
 use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use miette::{Context, IntoDiagnostic, miette};
+use std::collections::BTreeMap;
+
+pub(crate) type PkgJsonCache = BTreeMap<String, Option<serde_json::Value>>;
 
 /// Link bin entries from packages to node_modules/.bin/
 /// Compute the on-disk directory a dep's materialized package lives
@@ -114,11 +117,35 @@ fn read_materialized_pkg_json(
     Ok(Some(value))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn read_materialized_pkg_json_cached(
+    cache: &mut PkgJsonCache,
+    aube_dir: &std::path::Path,
+    dep_path: &str,
+    name: &str,
+    virtual_store_dir_max_length: usize,
+    placements: Option<&aube_linker::HoistedPlacements>,
+) -> miette::Result<Option<serde_json::Value>> {
+    if let Some(value) = cache.get(dep_path) {
+        return Ok(value.clone());
+    }
+    let value = read_materialized_pkg_json(
+        aube_dir,
+        dep_path,
+        name,
+        virtual_store_dir_max_length,
+        placements,
+    )?;
+    cache.insert(dep_path.to_string(), value.clone());
+    Ok(value)
+}
+
 /// Create top-level + bundled bin symlinks for one dep. Extracted so
 /// both the root-importer pass (`link_bins`) and the per-workspace
 /// loop use the same code path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn link_bins_for_dep(
+    cache: &mut PkgJsonCache,
     aube_dir: &std::path::Path,
     bin_dir: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
@@ -127,7 +154,6 @@ pub(super) fn link_bins_for_dep(
     virtual_store_dir_max_length: usize,
     placements: Option<&aube_linker::HoistedPlacements>,
     shim_opts: aube_linker::BinShimOptions,
-    has_bin_metadata: bool,
 ) -> miette::Result<()> {
     let pkg_dir = materialized_pkg_dir(
         aube_dir,
@@ -136,23 +162,8 @@ pub(super) fn link_bins_for_dep(
         virtual_store_dir_max_length,
         placements,
     );
-    // Fast path: when the lockfile carries bin metadata and says this
-    // package ships none, skip the package.json read + JSON parse.
-    // 95%+ of a typical graph falls into this bucket; the saving
-    // scales with every bin-linking caller (root, per-dep,
-    // per-workspace). `local_source` packages (file:/link:) bypass
-    // the lockfile's bin info so we still consult their on-disk
-    // manifest. Bundled dependencies contribute bins from child
-    // tarballs regardless of the parent's own `bin` field, so
-    // `link_bundled_bins` runs unconditionally below.
-    let skip_bin_read = has_bin_metadata
-        && graph
-            .get_package(dep_path)
-            .is_some_and(|p| p.bin.is_empty() && p.local_source.is_none());
-    if skip_bin_read {
-        return link_bundled_bins(bin_dir, &pkg_dir, graph, dep_path, shim_opts);
-    }
-    if let Some(pkg_json) = read_materialized_pkg_json(
+    if let Some(pkg_json) = read_materialized_pkg_json_cached(
+        cache,
         aube_dir,
         dep_path,
         name,
@@ -175,13 +186,14 @@ pub(super) fn link_bins(
     virtual_store_dir_max_length: usize,
     placements: Option<&aube_linker::HoistedPlacements>,
     shim_opts: aube_linker::BinShimOptions,
-    has_bin_metadata: bool,
+    cache: &mut PkgJsonCache,
 ) -> miette::Result<()> {
     let bin_dir = project_dir.join(modules_dir_name).join(".bin");
     std::fs::create_dir_all(&bin_dir).into_diagnostic()?;
 
     for dep in graph.root_deps() {
         link_bins_for_dep(
+            cache,
             aube_dir,
             &bin_dir,
             graph,
@@ -190,7 +202,6 @@ pub(super) fn link_bins(
             virtual_store_dir_max_length,
             placements,
             shim_opts,
-            has_bin_metadata,
         )?;
     }
 
@@ -218,7 +229,7 @@ pub(crate) fn link_dep_bins(
     virtual_store_dir_max_length: usize,
     placements: Option<&aube_linker::HoistedPlacements>,
     shim_opts: aube_linker::BinShimOptions,
-    has_bin_metadata: bool,
+    cache: &mut PkgJsonCache,
 ) -> miette::Result<()> {
     if placements.is_some() {
         // Hoisted — skip. See function doc.
@@ -226,30 +237,6 @@ pub(crate) fn link_dep_bins(
     }
     for (dep_path, pkg) in &graph.packages {
         if pkg.dependencies.is_empty() {
-            continue;
-        }
-        // Fast path: when lockfile bin metadata is trustworthy and
-        // none of this package's children declare bins, the whole dep
-        // contributes nothing to a local `.bin/`. Skipping here avoids
-        // both the `pkg_dir.exists()` stat and the per-child
-        // `link_bins_for_dep` dispatch on ~95% of entries in a typical
-        // graph. Escape hatches: a child with `local_source`
-        // (file:/link:) bypasses the lockfile's bin map; a child with
-        // its *own* `bundled_dependencies` can ship bins from its
-        // nested tarballs that `link_bins_for_dep` -> `link_bundled_bins`
-        // surfaces into the parent's `.bin/`, so we must dispatch
-        // normally for it.
-        if has_bin_metadata
-            && pkg.bundled_dependencies.is_empty()
-            && pkg.dependencies.iter().all(|(child_name, child_version)| {
-                let child_dep_path = format!("{child_name}@{child_version}");
-                graph.get_package(&child_dep_path).is_some_and(|c| {
-                    c.bin.is_empty()
-                        && c.local_source.is_none()
-                        && c.bundled_dependencies.is_empty()
-                })
-            })
-        {
             continue;
         }
         let pkg_dir = materialized_pkg_dir(
@@ -286,6 +273,7 @@ pub(crate) fn link_dep_bins(
             // platform); `link_bins_for_dep` already returns Ok when
             // the target pkg_json is absent, so just call through.
             link_bins_for_dep(
+                cache,
                 aube_dir,
                 &bin_dir,
                 graph,
@@ -294,7 +282,6 @@ pub(crate) fn link_dep_bins(
                 virtual_store_dir_max_length,
                 placements,
                 shim_opts,
-                has_bin_metadata,
             )?;
         }
     }
@@ -431,4 +418,80 @@ fn create_bin_link(
             )
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aube_lockfile::{DepType, DirectDep, LockedPackage, LockfileGraph};
+
+    fn locked(name: &str, version: &str, bin: BTreeMap<String, String>) -> LockedPackage {
+        LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            dep_path: format!("{name}@{version}"),
+            bin,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn link_bins_reads_manifest_when_lockfile_metadata_is_mixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path();
+        let aube_dir = project_dir.join("node_modules/.aube");
+        let dep_path = "vitepress@1.6.4";
+        let pkg_dir = materialized_pkg_dir(&aube_dir, dep_path, "vitepress", 120, None);
+        std::fs::create_dir_all(pkg_dir.join("bin")).unwrap();
+        std::fs::write(
+            pkg_dir.join("package.json"),
+            r#"{"name":"vitepress","bin":{"vitepress":"bin/vitepress.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg_dir.join("bin/vitepress.js"), "#!/usr/bin/env node\n").unwrap();
+
+        let mut semver_bin = BTreeMap::new();
+        semver_bin.insert("semver".to_string(), "bin/semver.js".to_string());
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            dep_path.to_string(),
+            locked("vitepress", "1.6.4", BTreeMap::new()),
+        );
+        packages.insert(
+            "semver@7.7.4".to_string(),
+            locked("semver", "7.7.4", semver_bin),
+        );
+
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "vitepress".to_string(),
+                dep_path: dep_path.to_string(),
+                dep_type: DepType::Dev,
+                specifier: Some("^1.5.0".to_string()),
+            }],
+        );
+
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        link_bins(
+            project_dir,
+            "node_modules",
+            &aube_dir,
+            &graph,
+            120,
+            None,
+            aube_linker::BinShimOptions::default(),
+            &mut PkgJsonCache::new(),
+        )
+        .unwrap();
+
+        assert!(project_dir.join("node_modules/.bin/vitepress").exists());
+    }
 }
