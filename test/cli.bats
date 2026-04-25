@@ -12,7 +12,9 @@ teardown() {
 @test "aube --version" {
 	run aube --version
 	assert_success
-	assert_output --partial "aube"
+	# Mise-style: `<ver> <os>-<arch> (<date>)`. Match the trailing
+	# `(YYYY-MM-DD)` so the assertion stays platform-agnostic.
+	assert_output --regexp '\([0-9]{4}-[0-9]{2}-[0-9]{2}\)$'
 }
 
 @test "aube --help" {
