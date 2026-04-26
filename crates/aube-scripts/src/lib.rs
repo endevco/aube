@@ -269,7 +269,6 @@ fn spawn_jailed_shell(
     settings: &ScriptSettings,
     _jail: &ScriptJail,
     _home: &Path,
-    _path_env: &std::ffi::OsStr,
 ) -> tokio::process::Command {
     spawn_shell_with_settings(script_cmd, settings)
 }
