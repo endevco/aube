@@ -1899,12 +1899,13 @@ mod retry_tests {
     }
 
     #[tokio::test]
-    async fn tarball_timeout_retries_at_most_once_even_with_high_retry_budget() {
-        // Tarball server delays past client `fetchTimeout`. With
-        // `retries=5` the unbounded policy would attempt 6 times; the
-        // timeout cap collapses that to 2 (1 initial + 1 retry). Pins
-        // the contract that a degraded upstream can't drag the install
-        // through `fetchTimeout × (retries + 1)` of wall-clock.
+    async fn tarball_headers_timeout_retries_at_most_once_even_with_high_retry_budget() {
+        // Headers-stage timeout: server delays the entire response past
+        // client `fetchTimeout`, so the `Err` arm of `send().await` fires.
+        // With `retries=5` the unbounded policy would attempt 6 times;
+        // the timeout cap collapses that to 2 (1 initial + 1 retry). The
+        // body-read path is covered separately by
+        // `tarball_body_read_timeout_retries_at_most_once`.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/pkg.tgz"))
@@ -1943,6 +1944,84 @@ mod retry_tests {
             requests.len(),
             2,
             "timeouts must cap retries at 1 regardless of fetchRetries",
+        );
+    }
+
+    #[tokio::test]
+    async fn tarball_body_read_timeout_retries_at_most_once() {
+        // Body-read timeout: a different code path from headers-stage
+        // timeouts. Server sends the 200 status line + headers
+        // immediately, then stalls the body. reqwest's `fetchTimeout`
+        // fires inside `resp.chunk().await` during `read_body_capped`,
+        // surfacing as `Error::Http(reqwest_timeout)` from the Ok-arm of
+        // the retry loop — guarded by `timeout_retry_exhausted`. This
+        // is the actual reproducer shape: `@cloudflare/workerd-*`
+        // tarballs trickling under a degraded CDN edge.
+        //
+        // wiremock's `set_delay` delays the *whole* response (including
+        // headers), so it can't reproduce this. We need a raw TCP
+        // listener that splits header-write and body-stall.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let count_handle = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                count_handle.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    // Drain the request — reqwest waits for headers before
+                    // returning from `send()`, so we must answer them.
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\n\
+                              Content-Length: 1048576\r\n\
+                              Content-Type: application/octet-stream\r\n\r\n",
+                        )
+                        .await;
+                    let _ = sock.flush().await;
+                    // Hold the connection without writing the body so the
+                    // client times out mid-`chunk()`. Bounded so the test
+                    // never wedges if the runtime forgets to drop us.
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                });
+            }
+        });
+
+        let policy = FetchPolicy {
+            timeout_ms: 100,
+            retries: 5,
+            retry_factor: 1,
+            retry_min_timeout_ms: 1,
+            retry_max_timeout_ms: 1,
+            ..FetchPolicy::default()
+        };
+        let config = NpmConfig {
+            registry: format!("http://{addr}/"),
+            ..Default::default()
+        };
+        let client = RegistryClient::from_config_with_policy(config, policy);
+        let url = format!("http://{addr}/pkg.tgz");
+        let err = client
+            .fetch_tarball_bytes(&url)
+            .await
+            .expect_err("body-read timeout should surface");
+        assert!(
+            matches!(&err, Error::Http(e) if e.is_timeout() || e.is_request()),
+            "expected timeout-shaped error, got {err:?}",
+        );
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "body-read timeouts must cap retries at 1 regardless of fetchRetries",
         );
     }
 
