@@ -159,7 +159,7 @@ jobs:
           Section: utils
           Priority: optional
           Maintainer: ${MAINTAINER_NAME} <${MAINTAINER_EMAIL}>
-          Build-Depends: debhelper-compat (= 13), rustc (>= 1.93), cargo, libssl-dev, pkgconf
+          Build-Depends: debhelper-compat (= 13), rustc (>= 1.93), cargo, libssl-dev, pkgconf, cmake
           Standards-Version: 4.6.2
           Homepage: https://aube.en.dev
           Vcs-Git: https://github.com/endevco/aube.git
