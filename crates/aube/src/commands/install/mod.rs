@@ -1612,9 +1612,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // We parse once and keep both the graph and its kind so the
     // `--lockfile-only` block below can reuse the same result for its
     // freshness check instead of re-reading + re-parsing the same file.
+    //
+    // Hard-fail on a real parse error: the prior in-arm parse in
+    // `FrozenMode::Prefer` propagated parse errors out of
+    // `lockfile_result`, and silently swallowing them here would leave
+    // a corrupt lockfile masquerading as "no lockfile" and trigger a
+    // full re-resolve without surfacing the actionable diagnostic.
+    // `NotFound` is the one error we treat as expected — it just means
+    // the lockfile is absent, which the downstream arms already handle.
     let lockfile_pre_parse: Option<(aube_lockfile::LockfileGraph, aube_lockfile::LockfileKind)> =
         if lockfile_enabled && matches!(mode, FrozenMode::Fix | FrozenMode::Prefer) {
-            aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest).ok()
+            match aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest) {
+                Ok(parsed) => Some(parsed),
+                Err(aube_lockfile::Error::NotFound(_)) => None,
+                Err(e) => {
+                    return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile");
+                }
+            }
         } else {
             None
         };

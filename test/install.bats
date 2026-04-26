@@ -415,6 +415,22 @@ JSON
 	assert_failure
 }
 
+@test "aube install surfaces lockfile parse errors instead of silently re-resolving" {
+	# Regression: when `lockfile_pre_parse` swallowed errors via `.ok()`,
+	# a corrupt lockfile in the default Prefer mode masqueraded as
+	# "no lockfile" and silently triggered a full re-resolve. Users
+	# should see a real diagnostic and a chance to fix the lockfile.
+	echo '{"name":"test","version":"1.0.0","dependencies":{"is-odd":"^3.0.1"}}' >package.json
+	cat >aube-lock.yaml <<'EOF'
+lockfileVersion: '9.0'
+settings:
+this is not valid yaml [
+EOF
+	run aube install
+	assert_failure
+	assert_output --partial "failed to parse lockfile"
+}
+
 @test "aube install without lockfile resolves from scratch" {
 	echo '{"name":"test","version":"1.0.0"}' >package.json
 	run aube -v install
