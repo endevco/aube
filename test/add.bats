@@ -41,7 +41,7 @@ EOF
 }
 EOF
 
-	run aube add -D is-odd
+	run aube add -D is-odd@3.0.1
 	assert_success
 
 	# Should be in devDependencies, not dependencies
@@ -67,7 +67,7 @@ EOF
 }
 EOF
 
-	run aube add -D is-odd
+	run aube add -D is-odd@3.0.1
 	assert_success
 
 	cat >expected-package.json <<'EOF'
@@ -80,7 +80,7 @@ EOF
   },
   "devDependencies": {
     "is-even": "^1.0.0",
-    "is-odd": "^3.0.1"
+    "is-odd": "3.0.1"
   }
 }
 EOF
