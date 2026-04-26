@@ -1589,24 +1589,31 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         None
     };
 
-    // Surgical `--fix-lockfile` support: when we're in Fix mode and a
-    // lockfile parses cleanly, hand it to the resolver as `existing`
-    // so unchanged specs reuse their already-pinned versions. Entries
-    // whose spec drifted fall through the resolver's version-satisfies
-    // fast path and get re-resolved naturally. On Fix with no lockfile
-    // present, this stays `None` and Fix degrades to a fresh resolve.
+    // Hand any parseable lockfile to the resolver as `existing` so
+    // unchanged specs reuse their already-pinned versions and only
+    // entries whose spec actually drifted get re-resolved. Without
+    // this, `aube install` after any manifest edit re-resolves every
+    // transitive against the latest packument and silently bumps
+    // versions that the previous lockfile had pinned (e.g.
+    // `electron-to-chromium@1.5.344` → `1.5.343`), which is the
+    // opposite of what pnpm/bun's default `install` does.
+    //
+    // Frozen mode short-circuits to the lockfile-as-truth branch and
+    // never calls the resolver, so parsing here is wasted work for it
+    // — gate this on the modes that actually re-resolve.
     //
     // We parse once and keep both the graph and its kind so the
     // `--lockfile-only` block below can reuse the same result for its
     // freshness check instead of re-reading + re-parsing the same file.
-    let fix_mode_parse: Option<(aube_lockfile::LockfileGraph, aube_lockfile::LockfileKind)> =
-        if mode == FrozenMode::Fix && lockfile_enabled {
+    let lockfile_pre_parse: Option<(aube_lockfile::LockfileGraph, aube_lockfile::LockfileKind)> =
+        if lockfile_enabled && matches!(mode, FrozenMode::Fix | FrozenMode::Prefer | FrozenMode::No)
+        {
             aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest).ok()
         } else {
             None
         };
     let existing_for_resolver: Option<&aube_lockfile::LockfileGraph> =
-        fix_mode_parse.as_ref().map(|(g, _)| g);
+        lockfile_pre_parse.as_ref().map(|(g, _)| g);
 
     // `--lockfile-only` short-circuit. Resolves (or reuses a fresh
     // lockfile), writes the new lockfile, and exits before any tarball
@@ -1623,16 +1630,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // or CI's auto-Frozen) a fresh lockfile is a no-op — for Fix
         // specifically, "fresh" means "nothing to fix."
         let force_resolve = matches!(mode, FrozenMode::No);
-        // Reuse the Fix-mode pre-parse when we already have it so we
+        // Reuse the up-front pre-parse when we already have it so we
         // don't read and parse the same lockfile twice on
-        // `--fix-lockfile --lockfile-only`. The borrowed form is all
-        // the freshness check needs — `existing_for_resolver` still
-        // points at the same graph for the resolver call below.
+        // `--lockfile-only`. The borrowed form is all the freshness
+        // check needs — `existing_for_resolver` still points at the
+        // same graph for the resolver call below.
         let parsed_owned;
         let parsed: Result<
             (&aube_lockfile::LockfileGraph, aube_lockfile::LockfileKind),
             &aube_lockfile::Error,
-        > = if let Some((g, k)) = fix_mode_parse.as_ref() {
+        > = if let Some((g, k)) = lockfile_pre_parse.as_ref() {
             Ok((g, *k))
         } else {
             parsed_owned = aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest);
@@ -2401,9 +2408,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             });
 
             // Run resolution (this streams packages to the fetch coordinator).
-            // `existing_for_resolver` is `Some` only in `--fix-lockfile` mode;
-            // in every other fresh-resolve path it's `None`, matching the
-            // previous behavior.
+            // `existing_for_resolver` is `Some` whenever a lockfile parsed
+            // cleanly (Fix / Prefer / No modes); the resolver reuses
+            // already-pinned versions for unchanged specs and only
+            // re-resolves entries whose spec drifted.
             let resolve_result = if has_workspace {
                 resolver
                     .resolve_workspace(&manifests, existing_for_resolver, &ws_package_versions)
