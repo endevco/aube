@@ -2287,7 +2287,20 @@ impl Linker {
         // ensured is empty), so nothing can be in the way.
         for (dep_name, dep_version) in &pkg.dependencies {
             let dep_dep_path = format!("{dep_name}@{dep_version}");
-            if dep_dep_path == *dep_path && dep_name == &pkg.name {
+            // Skip any dep whose name matches the package being
+            // materialized, regardless of version. The symlink would
+            // land at `pkg_nm_parent.join(dep_name)` which is exactly
+            // `pkg_nm_dir` — the directory we just populated with the
+            // package's own files — and `create_dir_link` would fail
+            // EEXIST. The skip used to require version-equality too,
+            // but published packages occasionally declare a *different*
+            // version of themselves as a dep (e.g. `react_ujs@3.3.0`
+            // pins `react_ujs@^2.7.1`, an artifact of how its build
+            // script generates its package.json). Treat that as a
+            // self-reference: `require('<self>')` from inside the
+            // package resolves to its own files, matching what npm /
+            // pnpm / yarn end up with after their hoisting passes.
+            if dep_name == &pkg.name {
                 continue;
             }
             // Match the parent's convention: global-store materialization
@@ -3288,6 +3301,78 @@ mod tests {
         match strategy {
             LinkStrategy::Reflink | LinkStrategy::Hardlink | LinkStrategy::Copy => {}
         }
+    }
+
+    #[test]
+    fn test_link_all_handles_self_referential_dep_at_different_version() {
+        // `react_ujs@3.3.0` (and other publish-script artifacts)
+        // declares its own name as a dep at a *different* version
+        // (`react_ujs: ^2.7.1`). The transitive-symlink pass would
+        // try to create a symlink at `node_modules/react_ujs`,
+        // which is exactly where the package's own files live —
+        // EEXIST. Skip self-name deps regardless of version so
+        // these install cleanly. `require('<self>')` from inside
+        // the package then resolves to its own files, matching how
+        // npm / pnpm / yarn end up after their hoisting passes.
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let store = Store::at(dir.path().join("store/files"));
+
+        let mut indices = BTreeMap::new();
+        let host_index_js = store.import_bytes(b"/* react_ujs 3.3.0 */", false).unwrap();
+        let host_pkg_json = store
+            .import_bytes(b"{\"name\":\"react_ujs\",\"version\":\"3.3.0\"}", false)
+            .unwrap();
+        let mut host_index = BTreeMap::new();
+        host_index.insert("index.js".to_string(), host_index_js);
+        host_index.insert("package.json".to_string(), host_pkg_json);
+        indices.insert("react_ujs@3.3.0".to_string(), host_index);
+
+        let mut host_deps = BTreeMap::new();
+        // Self-reference at a different version, the shape that
+        // triggered the EEXIST bug.
+        host_deps.insert("react_ujs".to_string(), "^2.7.1".to_string());
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "react_ujs@3.3.0".to_string(),
+            LockedPackage {
+                name: "react_ujs".to_string(),
+                version: "3.3.0".to_string(),
+                integrity: None,
+                dependencies: host_deps,
+                dep_path: "react_ujs@3.3.0".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "react_ujs".to_string(),
+                dep_path: "react_ujs@3.3.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        let linker = Linker::new_with_gvs(&store, LinkStrategy::Copy, true);
+        let stats = linker
+            .link_all(&project_dir, &graph, &indices)
+            .expect("install must succeed despite self-named dep");
+        assert_eq!(stats.packages_linked, 1);
+        let host_index =
+            project_dir.join("node_modules/.aube/react_ujs@3.3.0/node_modules/react_ujs/index.js");
+        assert!(host_index.exists(), "host package files must be present");
     }
 
     #[test]
