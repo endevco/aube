@@ -444,7 +444,7 @@ leaving `hoist=true` (equivalent to setting `hoist=false`).
 Packages to hoist directly to the root node_modules.
 
 - Type: `list<string>`
-- Default: `["*types*", "*eslint*", "@prettier/plugin-*", "*prettier-plugin-*"]`
+- Default: `[]`
 - CLI flags: `public-hoist-pattern`
 - Environment: `npm_config_public_hoist_pattern`, `NPM_CONFIG_PUBLIC_HOIST_PATTERN`, `AUBE_PUBLIC_HOIST_PATTERN`
 - .npmrc keys: `public-hoist-pattern`, `publicHoistPattern`
@@ -456,12 +456,6 @@ no `!`-prefixed negation) gets a top-level `node_modules/<name>`
 symlink in addition to the usual direct-dep entries, so frameworks
 like Next.js, Storybook, and Jest can resolve transitive deps from the
 project root without adding them to `package.json`.
-
-The default patterns match pnpm: `*types*` hoists `@types/*` and similar
-type-definition packages so TypeScript can resolve them from the project
-root; `*eslint*` hoists ESLint configs and plugins; `@prettier/plugin-*`
-and `*prettier-plugin-*` hoist Prettier plugins. Setting this option in
-`.npmrc` or `pnpm-workspace.yaml` replaces the defaults entirely.
 
 Matching is case-insensitive; direct deps always win on name clashes,
 and the pattern pass runs before `shamefullyHoist`. Use sparingly --
