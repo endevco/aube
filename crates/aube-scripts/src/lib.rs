@@ -17,6 +17,8 @@ pub mod policy;
 pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError};
 
 use aube_manifest::PackageJson;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Settings that affect every package-script shell aube spawns.
@@ -32,14 +34,12 @@ pub struct ScriptSettings {
 #[derive(Debug, Clone)]
 pub struct ScriptJail {
     pub package_dir: PathBuf,
-    pub dep_modules_dir: PathBuf,
 }
 
 impl ScriptJail {
-    pub fn new(package_dir: impl Into<PathBuf>, dep_modules_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(package_dir: impl Into<PathBuf>) -> Self {
         Self {
             package_dir: package_dir.into(),
-            dep_modules_dir: dep_modules_dir.into(),
         }
     }
 }
@@ -370,7 +370,18 @@ fn safe_jail_env_key(key: &str) -> bool {
     key.starts_with("npm_config_")
 }
 
+fn inherit_jail_env_key(key: &str) -> bool {
+    safe_jail_env_key(key)
+        && !matches!(
+            key,
+            "PATH" | "HOME" | "npm_lifecycle_event" | "npm_package_name" | "npm_package_version"
+        )
+}
+
 fn jail_home(package_dir: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    package_dir.hash(&mut hasher);
+    let hash = hasher.finish();
     let name = package_dir
         .file_name()
         .and_then(|s| s.to_str())
@@ -387,7 +398,7 @@ fn jail_home(package_dir: &Path) -> PathBuf {
     std::env::temp_dir()
         .join("aube-jail")
         .join(std::process::id().to_string())
-        .join(name)
+        .join(format!("{name}-{hash:016x}"))
 }
 
 fn apply_jail_env(
@@ -415,7 +426,7 @@ fn apply_jail_env(
         let Some(key_str) = key.to_str() else {
             continue;
         };
-        if safe_jail_env_key(key_str) && key_str != "PATH" && key_str != "HOME" {
+        if inherit_jail_env_key(key_str) {
             cmd.env(key, val);
         }
     }
@@ -590,6 +601,7 @@ pub async fn run_script(
             manifest,
             script_name,
         );
+        apply_script_settings_env(&mut cmd, &settings);
     }
 
     tracing::debug!("lifecycle: {script_name} → {script_cmd}");
@@ -778,6 +790,88 @@ pub enum Error {
     Spawn(String, String),
     #[error("script `{script}` exited with code {code:?}")]
     NonZeroExit { script: String, code: Option<i32> },
+}
+
+#[cfg(test)]
+mod jail_tests {
+    use super::*;
+
+    #[test]
+    fn jail_home_uses_full_package_path() {
+        let a = jail_home(Path::new("/tmp/project/node_modules/@scope-a/native"));
+        let b = jail_home(Path::new("/tmp/project/node_modules/@scope-b/native"));
+
+        assert_ne!(a, b);
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("native-")
+        );
+        assert!(
+            b.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("native-")
+        );
+    }
+
+    #[test]
+    fn parent_env_cannot_override_explicit_jail_metadata() {
+        for key in [
+            "PATH",
+            "HOME",
+            "npm_lifecycle_event",
+            "npm_package_name",
+            "npm_package_version",
+        ] {
+            assert!(!inherit_jail_env_key(key));
+        }
+        assert!(inherit_jail_env_key("INIT_CWD"));
+        assert!(inherit_jail_env_key("npm_config_arch"));
+        assert!(!inherit_jail_env_key("npm_config__authToken"));
+    }
+
+    #[test]
+    fn jail_env_preserves_script_settings_after_clear() {
+        let mut cmd = tokio::process::Command::new("node");
+        let manifest = PackageJson {
+            name: Some("pkg".to_string()),
+            version: Some("1.2.3".to_string()),
+            ..Default::default()
+        };
+        let settings = ScriptSettings {
+            node_options: Some("--conditions=aube".to_string()),
+            unsafe_perm: Some(false),
+            shell_emulator: true,
+            ..Default::default()
+        };
+
+        apply_jail_env(
+            &mut cmd,
+            std::ffi::OsStr::new("/bin"),
+            Path::new("/tmp/aube-jail/home"),
+            Path::new("/tmp/project"),
+            &manifest,
+            "postinstall",
+        );
+        apply_script_settings_env(&mut cmd, &settings);
+
+        let envs = cmd.as_std().get_envs().collect::<Vec<_>>();
+        let env = |name: &str| {
+            envs.iter()
+                .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+                .and_then(|(_, val)| *val)
+                .and_then(|val| val.to_str())
+        };
+
+        assert_eq!(env("NODE_OPTIONS"), Some("--conditions=aube"));
+        assert_eq!(env("npm_config_unsafe_perm"), Some("false"));
+        assert_eq!(env("npm_config_shell_emulator"), Some("true"));
+        assert_eq!(env("npm_lifecycle_event"), Some("postinstall"));
+        assert_eq!(env("npm_package_name"), Some("pkg"));
+        assert_eq!(env("npm_package_version"), Some("1.2.3"));
+    }
 }
 
 #[cfg(all(test, windows))]

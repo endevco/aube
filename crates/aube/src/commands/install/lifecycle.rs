@@ -340,8 +340,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                 .as_deref()
                 .map(|p| vec![p])
                 .unwrap_or_default();
-            let jail = jail_builds
-                .then(|| aube_scripts::ScriptJail::new(&job.package_dir, &job.dep_modules_dir));
+            let jail = jail_builds.then(|| aube_scripts::ScriptJail::new(&job.package_dir));
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
                 let did_run = aube_scripts::run_dep_hook(
