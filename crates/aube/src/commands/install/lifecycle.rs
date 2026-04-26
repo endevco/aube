@@ -89,14 +89,24 @@ impl JailBuildPolicy {
     pub(crate) fn from_settings(
         ctx: &aube_settings::ResolveCtx<'_>,
         workspace: &aube_manifest::WorkspaceConfig,
-    ) -> (Self, Vec<aube_scripts::BuildPolicyError>) {
+    ) -> (Self, Vec<String>) {
         let enabled = aube_settings::resolved::jail_builds(ctx);
         let jail_exclusions = aube_settings::resolved::jail_build_exclusions(ctx);
-        let (denylist, warnings) = aube_scripts::BuildPolicy::denylist(&jail_exclusions);
+        let (denylist, denylist_warnings) = aube_scripts::BuildPolicy::denylist(&jail_exclusions);
+        let mut warnings = denylist_warnings
+            .into_iter()
+            .map(|warning| format!("jailBuildExclusions: {warning}"))
+            .collect::<Vec<_>>();
         let grants = workspace
             .jail_build_permissions
             .iter()
-            .map(|(pattern, grant)| (pattern.clone(), grant.clone()))
+            .filter_map(|(pattern, grant)| {
+                if let Err(err) = aube_scripts::pattern_matches(pattern, "", "") {
+                    warnings.push(format!("jailBuildPermissions: {err}"));
+                    return None;
+                }
+                Some((pattern.clone(), grant.clone()))
+            })
             .collect();
         (
             Self {
@@ -149,7 +159,7 @@ impl JailBuildPolicy {
                     network |= grant.network;
                 }
                 Ok(false) => {}
-                Err(err) => tracing::warn!("jailBuildPermissions pattern {pattern:?}: {err}"),
+                Err(_) => {}
             }
         }
         Some(
@@ -449,6 +459,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                 &job.package_dir,
                 &project_dir,
             );
+            let _jail_home_cleanup = jail.as_ref().map(aube_scripts::ScriptJailHomeCleanup::new);
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
                 let did_run = aube_scripts::run_dep_hook(

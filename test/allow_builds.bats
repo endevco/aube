@@ -154,6 +154,9 @@ YAML
 	assert_success
 	assert_output --partial "name=aube-test-jailed-build"
 	assert_output --partial "aube-jail"
+	home_path="$(printf '%s\n' "$output" | sed -n 's/^home=//p')"
+	[ -n "$home_path" ]
+	[ ! -d "$home_path" ]
 }
 
 @test "jailBuildExclusions glob lets matching packages opt out of jailBuilds" {
@@ -179,6 +182,37 @@ YAML
 	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
 	assert_success
 	refute_output --partial "aube-jail"
+}
+
+@test "invalid jailBuildPermissions glob warns once before dep scripts run" {
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-invalid-permissions-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-jailed-build": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-jailed-build"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+jailBuildPermissions:
+  "aube-test-*@1.0.0":
+    env:
+      - SHARP_DIST_BASE_URL
+YAML
+	run aube install
+	assert_success
+	assert_output --partial "warn: jailBuildPermissions:"
+	warning_count="$(printf '%s\n' "$output" | grep -c "warn: jailBuildPermissions:")"
+	[ "$warning_count" -eq 1 ]
+	refute_output --partial "warn: jailBuildExclusions:"
+	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
+	assert_success
+	assert_output --partial "aube-jail"
 }
 
 @test "jailBuilds prevents dep scripts from writing to INIT_CWD on macOS" {

@@ -72,6 +72,28 @@ impl ScriptJail {
     }
 }
 
+pub struct ScriptJailHomeCleanup {
+    path: PathBuf,
+}
+
+impl ScriptJailHomeCleanup {
+    pub fn new(jail: &ScriptJail) -> Self {
+        Self {
+            path: jail_home(&jail.package_dir),
+        }
+    }
+}
+
+impl Drop for ScriptJailHomeCleanup {
+    fn drop(&mut self) {
+        if self.path.exists()
+            && let Err(err) = std::fs::remove_dir_all(&self.path)
+        {
+            tracing::debug!("failed to clean jail HOME {}: {err}", self.path.display());
+        }
+    }
+}
+
 static SCRIPT_SETTINGS: std::sync::OnceLock<std::sync::RwLock<ScriptSettings>> =
     std::sync::OnceLock::new();
 
@@ -172,7 +194,16 @@ fn sbpl_escape(s: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn jail_profile(jail: &ScriptJail, home: &Path, _path_env: &std::ffi::OsStr) -> String {
+fn push_write_rule(rules: &mut Vec<String>, path: &Path) {
+    let path = sbpl_escape(&path.to_string_lossy());
+    let rule = format!("(allow file-write* (subpath \"{path}\"))");
+    if !rules.iter().any(|existing| existing == &rule) {
+        rules.push(rule);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn jail_profile(jail: &ScriptJail, home: &Path) -> String {
     let mut rules = vec![
         "(version 1)".to_string(),
         "(allow default)".to_string(),
@@ -187,29 +218,23 @@ fn jail_profile(jail: &ScriptJail, home: &Path, _path_env: &std::ffi::OsStr) -> 
         Path::new("/tmp"),
         Path::new("/private/tmp"),
         Path::new("/dev"),
-        home,
     ] {
-        let path = sbpl_escape(&path.to_string_lossy());
-        rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+        push_write_rule(&mut rules, path);
     }
     for path in [&jail.package_dir, home] {
-        let path = sbpl_escape(&path.to_string_lossy());
-        rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+        push_write_rule(&mut rules, path);
     }
     for path in &jail.write_paths {
-        let path = sbpl_escape(&path.to_string_lossy());
-        rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+        push_write_rule(&mut rules, path);
     }
     for path in [&jail.package_dir, home] {
         if let Ok(canonical) = path.canonicalize() {
-            let path = sbpl_escape(&canonical.to_string_lossy());
-            rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+            push_write_rule(&mut rules, &canonical);
         }
     }
     for path in &jail.write_paths {
         if let Ok(canonical) = path.canonicalize() {
-            let path = sbpl_escape(&canonical.to_string_lossy());
-            rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+            push_write_rule(&mut rules, &canonical);
         }
     }
     rules.join("\n")
@@ -221,13 +246,12 @@ fn spawn_jailed_shell(
     settings: &ScriptSettings,
     jail: &ScriptJail,
     home: &Path,
-    path_env: &std::ffi::OsStr,
 ) -> tokio::process::Command {
     let shell = settings
         .script_shell
         .as_deref()
         .unwrap_or_else(|| Path::new("sh"));
-    let profile = jail_profile(jail, home, path_env);
+    let profile = jail_profile(jail, home);
     let mut cmd = tokio::process::Command::new("sandbox-exec");
     cmd.arg("-p")
         .arg(profile)
@@ -607,9 +631,7 @@ pub async fn run_script(
             .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
     }
     let mut cmd = match (jail, jail_home.as_deref()) {
-        (Some(jail), Some(home)) => {
-            spawn_jailed_shell(script_cmd, &settings, jail, home, &new_path)
-        }
+        (Some(jail), Some(home)) => spawn_jailed_shell(script_cmd, &settings, jail, home),
         _ => spawn_shell_with_settings(script_cmd, &settings),
     };
     cmd.current_dir(script_dir)
@@ -856,6 +878,25 @@ mod jail_tests {
                 .to_string_lossy()
                 .starts_with("native-")
         );
+    }
+
+    #[test]
+    fn jail_home_cleanup_removes_temp_home() {
+        let package_dir = std::env::temp_dir()
+            .join("aube-jail-cleanup-test")
+            .join(std::process::id().to_string())
+            .join("node_modules")
+            .join("native");
+        let jail = ScriptJail::new(&package_dir);
+        let home = jail_home(&package_dir);
+        std::fs::create_dir_all(home.join(".cache")).unwrap();
+        std::fs::write(home.join(".cache").join("marker"), "x").unwrap();
+
+        {
+            let _cleanup = ScriptJailHomeCleanup::new(&jail);
+        }
+
+        assert!(!home.exists());
     }
 
     #[test]
