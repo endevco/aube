@@ -522,6 +522,70 @@ mod tests {
         assert!(!graph.packages.contains_key("native-linux@1.0.0"));
     }
 
+    #[test]
+    fn filter_graph_prunes_npm_lockfile_transitive_optional_platform_mismatch() {
+        let content = r#"{
+            "name": "platform-optional-root",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "platform-optional-root",
+                    "version": "1.0.0",
+                    "dependencies": { "host": "file:host" }
+                },
+                "node_modules/host": {
+                    "resolved": "host",
+                    "link": true
+                },
+                "host": {
+                    "name": "host",
+                    "version": "1.0.0",
+                    "optionalDependencies": { "native-win": "1.0.0" }
+                },
+                "node_modules/native-win": {
+                    "version": "1.0.0",
+                    "resolved": "https://registry.npmjs.org/native-win/-/native-win-1.0.0.tgz",
+                    "integrity": "sha512-native",
+                    "optional": true,
+                    "os": ["win32"],
+                    "cpu": ["x64"],
+                    "libc": ["glibc"]
+                }
+            }
+        }"#;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), content).unwrap();
+        let mut graph = aube_lockfile::npm::parse(tmp.path()).unwrap();
+
+        let host_dep_path = graph.importers["."][0].dep_path.clone();
+        assert!(
+            graph.packages.contains_key(&host_dep_path),
+            "fixture must contain the host package before filtering"
+        );
+        assert!(
+            graph.packages.contains_key("native-win@1.0.0"),
+            "fixture must contain native-win before filtering"
+        );
+        let host = &graph.packages[&host_dep_path];
+        assert!(host.dependencies.contains_key("native-win"));
+        assert!(host.optional_dependencies.contains_key("native-win"));
+
+        let supported = SupportedArchitectures {
+            os: s(&["linux"]),
+            cpu: s(&["x64"]),
+            libc: s(&["glibc"]),
+            ..Default::default()
+        };
+        filter_graph(&mut graph, &supported, &Default::default());
+
+        assert!(graph.packages.contains_key(&host_dep_path));
+        assert!(!graph.packages.contains_key("native-win@1.0.0"));
+        let host = &graph.packages[&host_dep_path];
+        assert!(!host.dependencies.contains_key("native-win"));
+        assert!(!host.optional_dependencies.contains_key("native-win"));
+    }
+
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn libc_ignored_off_linux() {

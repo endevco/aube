@@ -70,6 +70,12 @@ struct RawNpmPackage {
     peer_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     peer_dependencies_meta: BTreeMap<String, RawNpmPeerDepMeta>,
+    #[serde(default)]
+    os: Vec<String>,
+    #[serde(default)]
+    cpu: Vec<String>,
+    #[serde(default)]
+    libc: Vec<String>,
     /// Captured verbatim for round-trip. npm writes these on every
     /// package entry; dropping them on re-emit is one of the
     /// remaining sources of `aube install --no-frozen-lockfile`
@@ -384,6 +390,9 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 peer_dependencies_meta,
                 dep_path,
                 local_source,
+                os: package_entry.os.iter().cloned().collect(),
+                cpu: package_entry.cpu.iter().cloned().collect(),
+                libc: package_entry.libc.iter().cloned().collect(),
                 alias_of,
                 tarball_url,
                 declared_dependencies: declared,
@@ -414,7 +423,9 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // (name, version) but have different resolved transitives —
     // npm.rs's data model doesn't express that, and in practice npm
     // dedupes only when the transitives match anyway.
-    let mut resolved_by_dep_path: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    type ResolvedDepMap = BTreeMap<String, String>;
+    let mut resolved_by_dep_path: BTreeMap<String, (ResolvedDepMap, ResolvedDepMap)> =
+        BTreeMap::new();
     for (install_path, entry) in &raw.packages {
         if install_path.is_empty() {
             continue;
@@ -450,26 +461,35 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         }
 
         let mut resolved: BTreeMap<String, String> = BTreeMap::new();
-        for dep_name in package_entry
+        let mut resolved_optional: BTreeMap<String, String> = BTreeMap::new();
+        for (dep_name, is_optional) in package_entry
             .dependencies
             .keys()
-            .chain(package_entry.optional_dependencies.keys())
+            .map(|name| (name, false))
+            .chain(
+                package_entry
+                    .optional_dependencies
+                    .keys()
+                    .map(|name| (name, true)),
+            )
         {
             if let Some(target_install_path) =
                 resolve_nested(lookup_path, dep_name, &install_path_info)
                 && let Some(target_info) = install_path_info.get(&target_install_path)
             {
-                resolved.insert(
-                    dep_name.clone(),
-                    dep_path_tail(&target_info.name, &target_info.dep_path).to_string(),
-                );
+                let tail = dep_path_tail(&target_info.name, &target_info.dep_path).to_string();
+                resolved.insert(dep_name.clone(), tail.clone());
+                if is_optional {
+                    resolved_optional.insert(dep_name.clone(), tail);
+                }
             }
         }
-        resolved_by_dep_path.insert(dep_path, resolved);
+        resolved_by_dep_path.insert(dep_path, (resolved, resolved_optional));
     }
-    for (dep_path, deps) in resolved_by_dep_path {
+    for (dep_path, (deps, optional_deps)) in resolved_by_dep_path {
         if let Some(pkg) = graph.packages.get_mut(&dep_path) {
             pkg.dependencies = deps;
+            pkg.optional_dependencies = optional_deps;
         }
     }
 
@@ -594,8 +614,8 @@ struct WriteNpmLockfile<'a> {
 // Field order mirrors npm's own package-lock.json output, so a
 // parse → write round-trip diffs cleanly against what `npm install`
 // would produce: `name`, `version`, `resolved`, `integrity`,
-// `license`, then the dep sections, then `bin`, `engines`, `funding`,
-// then the dev/optional flags. Don't reorder — the JSON is
+// `license`, then the dep sections, then `bin`, `engines`, platform
+// fields, `funding`, then the dev/optional flags. Don't reorder — the JSON is
 // serialized as a `BTreeMap`-like structure but serde preserves
 // struct field order for us, which is what npm readers (and git
 // diffs) expect.
@@ -632,6 +652,12 @@ struct WriteNpmPackage<'a> {
     bin: BTreeMap<&'a str, &'a str>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     engines: BTreeMap<&'a str, &'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    os: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cpu: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    libc: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     funding: Option<WriteNpmFunding<'a>>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -768,8 +794,8 @@ pub fn write(
         // treats that as a corrupt lockfile, and `npm install`
         // would refetch the dropped package. Matches the bun and
         // yarn writers, which filter the same way.
-        let deps: BTreeMap<&str, &str> = pkg
-            .dependencies
+        let optional_deps: BTreeMap<&str, &str> = pkg
+            .optional_dependencies
             .iter()
             .filter(|(n, value)| canonical.contains_key(&child_canonical_key(n, value)))
             .map(|(n, value)| {
@@ -778,6 +804,22 @@ pub fn write(
                 // pin. Falls back to the pin for entries where the
                 // source lockfile didn't carry declared ranges (e.g.
                 // pnpm → npm conversion).
+                let rendered = pkg
+                    .declared_dependencies
+                    .get(n)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| dep_value_as_version(n, value));
+                (n.as_str(), rendered)
+            })
+            .collect();
+        let deps: BTreeMap<&str, &str> = pkg
+            .dependencies
+            .iter()
+            .filter(|(n, value)| {
+                !pkg.optional_dependencies.contains_key(*n)
+                    && canonical.contains_key(&child_canonical_key(n, value))
+            })
+            .map(|(n, value)| {
                 let rendered = pkg
                     .declared_dependencies
                     .get(n)
@@ -854,6 +896,7 @@ pub fn write(
                 integrity: pkg.integrity.as_deref(),
                 license: pkg.license.as_deref(),
                 dependencies: deps,
+                optional_dependencies: optional_deps,
                 peer_dependencies: peer_deps,
                 peer_dependencies_meta: peer_deps_meta,
                 bin: pkg
@@ -867,6 +910,9 @@ pub fn write(
                     .iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
                     .collect(),
+                os: pkg.os.to_vec(),
+                cpu: pkg.cpu.to_vec(),
+                libc: pkg.libc.to_vec(),
                 funding: pkg
                     .funding_url
                     .as_deref()
@@ -1530,6 +1576,169 @@ mod tests {
             baz.dependencies.get("bar").map(String::as_str),
             Some("2.0.0"),
             "baz's bar dep was shadowed by foo/bar@1.0.0 — shadow-nest fix regressed",
+        );
+    }
+
+    #[test]
+    fn test_parse_npm_preserves_platform_optional_metadata() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "platform-optional-root",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "platform-optional-root",
+                    "version": "1.0.0",
+                    "dependencies": { "host": "file:host" }
+                },
+                "node_modules/host": {
+                    "resolved": "host",
+                    "link": true
+                },
+                "host": {
+                    "name": "host",
+                    "version": "1.0.0",
+                    "optionalDependencies": { "native-win": "1.0.0" }
+                },
+                "node_modules/native-win": {
+                    "version": "1.0.0",
+                    "resolved": "https://registry.npmjs.org/native-win/-/native-win-1.0.0.tgz",
+                    "integrity": "sha512-native",
+                    "optional": true,
+                    "os": ["win32"],
+                    "cpu": ["x64"],
+                    "libc": ["glibc"]
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let host_dep_path = &graph.importers["."][0].dep_path;
+        let host = &graph.packages[host_dep_path];
+        assert_eq!(
+            host.dependencies.get("native-win").map(String::as_str),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            host.optional_dependencies
+                .get("native-win")
+                .map(String::as_str),
+            Some("1.0.0")
+        );
+
+        let native = &graph.packages["native-win@1.0.0"];
+        assert_eq!(
+            native.os.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["win32"]
+        );
+        assert_eq!(
+            native.cpu.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["x64"]
+        );
+        assert_eq!(
+            native.libc.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["glibc"]
+        );
+    }
+
+    #[test]
+    fn test_write_npm_preserves_platform_optional_metadata() {
+        let mut graph = LockfileGraph::default();
+        graph.packages.insert(
+            "host@1.0.0".to_string(),
+            LockedPackage {
+                name: "host".to_string(),
+                version: "1.0.0".to_string(),
+                integrity: Some("sha512-host".to_string()),
+                dep_path: "host@1.0.0".to_string(),
+                dependencies: [("native-win".to_string(), "1.0.0".to_string())]
+                    .into_iter()
+                    .collect(),
+                optional_dependencies: [("native-win".to_string(), "1.0.0".to_string())]
+                    .into_iter()
+                    .collect(),
+                declared_dependencies: [("native-win".to_string(), "1.0.0".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "native-win@1.0.0".to_string(),
+            LockedPackage {
+                name: "native-win".to_string(),
+                version: "1.0.0".to_string(),
+                integrity: Some("sha512-native".to_string()),
+                dep_path: "native-win@1.0.0".to_string(),
+                os: vec!["win32".to_string()].into(),
+                cpu: vec!["x64".to_string()].into(),
+                libc: vec!["glibc".to_string()].into(),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "host".to_string(),
+                dep_path: "host@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("1.0.0".to_string()),
+            }],
+        );
+        let manifest = aube_manifest::PackageJson {
+            name: Some("platform-optional-root".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [("host".to_string(), "1.0.0".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+
+        let host = &json["packages"]["node_modules/host"];
+        assert_eq!(host["optionalDependencies"]["native-win"], "1.0.0");
+        assert!(
+            host.get("dependencies")
+                .and_then(|deps| deps.get("native-win"))
+                .is_none(),
+            "optional child must not be duplicated as a required dependency: {host}",
+        );
+
+        let native = &json["packages"]["node_modules/native-win"];
+        assert_eq!(native["os"], serde_json::json!(["win32"]));
+        assert_eq!(native["cpu"], serde_json::json!(["x64"]));
+        assert_eq!(native["libc"], serde_json::json!(["glibc"]));
+
+        let reparsed = parse(out.path()).unwrap();
+        let host = &reparsed.packages["host@1.0.0"];
+        assert_eq!(
+            host.optional_dependencies
+                .get("native-win")
+                .map(String::as_str),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            host.dependencies.get("native-win").map(String::as_str),
+            Some("1.0.0")
+        );
+        let native = &reparsed.packages["native-win@1.0.0"];
+        assert_eq!(
+            native.os.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["win32"]
+        );
+        assert_eq!(
+            native.cpu.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["x64"]
+        );
+        assert_eq!(
+            native.libc.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["glibc"]
         );
     }
 
