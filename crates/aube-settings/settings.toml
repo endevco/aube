@@ -1216,16 +1216,16 @@ examples = []
 [fetchTimeout]
 description = "Max time (ms) to wait for an HTTP request."
 type = "int"
-default = "60000"
+default = "300000"
 docs = """
 Per-request HTTP timeout, applied via `reqwest`'s single-knob
 `.timeout()` so it covers headers + body together. A request that
 exceeds this limit fails with a transport error, which is then
-retriable (see `fetchRetries`). Default matches pnpm / npm's 60s.
+retriable (see `fetchRetries`). Default matches npm's 5 minutes.
 """
 sources.cli = []
 sources.env = ["npm_config_fetch_timeout", "NPM_CONFIG_FETCH_TIMEOUT", "AUBE_FETCH_TIMEOUT"]
-sources.npmrc = ["fetchTimeout"]
+sources.npmrc = ["fetch-timeout", "fetchTimeout"]
 examples = []
 
 [fetchWarnTimeoutMs]

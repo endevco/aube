@@ -521,7 +521,7 @@ impl Default for FetchPolicy {
     /// sensible retry + timeout behavior.
     fn default() -> Self {
         Self {
-            timeout_ms: 60_000,
+            timeout_ms: 300_000,
             retries: 2,
             retry_factor: 10,
             retry_min_timeout_ms: 10_000,
@@ -2462,9 +2462,9 @@ mod tests {
     fn fetch_policy_default_matches_settings_toml_declared_defaults() {
         // `settings.toml` declares these defaults; `FetchPolicy::default`
         // must match them verbatim so callers that skip
-        // `FetchPolicy::from_ctx` still get pnpm-compatible behavior.
+        // `FetchPolicy::from_ctx` still get the same behavior.
         let p = FetchPolicy::default();
-        assert_eq!(p.timeout_ms, 60_000);
+        assert_eq!(p.timeout_ms, 300_000);
         assert_eq!(p.retries, 2);
         assert_eq!(p.retry_factor, 10);
         assert_eq!(p.retry_min_timeout_ms, 10_000);
@@ -2526,7 +2526,7 @@ mod tests {
         // just proves the composite struct wires each field through to
         // the right generated accessor.
         let entries = vec![
-            ("fetchTimeout".to_string(), "1234".to_string()),
+            ("fetch-timeout".to_string(), "1234".to_string()),
             ("fetch-retries".to_string(), "5".to_string()),
             ("fetch-retry-factor".to_string(), "3".to_string()),
             ("fetch-retry-mintimeout".to_string(), "250".to_string()),

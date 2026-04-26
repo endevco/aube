@@ -1257,14 +1257,14 @@ Upper bound on the computed retry backoff. See `fetchRetryFactor`.
 Max time (ms) to wait for an HTTP request.
 
 - Type: `int`
-- Default: `60000`
+- Default: `300000`
 - Environment: `npm_config_fetch_timeout`, `NPM_CONFIG_FETCH_TIMEOUT`, `AUBE_FETCH_TIMEOUT`
-- .npmrc keys: `fetchTimeout`, `fetch-timeout`
+- .npmrc keys: `fetch-timeout`, `fetchTimeout`
 
 Per-request HTTP timeout, applied via `reqwest`'s single-knob
 `.timeout()` so it covers headers + body together. A request that
 exceeds this limit fails with a transport error, which is then
-retriable (see `fetchRetries`). Default matches pnpm / npm's 60s.
+retriable (see `fetchRetries`). Default matches npm's 5 minutes.
 
 ### `fetchWarnTimeoutMs` {#setting-fetchwarntimeoutms}
 
