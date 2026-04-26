@@ -107,6 +107,8 @@ pub enum NetworkMode {
 pub struct Packument {
     pub name: String,
     #[serde(default)]
+    pub modified: Option<String>,
+    #[serde(default)]
     pub versions: BTreeMap<String, VersionMetadata>,
     #[serde(
         rename = "dist-tags",
@@ -569,6 +571,17 @@ mod tests {
     fn packument_dist_tags_null_whole_field_is_empty() {
         let p = parse_packument(r#"{"name":"pkg","dist-tags":null}"#);
         assert!(p.dist_tags.is_empty());
+    }
+
+    #[test]
+    fn packument_preserves_modified_timestamp() {
+        let p = parse_packument(
+            r#"{
+                "name": "pkg",
+                "modified": "2026-04-14T14:26:11.557Z"
+            }"#,
+        );
+        assert_eq!(p.modified.as_deref(), Some("2026-04-14T14:26:11.557Z"));
     }
 
     #[test]

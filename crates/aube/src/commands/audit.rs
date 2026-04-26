@@ -587,6 +587,7 @@ mod tests {
     fn packument_with_versions(versions: &[&str]) -> Packument {
         let mut packument = Packument {
             name: "demo".to_string(),
+            modified: None,
             versions: BTreeMap::new(),
             dist_tags: BTreeMap::new(),
             time: BTreeMap::new(),
