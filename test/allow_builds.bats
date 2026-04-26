@@ -156,7 +156,7 @@ YAML
 	assert_output --partial "aube-jail"
 }
 
-@test "neverJailBuiltDependencies glob lets matching packages opt out of jailBuilds" {
+@test "jailBuildExclusions glob lets matching packages opt out of jailBuilds" {
 	cat >package.json <<'JSON'
 {
   "name": "jail-builds-disable-test",
@@ -171,7 +171,7 @@ YAML
 JSON
 	cat >aube-workspace.yaml <<'YAML'
 jailBuilds: true
-neverJailBuiltDependencies:
+jailBuildExclusions:
   - aube-test-*
 YAML
 	run aube install

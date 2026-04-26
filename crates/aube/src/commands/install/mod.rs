@@ -2945,7 +2945,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         crate::progress::safe_eprintln(&format!("warn: {w}"));
     }
     for w in &jail_policy_warnings {
-        crate::progress::safe_eprintln(&format!("warn: neverJailBuiltDependencies: {w}"));
+        crate::progress::safe_eprintln(&format!("warn: jailBuildExclusions: {w}"));
     }
 
     // 6. Link node_modules

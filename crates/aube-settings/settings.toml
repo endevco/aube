@@ -1675,8 +1675,8 @@ examples = [
     "jail-builds=true",
 ]
 
-[neverJailBuiltDependencies]
-description = "Disable jailed builds for specific dependency packages."
+[jailBuildExclusions]
+description = "Exclude specific dependency packages from jailed builds."
 type = "list<string>"
 default = "[]"
 docs = """
@@ -1688,14 +1688,14 @@ writes outside the restricted jail profile.
 
 Patterns use the same forms as `neverBuiltDependencies`: bare package
 names, exact `name@version` pins, exact version unions, and `*`
-wildcards such as `@scope/*`. Explicit jail disables win over the
+wildcards such as `@scope/*`. Explicit jail exclusions win over the
 global `jailBuilds=true` setting.
 """
 sources.cli = []
-sources.env = ["npm_config_never_jail_built_dependencies", "NPM_CONFIG_NEVER_JAIL_BUILT_DEPENDENCIES", "AUBE_NEVER_JAIL_BUILT_DEPENDENCIES"]
-sources.npmrc = ["neverJailBuiltDependencies"]
-sources.workspaceYaml = ["neverJailBuiltDependencies"]
-examples = ['neverJailBuiltDependencies: ["sharp", "@vendor/*"]']
+sources.env = ["npm_config_jail_build_exclusions", "NPM_CONFIG_JAIL_BUILD_EXCLUSIONS", "AUBE_JAIL_BUILD_EXCLUSIONS"]
+sources.npmrc = ["jailBuildExclusions", "jail-build-exclusions"]
+sources.workspaceYaml = ["jailBuildExclusions"]
+examples = ['jailBuildExclusions: ["sharp", "@vendor/*"]']
 
 [jailBuildPermissions]
 description = "Grant package-specific privileges inside jailed builds."

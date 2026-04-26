@@ -94,7 +94,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
 | [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | Only read from the side-effects cache; don't write. |
 | [`jailBuilds`](#setting-jailbuilds) | `bool` | Run approved dependency lifecycle scripts in a restricted build jail. |
-| [`neverJailBuiltDependencies`](#setting-neverjailbuiltdependencies) | `list<string>` | Disable jailed builds for specific dependency packages. |
+| [`jailBuildExclusions`](#setting-jailbuildexclusions) | `list<string>` | Exclude specific dependency packages from jailed builds. |
 | [`jailBuildPermissions`](#setting-jailbuildpermissions) | `object` | Grant package-specific privileges inside jailed builds. |
 | [`unsafePerm`](#setting-unsafeperm) | `bool` | Drop to a non-root user when running scripts as root. |
 | [`nodeOptions`](#setting-nodeoptions) | `string` | Options passed to Node.js via NODE_OPTIONS. |
@@ -1694,15 +1694,15 @@ Examples:
 
 - `jail-builds=true`
 
-### `neverJailBuiltDependencies` {#setting-neverjailbuiltdependencies}
+### `jailBuildExclusions` {#setting-jailbuildexclusions}
 
-Disable jailed builds for specific dependency packages.
+Exclude specific dependency packages from jailed builds.
 
 - Type: `list<string>`
 - Default: `[]`
-- Environment: `npm_config_never_jail_built_dependencies`, `NPM_CONFIG_NEVER_JAIL_BUILT_DEPENDENCIES`, `AUBE_NEVER_JAIL_BUILT_DEPENDENCIES`
-- .npmrc keys: `neverJailBuiltDependencies`, `never-jail-built-dependencies`
-- Workspace YAML keys: `neverJailBuiltDependencies`
+- Environment: `npm_config_jail_build_exclusions`, `NPM_CONFIG_JAIL_BUILD_EXCLUSIONS`, `AUBE_JAIL_BUILD_EXCLUSIONS`
+- .npmrc keys: `jailBuildExclusions`, `jail-build-exclusions`
+- Workspace YAML keys: `jailBuildExclusions`
 
 Package patterns in this list still follow the active `allowBuilds` /
 `onlyBuiltDependencies` policy, but run outside the build jail when
@@ -1712,12 +1712,12 @@ writes outside the restricted jail profile.
 
 Patterns use the same forms as `neverBuiltDependencies`: bare package
 names, exact `name@version` pins, exact version unions, and `*`
-wildcards such as `@scope/*`. Explicit jail disables win over the
+wildcards such as `@scope/*`. Explicit jail exclusions win over the
 global `jailBuilds=true` setting.
 
 Examples:
 
-- `neverJailBuiltDependencies: ["sharp", "@vendor/*"]`
+- `jailBuildExclusions: ["sharp", "@vendor/*"]`
 
 ### `jailBuildPermissions` {#setting-jailbuildpermissions}
 

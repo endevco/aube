@@ -91,8 +91,8 @@ impl JailBuildPolicy {
         workspace: &aube_manifest::WorkspaceConfig,
     ) -> (Self, Vec<aube_scripts::BuildPolicyError>) {
         let enabled = aube_settings::resolved::jail_builds(ctx);
-        let never_jail = aube_settings::resolved::never_jail_built_dependencies(ctx);
-        let (denylist, warnings) = aube_scripts::BuildPolicy::denylist(&never_jail);
+        let jail_exclusions = aube_settings::resolved::jail_build_exclusions(ctx);
+        let (denylist, warnings) = aube_scripts::BuildPolicy::denylist(&jail_exclusions);
         let grants = workspace
             .jail_build_permissions
             .iter()

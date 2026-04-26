@@ -96,7 +96,7 @@ For packages that cannot run in the jail yet, disable the jail for a package
 glob while keeping the build approval requirement:
 
 ```yaml
-neverJailBuiltDependencies:
+jailBuildExclusions:
   - "@legacy-native/*"
 ```
 

@@ -3,7 +3,7 @@
 Dependency lifecycle scripts are one of the sharpest supply-chain edges in a
 JavaScript install. aube already keeps dependency scripts skipped until a
 project approves them with `allowBuilds` / `onlyBuiltDependencies`. Jailed
-builds would add a second boundary: approved packages may build, but they do
+builds add a second boundary: approved packages may build, but they do
 not automatically get the user's full filesystem, network, and environment.
 
 Jailed builds are opt-in today. Enable them in workspace config:
@@ -17,7 +17,7 @@ globally and exempt only that package:
 
 ```yaml
 jailBuilds: true
-neverJailBuiltDependencies:
+jailBuildExclusions:
   - "@vendor/*"
 ```
 
@@ -48,7 +48,7 @@ jailBuildPermissions:
 ## Default profile
 
 When `jailBuilds` is enabled and a dependency is approved through `allowBuilds` or
-`onlyBuiltDependencies`, aube can run its `preinstall`, `install`, and
+`onlyBuiltDependencies`, aube runs its `preinstall`, `install`, and
 `postinstall` scripts with a default native jail profile:
 
 | Capability | Default |
@@ -92,7 +92,7 @@ added to the macOS Seatbelt write allowlist today. `read` entries are accepted
 now for the stricter future read-deny profile; reads are currently
 unrestricted.
 
-`neverJailBuiltDependencies` remains the package-level escape hatch when the
+`jailBuildExclusions` remains the package-level escape hatch when the
 needed privilege is too broad. It accepts the same package glob syntax, only
 disables the jail, and does not bypass the build approval policy.
 
@@ -165,7 +165,7 @@ code. The supply-chain boundary is dependency code.
 5. Add more granular jail permission kinds as real packages need them.
 6. Make jailed dependency builds the default on supported platforms.
 7. Keep explicit config escape hatches for debugging:
-   `jailBuilds=false` globally, or `neverJailBuiltDependencies` for a package.
+   `jailBuilds=false` globally, or `jailBuildExclusions` for a package.
 
 The escape hatch should be noisy in CI-oriented output because disabling the
 jail turns an approved dependency build back into ambient code execution.

@@ -328,8 +328,8 @@ pub struct WorkspaceConfig {
     /// Dependency package patterns that should run outside the jail even
     /// when `jailBuilds` is enabled. Same typed/raw duality as
     /// `child_concurrency`.
-    #[serde(default, rename = "neverJailBuiltDependencies")]
-    pub never_jail_built_dependencies: Vec<String>,
+    #[serde(default, rename = "jailBuildExclusions")]
+    pub jail_build_exclusions: Vec<String>,
 
     /// Extra env/path/network grants for packages that still run in the
     /// jail. Keys use the same package-pattern syntax as `allowBuilds`.

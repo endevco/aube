@@ -42,7 +42,7 @@ jailBuildPermissions:
       - SHARP_DIST_BASE_URL
     write:
       - ~/.cache/sharp
-neverJailBuiltDependencies:
+jailBuildExclusions:
   - "@legacy-native/*"
 ```
 

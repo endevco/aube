@@ -69,7 +69,7 @@ pub async fn run(
             let (jail_policy, jail_policy_warnings) =
                 super::install::JailBuildPolicy::from_settings(&settings_ctx, &workspace);
             for warning in jail_policy_warnings {
-                eprintln!("warn: neverJailBuiltDependencies: {warning}");
+                eprintln!("warn: jailBuildExclusions: {warning}");
             }
             // The generated accessor already reads `nodeLinker` from
             // `raw_workspace`, which is the same map `workspace.node_linker`
