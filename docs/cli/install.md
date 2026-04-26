@@ -41,10 +41,6 @@ Skip running `.pnpmfile.cjs` hooks for this install
 
 Skip lifecycle scripts (no-op; aube already skips by default)
 
-### `--jail-builds`
-
-Run approved dependency lifecycle scripts in a restricted build jail
-
 ### `--lockfile-only`
 
 Resolve dependencies and write the lockfile, but don't link `node_modules`.
@@ -62,10 +58,6 @@ Companion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is
 Cap concurrent tarball downloads.
 
 Overrides `network-concurrency` from `.npmrc` / `aube-workspace.yaml` when set. Falls back to the built-in defaults otherwise (128 for the lockfile path, 64 for the streaming path).
-
-### `--no-jail-builds`
-
-Inverse of `--jail-builds`
 
 ### `--no-optional`
 

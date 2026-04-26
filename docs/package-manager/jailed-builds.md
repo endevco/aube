@@ -6,10 +6,19 @@ project approves them with `allowBuilds` / `onlyBuiltDependencies`. Jailed
 builds would add a second boundary: approved packages may build, but they do
 not automatically get the user's full filesystem, network, and environment.
 
-Jailed builds are opt-in today. Enable them with:
+Jailed builds are opt-in today. Enable them in workspace config:
 
-```sh
-aube install --jail-builds
+```yaml
+jailBuilds: true
+```
+
+If one reviewed package cannot run in the jail yet, keep jailed builds enabled
+globally and exempt only that package:
+
+```yaml
+jailBuilds: true
+neverJailBuiltDependencies:
+  - sharp
 ```
 
 ## Goals
@@ -87,6 +96,10 @@ Boolean `allowBuilds` entries stay compatible with pnpm and continue to mean
 "approved to run." aube-specific `buildPermissions` narrow or widen the
 jail used after that approval decision.
 
+Today, `neverJailBuiltDependencies` is the package-level escape hatch. Entries
+use the same package-pattern syntax as `neverBuiltDependencies`, and only
+disable the jail; they do not bypass the build approval policy.
+
 ## Native enforcement
 
 The jail uses the same lightweight strategy as mise on macOS:
@@ -148,16 +161,15 @@ code. The supply-chain boundary is dependency code.
 
 ## Rollout
 
-1. Add `--jail-builds` and `AUBE_JAIL_BUILDS=1` as an opt-in for dependency
-   lifecycle scripts.
+1. Add `jailBuilds` as an opt-in for dependency lifecycle scripts.
 2. Add package/toolchain-only read enforcement.
 3. Add Linux Landlock / seccomp enforcement.
 4. Teach `aube approve-builds` to show the default jail profile for newly
    approved packages.
 5. Add `buildPermissions` to `aube-workspace.yaml`.
 6. Make jailed dependency builds the default on supported platforms.
-7. Keep an explicit escape hatch for debugging:
-   `--no-jail-builds` / `jailBuilds=false`.
+7. Keep explicit config escape hatches for debugging:
+   `jailBuilds=false` globally, or `neverJailBuiltDependencies` for a package.
 
 The escape hatch should be noisy in CI-oriented output because disabling the
 jail turns an approved dependency build back into ambient code execution.

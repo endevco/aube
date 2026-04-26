@@ -128,7 +128,7 @@ JSON
 	assert_output "ran:aube-test-builds-marker@1.0.0"
 }
 
-@test "--jail-builds runs approved dep scripts with a scrubbed env and temp HOME" {
+@test "jailBuilds runs approved dep scripts with a scrubbed env and temp HOME" {
 	cat >package.json <<'JSON'
 {
   "name": "jail-builds-env-test",
@@ -141,7 +141,10 @@ JSON
   }
 }
 JSON
-	AUBE_AUTH_TOKEN=aube-secret NPM_TOKEN=npm-secret NODE_AUTH_TOKEN=node-secret GITHUB_TOKEN=gh-secret run aube install --jail-builds
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+YAML
+	AUBE_AUTH_TOKEN=aube-secret NPM_TOKEN=npm-secret NODE_AUTH_TOKEN=node-secret GITHUB_TOKEN=gh-secret run aube install
 	assert_success
 	assert_file_not_exists jail-package-marker.txt
 	run find -L node_modules -name jail-package-marker.txt -type f
@@ -153,7 +156,32 @@ JSON
 	assert_output --partial "aube-jail"
 }
 
-@test "--jail-builds prevents dep scripts from writing to INIT_CWD on macOS" {
+@test "neverJailBuiltDependencies lets selected packages opt out of jailBuilds" {
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-disable-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-jailed-build": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-jailed-build"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+neverJailBuiltDependencies:
+  - aube-test-jailed-build
+YAML
+	run aube install
+	assert_success
+	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
+	assert_success
+	refute_output --partial "aube-jail"
+}
+
+@test "jailBuilds prevents dep scripts from writing to INIT_CWD on macOS" {
 	if [ "$(uname -s)" != "Darwin" ]; then
 		skip "native build jail filesystem enforcement is macOS-only today"
 	fi
@@ -169,12 +197,15 @@ JSON
   }
 }
 JSON
-	run aube install --jail-builds
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+YAML
+	run aube install
 	assert_failure
 	assert_file_not_exists aube-builds-marker.txt
 }
 
-@test "--jail-builds denies dep script network sockets on macOS" {
+@test "jailBuilds denies dep script network sockets on macOS" {
 	if [ "$(uname -s)" != "Darwin" ]; then
 		skip "native build jail network enforcement is macOS-only today"
 	fi
@@ -190,7 +221,10 @@ JSON
   }
 }
 JSON
-	run aube install --jail-builds
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+YAML
+	run aube install
 	assert_success
 }
 

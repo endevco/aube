@@ -311,6 +311,12 @@ pub struct WorkspaceConfig {
     #[serde(default, rename = "jailBuilds")]
     pub jail_builds: Option<bool>,
 
+    /// Dependency package patterns that should run outside the jail even
+    /// when `jailBuilds` is enabled. Same typed/raw duality as
+    /// `child_concurrency`.
+    #[serde(default, rename = "neverJailBuiltDependencies")]
+    pub never_jail_built_dependencies: Vec<String>,
+
     // -- Catalog Settings --
     /// Drop catalog entries that no importer references after resolve.
     /// Wired through `aube_settings::resolved::cleanup_unused_catalogs`;

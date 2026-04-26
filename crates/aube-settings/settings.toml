@@ -1667,14 +1667,35 @@ with a native Seatbelt profile that denies network access and limits
 filesystem writes to the package directory and temporary directories.
 Root lifecycle scripts are not jailed.
 """
-sources.cli = ["jail-builds"]
+sources.cli = []
 sources.env = ["npm_config_jail_builds", "NPM_CONFIG_JAIL_BUILDS", "AUBE_JAIL_BUILDS"]
 sources.npmrc = ["jail-builds", "jailBuilds"]
 sources.workspaceYaml = ["jailBuilds"]
 examples = [
-    "aube install --jail-builds",
     "jail-builds=true",
 ]
+
+[neverJailBuiltDependencies]
+description = "Disable jailed builds for specific dependency packages."
+type = "list<string>"
+default = "[]"
+docs = """
+Package patterns in this list still follow the active `allowBuilds` /
+`onlyBuiltDependencies` policy, but run outside the build jail when
+`jailBuilds` is enabled. Use this for reviewed native packages whose
+install scripts need network access, shared caches, or filesystem
+writes outside the restricted jail profile.
+
+Patterns use the same forms as `neverBuiltDependencies`: bare package
+names, exact `name@version` pins, exact version unions, and `*`
+wildcards such as `@scope/*`. Explicit jail disables win over the
+global `jailBuilds=true` setting.
+"""
+sources.cli = []
+sources.env = ["npm_config_never_jail_built_dependencies", "NPM_CONFIG_NEVER_JAIL_BUILT_DEPENDENCIES", "AUBE_NEVER_JAIL_BUILT_DEPENDENCIES"]
+sources.npmrc = ["neverJailBuiltDependencies"]
+sources.workspaceYaml = ["neverJailBuiltDependencies"]
+examples = ['neverJailBuiltDependencies: ["sharp", "@vendor/*"]']
 
 [unsafePerm]
 description = "Drop to a non-root user when running scripts as root."

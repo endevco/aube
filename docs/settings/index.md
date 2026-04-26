@@ -94,6 +94,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
 | [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | Only read from the side-effects cache; don't write. |
 | [`jailBuilds`](#setting-jailbuilds) | `bool` | Run approved dependency lifecycle scripts in a restricted build jail. |
+| [`neverJailBuiltDependencies`](#setting-neverjailbuiltdependencies) | `list<string>` | Disable jailed builds for specific dependency packages. |
 | [`unsafePerm`](#setting-unsafeperm) | `bool` | Drop to a non-root user when running scripts as root. |
 | [`nodeOptions`](#setting-nodeoptions) | `string` | Options passed to Node.js via NODE_OPTIONS. |
 | [`verifyDepsBeforeRun`](#setting-verifydepsbeforerun) | `"install" \| "warn" \| "error" \| "prompt" \| false` | Check dependencies before running scripts. |
@@ -1677,7 +1678,6 @@ Run approved dependency lifecycle scripts in a restricted build jail.
 
 - Type: `bool`
 - Default: `false`
-- CLI flags: `jail-builds`
 - Environment: `npm_config_jail_builds`, `NPM_CONFIG_JAIL_BUILDS`, `AUBE_JAIL_BUILDS`
 - .npmrc keys: `jail-builds`, `jailBuilds`
 - Workspace YAML keys: `jailBuilds`
@@ -1691,8 +1691,32 @@ Root lifecycle scripts are not jailed.
 
 Examples:
 
-- `aube install --jail-builds`
 - `jail-builds=true`
+
+### `neverJailBuiltDependencies` {#setting-neverjailbuiltdependencies}
+
+Disable jailed builds for specific dependency packages.
+
+- Type: `list<string>`
+- Default: `[]`
+- Environment: `npm_config_never_jail_built_dependencies`, `NPM_CONFIG_NEVER_JAIL_BUILT_DEPENDENCIES`, `AUBE_NEVER_JAIL_BUILT_DEPENDENCIES`
+- .npmrc keys: `neverJailBuiltDependencies`, `never-jail-built-dependencies`
+- Workspace YAML keys: `neverJailBuiltDependencies`
+
+Package patterns in this list still follow the active `allowBuilds` /
+`onlyBuiltDependencies` policy, but run outside the build jail when
+`jailBuilds` is enabled. Use this for reviewed native packages whose
+install scripts need network access, shared caches, or filesystem
+writes outside the restricted jail profile.
+
+Patterns use the same forms as `neverBuiltDependencies`: bare package
+names, exact `name@version` pins, exact version unions, and `*`
+wildcards such as `@scope/*`. Explicit jail disables win over the
+global `jailBuilds=true` setting.
+
+Examples:
+
+- `neverJailBuiltDependencies: ["sharp", "@vendor/*"]`
 
 ### `unsafePerm` {#setting-unsafeperm}
 

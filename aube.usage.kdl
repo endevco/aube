@@ -392,7 +392,6 @@ cmd install help="Install all dependencies" {
     }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
-    flag --jail-builds help="Run approved dependency lifecycle scripts in a restricted build jail"
     flag --lockfile-only help="Resolve dependencies and write the lockfile, but don't link `node_modules`" {
         long_help "Resolve dependencies and write the lockfile, but don't link `node_modules`.\n\nUseful for CI workflows that only update the lockfile."
     }
@@ -403,7 +402,6 @@ cmd install help="Install all dependencies" {
         long_help "Cap concurrent tarball downloads.\n\nOverrides `network-concurrency` from `.npmrc` / `aube-workspace.yaml` when set. Falls back to the built-in defaults otherwise (128 for the lockfile path, 64 for the streaming path)."
         arg <N>
     }
-    flag --no-jail-builds help="Inverse of `--jail-builds`"
     flag --no-optional help="Skip optionalDependencies; don't install optional native modules"
     flag --no-side-effects-cache help="Inverse of `--side-effects-cache`"
     flag --no-verify-store-integrity help="Inverse of `--verify-store-integrity`" {

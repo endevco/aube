@@ -78,6 +78,31 @@ pub(crate) fn build_policy_from_sources(
     )
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct JailBuildPolicy {
+    enabled: bool,
+    denylist: aube_scripts::BuildPolicy,
+}
+
+impl JailBuildPolicy {
+    pub(crate) fn from_settings(
+        ctx: &aube_settings::ResolveCtx<'_>,
+    ) -> (Self, Vec<aube_scripts::BuildPolicyError>) {
+        let enabled = aube_settings::resolved::jail_builds(ctx);
+        let never_jail = aube_settings::resolved::never_jail_built_dependencies(ctx);
+        let (denylist, warnings) = aube_scripts::BuildPolicy::denylist(&never_jail);
+        (Self { enabled, denylist }, warnings)
+    }
+
+    fn should_jail(&self, name: &str, version: &str) -> bool {
+        self.enabled
+            && !matches!(
+                self.denylist.decide(name, version),
+                aube_scripts::AllowDecision::Deny
+            )
+    }
+}
+
 /// Resolve the link strategy (reflink / hardlink / copy) from CLI
 /// override, `.npmrc` / `pnpm-workspace.yaml`, or filesystem detection.
 /// Shared by the prewarm-GVS materializer (which needs the strategy
@@ -164,7 +189,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     child_concurrency: usize,
     placements: Option<&aube_linker::HoistedPlacements>,
     side_effects_cache: SideEffectsCacheConfig<'_>,
-    jail_builds: bool,
+    jail_policy: &JailBuildPolicy,
 ) -> miette::Result<usize> {
     // Pass 1 (serial, cheap): walk the graph, keep only the packages
     // the policy allows AND that actually define at least one dep
@@ -174,6 +199,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     #[derive(Clone)]
     struct BuildJob {
         name: String,
+        registry_name: String,
         version: String,
         package_dir: std::path::PathBuf,
         /// Directory containing the dep package and its sibling
@@ -263,6 +289,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
         let dep_modules_dir = dep_modules_dir_for(&package_dir, &pkg.name);
         jobs.push(BuildJob {
             name: pkg.name.clone(),
+            registry_name: pkg.registry_name().to_string(),
             version: pkg.version.clone(),
             package_dir,
             dep_modules_dir,
@@ -306,12 +333,14 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     let should_restore_side_effects_cache = side_effects_cache.should_restore();
     let should_save_side_effects_cache = side_effects_cache.should_save();
     let overwrite_side_effects_cache = side_effects_cache.overwrite_existing();
+    let jail_policy = std::sync::Arc::new((*jail_policy).clone());
     let mut set: tokio::task::JoinSet<miette::Result<usize>> = tokio::task::JoinSet::new();
     for job in jobs {
         let sem = semaphore.clone();
         let project_dir = project_dir.clone();
         let modules_dir_name = modules_dir_name.clone();
         let node_gyp_bin_dir = node_gyp_bin_dir.clone();
+        let jail_policy = jail_policy.clone();
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             if should_restore_side_effects_cache && let Some(cache_entry) = job.cache_entry.clone()
@@ -340,7 +369,9 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                 .as_deref()
                 .map(|p| vec![p])
                 .unwrap_or_default();
-            let jail = jail_builds.then(|| aube_scripts::ScriptJail::new(&job.package_dir));
+            let jail = jail_policy
+                .should_jail(&job.registry_name, &job.version)
+                .then(|| aube_scripts::ScriptJail::new(&job.package_dir));
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
                 let did_run = aube_scripts::run_dep_hook(
