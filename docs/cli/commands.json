@@ -2175,6 +2175,18 @@
             "global": false
           },
           {
+            "name": "jail-builds",
+            "usage": "--jail-builds",
+            "help": "Run approved dependency lifecycle scripts in a restricted build jail",
+            "help_first_line": "Run approved dependency lifecycle scripts in a restricted build jail",
+            "short": [],
+            "long": [
+              "jail-builds"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "lockfile-only",
             "usage": "--lockfile-only",
             "help": "Resolve dependencies and write the lockfile, but don't link `node_modules`",
@@ -2219,6 +2231,18 @@
               "double_dash": "Optional",
               "hide": false
             }
+          },
+          {
+            "name": "no-jail-builds",
+            "usage": "--no-jail-builds",
+            "help": "Inverse of `--jail-builds`",
+            "help_first_line": "Inverse of `--jail-builds`",
+            "short": [],
+            "long": [
+              "no-jail-builds"
+            ],
+            "hide": false,
+            "global": false
           },
           {
             "name": "no-optional",
