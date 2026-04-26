@@ -420,7 +420,7 @@ watch(progressBarEl, (el, previousEl) => {
         </span>
         <span class="aube-proof-link">node_modules layout -></span>
       </a>
-      <a class="aube-proof-item" href="/package-manager/configuration">
+      <a class="aube-proof-item" href="/package-manager/jailed-builds">
         <span class="aube-proof-number">05</span>
         <span class="aube-proof-tag">secure</span>
         <span class="aube-proof-visual aube-proof-scripts" aria-hidden="true">
@@ -433,16 +433,16 @@ watch(progressBarEl, (el, previousEl) => {
             <i>blocked</i>
           </span>
           <span class="aube-script-row">
-            <b>dep scripts</b>
-            <i>approve</i>
+            <b>jailed builds</b>
+            <i>opt in</i>
           </span>
         </span>
-        <strong>Secure defaults first.</strong>
+        <strong>Jailed builds for dependency scripts.</strong>
         <span>
-          Minimum release age, exotic dependency blocking, and build-script
-          approval keep installs cautious by default.
+          Approve the packages that may build, then run lifecycle scripts with
+          a scrubbed env, temporary HOME, and package-glob permissions.
         </span>
-        <span class="aube-proof-link">Configuration -></span>
+        <span class="aube-proof-link">Jailed builds -></span>
       </a>
     </section>
   </main>

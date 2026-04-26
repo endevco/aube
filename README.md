@@ -30,7 +30,7 @@
 
 **[Less disk use](https://aube.en.dev/package-manager/node-modules).** A global content-addressable store lets projects share package files instead of keeping a full copy of the same dependencies in every checkout.
 
-**[Secure defaults](https://aube.en.dev/package-manager/configuration).** aube defaults to safer installs: new releases wait out a minimum age, exotic transitive dependencies are blocked, and dependency lifecycle scripts require approval.
+**[Secure defaults](https://aube.en.dev/package-manager/jailed-builds).** aube defaults to safer installs: new releases wait out a minimum age, exotic transitive dependencies are blocked, and approved lifecycle scripts can run in a package-scoped jail.
 
 ## Install
 
@@ -200,6 +200,8 @@ You can inspect packages whose scripts were skipped:
 ```sh
 aube ignored-builds
 ```
+
+For approved packages, `jailBuilds: true` runs lifecycle scripts with a scrubbed env and temporary `HOME`. Use package globs in `jailBuildPermissions` or `neverJailBuiltDependencies` for packages that need specific env vars, paths, network, or a full opt-out.
 
 ## Package Layout
 
