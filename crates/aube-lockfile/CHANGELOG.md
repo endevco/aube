@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1](https://github.com/endevco/aube/compare/aube-lockfile-v1.2.0...aube-lockfile-v1.2.1) - 2026-04-26
+
+### Fixed
+
+- pnpm snapshot round-trip + workspace negation patterns ([#312](https://github.com/endevco/aube/pull/312))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.1.0...aube-lockfile-v1.2.0) - 2026-04-25
 
 ### Fixed

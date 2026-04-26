@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1](https://github.com/endevco/aube/compare/aube-registry-v1.2.0...aube-registry-v1.2.1) - 2026-04-26
+
+### Fixed
+
+- *(registry)* raise fetch timeout default ([#323](https://github.com/endevco/aube/pull/323))
+
+### Other
+
+- *(resolver)* avoid full packuments for aged metadata ([#314](https://github.com/endevco/aube/pull/314))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-registry-v1.1.0...aube-registry-v1.2.0) - 2026-04-25
 
 ### Added

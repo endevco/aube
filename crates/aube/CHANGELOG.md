@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1](https://github.com/endevco/aube/compare/v1.2.0...v1.2.1) - 2026-04-26
+
+### Fixed
+
+- *(add)* preserve package manifest field order ([#315](https://github.com/endevco/aube/pull/315))
+
+### Other
+
+- *(resolver)* avoid full packuments for aged metadata ([#314](https://github.com/endevco/aube/pull/314))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/v1.1.0...v1.2.0) - 2026-04-25
 
 ### Added
