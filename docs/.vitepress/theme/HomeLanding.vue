@@ -11,17 +11,17 @@ type BenchmarkRow = {
 };
 
 const chartTools = ["aube", "bun", "pnpm", "yarn", "npm"] as const;
-const ciWarmBenchmark = (benchmarkResults.rows as BenchmarkRow[]).find(
-  (row) => row.key === "ci-warm",
+const warmInstallBenchmark = (benchmarkResults.rows as BenchmarkRow[]).find(
+  (row) => row.key === "gvs-warm",
 );
-const ciWarmValues = ciWarmBenchmark?.values ?? {};
-const maxCiWarmValue = Math.max(
-  ...chartTools.map((tool) => ciWarmValues[tool] ?? 0),
+const warmInstallValues = warmInstallBenchmark?.values ?? {};
+const maxWarmInstallValue = Math.max(
+  ...chartTools.map((tool) => warmInstallValues[tool] ?? 0),
   1,
 );
 const chartRows = chartTools.map((tool) => {
-  const value = ciWarmValues[tool] ?? 0;
-  const width = ((value / maxCiWarmValue) * 100).toFixed(2);
+  const value = warmInstallValues[tool] ?? 0;
+  const width = ((value / maxWarmInstallValue) * 100).toFixed(2);
 
   return {
     tool,
@@ -29,30 +29,13 @@ const chartRows = chartTools.map((tool) => {
   };
 });
 const benchmarkMultiple = (tool: "bun" | "pnpm") => {
-  const aube = ciWarmValues.aube;
-  const value = ciWarmValues[tool];
+  const aube = warmInstallValues.aube;
+  const value = warmInstallValues[tool];
   if (!aube || !value) return "";
   return (value / aube).toFixed(1);
 };
-const benchmarkRange = (tool: "bun" | "pnpm") => {
-  const multiples = (benchmarkResults.rows as BenchmarkRow[])
-    .map((row) => {
-      const aube = row.values.aube;
-      const value = row.values[tool];
-      if (!aube || !value) return 0;
-      return value / aube;
-    })
-    .filter(Boolean);
-
-  if (!multiples.length) return "";
-  const low = Math.max(1, Math.round(Math.min(...multiples)));
-  const high = Math.max(low, Math.round(Math.max(...multiples)));
-  return low === 1 ? `up to ${high}` : `about ${low}-${high}`;
-};
-const pnpmCiWarmMultiple = benchmarkMultiple("pnpm");
-const bunCiWarmMultiple = benchmarkMultiple("bun");
-const pnpmBenchmarkRange = benchmarkRange("pnpm");
-const bunBenchmarkRange = benchmarkRange("bun");
+const pnpmWarmInstallMultiple = benchmarkMultiple("pnpm");
+const bunWarmInstallMultiple = benchmarkMultiple("bun");
 
 const packages = [
   "@vue/compiler-sfc@3.5.32",
@@ -244,18 +227,18 @@ watch(progressBarEl, (el, previousEl) => {
             <a
               class="aube-stat-link"
               href="/benchmarks"
-              :aria-label="`See benchmarks — aube is ${pnpmCiWarmMultiple}x faster than pnpm`"
+              :aria-label="`See benchmarks — aube is ${pnpmWarmInstallMultiple}x faster than pnpm`"
             ></a>
-            <dt>{{ pnpmCiWarmMultiple }}x</dt>
+            <dt>{{ pnpmWarmInstallMultiple }}x</dt>
             <dd>faster than pnpm</dd>
           </div>
           <div class="aube-stat-linked">
             <a
               class="aube-stat-link"
               href="/benchmarks"
-              :aria-label="`See benchmarks — aube is ${bunCiWarmMultiple}x faster than bun`"
+              :aria-label="`See benchmarks — aube is ${bunWarmInstallMultiple}x faster than bun`"
             ></a>
-            <dt>{{ bunCiWarmMultiple }}x</dt>
+            <dt>{{ bunWarmInstallMultiple }}x</dt>
             <dd>faster than bun</dd>
           </div>
           <div class="aube-stat-with-tip">
@@ -344,10 +327,11 @@ watch(progressBarEl, (el, previousEl) => {
         </span>
         <strong>Fastest Node.js package manager.</strong>
         <span>
-          Across the benchmarks, aube is {{ pnpmBenchmarkRange }}x faster than
-          pnpm and {{ bunBenchmarkRange }}x faster than Bun. The chart shows
-          warm CI with no <code>node_modules</code>, using the global virtual
-          store; the other benchmarks cover other situations.
+          In the warm install benchmark, aube is
+          {{ pnpmWarmInstallMultiple }}x faster than pnpm and
+          {{ bunWarmInstallMultiple }}x faster than Bun. The chart shows warm
+          installs with no <code>node_modules</code>; the other benchmarks
+          cover CI and cold-cache cases.
         </span>
         <span class="aube-proof-link">See the benchmarks -></span>
       </a>

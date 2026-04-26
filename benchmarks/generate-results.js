@@ -23,8 +23,8 @@ const benchDir = process.argv[2]
 const outputFile = process.argv[3]
 
 const benchmarks = [
-  ['gvs-warm', 'Fresh install (warm cache, GVS)'],
-  ['gvs-cold', 'Fresh install (cold cache, GVS)'],
+  ['gvs-warm', 'Fresh install (warm cache)'],
+  ['gvs-cold', 'Fresh install (cold cache)'],
   ['ci-warm', 'CI install (warm cache, GVS disabled)'],
   ['ci-cold', 'CI install (cold cache, GVS disabled)'],
   ['install-test', 'npm install && npm run test'],

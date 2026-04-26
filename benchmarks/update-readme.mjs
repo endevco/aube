@@ -28,12 +28,12 @@ function about(label) {
   return label.startsWith('~') ? label : `about ${label}`
 }
 
-const gvsPnpm = ratio('gvs-warm', 'pnpm', { approximate: true })
-const gvsBun = ratio('gvs-warm', 'bun', { approximate: true })
+const defaultPnpm = ratio('gvs-warm', 'pnpm', { approximate: true })
+const defaultBun = ratio('gvs-warm', 'bun', { approximate: true })
 const testPnpm = ratio('install-test', 'pnpm')
 const testBun = ratio('install-test', 'bun')
 
-const paragraph = `**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs with the global virtual store are ${about(gvsPnpm)} faster than pnpm and ${about(gvsBun)} faster than Bun in the current benchmarks. Repeat test commands run up to ${testPnpm} faster than pnpm and up to ${testBun} faster than Bun.`
+const paragraph = `**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs are ${about(defaultPnpm)} faster than pnpm and ${about(defaultBun)} faster than Bun in the current benchmarks. Repeat test commands run up to ${testPnpm} faster than pnpm and up to ${testBun} faster than Bun.`
 
 const START = '<!-- BENCH_RATIOS:START -->'
 const END = '<!-- BENCH_RATIOS:END -->'
@@ -47,4 +47,4 @@ if (startIdx === -1 || endIdx === -1) {
 }
 
 writeFileSync(readmePath, readme.slice(0, startIdx) + `${START}\n${paragraph}\n${END}` + readme.slice(endIdx + END.length))
-console.log(`bench ratios: gvs-warm pnpm=${gvsPnpm} bun=${gvsBun} / install-test pnpm=${testPnpm} bun=${testBun}`)
+console.log(`bench ratios: gvs-warm pnpm=${defaultPnpm} bun=${defaultBun} / install-test pnpm=${testPnpm} bun=${testBun}`)

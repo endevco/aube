@@ -32,26 +32,26 @@ jobs:
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
       - name: Build aube
-        run: cargo build --release
+        run: cargo build
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Render CLI docs from usage spec
         run: |
-          ./target/release/aube usage > aube.usage.kdl
+          ./target/debug/aube usage > aube.usage.kdl
           rm -rf docs/cli && mkdir -p docs/cli
           usage g markdown -mf aube.usage.kdl --out-dir docs/cli --url-prefix /cli
           usage g json     -f aube.usage.kdl > docs/cli/commands.json
       - name: Install docs dependencies with aube
         run: |
           cd docs
-          ../target/release/aube install
+          ../target/debug/aube install
       - name: Build docs site with aube
         env:
           AUBE_UPDATE_STARS: "1"
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd docs
-          ../target/release/aube run docs:build
+          ../target/debug/aube run docs:build
           touch .vitepress/dist/.nojekyll
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

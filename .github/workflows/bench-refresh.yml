@@ -80,6 +80,8 @@ jobs:
           git config user.email "release-plz+bot@users.noreply.github.com"
       - name: Refresh benchmarks
         run: mise run bench:bump
+      - name: Validate benchmark claims
+        run: node benchmarks/validate-results.mjs
 
       # Guard against a bench run that produced no diff — e.g. the version
       # moved but the numbers are byte-identical. No diff, no PR churn.
@@ -119,7 +121,7 @@ jobs:
           cat > /tmp/bench_body.md <<EOF
           ## 🤖 Refreshed benchmarks
 
-          \`benchmarks/results.json\` was pinned to aube \`${BENCH:-<unset>}\` but the workspace is now \`${WORKSPACE}\`. Re-ran \`mise run bench:bump\` on the hermetic Verdaccio registry (throttled per the mise task) and regenerated \`benchmarks/results.json\` plus the README \`BENCH_RATIOS\` block. The benchmark matrix pins each scenario's GVS mode via \`npm_config_enable_global_virtual_store=true|false\` (the auto-synthesized env alias for the \`enableGlobalVirtualStore\` setting), so GitHub Actions' inherited \`CI=true\` environment does not change the measured mode.
+          \`benchmarks/results.json\` was pinned to aube \`${BENCH:-<unset>}\` but the workspace is now \`${WORKSPACE}\`. Re-ran \`mise run bench:bump\` on the hermetic Verdaccio registry (throttled per the mise task) and regenerated \`benchmarks/results.json\` plus the README \`BENCH_RATIOS\` block. The benchmark matrix pins aube's GVS mode via \`npm_config_enable_global_virtual_store=true|false\` (the auto-synthesized env alias for the \`enableGlobalVirtualStore\` setting), so GitHub Actions' inherited \`CI=true\` environment does not change whether aube runs with GVS enabled or disabled.
 
           **Review the numbers** before merging — if anything looks wildly off vs. the previous release, investigate before landing. Hermetic proxy jitter or an npmjs uplink hiccup can occasionally skew results.
 
