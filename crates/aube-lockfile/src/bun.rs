@@ -1277,6 +1277,18 @@ pub fn write(
     // Tuple shape: `[ident]` when the workspace declares no deps,
     // `[ident, { meta }]` when it does. No empty-string slot, no
     // integrity — bun's parser keys off element type, not position.
+    //
+    // Workspace deps may reference *other* workspace packages
+    // (`app` → `lib` via `workspace:*`). Those targets aren't in
+    // `canonical` (which excludes `LocalSource::Link`), so build a
+    // separate set of workspace dep_paths and accept either when
+    // checking whether a dep target is reachable.
+    let workspace_dep_paths: BTreeSet<String> = graph
+        .packages
+        .values()
+        .filter(|p| matches!(p.local_source, Some(LocalSource::Link(_))))
+        .map(|p| p.dep_path.clone())
+        .collect();
     let mut emitted_workspace_keys: BTreeSet<String> = BTreeSet::new();
     for pkg in graph.packages.values() {
         let Some(LocalSource::Link(rel_path)) = pkg.local_source.as_ref() else {
@@ -1314,7 +1326,7 @@ pub fn write(
         let mut opt_deps_obj = serde_json::Map::new();
         for (dep_name, dep_value) in &pkg.dependencies {
             let canonical_key = crate::npm::child_canonical_key(dep_name, dep_value);
-            if !canonical.contains_key(&canonical_key) {
+            if !canonical.contains_key(&canonical_key) && !workspace_dep_paths.contains(dep_value) {
                 continue;
             }
             let rendered = pkg
@@ -2262,6 +2274,93 @@ mod tests {
         assert_eq!(arr[0].as_str(), Some("my-app@workspace:packages/app"));
         let ws = v["workspaces"].as_object().unwrap();
         assert!(ws.contains_key("packages/app"));
+    }
+
+    /// Workspace-to-workspace deps must survive emission. When `app`
+    /// depends on `lib` via `workspace:*`, `app`'s `packages:` entry
+    /// has to carry that dep edge in its meta or bun's frozen-install
+    /// pass can't wire it up. The dep target is another `LocalSource::Link`
+    /// package, not a registry one, so the membership check has to
+    /// accept workspace dep_paths in addition to canonical entries.
+    #[test]
+    fn test_write_preserves_workspace_to_workspace_dep_edge() {
+        use crate::LocalSource;
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/lib")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","version":"0.1.0","dependencies":{"lib":"workspace:*"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project_dir.join("packages/lib/package.json"),
+            r#"{"name":"lib","version":"0.1.0"}"#,
+        )
+        .unwrap();
+
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "app@workspace:packages/app".to_string(),
+            LockedPackage {
+                name: "app".to_string(),
+                version: "workspace:packages/app".to_string(),
+                dep_path: "app@workspace:packages/app".to_string(),
+                local_source: Some(LocalSource::Link(PathBuf::from("packages/app"))),
+                dependencies: [("lib".to_string(), "lib@workspace:packages/lib".to_string())]
+                    .into(),
+                declared_dependencies: [("lib".to_string(), "workspace:*".to_string())].into(),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            "lib@workspace:packages/lib".to_string(),
+            LockedPackage {
+                name: "lib".to_string(),
+                version: "workspace:packages/lib".to_string(),
+                dep_path: "lib@workspace:packages/lib".to_string(),
+                local_source: Some(LocalSource::Link(PathBuf::from("packages/lib"))),
+                ..Default::default()
+            },
+        );
+        let mut importers = BTreeMap::new();
+        importers.insert(".".to_string(), vec![]);
+        importers.insert("packages/app".to_string(), vec![]);
+        importers.insert("packages/lib".to_string(), vec![]);
+        let graph = LockfileGraph {
+            importers,
+            packages,
+            ..Default::default()
+        };
+
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        let lock_path = project_dir.join("bun.lock");
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let raw = std::fs::read_to_string(&lock_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&strip_jsonc(&raw)).unwrap();
+        let app_entry = v["packages"]["app"].as_array().unwrap();
+        assert_eq!(
+            app_entry.len(),
+            2,
+            "workspace entry with deps must be `[ident, {{ meta }}]`"
+        );
+        assert_eq!(app_entry[0].as_str(), Some("app@workspace:packages/app"));
+        assert_eq!(
+            app_entry[1]["dependencies"]["lib"].as_str(),
+            Some("workspace:*"),
+            "workspace-to-workspace dep edge dropped"
+        );
     }
 
     /// Parse → write → parse round-trip preserves a workspace entry
