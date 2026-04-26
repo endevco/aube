@@ -1666,6 +1666,9 @@ environment and temporary HOME. On macOS, aube also wraps the script
 with a native Seatbelt profile that denies network access and limits
 filesystem writes to the package directory and temporary directories.
 Root lifecycle scripts are not jailed.
+
+This defaults to `false` today and is planned to default to `true` in
+the next major version.
 """
 sources.cli = []
 sources.env = ["npm_config_jail_builds", "NPM_CONFIG_JAIL_BUILDS", "AUBE_JAIL_BUILDS"]

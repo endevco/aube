@@ -81,6 +81,9 @@ On macOS, aube also applies a native Seatbelt profile that denies network
 access and restricts filesystem writes to the package directory and temporary
 directories.
 
+`jailBuilds` defaults to `false` today and is planned to default to `true` in
+the next major version.
+
 For packages that need a narrow exception, grant only that privilege:
 
 ```yaml

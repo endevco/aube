@@ -201,7 +201,7 @@ You can inspect packages whose scripts were skipped:
 aube ignored-builds
 ```
 
-For approved packages, `jailBuilds: true` runs lifecycle scripts with a scrubbed env and temporary `HOME`. Use package globs in `jailBuildPermissions` or `jailBuildExclusions` for packages that need specific env vars, paths, network, or a full opt-out.
+For approved packages, `jailBuilds: true` runs lifecycle scripts with a scrubbed env and temporary `HOME`. It defaults to `false` today and is planned to default to `true` in the next major version. Use package globs in `jailBuildPermissions` or `jailBuildExclusions` for packages that need specific env vars, paths, network, or a full opt-out.
 
 ## Package Layout
 

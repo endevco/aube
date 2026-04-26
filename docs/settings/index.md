@@ -1690,6 +1690,9 @@ with a native Seatbelt profile that denies network access and limits
 filesystem writes to the package directory and temporary directories.
 Root lifecycle scripts are not jailed.
 
+This defaults to `false` today and is planned to default to `true` in
+the next major version.
+
 Examples:
 
 - `jail-builds=true`

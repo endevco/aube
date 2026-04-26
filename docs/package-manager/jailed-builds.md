@@ -6,7 +6,8 @@ project approves them with `allowBuilds` / `onlyBuiltDependencies`. Jailed
 builds add a second boundary: approved packages may build, but they do
 not automatically get the user's full filesystem, network, and environment.
 
-Jailed builds are opt-in today. Enable them in workspace config:
+Jailed builds default to `false` today and are planned to default to `true` in
+the next major version. Enable them now in workspace config:
 
 ```yaml
 jailBuilds: true
@@ -163,7 +164,7 @@ code. The supply-chain boundary is dependency code.
 4. Teach `aube approve-builds` to show the default jail profile for newly
    approved packages.
 5. Add more granular jail permission kinds as real packages need them.
-6. Make jailed dependency builds the default on supported platforms.
+6. Make jailed dependency builds the default in the next major version.
 7. Keep explicit config escape hatches for debugging:
    `jailBuilds=false` globally, or `jailBuildExclusions` for a package.
 
