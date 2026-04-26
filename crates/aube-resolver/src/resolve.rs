@@ -1038,6 +1038,10 @@ impl Resolver {
                                     cpu: locked_pkg.cpu.clone(),
                                     libc: locked_pkg.libc.clone(),
                                     bundled_dependencies: locked_pkg.bundled_dependencies.clone(),
+                                    optional: locked_pkg.optional,
+                                    transitive_peer_dependencies: locked_pkg
+                                        .transitive_peer_dependencies
+                                        .clone(),
                                     tarball_url: locked_pkg.tarball_url.clone(),
                                     alias_of: locked_pkg.alias_of.clone(),
                                     yarn_checksum: locked_pkg.yarn_checksum.clone(),
@@ -1566,6 +1570,8 @@ impl Resolver {
                         },
                         license: version_meta.license.clone(),
                         funding_url: version_meta.funding_url.clone(),
+                        optional: false,
+                        transitive_peer_dependencies: Vec::new(),
                         extra_meta: BTreeMap::new(),
                     },
                 );
