@@ -1267,6 +1267,88 @@ pub fn write(
         package_entries.push((bun_key, entry));
     }
 
+    // Workspace packages live as `[name@workspace:path]` entries
+    // alongside the registry packages — bun's `bun install
+    // --frozen-lockfile` walks them out of `packages:` to wire up
+    // workspace deps without re-reading every workspace package.json.
+    // Dropping them on rewrite produces a lockfile that errors
+    // "Cannot find package" on subsequent installs.
+    //
+    // Tuple shape: `[ident]` when the workspace declares no deps,
+    // `[ident, { meta }]` when it does. No empty-string slot, no
+    // integrity — bun's parser keys off element type, not position.
+    let mut emitted_workspace_keys: BTreeSet<String> = BTreeSet::new();
+    for pkg in graph.packages.values() {
+        let Some(LocalSource::Link(rel_path)) = pkg.local_source.as_ref() else {
+            continue;
+        };
+        let key = pkg.alias_of.as_deref().unwrap_or(&pkg.name).to_string();
+        if !emitted_workspace_keys.insert(key.clone()) {
+            continue;
+        }
+        // Build the ident as `name@workspace:<spec>`. Prefer the
+        // original specifier captured on `version` (bun-roundtripped
+        // graphs carry `version = "workspace:packages/app"`), and
+        // fall back to the `LocalSource::Link` path for graphs
+        // synthesized by aube's resolver where `version` is the
+        // workspace's real semver. The ident must always reflect
+        // the workspace specifier so bun's parser routes the entry
+        // into its workspace logic.
+        let ident_name = pkg.alias_of.as_deref().unwrap_or(&pkg.name);
+        let workspace_spec = if pkg.version.starts_with("workspace:") {
+            pkg.version
+                .strip_prefix("workspace:")
+                .unwrap_or("*")
+                .to_string()
+        } else {
+            let path_str = rel_path.to_string_lossy();
+            if path_str.is_empty() || path_str == "." {
+                "*".to_string()
+            } else {
+                path_str.into_owned()
+            }
+        };
+        let ident = format!("{ident_name}@workspace:{workspace_spec}");
+
+        let mut deps_obj = serde_json::Map::new();
+        let mut opt_deps_obj = serde_json::Map::new();
+        for (dep_name, dep_value) in &pkg.dependencies {
+            let canonical_key = crate::npm::child_canonical_key(dep_name, dep_value);
+            if !canonical.contains_key(&canonical_key) {
+                continue;
+            }
+            let rendered = pkg
+                .declared_dependencies
+                .get(dep_name)
+                .cloned()
+                .unwrap_or_else(|| {
+                    crate::npm::dep_value_as_version(dep_name, dep_value).to_string()
+                });
+            if pkg.optional_dependencies.contains_key(dep_name) {
+                opt_deps_obj.insert(dep_name.clone(), Value::String(rendered));
+            } else {
+                deps_obj.insert(dep_name.clone(), Value::String(rendered));
+            }
+        }
+        let entry = if deps_obj.is_empty() && opt_deps_obj.is_empty() {
+            Value::Array(vec![Value::String(ident)])
+        } else {
+            let mut meta = serde_json::Map::new();
+            if !deps_obj.is_empty() {
+                meta.insert("dependencies".to_string(), Value::Object(deps_obj));
+            }
+            if !opt_deps_obj.is_empty() {
+                meta.insert(
+                    "optionalDependencies".to_string(),
+                    Value::Object(opt_deps_obj),
+                );
+            }
+            Value::Array(vec![Value::String(ident), Value::Object(meta)])
+        };
+        package_entries.push((key, entry));
+    }
+    package_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
     // Echo back the parsed `configVersion` (default 1 for older v1.1
     // lockfiles that predate the field) so a bun-bumped value round-
     // trips instead of silently downgrading on re-emit.
@@ -2120,12 +2202,13 @@ mod tests {
         );
     }
 
-    /// A workspace-link package (`my-app` in this graph) must not leak
-    /// into the bun.lock `packages` section — bun tracks workspaces
-    /// through the `workspaces` map, and a leftover `packages["my-app"]`
-    /// entry would confuse bun's own parser on round-trip.
+    /// Workspace-link packages must appear in `packages:` as
+    /// `[name@workspace:path]` so `bun install --frozen-lockfile`
+    /// can wire up the workspace dep without re-reading every
+    /// workspace package.json. Dropping them produces a lockfile
+    /// that errors with "Cannot find package" on the next install.
     #[test]
-    fn test_write_skips_workspace_link_packages() {
+    fn test_write_emits_workspace_link_packages() {
         use crate::LocalSource;
         use std::path::PathBuf;
 
@@ -2171,12 +2254,63 @@ mod tests {
         let raw = std::fs::read_to_string(&lock_path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&strip_jsonc(&raw)).unwrap();
         let pkgs = v["packages"].as_object().unwrap();
-        assert!(
-            !pkgs.contains_key("my-app"),
-            "workspace-link package leaked into `packages`: {pkgs:?}"
-        );
+        let entry = pkgs
+            .get("my-app")
+            .expect("workspace-link package missing from `packages`");
+        let arr = entry.as_array().expect("entry must be a JSON array");
+        assert_eq!(arr.len(), 1, "no-deps workspace entry must be `[ident]`");
+        assert_eq!(arr[0].as_str(), Some("my-app@workspace:packages/app"));
         let ws = v["workspaces"].as_object().unwrap();
         assert!(ws.contains_key("packages/app"));
+    }
+
+    /// Parse → write → parse round-trip preserves a workspace entry
+    /// in `packages:`. Bun emits `[ident]` (and optionally `[ident,
+    /// { meta }]` when the workspace declares deps); both shapes must
+    /// survive without churning to the registry-package 4-tuple form.
+    #[test]
+    fn test_roundtrip_workspace_entry_in_packages_section() {
+        use tempfile::TempDir;
+        let project = TempDir::new().unwrap();
+        let project_dir = project.path();
+        std::fs::write(
+            project_dir.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_dir.join("packages/app")).unwrap();
+        std::fs::write(
+            project_dir.join("packages/app/package.json"),
+            r#"{"name":"app","version":"0.1.0"}"#,
+        )
+        .unwrap();
+
+        let lock_path = project_dir.join("bun.lock");
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root", "version": "1.0.0" },
+    "packages/app": { "name": "app", "version": "0.1.0" }
+  },
+  "packages": {
+    "app": ["app@workspace:packages/app"]
+  }
+}"#;
+        std::fs::write(&lock_path, content).unwrap();
+
+        let graph = parse(&lock_path).unwrap();
+        let manifest =
+            aube_manifest::PackageJson::from_path(&project_dir.join("package.json")).unwrap();
+        std::fs::remove_file(&lock_path).unwrap();
+        write(&lock_path, &graph, &manifest).unwrap();
+
+        let raw = std::fs::read_to_string(&lock_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&strip_jsonc(&raw)).unwrap();
+        let arr = v["packages"]["app"]
+            .as_array()
+            .expect("workspace entry survived as array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].as_str(), Some("app@workspace:packages/app"));
     }
 
     /// When the root and a non-root workspace declare the same dep
