@@ -291,7 +291,7 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # and `COLD_WIPE` wouldn't find it to clean up between iterations.
 AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
 
-# Per-scenario AUBE_ENV variants that pin the global virtual store mode
+# Per-scenario AUBE_ENV variants that pin aube's global virtual store mode
 # via the `enableGlobalVirtualStore` setting's auto-synthesized env-var
 # alias (`npm_config_<snake_case>` — see `aube-settings/build.rs`).
 # Using an env var rather than `--enable-gvs` / `--disable-gvs` means
@@ -304,18 +304,19 @@ AUBE_ENV_GVS_OFF="$AUBE_ENV npm_config_enable_global_virtual_store=false"
 
 # Scenario keys describe what's on disk before the run. Every install
 # scenario assumes a committed lockfile is present; the axes are
-# cache/store warmth and whether aube's global virtual store is enabled.
+# cache/store warmth and whether aube's global virtual store is disabled
+# for CI parity.
 # Plus an "add" scenario that exercises the incremental add path and an
 # "install-test" scenario that measures install + script dispatch end-to-end.
 
-# Scenario 1: Fresh install, warm cache (aube GVS enabled) ------------------
+# Scenario 1: Fresh install, warm cache -------------------------------------
 CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 CMDS["gvs-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 CMDS["gvs-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
 
-# Scenario 2: Fresh install, cold cache (aube GVS enabled) ------------------
+# Scenario 2: Fresh install, cold cache -------------------------------------
 CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 CMDS["gvs-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
@@ -466,21 +467,22 @@ COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.local/share/aube {home}/.n
 # `lockfile_dest` placeholder so each pm gets its native filename.
 WARM_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb && cp {lockfile} {lockfile_dest}"
 
-# ── Benchmark 1: Fresh install, warm cache, GVS enabled ────────────────────
+# ── Benchmark 1: Fresh install, warm cache ─────────────────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
-# Forces aube's global virtual store on so GitHub Actions' inherited
-# CI=true environment cannot silently turn this into per-project mode.
+# Pins aube's default local global virtual store behavior so GitHub
+# Actions' inherited CI=true environment cannot silently turn this into
+# per-project mode.
 
 echo ""
-echo "━━━ Benchmark 1: Fresh install (warm cache, GVS) ━━━"
+echo "━━━ Benchmark 1: Fresh install (warm cache) ━━━"
 run_bench "gvs-warm" "$WARM_PREP"
 
-# ── Benchmark 2: Fresh install, cold cache, GVS enabled ────────────────────
+# ── Benchmark 2: Fresh install, cold cache ─────────────────────────────────
 # Lockfile present, but store and cache are empty.
-# Measures fetch-from-registry + import + GVS link path.
+# Measures fetch-from-registry + import + link/materialization work.
 
 echo ""
-echo "━━━ Benchmark 2: Fresh install (cold cache, GVS) ━━━"
+echo "━━━ Benchmark 2: Fresh install (cold cache) ━━━"
 run_bench "gvs-cold" \
 	"rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
 

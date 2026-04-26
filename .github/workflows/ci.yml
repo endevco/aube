@@ -65,6 +65,7 @@ jobs:
         with:
           shared-key: test-linux
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - run: node benchmarks/validate-results.mjs
       - run: mise run test
       - run: mise run lint
       - run: cargo-machete

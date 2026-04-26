@@ -19,7 +19,7 @@
   "rows": [
     {
       "key": "gvs-warm",
-      "label": "Fresh install (warm cache, GVS)",
+      "label": "Fresh install (warm cache)",
       "values": {
         "aube": 236,
         "bun": 713,
@@ -67,7 +67,7 @@
     },
     {
       "key": "gvs-cold",
-      "label": "Fresh install (cold cache, GVS)",
+      "label": "Fresh install (cold cache)",
       "values": {
         "aube": 2980,
         "bun": 2095,
