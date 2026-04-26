@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1](https://github.com/endevco/aube/compare/aube-linker-v1.2.0...aube-linker-v1.2.1) - 2026-04-26
+
+### Fixed
+
+- *(linker)* skip self-named deps regardless of version ([#321](https://github.com/endevco/aube/pull/321))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-linker-v1.1.0...aube-linker-v1.2.0) - 2026-04-25
 
 ### Fixed

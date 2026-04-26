@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1](https://github.com/endevco/aube/compare/aube-settings-v1.2.0...aube-settings-v1.2.1) - 2026-04-26
+
+### Fixed
+
+- *(registry)* raise fetch timeout default ([#323](https://github.com/endevco/aube/pull/323))
+- *(install)* keep transitive peers out of root modules ([#316](https://github.com/endevco/aube/pull/316))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-settings-v1.1.0...aube-settings-v1.2.0) - 2026-04-25
 
 ### Added
