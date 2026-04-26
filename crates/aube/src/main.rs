@@ -1295,8 +1295,15 @@ fn raise_nofile_limit() {}
 
 fn init_logging(cli: &Cli, effective_level: LogLevel) {
     let log_level = effective_level.filter();
-    let env_filter = tracing_subscriber::EnvFilter::try_from_env("AUBE_LOG")
-        .unwrap_or_else(|_| format!("aube={log_level},aube_cli={log_level}").into());
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("AUBE_LOG").unwrap_or_else(|_| {
+        format!(
+            "aube={log_level},aube_cli={log_level},aube_registry={log_level},\
+             aube_resolver={log_level},aube_lockfile={log_level},aube_store={log_level},\
+             aube_linker={log_level},aube_manifest={log_level},aube_scripts={log_level},\
+             aube_workspace={log_level},aube_settings={log_level},aube_util={log_level}"
+        )
+        .into()
+    });
 
     // ndjson swaps the fmt layer for the JSON formatter so every tracing
     // event is serialized as a single line of JSON on stderr. The filter

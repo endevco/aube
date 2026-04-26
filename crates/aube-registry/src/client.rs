@@ -342,12 +342,11 @@ impl RegistryClient {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
                     drop(resp);
-                    // Recoverable: the retry succeeds in the common
-                    // case, and the final failure propagates up as a
-                    // user-facing error. Emitting a WARN on every
-                    // transient blip turns a healthy retry loop into
-                    // install-time noise.
-                    tracing::debug!(
+                    // Surfaces at WARN so users see retry activity in
+                    // the install output. The final failure still
+                    // propagates up as a user-facing error if every
+                    // attempt fails.
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -361,7 +360,7 @@ impl RegistryClient {
                         return Err(e);
                     }
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -445,7 +444,7 @@ impl RegistryClient {
                 Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -461,9 +460,9 @@ impl RegistryClient {
                     let started = std::time::Instant::now();
                     match read_body_capped(resp, cap, label).await {
                         Ok(bytes) => return Ok((bytes, started.elapsed())),
-                        Err(err) if !is_last => {
+                        Err(err) if !is_last && !timeout_retry_exhausted(&err, attempt) => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                            tracing::debug!(
+                            tracing::warn!(
                                 attempt = attempt + 1,
                                 max_attempts,
                                 backoff_ms = wait.as_millis() as u64,
@@ -476,15 +475,27 @@ impl RegistryClient {
                         Err(err) => return Err(err),
                     }
                 }
-                Err(err) if !is_last => {
+                Err(err) if !is_last && !err.is_timeout() => {
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
                         "retrying HTTP request after transport error",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(err) if !is_last && attempt < TIMEOUT_RETRY_CAP => {
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label,
+                        "retrying HTTP request after timeout (capped)",
                     );
                     tokio::time::sleep(wait).await;
                 }
@@ -566,7 +577,7 @@ impl RegistryClient {
                 Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -628,7 +639,7 @@ impl RegistryClient {
                         }
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                            tracing::debug!(
+                            tracing::warn!(
                                 attempt = attempt + 1,
                                 max_attempts,
                                 backoff_ms = wait.as_millis() as u64,
@@ -643,7 +654,7 @@ impl RegistryClient {
                 }
                 Err(err) if !is_last => {
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -728,7 +739,7 @@ impl RegistryClient {
                 Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -750,7 +761,7 @@ impl RegistryClient {
                         }
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                            tracing::debug!(
+                            tracing::warn!(
                                 attempt = attempt + 1,
                                 max_attempts,
                                 backoff_ms = wait.as_millis() as u64,
@@ -765,7 +776,7 @@ impl RegistryClient {
                 }
                 Err(err) if !is_last => {
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -852,7 +863,7 @@ impl RegistryClient {
                 Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
                     let wait = retry_after_from(&resp)
                         .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -913,7 +924,7 @@ impl RegistryClient {
                         }
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                            tracing::debug!(
+                            tracing::warn!(
                                 attempt = attempt + 1,
                                 max_attempts,
                                 backoff_ms = wait.as_millis() as u64,
@@ -928,7 +939,7 @@ impl RegistryClient {
                 }
                 Err(err) if !is_last => {
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::debug!(
+                    tracing::warn!(
                         attempt = attempt + 1,
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
@@ -1624,6 +1635,23 @@ fn retry_after_from(resp: &reqwest::Response) -> Option<std::time::Duration> {
 /// value.
 const RETRY_AFTER_CAP_SECS: u64 = 60;
 
+/// Maximum number of timeout-shaped retries before we surface the
+/// error to the caller, regardless of `fetchRetries`. A timeout has
+/// already cost us `fetchTimeout` of wall-clock; retrying many more
+/// times compounds the user-visible hang without much chance of
+/// recovery on the same upstream. One retry is enough to absorb a
+/// fluke; beyond that, fail fast and let the caller decide.
+const TIMEOUT_RETRY_CAP: u32 = 1;
+
+/// True when `err` is a tarball body-read timeout AND we have already
+/// burned through the [`TIMEOUT_RETRY_CAP`] budget. Used as a guard
+/// inside [`RegistryClient::retry_bytes_body_read`] so a body read that
+/// hit `fetchTimeout` doesn't keep the user blocked through the full
+/// `fetchRetries` schedule.
+fn timeout_retry_exhausted(err: &Error, attempt: u32) -> bool {
+    matches!(err, Error::Http(e) if e.is_timeout()) && attempt >= TIMEOUT_RETRY_CAP
+}
+
 #[cfg(test)]
 mod retry_tests {
     //! End-to-end tests for [`RegistryClient::send_with_retry`] via the
@@ -1868,6 +1896,54 @@ mod retry_tests {
             ),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn tarball_timeout_retries_at_most_once_even_with_high_retry_budget() {
+        // Tarball server delays past client `fetchTimeout`. With
+        // `retries=5` the unbounded policy would attempt 6 times; the
+        // timeout cap collapses that to 2 (1 initial + 1 retry). Pins
+        // the contract that a degraded upstream can't drag the install
+        // through `fetchTimeout × (retries + 1)` of wall-clock.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pkg.tgz"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"unused".to_vec())
+                    .set_delay(std::time::Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 50,
+            retries: 5,
+            retry_factor: 1,
+            retry_min_timeout_ms: 1,
+            retry_max_timeout_ms: 1,
+            ..FetchPolicy::default()
+        };
+        let client = client_with(&server, policy);
+        let url = format!("{}/pkg.tgz", server.uri());
+        let err = client
+            .fetch_tarball_bytes(&url)
+            .await
+            .expect_err("timeout should surface");
+        match err {
+            Error::Http(inner) => assert!(
+                inner.is_timeout() || inner.is_request(),
+                "expected timeout-shaped reqwest error, got {inner:?}",
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "timeouts must cap retries at 1 regardless of fetchRetries",
+        );
     }
 
     #[tokio::test]
