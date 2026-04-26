@@ -438,6 +438,10 @@ impl RegistryClient {
         F: Fn() -> reqwest::RequestBuilder,
     {
         let max_attempts = self.fetch_policy.retries.saturating_add(1);
+        // Counted independently of `attempt` so a non-timeout failure
+        // (e.g. a 503 on the first try) doesn't consume the timeout
+        // budget. Increments only when a retry follows a timeout.
+        let mut timeout_retries: u32 = 0;
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
             match build().send().await {
@@ -460,7 +464,15 @@ impl RegistryClient {
                     let started = std::time::Instant::now();
                     match read_body_capped(resp, cap, label).await {
                         Ok(bytes) => return Ok((bytes, started.elapsed())),
-                        Err(err) if !is_last && !timeout_retry_exhausted(&err, attempt) => {
+                        Err(err) if !is_last => {
+                            let is_timeout =
+                                matches!(&err, Error::Http(e) if e.is_timeout());
+                            if is_timeout && timeout_retries >= TIMEOUT_RETRY_CAP {
+                                return Err(err);
+                            }
+                            if is_timeout {
+                                timeout_retries += 1;
+                            }
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                             tracing::warn!(
                                 attempt = attempt + 1,
@@ -475,7 +487,13 @@ impl RegistryClient {
                         Err(err) => return Err(err),
                     }
                 }
-                Err(err) if !is_last && !err.is_timeout() => {
+                Err(err) if !is_last => {
+                    if err.is_timeout() {
+                        if timeout_retries >= TIMEOUT_RETRY_CAP {
+                            return Err(Error::Http(err));
+                        }
+                        timeout_retries += 1;
+                    }
                     let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                     tracing::warn!(
                         attempt = attempt + 1,
@@ -484,18 +502,6 @@ impl RegistryClient {
                         error = %err,
                         label,
                         "retrying HTTP request after transport error",
-                    );
-                    tokio::time::sleep(wait).await;
-                }
-                Err(err) if !is_last && attempt < TIMEOUT_RETRY_CAP => {
-                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        max_attempts,
-                        backoff_ms = wait.as_millis() as u64,
-                        error = %err,
-                        label,
-                        "retrying HTTP request after timeout (capped)",
                     );
                     tokio::time::sleep(wait).await;
                 }
@@ -1641,16 +1647,11 @@ const RETRY_AFTER_CAP_SECS: u64 = 60;
 /// times compounds the user-visible hang without much chance of
 /// recovery on the same upstream. One retry is enough to absorb a
 /// fluke; beyond that, fail fast and let the caller decide.
+///
+/// Counted separately from the global retry counter inside the retry
+/// loop so a non-timeout failure (e.g. a 503 on the first attempt)
+/// never consumes the timeout budget.
 const TIMEOUT_RETRY_CAP: u32 = 1;
-
-/// True when `err` is a tarball body-read timeout AND we have already
-/// burned through the [`TIMEOUT_RETRY_CAP`] budget. Used as a guard
-/// inside [`RegistryClient::retry_bytes_body_read`] so a body read that
-/// hit `fetchTimeout` doesn't keep the user blocked through the full
-/// `fetchRetries` schedule.
-fn timeout_retry_exhausted(err: &Error, attempt: u32) -> bool {
-    matches!(err, Error::Http(e) if e.is_timeout()) && attempt >= TIMEOUT_RETRY_CAP
-}
 
 #[cfg(test)]
 mod retry_tests {
@@ -1944,6 +1945,54 @@ mod retry_tests {
             requests.len(),
             2,
             "timeouts must cap retries at 1 regardless of fetchRetries",
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_cap_counts_only_timeouts_not_other_retries() {
+        // Mixed-error reproducer: a non-timeout failure (503) consumes
+        // a global retry slot, then a timeout still gets its allowed
+        // retry. If the cap were keyed off the global `attempt`
+        // counter, the second timeout would surface immediately and
+        // the user would get *zero* timeout retries instead of one.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pkg.tgz"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/pkg.tgz"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"unused".to_vec())
+                    .set_delay(std::time::Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 50,
+            retries: 5,
+            retry_factor: 1,
+            retry_min_timeout_ms: 1,
+            retry_max_timeout_ms: 1,
+            ..FetchPolicy::default()
+        };
+        let client = client_with(&server, policy);
+        let url = format!("{}/pkg.tgz", server.uri());
+        let _ = client
+            .fetch_tarball_bytes(&url)
+            .await
+            .expect_err("all attempts fail");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            3,
+            "expected 1 503 + 1 initial timeout + 1 capped timeout retry; \
+             timeout cap must not consume non-timeout retry slots",
         );
     }
 
