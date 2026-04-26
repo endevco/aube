@@ -409,6 +409,7 @@ mod tests {
         assert!(pattern_matches("@swc/core@1.3.0", "@swc/core", "1.3.0").unwrap());
         assert!(!pattern_matches("@swc/core@1.3.0", "@swc/core", "1.3.1").unwrap());
         assert!(pattern_matches("@swc/*", "@swc/core", "1.3.0").unwrap());
+        assert!(pattern_matches("aube-test-*", "aube-test-native", "1.0.0").unwrap());
     }
 
     #[test]

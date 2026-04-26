@@ -156,7 +156,7 @@ YAML
 	assert_output --partial "aube-jail"
 }
 
-@test "neverJailBuiltDependencies lets selected packages opt out of jailBuilds" {
+@test "neverJailBuiltDependencies glob lets matching packages opt out of jailBuilds" {
 	cat >package.json <<'JSON'
 {
   "name": "jail-builds-disable-test",
@@ -172,7 +172,7 @@ JSON
 	cat >aube-workspace.yaml <<'YAML'
 jailBuilds: true
 neverJailBuiltDependencies:
-  - aube-test-jailed-build
+  - aube-test-*
 YAML
 	run aube install
 	assert_success
@@ -205,7 +205,7 @@ YAML
 	assert_file_not_exists aube-builds-marker.txt
 }
 
-@test "jailBuildPermissions can grant a package write access on macOS" {
+@test "jailBuildPermissions glob can grant matching packages write access on macOS" {
 	if [ "$(uname -s)" != "Darwin" ]; then
 		skip "native build jail filesystem enforcement is macOS-only today"
 	fi
@@ -224,7 +224,7 @@ JSON
 	cat >aube-workspace.yaml <<'YAML'
 jailBuilds: true
 jailBuildPermissions:
-  aube-test-builds-marker:
+  aube-test-*:
     write:
       - "."
 YAML

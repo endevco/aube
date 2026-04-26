@@ -1703,10 +1703,10 @@ type = "object"
 default = "undefined"
 docs = """
 Package-pattern map of extra privileges for approved dependency scripts
-that still run inside the build jail. Keys use the same pattern forms as
-`allowBuilds` (`sharp`, `@scope/*`, `pkg@1.2.3 || 1.2.4`). Values may
-grant specific environment variables, extra readable paths, extra writable
-paths, or network access.
+that still run inside the build jail. Keys use the same package glob
+forms as `allowBuilds` (`sharp`, `@scope/*`, `*-native`,
+`pkg@1.2.3 || 1.2.4`). Values may grant specific environment variables,
+extra readable paths, extra writable paths, or network access.
 
 `env` entries are exact variable names inherited from the parent process.
 Use this sparingly: explicit env grants can expose secrets. `write` entries

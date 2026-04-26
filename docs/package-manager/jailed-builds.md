@@ -18,7 +18,7 @@ globally and exempt only that package:
 ```yaml
 jailBuilds: true
 neverJailBuiltDependencies:
-  - sharp
+  - "@vendor/*"
 ```
 
 If a package only needs a narrow exception, grant that privilege instead of
@@ -27,7 +27,7 @@ turning the jail off:
 ```yaml
 jailBuilds: true
 jailBuildPermissions:
-  sharp:
+  "@vendor/*":
     env:
       - SHARP_DIST_BASE_URL
     write:
@@ -84,16 +84,17 @@ Boolean `allowBuilds` entries stay compatible with pnpm and continue to mean
 "approved to run." aube-specific `jailBuildPermissions` narrow or widen the
 jail used after that approval decision.
 
-Keys use the same package-pattern syntax as `allowBuilds` and
-`neverBuiltDependencies`: bare names, exact `name@version` pins, exact version
-unions, and `*` wildcards. `env` entries are exact variable names inherited from
-the parent process. `write` entries are added to the macOS Seatbelt write
-allowlist today. `read` entries are accepted now for the stricter future
-read-deny profile; reads are currently unrestricted.
+Keys use the same package glob syntax as `allowBuilds` and
+`neverBuiltDependencies`: bare names, `*` wildcards like `@scope/*` and
+`*-native`, exact `name@version` pins, and exact version unions. `env` entries
+are exact variable names inherited from the parent process. `write` entries are
+added to the macOS Seatbelt write allowlist today. `read` entries are accepted
+now for the stricter future read-deny profile; reads are currently
+unrestricted.
 
 `neverJailBuiltDependencies` remains the package-level escape hatch when the
-needed privilege is too broad. It only disables the jail; it does not bypass the
-build approval policy.
+needed privilege is too broad. It accepts the same package glob syntax, only
+disables the jail, and does not bypass the build approval policy.
 
 ## Native enforcement
 
