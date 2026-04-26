@@ -1079,17 +1079,25 @@ impl Resolver {
                             // before treating it as a semver range — a
                             // locked `"18.2.0(react@18.2.0)"` tail should
                             // match against packuments as just `18.2.0`.
+                            // Also strip a leading `name@` if present:
+                            // bun/yarn parsers store transitive deps in
+                            // `name@version` (full dep_path) form, while
+                            // pnpm stores bare versions. Without the
+                            // strip, a yarn/bun-locked `is-odd` would
+                            // emit a transitive task for is-number with
+                            // range `"is-number@6.0.0"`, which doesn't
+                            // parse as semver and fails resolution.
                             // The lockfile already omitted bundled dep
                             // edges on write, so iterating
                             // `locked_pkg.dependencies` naturally skips them.
                             let mut child_ancestors = task.ancestors.clone();
                             child_ancestors.push((task.name.clone(), version.clone()));
                             for (dep_name, dep_version) in &locked_pkg.dependencies {
-                                let canonical_version = dep_version
-                                    .split('(')
-                                    .next()
-                                    .unwrap_or(dep_version)
-                                    .to_string();
+                                let prefix = format!("{dep_name}@");
+                                let stripped =
+                                    dep_version.strip_prefix(&prefix).unwrap_or(dep_version);
+                                let canonical_version =
+                                    stripped.split('(').next().unwrap_or(stripped).to_string();
                                 let dep_type =
                                     if locked_pkg.optional_dependencies.contains_key(dep_name) {
                                         DepType::Optional

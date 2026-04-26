@@ -2526,6 +2526,75 @@ async fn lockfile_reuse_preserves_transitive_optional_edges() {
     );
 }
 
+// Bun and yarn parsers store transitive deps in `pkg.dependencies`
+// using the full dep_path form (`is-number@6.0.0`), while pnpm uses
+// bare versions (`6.0.0`). The resolver's lockfile-reuse path
+// previously used the dep value verbatim as a semver range, which
+// hard-failed on bun/yarn lockfiles with a malformed range like
+// `is-number@6.0.0`. Strip the `name@` prefix before treating the
+// value as a range.
+#[tokio::test]
+async fn lockfile_reuse_handles_name_at_version_dep_form() {
+    let is_number = make_packument("is-number", &["6.0.0", "7.0.0"], "7.0.0");
+    let mut is_odd = make_packument("is-odd", &["3.0.1"], "3.0.1");
+    is_odd
+        .versions
+        .get_mut("3.0.1")
+        .unwrap()
+        .dependencies
+        .insert("is-number".to_string(), "^6.0.0".to_string());
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    let mut resolver = Resolver::new(client);
+    resolver.cache.insert("is-number".to_string(), is_number);
+    resolver.cache.insert("is-odd".to_string(), is_odd);
+
+    // Mimic the bun/yarn parser: `dependencies` value is the full
+    // dep_path, not a bare version.
+    let mut existing_pkgs: BTreeMap<String, LockedPackage> = BTreeMap::new();
+    existing_pkgs.insert(
+        "is-odd@3.0.1".to_string(),
+        LockedPackage {
+            name: "is-odd".to_string(),
+            version: "3.0.1".to_string(),
+            dep_path: "is-odd@3.0.1".to_string(),
+            dependencies: [("is-number".to_string(), "is-number@6.0.0".to_string())].into(),
+            ..Default::default()
+        },
+    );
+    existing_pkgs.insert(
+        "is-number@6.0.0".to_string(),
+        LockedPackage {
+            name: "is-number".to_string(),
+            version: "6.0.0".to_string(),
+            dep_path: "is-number@6.0.0".to_string(),
+            ..Default::default()
+        },
+    );
+    let existing = LockfileGraph {
+        packages: existing_pkgs,
+        ..Default::default()
+    };
+
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("is-odd".to_string(), "3.0.1".to_string());
+
+    let graph = resolver
+        .resolve(&manifest, Some(&existing))
+        .await
+        .expect("resolve failed");
+
+    assert!(graph_has_package(&graph, "is-odd", "3.0.1"));
+    assert!(
+        graph_has_package(&graph, "is-number", "6.0.0"),
+        "transitive must reuse the locked 6.0.0, not fail or pick 7.0.0"
+    );
+}
+
 // ===== peersSuffixMaxLength =====
 //
 // Helpers exercised directly: `hash_peer_suffix` for the format
