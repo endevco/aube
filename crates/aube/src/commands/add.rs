@@ -723,12 +723,54 @@ async fn update_manifest_for_add(
     // write the mutated manifest to disk for the duration of the
     // resolver + install pipeline (both re-read from disk), then
     // restore the original bytes from their snapshot before returning.
-    super::write_manifest_json(&manifest_path, &manifest)?;
+    write_manifest_json_for_add(&manifest_path, &manifest)?;
     if print_updated {
         eprintln!("Updated package.json");
     }
 
     Ok((manifest, workspace_catalogs))
+}
+
+fn write_manifest_json_for_add(
+    path: &Path,
+    manifest: &aube_manifest::PackageJson,
+) -> miette::Result<()> {
+    let content = std::fs::read_to_string(path)
+        .into_diagnostic()
+        .wrap_err("failed to read package.json")?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .into_diagnostic()
+        .wrap_err("failed to parse package.json")?;
+    let serde_json::Value::Object(obj) = &mut json else {
+        return Err(miette!("package.json must contain a JSON object"));
+    };
+
+    sync_dep_section(obj, "dependencies", &manifest.dependencies);
+    sync_dep_section(obj, "devDependencies", &manifest.dev_dependencies);
+    sync_dep_section(obj, "peerDependencies", &manifest.peer_dependencies);
+    sync_dep_section(obj, "optionalDependencies", &manifest.optional_dependencies);
+
+    let json = serde_json::to_string_pretty(&json)
+        .into_diagnostic()
+        .wrap_err("failed to serialize package.json")?;
+    super::write_manifest_atomic(path, format!("{json}\n").as_bytes())
+}
+
+fn sync_dep_section(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    deps: &BTreeMap<String, String>,
+) {
+    if deps.is_empty() {
+        obj.remove(key);
+        return;
+    }
+
+    let section = deps
+        .iter()
+        .map(|(name, spec)| (name.clone(), serde_json::Value::String(spec.clone())))
+        .collect();
+    obj.insert(key.to_string(), serde_json::Value::Object(section));
 }
 
 /// Resolve the on-disk lockfile path that a normal `add` would write

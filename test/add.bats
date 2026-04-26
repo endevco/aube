@@ -52,6 +52,42 @@ EOF
 	refute_output --partial '"dependencies"'
 }
 
+@test "aube add: preserves existing package.json top-level order" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-add-order",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "test": "echo ok"
+  },
+  "devDependencies": {
+    "is-even": "^1.0.0"
+  }
+}
+EOF
+
+	run aube add -D is-odd
+	assert_success
+
+	cat >expected-package.json <<'EOF'
+{
+  "name": "test-add-order",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "test": "echo ok"
+  },
+  "devDependencies": {
+    "is-even": "^1.0.0",
+    "is-odd": "^3.0.1"
+  }
+}
+EOF
+	run diff -u expected-package.json package.json
+	assert_success
+}
+
 @test "aube add: adds specific version" {
 	cat >package.json <<'EOF'
 {
