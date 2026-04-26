@@ -1890,6 +1890,93 @@ fn hoist_auto_installed_peers_hoists_unmet_peers_to_importer() {
     assert_eq!(root[1].specifier.as_deref(), Some("^17 || ^18"));
 }
 
+// Peers declared by transitive dependencies are still resolved and
+// sibling-linked by the peer-context pass, but pnpm does not expose
+// them as root importer deps or top-level node_modules entries.
+#[test]
+fn hoist_auto_installed_peers_does_not_hoist_transitive_peers_to_importer() {
+    let parent = mk_locked("parent", "1.0.0", &[("consumer", "1.0.0")], &[]);
+    let consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("react", "18.2.0")],
+        &[("react", "^17 || ^18")],
+    );
+    let react = mk_locked("react", "18.2.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("parent@1.0.0".to_string(), parent);
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("react@18.2.0".to_string(), react);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "parent".to_string(),
+            dep_path: "parent@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let hoisted = hoist_auto_installed_peers(graph);
+    let root = hoisted.importers.get(".").unwrap();
+
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].name, "parent");
+}
+
+// pnpm 11 keeps peers of auto-installed peers contextual to the
+// virtual store. If direct dep `consumer` peers on `plugin`, and the
+// auto-installed `plugin` peers on `host`, only `plugin` becomes an
+// importer dep; `host` is wired later by `apply_peer_contexts`.
+#[test]
+fn hoist_auto_installed_peers_does_not_hoist_auto_peer_peers_to_importer() {
+    let consumer = mk_locked(
+        "consumer",
+        "1.0.0",
+        &[("plugin", "2.0.0")],
+        &[("plugin", "^2")],
+    );
+    let plugin = mk_locked("plugin", "2.0.0", &[("host", "3.0.0")], &[("host", "^3")]);
+    let host = mk_locked("host", "3.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("plugin@2.0.0".to_string(), plugin);
+    packages.insert("host@3.0.0".to_string(), host);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let hoisted = hoist_auto_installed_peers(graph);
+    let root = hoisted.importers.get(".").unwrap();
+
+    assert_eq!(root.len(), 2);
+    assert_eq!(root[0].name, "consumer");
+    assert_eq!(root[1].name, "plugin");
+    assert_eq!(root[1].dep_path, "plugin@2.0.0");
+}
+
 // If the peer is already in the importer's direct deps, hoist is a
 // no-op — we don't duplicate or shadow the user's own specifier.
 #[test]

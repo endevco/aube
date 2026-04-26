@@ -2,10 +2,10 @@
 //!
 //! Two user-visible passes live here:
 //!
-//! * [`hoist_auto_installed_peers`] — promotes declared-but-unmet peers
-//!   up to importer direct deps, matching pnpm's `auto-install-peers=true`
-//!   behavior. Idempotent on graphs that already ship with those hoists
-//!   (npm v7+ output, lockfile-driven installs).
+//! * [`hoist_auto_installed_peers`] — promotes peers declared by direct
+//!   dependencies up to importer direct deps, matching pnpm's
+//!   `auto-install-peers=true` behavior. Idempotent on graphs that already
+//!   ship with those hoists (npm v7+ output, lockfile-driven installs).
 //! * [`apply_peer_contexts`] — computes pnpm-style `(peer@ver)` suffixes
 //!   on contextualized `dep_path`s. Drives the sibling-symlink wiring in
 //!   `aube-linker` so each subtree that pins different peer versions gets
@@ -95,17 +95,15 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
     unmet
 }
 
-/// Promote unmet peers to importer direct deps.
+/// Promote direct dependencies' unmet peers to importer direct deps.
 ///
-/// Walks every resolved package's declared peer deps and hoists any
-/// peer that isn't already a direct dep of the importer up to the
+/// Walks each importer's direct dependencies and hoists any peer they
+/// declare that isn't already a direct dep of the importer up to the
 /// importer's `dependencies` list — what pnpm's
-/// `auto-install-peers=true` produces in its v9 lockfile. If you
-/// depend on a package whose `peerDependencies` declares `react` and
-/// you don't list `react` yourself, pnpm (and now aube) adds it to
-/// your importer's dependencies with the declared peer range as the
-/// specifier, and the linker creates a top-level
-/// `node_modules/react` symlink you can import from your own code.
+/// `auto-install-peers=true` produces in its v9 lockfile. Peers declared by
+/// transitive dependencies stay in the resolved graph for peer-context
+/// sibling wiring, but they are not surfaced as top-level
+/// `node_modules/<peer>` entries.
 ///
 /// Public so lockfile-driven installs that need to re-derive peer
 /// wiring (npm/yarn/bun formats, which don't record peer contexts)
@@ -117,12 +115,11 @@ pub fn detect_unmet_peers(graph: &LockfileGraph) -> Vec<UnmetPeer> {
 /// Algorithm:
 ///   1. For each importer, collect the set of names already in its
 ///      direct deps. Those are "satisfied" and need no hoist.
-///   2. DFS the reachable graph from the importer, visiting each package
-///      and examining its `peer_dependencies` declarations. For each
-///      declared peer not already satisfied by the importer, find a
-///      resolved version somewhere in the graph and synthesize a
-///      `DirectDep` entry. Mark it as satisfied so a second encounter
-///      doesn't add a duplicate.
+///   2. Visit only those direct dependency packages and examine their
+///      `peer_dependencies` declarations. For each declared peer not
+///      already satisfied by the importer, find a resolved version somewhere
+///      in the graph and synthesize a `DirectDep` entry. Mark it as
+///      satisfied so a second direct dep doesn't add a duplicate.
 ///   3. Stable: we walk in-order and take the first declared peer range
 ///      encountered per name as the specifier. Conflicting ranges across
 ///      the tree are not reconciled — first one wins. This matches pnpm
@@ -138,18 +135,12 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
         };
         let mut satisfied: FxHashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
 
-        let mut queue: std::collections::VecDeque<String> =
-            direct_deps.iter().map(|d| d.dep_path.clone()).collect();
-        let mut walked: FxHashSet<String> = FxHashSet::default();
         // Additions are gathered into a separate vec so we don't mutate
         // the importer's direct-dep list while still borrowing from it.
         let mut additions: Vec<DirectDep> = Vec::new();
 
-        while let Some(dep_path) = queue.pop_front() {
-            if !walked.insert(dep_path.clone()) {
-                continue;
-            }
-            let Some(pkg) = graph.packages.get(&dep_path) else {
+        for dep_path in direct_deps.iter().map(|d| &d.dep_path) {
+            let Some(pkg) = graph.packages.get(dep_path) else {
                 continue;
             };
 
@@ -171,7 +162,6 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
                 // otherwise two resolved `react` entries like `18.0.0`
                 // and `18.3.1` would pick the lexicographically-earlier
                 // (older) one.
-                let resolved_via_pkg_deps = pkg.dependencies.contains_key(peer_name);
                 let resolved_version = pkg.dependencies.get(peer_name).cloned().or_else(|| {
                     // Filter to parseable semver versions *before* the
                     // max_by — returning `Equal` on parse failure makes
@@ -203,14 +193,6 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
                     continue;
                 }
                 satisfied.insert(peer_name.clone());
-                // Peer reached via the fallback path isn't in
-                // `pkg.dependencies`, so the normal "walk pkg's deps"
-                // loop at the bottom of the while block would skip it.
-                // Push it onto the queue directly so its own declared
-                // peers get hoisted too.
-                if !resolved_via_pkg_deps {
-                    queue.push_back(synth_dep_path.clone());
-                }
                 additions.push(DirectDep {
                     name: peer_name.clone(),
                     dep_path: synth_dep_path,
@@ -219,15 +201,6 @@ pub fn hoist_auto_installed_peers(mut graph: LockfileGraph) -> LockfileGraph {
                     dep_type: DepType::Production,
                     specifier: Some(peer_range.clone()),
                 });
-            }
-
-            // Queue the package's own resolved deps for further walking.
-            for (child_name, child_version_tail) in &pkg.dependencies {
-                let canonical = child_version_tail
-                    .split('(')
-                    .next()
-                    .unwrap_or(child_version_tail);
-                queue.push_back(format!("{child_name}@{canonical}"));
             }
         }
 

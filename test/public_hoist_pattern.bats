@@ -108,23 +108,21 @@ JSON
 	assert_not_exists node_modules/is-number
 }
 
-@test "default public-hoist-pattern hoists *types* transitives" {
+@test "default public-hoist-pattern leaves transitives private" {
 	cat >package.json <<'JSON'
 {
-  "name": "default-hoist-types",
+  "name": "default-public-hoist-empty",
   "version": "1.0.0",
   "dependencies": {
     "@types/react": "18.3.28"
   }
 }
 JSON
-	# No .npmrc override — the built-in default ["*types*", ...] applies.
-	# @types/react depends on @types/prop-types (matches *types*) and
-	# csstype (does NOT match *types*). Only the former should be hoisted.
+	# No .npmrc override — pnpm's current default is [].
 	run aube install
 	assert_success
 	assert_link_exists node_modules/@types/react
-	assert_link_exists node_modules/@types/prop-types
+	assert_not_exists node_modules/@types/prop-types
 	assert_not_exists node_modules/csstype
 }
 
