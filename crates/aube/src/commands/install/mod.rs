@@ -1924,8 +1924,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             FrozenMode::Prefer => {
                 // Use the lockfile when fresh, otherwise pretend there isn't one
                 // so the existing "no lockfile → resolve" branch handles it.
-                match aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest) {
-                    Ok((graph, kind)) => {
+                // Reuse `lockfile_pre_parse` instead of parsing the same file
+                // a second time — on Prefer-fresh we clone the graph so the
+                // borrow held by `existing_for_resolver` keeps pointing at
+                // the original (unused on the fresh path, but safe to leave).
+                match lockfile_pre_parse.as_ref() {
+                    Some((graph, kind)) => {
                         if let DriftStatus::Stale { reason } =
                             graph.check_catalogs_drift(&workspace_catalogs)
                         {
@@ -1940,7 +1944,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 &ws_config_shared.ignored_optional_dependencies,
                                 &workspace_catalogs,
                             ) {
-                                DriftStatus::Fresh => Ok((graph, kind)),
+                                DriftStatus::Fresh => Ok((graph.clone(), *kind)),
                                 DriftStatus::Stale { reason } => {
                                     tracing::debug!(
                                         "Lockfile out of date ({reason}), re-resolving..."
@@ -1950,7 +1954,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             }
                         }
                     }
-                    other => other,
+                    None => Err(aube_lockfile::Error::NotFound(cwd.clone())),
                 }
             }
         }
