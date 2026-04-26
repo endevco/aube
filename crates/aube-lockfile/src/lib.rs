@@ -692,6 +692,23 @@ pub struct LockedPackage {
     /// Round-tripped so npm's lockfile keeps its per-entry
     /// `"funding": {"url": "…"}` block.
     pub funding_url: Option<String>,
+    /// pnpm `snapshots:` `optional: true` flag, marking a package
+    /// reachable only through optional edges (typically platform-
+    /// specific binaries like `@reflink/reflink-darwin-arm64`). pnpm
+    /// uses this on the next install to decide whether the entry
+    /// should be skipped on a non-matching platform; dropping it on
+    /// round-trip would let pnpm treat the package as required.
+    /// Always `false` outside the pnpm parse/write path.
+    pub optional: bool,
+    /// pnpm `snapshots:` `transitivePeerDependencies:` list — peer
+    /// names that bubble up transitively through this package. pnpm
+    /// reads it during hoisting and as a resolver staleness signal
+    /// (`resolveDependencies.ts`'s non-zero-length check); a missing
+    /// list looks like a graph change and triggers needless re-
+    /// resolution on the next pnpm install. Empty outside the pnpm
+    /// parse/write path. Fresh resolves leave this empty too — pnpm
+    /// recomputes it from the graph during `resolvePeers` when needed.
+    pub transitive_peer_dependencies: Vec<String>,
     /// Per-package-meta extras preserved verbatim from the source
     /// lockfile. Captures fields the typed model doesn't yet cover
     /// (`deprecated`, `hasInstallScript`, bun's `optionalPeers`, and

@@ -362,23 +362,20 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             version
         };
 
-        let dependencies = raw
-            .snapshots
-            .get(&dep_path)
-            .and_then(|s| s.dependencies.clone())
-            .unwrap_or_default();
-        let optional_dependencies = raw
-            .snapshots
-            .get(&dep_path)
+        let snapshot = raw.snapshots.get(&dep_path);
+        let optional_dependencies = snapshot
             .and_then(|s| s.optional_dependencies.clone())
             .unwrap_or_default();
-        let mut dependencies = dependencies;
+        let mut dependencies = snapshot
+            .and_then(|s| s.dependencies.clone())
+            .unwrap_or_default();
         dependencies.extend(optional_dependencies.clone());
-
-        let bundled_dependencies = raw
-            .snapshots
-            .get(&dep_path)
+        let bundled_dependencies = snapshot
             .and_then(|s| s.bundled_dependencies.clone())
+            .unwrap_or_default();
+        let optional = snapshot.and_then(|s| s.optional).unwrap_or(false);
+        let transitive_peer_dependencies = snapshot
+            .and_then(|s| s.transitive_peer_dependencies.clone())
             .unwrap_or_default();
 
         let peer_dependencies = pkg_info
@@ -445,6 +442,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 cpu: cpu.into(),
                 libc: libc.into(),
                 bundled_dependencies,
+                optional,
+                transitive_peer_dependencies,
                 tarball_url,
                 alias_of,
                 yarn_checksum: None,
@@ -912,11 +911,17 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 } else {
                     Some(pkg_opt_deps)
                 },
+                transitive_peer_dependencies: if pkg.transitive_peer_dependencies.is_empty() {
+                    None
+                } else {
+                    Some(pkg.transitive_peer_dependencies.clone())
+                },
                 bundled_dependencies: if pkg.bundled_dependencies.is_empty() {
                     None
                 } else {
                     Some(pkg.bundled_dependencies.clone())
                 },
+                optional: if pkg.optional { Some(true) } else { None },
             },
         );
     }
@@ -1305,7 +1310,11 @@ struct WritableSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     optional_dependencies: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    transitive_peer_dependencies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     bundled_dependencies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optional: Option<bool>,
 }
 
 /// Parse `pnpm-lock.yaml` content, tolerating pnpm v11's multi-document
@@ -1612,6 +1621,10 @@ struct RawSnapshot {
     optional_dependencies: Option<BTreeMap<String, String>>,
     #[serde(default)]
     bundled_dependencies: Option<Vec<String>>,
+    #[serde(default)]
+    optional: Option<bool>,
+    #[serde(default)]
+    transitive_peer_dependencies: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -2916,6 +2929,114 @@ snapshots:
         assert!(
             !names.contains(&"pnpm"),
             "bootstrap doc's packageManagerDependencies should not leak in, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_optional_and_transitive_peer_deps_roundtrip() {
+        let yaml = r#"lockfileVersion: '9.0'
+settings:
+  autoInstallPeers: true
+importers:
+  .:
+    dependencies:
+      '@reflink/reflink':
+        specifier: ^0.1.19
+        version: 0.1.19
+      '@babel/generator':
+        specifier: ^7.29.1
+        version: 7.29.1
+packages:
+  '@reflink/reflink-darwin-arm64@0.1.19':
+    resolution: {integrity: sha512-darwin}
+    cpu: [arm64]
+    os: [darwin]
+  '@reflink/reflink@0.1.19':
+    resolution: {integrity: sha512-reflink}
+  '@babel/generator@7.29.1':
+    resolution: {integrity: sha512-gen}
+  '@babel/parser@7.29.2':
+    resolution: {integrity: sha512-parser}
+snapshots:
+  '@reflink/reflink-darwin-arm64@0.1.19':
+    optional: true
+  '@reflink/reflink@0.1.19':
+    optionalDependencies:
+      '@reflink/reflink-darwin-arm64': 0.1.19
+  '@babel/generator@7.29.1':
+    dependencies:
+      '@babel/parser': 7.29.2
+    transitivePeerDependencies:
+      - supports-color
+  '@babel/parser@7.29.2': {}
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let graph = parse(&path).unwrap();
+        let darwin = graph
+            .packages
+            .get("@reflink/reflink-darwin-arm64@0.1.19")
+            .expect("darwin snapshot present");
+        assert!(darwin.optional, "optional: true must round-trip");
+
+        let generator = graph
+            .packages
+            .get("@babel/generator@7.29.1")
+            .expect("generator snapshot present");
+        assert_eq!(
+            generator.transitive_peer_dependencies,
+            vec!["supports-color".to_string()],
+        );
+
+        let parser_pkg = graph.packages.get("@babel/parser@7.29.2").unwrap();
+        assert!(!parser_pkg.optional);
+        assert!(parser_pkg.transitive_peer_dependencies.is_empty());
+
+        let manifest = PackageJson {
+            name: Some("rt".to_string()),
+            version: Some("0.0.0".to_string()),
+            dependencies: [
+                ("@reflink/reflink".to_string(), "^0.1.19".to_string()),
+                ("@babel/generator".to_string(), "^7.29.1".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let out_path = dir.path().join("out.yaml");
+        write(&out_path, &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(&out_path).unwrap();
+
+        assert!(
+            written.contains("optional: true"),
+            "writer must emit optional: true; got:\n{written}"
+        );
+        assert!(
+            written.contains("transitivePeerDependencies:"),
+            "writer must emit transitivePeerDependencies; got:\n{written}"
+        );
+        assert!(
+            written.contains("- supports-color"),
+            "writer must list bubbled peers; got:\n{written}"
+        );
+
+        let reparsed = parse(&out_path).unwrap();
+        assert!(
+            reparsed
+                .packages
+                .get("@reflink/reflink-darwin-arm64@0.1.19")
+                .unwrap()
+                .optional
+        );
+        assert_eq!(
+            reparsed
+                .packages
+                .get("@babel/generator@7.29.1")
+                .unwrap()
+                .transitive_peer_dependencies,
+            vec!["supports-color".to_string()]
         );
     }
 
