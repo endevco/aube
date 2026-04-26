@@ -1598,16 +1598,22 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // `electron-to-chromium@1.5.344` → `1.5.343`), which is the
     // opposite of what pnpm/bun's default `install` does.
     //
-    // Frozen mode short-circuits to the lockfile-as-truth branch and
-    // never calls the resolver, so parsing here is wasted work for it
-    // — gate this on the modes that actually re-resolve.
+    // Scope:
+    //   - Fix: existing behavior (`--fix-lockfile`).
+    //   - Prefer: default mode; the bug above lives here.
+    //   - Frozen: short-circuits to the lockfile-as-truth branch and
+    //     never calls the resolver, so parsing is wasted work.
+    //   - No (`--no-frozen-lockfile`): kept as fresh-resolve so users
+    //     who reach for that flag to bump transitives still get a
+    //     fresh pass. Matching pnpm's "lockfile may drift but locked
+    //     versions are still preferred" semantics is a separate
+    //     decision and would change observable behavior on this path.
     //
     // We parse once and keep both the graph and its kind so the
     // `--lockfile-only` block below can reuse the same result for its
     // freshness check instead of re-reading + re-parsing the same file.
     let lockfile_pre_parse: Option<(aube_lockfile::LockfileGraph, aube_lockfile::LockfileKind)> =
-        if lockfile_enabled && matches!(mode, FrozenMode::Fix | FrozenMode::Prefer | FrozenMode::No)
-        {
+        if lockfile_enabled && matches!(mode, FrozenMode::Fix | FrozenMode::Prefer) {
             aube_lockfile::parse_lockfile_with_kind(&cwd, &manifest).ok()
         } else {
             None
@@ -2408,10 +2414,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             });
 
             // Run resolution (this streams packages to the fetch coordinator).
-            // `existing_for_resolver` is `Some` whenever a lockfile parsed
-            // cleanly (Fix / Prefer / No modes); the resolver reuses
-            // already-pinned versions for unchanged specs and only
-            // re-resolves entries whose spec drifted.
+            // `existing_for_resolver` is `Some` when Fix / Prefer parsed a
+            // lockfile cleanly; the resolver reuses already-pinned versions
+            // for unchanged specs and only re-resolves entries whose spec
+            // drifted. `No` mode (`--no-frozen-lockfile`) intentionally
+            // stays at `None` so the user gets the fresh resolve they
+            // asked for.
             let resolve_result = if has_workspace {
                 resolver
                     .resolve_workspace(&manifests, existing_for_resolver, &ws_package_versions)
