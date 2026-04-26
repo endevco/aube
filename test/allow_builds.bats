@@ -205,6 +205,34 @@ YAML
 	assert_file_not_exists aube-builds-marker.txt
 }
 
+@test "jailBuildPermissions can grant a package write access on macOS" {
+	if [ "$(uname -s)" != "Darwin" ]; then
+		skip "native build jail filesystem enforcement is macOS-only today"
+	fi
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-write-grant-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-builds-marker"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+jailBuildPermissions:
+  aube-test-builds-marker:
+    write:
+      - "."
+YAML
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+}
+
 @test "jailBuilds denies dep script network sockets on macOS" {
 	if [ "$(uname -s)" != "Darwin" ]; then
 		skip "native build jail network enforcement is macOS-only today"

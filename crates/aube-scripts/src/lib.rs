@@ -14,7 +14,7 @@
 
 pub mod policy;
 
-pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError};
+pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError, pattern_matches};
 
 use aube_manifest::PackageJson;
 use std::collections::hash_map::DefaultHasher;
@@ -34,13 +34,41 @@ pub struct ScriptSettings {
 #[derive(Debug, Clone)]
 pub struct ScriptJail {
     pub package_dir: PathBuf,
+    pub env: Vec<String>,
+    pub read_paths: Vec<PathBuf>,
+    pub write_paths: Vec<PathBuf>,
+    pub network: bool,
 }
 
 impl ScriptJail {
     pub fn new(package_dir: impl Into<PathBuf>) -> Self {
         Self {
             package_dir: package_dir.into(),
+            env: Vec::new(),
+            read_paths: Vec::new(),
+            write_paths: Vec::new(),
+            network: false,
         }
+    }
+
+    pub fn with_env(mut self, env: impl IntoIterator<Item = String>) -> Self {
+        self.env = env.into_iter().collect();
+        self
+    }
+
+    pub fn with_read_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.read_paths = paths.into_iter().collect();
+        self
+    }
+
+    pub fn with_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.write_paths = paths.into_iter().collect();
+        self
+    }
+
+    pub fn with_network(mut self, network: bool) -> Self {
+        self.network = network;
+        self
     }
 }
 
@@ -148,10 +176,12 @@ fn jail_profile(jail: &ScriptJail, home: &Path, _path_env: &std::ffi::OsStr) -> 
     let mut rules = vec![
         "(version 1)".to_string(),
         "(allow default)".to_string(),
-        "(deny network*)".to_string(),
         "(allow network* (local unix))".to_string(),
         "(deny file-write*)".to_string(),
     ];
+    if !jail.network {
+        rules.insert(2, "(deny network*)".to_string());
+    }
 
     for path in [
         Path::new("/tmp"),
@@ -166,7 +196,17 @@ fn jail_profile(jail: &ScriptJail, home: &Path, _path_env: &std::ffi::OsStr) -> 
         let path = sbpl_escape(&path.to_string_lossy());
         rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
     }
+    for path in &jail.write_paths {
+        let path = sbpl_escape(&path.to_string_lossy());
+        rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+    }
     for path in [&jail.package_dir, home] {
+        if let Ok(canonical) = path.canonicalize() {
+            let path = sbpl_escape(&canonical.to_string_lossy());
+            rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
+        }
+    }
+    for path in &jail.write_paths {
         if let Ok(canonical) = path.canonicalize() {
             let path = sbpl_escape(&canonical.to_string_lossy());
             rules.push(format!("(allow file-write* (subpath \"{path}\"))"));
@@ -370,8 +410,8 @@ fn safe_jail_env_key(key: &str) -> bool {
     key.starts_with("npm_config_")
 }
 
-fn inherit_jail_env_key(key: &str) -> bool {
-    safe_jail_env_key(key)
+fn inherit_jail_env_key(key: &str, extra_env: &[String]) -> bool {
+    (safe_jail_env_key(key) || extra_env.iter().any(|env| env == key))
         && !matches!(
             key,
             "PATH" | "HOME" | "npm_lifecycle_event" | "npm_package_name" | "npm_package_version"
@@ -408,6 +448,7 @@ fn apply_jail_env(
     project_root: &Path,
     manifest: &PackageJson,
     script_name: &str,
+    extra_env: &[String],
 ) {
     cmd.env_clear();
     cmd.env("PATH", path_env)
@@ -426,7 +467,7 @@ fn apply_jail_env(
         let Some(key_str) = key.to_str() else {
             continue;
         };
-        if inherit_jail_env_key(key_str) {
+        if inherit_jail_env_key(key_str, extra_env) {
             cmd.env(key, val);
         }
     }
@@ -592,7 +633,7 @@ pub async fn run_script(
     if let Some(ref version) = manifest.version {
         cmd.env("npm_package_version", version);
     }
-    if let (Some(_), Some(home)) = (jail, jail_home.as_deref()) {
+    if let (Some(jail), Some(home)) = (jail, jail_home.as_deref()) {
         apply_jail_env(
             &mut cmd,
             &new_path,
@@ -600,6 +641,7 @@ pub async fn run_script(
             project_root,
             manifest,
             script_name,
+            &jail.env,
         );
         apply_script_settings_env(&mut cmd, &settings);
     }
@@ -825,11 +867,15 @@ mod jail_tests {
             "npm_package_name",
             "npm_package_version",
         ] {
-            assert!(!inherit_jail_env_key(key));
+            assert!(!inherit_jail_env_key(key, &[]));
         }
-        assert!(inherit_jail_env_key("INIT_CWD"));
-        assert!(inherit_jail_env_key("npm_config_arch"));
-        assert!(!inherit_jail_env_key("npm_config__authToken"));
+        assert!(inherit_jail_env_key("INIT_CWD", &[]));
+        assert!(inherit_jail_env_key("npm_config_arch", &[]));
+        assert!(!inherit_jail_env_key("npm_config__authToken", &[]));
+        assert!(inherit_jail_env_key(
+            "SHARP_DIST_BASE_URL",
+            &["SHARP_DIST_BASE_URL".to_string()]
+        ));
     }
 
     #[test]
@@ -854,6 +900,7 @@ mod jail_tests {
             Path::new("/tmp/project"),
             &manifest,
             "postinstall",
+            &[],
         );
         apply_script_settings_env(&mut cmd, &settings);
 

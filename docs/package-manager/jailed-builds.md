@@ -21,6 +21,19 @@ neverJailBuiltDependencies:
   - sharp
 ```
 
+If a package only needs a narrow exception, grant that privilege instead of
+turning the jail off:
+
+```yaml
+jailBuilds: true
+jailBuildPermissions:
+  sharp:
+    env:
+      - SHARP_DIST_BASE_URL
+    write:
+      - ~/.cache/sharp
+```
+
 ## Goals
 
 - Keep dependency lifecycle scripts denied by default.
@@ -52,53 +65,35 @@ unrelated workspace files, inherit registry tokens, or reach the network."
 
 ## Package permissions
 
-The package-specific permissions shape below is the planned extension for
-packages that genuinely need extra access:
+Package-specific permissions let a reviewed package keep the jail while gaining
+only the privileges its build script needs:
 
 ```yaml
-buildPermissions:
-  esbuild:
-    jail: native
-    read:
-      - package
-      - deps
-      - toolchain
-    write:
-      - package
-      - tmp
-    net: false
-    env:
-      - PATH
-      - HOME
-      - npm_*
-      - npm_config_arch
-      - npm_config_platform
-
+jailBuildPermissions:
   sharp:
-    jail: native
-    read:
-      - package
-      - deps
-      - toolchain
-    write:
-      - package
-      - tmp
-    net:
-      - registry.npmjs.org
-      - github.com
     env:
-      - PATH
-      - HOME
-      - npm_config_*
+      - SHARP_DIST_BASE_URL
+    read:
+      - ~/.cache/node-gyp
+    write:
+      - ~/.cache/sharp
+    network: true
 ```
 
 Boolean `allowBuilds` entries stay compatible with pnpm and continue to mean
-"approved to run." aube-specific `buildPermissions` narrow or widen the
+"approved to run." aube-specific `jailBuildPermissions` narrow or widen the
 jail used after that approval decision.
 
-Today, `neverJailBuiltDependencies` is the package-level escape hatch. Entries
-use the same package-pattern syntax as `neverBuiltDependencies`, and only
-disable the jail; they do not bypass the build approval policy.
+Keys use the same package-pattern syntax as `allowBuilds` and
+`neverBuiltDependencies`: bare names, exact `name@version` pins, exact version
+unions, and `*` wildcards. `env` entries are exact variable names inherited from
+the parent process. `write` entries are added to the macOS Seatbelt write
+allowlist today. `read` entries are accepted now for the stricter future
+read-deny profile; reads are currently unrestricted.
+
+`neverJailBuiltDependencies` remains the package-level escape hatch when the
+needed privilege is too broad. It only disables the jail; it does not bypass the
+build approval policy.
 
 ## Native enforcement
 
@@ -145,7 +140,7 @@ npm lifecycle scripts:
 - `npm_package_version`
 - selected `npm_config_*` values needed for platform and build tooling
 
-Tokens are denied unless a future package-specific permission allows them:
+Tokens are denied unless a package-specific env grant allows them:
 
 - `AUBE_AUTH_TOKEN`
 - `NPM_TOKEN`
@@ -166,7 +161,7 @@ code. The supply-chain boundary is dependency code.
 3. Add Linux Landlock / seccomp enforcement.
 4. Teach `aube approve-builds` to show the default jail profile for newly
    approved packages.
-5. Add `buildPermissions` to `aube-workspace.yaml`.
+5. Add more granular jail permission kinds as real packages need them.
 6. Make jailed dependency builds the default on supported platforms.
 7. Keep explicit config escape hatches for debugging:
    `jailBuilds=false` globally, or `neverJailBuiltDependencies` for a package.

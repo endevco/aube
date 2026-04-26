@@ -1697,6 +1697,30 @@ sources.npmrc = ["neverJailBuiltDependencies"]
 sources.workspaceYaml = ["neverJailBuiltDependencies"]
 examples = ['neverJailBuiltDependencies: ["sharp", "@vendor/*"]']
 
+[jailBuildPermissions]
+description = "Grant package-specific privileges inside jailed builds."
+type = "object"
+default = "undefined"
+docs = """
+Package-pattern map of extra privileges for approved dependency scripts
+that still run inside the build jail. Keys use the same pattern forms as
+`allowBuilds` (`sharp`, `@scope/*`, `pkg@1.2.3 || 1.2.4`). Values may
+grant specific environment variables, extra readable paths, extra writable
+paths, or network access.
+
+`env` entries are exact variable names inherited from the parent process.
+Use this sparingly: explicit env grants can expose secrets. `write` entries
+are added to the macOS Seatbelt write allowlist today. `read` entries are
+accepted now and reserved for the stricter read-deny profile; reads are
+currently unrestricted.
+"""
+sources.cli = []
+sources.env = []
+sources.npmrc = []
+sources.workspaceYaml = ["jailBuildPermissions"]
+examples = ['jailBuildPermissions: { sharp: { env: ["SHARP_DIST_BASE_URL"], write: ["~/.cache/sharp"] } }']
+typedAccessorUnused = true
+
 [unsafePerm]
 description = "Drop to a non-root user when running scripts as root."
 type = "bool"

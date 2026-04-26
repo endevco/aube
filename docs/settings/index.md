@@ -95,6 +95,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | Only read from the side-effects cache; don't write. |
 | [`jailBuilds`](#setting-jailbuilds) | `bool` | Run approved dependency lifecycle scripts in a restricted build jail. |
 | [`neverJailBuiltDependencies`](#setting-neverjailbuiltdependencies) | `list<string>` | Disable jailed builds for specific dependency packages. |
+| [`jailBuildPermissions`](#setting-jailbuildpermissions) | `object` | Grant package-specific privileges inside jailed builds. |
 | [`unsafePerm`](#setting-unsafeperm) | `bool` | Drop to a non-root user when running scripts as root. |
 | [`nodeOptions`](#setting-nodeoptions) | `string` | Options passed to Node.js via NODE_OPTIONS. |
 | [`verifyDepsBeforeRun`](#setting-verifydepsbeforerun) | `"install" \| "warn" \| "error" \| "prompt" \| false` | Check dependencies before running scripts. |
@@ -1717,6 +1718,30 @@ global `jailBuilds=true` setting.
 Examples:
 
 - `neverJailBuiltDependencies: ["sharp", "@vendor/*"]`
+
+### `jailBuildPermissions` {#setting-jailbuildpermissions}
+
+Grant package-specific privileges inside jailed builds.
+
+- Type: `object`
+- Default: `undefined`
+- Workspace YAML keys: `jailBuildPermissions`
+
+Package-pattern map of extra privileges for approved dependency scripts
+that still run inside the build jail. Keys use the same pattern forms as
+`allowBuilds` (`sharp`, `@scope/*`, `pkg@1.2.3 || 1.2.4`). Values may
+grant specific environment variables, extra readable paths, extra writable
+paths, or network access.
+
+`env` entries are exact variable names inherited from the parent process.
+Use this sparingly: explicit env grants can expose secrets. `write` entries
+are added to the macOS Seatbelt write allowlist today. `read` entries are
+accepted now and reserved for the stricter read-deny profile; reads are
+currently unrestricted.
+
+Examples:
+
+- `jailBuildPermissions: { sharp: { env: ["SHARP_DIST_BASE_URL"], write: ["~/.cache/sharp"] } }`
 
 ### `unsafePerm` {#setting-unsafeperm}
 

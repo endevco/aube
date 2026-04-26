@@ -205,6 +205,21 @@ impl BuildPolicy {
     }
 }
 
+/// True when a package-pattern entry matches `(name, version)`.
+pub fn pattern_matches(pattern: &str, name: &str, version: &str) -> Result<bool, BuildPolicyError> {
+    let with_version = format!("{name}@{version}");
+    for expanded in expand_spec(pattern)? {
+        if expanded.contains('*') {
+            if matches_wildcard(name, &expanded) {
+                return Ok(true);
+            }
+        } else if expanded == name || expanded == with_version {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Split one entry list from `expand_spec` across the exact-match set
 /// and the wildcard list. Wildcards are identified by a literal `*` in
 /// the string; since `expand_spec` rejects `wildcard@version`, a `*`
@@ -386,6 +401,14 @@ mod tests {
     fn scoped_bare_name() {
         let p = policy(&[("@swc/core", true)]);
         assert_eq!(p.decide("@swc/core", "1.3.0"), AllowDecision::Allow);
+    }
+
+    #[test]
+    fn pattern_matches_scoped_names_and_versions() {
+        assert!(pattern_matches("@swc/core", "@swc/core", "1.3.0").unwrap());
+        assert!(pattern_matches("@swc/core@1.3.0", "@swc/core", "1.3.0").unwrap());
+        assert!(!pattern_matches("@swc/core@1.3.0", "@swc/core", "1.3.1").unwrap());
+        assert!(pattern_matches("@swc/*", "@swc/core", "1.3.0").unwrap());
     }
 
     #[test]

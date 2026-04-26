@@ -82,16 +82,30 @@ pub(crate) fn build_policy_from_sources(
 pub(crate) struct JailBuildPolicy {
     enabled: bool,
     denylist: aube_scripts::BuildPolicy,
+    grants: Vec<(String, aube_manifest::JailBuildPermission)>,
 }
 
 impl JailBuildPolicy {
     pub(crate) fn from_settings(
         ctx: &aube_settings::ResolveCtx<'_>,
+        workspace: &aube_manifest::WorkspaceConfig,
     ) -> (Self, Vec<aube_scripts::BuildPolicyError>) {
         let enabled = aube_settings::resolved::jail_builds(ctx);
         let never_jail = aube_settings::resolved::never_jail_built_dependencies(ctx);
         let (denylist, warnings) = aube_scripts::BuildPolicy::denylist(&never_jail);
-        (Self { enabled, denylist }, warnings)
+        let grants = workspace
+            .jail_build_permissions
+            .iter()
+            .map(|(pattern, grant)| (pattern.clone(), grant.clone()))
+            .collect();
+        (
+            Self {
+                enabled,
+                denylist,
+                grants,
+            },
+            warnings,
+        )
     }
 
     fn should_jail(&self, name: &str, version: &str) -> bool {
@@ -100,6 +114,66 @@ impl JailBuildPolicy {
                 self.denylist.decide(name, version),
                 aube_scripts::AllowDecision::Deny
             )
+    }
+
+    fn jail_for(
+        &self,
+        name: &str,
+        version: &str,
+        package_dir: &std::path::Path,
+        project_dir: &std::path::Path,
+    ) -> Option<aube_scripts::ScriptJail> {
+        if !self.should_jail(name, version) {
+            return None;
+        }
+        let mut env = Vec::new();
+        let mut read_paths = Vec::new();
+        let mut write_paths = Vec::new();
+        let mut network = false;
+        for (pattern, grant) in &self.grants {
+            match aube_scripts::pattern_matches(pattern, name, version) {
+                Ok(true) => {
+                    env.extend(grant.env.iter().cloned());
+                    read_paths.extend(
+                        grant
+                            .read
+                            .iter()
+                            .map(|path| resolve_jail_grant_path(project_dir, path)),
+                    );
+                    write_paths.extend(
+                        grant
+                            .write
+                            .iter()
+                            .map(|path| resolve_jail_grant_path(project_dir, path)),
+                    );
+                    network |= grant.network;
+                }
+                Ok(false) => {}
+                Err(err) => tracing::warn!("jailBuildPermissions pattern {pattern:?}: {err}"),
+            }
+        }
+        Some(
+            aube_scripts::ScriptJail::new(package_dir)
+                .with_env(env)
+                .with_read_paths(read_paths)
+                .with_write_paths(write_paths)
+                .with_network(network),
+        )
+    }
+}
+
+fn resolve_jail_grant_path(project_dir: &std::path::Path, raw: &str) -> std::path::PathBuf {
+    let path = raw.trim();
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return std::path::PathBuf::from(home).join(rest);
+    }
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_dir.join(path)
     }
 }
 
@@ -369,9 +443,12 @@ pub(crate) async fn run_dep_lifecycle_scripts(
                 .as_deref()
                 .map(|p| vec![p])
                 .unwrap_or_default();
-            let jail = jail_policy
-                .should_jail(&job.registry_name, &job.version)
-                .then(|| aube_scripts::ScriptJail::new(&job.package_dir));
+            let jail = jail_policy.jail_for(
+                &job.registry_name,
+                &job.version,
+                &job.package_dir,
+                &project_dir,
+            );
             let mut ran_here = 0usize;
             for hook in aube_scripts::DEP_LIFECYCLE_HOOKS {
                 let did_run = aube_scripts::run_dep_hook(

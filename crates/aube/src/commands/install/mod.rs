@@ -2915,7 +2915,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // `run_dep_lifecycle_scripts` so a malformed config can't wedge
     // the install.
     let child_concurrency = aube_settings::resolved::child_concurrency(&settings_ctx) as usize;
-    let (jail_policy, jail_policy_warnings) = JailBuildPolicy::from_settings(&settings_ctx);
+    let (jail_policy, jail_policy_warnings) =
+        JailBuildPolicy::from_settings(&settings_ctx, &ws_config_shared);
     let node_version_override = aube_settings::resolved::node_version(&settings_ctx);
     let node_version = crate::engines::resolve_node_version(node_version_override.as_deref());
     crate::engines::run_checks(

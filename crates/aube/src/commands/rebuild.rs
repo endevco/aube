@@ -67,7 +67,7 @@ pub async fn run(
             let child_concurrency =
                 aube_settings::resolved::child_concurrency(&settings_ctx) as usize;
             let (jail_policy, jail_policy_warnings) =
-                super::install::JailBuildPolicy::from_settings(&settings_ctx);
+                super::install::JailBuildPolicy::from_settings(&settings_ctx, &workspace);
             for warning in jail_policy_warnings {
                 eprintln!("warn: neverJailBuiltDependencies: {warning}");
             }

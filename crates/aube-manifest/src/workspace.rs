@@ -17,6 +17,20 @@ fn find_and_read(project_dir: &Path) -> Result<Option<(PathBuf, String)>, crate:
     Ok(None)
 }
 
+/// Extra privileges granted to one package pattern under `jailBuilds`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JailBuildPermission {
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
+    #[serde(default)]
+    pub network: bool,
+}
+
 /// Configuration from `pnpm-workspace.yaml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -316,6 +330,11 @@ pub struct WorkspaceConfig {
     /// `child_concurrency`.
     #[serde(default, rename = "neverJailBuiltDependencies")]
     pub never_jail_built_dependencies: Vec<String>,
+
+    /// Extra env/path/network grants for packages that still run in the
+    /// jail. Keys use the same package-pattern syntax as `allowBuilds`.
+    #[serde(default, rename = "jailBuildPermissions")]
+    pub jail_build_permissions: BTreeMap<String, JailBuildPermission>,
 
     // -- Catalog Settings --
     /// Drop catalog entries that no importer references after resolve.
