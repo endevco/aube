@@ -13,6 +13,7 @@ aube reads pnpm-compatible configuration from project `.npmrc`, user `.npmrc`,
 | New releases | `minimumReleaseAge=1440` | Avoids installing versions published in the last 24 hours by default. |
 | Exotic transitive deps | `blockExoticSubdeps=true` | Blocks transitive git and tarball dependencies unless you opt out. |
 | Dependency scripts | approval required | Build scripts in dependencies stay skipped until approved. |
+| Jailed builds | `jailBuilds=false` | Opt in to running approved dependency scripts with a restricted env, temporary `HOME`, and native macOS jail. |
 | Auto-install before scripts | enabled | `aube run`, `aube test`, and `aube exec` repair stale installs first. |
 
 ## .npmrc
@@ -34,9 +35,19 @@ nodeLinker: isolated
 minimumReleaseAge: 1440
 publicHoistPattern:
   - "*eslint*"
+jailBuilds: true
+jailBuildPermissions:
+  "@vendor/*":
+    env:
+      - SHARP_DIST_BASE_URL
+    write:
+      - ~/.cache/sharp
+neverJailBuiltDependencies:
+  - "@legacy-native/*"
 ```
 
 See the [settings reference](/settings/) — workspace YAML keys are listed per setting.
+The jail-related keys are described in [Jailed builds](/package-manager/jailed-builds).
 
 ## Environment variables
 
