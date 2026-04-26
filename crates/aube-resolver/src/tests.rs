@@ -1,4 +1,5 @@
 use super::*;
+use crate::resolve::modified_allows_short_circuit;
 use aube_registry::{Dist, Packument, VersionMetadata};
 use miette::Diagnostic;
 
@@ -596,6 +597,7 @@ fn make_packument(name: &str, versions: &[&str], latest: &str) -> Packument {
     dist_tags.insert("latest".to_string(), latest.to_string());
     Packument {
         name: name.to_string(),
+        modified: None,
         versions: ver_map,
         dist_tags,
         time: BTreeMap::new(),
@@ -744,6 +746,86 @@ fn test_minimum_release_age_cutoff_format() {
 fn test_minimum_release_age_zero_disables() {
     let mra = MinimumReleaseAge::default();
     assert!(mra.cutoff().is_none());
+}
+
+#[test]
+fn minimum_release_age_modified_short_circuit_requires_utc_timestamp() {
+    let cutoff = "2024-06-01T10:00:00.000Z";
+
+    assert!(modified_allows_short_circuit(
+        "2024-06-01T09:59:59.000Z",
+        cutoff
+    ));
+    assert!(!modified_allows_short_circuit(
+        "2024-06-01T10:00:00-05:00",
+        cutoff
+    ));
+}
+
+#[tokio::test]
+async fn minimum_release_age_uses_modified_to_skip_full_packument() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut packument = make_packument("foo", &["1.0.0"], "1.0.0");
+    packument.modified = Some("2024-01-01T00:00:00.000Z".to_string());
+    let body = serde_json::to_vec(&packument).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let registry = format!("http://{}/", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let request_count = requests.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            request_count.fetch_add(1, Ordering::Relaxed);
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = [0_u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            });
+        }
+    });
+
+    let base = std::env::temp_dir().join(format!(
+        "aube-resolver-mra-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let cache_dir = base.join("packuments");
+    let full_cache_dir = base.join("packuments-full");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(&full_cache_dir).unwrap();
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(&registry));
+    let mut resolver = Resolver::new(client)
+        .with_packument_cache(cache_dir)
+        .with_packument_full_cache(full_cache_dir)
+        .with_minimum_release_age(Some(MinimumReleaseAge {
+            minutes: 60,
+            ..Default::default()
+        }));
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("foo".to_string(), "1.0.0".to_string());
+
+    let graph = resolver.resolve(&manifest, None).await.unwrap();
+
+    assert!(graph_has_package(&graph, "foo", "1.0.0"));
+    assert_eq!(requests.load(Ordering::Relaxed), 1);
+    server.abort();
+    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]

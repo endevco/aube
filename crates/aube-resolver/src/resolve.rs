@@ -147,6 +147,8 @@ impl Resolver {
         let needs_time = (self.resolution_mode == ResolutionMode::TimeBased
             || self.minimum_release_age.is_some())
             && !self.registry_supports_time_field;
+        let minimum_release_age_only =
+            self.resolution_mode != ResolutionMode::TimeBased && self.minimum_release_age.is_some();
         // In-flight packument fetches. The spawned task returns the
         // `(name, packument)` tuple so `join_next` gives us back the
         // identity of whichever fetch landed next without a side
@@ -205,6 +207,7 @@ impl Resolver {
                     let client = self.client.clone();
                     let cache_dir = self.packument_cache_dir.clone();
                     let full_cache_dir = self.packument_full_cache_dir.clone();
+                    let cutoff = published_by.clone();
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
                         let _permit = sem
@@ -212,6 +215,23 @@ impl Resolver {
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
                         let packument = if needs_time {
+                            if minimum_release_age_only
+                                && let (Some(dir), Some(cutoff)) =
+                                    (cache_dir.as_ref(), cutoff.as_deref())
+                                && full_cache_dir.is_some()
+                            {
+                                let packument = client
+                                    .fetch_packument_cached(&name_owned, dir)
+                                    .await
+                                    .map_err(|e| {
+                                        Error::Registry(name_owned.clone(), e.to_string())
+                                    })?;
+                                if packument.modified.as_deref().is_some_and(|modified| {
+                                    modified_allows_short_circuit(modified, cutoff)
+                                }) {
+                                    return Ok::<_, Error>((name_owned, packument));
+                                }
+                            }
                             match full_cache_dir.as_ref() {
                                 Some(dir) => {
                                     client
@@ -1830,6 +1850,10 @@ impl Resolver {
         );
         Ok(contextualized)
     }
+}
+
+pub(crate) fn modified_allows_short_circuit(modified: &str, cutoff: &str) -> bool {
+    modified.ends_with('Z') && modified <= cutoff
 }
 
 /// Seed the BFS queue with direct deps from every importer manifest.
