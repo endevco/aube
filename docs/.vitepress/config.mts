@@ -76,18 +76,11 @@ export default defineConfig({
     [
       "script",
       {
-        async: "",
-        src: "https://www.googletagmanager.com/gtag/js?id=G-WD1RRC0F8C",
+        defer: "",
+        "data-domain": "pa-pKoppeTCBJKVlCRf8Mxk_",
+        "data-api": "https://shrill.en.dev/f5f1/event",
+        src: "https://shrill.en.dev/shrill/script.js",
       },
-    ],
-    [
-      "script",
-      {},
-      `window.dataLayer = window.dataLayer || [];
-function gtag(){dataLayer.push(arguments);}
-gtag('js', new Date());
-
-gtag('config', 'G-WD1RRC0F8C');`,
     ],
   ],
   themeConfig: {
