@@ -467,7 +467,7 @@ pub(super) async fn import_local_source(
             let resolved = g.resolved.clone();
             let spec = local.specifier();
             let shallow = aube_store::git_host_in_list(&url, git_shallow_hosts);
-            let clone_dir = tokio::task::spawn_blocking(move || {
+            let (clone_dir, _head_sha) = tokio::task::spawn_blocking(move || {
                 aube_store::git_shallow_clone(&url, &resolved, shallow)
             })
             .await

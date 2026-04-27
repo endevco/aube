@@ -1278,18 +1278,16 @@ pub fn git_resolve_ref(url: &str, committish: Option<&str>) -> Result<String, Er
         if let Some(sha) = tag_match.or(head_match) {
             return Ok(sha);
         }
-        // If the committish looks like a hex prefix but isn't a full
-        // SHA, the user likely copy-pasted an abbreviated commit from
-        // a git UI. ls-remote only lists advertised refs (branches /
-        // tags), so an abbreviated commit never matches — surface a
-        // clearer error instead of the generic "no ref matched".
+        // ls-remote only advertises branches and tags, so an
+        // abbreviated commit SHA never matches a ref name. Pass it
+        // through unchanged — `git_shallow_clone` resolves the prefix
+        // by fetching and running `git checkout`, and the resolver
+        // promotes the rev-parsed full SHA back into `GitSource`
+        // before writing the lockfile (see `resolve_git_source`).
         let looks_hex =
             want.len() >= 4 && want.len() < 40 && want.chars().all(|c| c.is_ascii_hexdigit());
         if looks_hex {
-            return Err(Error::Git(format!(
-                "git ls-remote {}: `#{want}` looks like an abbreviated commit SHA. aube requires a full 40-character SHA, or a branch/tag name",
-                redact_url(url)
-            )));
+            return Ok(want.to_ascii_lowercase());
         }
         Err(Error::Git(format!(
             "git ls-remote {}: no ref matched {want}",
@@ -1393,7 +1391,17 @@ pub fn git_url_host(url: &str) -> Option<&str> {
 /// straight to the full-fetch path. Callers decide shallow vs. full
 /// by consulting the `gitShallowHosts` setting via
 /// [`git_host_in_list`].
-pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathBuf, Error> {
+///
+/// Returns `(clone_dir, head_sha)` where `head_sha` is the 40-char
+/// `git rev-parse HEAD` of the checked-out tree. Callers can pass
+/// `commit` as either a full SHA or an abbreviated hex prefix; the
+/// returned SHA is always the canonical full-length form so the
+/// resolver can pin the lockfile to it.
+pub fn git_shallow_clone(
+    url: &str,
+    commit: &str,
+    shallow: bool,
+) -> Result<(PathBuf, String), Error> {
     use std::process::Command;
     validate_git_positional(url, "git url")?;
     validate_git_positional(commit, "git commit")?;
@@ -1459,9 +1467,11 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
             .current_dir(&target)
             .output()
         && out.status.success()
-        && git_commit_matches(String::from_utf8_lossy(&out.stdout).trim(), commit)
     {
-        return Ok(target);
+        let head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if git_commit_matches(&head, commit) {
+            return Ok((target, head));
+        }
     }
 
     // Clone into a scratch dir first and atomically rename into
@@ -1501,7 +1511,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
         Ok(())
     };
 
-    let do_clone = || -> Result<(), Error> {
+    let do_clone = || -> Result<String, Error> {
         run_in(&scratch, &["init", "-q"])?;
         run_in(&scratch, &["remote", "add", "--", "origin", url])?;
         // Shallow fetch by raw SHA only works when the remote allows
@@ -1548,12 +1558,15 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
                 "git clone HEAD {actual} does not match requested commit {commit}"
             )));
         }
-        Ok(())
+        Ok(actual)
     };
-    if let Err(e) = do_clone() {
-        let _ = std::fs::remove_dir_all(&scratch);
-        return Err(e);
-    }
+    let head_sha = match do_clone() {
+        Ok(sha) => sha,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&scratch);
+            return Err(e);
+        }
+    };
 
     // `rename` is atomic on the same filesystem. Two outcomes:
     //  - Target doesn't exist → we win and it's ours.
@@ -1562,7 +1575,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     //    with ENOTEMPTY/EEXIST. Verify the existing target has our
     //    commit and reuse it; otherwise remove it and retry once.
     match aube_util::fs_atomic::rename_with_retry(&scratch, &target) {
-        Ok(()) => Ok(target),
+        Ok(()) => Ok((target, head_sha)),
         Err(_) => {
             if target.join(".git").is_dir()
                 && let Ok(out) = Command::new("git")
@@ -1570,10 +1583,12 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
                     .current_dir(&target)
                     .output()
                 && out.status.success()
-                && git_commit_matches(String::from_utf8_lossy(&out.stdout).trim(), commit)
             {
-                let _ = std::fs::remove_dir_all(&scratch);
-                return Ok(target);
+                let head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if git_commit_matches(&head, commit) {
+                    let _ = std::fs::remove_dir_all(&scratch);
+                    return Ok((target, head));
+                }
             }
             // Stale target — clear and retry the rename. Any
             // remaining race here would be between two installs
@@ -1584,7 +1599,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
                 let _ = std::fs::remove_dir_all(&scratch);
                 Error::Git(format!("rename clone into place: {e}"))
             })?;
-            Ok(target)
+            Ok((target, head_sha))
         }
     }
 }
@@ -2293,6 +2308,26 @@ mod tests {
         // the validation runs at the public entry point.
         let err = git_resolve_ref("--upload-pack=/tmp/evil", None).unwrap_err();
         assert!(matches!(err, Error::Git(_)));
+    }
+
+    #[test]
+    fn test_git_resolve_ref_full_sha_is_offline() {
+        // 40-char hex committish short-circuits `ls-remote`. Confirm
+        // by handing a non-existent URL — if the fast path regressed
+        // into a network call, the test would fail to spawn git.
+        let sha = "0123456789ABCDEF0123456789abcdef01234567";
+        let resolved = git_resolve_ref("https://example.invalid/missing.git", Some(sha)).unwrap();
+        assert_eq!(resolved, "0123456789abcdef0123456789abcdef01234567");
+    }
+
+    #[test]
+    fn test_git_commit_matches_prefix() {
+        let full = "0b6ea539609031977983f0b2393ebe81ee28c8ec";
+        assert!(git_commit_matches(full, full));
+        assert!(git_commit_matches(full, "0b6ea53"));
+        assert!(!git_commit_matches(full, "0b6ea5"));
+        assert!(!git_commit_matches(full, "abc1234"));
+        assert!(!git_commit_matches(full, "main"));
     }
 
     #[test]

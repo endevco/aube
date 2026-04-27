@@ -244,9 +244,16 @@ pub(crate) async fn resolve_git_source(
     let subpath = git.subpath.clone();
     let name_owned = name.to_string();
     let (local, version, deps) = tokio::task::spawn_blocking(move || -> Result<_, Error> {
-        let resolved = aube_store::git_resolve_ref(&url, committish.as_deref())
+        // `git_resolve_ref` resolves branch / tag / HEAD names to a
+        // 40-char SHA via `ls-remote`, but passes hex prefixes (i.e.
+        // user-written abbreviated commit SHAs) through unchanged
+        // because abbreviated commits aren't advertised as refs. The
+        // canonical full SHA is recovered from `git_shallow_clone`'s
+        // post-checkout `rev-parse HEAD`, so the lockfile always
+        // pins the full form.
+        let resolve_seed = aube_store::git_resolve_ref(&url, committish.as_deref())
             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-        let clone_dir = aube_store::git_shallow_clone(&url, &resolved, shallow)
+        let (clone_dir, resolved) = aube_store::git_shallow_clone(&url, &resolve_seed, shallow)
             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
         // `&path:/<sub>` narrows the package root to a subdirectory
         // of the cloned repo (pnpm-compatible). The manifest, version,
