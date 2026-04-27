@@ -1,0 +1,348 @@
+//! `aube config` — read/write settings in `.npmrc`.
+//!
+//! The command's known setting surface is derived from
+//! [`aube_settings::meta::SETTINGS`], generated at build time from
+//! `settings.toml`. Unknown keys are still accepted verbatim because
+//! `.npmrc` is free-form and includes auth-token entries such as
+//! `//registry.npmjs.org/:_authToken`.
+
+mod delete;
+mod explain;
+mod find;
+#[path = "get.rs"]
+mod get_cmd;
+mod list;
+#[path = "set.rs"]
+mod set_cmd;
+mod tui;
+
+use crate::commands::npmrc::{NpmrcEdit, user_npmrc_path};
+use aube_settings::meta as settings_meta;
+use clap::{Args, Subcommand, ValueEnum};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(flatten)]
+    pub list: list::ListArgs,
+
+    #[command(subcommand)]
+    pub command: Option<ConfigCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Delete a key from the selected `.npmrc` file
+    #[command(visible_aliases = ["rm", "remove", "unset"])]
+    Delete(delete::DeleteArgs),
+    /// Explain a known setting, including defaults and supported config sources
+    Explain(explain::ExplainArgs),
+    /// Search known settings by name, source key, or description
+    #[command(visible_alias = "search")]
+    Find(find::FindArgs),
+    /// Print the effective value of a key
+    Get(GetArgs),
+    /// Print every key/value from the selected `.npmrc` file(s)
+    #[command(visible_alias = "ls")]
+    List(list::ListArgs),
+    /// Write a key=value pair to the selected `.npmrc` file
+    Set(SetArgs),
+    /// Browse known settings in an interactive terminal UI
+    Tui,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct KeyArgs {
+    /// The setting key.
+    ///
+    /// Accepts either a pnpm canonical name (e.g. `autoInstallPeers`)
+    /// or an `.npmrc` alias (e.g. `auto-install-peers`).
+    pub key: String,
+
+    /// Shortcut for `--location project`.
+    #[arg(long, conflicts_with = "location")]
+    pub local: bool,
+
+    /// Which `.npmrc` file to act on.
+    ///
+    /// Defaults to `user` (`~/.npmrc`), matching pnpm.
+    #[arg(long, value_enum, default_value_t = Location::User)]
+    pub location: Location,
+}
+
+impl KeyArgs {
+    pub(super) fn effective_location(&self) -> Location {
+        if self.local {
+            Location::Project
+        } else {
+            self.location
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum Location {
+    /// `~/.npmrc`
+    User,
+    /// `<cwd>/.npmrc`
+    Project,
+    /// Alias for `user` — aube has no separate global config file.
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ListLocation {
+    /// Merge `~/.npmrc` + project `.npmrc`, last-write-wins (same
+    /// precedence install uses).
+    Merged,
+    /// Only `~/.npmrc`
+    User,
+    /// Only `<cwd>/.npmrc`
+    Project,
+    /// Alias for `user`.
+    Global,
+}
+
+pub(crate) use get_cmd::GetArgs;
+pub(crate) use set_cmd::SetArgs;
+
+impl Location {
+    pub(super) fn path(self) -> miette::Result<PathBuf> {
+        match self {
+            Location::User | Location::Global => user_npmrc_path(),
+            Location::Project => Ok(crate::dirs::project_root_or_cwd()?.join(".npmrc")),
+        }
+    }
+}
+
+pub async fn run(args: ConfigArgs) -> miette::Result<()> {
+    match args.command {
+        Some(ConfigCommand::Get(a)) => get(a),
+        Some(ConfigCommand::Set(a)) => set(a),
+        Some(ConfigCommand::Delete(a)) => delete::run(a),
+        Some(ConfigCommand::Explain(a)) => explain::run(a),
+        Some(ConfigCommand::Find(a)) => find::run(a),
+        Some(ConfigCommand::List(a)) => list::run(a),
+        Some(ConfigCommand::Tui) => tui::run(),
+        None => list::run(args.list),
+    }
+}
+
+pub(crate) fn get(args: GetArgs) -> miette::Result<()> {
+    get_cmd::run(args)
+}
+
+pub(crate) fn set(args: SetArgs) -> miette::Result<()> {
+    set_cmd::run(args)
+}
+
+/// True for entries in `SettingMeta::npmrc_keys` that are real, literal
+/// `.npmrc` keys — not pattern templates like `@scope:registry` or
+/// `//host/:_authToken`.
+fn is_literal_alias(key: &str) -> bool {
+    !key.starts_with("//") && !key.contains(':')
+}
+
+/// Expand a user-supplied key into the full set of `.npmrc` aliases it
+/// covers. Pattern-template entries in `npmrc_keys` (e.g.
+/// `@scope:registry`) are filtered out — see [`is_literal_alias`].
+pub(super) fn resolve_aliases(key: &str) -> Vec<String> {
+    if let Some(meta) = settings_meta::find(key) {
+        let literals = literal_aliases(meta.npmrc_keys);
+        if !literals.is_empty() {
+            return literals;
+        }
+    }
+    for meta in settings_meta::all() {
+        let literals = literal_aliases(meta.npmrc_keys);
+        if literals.iter().any(|a| a == key) {
+            return literals;
+        }
+    }
+    vec![key.to_string()]
+}
+
+pub(super) fn literal_aliases(keys: &[&'static str]) -> Vec<String> {
+    keys.iter()
+        .filter(|k| is_literal_alias(k))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+pub(super) fn setting_for_key(key: &str) -> Option<&'static settings_meta::SettingMeta> {
+    settings_meta::find(key).or_else(|| {
+        settings_meta::all().iter().find(|meta| {
+            meta.npmrc_keys.iter().any(|candidate| candidate == &key)
+                || meta
+                    .workspace_yaml_keys
+                    .iter()
+                    .any(|candidate| candidate == &key)
+                || meta.env_vars.iter().any(|candidate| candidate == &key)
+                || meta.cli_flags.iter().any(|candidate| candidate == &key)
+        })
+    })
+}
+
+pub(super) fn setting_search_score(meta: &settings_meta::SettingMeta, terms: &[String]) -> usize {
+    let names = setting_search_text(&[
+        &[meta.name],
+        meta.cli_flags,
+        meta.env_vars,
+        meta.npmrc_keys,
+        meta.workspace_yaml_keys,
+    ]);
+    let summary = setting_search_text(&[&[meta.description]]);
+    let body = setting_search_text(&[&[meta.docs], meta.examples]);
+
+    terms
+        .iter()
+        .map(|term| {
+            usize::from(search_text_matches(&names, term)) * 4
+                + usize::from(search_text_matches(&summary, term)) * 2
+                + usize::from(search_text_matches(&body, term))
+        })
+        .sum()
+}
+
+fn setting_search_text(groups: &[&[&str]]) -> String {
+    let mut out = String::new();
+    for value in groups.iter().copied().flatten().copied() {
+        out.push(' ');
+        out.push_str(value);
+    }
+    out.to_ascii_lowercase()
+}
+
+fn search_text_matches(haystack: &str, term: &str) -> bool {
+    haystack
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word.starts_with(term))
+}
+
+/// Read `~/.npmrc` then `<cwd>/.npmrc` and return every entry in file
+/// order (user-first, project-second) so a later duplicate wins.
+pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    if let Ok(user) = user_npmrc_path() {
+        out.extend(read_single(&user)?);
+    }
+    out.extend(read_single(&cwd.join(".npmrc"))?);
+    Ok(out)
+}
+
+pub(super) fn read_single(path: &std::path::Path) -> miette::Result<Vec<(String, String)>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let edit = NpmrcEdit::load(path)?;
+    Ok(edit.entries())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_list_key_collapses_alias_to_primary() {
+        assert_eq!(
+            list::canonical_list_key("autoInstallPeers"),
+            "auto-install-peers"
+        );
+        assert_eq!(
+            list::canonical_list_key("auto-install-peers"),
+            "auto-install-peers"
+        );
+    }
+
+    #[test]
+    fn canonical_list_key_passthrough_for_unknown_key() {
+        assert_eq!(
+            list::canonical_list_key("//registry.example.com/:_authToken"),
+            "//registry.example.com/:_authToken"
+        );
+    }
+
+    #[test]
+    fn resolve_aliases_canonical_name() {
+        let aliases = resolve_aliases("autoInstallPeers");
+        assert!(aliases.iter().any(|a| a == "auto-install-peers"));
+        assert!(aliases.iter().any(|a| a == "autoInstallPeers"));
+    }
+
+    #[test]
+    fn resolve_aliases_from_alias() {
+        let aliases = resolve_aliases("auto-install-peers");
+        assert!(aliases.iter().any(|a| a == "auto-install-peers"));
+        assert!(aliases.iter().any(|a| a == "autoInstallPeers"));
+    }
+
+    #[test]
+    fn resolve_aliases_registry_excludes_template_keys() {
+        let aliases = resolve_aliases("registry");
+        assert_eq!(aliases, vec!["registry".to_string()]);
+        for a in &aliases {
+            assert!(is_literal_alias(a), "leaked template alias: {a}");
+        }
+    }
+
+    #[test]
+    fn resolve_aliases_template_input_is_identity() {
+        for template in [
+            "@scope:registry",
+            "//registry.example.com/:_authToken",
+            "//registry.example.com/:_auth",
+        ] {
+            assert_eq!(
+                resolve_aliases(template),
+                vec![template.to_string()],
+                "{template} should be identity, not registries-grouped"
+            );
+        }
+    }
+
+    #[test]
+    fn is_literal_alias_recognizes_templates() {
+        assert!(is_literal_alias("registry"));
+        assert!(is_literal_alias("auto-install-peers"));
+        assert!(!is_literal_alias("@scope:registry"));
+        assert!(!is_literal_alias("//host/:_authToken"));
+        assert!(!is_literal_alias("//host/:_auth"));
+    }
+
+    #[test]
+    fn resolve_aliases_unknown_key_is_identity() {
+        let aliases = resolve_aliases("//registry.example.com/:_authToken");
+        assert_eq!(
+            aliases,
+            vec!["//registry.example.com/:_authToken".to_string()]
+        );
+    }
+
+    #[test]
+    fn preferred_write_key_keeps_user_typed_alias() {
+        let aliases = vec![
+            "auto-install-peers".to_string(),
+            "autoInstallPeers".to_string(),
+        ];
+        assert_eq!(
+            set_cmd::preferred_write_key("autoInstallPeers", &aliases),
+            "autoInstallPeers"
+        );
+        assert_eq!(
+            set_cmd::preferred_write_key("auto-install-peers", &aliases),
+            "auto-install-peers"
+        );
+    }
+
+    #[test]
+    fn preferred_write_key_falls_back_to_first_alias() {
+        let aliases = vec![
+            "auto-install-peers".to_string(),
+            "autoInstallPeers".to_string(),
+        ];
+        assert_eq!(
+            set_cmd::preferred_write_key("something-else", &aliases),
+            "auto-install-peers"
+        );
+    }
+}

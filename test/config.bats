@@ -122,6 +122,23 @@ teardown() {
 	assert_output --partial "auto-install-peers=false"
 }
 
+@test "config with no subcommand lists merged entries" {
+	mkdir proj
+	echo "registry=https://user.example.com/" >"$HOME/.npmrc"
+	echo "autoInstallPeers=false" >proj/.npmrc
+	cd proj
+	run aube config
+	assert_success
+	assert_output --partial "registry=https://user.example.com/"
+	assert_output --partial "auto-install-peers=false"
+}
+
+@test "config with parent --all lists defaults" {
+	run aube config --all
+	assert_success
+	assert_output --partial "auto-install-peers=true (default)"
+}
+
 @test "config list --location project only reads project .npmrc" {
 	mkdir proj
 	echo "registry=https://user.example.com/" >"$HOME/.npmrc"
@@ -239,6 +256,29 @@ teardown() {
 	run aube config list --all
 	assert_success
 	assert_output --partial "(default)"
+}
+
+@test "config find searches the generated settings reference" {
+	run aube config find min package install time
+	assert_success
+	assert_line --partial "minimumReleaseAge (minimumReleaseAge) - Delay installation of newly published versions (minutes)."
+}
+
+@test "config explain prints sources for a known setting" {
+	run aube config explain minimum-release-age
+	assert_success
+	assert_line "minimumReleaseAge"
+	assert_line "  Default: 1440"
+	assert_line "  Environment: npm_config_minimum_release_age, NPM_CONFIG_MINIMUM_RELEASE_AGE, AUBE_MINIMUM_RELEASE_AGE"
+	assert_line "  .npmrc keys: minimumReleaseAge, minimum-release-age"
+	assert_line "  Workspace YAML keys: minimumReleaseAge"
+	assert_output --partial "Set to \`0\` to disable."
+}
+
+@test "config tui rejects non-interactive stdout" {
+	run aube config tui
+	assert_failure
+	assert_output --partial "requires an interactive terminal"
 }
 
 # ── top-level get / set aliases ──────────────────────────────────────
