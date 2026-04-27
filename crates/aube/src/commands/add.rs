@@ -366,7 +366,7 @@ pub async fn run(
     ))
     .await;
 
-    // 6. Under `--no-save`, restore the snapshotted `package.json` and
+    // 5. Under `--no-save`, restore the snapshotted `package.json` and
     // lockfile so neither shows up in `git status`. The user's
     // `node_modules` keeps the freshly linked package — matching
     // pnpm's `--no-save` semantics. We do this regardless of whether
@@ -462,7 +462,7 @@ async fn update_manifest_for_add(
     packages: &[String],
     opts: AddManifestOptions,
     print_updated: bool,
-) -> miette::Result<(aube_manifest::PackageJson, super::CatalogMap)> {
+) -> miette::Result<()> {
     // Resolve settings (savePrefix, tag, catalogMode) from .npmrc /
     // workspace yaml. `catalog_mode` decides whether a newly-added dep
     // that already lives in the default workspace catalog gets rewritten
@@ -717,7 +717,7 @@ async fn update_manifest_for_add(
         eprintln!("Updated package.json");
     }
 
-    Ok((manifest, workspace_catalogs))
+    Ok(())
 }
 
 /// Resolve the on-disk lockfile path that a normal `add` would write
