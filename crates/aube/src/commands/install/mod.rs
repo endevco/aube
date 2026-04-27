@@ -3275,14 +3275,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 }
             }
         }
-        link_dep_bins(
-            &aube_dir,
-            &graph_for_link,
-            virtual_store_dir_max_length,
-            placements_ref,
-            shim_opts,
-            &mut pkg_json_cache,
-        )?;
+        if !opts.ignore_scripts && build_policy.has_any_allow_rule() {
+            link_dep_bins(
+                &aube_dir,
+                &graph_for_link,
+                virtual_store_dir_max_length,
+                placements_ref,
+                shim_opts,
+                &mut pkg_json_cache,
+            )?;
+        }
         tracing::debug!("phase:link_bins {:.1?}", phase_start.elapsed());
     }
 
