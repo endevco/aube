@@ -398,7 +398,7 @@ fn home_dir_os() -> Option<std::ffi::OsString> {
 
 /// Build a file-only `ResolveCtx` for `cwd` and call `f` with it.
 /// Handles the temporary ownership of npmrc/workspace/env data so
-/// callers don't need to import `serde_yaml`.
+/// callers don't need to import `yaml_serde`.
 pub(crate) fn with_settings_ctx<T>(
     cwd: &std::path::Path,
     f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,

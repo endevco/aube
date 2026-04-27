@@ -136,7 +136,7 @@ pub(crate) fn workspace_yaml_path(project_dir: &Path) -> Option<PathBuf> {
 /// package)` pairs that were dropped so the caller can surface a
 /// one-line summary.
 ///
-/// The rewrite is a plain `serde_yaml` round trip: comments and custom
+/// The rewrite is a plain `yaml_serde` round trip: comments and custom
 /// layout are not preserved. Callers gate this on `cleanupUnusedCatalogs`
 /// so the destructive rewrite only happens when the user opted in.
 pub(crate) fn prune_unused_catalog_entries(
@@ -170,7 +170,7 @@ pub(crate) fn prune_unused_catalog_entries(
                 workspace_path.display()
             )
         })?;
-    let mut value: serde_yaml::Value = serde_yaml::from_str(&text)
+    let mut value: yaml_serde::Value = yaml_serde::from_str(&text)
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to parse {}", workspace_path.display()))?;
 
@@ -185,36 +185,36 @@ pub(crate) fn prune_unused_catalog_entries(
     for (cat_name, pkg_name) in &unused {
         if cat_name == "default" {
             if let Some(map) = root
-                .get_mut(serde_yaml::Value::String("catalog".to_string()))
-                .and_then(serde_yaml::Value::as_mapping_mut)
+                .get_mut(yaml_serde::Value::String("catalog".to_string()))
+                .and_then(yaml_serde::Value::as_mapping_mut)
             {
-                map.remove(serde_yaml::Value::String(pkg_name.clone()));
+                map.remove(yaml_serde::Value::String(pkg_name.clone()));
             }
         } else if let Some(catalogs) = root
-            .get_mut(serde_yaml::Value::String("catalogs".to_string()))
-            .and_then(serde_yaml::Value::as_mapping_mut)
+            .get_mut(yaml_serde::Value::String("catalogs".to_string()))
+            .and_then(yaml_serde::Value::as_mapping_mut)
             && let Some(map) = catalogs
-                .get_mut(serde_yaml::Value::String(cat_name.clone()))
-                .and_then(serde_yaml::Value::as_mapping_mut)
+                .get_mut(yaml_serde::Value::String(cat_name.clone()))
+                .and_then(yaml_serde::Value::as_mapping_mut)
         {
-            map.remove(serde_yaml::Value::String(pkg_name.clone()));
+            map.remove(yaml_serde::Value::String(pkg_name.clone()));
         }
     }
 
     // Drop now-empty catalog containers so the file doesn't grow
     // meaningless `catalog: {}` / `catalogs:` headers.
     let empty_default = root
-        .get(serde_yaml::Value::String("catalog".to_string()))
-        .and_then(serde_yaml::Value::as_mapping)
-        .is_some_and(serde_yaml::Mapping::is_empty);
+        .get(yaml_serde::Value::String("catalog".to_string()))
+        .and_then(yaml_serde::Value::as_mapping)
+        .is_some_and(yaml_serde::Mapping::is_empty);
     if empty_default {
-        root.remove(serde_yaml::Value::String("catalog".to_string()));
+        root.remove(yaml_serde::Value::String("catalog".to_string()));
     }
     if let Some(catalogs) = root
-        .get_mut(serde_yaml::Value::String("catalogs".to_string()))
-        .and_then(serde_yaml::Value::as_mapping_mut)
+        .get_mut(yaml_serde::Value::String("catalogs".to_string()))
+        .and_then(yaml_serde::Value::as_mapping_mut)
     {
-        let to_drop: Vec<serde_yaml::Value> = catalogs
+        let to_drop: Vec<yaml_serde::Value> = catalogs
             .iter()
             .filter_map(|(k, v)| match v.as_mapping() {
                 Some(m) if m.is_empty() => Some(k.clone()),
@@ -226,14 +226,14 @@ pub(crate) fn prune_unused_catalog_entries(
         }
     }
     let empty_named = root
-        .get(serde_yaml::Value::String("catalogs".to_string()))
-        .and_then(serde_yaml::Value::as_mapping)
-        .is_some_and(serde_yaml::Mapping::is_empty);
+        .get(yaml_serde::Value::String("catalogs".to_string()))
+        .and_then(yaml_serde::Value::as_mapping)
+        .is_some_and(yaml_serde::Mapping::is_empty);
     if empty_named {
-        root.remove(serde_yaml::Value::String("catalogs".to_string()));
+        root.remove(yaml_serde::Value::String("catalogs".to_string()));
     }
 
-    let new_text = serde_yaml::to_string(&value)
+    let new_text = yaml_serde::to_string(&value)
         .into_diagnostic()
         .wrap_err("failed to serialize workspace yaml after cleanupUnusedCatalogs")?;
     aube_util::fs_atomic::atomic_write(workspace_path, new_text.as_bytes())

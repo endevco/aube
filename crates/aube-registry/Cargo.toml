@@ -28,6 +28,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 flate2 = { workspace = true }
-serde_yaml = { workspace = true }
+yaml_serde = { workspace = true }
 tar = { workspace = true }
 wiremock = "0.6"

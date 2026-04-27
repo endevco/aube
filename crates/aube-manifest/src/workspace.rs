@@ -194,7 +194,7 @@ pub struct WorkspaceConfig {
 
     /// Extend package metadata during resolution.
     #[serde(default)]
-    pub package_extensions: BTreeMap<String, serde_yaml::Value>,
+    pub package_extensions: BTreeMap<String, yaml_serde::Value>,
 
     /// Package deprecation ranges whose warnings should be muted.
     #[serde(default)]
@@ -259,7 +259,7 @@ pub struct WorkspaceConfig {
     /// `package.json`'s `pnpm.allowBuilds` — workspace-level entries
     /// take precedence for the same key.
     #[serde(default)]
-    pub allow_builds: BTreeMap<String, serde_yaml::Value>,
+    pub allow_builds: BTreeMap<String, yaml_serde::Value>,
 
     /// pnpm's canonical allowlist format: a flat list of package names
     /// whose lifecycle scripts are allowed to run. Merged with
@@ -411,11 +411,11 @@ pub struct WorkspaceConfig {
     /// field (not falling into `extra`). Leaves of the map are
     /// deserialized lazily on demand.
     #[serde(default)]
-    pub peer_dependency_rules: Option<serde_yaml::Value>,
+    pub peer_dependency_rules: Option<yaml_serde::Value>,
 
     /// Capture unknown fields for forward compatibility.
     #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_yaml::Value>,
+    pub extra: BTreeMap<String, yaml_serde::Value>,
 }
 
 /// `supportedArchitectures.{os,cpu,libc}` arrays from
@@ -447,14 +447,14 @@ impl WorkspaceConfig {
             .iter()
             .map(|(k, v)| {
                 let raw = match v {
-                    serde_yaml::Value::Bool(b) => crate::AllowBuildRaw::Bool(*b),
+                    yaml_serde::Value::Bool(b) => crate::AllowBuildRaw::Bool(*b),
                     other => {
                         // Render via YAML serialization so the user sees
                         // the same text they wrote (`maybe`, `[a, b]`)
-                        // rather than serde_yaml's Debug form
+                        // rather than yaml_serde's Debug form
                         // (`String("maybe")`). Matches the JSON side in
                         // `AllowBuildRaw::from_json`.
-                        let rendered = serde_yaml::to_string(other)
+                        let rendered = yaml_serde::to_string(other)
                             .unwrap_or_default()
                             .trim()
                             .to_string();
@@ -498,22 +498,22 @@ impl WorkspaceConfig {
 // `load_raw` and `load_both` populate + read this cache so a later
 // `load_raw` after `load_both` doesn't re-read the file.
 type RawCacheMap =
-    std::collections::HashMap<std::path::PathBuf, BTreeMap<String, serde_yaml::Value>>;
+    std::collections::HashMap<std::path::PathBuf, BTreeMap<String, yaml_serde::Value>>;
 static RAW_CACHE: std::sync::OnceLock<std::sync::Mutex<RawCacheMap>> = std::sync::OnceLock::new();
 
-fn raw_cache_lookup(project_dir: &Path) -> Option<BTreeMap<String, serde_yaml::Value>> {
+fn raw_cache_lookup(project_dir: &Path) -> Option<BTreeMap<String, yaml_serde::Value>> {
     let cache = RAW_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     cache.lock().ok()?.get(project_dir).cloned()
 }
 
-fn raw_cache_insert(project_dir: &Path, value: BTreeMap<String, serde_yaml::Value>) {
+fn raw_cache_insert(project_dir: &Path, value: BTreeMap<String, yaml_serde::Value>) {
     let cache = RAW_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Ok(mut map) = cache.lock() {
         map.insert(project_dir.to_path_buf(), value);
     }
 }
 
-pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value>, crate::Error> {
+pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, yaml_serde::Value>, crate::Error> {
     if let Some(hit) = raw_cache_lookup(project_dir) {
         return Ok(hit);
     }
@@ -525,7 +525,7 @@ pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value
         raw_cache_insert(project_dir, BTreeMap::new());
         return Ok(BTreeMap::new());
     }
-    let parsed: BTreeMap<String, serde_yaml::Value> = crate::parse_yaml(&path, content)?;
+    let parsed: BTreeMap<String, yaml_serde::Value> = crate::parse_yaml(&path, content)?;
     raw_cache_insert(project_dir, parsed.clone());
     Ok(parsed)
 }
@@ -539,7 +539,7 @@ pub fn load_raw(project_dir: &Path) -> Result<BTreeMap<String, serde_yaml::Value
 #[allow(clippy::type_complexity)]
 pub fn load_both(
     project_dir: &Path,
-) -> Result<(WorkspaceConfig, BTreeMap<String, serde_yaml::Value>), crate::Error> {
+) -> Result<(WorkspaceConfig, BTreeMap<String, yaml_serde::Value>), crate::Error> {
     let Some((path, content)) = find_and_read(project_dir)? else {
         raw_cache_insert(project_dir, BTreeMap::new());
         return Ok((WorkspaceConfig::default(), BTreeMap::new()));
@@ -548,10 +548,10 @@ pub fn load_both(
         raw_cache_insert(project_dir, BTreeMap::new());
         return Ok((WorkspaceConfig::default(), BTreeMap::new()));
     }
-    let value: serde_yaml::Value = crate::parse_yaml(&path, content.clone())?;
-    let typed: WorkspaceConfig = serde_yaml::from_value(value.clone())
+    let value: yaml_serde::Value = crate::parse_yaml(&path, content.clone())?;
+    let typed: WorkspaceConfig = yaml_serde::from_value(value.clone())
         .map_err(|e| crate::Error::parse_yaml_err(&path, content.clone(), &e))?;
-    let raw: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_value(value)
+    let raw: BTreeMap<String, yaml_serde::Value> = yaml_serde::from_value(value)
         .map_err(|e| crate::Error::parse_yaml_err(&path, content, &e))?;
     raw_cache_insert(project_dir, raw.clone());
     Ok((typed, raw))
@@ -593,7 +593,7 @@ pub fn add_to_only_built_dependencies(
 }
 
 fn write_to_yaml(path: &Path, names: &[String]) -> Result<std::path::PathBuf, crate::Error> {
-    use serde_yaml::{Mapping, Value};
+    use yaml_serde::{Mapping, Value};
 
     let mut doc: Value = if path.exists() {
         let content =
@@ -635,12 +635,12 @@ fn write_to_yaml(path: &Path, names: &[String]) -> Result<std::path::PathBuf, cr
         }
     }
 
-    let raw = serde_yaml::to_string(&doc)
+    let raw = yaml_serde::to_string(&doc)
         .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
-    // serde_yaml emits block sequences flush-left (`- foo`) while pnpm's
+    // yaml_serde emits block sequences flush-left (`- foo`) while pnpm's
     // canonical workspace yaml indents them by two (`  - foo`). Reindent
     // so the output matches what a human or pnpm would write. Safe because
-    // serde_yaml's block style always starts sequence items at the parent's
+    // yaml_serde's block style always starts sequence items at the parent's
     // column; bumping every sequence line by two is a consistent transform.
     let indented = indent_block_sequences(&raw);
     aube_util::fs_atomic::atomic_write(path, indented.as_bytes())
@@ -719,7 +719,7 @@ fn write_to_package_json(
 }
 
 /// Bump every block-sequence item line (`- ...`) by two spaces. Leaves
-/// already-indented lines and non-sequence lines alone. serde_yaml's
+/// already-indented lines and non-sequence lines alone. yaml_serde's
 /// output uses a single indent step per nesting level, so this produces
 /// the `parent:\n  - item` shape humans expect.
 fn indent_block_sequences(input: &str) -> String {
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_empty_config() {
-        let config: WorkspaceConfig = serde_yaml::from_str("{}").unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str("{}").unwrap();
         assert!(config.packages.is_empty());
         assert!(config.enable_global_virtual_store.is_none());
     }
@@ -752,7 +752,7 @@ packages:
   - 'packages/*'
   - 'apps/*'
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(config.packages, vec!["packages/*", "apps/*"]);
     }
 
@@ -766,7 +766,7 @@ shamefullyHoist: false
 packageImportMethod: hardlink
 storeDir: /tmp/my-store
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(config.packages, vec!["packages/*"]);
         assert_eq!(config.enable_global_virtual_store, Some(true));
         assert_eq!(config.shamefully_hoist, Some(false));
@@ -784,7 +784,7 @@ catalogs:
   react16:
     react: ^16.7.0
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(config.catalog.get("chalk").unwrap(), "^4.1.2");
         assert_eq!(
             config
@@ -804,7 +804,7 @@ overrides:
   foo: 1.0.0
   bar: npm:baz@^2
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(config.overrides.get("foo").unwrap(), "1.0.0");
         assert_eq!(config.overrides.get("bar").unwrap(), "npm:baz@^2");
     }
@@ -817,7 +817,7 @@ supportedArchitectures:
   cpu: ["current", "x64"]
   libc: ["glibc"]
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         let sa = config.supported_architectures.as_ref().unwrap();
         assert_eq!(sa.os, vec!["current", "linux"]);
         assert_eq!(sa.cpu, vec!["current", "x64"]);
@@ -832,7 +832,7 @@ ignoredOptionalDependencies:
   - fsevents
   - dtrace-provider
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(
             config.ignored_optional_dependencies,
             vec!["fsevents", "dtrace-provider"]
@@ -844,7 +844,7 @@ ignoredOptionalDependencies:
         let yaml = r#"
 pnpmfilePath: config/pnpmfile.cjs
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(config.pnpmfile_path.as_deref(), Some("config/pnpmfile.cjs"));
     }
 
@@ -859,7 +859,7 @@ patchedDependencies:
   "is-positive@3.1.0": patches/is-positive@3.1.0.patch
   "@scope/pkg@1.0.0": patches/scope-pkg.patch
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(
             config
                 .patched_dependencies
@@ -1025,7 +1025,7 @@ patchedDependencies:
 someNewField: true
 anotherSetting: value
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert!(config.extra.contains_key("someNewField"));
     }
 
@@ -1036,7 +1036,7 @@ updateConfig:
   ignoreDependencies:
     - is-odd
 "#;
-        let config: WorkspaceConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: WorkspaceConfig = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(
             config
                 .update_config

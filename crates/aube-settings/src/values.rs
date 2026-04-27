@@ -37,7 +37,7 @@ pub struct ResolveCtx<'a> {
     /// Raw top-level map from `pnpm-workspace.yaml` /
     /// `aube-workspace.yaml`, as returned by
     /// `aube_manifest::workspace::load_raw`.
-    pub workspace_yaml: &'a std::collections::BTreeMap<String, serde_yaml::Value>,
+    pub workspace_yaml: &'a std::collections::BTreeMap<String, yaml_serde::Value>,
     /// Captured environment variables relevant to settings. In
     /// production this is populated by [`capture_env`]; tests build a
     /// literal slice. `sources.env` alias order defines priority; within
@@ -57,7 +57,7 @@ impl<'a> ResolveCtx<'a> {
     /// through yet.
     pub fn files_only(
         npmrc: &'a [(String, String)],
-        workspace_yaml: &'a std::collections::BTreeMap<String, serde_yaml::Value>,
+        workspace_yaml: &'a std::collections::BTreeMap<String, yaml_serde::Value>,
     ) -> Self {
         Self {
             npmrc,
@@ -155,7 +155,7 @@ pub fn string_from_npmrc(setting: &str, entries: &[(String, String)]) -> Option<
 /// whichever one is present wins.
 pub(crate) fn bool_from_workspace_yaml(
     setting: &str,
-    raw: &std::collections::BTreeMap<String, serde_yaml::Value>,
+    raw: &std::collections::BTreeMap<String, yaml_serde::Value>,
 ) -> Option<bool> {
     let meta = meta::find(setting)?;
     if meta.type_ != "bool" {
@@ -166,8 +166,8 @@ pub(crate) fn bool_from_workspace_yaml(
             continue;
         };
         match val {
-            serde_yaml::Value::Bool(b) => return Some(*b),
-            serde_yaml::Value::String(s) => {
+            yaml_serde::Value::Bool(b) => return Some(*b),
+            yaml_serde::Value::String(s) => {
                 if let Some(b) = parse_bool(s) {
                     return Some(b);
                 }
@@ -188,7 +188,7 @@ pub(crate) fn bool_from_workspace_yaml(
 /// rather than a bogus rendering.
 pub fn string_from_workspace_yaml(
     setting: &str,
-    raw: &std::collections::BTreeMap<String, serde_yaml::Value>,
+    raw: &std::collections::BTreeMap<String, yaml_serde::Value>,
 ) -> Option<String> {
     let meta = meta::find(setting)?;
     if !is_stringish(meta.type_) {
@@ -199,9 +199,9 @@ pub fn string_from_workspace_yaml(
             continue;
         };
         match val {
-            serde_yaml::Value::String(s) => return Some(s.clone()),
-            serde_yaml::Value::Number(n) => return Some(n.to_string()),
-            serde_yaml::Value::Bool(b) => return Some(b.to_string()),
+            yaml_serde::Value::String(s) => return Some(s.clone()),
+            yaml_serde::Value::Number(n) => return Some(n.to_string()),
+            yaml_serde::Value::Bool(b) => return Some(b.to_string()),
             _ => {}
         }
     }
@@ -237,7 +237,7 @@ pub(crate) fn u64_from_npmrc(setting: &str, entries: &[(String, String)]) -> Opt
 /// Accepts YAML integers and stringified numbers.
 pub(crate) fn u64_from_workspace_yaml(
     setting: &str,
-    raw: &std::collections::BTreeMap<String, serde_yaml::Value>,
+    raw: &std::collections::BTreeMap<String, yaml_serde::Value>,
 ) -> Option<u64> {
     let meta = meta::find(setting)?;
     if meta.type_ != "int" {
@@ -248,12 +248,12 @@ pub(crate) fn u64_from_workspace_yaml(
             continue;
         };
         match val {
-            serde_yaml::Value::Number(n) => {
+            yaml_serde::Value::Number(n) => {
                 if let Some(u) = n.as_u64() {
                     return Some(u);
                 }
             }
-            serde_yaml::Value::String(s) => {
+            yaml_serde::Value::String(s) => {
                 if let Ok(u) = s.trim().parse::<u64>() {
                     return Some(u);
                 }
@@ -289,7 +289,7 @@ pub(crate) fn string_list_from_npmrc(
 /// that stringify the list).
 pub(crate) fn string_list_from_workspace_yaml(
     setting: &str,
-    raw: &std::collections::BTreeMap<String, serde_yaml::Value>,
+    raw: &std::collections::BTreeMap<String, yaml_serde::Value>,
 ) -> Option<Vec<String>> {
     let meta = meta::find(setting)?;
     if meta.type_ != "list<string>" {
@@ -300,14 +300,14 @@ pub(crate) fn string_list_from_workspace_yaml(
             continue;
         };
         match val {
-            serde_yaml::Value::Sequence(seq) => {
+            yaml_serde::Value::Sequence(seq) => {
                 let items: Vec<String> = seq
                     .iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect();
                 return Some(items);
             }
-            serde_yaml::Value::String(s) => return Some(parse_string_list(s)),
+            yaml_serde::Value::String(s) => return Some(parse_string_list(s)),
             _ => {}
         }
     }
@@ -315,17 +315,17 @@ pub(crate) fn string_list_from_workspace_yaml(
 }
 
 pub fn workspace_yaml_value<'a>(
-    raw: &'a std::collections::BTreeMap<String, serde_yaml::Value>,
+    raw: &'a std::collections::BTreeMap<String, yaml_serde::Value>,
     key: &str,
-) -> Option<&'a serde_yaml::Value> {
+) -> Option<&'a yaml_serde::Value> {
     let mut parts = key.split('.');
     let first = parts.next()?;
     let mut value = raw.get(first)?;
     for part in parts {
-        let serde_yaml::Value::Mapping(map) = value else {
+        let yaml_serde::Value::Mapping(map) = value else {
             return None;
         };
-        value = map.get(serde_yaml::Value::String(part.to_string()))?;
+        value = map.get(yaml_serde::Value::String(part.to_string()))?;
     }
     Some(value)
 }
@@ -495,8 +495,8 @@ mod tests {
 
     #[test]
     fn workspace_yaml_value_resolves_dotted_paths() {
-        let raw: BTreeMap<String, serde_yaml::Value> =
-            serde_yaml::from_str("outer:\n  inner:\n    key: value\n").unwrap();
+        let raw: BTreeMap<String, yaml_serde::Value> =
+            yaml_serde::from_str("outer:\n  inner:\n    key: value\n").unwrap();
 
         assert_eq!(
             workspace_yaml_value(&raw, "outer.inner.key").and_then(|v| v.as_str()),
@@ -625,8 +625,8 @@ mod tests {
         assert_eq!(bool_from_npmrc("autoInstallPeers", &e), Some(false));
     }
 
-    fn raw_yaml(src: &str) -> std::collections::BTreeMap<String, serde_yaml::Value> {
-        serde_yaml::from_str(src).expect("test fixture is valid yaml")
+    fn raw_yaml(src: &str) -> std::collections::BTreeMap<String, yaml_serde::Value> {
+        yaml_serde::from_str(src).expect("test fixture is valid yaml")
     }
 
     #[test]
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn generated_accessor_returns_declared_default_when_no_source_matches() {
         let npmrc: Vec<(String, String)> = Vec::new();
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert!(resolved::auto_install_peers(&ctx));
@@ -800,7 +800,7 @@ mod tests {
         // Callers match on the variant rather than hand-parsing the raw
         // string.
         let npmrc = entries(&[("resolutionMode", "time-based")]);
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert_eq!(
@@ -814,7 +814,7 @@ mod tests {
         // An unrecognized value should not pollute the result — the
         // accessor falls back to the declared default when it has one.
         let npmrc = entries(&[("nodeLinker", "totally-fake")]);
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert_eq!(resolved::node_linker(&ctx), resolved::NodeLinker::Isolated);
@@ -844,7 +844,7 @@ mod tests {
         // pnpm normalizes enum values before matching; the generated
         // `from_str_normalized` mirrors that.
         let npmrc = entries(&[("nodeLinker", "Hoisted")]);
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert_eq!(resolved::node_linker(&ctx), resolved::NodeLinker::Hoisted);
@@ -857,7 +857,7 @@ mod tests {
         // otherwise the setting is silently ignored for anyone copying
         // from pnpm docs.
         let npmrc = entries(&[("node-linker", "hoisted")]);
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert_eq!(resolved::node_linker(&ctx), resolved::NodeLinker::Hoisted);
@@ -871,7 +871,7 @@ mod tests {
         // `virtual-store-dir-max-length` so users copying from pnpm's
         // `.npmrc` docs get the expected behaviour.
         let npmrc = entries(&[("virtual-store-dir-max-length", "40")]);
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert_eq!(resolved::virtual_store_dir_max_length(&ctx), Some(40));
@@ -884,7 +884,7 @@ mod tests {
         // `.npmrc` (the pnpm-workspace.yaml spelling) were silently
         // ignored. Auto-synth fills in the camelCase alias too.
         let npmrc = entries(&[("preferFrozenLockfile", "false")]);
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = ResolveCtx::files_only(&npmrc, &ws);
         assert_eq!(resolved::prefer_frozen_lockfile(&ctx), Some(false));

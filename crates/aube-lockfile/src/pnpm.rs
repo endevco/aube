@@ -999,7 +999,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         snapshots,
     };
 
-    let yaml = serde_yaml::to_string(&lockfile).map_err(|e| Error::parse(path, e.to_string()))?;
+    let yaml = yaml_serde::to_string(&lockfile).map_err(|e| Error::parse(path, e.to_string()))?;
     let yaml = reformat_for_pnpm_parity(&yaml);
     // Atomic via tempfile + persist. Crash, Ctrl+C, or AV
     // quarantine during the write used to leave the user with a
@@ -1010,12 +1010,12 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
     Ok(())
 }
 
-/// Post-process a `serde_yaml`-emitted pnpm-lock.yaml into the exact
+/// Post-process a `yaml_serde`-emitted pnpm-lock.yaml into the exact
 /// shape real pnpm writes. Two tweaks:
 ///
 ///   1. Collapse `resolution:` / `engines:` block maps into flow form
 ///      (`resolution: {integrity: sha512-…}`). pnpm writes both inline
-///      and `serde_yaml` can't be coerced into flow style per-field
+///      and `yaml_serde` can't be coerced into flow style per-field
 ///      without a custom emitter.
 ///   2. Insert blank-line separators above every top-level section
 ///      (`settings:`, `importers:`, `packages:`, `snapshots:`, …) and
@@ -1143,7 +1143,7 @@ struct WritablePnpmLockfile {
     settings: WritableSettings,
     // pnpm v9 places `overrides:` immediately after `settings:` and
     // before `importers:`. Field order matters because we serialize
-    // through serde_yaml and want byte-for-byte parity with pnpm output
+    // through yaml_serde and want byte-for-byte parity with pnpm output
     // for the no-overrides case (the field is skipped when empty).
     #[serde(skip_serializing_if = "Option::is_none")]
     overrides: Option<BTreeMap<String, String>>,
@@ -1337,18 +1337,18 @@ struct WritableSnapshot {
 /// overrides + packages/snapshots count) and take the highest. If only
 /// one document is present (pnpm v9/v10 and older) this reduces to the
 /// previous single-document parse.
-fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Error> {
+fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, yaml_serde::Error> {
     // Hard cap on documents inspected. pnpm v11 emits exactly two;
     // anything beyond a handful is pathological. This also guards
     // against malformed YAML that puts
-    // `serde_yaml::Deserializer::from_str`'s iterator into an
+    // `yaml_serde::Deserializer::from_str`'s iterator into an
     // infinite-yield state — `test_parse_invalid_yaml` tripped that
     // mode on Windows CI with an unbounded loop.
     const MAX_DOCUMENTS: usize = 16;
 
     let mut best: Option<(u64, RawPnpmLockfile)> = None;
-    let mut first_err: Option<serde_yaml::Error> = None;
-    for (idx, doc) in serde_yaml::Deserializer::from_str(content)
+    let mut first_err: Option<yaml_serde::Error> = None;
+    for (idx, doc) in yaml_serde::Deserializer::from_str(content)
         .enumerate()
         .take(MAX_DOCUMENTS)
     {
@@ -1365,7 +1365,7 @@ fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Erro
                 // lockfile where every document fails surfaces all the
                 // diagnostic signal at `RUST_LOG=aube_lockfile=debug`.
                 // Break on the first failure: a malformed document
-                // typically puts serde_yaml's iterator into a state
+                // typically puts yaml_serde's iterator into a state
                 // where further iteration is either more garbage or an
                 // infinite loop (see `test_parse_invalid_yaml`). The
                 // returned error is the first failure, which is both
@@ -1382,7 +1382,7 @@ fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, serde_yaml::Erro
         (None, Some(e)) => Err(e),
         // No documents at all — defer to the single-doc parser so the
         // error surface matches what callers saw before.
-        (None, None) => serde_yaml::from_str(content),
+        (None, None) => yaml_serde::from_str(content),
     }
 }
 
@@ -1424,7 +1424,7 @@ fn project_lockfile_score(raw: &RawPnpmLockfile) -> u64 {
 #[serde(rename_all = "camelCase")]
 struct RawPnpmLockfile {
     #[allow(dead_code)]
-    lockfile_version: serde_yaml::Value,
+    lockfile_version: yaml_serde::Value,
     #[serde(default)]
     settings: Option<RawSettings>,
     #[serde(default)]

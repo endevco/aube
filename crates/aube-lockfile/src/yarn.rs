@@ -563,7 +563,7 @@ fn parse_berry_str(
     content: &str,
     manifest: &aube_manifest::PackageJson,
 ) -> Result<LockfileGraph, Error> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(content)
+    let doc: yaml_serde::Value = yaml_serde::from_str(content)
         .map_err(|e| Error::parse_yaml_err(path, content.to_string(), &e))?;
     let map = doc
         .as_mapping()
@@ -617,13 +617,10 @@ fn parse_berry_str(
             continue;
         }
 
-        // Berry writes versions unquoted (`version: 1.0.0`), so
-        // YAML 1.2 core-schema resolution kicks in: three-component
-        // semver parses as a plain string, but a bare integer
-        // (`version: 5`) or two-component value (`version: 1.0`)
-        // parses as number. Coerce both back to a string rather than
-        // reporting "has no version" against a spec that obviously
-        // does.
+        // Berry writes versions unquoted (`version: 1.0.0`). Depending
+        // on the YAML resolver, scalar-looking versions may parse as
+        // non-string values, so coerce them back to strings rather than
+        // reporting "has no version" against a spec that obviously does.
         let version = block
             .get("version")
             .and_then(yaml_scalar_as_string)
@@ -914,22 +911,15 @@ fn range_has_protocol(range: &str) -> bool {
 
 /// Render a scalar YAML value as its source-text-equivalent string.
 ///
-/// Berry emits `version: 1.0.0` unquoted. Under YAML 1.2 core-schema
-/// resolution (what `serde_yaml` 0.9 uses), that bare token parses
-/// as a string *only because* it has two dots — a bare integer
-/// (`version: 5`) comes out as `Value::Number(5)`, a two-component
-/// value (`version: 1.0`) as a float. Returning those back as
-/// strings matches what a quote-everything serializer would have
-/// produced, so rare packages with one- or two-component versions
-/// don't break parsing against a lockfile yarn itself wrote.
-///
-/// Booleans would behave the same way (`version: yes`), but no real
-/// version string collides with YAML 1.2's bool tokens (`true` /
-/// `false`), so we don't bother unfolding them.
-fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
+/// Berry emits scalar fields unquoted in several places. YAML parsers
+/// may resolve integer-, float-, or boolean-looking tokens to typed
+/// values; returning those as strings preserves the graph edge instead
+/// of silently dropping an otherwise valid lockfile entry.
+fn yaml_scalar_as_string(v: &yaml_serde::Value) -> Option<String> {
     match v {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        yaml_serde::Value::String(s) => Some(s.clone()),
+        yaml_serde::Value::Number(n) => Some(n.to_string()),
+        yaml_serde::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -940,7 +930,7 @@ fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
 /// `yaml_scalar_as_string` for the same reason `version` does — a
 /// bare `dep: 5` would otherwise silently drop the edge instead of
 /// recording `"5"` as the range.
-fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, String> {
+fn collect_dep_map(block: &yaml_serde::Mapping, key: &str) -> BTreeMap<String, String> {
     block
         .get(key)
         .and_then(|v| v.as_mapping())
@@ -955,7 +945,7 @@ fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, S
 /// Pull `peerDependenciesMeta` into our structured form. Only the
 /// `optional` flag round-trips through aube's model; other keys in
 /// the meta block (if any) are ignored.
-fn collect_peer_meta(block: &serde_yaml::Mapping) -> BTreeMap<String, crate::PeerDepMeta> {
+fn collect_peer_meta(block: &yaml_serde::Mapping) -> BTreeMap<String, crate::PeerDepMeta> {
     block
         .get("peerDependenciesMeta")
         .and_then(|v| v.as_mapping())
@@ -1012,7 +1002,7 @@ fn strip_commit_hash(url: &str) -> String {
 /// repo (if it has a commit hash suffix or a `.git` path) or a plain
 /// tarball download. Checksum / integrity lives on the `checksum:`
 /// field and round-trips through `yarn_checksum`.
-fn classify_remote(url: &str, _block: &serde_yaml::Mapping) -> Option<LocalSource> {
+fn classify_remote(url: &str, _block: &yaml_serde::Mapping) -> Option<LocalSource> {
     if url.ends_with(".git") || url.contains(".git#") {
         Some(LocalSource::Git(GitSource {
             url: strip_commit_hash(url),
@@ -1665,11 +1655,10 @@ __metadata:
         assert!(!graph.packages.contains_key("my-project@0.0.0-use.local"));
     }
 
-    /// Berry emits `version:` unquoted, and under YAML 1.2 core-schema
-    /// resolution a bare integer (`version: 5`) comes out as a
-    /// number, not a string. Our parser must unfold those back to
-    /// strings instead of failing with "has no version" — real
-    /// packages with fewer-than-three-component versions do exist
+    /// Berry emits `version:` unquoted, so scalar-looking values can
+    /// parse as numbers instead of strings. Our parser must unfold
+    /// those back to strings instead of failing with "has no version" —
+    /// real packages with fewer-than-three-component versions do exist
     /// (even if rare).
     #[test]
     fn test_parse_berry_unquoted_numeric_version() {
@@ -1700,14 +1689,14 @@ __metadata:
         assert_eq!(graph.packages["two-part@1.0"].version, "1.0");
     }
 
-    /// Same numeric-scalar hazard applies to dependency values:
+    /// Same scalar hazard applies to dependency values:
     /// `peerDependencies: { foo: 5 }` writes a YAML number, and
-    /// `as_str()` would silently drop the edge. The fix routes dep
-    /// values through `yaml_scalar_as_string`; this test exercises
-    /// that path end-to-end so a future regression would show up as
-    /// a missing peer edge rather than a parse error.
+    /// boolean-looking tags or ranges can parse as booleans. The parser
+    /// routes dep values through `yaml_scalar_as_string` so a future
+    /// regression shows up as a missing peer edge rather than a parse
+    /// error.
     #[test]
-    fn test_parse_berry_numeric_dep_value() {
+    fn test_parse_berry_typed_dep_values() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let content = r#"__metadata:
   version: 8
@@ -1718,6 +1707,7 @@ __metadata:
   resolution: "foo@npm:1.0.0"
   peerDependencies:
     numeric-peer: 5
+    bool-peer: true
   languageName: node
   linkType: hard
 "#;
@@ -1730,6 +1720,10 @@ __metadata:
                 .get("numeric-peer")
                 .map(String::as_str),
             Some("5")
+        );
+        assert_eq!(
+            foo.peer_dependencies.get("bool-peer").map(String::as_str),
+            Some("true")
         );
     }
 
@@ -1935,7 +1929,7 @@ __metadata:
     /// from a parsed berry file (berry itself doesn't emit them on
     /// macOS/Linux), so we construct a package with a `file:` source
     /// that contains a backslash directly and assert the output
-    /// escapes it and round-trips through `serde_yaml::from_str`.
+    /// escapes it and round-trips through `yaml_serde::from_str`.
     #[test]
     fn test_write_berry_escapes_resolution_and_header() {
         let mut packages = BTreeMap::new();
@@ -1971,7 +1965,7 @@ __metadata:
 
         // The emitted file must parse as YAML — any missing escape
         // blows up here instead of corrupting a real install.
-        let _doc: serde_yaml::Value = serde_yaml::from_str(&written)
+        let _doc: yaml_serde::Value = yaml_serde::from_str(&written)
             .unwrap_or_else(|e| panic!("berry writer produced malformed YAML: {e}\n{written}"));
     }
 }
