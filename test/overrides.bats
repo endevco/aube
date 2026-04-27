@@ -417,6 +417,32 @@ teardown() {
 	assert_dir_exists node_modules/.aube/is-number@7.0.0
 }
 
+@test "frozen-lockfile accepts version-keyed override that rewrites importer specifier" {
+	# discussion #352: a name+range override (`is-number@<7.0.0` →
+	# `7.0.0`) rewrites the lockfile's importer `specifier:` to the
+	# override target. The frozen check has to apply the same override
+	# to the manifest spec before comparing — otherwise every
+	# subsequent `aube install --frozen-lockfile` reads stale even
+	# though the lockfile is in sync.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "test-overrides",
+		  "version": "1.0.0",
+		  "dependencies": { "is-number": "^6.0.0" },
+		  "overrides": { "is-number@<7.0.0": "7.0.0" }
+		}
+	EOF
+	run aube install --no-frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-number@7.0.0
+
+	# Lockfile is in sync; frozen-lockfile must not report stale.
+	rm -rf node_modules
+	run aube install --frozen-lockfile
+	assert_success
+	assert_dir_exists node_modules/.aube/is-number@7.0.0
+}
+
 @test "changing overrides re-resolves the lockfile on next install" {
 	# First install with no override.
 	cat >package.json <<-'EOF'
