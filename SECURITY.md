@@ -19,7 +19,7 @@ several more available as one-line opt-ins. Full reference:
 | --- | --- | --- |
 | `blockExoticSubdeps` | `true` | Transitive deps from `git+`, `file:`, or raw tarball URLs |
 | `allowBuilds` (deny-by-default) | `true` | Lifecycle scripts running without explicit approval |
-| `trustPolicy = no-downgrade` | `true` | Versions that lost provenance or trusted-publisher evidence |
+| `trustPolicy` | `"no-downgrade"` | Versions that lost provenance or trusted-publisher evidence |
 | `minimumReleaseAge` | `1440` (24h) | Newly published versions before they have aged in the registry |
 | `jailBuilds` | `false` (planned `true` in v2) | Approved scripts with full filesystem / network / env |
 | `paranoid` | `false` | Master switch — forces `jailBuilds`, `trustPolicy=no-downgrade`, `minimumReleaseAgeStrict`, `strictStoreIntegrity`, `strictDepBuilds` |

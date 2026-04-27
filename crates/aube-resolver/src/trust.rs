@@ -128,6 +128,19 @@ pub fn check_no_downgrade(
         return Ok(());
     }
 
+    // Registry doesn't publish `time` at all — local Verdaccio fixtures,
+    // some private mirrors, ancient registry forks. Without per-version
+    // publish times we can't compare evidence chronologically, so skip
+    // the check rather than fail every install. This degrades the
+    // protection but preserves install behavior against compliant
+    // registries (npmjs.org, JSR, modern Verdaccio). Diverges from
+    // pnpm's strict-throw behavior because trustPolicy is default-on
+    // in aube — strict-throw against the long tail of registries that
+    // omit `time` would make aube unusable on first install.
+    if packument.time.is_empty() {
+        return Ok(());
+    }
+
     let Some(picked_time) = packument.time.get(picked_version) else {
         return Err(TrustCheckError::MissingTime(MissingTimeDetails {
             name: packument.name.clone(),
@@ -742,6 +755,34 @@ mod tests {
             result.is_err(),
             "prerelease pick should compare against prior prereleases"
         );
+    }
+
+    /// Registries that don't publish `time` at all (Verdaccio without
+    /// the `--store-info` middleware, private mirrors that strip it,
+    /// old registry forks) must not break every install. Verified by
+    /// constructing a packument with versions but no `time` map.
+    #[test]
+    fn empty_time_map_skips_check() {
+        let p = Packument {
+            name: "foo".to_string(),
+            modified: None,
+            versions: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "1.0.0".to_string(),
+                    with_provenance(version("foo", "1.0.0")),
+                );
+                m.insert("2.0.0".to_string(), version("foo", "2.0.0"));
+                m
+            },
+            dist_tags: BTreeMap::new(),
+            time: BTreeMap::new(), // Empty — registry doesn't ship time at all.
+        };
+        let picked = p.versions.get("2.0.0").unwrap();
+        // Would normally be a downgrade (2.0.0 lost provenance), but
+        // without `time` we can't establish chronology and degrade safely.
+        let result = check_no_downgrade(&p, "2.0.0", picked, &TrustExcludeRules::default(), None);
+        assert!(result.is_ok(), "empty time map should skip the check");
     }
 
     #[test]
