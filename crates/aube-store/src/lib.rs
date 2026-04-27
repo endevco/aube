@@ -1284,8 +1284,14 @@ pub fn git_resolve_ref(url: &str, committish: Option<&str>) -> Result<String, Er
         // by fetching and running `git checkout`, and the resolver
         // promotes the rev-parsed full SHA back into `GitSource`
         // before writing the lockfile (see `resolve_git_source`).
+        //
+        // Lower bound is 7 to stay in lockstep with `git_commit_matches`:
+        // a shorter prefix would clear this gate but then trip the
+        // post-checkout verification with a confusing mismatch error.
+        // 7 is also git's own default `core.abbrev`, so anything users
+        // copy out of a git UI lands at or above the cutoff.
         let looks_hex =
-            want.len() >= 4 && want.len() < 40 && want.chars().all(|c| c.is_ascii_hexdigit());
+            want.len() >= 7 && want.len() < 40 && want.chars().all(|c| c.is_ascii_hexdigit());
         if looks_hex {
             return Ok(want.to_ascii_lowercase());
         }
