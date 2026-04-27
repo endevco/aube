@@ -830,6 +830,108 @@ async fn minimum_release_age_uses_modified_to_skip_full_packument() {
     let _ = std::fs::remove_dir_all(base);
 }
 
+/// Regression: when both `minimumReleaseAge` and `trustPolicy=NoDowngrade`
+/// are active, the corgi-shortcircuit in `Resolver::resolve` must NOT
+/// fire — it would return an abbreviated packument without `time`,
+/// causing the trust check to fail with a spurious
+/// `TrustCheckMissingTime` for every version. Reported by Cursor Bugbot
+/// on PR #333.
+#[tokio::test]
+async fn trust_policy_disables_minimum_release_age_short_circuit() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Two packument bodies sharing one name. The corgi body (served to
+    // requests carrying the corgi Accept header) has `modified` set to
+    // an old timestamp and an empty `time` map — exactly what a real
+    // npmjs.org corgi response looks like. The full body has the same
+    // versions but a populated `time` map. With the bug present,
+    // `minimum_release_age_only` is true, the corgi response satisfies
+    // `modified_allows_short_circuit`, the corgi packument is returned
+    // early, and the trust check fails because `time["1.0.0"]` is
+    // missing. With the fix, `minimum_release_age_only` is forced
+    // false by `trust_policy == NoDowngrade`, the resolver bypasses
+    // the corgi-shortcircuit branch and goes straight to the full
+    // fetch, the trust check sees a populated `time`, finds no prior
+    // versions to compare against, and resolves cleanly.
+    let mut corgi = make_packument("foo", &["1.0.0"], "1.0.0");
+    corgi.modified = Some("2024-01-01T00:00:00.000Z".to_string());
+    let corgi_body = serde_json::to_vec(&corgi).unwrap();
+
+    let mut full = make_packument("foo", &["1.0.0"], "1.0.0");
+    full.modified = Some("2024-01-01T00:00:00.000Z".to_string());
+    full.time
+        .insert("1.0.0".to_string(), "2024-01-01T00:00:00.000Z".to_string());
+    let full_body = serde_json::to_vec(&full).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let registry = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let corgi_body = corgi_body.clone();
+            let full_body = full_body.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0_u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let body = if request.contains("application/vnd.npm.install-v1+json") {
+                    corgi_body
+                } else {
+                    full_body
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            });
+        }
+    });
+
+    let base = std::env::temp_dir().join(format!(
+        "aube-resolver-trust-mra-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(base.join("packuments")).unwrap();
+    std::fs::create_dir_all(base.join("packuments-full")).unwrap();
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(&registry));
+    let policy = crate::DependencyPolicy {
+        trust_policy: crate::TrustPolicy::NoDowngrade,
+        ..crate::DependencyPolicy::default()
+    };
+    let mut resolver = Resolver::new(client)
+        .with_packument_cache(base.join("packuments"))
+        .with_packument_full_cache(base.join("packuments-full"))
+        .with_minimum_release_age(Some(MinimumReleaseAge {
+            minutes: 60,
+            ..Default::default()
+        }))
+        .with_dependency_policy(policy);
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("foo".to_string(), "1.0.0".to_string());
+
+    let result = resolver.resolve(&manifest, None).await;
+    assert!(
+        !matches!(result, Err(Error::TrustCheckMissingTime(_))),
+        "shortcircuit must be suppressed when trustPolicy=NoDowngrade — got {result:?}"
+    );
+    let graph = result.expect("clean resolve");
+    assert!(graph_has_package(&graph, "foo", "1.0.0"));
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(base);
+}
+
 #[tokio::test]
 async fn trust_policy_no_downgrade_blocks_downgraded_install() {
     use aube_registry::Attestations;

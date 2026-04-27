@@ -148,8 +148,17 @@ impl Resolver {
             || self.minimum_release_age.is_some()
             || self.dependency_policy.trust_policy == crate::TrustPolicy::NoDowngrade)
             && !self.registry_supports_time_field;
-        let minimum_release_age_only =
-            self.resolution_mode != ResolutionMode::TimeBased && self.minimum_release_age.is_some();
+        // Gate for the corgi-shortcircuit at L219-235: when the only
+        // reason we need `time` is `minimumReleaseAge` AND the
+        // packument's top-level `modified` predates the cutoff, every
+        // version is old enough so we can skip the full-packument
+        // fetch. trustPolicy=NoDowngrade adds a second time requirement
+        // (per-version compare), so the shortcircuit must NOT fire when
+        // it's on — otherwise the trust check falls through to a
+        // spurious TrustCheckMissingTime on every version.
+        let minimum_release_age_only = self.resolution_mode != ResolutionMode::TimeBased
+            && self.minimum_release_age.is_some()
+            && self.dependency_policy.trust_policy != crate::TrustPolicy::NoDowngrade;
         // In-flight packument fetches. The spawned task returns the
         // `(name, packument)` tuple so `join_next` gives us back the
         // identity of whichever fetch landed next without a side
