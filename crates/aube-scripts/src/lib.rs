@@ -14,9 +14,11 @@
 
 pub mod policy;
 
-pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError};
+pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError, pattern_matches};
 
 use aube_manifest::PackageJson;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Settings that affect every package-script shell aube spawns.
@@ -26,6 +28,70 @@ pub struct ScriptSettings {
     pub script_shell: Option<PathBuf>,
     pub unsafe_perm: Option<bool>,
     pub shell_emulator: bool,
+}
+
+/// Native build jail applied to dependency lifecycle scripts.
+#[derive(Debug, Clone)]
+pub struct ScriptJail {
+    pub package_dir: PathBuf,
+    pub env: Vec<String>,
+    pub read_paths: Vec<PathBuf>,
+    pub write_paths: Vec<PathBuf>,
+    pub network: bool,
+}
+
+impl ScriptJail {
+    pub fn new(package_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            package_dir: package_dir.into(),
+            env: Vec::new(),
+            read_paths: Vec::new(),
+            write_paths: Vec::new(),
+            network: false,
+        }
+    }
+
+    pub fn with_env(mut self, env: impl IntoIterator<Item = String>) -> Self {
+        self.env = env.into_iter().collect();
+        self
+    }
+
+    pub fn with_read_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.read_paths = paths.into_iter().collect();
+        self
+    }
+
+    pub fn with_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.write_paths = paths.into_iter().collect();
+        self
+    }
+
+    pub fn with_network(mut self, network: bool) -> Self {
+        self.network = network;
+        self
+    }
+}
+
+pub struct ScriptJailHomeCleanup {
+    path: PathBuf,
+}
+
+impl ScriptJailHomeCleanup {
+    pub fn new(jail: &ScriptJail) -> Self {
+        Self {
+            path: jail_home(&jail.package_dir),
+        }
+    }
+}
+
+impl Drop for ScriptJailHomeCleanup {
+    fn drop(&mut self) {
+        if self.path.exists()
+            && let Err(err) = std::fs::remove_dir_all(&self.path)
+        {
+            tracing::debug!("failed to clean jail HOME {}: {err}", self.path.display());
+        }
+    }
 }
 
 static SCRIPT_SETTINGS: std::sync::OnceLock<std::sync::RwLock<ScriptSettings>> =
@@ -81,6 +147,13 @@ pub fn prepend_path(bin_dir: &Path) -> std::ffi::OsString {
 /// `@npmcli/run-script` and `node-cross-spawn` use.
 pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
     let settings = script_settings();
+    spawn_shell_with_settings(script_cmd, &settings)
+}
+
+fn spawn_shell_with_settings(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+) -> tokio::process::Command {
     #[cfg(unix)]
     {
         let mut cmd = tokio::process::Command::new(
@@ -90,7 +163,7 @@ pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
                 .unwrap_or_else(|| Path::new("sh")),
         );
         cmd.arg("-c").arg(script_cmd);
-        apply_script_settings_env(&mut cmd, &settings);
+        apply_script_settings_env(&mut cmd, settings);
         cmd
     }
     #[cfg(windows)]
@@ -113,6 +186,91 @@ pub fn spawn_shell(script_cmd: &str) -> tokio::process::Command {
         apply_script_settings_env(&mut cmd, &settings);
         cmd
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sbpl_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "macos")]
+fn push_write_rule(rules: &mut Vec<String>, path: &Path) {
+    let path = sbpl_escape(&path.to_string_lossy());
+    let rule = format!("(allow file-write* (subpath \"{path}\"))");
+    if !rules.iter().any(|existing| existing == &rule) {
+        rules.push(rule);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn jail_profile(jail: &ScriptJail, home: &Path) -> String {
+    let mut rules = vec![
+        "(version 1)".to_string(),
+        "(allow default)".to_string(),
+        "(allow network* (local unix))".to_string(),
+        "(deny file-write*)".to_string(),
+    ];
+    if !jail.network {
+        rules.insert(2, "(deny network*)".to_string());
+    }
+
+    for path in [
+        Path::new("/tmp"),
+        Path::new("/private/tmp"),
+        Path::new("/dev"),
+    ] {
+        push_write_rule(&mut rules, path);
+    }
+    for path in [&jail.package_dir, home] {
+        push_write_rule(&mut rules, path);
+    }
+    for path in &jail.write_paths {
+        push_write_rule(&mut rules, path);
+    }
+    for path in [&jail.package_dir, home] {
+        if let Ok(canonical) = path.canonicalize() {
+            push_write_rule(&mut rules, &canonical);
+        }
+    }
+    for path in &jail.write_paths {
+        if let Ok(canonical) = path.canonicalize() {
+            push_write_rule(&mut rules, &canonical);
+        }
+    }
+    rules.join("\n")
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_jailed_shell(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+    jail: &ScriptJail,
+    home: &Path,
+) -> tokio::process::Command {
+    let shell = settings
+        .script_shell
+        .as_deref()
+        .unwrap_or_else(|| Path::new("sh"));
+    let profile = jail_profile(jail, home);
+    let mut cmd = tokio::process::Command::new("sandbox-exec");
+    cmd.arg("-p")
+        .arg(profile)
+        .arg("--")
+        .arg(shell)
+        .arg("-c")
+        .arg(script_cmd);
+    apply_script_settings_env(&mut cmd, settings);
+    cmd
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_jailed_shell(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+    _jail: &ScriptJail,
+    _home: &Path,
+) -> tokio::process::Command {
+    spawn_shell_with_settings(script_cmd, settings)
 }
 
 /// Shell-quote one arg for safe splicing into a shell command line.
@@ -248,6 +406,96 @@ fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &Scrip
     }
 }
 
+fn safe_jail_env_key(key: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "PATH",
+        "HOME",
+        "TERM",
+        "LANG",
+        "LC_ALL",
+        "INIT_CWD",
+        "npm_lifecycle_event",
+        "npm_package_name",
+        "npm_package_version",
+    ];
+    if EXACT.contains(&key) {
+        return true;
+    }
+    let lower = key.to_ascii_lowercase();
+    if lower.contains("token")
+        || lower.contains("auth")
+        || lower.contains("password")
+        || lower.contains("credential")
+        || lower.contains("secret")
+    {
+        return false;
+    }
+    key.starts_with("npm_config_")
+}
+
+fn inherit_jail_env_key(key: &str, extra_env: &[String]) -> bool {
+    (safe_jail_env_key(key) || extra_env.iter().any(|env| env == key))
+        && !matches!(
+            key,
+            "PATH" | "HOME" | "npm_lifecycle_event" | "npm_package_name" | "npm_package_version"
+        )
+}
+
+fn jail_home(package_dir: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    package_dir.hash(&mut hasher);
+    let hash = hasher.finish();
+    let name = package_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("package")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    std::env::temp_dir()
+        .join("aube-jail")
+        .join(std::process::id().to_string())
+        .join(format!("{name}-{hash:016x}"))
+}
+
+fn apply_jail_env(
+    cmd: &mut tokio::process::Command,
+    path_env: &std::ffi::OsStr,
+    home: &Path,
+    project_root: &Path,
+    manifest: &PackageJson,
+    script_name: &str,
+    extra_env: &[String],
+) {
+    cmd.env_clear();
+    cmd.env("PATH", path_env)
+        .env("HOME", home)
+        .env("npm_lifecycle_event", script_name);
+    if std::env::var_os("INIT_CWD").is_none() {
+        cmd.env("INIT_CWD", project_root);
+    }
+    if let Some(ref name) = manifest.name {
+        cmd.env("npm_package_name", name);
+    }
+    if let Some(ref version) = manifest.version {
+        cmd.env("npm_package_version", version);
+    }
+    for (key, val) in std::env::vars_os() {
+        let Some(key_str) = key.to_str() else {
+            continue;
+        };
+        if inherit_jail_env_key(key_str, extra_env) {
+            cmd.env(key, val);
+        }
+    }
+}
+
 /// Lifecycle hooks that `aube install` runs against the root package's
 /// `scripts` field, in this order: `preinstall` → (dependencies link) →
 /// `install` → `postinstall` → `prepare`. Matches pnpm / npm.
@@ -347,6 +595,7 @@ pub fn child_stderr() -> std::process::Stdio {
 /// Inherits stdio from the parent so the user sees script output live.
 /// Returns Err on non-zero exit so install fails fast if a lifecycle
 /// script breaks, matching pnpm.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_script(
     script_dir: &Path,
     project_root: &Path,
@@ -355,6 +604,7 @@ pub async fn run_script(
     script_name: &str,
     script_cmd: &str,
     extra_bin_dirs: &[&Path],
+    jail: Option<&ScriptJail>,
 ) -> Result<(), Error> {
     // PATH prepends (most-local-first): `extra_bin_dirs` in caller
     // order, then the project root's `<modules_dir>/.bin`. For root
@@ -373,7 +623,16 @@ pub async fn run_script(
     entries.extend(std::env::split_paths(&path));
     let new_path = std::env::join_paths(entries).unwrap_or(path);
 
-    let mut cmd = spawn_shell(script_cmd);
+    let settings = script_settings();
+    let jail_home = jail.map(|j| jail_home(&j.package_dir));
+    if let Some(home) = &jail_home {
+        std::fs::create_dir_all(home)
+            .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+    }
+    let mut cmd = match (jail, jail_home.as_deref()) {
+        (Some(jail), Some(home)) => spawn_jailed_shell(script_cmd, &settings, jail, home),
+        _ => spawn_shell_with_settings(script_cmd, &settings),
+    };
     cmd.current_dir(script_dir)
         .stderr(child_stderr())
         .env("PATH", &new_path)
@@ -394,6 +653,18 @@ pub async fn run_script(
     }
     if let Some(ref version) = manifest.version {
         cmd.env("npm_package_version", version);
+    }
+    if let (Some(jail), Some(home)) = (jail, jail_home.as_deref()) {
+        apply_jail_env(
+            &mut cmd,
+            &new_path,
+            home,
+            project_root,
+            manifest,
+            script_name,
+            &jail.env,
+        );
+        apply_script_settings_env(&mut cmd, &settings);
     }
 
     tracing::debug!("lifecycle: {script_name} → {script_cmd}");
@@ -449,6 +720,7 @@ pub async fn run_root_script_by_name(
         name,
         script_cmd,
         &[],
+        None,
     )
     .await?;
     Ok(true)
@@ -535,6 +807,7 @@ pub fn has_dep_lifecycle_work(package_dir: &Path, manifest: &PackageJson) -> boo
 ///
 /// The caller is responsible for gating on `BuildPolicy` and
 /// `--ignore-scripts`. Returns `Ok(false)` if the hook wasn't defined.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_dep_hook(
     package_dir: &Path,
     dep_modules_dir: &Path,
@@ -543,6 +816,7 @@ pub async fn run_dep_hook(
     manifest: &PackageJson,
     hook: LifecycleHook,
     tool_bin_dirs: &[&Path],
+    jail: Option<&ScriptJail>,
 ) -> Result<bool, Error> {
     let name = hook.script_name();
     let script_cmd: &str = match manifest.scripts.get(name) {
@@ -567,6 +841,7 @@ pub async fn run_dep_hook(
         name,
         script_cmd,
         &bin_dirs,
+        jail,
     )
     .await?;
     Ok(true)
@@ -578,6 +853,112 @@ pub enum Error {
     Spawn(String, String),
     #[error("script `{script}` exited with code {code:?}")]
     NonZeroExit { script: String, code: Option<i32> },
+}
+
+#[cfg(test)]
+mod jail_tests {
+    use super::*;
+
+    #[test]
+    fn jail_home_uses_full_package_path() {
+        let a = jail_home(Path::new("/tmp/project/node_modules/@scope-a/native"));
+        let b = jail_home(Path::new("/tmp/project/node_modules/@scope-b/native"));
+
+        assert_ne!(a, b);
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("native-")
+        );
+        assert!(
+            b.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("native-")
+        );
+    }
+
+    #[test]
+    fn jail_home_cleanup_removes_temp_home() {
+        let package_dir = std::env::temp_dir()
+            .join("aube-jail-cleanup-test")
+            .join(std::process::id().to_string())
+            .join("node_modules")
+            .join("native");
+        let jail = ScriptJail::new(&package_dir);
+        let home = jail_home(&package_dir);
+        std::fs::create_dir_all(home.join(".cache")).unwrap();
+        std::fs::write(home.join(".cache").join("marker"), "x").unwrap();
+
+        {
+            let _cleanup = ScriptJailHomeCleanup::new(&jail);
+        }
+
+        assert!(!home.exists());
+    }
+
+    #[test]
+    fn parent_env_cannot_override_explicit_jail_metadata() {
+        for key in [
+            "PATH",
+            "HOME",
+            "npm_lifecycle_event",
+            "npm_package_name",
+            "npm_package_version",
+        ] {
+            assert!(!inherit_jail_env_key(key, &[]));
+        }
+        assert!(inherit_jail_env_key("INIT_CWD", &[]));
+        assert!(inherit_jail_env_key("npm_config_arch", &[]));
+        assert!(!inherit_jail_env_key("npm_config__authToken", &[]));
+        assert!(inherit_jail_env_key(
+            "SHARP_DIST_BASE_URL",
+            &["SHARP_DIST_BASE_URL".to_string()]
+        ));
+    }
+
+    #[test]
+    fn jail_env_preserves_script_settings_after_clear() {
+        let mut cmd = tokio::process::Command::new("node");
+        let manifest = PackageJson {
+            name: Some("pkg".to_string()),
+            version: Some("1.2.3".to_string()),
+            ..Default::default()
+        };
+        let settings = ScriptSettings {
+            node_options: Some("--conditions=aube".to_string()),
+            unsafe_perm: Some(false),
+            shell_emulator: true,
+            ..Default::default()
+        };
+
+        apply_jail_env(
+            &mut cmd,
+            std::ffi::OsStr::new("/bin"),
+            Path::new("/tmp/aube-jail/home"),
+            Path::new("/tmp/project"),
+            &manifest,
+            "postinstall",
+            &[],
+        );
+        apply_script_settings_env(&mut cmd, &settings);
+
+        let envs = cmd.as_std().get_envs().collect::<Vec<_>>();
+        let env = |name: &str| {
+            envs.iter()
+                .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+                .and_then(|(_, val)| *val)
+                .and_then(|val| val.to_str())
+        };
+
+        assert_eq!(env("NODE_OPTIONS"), Some("--conditions=aube"));
+        assert_eq!(env("npm_config_unsafe_perm"), Some("false"));
+        assert_eq!(env("npm_config_shell_emulator"), Some("true"));
+        assert_eq!(env("npm_lifecycle_event"), Some("postinstall"));
+        assert_eq!(env("npm_package_name"), Some("pkg"));
+        assert_eq!(env("npm_package_version"), Some("1.2.3"));
+    }
 }
 
 #[cfg(all(test, windows))]

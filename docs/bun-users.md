@@ -53,6 +53,8 @@ future installs keep writing `aube-lock.yaml`.
   `aube approve-builds` writes new entries into
   `pnpm-workspace.yaml`'s `onlyBuiltDependencies`; a package in
   `pnpm.neverBuiltDependencies` is denied even if it appears in
-  `trustedDependencies`.
+  `trustedDependencies`. Approved dependency builds can also run in a
+  [jail](/package-manager/jailed-builds) with package-specific env, path,
+  and network permissions.
 
 Reference: [bun install](https://bun.sh/docs/cli/install)

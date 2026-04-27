@@ -128,6 +128,168 @@ JSON
 	assert_output "ran:aube-test-builds-marker@1.0.0"
 }
 
+@test "jailBuilds runs approved dep scripts with a scrubbed env and temp HOME" {
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-env-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-jailed-build": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-jailed-build"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+YAML
+	AUBE_AUTH_TOKEN=aube-secret NPM_TOKEN=npm-secret NODE_AUTH_TOKEN=node-secret GITHUB_TOKEN=gh-secret run aube install
+	assert_success
+	assert_file_not_exists jail-package-marker.txt
+	run find -L node_modules -name jail-package-marker.txt -type f
+	assert_success
+	assert_output --partial "jail-package-marker.txt"
+	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
+	assert_success
+	assert_output --partial "name=aube-test-jailed-build"
+	assert_output --partial "aube-jail"
+	home_path="$(printf '%s\n' "$output" | sed -n 's/^home=//p')"
+	[ -n "$home_path" ]
+	[ ! -d "$home_path" ]
+}
+
+@test "jailBuildExclusions glob lets matching packages opt out of jailBuilds" {
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-disable-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-jailed-build": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-jailed-build"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+jailBuildExclusions:
+  - aube-test-*
+YAML
+	run aube install
+	assert_success
+	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
+	assert_success
+	refute_output --partial "aube-jail"
+}
+
+@test "invalid jailBuildPermissions glob warns once before dep scripts run" {
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-invalid-permissions-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-jailed-build": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-jailed-build"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+jailBuildPermissions:
+  "aube-test-*@1.0.0":
+    env:
+      - SHARP_DIST_BASE_URL
+YAML
+	run aube install
+	assert_success
+	assert_output --partial "warn: jailBuildPermissions:"
+	warning_count="$(printf '%s\n' "$output" | grep -c "warn: jailBuildPermissions:")"
+	[ "$warning_count" -eq 1 ]
+	refute_output --partial "warn: jailBuildExclusions:"
+	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
+	assert_success
+	assert_output --partial "aube-jail"
+}
+
+@test "jailBuilds prevents dep scripts from writing to INIT_CWD on macOS" {
+	if [ "$(uname -s)" != "Darwin" ]; then
+		skip "native build jail filesystem enforcement is macOS-only today"
+	fi
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-write-deny-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-builds-marker"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+YAML
+	run aube install
+	assert_failure
+	assert_file_not_exists aube-builds-marker.txt
+}
+
+@test "jailBuildPermissions glob can grant matching packages write access on macOS" {
+	if [ "$(uname -s)" != "Darwin" ]; then
+		skip "native build jail filesystem enforcement is macOS-only today"
+	fi
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-write-grant-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-builds-marker"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+jailBuildPermissions:
+  aube-test-*:
+    write:
+      - "."
+YAML
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+}
+
+@test "jailBuilds denies dep script network sockets on macOS" {
+	if [ "$(uname -s)" != "Darwin" ]; then
+		skip "native build jail network enforcement is macOS-only today"
+	fi
+	cat >package.json <<'JSON'
+{
+  "name": "jail-builds-network-deny-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-jail-network": "^1.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["aube-test-jail-network"]
+  }
+}
+JSON
+	cat >aube-workspace.yaml <<'YAML'
+jailBuilds: true
+YAML
+	run aube install
+	assert_success
+}
+
 @test "top-level trustedDependencies (bun format) allows a dep script" {
 	cat >package.json <<'JSON'
 {

@@ -22,7 +22,7 @@ use bin_linking::{link_bin_entries, link_bins, link_bins_for_dep};
 pub use dep_selection::DepSelection;
 pub use frozen::{FrozenMode, FrozenOverride, GlobalVirtualStoreFlags};
 use git_prepare::{prepare_scratch_copy, run_git_dep_prepare};
-pub(crate) use lifecycle::{build_policy_from_sources, run_dep_lifecycle_scripts};
+pub(crate) use lifecycle::{JailBuildPolicy, build_policy_from_sources, run_dep_lifecycle_scripts};
 use lifecycle::{
     import_verified_tarball, resolve_link_strategy, run_root_lifecycle, unreviewed_dep_builds,
     validate_required_scripts,
@@ -2949,6 +2949,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // `run_dep_lifecycle_scripts` so a malformed config can't wedge
     // the install.
     let child_concurrency = aube_settings::resolved::child_concurrency(&settings_ctx) as usize;
+    let (jail_policy, jail_policy_warnings) =
+        JailBuildPolicy::from_settings(&settings_ctx, &ws_config_shared);
     let node_version_override = aube_settings::resolved::node_version(&settings_ctx);
     let node_version = crate::engines::resolve_node_version(node_version_override.as_deref());
     crate::engines::run_checks(
@@ -2974,6 +2976,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // output across bar frames. Route through safe_eprintln which
     // pauses the bar and holds the terminal lock for atomic output.
     for w in &policy_warnings {
+        crate::progress::safe_eprintln(&format!("warn: {w}"));
+    }
+    for w in &jail_policy_warnings {
         crate::progress::safe_eprintln(&format!("warn: {w}"));
     }
 
@@ -3347,6 +3352,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             child_concurrency,
             placements_ref,
             side_effects_cache,
+            &jail_policy,
         )
         .await?;
         if ran > 0 {

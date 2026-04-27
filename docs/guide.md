@@ -24,6 +24,9 @@ Existing projects keep their lockfile format. aube reads and writes
 - [Install dependencies](/package-manager/install) covers explicit install
   work: setup-only installs, CI mode, production installs, offline installs,
   and lockfile modes.
+- [Lifecycle scripts](/package-manager/lifecycle-scripts) and
+  [Jailed builds](/package-manager/jailed-builds) cover dependency build
+  approval, jailed execution, and package-specific jail permissions.
 - [Manage dependencies](/package-manager/dependencies) covers `add`, `remove`,
   `update`, `dedupe`, and `prune`.
 - [Workspaces](/package-manager/workspaces) covers `aube-workspace.yaml`,
@@ -39,7 +42,7 @@ aube has the same CLI, config, and internals that pnpm v11 does.
 - `workspace:`, `link:`, `file:`, git, tarball URL, npm alias, and catalog
   dependency specifiers.
 - Root lifecycle scripts, with dependency lifecycle scripts gated by an
-  explicit allowlist.
+  explicit allowlist and optional jailed execution.
 
 aube uses its own internal directory names: `node_modules/.aube/` for the
 virtual store and `$XDG_DATA_HOME/aube/store/` (defaulting to

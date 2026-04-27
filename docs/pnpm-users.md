@@ -80,7 +80,9 @@ projects).
   aube-named variant.
 - **Build approvals.** Dependency lifecycle script approval follows pnpm
   v11's allowlist model. Use explicit policy fields in `package.json` or
-  `aube-workspace.yaml` to opt in.
+  `aube-workspace.yaml` to opt in. aube can also run approved dependency
+  builds in a [jail](/package-manager/jailed-builds) with package glob
+  permissions for env, path, and network exceptions.
 - **Speed.** See the [benchmarks](/benchmarks).
 
 ## Supported pnpm lockfile versions

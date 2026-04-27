@@ -152,6 +152,29 @@ impl BuildPolicy {
         )
     }
 
+    /// Build an allow-all policy with explicit package-pattern denies.
+    pub fn denylist(denied_patterns: &[String]) -> (Self, Vec<BuildPolicyError>) {
+        let mut denied = HashSet::new();
+        let mut denied_wildcards = Vec::new();
+        let mut warnings = Vec::new();
+        for pattern in denied_patterns {
+            match expand_spec(pattern) {
+                Ok(expanded) => sort_entries(expanded, &mut denied, &mut denied_wildcards),
+                Err(e) => warnings.push(e),
+            }
+        }
+        (
+            Self {
+                allow_all: true,
+                allowed: HashSet::new(),
+                denied,
+                allowed_wildcards: Vec::new(),
+                denied_wildcards,
+            },
+            warnings,
+        )
+    }
+
     /// Decide whether `(name, version)` may run lifecycle scripts.
     /// Explicit denies always win over allows (mirrors pnpm).
     pub fn decide(&self, name: &str, version: &str) -> AllowDecision {
@@ -180,6 +203,21 @@ impl BuildPolicy {
     pub fn has_any_allow_rule(&self) -> bool {
         self.allow_all || !self.allowed.is_empty() || !self.allowed_wildcards.is_empty()
     }
+}
+
+/// True when a package-pattern entry matches `(name, version)`.
+pub fn pattern_matches(pattern: &str, name: &str, version: &str) -> Result<bool, BuildPolicyError> {
+    let with_version = format!("{name}@{version}");
+    for expanded in expand_spec(pattern)? {
+        if expanded.contains('*') {
+            if matches_wildcard(name, &expanded) {
+                return Ok(true);
+            }
+        } else if expanded == name || expanded == with_version {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Split one entry list from `expand_spec` across the exact-match set
@@ -251,11 +289,11 @@ fn matches_wildcard(name: &str, pattern: &str) -> bool {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum BuildPolicyError {
-    #[error("allowBuilds entry {pattern:?} has unsupported value {raw:?}: expected true/false")]
+    #[error("build policy entry {pattern:?} has unsupported value {raw:?}: expected true/false")]
     UnsupportedValue { pattern: String, raw: String },
-    #[error("allowBuilds pattern {0:?} contains an invalid version union")]
+    #[error("build policy pattern {0:?} contains an invalid version union")]
     InvalidVersionUnion(String),
-    #[error("allowBuilds pattern {0:?} mixes a wildcard name with a version union")]
+    #[error("build policy pattern {0:?} mixes a wildcard name with a version union")]
     WildcardWithVersion(String),
 }
 
@@ -363,6 +401,15 @@ mod tests {
     fn scoped_bare_name() {
         let p = policy(&[("@swc/core", true)]);
         assert_eq!(p.decide("@swc/core", "1.3.0"), AllowDecision::Allow);
+    }
+
+    #[test]
+    fn pattern_matches_scoped_names_and_versions() {
+        assert!(pattern_matches("@swc/core", "@swc/core", "1.3.0").unwrap());
+        assert!(pattern_matches("@swc/core@1.3.0", "@swc/core", "1.3.0").unwrap());
+        assert!(!pattern_matches("@swc/core@1.3.0", "@swc/core", "1.3.1").unwrap());
+        assert!(pattern_matches("@swc/*", "@swc/core", "1.3.0").unwrap());
+        assert!(pattern_matches("aube-test-*", "aube-test-native", "1.0.0").unwrap());
     }
 
     #[test]

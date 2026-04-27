@@ -66,6 +66,46 @@ with a version pin — the point of a version pin is to assert a
 specific build was audited, and a wildcard defeats that. Semver
 ranges aren't supported for the same reason.
 
+## Jailed dependency builds
+
+Build approval controls whether a dependency script may run at all. Jailed
+builds add a second boundary for approved packages:
+
+```yaml
+jailBuilds: true
+```
+
+With `jailBuilds` enabled, approved dependency `preinstall`, `install`, and
+`postinstall` scripts run with a scrubbed environment and a temporary `HOME`.
+On macOS, aube also applies a native Seatbelt profile that denies network
+access and restricts filesystem writes to the package directory and temporary
+directories.
+
+`jailBuilds` defaults to `false` today and is planned to default to `true` in
+the next major version.
+
+For packages that need a narrow exception, grant only that privilege:
+
+```yaml
+jailBuildPermissions:
+  "@vendor/*":
+    env:
+      - SHARP_DIST_BASE_URL
+    write:
+      - ~/.cache/sharp
+```
+
+For packages that cannot run in the jail yet, disable the jail for a package
+glob while keeping the build approval requirement:
+
+```yaml
+jailBuildExclusions:
+  - "@legacy-native/*"
+```
+
+See [Jailed builds](/package-manager/jailed-builds) for the full profile,
+supported permissions, and platform behavior.
+
 ## Git dependencies
 
 Git dependencies with `prepare` scripts get a nested install in the clone

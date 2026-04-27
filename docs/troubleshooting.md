@@ -51,6 +51,31 @@ aube rebuild
 Use `--dangerously-allow-all-builds` only for a local diagnostic run. Do not use
 it as a permanent CI default.
 
+## A jailed dependency build needs more access
+
+If `jailBuilds` is enabled and an approved dependency build fails only inside
+the jail, keep the jail on and grant the narrow permission the package needs:
+
+```yaml
+jailBuildPermissions:
+  "@vendor/*":
+    env:
+      - SOME_BUILD_FLAG
+    write:
+      - ~/.cache/vendor
+```
+
+If the package cannot run in the jail yet, disable the jail for that package
+glob without bypassing build approval:
+
+```yaml
+jailBuildExclusions:
+  - "@legacy-native/*"
+```
+
+See [Jailed builds](/package-manager/jailed-builds) for the default profile and
+supported permission keys.
+
 ## A lockfile format is unsupported
 
 aube reads and writes the current supported lockfile formats listed on the

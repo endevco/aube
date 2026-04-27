@@ -52,3 +52,6 @@ instead of `aube dlx cowsay hi`.
   catalogs, workspace dependencies, and deploys.
 - [Lifecycle scripts](/package-manager/lifecycle-scripts) explains the
   dependency script allowlist model.
+- [Jailed builds](/package-manager/jailed-builds) explains how to run
+  approved dependency scripts with restricted environment, filesystem, and
+  network access.

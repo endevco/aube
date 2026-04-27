@@ -17,6 +17,20 @@ fn find_and_read(project_dir: &Path) -> Result<Option<(PathBuf, String)>, crate:
     Ok(None)
 }
 
+/// Extra privileges granted to one package pattern under `jailBuilds`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JailBuildPermission {
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
+    #[serde(default)]
+    pub network: bool,
+}
+
 /// Configuration from `pnpm-workspace.yaml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -305,6 +319,22 @@ pub struct WorkspaceConfig {
     /// aube skips dep lifecycle scripts by default.
     #[serde(default, rename = "sideEffectsCache")]
     pub side_effects_cache: Option<bool>,
+
+    /// Run approved dependency lifecycle scripts in a restricted build
+    /// jail. Same typed/raw duality as `child_concurrency`.
+    #[serde(default, rename = "jailBuilds")]
+    pub jail_builds: Option<bool>,
+
+    /// Dependency package patterns that should run outside the jail even
+    /// when `jailBuilds` is enabled. Same typed/raw duality as
+    /// `child_concurrency`.
+    #[serde(default, rename = "jailBuildExclusions")]
+    pub jail_build_exclusions: Vec<String>,
+
+    /// Extra env/path/network grants for packages that still run in the
+    /// jail. Keys use the same package-pattern syntax as `allowBuilds`.
+    #[serde(default, rename = "jailBuildPermissions")]
+    pub jail_build_permissions: BTreeMap<String, JailBuildPermission>,
 
     // -- Catalog Settings --
     /// Drop catalog entries that no importer references after resolve.

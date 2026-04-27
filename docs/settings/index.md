@@ -93,6 +93,9 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`childConcurrency`](#setting-childconcurrency) | `int` | Maximum number of concurrent script-executing child processes. |
 | [`sideEffectsCache`](#setting-sideeffectscache) | `bool` | Cache the results of install hooks. |
 | [`sideEffectsCacheReadonly`](#setting-sideeffectscachereadonly) | `bool` | Only read from the side-effects cache; don't write. |
+| [`jailBuilds`](#setting-jailbuilds) | `bool` | Run approved dependency lifecycle scripts in a restricted build jail. |
+| [`jailBuildExclusions`](#setting-jailbuildexclusions) | `list<string>` | Exclude specific dependency packages from jailed builds. |
+| [`jailBuildPermissions`](#setting-jailbuildpermissions) | `object` | Grant package-specific privileges inside jailed builds. |
 | [`unsafePerm`](#setting-unsafeperm) | `bool` | Drop to a non-root user when running scripts as root. |
 | [`nodeOptions`](#setting-nodeoptions) | `string` | Options passed to Node.js via NODE_OPTIONS. |
 | [`verifyDepsBeforeRun`](#setting-verifydepsbeforerun) | `"install" \| "warn" \| "error" \| "prompt" \| false` | Check dependencies before running scripts. |
@@ -1669,6 +1672,79 @@ Only read from the side-effects cache; don't write.
 
 When true, aube may restore allowlisted dependency build output from the
 side-effects cache but will not write new cache entries after scripts run.
+
+### `jailBuilds` {#setting-jailbuilds}
+
+Run approved dependency lifecycle scripts in a restricted build jail.
+
+- Type: `bool`
+- Default: `false`
+- Environment: `npm_config_jail_builds`, `NPM_CONFIG_JAIL_BUILDS`, `AUBE_JAIL_BUILDS`
+- .npmrc keys: `jail-builds`, `jailBuilds`
+- Workspace YAML keys: `jailBuilds`
+
+When enabled, dependency lifecycle scripts that pass the active
+`allowBuilds` / `onlyBuiltDependencies` policy run with a scrubbed
+environment and temporary HOME. On macOS, aube also wraps the script
+with a native Seatbelt profile that denies network access and limits
+filesystem writes to the package directory and temporary directories.
+Root lifecycle scripts are not jailed.
+
+This defaults to `false` today and is planned to default to `true` in
+the next major version.
+
+Examples:
+
+- `jail-builds=true`
+
+### `jailBuildExclusions` {#setting-jailbuildexclusions}
+
+Exclude specific dependency packages from jailed builds.
+
+- Type: `list<string>`
+- Default: `[]`
+- Environment: `npm_config_jail_build_exclusions`, `NPM_CONFIG_JAIL_BUILD_EXCLUSIONS`, `AUBE_JAIL_BUILD_EXCLUSIONS`
+- .npmrc keys: `jailBuildExclusions`, `jail-build-exclusions`
+- Workspace YAML keys: `jailBuildExclusions`
+
+Package patterns in this list still follow the active `allowBuilds` /
+`onlyBuiltDependencies` policy, but run outside the build jail when
+`jailBuilds` is enabled. Use this for reviewed native packages whose
+install scripts need network access, shared caches, or filesystem
+writes outside the restricted jail profile.
+
+Patterns use the same forms as `neverBuiltDependencies`: bare package
+names, exact `name@version` pins, exact version unions, and `*`
+wildcards such as `@scope/*`. Explicit jail exclusions win over the
+global `jailBuilds=true` setting.
+
+Examples:
+
+- `jailBuildExclusions: ["sharp", "@vendor/*"]`
+
+### `jailBuildPermissions` {#setting-jailbuildpermissions}
+
+Grant package-specific privileges inside jailed builds.
+
+- Type: `object`
+- Default: `undefined`
+- Workspace YAML keys: `jailBuildPermissions`
+
+Package-pattern map of extra privileges for approved dependency scripts
+that still run inside the build jail. Keys use the same package glob
+forms as `allowBuilds` (`sharp`, `@scope/*`, `*-native`,
+`pkg@1.2.3 || 1.2.4`). Values may grant specific environment variables,
+extra readable paths, extra writable paths, or network access.
+
+`env` entries are exact variable names inherited from the parent process.
+Use this sparingly: explicit env grants can expose secrets. `write` entries
+are added to the macOS Seatbelt write allowlist today. `read` entries are
+accepted now and reserved for the stricter read-deny profile; reads are
+currently unrestricted.
+
+Examples:
+
+- `jailBuildPermissions: { sharp: { env: ["SHARP_DIST_BASE_URL"], write: ["~/.cache/sharp"] } }`
 
 ### `unsafePerm` {#setting-unsafeperm}
 

@@ -44,7 +44,9 @@ installs keep writing `aube-lock.yaml`.
   not run by default. npm runs them for every dependency; aube runs them
   only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
   `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
-  the pnpm v11 model.
+  the pnpm v11 model. Approved dependency builds can also run in a
+  [jail](/package-manager/jailed-builds) with package-specific env, path,
+  and network permissions.
 - Global installs live under aube's global package directory instead of npm's
   shared global `node_modules`.
 

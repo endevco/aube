@@ -68,7 +68,9 @@ can drop in against the same `yarn.lock`.
   not run by default. Yarn runs them for every dependency; aube runs them
   only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
   `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
-  the pnpm v11 model.
+  the pnpm v11 model. Approved dependency builds can also run in a
+  [jail](/package-manager/jailed-builds) with package-specific env, path,
+  and network permissions.
 
 References:
 [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)

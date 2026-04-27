@@ -1,6 +1,6 @@
 pub mod workspace;
 
-pub use workspace::WorkspaceConfig;
+pub use workspace::{JailBuildPermission, WorkspaceConfig};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
