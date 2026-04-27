@@ -74,10 +74,15 @@ pub struct PackageExtension {
     pub peer_dependencies_meta: BTreeMap<String, aube_registry::PeerDepMeta>,
 }
 
+/// Default is `NoDowngrade` to match the user-facing default in
+/// `crates/aube-settings/settings.toml`. The install command overrides
+/// this from the resolved settings anyway, but library consumers
+/// constructing a `Resolver` via [`Resolver::new`] inherit the
+/// documented default behavior without extra plumbing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TrustPolicy {
-    NoDowngrade,
     #[default]
+    NoDowngrade,
     Off,
 }
 
