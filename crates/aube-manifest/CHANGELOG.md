@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/endevco/aube/compare/aube-manifest-v1.2.1...aube-manifest-v1.3.0) - 2026-04-27
+
+### Added
+
+- *(security)* enforce trustPolicy by default, add paranoid bundle, security docs ([#333](https://github.com/endevco/aube/pull/333))
+- *(scripts)* add jailed dependency builds ([#306](https://github.com/endevco/aube/pull/306))
+
+### Other
+
+- *(deps)* replace serde_yaml with yaml_serde ([#340](https://github.com/endevco/aube/pull/340))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-manifest-v1.1.0...aube-manifest-v1.2.0) - 2026-04-25
 
 ### Fixed

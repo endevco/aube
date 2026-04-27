@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/endevco/aube/compare/v1.2.1...v1.3.0) - 2026-04-27
+
+### Added
+
+- *(config)* add settings discovery ([#347](https://github.com/endevco/aube/pull/347))
+- *(security)* enforce trustPolicy by default, add paranoid bundle, security docs ([#333](https://github.com/endevco/aube/pull/333))
+- *(scripts)* add jailed dependency builds ([#306](https://github.com/endevco/aube/pull/306))
+
+### Fixed
+
+- *(resolver)* accept abbreviated git commit SHAs in user specs ([#346](https://github.com/endevco/aube/pull/346))
+- *(lockfile)* preserve package and bun lock compatibility ([#339](https://github.com/endevco/aube/pull/339))
+- *(registry)* surface retry warnings and cap timeout retries at 1 ([#331](https://github.com/endevco/aube/pull/331))
+- bun.lock parity for workspaces, platforms, and locked versions ([#327](https://github.com/endevco/aube/pull/327))
+
+### Other
+
+- *(add)* drop redundant pre-install resolve, use FrozenMode::Fix ([#348](https://github.com/endevco/aube/pull/348))
+- *(install)* skip unused dep bin links ([#343](https://github.com/endevco/aube/pull/343))
+- *(deps)* replace serde_yaml with yaml_serde ([#340](https://github.com/endevco/aube/pull/340))
+
 ## [1.2.1](https://github.com/endevco/aube/compare/v1.2.0...v1.2.1) - 2026-04-26
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/endevco/aube/compare/aube-scripts-v1.2.1...aube-scripts-v1.3.0) - 2026-04-27
+
+### Added
+
+- *(scripts)* add jailed dependency builds ([#306](https://github.com/endevco/aube/pull/306))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-scripts-v1.1.0...aube-scripts-v1.2.0) - 2026-04-25
 
 ### Fixed

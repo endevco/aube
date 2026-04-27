@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/endevco/aube/compare/aube-resolver-v1.2.1...aube-resolver-v1.3.0) - 2026-04-27
+
+### Added
+
+- *(security)* enforce trustPolicy by default, add paranoid bundle, security docs ([#333](https://github.com/endevco/aube/pull/333))
+
+### Fixed
+
+- *(resolver)* accept abbreviated git commit SHAs in user specs ([#346](https://github.com/endevco/aube/pull/346))
+- *(lockfile)* preserve npm platform optional metadata ([#329](https://github.com/endevco/aube/pull/329))
+- bun.lock parity for workspaces, platforms, and locked versions ([#327](https://github.com/endevco/aube/pull/327))
+
 ## [1.2.1](https://github.com/endevco/aube/compare/aube-resolver-v1.2.0...aube-resolver-v1.2.1) - 2026-04-26
 
 ### Fixed

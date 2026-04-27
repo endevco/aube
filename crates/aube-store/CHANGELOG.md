@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/endevco/aube/compare/aube-store-v1.2.1...aube-store-v1.3.0) - 2026-04-27
+
+### Fixed
+
+- *(resolver)* accept abbreviated git commit SHAs in user specs ([#346](https://github.com/endevco/aube/pull/346))
+- *(lockfile)* preserve package and bun lock compatibility ([#339](https://github.com/endevco/aube/pull/339))
+
 ## [1.2.0](https://github.com/endevco/aube/compare/aube-store-v1.1.0...aube-store-v1.2.0) - 2026-04-25
 
 ### Security

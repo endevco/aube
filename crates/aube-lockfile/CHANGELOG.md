@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.2.1...aube-lockfile-v1.3.0) - 2026-04-27
+
+### Fixed
+
+- *(lockfile)* preserve non-registry and bun platform entries ([#338](https://github.com/endevco/aube/pull/338))
+- *(lockfile)* preserve package and bun lock compatibility ([#339](https://github.com/endevco/aube/pull/339))
+- *(lockfile)* parse scalar pnpm platform fields ([#337](https://github.com/endevco/aube/pull/337))
+- *(lockfile)* preserve npm platform optional metadata ([#329](https://github.com/endevco/aube/pull/329))
+- bun.lock parity for workspaces, platforms, and locked versions ([#327](https://github.com/endevco/aube/pull/327))
+
+### Other
+
+- *(deps)* replace serde_yaml with yaml_serde ([#340](https://github.com/endevco/aube/pull/340))
+
 ## [1.2.1](https://github.com/endevco/aube/compare/aube-lockfile-v1.2.0...aube-lockfile-v1.2.1) - 2026-04-26
 
 ### Fixed
