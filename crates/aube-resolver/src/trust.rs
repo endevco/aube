@@ -226,7 +226,9 @@ struct GlobMatcher {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustExcludeParseError {
-    #[error("invalid trustPolicyExclude pattern `{pattern}`: only exact versions are allowed in version unions, ranges (^/~/>=) are not supported")]
+    #[error(
+        "invalid trustPolicyExclude pattern `{pattern}`: only exact versions are allowed in version unions, ranges (^/~/>=) are not supported"
+    )]
     InvalidVersionUnion { pattern: String },
     #[error(
         "invalid trustPolicyExclude pattern `{pattern}`: name patterns (`*`) cannot be combined with version unions"
@@ -434,10 +436,7 @@ mod tests {
         v
     }
 
-    fn packument(
-        name: &str,
-        versions: Vec<(&str, &str, VersionMetadata)>,
-    ) -> Packument {
+    fn packument(name: &str, versions: Vec<(&str, &str, VersionMetadata)>) -> Packument {
         let mut p = Packument {
             name: name.to_string(),
             modified: None,
@@ -521,7 +520,10 @@ mod tests {
         );
         let picked = p.versions.get("1.0.0").unwrap();
         let result = check_no_downgrade(&p, "1.0.0", picked, &TrustExcludeRules::default(), None);
-        assert!(result.is_ok(), "version 1.0.0 was published first; it has nothing prior to compare against");
+        assert!(
+            result.is_ok(),
+            "version 1.0.0 was published first; it has nothing prior to compare against"
+        );
     }
 
     #[test]
@@ -744,7 +746,8 @@ mod tests {
         );
         let picked = p.versions.get("3.0.0").unwrap();
         // 1 minute cutoff — both versions are way older, should skip.
-        let result = check_no_downgrade(&p, "3.0.0", picked, &TrustExcludeRules::default(), Some(1));
+        let result =
+            check_no_downgrade(&p, "3.0.0", picked, &TrustExcludeRules::default(), Some(1));
         assert!(result.is_ok());
     }
 
@@ -777,14 +780,23 @@ mod tests {
     #[test]
     fn exclude_parses_scoped_name() {
         let r = TrustExcludeRules::parse(["@babel/core@7.20.0"]).unwrap();
-        assert!(r.matches("@babel/core", &node_semver::Version::parse("7.20.0").unwrap()));
-        assert!(!r.matches("@babel/core", &node_semver::Version::parse("7.20.1").unwrap()));
+        assert!(r.matches(
+            "@babel/core",
+            &node_semver::Version::parse("7.20.0").unwrap()
+        ));
+        assert!(!r.matches(
+            "@babel/core",
+            &node_semver::Version::parse("7.20.1").unwrap()
+        ));
     }
 
     #[test]
     fn exclude_parses_scoped_name_only() {
         let r = TrustExcludeRules::parse(["@babel/core"]).unwrap();
-        assert!(r.matches("@babel/core", &node_semver::Version::parse("9.9.9").unwrap()));
+        assert!(r.matches(
+            "@babel/core",
+            &node_semver::Version::parse("9.9.9").unwrap()
+        ));
     }
 
     #[test]
@@ -805,14 +817,20 @@ mod tests {
     fn exclude_rejects_range_operators() {
         for bad in ["foo@^1.0.0", "foo@~1.0.0", "foo@>=1.0.0"] {
             let err = TrustExcludeRules::parse([bad]).expect_err(bad);
-            assert!(matches!(err, TrustExcludeParseError::InvalidVersionUnion { .. }));
+            assert!(matches!(
+                err,
+                TrustExcludeParseError::InvalidVersionUnion { .. }
+            ));
         }
     }
 
     #[test]
     fn exclude_rejects_glob_with_version() {
         let err = TrustExcludeRules::parse(["is-*@1.0.0"]).expect_err("glob+version");
-        assert!(matches!(err, TrustExcludeParseError::NameGlobWithVersions { .. }));
+        assert!(matches!(
+            err,
+            TrustExcludeParseError::NameGlobWithVersions { .. }
+        ));
     }
 
     #[test]

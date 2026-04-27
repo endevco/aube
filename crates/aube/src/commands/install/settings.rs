@@ -395,13 +395,15 @@ pub(crate) fn resolve_dependency_policy(
     let trust_excludes = aube_settings::resolved::trust_policy_exclude(ctx);
     let valid: Vec<String> = trust_excludes
         .into_iter()
-        .filter(|p| match aube_resolver::TrustExcludeRules::parse(std::iter::once(p.as_str())) {
-            Ok(_) => true,
-            Err(err) => {
-                tracing::warn!(error = %err, "ignoring malformed trustPolicyExclude entry");
-                false
-            }
-        })
+        .filter(
+            |p| match aube_resolver::TrustExcludeRules::parse(std::iter::once(p.as_str())) {
+                Ok(_) => true,
+                Err(err) => {
+                    tracing::warn!(error = %err, "ignoring malformed trustPolicyExclude entry");
+                    false
+                }
+            },
+        )
         .collect();
     policy.trust_policy_exclude =
         aube_resolver::TrustExcludeRules::parse(valid).unwrap_or_default();

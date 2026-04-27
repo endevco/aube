@@ -928,8 +928,7 @@ async fn trust_policy_no_downgrade_blocks_downgraded_install() {
         trust_policy: crate::TrustPolicy::NoDowngrade,
         ..crate::DependencyPolicy::default()
     };
-    excluded_policy.trust_policy_exclude =
-        crate::TrustExcludeRules::parse(["foo@3.0.0"]).unwrap();
+    excluded_policy.trust_policy_exclude = crate::TrustExcludeRules::parse(["foo@3.0.0"]).unwrap();
     let mut resolver = Resolver::new(Arc::new(aube_registry::client::RegistryClient::new(
         &registry,
     )))

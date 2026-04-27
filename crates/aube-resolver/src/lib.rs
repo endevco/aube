@@ -12,15 +12,13 @@ mod trust;
 mod types;
 
 pub use error::{AgeGateDetails, CatalogDetails, Error, ExoticSubdepDetails, NoMatchDetails};
-pub use trust::{
-    MissingTimeDetails as MissingTrustTimeDetails, TrustDowngradeDetails,
-};
 pub use package_ext::is_deprecation_allowed;
 pub use peer_context::{
     PeerContextOptions, UnmetPeer, apply_peer_contexts, detect_unmet_peers,
     hoist_auto_installed_peers,
 };
 pub use platform::{SupportedArchitectures, is_supported};
+pub use trust::{MissingTimeDetails as MissingTrustTimeDetails, TrustDowngradeDetails};
 pub use trust::{TrustEvidence, TrustExcludeParseError, TrustExcludeRules};
 pub use types::{
     DependencyPolicy, MinimumReleaseAge, PackageExtension, ReadPackageHook, ResolutionMode,
