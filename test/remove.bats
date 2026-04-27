@@ -38,6 +38,33 @@ EOF
 	assert_file_exists node_modules/is-even/index.js
 }
 
+@test "aube remove: preserves package.json top-level key order" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-remove-order",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "test": "echo test"
+  },
+  "dependencies": {
+    "is-even": "^1.0.0",
+    "is-odd": "^3.0.1"
+  }
+}
+EOF
+
+	run aube install
+	assert_success
+
+	run aube remove is-odd
+	assert_success
+
+	run node -e 'console.log(Object.keys(require("./package.json")).join(","))'
+	assert_success
+	assert_output 'name,version,license,scripts,dependencies'
+}
+
 @test "aube remove: errors on unknown package" {
 	cat >package.json <<'EOF'
 {

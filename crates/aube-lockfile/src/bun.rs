@@ -674,6 +674,15 @@ fn classify_bun_ident(
         };
         return Ok((name, raw_version.to_string(), Some(kind), alias_of));
     }
+    let raw_path = std::path::PathBuf::from(raw_version);
+    if LocalSource::path_looks_like_tarball(&raw_path) {
+        return Ok((
+            name,
+            raw_version.to_string(),
+            Some(LocalSource::Tarball(raw_path)),
+            alias_of,
+        ));
+    }
     if let Some(rest) = raw_version.strip_prefix("link:") {
         return Ok((
             name,
@@ -1891,6 +1900,33 @@ mod tests {
 
         let root = graph.importers.get(".").unwrap();
         assert!(root.iter().any(|d| d.name == "vfs"));
+    }
+
+    #[test]
+    fn test_parse_prefixless_local_tarball() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('t');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": { "local-helper": "file:tarballs/local-helper-1.0.0.tgz" }
+    }
+  },
+  "packages": {
+    "local-helper": ["local-helper@tarballs/local-helper-1.0.0.tgz", {}, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let pkg = &graph.packages["local-helper@tarballs/local-helper-1.0.0.tgz"];
+        assert!(
+            matches!(pkg.local_source, Some(LocalSource::Tarball(_))),
+            "prefixless bun tarball ident must be LocalSource::Tarball, got {:?}",
+            pkg.local_source
+        );
     }
 
     /// Round-trip the same multi-version shape the npm writer test

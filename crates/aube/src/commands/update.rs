@@ -303,7 +303,7 @@ pub async fn run(
                 wrote_any = true;
             }
             if wrote_any {
-                super::write_manifest_json(&manifest_path, &manifest)?;
+                super::write_manifest_dep_sections(&manifest_path, &manifest)?;
                 eprintln!("Updated package.json");
             }
         }

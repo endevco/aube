@@ -1459,7 +1459,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
             .current_dir(&target)
             .output()
         && out.status.success()
-        && String::from_utf8_lossy(&out.stdout).trim() == commit
+        && git_commit_matches(String::from_utf8_lossy(&out.stdout).trim(), commit)
     {
         return Ok(target);
     }
@@ -1543,7 +1543,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
             )));
         }
         let actual = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if actual != commit {
+        if !git_commit_matches(&actual, commit) {
             return Err(Error::Git(format!(
                 "git clone HEAD {actual} does not match requested commit {commit}"
             )));
@@ -1570,7 +1570,7 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
                     .current_dir(&target)
                     .output()
                 && out.status.success()
-                && String::from_utf8_lossy(&out.stdout).trim() == commit
+                && git_commit_matches(String::from_utf8_lossy(&out.stdout).trim(), commit)
             {
                 let _ = std::fs::remove_dir_all(&scratch);
                 return Ok(target);
@@ -1589,9 +1589,33 @@ pub fn git_shallow_clone(url: &str, commit: &str, shallow: bool) -> Result<PathB
     }
 }
 
+fn git_commit_matches(actual: &str, requested: &str) -> bool {
+    actual == requested
+        || (requested.len() >= 7
+            && requested.len() < 40
+            && requested.chars().all(|c| c.is_ascii_hexdigit())
+            && actual.starts_with(requested))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_commit_matches_abbreviated_sha() {
+        assert!(git_commit_matches(
+            "98e8ff1da1a89f93d1397a24d7413ed15421c139",
+            "98e8ff1"
+        ));
+        assert!(!git_commit_matches(
+            "98e8ff1da1a89f93d1397a24d7413ed15421c139",
+            "98e8ff2"
+        ));
+        assert!(!git_commit_matches(
+            "98e8ff1da1a89f93d1397a24d7413ed15421c139",
+            "main"
+        ));
+    }
 
     #[test]
     fn test_integrity_to_hex() {

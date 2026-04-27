@@ -104,7 +104,13 @@ pub async fn run(
     // Write updated package.json atomically. Crash mid-write would
     // otherwise truncate the user manifest, worst-case aube failure
     // mode. Tempfile + persist keeps the swap atomic.
-    super::write_manifest_json(&manifest_path, &manifest)?;
+    super::update_manifest_json_object(&manifest_path, |obj| {
+        super::sync_manifest_dep_sections(obj, &manifest);
+        for name in packages {
+            prune_sidecar_entries_json(obj, name);
+        }
+        Ok(())
+    })?;
     eprintln!("Updated package.json");
 
     // Re-resolve dependency tree without the removed packages
@@ -174,6 +180,54 @@ fn run_global(packages: &[String]) -> miette::Result<()> {
         return Err(miette!("no matching global packages were removed"));
     }
     Ok(())
+}
+
+fn prune_sidecar_entries_json(obj: &mut serde_json::Map<String, serde_json::Value>, name: &str) {
+    for ns_key in ["pnpm", "aube"] {
+        let remove_ns = if let Some(ns) = obj.get_mut(ns_key).and_then(|v| v.as_object_mut()) {
+            for map_key in ["allowBuilds", "overrides", "peerDependencyRules"] {
+                if let Some(inner) = ns.get_mut(map_key).and_then(|v| v.as_object_mut()) {
+                    inner.remove(name);
+                    if inner.is_empty() {
+                        ns.remove(map_key);
+                    }
+                }
+            }
+            for arr_key in [
+                "onlyBuiltDependencies",
+                "neverBuiltDependencies",
+                "trustedDependencies",
+            ] {
+                if let Some(arr) = ns.get_mut(arr_key).and_then(|v| v.as_array_mut()) {
+                    arr.retain(|entry| match entry.as_str() {
+                        Some(s) => s.rsplit_once('@').map(|(base, _)| base).unwrap_or(s) != name,
+                        None => true,
+                    });
+                    if arr.is_empty() {
+                        ns.remove(arr_key);
+                    }
+                }
+            }
+            ns.is_empty()
+        } else {
+            false
+        };
+        if remove_ns {
+            obj.remove(ns_key);
+        }
+    }
+
+    for top_key in ["overrides", "resolutions"] {
+        let remove_top = if let Some(top) = obj.get_mut(top_key).and_then(|v| v.as_object_mut()) {
+            top.remove(name);
+            top.is_empty()
+        } else {
+            false
+        };
+        if remove_top {
+            obj.remove(top_key);
+        }
+    }
 }
 
 /// Prune aube/pnpm sidecar metadata entries that reference `name`.
