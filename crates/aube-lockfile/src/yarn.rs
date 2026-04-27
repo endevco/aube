@@ -563,7 +563,7 @@ fn parse_berry_str(
     content: &str,
     manifest: &aube_manifest::PackageJson,
 ) -> Result<LockfileGraph, Error> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(content)
+    let doc: yaml_serde::Value = yaml_serde::from_str(content)
         .map_err(|e| Error::parse_yaml_err(path, content.to_string(), &e))?;
     let map = doc
         .as_mapping()
@@ -915,7 +915,7 @@ fn range_has_protocol(range: &str) -> bool {
 /// Render a scalar YAML value as its source-text-equivalent string.
 ///
 /// Berry emits `version: 1.0.0` unquoted. Under YAML 1.2 core-schema
-/// resolution (what `serde_yaml` 0.9 uses), that bare token parses
+/// resolution (what `yaml_serde` uses), that bare token parses
 /// as a string *only because* it has two dots — a bare integer
 /// (`version: 5`) comes out as `Value::Number(5)`, a two-component
 /// value (`version: 1.0`) as a float. Returning those back as
@@ -926,10 +926,10 @@ fn range_has_protocol(range: &str) -> bool {
 /// Booleans would behave the same way (`version: yes`), but no real
 /// version string collides with YAML 1.2's bool tokens (`true` /
 /// `false`), so we don't bother unfolding them.
-fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
+fn yaml_scalar_as_string(v: &yaml_serde::Value) -> Option<String> {
     match v {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        yaml_serde::Value::String(s) => Some(s.clone()),
+        yaml_serde::Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
 }
@@ -940,7 +940,7 @@ fn yaml_scalar_as_string(v: &serde_yaml::Value) -> Option<String> {
 /// `yaml_scalar_as_string` for the same reason `version` does — a
 /// bare `dep: 5` would otherwise silently drop the edge instead of
 /// recording `"5"` as the range.
-fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, String> {
+fn collect_dep_map(block: &yaml_serde::Mapping, key: &str) -> BTreeMap<String, String> {
     block
         .get(key)
         .and_then(|v| v.as_mapping())
@@ -955,7 +955,7 @@ fn collect_dep_map(block: &serde_yaml::Mapping, key: &str) -> BTreeMap<String, S
 /// Pull `peerDependenciesMeta` into our structured form. Only the
 /// `optional` flag round-trips through aube's model; other keys in
 /// the meta block (if any) are ignored.
-fn collect_peer_meta(block: &serde_yaml::Mapping) -> BTreeMap<String, crate::PeerDepMeta> {
+fn collect_peer_meta(block: &yaml_serde::Mapping) -> BTreeMap<String, crate::PeerDepMeta> {
     block
         .get("peerDependenciesMeta")
         .and_then(|v| v.as_mapping())
@@ -1012,7 +1012,7 @@ fn strip_commit_hash(url: &str) -> String {
 /// repo (if it has a commit hash suffix or a `.git` path) or a plain
 /// tarball download. Checksum / integrity lives on the `checksum:`
 /// field and round-trips through `yarn_checksum`.
-fn classify_remote(url: &str, _block: &serde_yaml::Mapping) -> Option<LocalSource> {
+fn classify_remote(url: &str, _block: &yaml_serde::Mapping) -> Option<LocalSource> {
     if url.ends_with(".git") || url.contains(".git#") {
         Some(LocalSource::Git(GitSource {
             url: strip_commit_hash(url),
@@ -1935,7 +1935,7 @@ __metadata:
     /// from a parsed berry file (berry itself doesn't emit them on
     /// macOS/Linux), so we construct a package with a `file:` source
     /// that contains a backslash directly and assert the output
-    /// escapes it and round-trips through `serde_yaml::from_str`.
+    /// escapes it and round-trips through `yaml_serde::from_str`.
     #[test]
     fn test_write_berry_escapes_resolution_and_header() {
         let mut packages = BTreeMap::new();
@@ -1971,7 +1971,7 @@ __metadata:
 
         // The emitted file must parse as YAML — any missing escape
         // blows up here instead of corrupting a real install.
-        let _doc: serde_yaml::Value = serde_yaml::from_str(&written)
+        let _doc: yaml_serde::Value = yaml_serde::from_str(&written)
             .unwrap_or_else(|e| panic!("berry writer produced malformed YAML: {e}\n{written}"));
     }
 }

@@ -889,13 +889,13 @@ impl ParseError {
         Self::new(path, content, err.to_string(), offset, len)
     }
 
-    /// Build a `ParseError` from a `serde_yaml::Error`.
-    /// `serde_yaml::Location::index` is already a byte offset, so no
+    /// Build a `ParseError` from a `yaml_serde::Error`.
+    /// `yaml_serde::Location::index` is already a byte offset, so no
     /// line/col conversion is needed. Errors without a location
-    /// (notably those bubbling from `serde_yaml::from_value`) collapse
+    /// (notably those bubbling from `yaml_serde::from_value`) collapse
     /// to an empty span at offset 0 — miette still renders the file
     /// name + message, just without a pointer.
-    pub fn from_yaml_err(path: &Path, content: String, err: &serde_yaml::Error) -> Self {
+    pub fn from_yaml_err(path: &Path, content: String, err: &yaml_serde::Error) -> Self {
         let (offset, len) = match err.location() {
             Some(loc) => {
                 let idx = loc.index().min(content.len());
@@ -958,7 +958,7 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
 }
 
 /// Parse a YAML document from `content`, returning an [`Error::Parse`] on
-/// failure with the source content + span attached. `serde_yaml` reports
+/// failure with the source content + span attached. `yaml_serde` reports
 /// errors with a `Location { index, line, column }` we can feed straight
 /// into a miette span; type-mismatch errors raised after `from_str`
 /// succeeds (e.g. via `from_value`) have no location and render without
@@ -967,7 +967,7 @@ pub fn parse_yaml<T: serde::de::DeserializeOwned>(
     path: &Path,
     content: String,
 ) -> Result<T, Error> {
-    match serde_yaml::from_str(&content) {
+    match yaml_serde::from_str(&content) {
         Ok(v) => Ok(v),
         Err(e) => Err(Error::parse_yaml_err(path, content, &e)),
     }
@@ -982,9 +982,9 @@ impl Error {
         Error::Parse(Box::new(ParseError::from_json_err(path, content, err)))
     }
 
-    /// Build an [`Error::Parse`] from a `serde_yaml::Error`. Delegates
+    /// Build an [`Error::Parse`] from a `yaml_serde::Error`. Delegates
     /// to [`ParseError::from_yaml_err`].
-    pub fn parse_yaml_err(path: &Path, content: String, err: &serde_yaml::Error) -> Self {
+    pub fn parse_yaml_err(path: &Path, content: String, err: &yaml_serde::Error) -> Self {
         Error::Parse(Box::new(ParseError::from_yaml_err(path, content, err)))
     }
 
@@ -1148,9 +1148,9 @@ mod tests {
     fn parse_yaml_attaches_source_span() {
         let path = Path::new("pnpm-workspace.yaml");
         // Tab as the first indent char is a spec-level YAML error;
-        // serde_yaml reports a location for it.
+        // yaml_serde reports a location for it.
         let content = "packages:\n\t- pkg\n".to_string();
-        let res: Result<serde_yaml::Value, Error> = parse_yaml(path, content.clone());
+        let res: Result<yaml_serde::Value, Error> = parse_yaml(path, content.clone());
         let Err(Error::Parse(pe)) = res else {
             panic!("parse_yaml must produce Parse variant on malformed input");
         };
@@ -1160,15 +1160,15 @@ mod tests {
         assert_eq!(pe.path, path);
     }
 
-    /// `serde_yaml::from_value` errors have no `location()`. The helper
+    /// `yaml_serde::from_value` errors have no `location()`. The helper
     /// should still produce an `Error::Parse` (with a zero-length span)
     /// so the file name survives into miette's render.
     #[test]
     fn parse_yaml_err_without_location_falls_back_to_empty_span() {
         let path = Path::new("pnpm-workspace.yaml");
         let content = String::new();
-        let yaml_err: serde_yaml::Error =
-            serde_yaml::from_value::<BTreeMap<String, String>>(serde_yaml::Value::Bool(true))
+        let yaml_err: yaml_serde::Error =
+            yaml_serde::from_value::<BTreeMap<String, String>>(yaml_serde::Value::Bool(true))
                 .expect_err("bool cannot coerce to a map");
         assert!(yaml_err.location().is_none());
         let Error::Parse(pe) = Error::parse_yaml_err(path, content, &yaml_err) else {
@@ -1694,7 +1694,7 @@ mod tests {
                 }
             }"#,
         );
-        let ws: workspace::WorkspaceConfig = serde_yaml::from_str(
+        let ws: workspace::WorkspaceConfig = yaml_serde::from_str(
             r#"
 supportedArchitectures:
   os: ["win32"]
@@ -1725,7 +1725,7 @@ supportedArchitectures:
                 "pnpm": { "ignoredOptionalDependencies": ["fsevents"] }
             }"#,
         );
-        let ws: workspace::WorkspaceConfig = serde_yaml::from_str(
+        let ws: workspace::WorkspaceConfig = yaml_serde::from_str(
             r#"
 ignoredOptionalDependencies:
   - dtrace-provider

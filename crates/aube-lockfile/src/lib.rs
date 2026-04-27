@@ -1826,7 +1826,7 @@ pub enum Error {
     Io(std::path::PathBuf, std::io::Error),
     /// Structural/serialization lockfile errors that have no source
     /// location — shape checks (`must be a mapping`), version guards
-    /// (`lockfileVersion N unsupported`), and `serde_yaml::to_string`
+    /// (`lockfileVersion N unsupported`), and `yaml_serde::to_string`
     /// failures during write.
     #[error("failed to parse lockfile {0}: {1}")]
     Parse(std::path::PathBuf, String),
@@ -1879,7 +1879,7 @@ impl Error {
     pub fn parse_yaml_err(
         path: &std::path::Path,
         content: String,
-        err: &serde_yaml::Error,
+        err: &yaml_serde::Error,
     ) -> Self {
         Error::ParseDiag(Box::new(aube_manifest::ParseError::from_yaml_err(
             path, content, err,
@@ -1909,7 +1909,7 @@ mod parse_diag_tests {
         assert_eq!(pe.path, path);
     }
 
-    /// Same story for YAML — serde_yaml reports a `Location` with a
+    /// Same story for YAML — yaml_serde reports a `Location` with a
     /// byte index directly, so no line/col conversion is exercised
     /// here. Both production sites (`pnpm.rs`, `yarn.rs`) call
     /// `Error::parse_yaml_err` directly (one iterates multiple YAML
@@ -1919,7 +1919,7 @@ mod parse_diag_tests {
     fn parse_yaml_err_attaches_span_for_bad_input() {
         let path = Path::new("yarn.lock");
         let content = "packages:\n\t- pkg\n".to_string();
-        let yaml_err: serde_yaml::Error = serde_yaml::from_str::<serde_yaml::Value>(&content)
+        let yaml_err: yaml_serde::Error = yaml_serde::from_str::<yaml_serde::Value>(&content)
             .expect_err("tab-indented YAML must fail");
         let Error::ParseDiag(pe) = Error::parse_yaml_err(path, content.clone(), &yaml_err) else {
             panic!("parse_yaml_err must produce ParseDiag");

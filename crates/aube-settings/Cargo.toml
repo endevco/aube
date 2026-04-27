@@ -19,7 +19,7 @@ serde = { workspace = true }
 toml = { workspace = true }
 
 [dependencies]
-serde_yaml = { workspace = true }
+yaml_serde = { workspace = true }
 
 [dev-dependencies]
 aube-manifest = { workspace = true }

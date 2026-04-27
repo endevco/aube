@@ -123,7 +123,7 @@ mod tests {
                 let top_level_key = key.split('.').next().unwrap_or(key);
                 for shape in shapes {
                     let yaml = format!("{top_level_key}: {shape}\n");
-                    if let Ok(cfg) = serde_yaml::from_str::<aube_manifest::WorkspaceConfig>(&yaml)
+                    if let Ok(cfg) = yaml_serde::from_str::<aube_manifest::WorkspaceConfig>(&yaml)
                         && !cfg.extra.contains_key(top_level_key)
                     {
                         recognized = true;

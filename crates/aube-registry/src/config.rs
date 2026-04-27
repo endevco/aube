@@ -2532,7 +2532,7 @@ mod tests {
             ("fetch-retry-mintimeout".to_string(), "250".to_string()),
             ("fetch-retry-maxtimeout".to_string(), "9_999".to_string()),
         ];
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = aube_settings::ResolveCtx::files_only(&entries, &ws);
         let p = FetchPolicy::from_ctx(&ctx);
@@ -2556,7 +2556,7 @@ mod tests {
             ("fetchWarnTimeoutMs".to_string(), "500".to_string()),
             ("fetchMinSpeedKiBps".to_string(), "123".to_string()),
         ];
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = aube_settings::ResolveCtx::files_only(&entries, &ws);
         let p = FetchPolicy::from_ctx(&ctx);
@@ -2714,7 +2714,7 @@ mod tests {
         // A user writing `fetch-retries=99999999999` should not panic;
         // the retry loop just caps at u32::MAX attempts.
         let entries = vec![("fetch-retries".to_string(), "99999999999999".to_string())];
-        let ws: std::collections::BTreeMap<String, serde_yaml::Value> =
+        let ws: std::collections::BTreeMap<String, yaml_serde::Value> =
             std::collections::BTreeMap::new();
         let ctx = aube_settings::ResolveCtx::files_only(&entries, &ws);
         let p = FetchPolicy::from_ctx(&ctx);

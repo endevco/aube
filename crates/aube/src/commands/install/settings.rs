@@ -473,7 +473,7 @@ fn object_setting_from_env(
 
 fn object_setting_from_workspace_yaml(
     setting: &str,
-    raw: &BTreeMap<String, serde_yaml::Value>,
+    raw: &BTreeMap<String, yaml_serde::Value>,
 ) -> Option<BTreeMap<String, serde_json::Value>> {
     let meta = aube_settings::find(setting)?;
     for key in meta.workspace_yaml_keys {

@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["full"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-serde_yaml = "0.9"
+yaml_serde = "0.10.4"
 simd-json = "0.17"
 toml = "0.8"
 
