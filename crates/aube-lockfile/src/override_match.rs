@@ -32,10 +32,19 @@ pub(crate) struct DirectOverrideRule {
 }
 
 /// Parse and compile a raw `name → replacement` map into rules. Keys
-/// with parent-chain selectors (containing `>` or `/`, except for the
-/// scope `/`) are dropped — they only match transitive deps.
+/// with parent-chain selectors (`foo>bar`, `**/foo`, `parent/foo`) are
+/// dropped — they only match transitive deps.
+///
+/// Output is sorted so version-keyed rules come before bare-name rules
+/// for the same package. Mirrors pnpm's "more specific selector wins"
+/// behavior: when a manifest has both `"plist": "9.9.9"` and
+/// `"plist@<3": "2.0.0"`, pnpm picks the version-keyed one for any
+/// matching range, and the lockfile records that replacement. A
+/// bare-first iteration order would always shadow the version-keyed
+/// rule and produce a false `Stale`.
 pub(crate) fn compile(raw: &BTreeMap<String, String>) -> Vec<DirectOverrideRule> {
-    raw.iter()
+    let mut rules: Vec<DirectOverrideRule> = raw
+        .iter()
         .filter_map(|(k, v)| {
             parse_key(k).map(|(n, r)| DirectOverrideRule {
                 name: n,
@@ -43,7 +52,9 @@ pub(crate) fn compile(raw: &BTreeMap<String, String>) -> Vec<DirectOverrideRule>
                 replacement: v.clone(),
             })
         })
-        .collect()
+        .collect();
+    rules.sort_by_key(|r| r.version_req.is_none());
+    rules
 }
 
 /// Find the first rule whose target matches `(name, spec)` and return
@@ -69,42 +80,123 @@ pub(crate) fn apply<'a>(
 }
 
 fn parse_key(key: &str) -> Option<(String, Option<String>)> {
-    if key.is_empty() || key.contains('>') {
+    if key.is_empty() {
         return None;
     }
-    if let Some(after_at) = key.strip_prefix('@') {
-        let slash = after_at.find('/')?;
-        let scope = &after_at[..slash];
-        let rest = &after_at[slash + 1..];
-        if rest.is_empty() || rest.contains('/') {
-            return None;
-        }
-        match rest.find('@') {
-            Some(0) => None,
-            Some(i) => {
-                let pkg_tail = &rest[..i];
-                let req = &rest[i + 1..];
-                if pkg_tail.is_empty() || req.is_empty() {
+    // Multi-segment selectors are parent-chain rules (`foo>bar`,
+    // `**/foo`, `parent/foo`) — they only fire on transitive deps.
+    let segments = split_segments(key)?;
+    if segments.len() != 1 {
+        return None;
+    }
+    parse_segment(segments[0])
+}
+
+/// Split `key` on pnpm `>` chain separators (and yarn `/` ancestors),
+/// while keeping `>` characters that belong to a version comparator
+/// (`>=`, `>1.0.0`, `> 1`) attached to the segment they qualify.
+/// Mirrors `aube-resolver::override_rule::split_segments`.
+fn split_segments(key: &str) -> Option<Vec<&str>> {
+    if key.contains('>') {
+        let bytes = key.as_bytes();
+        let mut parts: Vec<&str> = Vec::new();
+        let mut start = 0;
+        let mut i = 0;
+        let mut in_req = false;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if c == b'@' && !in_req && i != start {
+                in_req = true;
+            } else if c == b'>' {
+                if in_req {
+                    let comparator_cont = bytes
+                        .get(i + 1)
+                        .is_some_and(|&n| matches!(n, b'=' | b' ' | b'v') || n.is_ascii_digit());
+                    if comparator_cont {
+                        i += 1;
+                        continue;
+                    }
+                }
+                if start == i {
                     return None;
                 }
-                Some((format!("@{scope}/{pkg_tail}"), Some(req.to_string())))
+                parts.push(&key[start..i]);
+                start = i + 1;
+                in_req = false;
             }
-            None => Some((format!("@{scope}/{rest}"), None)),
+            i += 1;
         }
-    } else if key.contains('/') {
-        None
-    } else if let Some(at) = key.find('@') {
+        if start >= bytes.len() {
+            return None;
+        }
+        parts.push(&key[start..]);
+        return Some(parts);
+    }
+    // Yarn slash form: split on `/` except the scope-introducing `/`.
+    let bytes = key.as_bytes();
+    let mut out: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' {
+            let current = &key[start..i];
+            let scope = current.starts_with('@') && !current[1..].contains('/');
+            if !scope {
+                if current.is_empty() {
+                    return None;
+                }
+                out.push(current);
+                start = i + 1;
+            }
+        }
+        i += 1;
+    }
+    let tail = &key[start..];
+    if tail.is_empty() {
+        return None;
+    }
+    out.push(tail);
+    Some(out)
+}
+
+/// Parse a single segment `name[@range]` (scoped or unscoped) into its
+/// (name, req) pair. Wildcards (`**`) are rejected — they're a
+/// parent-chain construct that has no meaning at the importer level.
+fn parse_segment(seg: &str) -> Option<(String, Option<String>)> {
+    if seg == "**" {
+        return None;
+    }
+    if let Some(after_at) = seg.strip_prefix('@') {
+        let slash = after_at.find('/')?;
+        let rest = &after_at[slash + 1..];
+        if rest.is_empty() {
+            return None;
+        }
+        if let Some(at) = rest.find('@') {
+            let pkg_tail = &rest[..at];
+            let req = &rest[at + 1..];
+            if pkg_tail.is_empty() || req.is_empty() {
+                return None;
+            }
+            Some((
+                format!("@{}/{}", &after_at[..slash], pkg_tail),
+                Some(req.to_string()),
+            ))
+        } else {
+            Some((format!("@{after_at}"), None))
+        }
+    } else if let Some(at) = seg.find('@') {
         if at == 0 {
             return None;
         }
-        let name = &key[..at];
-        let req = &key[at + 1..];
+        let name = &seg[..at];
+        let req = &seg[at + 1..];
         if name.is_empty() || req.is_empty() {
             return None;
         }
         Some((name.to_string(), Some(req.to_string())))
     } else {
-        Some((key.to_string(), None))
+        Some((seg.to_string(), None))
     }
 }
 
@@ -112,6 +204,12 @@ fn parse_key(key: &str) -> Option<(String, Option<String>)> {
 /// without the cross-crate dep. A range whose extractable lower bound
 /// satisfies the req counts as a hit. Ranges we can't parse fall through
 /// to "probably matches" so a user override is never silently dropped.
+///
+/// Exclusive `>X.Y.Z` is special-cased: trimming the prefix yields the
+/// boundary itself, which fails any `<X.Y.Z` req and would otherwise
+/// fall through to "probably matches" — spuriously firing the override
+/// for two ranges with empty intersection. The caller signals the
+/// exclusive form via a separate try with `bumped_lower_bound` first.
 fn range_could_satisfy(task_range: &str, req: &str) -> bool {
     let Ok(r) = node_semver::Range::parse(req) else {
         return true;
@@ -121,9 +219,17 @@ fn range_could_satisfy(task_range: &str, req: &str) -> bool {
     {
         return true;
     }
-    if let Some(candidate) = lower_bound_version(task_range)
-        && let Ok(v) = node_semver::Version::parse(&candidate)
+    let trimmed = task_range.trim();
+    let exclusive = trimmed.starts_with('>') && !trimmed.starts_with(">=");
+    if let Some(candidate) = lower_bound_version(trimmed)
+        && let Ok(mut v) = node_semver::Version::parse(&candidate)
     {
+        if exclusive {
+            // Probe just above the exclusive boundary: `>3.0.5` covers
+            // every version above 3.0.5, so use 3.0.5 + minimum patch
+            // bump as the representative point.
+            v.patch += 1;
+        }
         return v.satisfies(&r);
     }
     true
@@ -202,8 +308,46 @@ mod tests {
     }
 
     #[test]
-    fn first_matching_rule_wins() {
+    fn version_keyed_rule_wins_over_bare_when_both_match() {
+        // pnpm picks the more specific selector, so a manifest with
+        // both `"plist": "9.9.9"` and `"plist@<3": "2.0.0"` and a dep
+        // spec of `^2.0.0` (covered by `<3`) should resolve to
+        // `2.0.0`. Bare-first iteration order would silently shadow
+        // the version-keyed rule and produce a false `Stale`.
         let rules = compile(&map(&[("plist", "9.9.9"), ("plist@<3", "2.0.0")]));
-        assert_eq!(apply(&rules, "plist", "^3"), Some("9.9.9"));
+        assert_eq!(apply(&rules, "plist", "^2.0.0"), Some("2.0.0"));
+        // Spec outside the version-keyed rule's range falls through to
+        // the bare rule.
+        assert_eq!(apply(&rules, "plist", "^4.0.0"), Some("9.9.9"));
+    }
+
+    #[test]
+    fn key_with_gte_comparator_parses() {
+        // `lodash@>=4.17.21` is a single segment whose `>=` is a
+        // comparator, not a chain separator. Pre-fix, the parser
+        // rejected any key containing `>` and silently dropped this.
+        let rules = compile(&map(&[("lodash@>=4.17.21", "4.18.0")]));
+        assert_eq!(apply(&rules, "lodash", "4.17.21"), Some("4.18.0"));
+        // Lower-bound probe is conservative — concrete version that
+        // doesn't satisfy the req falls through, which is fine.
+        assert_eq!(apply(&rules, "lodash", "4.0.0"), None);
+    }
+
+    #[test]
+    fn key_with_gt_comparator_parses() {
+        let rules = compile(&map(&[("lodash@>1.0.0", "1.5.0")]));
+        assert_eq!(apply(&rules, "lodash", "1.2.0"), Some("1.5.0"));
+    }
+
+    #[test]
+    fn exclusive_gt_spec_against_lt_req_does_not_overlap() {
+        // `>3.0.5` and `<3.0.5` have empty intersection. A naive
+        // lower-bound probe would extract `3.0.5` from `>3.0.5` and
+        // see it fail `<3.0.5` (boundary excluded), then fall through
+        // to "probably matches". The fix is to bump the candidate
+        // above the exclusive boundary before satisfaction-probing.
+        assert!(!range_could_satisfy(">3.0.5", "<3.0.5"));
+        // Sanity: the inclusive case still doesn't overlap.
+        assert!(range_could_satisfy(">3.0.5", ">=3.0.5"));
     }
 }
