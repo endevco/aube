@@ -339,7 +339,7 @@ pub async fn run(
     } else {
         None
     };
-    let (manifest, workspace_catalogs) = update_manifest_for_add(
+    update_manifest_for_add(
         &cwd,
         packages,
         AddManifestOptions {
@@ -352,29 +352,18 @@ pub async fn run(
     )
     .await?;
 
-    // 4 + 5. Resolve, write the lockfile, and run install. We collect
-    // the entire pipeline into a single `Result` so the restore step
-    // below runs even if the resolver, lockfile writer, or install
-    // bails out — without this wrapper a network failure mid-resolve
-    // would leave the mutated `package.json` (and any partially
-    // written lockfile) on disk, breaking the `--no-save` promise.
-    let pipeline_result: miette::Result<()> = async {
-        let existing = aube_lockfile::parse_lockfile(&cwd, &manifest).ok();
-        let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
-        let graph = resolver
-            .resolve(&manifest, existing.as_ref())
-            .await
-            .map_err(miette::Report::new)
-            .wrap_err("failed to resolve dependencies")?;
-        eprintln!("Resolved {} packages", graph.packages.len());
-
-        super::write_and_log_lockfile(&cwd, &graph, &manifest)?;
-
-        install::run(install::InstallOptions::with_mode(
-            super::chained_frozen_mode(install::FrozenMode::Prefer),
-        ))
-        .await
-    }
+    // 4. Run install. It re-reads the mutated package.json, runs the
+    // resolver (reusing locked entries for unchanged specs), writes the
+    // lockfile, and links node_modules in one pipeline. `Fix` mode is
+    // the right semantic here: package.json just gained a new spec,
+    // so the lockfile is by definition stale on that one entry — Prefer
+    // would risk taking the from-lockfile fast path and missing the
+    // new dep. Wrapping in a `Result` so the restore step below runs
+    // even on failure — a network error mid-resolve would otherwise
+    // leave the mutated `package.json` on disk, breaking `--no-save`.
+    let pipeline_result: miette::Result<()> = install::run(install::InstallOptions::with_mode(
+        super::chained_frozen_mode(install::FrozenMode::Fix),
+    ))
     .await;
 
     // 6. Under `--no-save`, restore the snapshotted `package.json` and
@@ -803,7 +792,7 @@ async fn run_filtered(
         }
 
         let mut install_opts = install::InstallOptions::with_mode(super::chained_frozen_mode(
-            install::FrozenMode::Prefer,
+            install::FrozenMode::Fix,
         ));
         install_opts.workspace_filter = filter.clone();
         install::run(install_opts).await?;
