@@ -77,7 +77,7 @@ export default defineConfig({
       "script",
       {
         defer: "",
-        "data-domain": "pa-pKoppeTCBJKVlCRf8Mxk_",
+        "data-domain": "aube.en.dev",
         "data-api": "https://shrill.en.dev/f5f1/event",
         src: "https://shrill.en.dev/shrill/script.js",
       },
