@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme.workspace = true
 description = "Shared helpers reused across aube crates (semantic hashing, async dedup, atomic filesystem ops, bincode sidecars)."
 
 [dependencies]
