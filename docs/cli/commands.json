@@ -737,7 +737,7 @@
         "full_cmd": [
           "config"
         ],
-        "usage": "config <SUBCOMMAND>",
+        "usage": "config [FLAGS] <SUBCOMMAND>",
         "subcommands": {
           "delete": {
             "full_cmd": [
@@ -810,6 +810,63 @@
               "rm",
               "remove",
               "unset"
+            ],
+            "hidden_aliases": [],
+            "examples": []
+          },
+          "explain": {
+            "full_cmd": [
+              "config",
+              "explain"
+            ],
+            "usage": "config explain <KEY>",
+            "subcommands": {},
+            "args": [
+              {
+                "name": "KEY",
+                "usage": "<KEY>",
+                "help": "Setting key, `.npmrc` alias, env var, workspace YAML key, or CLI flag",
+                "help_first_line": "Setting key, `.npmrc` alias, env var, workspace YAML key, or CLI flag",
+                "required": true,
+                "double_dash": "Optional",
+                "hide": false
+              }
+            ],
+            "flags": [],
+            "mounts": [],
+            "hide": false,
+            "help": "Explain a known setting, including defaults and supported config sources",
+            "name": "explain",
+            "aliases": [],
+            "hidden_aliases": [],
+            "examples": []
+          },
+          "find": {
+            "full_cmd": [
+              "config",
+              "find"
+            ],
+            "usage": "config find <QUERY>…",
+            "subcommands": {},
+            "args": [
+              {
+                "name": "QUERY",
+                "usage": "<QUERY>…",
+                "help": "Words to search for",
+                "help_first_line": "Words to search for",
+                "required": true,
+                "double_dash": "Optional",
+                "var": true,
+                "hide": false
+              }
+            ],
+            "flags": [],
+            "mounts": [],
+            "hide": false,
+            "help": "Search known settings by name, source key, or description",
+            "name": "find",
+            "aliases": [
+              "search"
             ],
             "hidden_aliases": [],
             "examples": []
@@ -1067,13 +1124,100 @@
             "aliases": [],
             "hidden_aliases": [],
             "examples": []
+          },
+          "tui": {
+            "full_cmd": [
+              "config",
+              "tui"
+            ],
+            "usage": "config tui",
+            "subcommands": {},
+            "args": [],
+            "flags": [],
+            "mounts": [],
+            "hide": false,
+            "help": "Browse known settings in an interactive terminal UI",
+            "name": "tui",
+            "aliases": [],
+            "hidden_aliases": [],
+            "examples": []
           }
         },
         "args": [],
-        "flags": [],
+        "flags": [
+          {
+            "name": "all",
+            "usage": "--all",
+            "help": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered",
+            "help_long": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults.",
+            "help_first_line": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered",
+            "short": [],
+            "long": [
+              "all"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "json",
+            "usage": "--json",
+            "help": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`",
+            "help_long": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does.",
+            "help_first_line": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`",
+            "short": [],
+            "long": [
+              "json"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "local",
+            "usage": "--local",
+            "help": "Shortcut for `--location project`",
+            "help_long": "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why.",
+            "help_first_line": "Shortcut for `--location project`",
+            "short": [],
+            "long": [
+              "local"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "location",
+            "usage": "--location <LOCATION>",
+            "help": "Which `.npmrc` file(s) to list",
+            "help_long": "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.",
+            "help_first_line": "Which `.npmrc` file(s) to list",
+            "short": [],
+            "long": [
+              "location"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "LOCATION",
+              "usage": "<LOCATION>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false,
+              "choices": {
+                "choices": [
+                  "merged",
+                  "user",
+                  "project",
+                  "global"
+                ]
+              }
+            },
+            "default": [
+              "merged"
+            ]
+          }
+        ],
         "mounts": [],
         "hide": false,
-        "subcommand_required": true,
         "help": "Read and write settings in `.npmrc`",
         "name": "config",
         "aliases": [],

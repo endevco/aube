@@ -181,8 +181,23 @@ cmd clean help="Remove `node_modules` across every workspace project" {
 cmd completion help="Generate shell completions (bash, zsh, fish)" {
     arg <SHELL> help="The shell to generate completions for (bash, zsh, fish)"
 }
-cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" {
+cmd config help="Read and write settings in `.npmrc`" {
     alias c hide=#true
+    flag --all help="Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered" {
+        long_help "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults."
+    }
+    flag --json help="Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`" {
+        long_help "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does."
+    }
+    flag --local help="Shortcut for `--location project`" {
+        long_help "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why."
+    }
+    flag --location help="Which `.npmrc` file(s) to list" default=merged {
+        long_help "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config."
+        arg <LOCATION> {
+            choices merged user project global
+        }
+    }
     cmd delete help="Delete a key from the selected `.npmrc` file" {
         alias rm remove unset
         flag --local help="Shortcut for `--location project`"
@@ -193,6 +208,13 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
             }
         }
         arg <KEY> help="The setting key" help_long="The setting key.\n\nAccepts either a pnpm canonical name (e.g. `autoInstallPeers`) or an `.npmrc` alias (e.g. `auto-install-peers`)."
+    }
+    cmd explain help="Explain a known setting, including defaults and supported config sources" {
+        arg <KEY> help="Setting key, `.npmrc` alias, env var, workspace YAML key, or CLI flag"
+    }
+    cmd find help="Search known settings by name, source key, or description" {
+        alias search
+        arg <QUERY>… help="Words to search for" var=#true
     }
     cmd get help="Print the effective value of a key" {
         flag --json help="Emit the value as JSON" {
@@ -236,6 +258,7 @@ cmd config subcommand_required=#true help="Read and write settings in `.npmrc`" 
         arg <KEY> help="Setting key (canonical name or `.npmrc` alias)"
         arg <VALUE> help="Value to write. Stored verbatim after `key=`"
     }
+    cmd tui help="Browse known settings in an interactive terminal UI"
 }
 cmd create help="Scaffold a project from a `create-*` starter kit (via dlx)" {
     arg "[PARAMS]…" help="Template package name followed by any args to pass through to the scaffold binary" help_long="Template package name followed by any args to pass through to the scaffold binary.\n\nThe first positional is the template; the rest are forwarded verbatim to `create-<template>`." required=#false double_dash=automatic var=#true
