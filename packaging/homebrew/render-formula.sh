@@ -17,6 +17,8 @@ class Aube < Formula
 
   depends_on "rust" => :build
   depends_on "usage" => :build
+  depends_on "cmake" => :build
+  depends_on "pkgconf" => :build
 
   def install
     system "cargo", "install", *std_cargo_args(path: "crates/aube")
