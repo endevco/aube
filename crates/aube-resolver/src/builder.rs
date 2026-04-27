@@ -118,7 +118,9 @@ impl Resolver {
     /// two `resolved_times.insert` call sites on this predicate so
     /// Highest-mode installs never populate the map.
     pub(crate) fn should_record_times(&self) -> bool {
-        self.resolution_mode == ResolutionMode::TimeBased || self.minimum_release_age.is_some()
+        self.resolution_mode == ResolutionMode::TimeBased
+            || self.minimum_release_age.is_some()
+            || self.dependency_policy.trust_policy == crate::TrustPolicy::NoDowngrade
     }
 
     /// Override the default `auto-install-peers=true` behavior. pnpm reads

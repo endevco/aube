@@ -614,6 +614,7 @@ mod tests {
                     bin: BTreeMap::new(),
                     has_install_script: false,
                     deprecated: None,
+                    npm_user: None,
                 },
             );
         }

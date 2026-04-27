@@ -228,14 +228,17 @@ precedence = ["workspaceYaml", "npmrc"]
 examples = []
 
 [trustPolicy]
-description = "Behavior when a package's trust level decreases between installs."
+description = "Fail install when a package's trust evidence weakens between releases."
 type = '"no-downgrade" | "off"'
 default = "\"off\""
 docs = """
-When set to `no-downgrade`, aube accepts and preserves the policy in the
-resolver configuration. Registry trust metadata is not exposed through
-aube's packument path yet, so no downgrade failure can fire until that
-metadata source lands.
+When `no-downgrade`, aube rejects a version that carries weaker trust evidence
+than any earlier-published version of the same package. Recognized evidence:
+npm trusted-publisher (`_npmUser.trustedPublisher`) outranks sigstore provenance
+(`dist.attestations.provenance`). Set to `off` to disable.
+
+This defaults to `off` today and is planned to default to `no-downgrade` in
+the next major version.
 """
 sources.cli = []
 sources.env = ["npm_config_trust_policy", "NPM_CONFIG_TRUST_POLICY", "AUBE_TRUST_POLICY"]
@@ -244,10 +247,14 @@ sources.workspaceYaml = ["trustPolicy"]
 examples = []
 
 [trustPolicyExclude]
-description = "Packages exempt from trust policy checks."
+description = "Packages exempt from `trustPolicy` checks."
 type = "list<string>"
 default = "[]"
-docs = "Whitelist for `trustPolicy`. Entries skip the downgrade check."
+docs = """
+Patterns: `name`, `name@1.0.0`, `name@1.0.0 || 1.0.1` (exact versions only —
+no `^`/`~`/`>=`), `is-*` (name glob, no version), `@scope/name@1.0.0`.
+Empty list disables exclusions.
+"""
 sources.cli = []
 sources.env = ["npm_config_trust_policy_exclude", "NPM_CONFIG_TRUST_POLICY_EXCLUDE", "AUBE_TRUST_POLICY_EXCLUDE"]
 sources.npmrc = ["trustPolicyExclude"]
@@ -255,11 +262,12 @@ sources.workspaceYaml = ["trustPolicyExclude"]
 examples = []
 
 [trustPolicyIgnoreAfter]
-description = "Ignore trust policy for packages older than this age (minutes)."
+description = "Skip the trust check for versions older than this many minutes."
 type = "int"
 default = "undefined"
 docs = """
-Useful for pinning very old versions that predate signing infrastructure.
+Versions whose publish time is older than the cutoff are exempted from
+`trustPolicy`. Leave unset to apply the check to every version.
 """
 sources.cli = []
 sources.env = ["npm_config_trust_policy_ignore_after", "NPM_CONFIG_TRUST_POLICY_IGNORE_AFTER", "AUBE_TRUST_POLICY_IGNORE_AFTER"]

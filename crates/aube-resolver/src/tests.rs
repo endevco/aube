@@ -575,6 +575,7 @@ fn make_version(name: &str, version: &str) -> VersionMetadata {
             tarball: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
             integrity: Some(format!("sha512-fake-{name}-{version}")),
             shasum: None,
+            attestations: None,
         }),
         os: vec![],
         cpu: vec![],
@@ -585,6 +586,7 @@ fn make_version(name: &str, version: &str) -> VersionMetadata {
         bin: BTreeMap::new(),
         has_install_script: false,
         deprecated: None,
+        npm_user: None,
     }
 }
 
@@ -824,6 +826,122 @@ async fn minimum_release_age_uses_modified_to_skip_full_packument() {
 
     assert!(graph_has_package(&graph, "foo", "1.0.0"));
     assert_eq!(requests.load(Ordering::Relaxed), 1);
+    server.abort();
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test]
+async fn trust_policy_no_downgrade_blocks_downgraded_install() {
+    use aube_registry::Attestations;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Three versions of `foo`. 2.0.0 has provenance attestation;
+    // 3.0.0 lost it (the supply-chain incident shape pnpm's check is
+    // designed for). With trustPolicy=no-downgrade, picking 3.0.0
+    // must fail with Error::TrustDowngrade.
+    let mut packument = make_packument("foo", &["1.0.0", "2.0.0", "3.0.0"], "3.0.0");
+    packument
+        .time
+        .insert("1.0.0".to_string(), "2025-01-01T00:00:00.000Z".to_string());
+    packument
+        .time
+        .insert("2.0.0".to_string(), "2025-02-01T00:00:00.000Z".to_string());
+    packument
+        .time
+        .insert("3.0.0".to_string(), "2025-03-01T00:00:00.000Z".to_string());
+    let v2 = packument.versions.get_mut("2.0.0").unwrap();
+    v2.dist.as_mut().unwrap().attestations = Some(Attestations {
+        provenance: Some(serde_json::json!({"predicateType": "slsa"})),
+    });
+    let body = serde_json::to_vec(&packument).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let registry = format!("http://{}/", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let request_count = requests.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            request_count.fetch_add(1, Ordering::Relaxed);
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = [0_u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            });
+        }
+    });
+
+    let base = std::env::temp_dir().join(format!(
+        "aube-resolver-trust-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(base.join("packuments")).unwrap();
+    std::fs::create_dir_all(base.join("packuments-full")).unwrap();
+
+    let client = Arc::new(aube_registry::client::RegistryClient::new(&registry));
+    let policy = crate::DependencyPolicy {
+        trust_policy: crate::TrustPolicy::NoDowngrade,
+        ..crate::DependencyPolicy::default()
+    };
+    let mut resolver = Resolver::new(client)
+        .with_packument_cache(base.join("packuments"))
+        .with_packument_full_cache(base.join("packuments-full"))
+        .with_dependency_policy(policy);
+    let mut manifest = PackageJson::default();
+    manifest
+        .dependencies
+        .insert("foo".to_string(), "3.0.0".to_string());
+
+    let err = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect_err("3.0.0 must be rejected as a trust downgrade");
+    match err {
+        Error::TrustDowngrade(d) => {
+            assert_eq!(d.name, "foo");
+            assert_eq!(d.picked_version, "3.0.0");
+            assert_eq!(d.prior_version, "2.0.0");
+            assert!(matches!(
+                d.prior_evidence,
+                crate::trust::TrustEvidence::Provenance
+            ));
+            assert!(d.current_evidence.is_none());
+        }
+        other => panic!("expected TrustDowngrade, got {other:?}"),
+    }
+
+    // Verify the suggested fix path actually unblocks the install.
+    let mut excluded_policy = crate::DependencyPolicy {
+        trust_policy: crate::TrustPolicy::NoDowngrade,
+        ..crate::DependencyPolicy::default()
+    };
+    excluded_policy.trust_policy_exclude =
+        crate::TrustExcludeRules::parse(["foo@3.0.0"]).unwrap();
+    let mut resolver = Resolver::new(Arc::new(aube_registry::client::RegistryClient::new(
+        &registry,
+    )))
+    .with_packument_cache(base.join("packuments"))
+    .with_packument_full_cache(base.join("packuments-full"))
+    .with_dependency_policy(excluded_policy);
+    let graph = resolver
+        .resolve(&manifest, None)
+        .await
+        .expect("excluded version installs cleanly");
+    assert!(graph_has_package(&graph, "foo", "3.0.0"));
+
     server.abort();
     let _ = std::fs::remove_dir_all(base);
 }

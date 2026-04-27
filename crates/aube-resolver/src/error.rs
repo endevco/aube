@@ -1,5 +1,6 @@
 use crate::ResolveTask;
 use crate::semver_util::highest_stable_version;
+use crate::trust::{MissingTimeDetails, TrustDowngradeDetails};
 use aube_registry::Packument;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +29,17 @@ pub enum Error {
         .0.name, .0.spec, .0.parent
     )]
     BlockedExoticSubdep(Box<ExoticSubdepDetails>),
+    #[error(
+        "trust downgrade for {}@{} (trustPolicy=no-downgrade): earlier published version {} had {} but this version has {}",
+        .0.name, .0.picked_version, .0.prior_version, .0.prior_evidence.label(),
+        .0.current_evidence.map_or("no trust evidence", |e| e.label())
+    )]
+    TrustDowngrade(Box<TrustDowngradeDetails>),
+    #[error(
+        "trust check failed for {}@{} (trustPolicy=no-downgrade): registry packument has no `time` entry for the picked version",
+        .0.name, .0.version
+    )]
+    TrustCheckMissingTime(Box<MissingTimeDetails>),
 }
 
 /// Context attached to a `NoMatch` error so the miette `help()` output can
@@ -107,8 +119,31 @@ impl miette::Diagnostic for Error {
             Self::UnknownCatalog(d) => Some(Box::new(format_unknown_catalog_help(d))),
             Self::UnknownCatalogEntry(d) => Some(Box::new(format_unknown_catalog_entry_help(d))),
             Self::BlockedExoticSubdep(d) => Some(Box::new(format_exotic_subdep_help(d))),
+            Self::TrustDowngrade(d) => Some(Box::new(format_trust_downgrade_help(d))),
+            Self::TrustCheckMissingTime(d) => Some(Box::new(format_trust_missing_time_help(d))),
         }
     }
+}
+
+fn format_trust_downgrade_help(d: &TrustDowngradeDetails) -> String {
+    format!(
+        "a trust downgrade may indicate a supply-chain incident — the publisher's previous releases carried {evidence} but {name}@{ver} does not.\n\
+         to bypass: pin a version that retains evidence, set `trustPolicy = off` in .npmrc / pnpm-workspace.yaml, \
+         or add `{name}` (or `{name}@{ver}`) to `trustPolicyExclude`.",
+        evidence = d.prior_evidence.label(),
+        name = d.name,
+        ver = d.picked_version,
+    )
+}
+
+fn format_trust_missing_time_help(d: &MissingTimeDetails) -> String {
+    format!(
+        "trustPolicy=no-downgrade compares against per-version publish times in the packument. \
+         The registry serving {name} omitted `time[{ver}]` — check the registry config in .npmrc, \
+         or set `trustPolicy = off` to skip the check.",
+        name = d.name,
+        ver = d.version,
+    )
 }
 
 /// Build a `NoMatchDetails` snapshot from the task that failed and the

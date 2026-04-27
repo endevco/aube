@@ -209,6 +209,14 @@ pub struct VersionMetadata {
     /// Deprecation message from the registry, if this version is deprecated.
     #[serde(default, deserialize_with = "deprecated_string")]
     pub deprecated: Option<String>,
+    /// `_npmUser` block from the packument, when present. The
+    /// trust-policy check reads `_npmUser.trustedPublisher` as the
+    /// strongest trust-evidence signal (npm's "trusted publishers"
+    /// feature, OIDC-backed). Some old packuments emit `_npmUser` as
+    /// a `"name <email>"` string rather than an object — that shape
+    /// degrades to `None` instead of failing the whole packument.
+    #[serde(default, rename = "_npmUser", deserialize_with = "npm_user_tolerant")]
+    pub npm_user: Option<NpmUser>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -217,11 +225,33 @@ pub struct PeerDepMeta {
     pub optional: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct NpmUser {
+    /// Truthy when the publish came from an npm "trusted publisher"
+    /// (e.g. GitHub Actions OIDC). Pnpm's trust-policy check treats
+    /// presence of any non-null value here as the strongest evidence
+    /// (rank 2, above provenance attestations).
+    #[serde(default, rename = "trustedPublisher")]
+    pub trusted_publisher: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Dist {
     pub tarball: String,
     pub integrity: Option<String>,
     pub shasum: Option<String>,
+    /// Sigstore attestations block. The trust-policy check reads
+    /// `dist.attestations.provenance` as a rank-1 trust-evidence
+    /// signal (`npm publish --provenance`). Existence is the only
+    /// signal we read — neither pnpm nor aube validates the bundle.
+    #[serde(default)]
+    pub attestations: Option<Attestations>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Attestations {
+    #[serde(default)]
+    pub provenance: Option<serde_json::Value>,
 }
 
 fn deprecated_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
@@ -282,6 +312,23 @@ where
                 .map(String::from),
             _ => None,
         }),
+        _ => None,
+    })
+}
+
+/// Accept the packument's `_npmUser:` field in its documented shapes
+/// and degrade to `None` for anything else. Modern packuments emit an
+/// object (`{name, email, trustedPublisher?}`); pre-2010 publishes
+/// emit `"name <email>"` strings. We only care about
+/// `trustedPublisher`, so unparseable shapes don't fail the packument
+/// — they just lose the trusted-publisher signal for that version.
+fn npm_user_tolerant<'de, D>(de: D) -> Result<Option<NpmUser>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(de)?;
+    Ok(match value {
+        Some(v @ serde_json::Value::Object(_)) => serde_json::from_value(v).ok(),
         _ => None,
     })
 }
@@ -460,6 +507,7 @@ mod tests {
             bin,
             has_install_script: false,
             deprecated: None,
+            npm_user: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         let back: VersionMetadata = serde_json::from_str(&json).unwrap();
@@ -476,6 +524,57 @@ mod tests {
         assert!(v.os.is_empty());
         assert!(v.cpu.is_empty());
         assert!(v.libc.is_empty());
+    }
+
+    #[test]
+    fn attestations_provenance_is_extracted() {
+        let v = parse(
+            r#"{"name":"x","version":"1.0.0",
+                "dist":{"tarball":"t","attestations":{"provenance":{"predicateType":"slsa"}}}}"#,
+        );
+        let dist = v.dist.expect("dist present");
+        let att = dist.attestations.expect("attestations present");
+        assert!(att.provenance.is_some(), "provenance present");
+    }
+
+    #[test]
+    fn attestations_missing_is_none() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","dist":{"tarball":"t"}}"#);
+        let dist = v.dist.expect("dist present");
+        assert!(dist.attestations.is_none());
+    }
+
+    #[test]
+    fn npm_user_object_with_trusted_publisher_is_parsed() {
+        let v = parse(
+            r#"{"name":"x","version":"1.0.0",
+                "_npmUser":{"name":"u","email":"u@x","trustedPublisher":{"id":"gh"}}}"#,
+        );
+        let user = v.npm_user.expect("_npmUser present");
+        assert!(user.trusted_publisher.is_some());
+    }
+
+    #[test]
+    fn npm_user_object_without_trusted_publisher_is_parsed() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","_npmUser":{"name":"u","email":"u@x"}}"#);
+        let user = v.npm_user.expect("_npmUser present");
+        assert!(user.trusted_publisher.is_none());
+    }
+
+    /// Pre-2010 publishes serialize `_npmUser` as a `"name <email>"`
+    /// string. Degrade to `None` instead of failing the whole packument.
+    #[test]
+    fn npm_user_string_form_degrades_to_none() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","_npmUser":"isaacs <i@npmjs.com>"}"#);
+        assert!(v.npm_user.is_none());
+    }
+
+    #[test]
+    fn npm_user_null_or_missing_is_none() {
+        let v_null = parse(r#"{"name":"x","version":"1.0.0","_npmUser":null}"#);
+        assert!(v_null.npm_user.is_none());
+        let v_missing = parse(r#"{"name":"x","version":"1.0.0"}"#);
+        assert!(v_missing.npm_user.is_none());
     }
 
     #[test]

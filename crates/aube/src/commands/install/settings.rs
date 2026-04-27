@@ -388,9 +388,23 @@ pub(crate) fn resolve_dependency_policy(
         }
         aube_settings::resolved::TrustPolicy::Off => aube_resolver::TrustPolicy::Off,
     };
-    policy.trust_policy_exclude = aube_settings::resolved::trust_policy_exclude(ctx)
+    // Parse trustPolicyExclude pattern-by-pattern so one malformed entry
+    // doesn't drop the rest. The user needs visible feedback when their
+    // exclude isn't being applied — silently dropping all rules would
+    // turn what looked like an opt-in into a security regression.
+    let trust_excludes = aube_settings::resolved::trust_policy_exclude(ctx);
+    let valid: Vec<String> = trust_excludes
         .into_iter()
+        .filter(|p| match aube_resolver::TrustExcludeRules::parse(std::iter::once(p.as_str())) {
+            Ok(_) => true,
+            Err(err) => {
+                tracing::warn!(error = %err, "ignoring malformed trustPolicyExclude entry");
+                false
+            }
+        })
         .collect();
+    policy.trust_policy_exclude =
+        aube_resolver::TrustExcludeRules::parse(valid).unwrap_or_default();
     policy.trust_policy_ignore_after = aube_settings::resolved::trust_policy_ignore_after(ctx);
     policy.block_exotic_subdeps = aube_settings::resolved::block_exotic_subdeps(ctx);
 

@@ -21,9 +21,9 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
-| [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Behavior when a package's trust level decreases between installs. |
-| [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from trust policy checks. |
-| [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | Ignore trust policy for packages older than this age (minutes). |
+| [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Fail install when a package's trust evidence weakens between releases. |
+| [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from `trustPolicy` checks. |
+| [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | Skip the trust check for versions older than this many minutes. |
 | [`blockExoticSubdeps`](#setting-blockexoticsubdeps) | `bool` | Restrict transitive dependencies to trusted sources (registries, not git/tarball URLs). |
 | [`registries`](#setting-registries) | `object` | Registry URLs, including scoped registry overrides. |
 | [`hoist`](#setting-hoist) | `bool` | Hoist all dependencies to the hidden modules directory. |
@@ -300,7 +300,7 @@ resolver fails the install instead.
 
 ### `trustPolicy` {#setting-trustpolicy}
 
-Behavior when a package's trust level decreases between installs.
+Fail install when a package's trust evidence weakens between releases.
 
 - Type: `"no-downgrade" | "off"`
 - Default: `"off"`
@@ -308,14 +308,17 @@ Behavior when a package's trust level decreases between installs.
 - .npmrc keys: `trustPolicy`, `trust-policy`
 - Workspace YAML keys: `trustPolicy`
 
-When set to `no-downgrade`, aube accepts and preserves the policy in the
-resolver configuration. Registry trust metadata is not exposed through
-aube's packument path yet, so no downgrade failure can fire until that
-metadata source lands.
+When `no-downgrade`, aube rejects a version that carries weaker trust evidence
+than any earlier-published version of the same package. Recognized evidence:
+npm trusted-publisher (`_npmUser.trustedPublisher`) outranks sigstore provenance
+(`dist.attestations.provenance`). Set to `off` to disable.
+
+This defaults to `off` today and is planned to default to `no-downgrade` in
+the next major version.
 
 ### `trustPolicyExclude` {#setting-trustpolicyexclude}
 
-Packages exempt from trust policy checks.
+Packages exempt from `trustPolicy` checks.
 
 - Type: `list<string>`
 - Default: `[]`
@@ -323,11 +326,13 @@ Packages exempt from trust policy checks.
 - .npmrc keys: `trustPolicyExclude`, `trust-policy-exclude`
 - Workspace YAML keys: `trustPolicyExclude`
 
-Whitelist for `trustPolicy`. Entries skip the downgrade check.
+Patterns: `name`, `name@1.0.0`, `name@1.0.0 || 1.0.1` (exact versions only —
+no `^`/`~`/`>=`), `is-*` (name glob, no version), `@scope/name@1.0.0`.
+Empty list disables exclusions.
 
 ### `trustPolicyIgnoreAfter` {#setting-trustpolicyignoreafter}
 
-Ignore trust policy for packages older than this age (minutes).
+Skip the trust check for versions older than this many minutes.
 
 - Type: `int`
 - Default: `undefined`
@@ -335,7 +340,8 @@ Ignore trust policy for packages older than this age (minutes).
 - .npmrc keys: `trustPolicyIgnoreAfter`, `trust-policy-ignore-after`
 - Workspace YAML keys: `trustPolicyIgnoreAfter`
 
-Useful for pinning very old versions that predate signing infrastructure.
+Versions whose publish time is older than the cutoff are exempted from
+`trustPolicy`. Leave unset to apply the check to every version.
 
 ### `blockExoticSubdeps` {#setting-blockexoticsubdeps}
 
