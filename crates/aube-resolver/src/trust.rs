@@ -62,8 +62,23 @@ pub fn evidence_for(meta: &VersionMetadata) -> Option<TrustEvidence> {
     None
 }
 
+/// JS-style truthiness for `_npmUser.trustedPublisher`. Pnpm's check
+/// is `manifest._npmUser?.trustedPublisher`, which evaluates the value
+/// in a boolean context — so we have to reject every JS falsy value,
+/// not just `null`/`false`. Falsy: `null`, `false`, `0`, `""`, `NaN`.
+/// Truthy: every object (including `{}`), every array (including `[]`),
+/// every non-zero number, every non-empty string. In practice the
+/// field is always either an object or absent, but matching JS
+/// semantics keeps a hostile registry from sneaking trust evidence
+/// past us via `0` or an empty string.
 fn is_truthy(v: &serde_json::Value) -> bool {
-    !matches!(v, serde_json::Value::Null | serde_json::Value::Bool(false))
+    match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64().is_none_or(|f| f != 0.0 && !f.is_nan()),
+        serde_json::Value::String(s) => !s.is_empty(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => true,
+    }
 }
 
 #[derive(Debug)]
@@ -251,6 +266,32 @@ impl TrustExcludeRules {
             rules.push(parse_one(pattern)?);
         }
         Ok(Self { rules })
+    }
+
+    /// Parse a list of patterns, keeping every rule that succeeds and
+    /// returning the per-pattern errors for everything that didn't.
+    /// Lets the caller log malformed entries individually without
+    /// dropping the rules that did parse — a strict batch `parse` would
+    /// turn one typo into a silent security regression where every
+    /// exclude vanishes.
+    pub fn parse_lossy<I, S>(patterns: I) -> (Self, Vec<TrustExcludeParseError>)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut rules = Vec::new();
+        let mut errors = Vec::new();
+        for pattern in patterns {
+            let pattern = pattern.as_ref();
+            if pattern.is_empty() {
+                continue;
+            }
+            match parse_one(pattern) {
+                Ok(rule) => rules.push(rule),
+                Err(err) => errors.push(err),
+            }
+        }
+        (Self { rules }, errors)
     }
 
     fn matches(&self, name: &str, version: &node_semver::Version) -> bool {
@@ -475,14 +516,43 @@ mod tests {
     #[test]
     fn evidence_falsy_trusted_publisher_is_none() {
         let mut v = version("foo", "1.0.0");
-        v.npm_user = Some(NpmUser {
-            trusted_publisher: Some(serde_json::Value::Bool(false)),
-        });
-        assert_eq!(evidence_for(&v), None);
-        v.npm_user = Some(NpmUser {
-            trusted_publisher: Some(serde_json::Value::Null),
-        });
-        assert_eq!(evidence_for(&v), None);
+        for falsy in [
+            serde_json::Value::Bool(false),
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(0.0),
+            serde_json::json!(""),
+        ] {
+            v.npm_user = Some(NpmUser {
+                trusted_publisher: Some(falsy.clone()),
+            });
+            assert_eq!(evidence_for(&v), None, "{falsy:?} should be falsy");
+        }
+    }
+
+    #[test]
+    fn evidence_truthy_non_object_trusted_publisher_counts() {
+        // JS truthy values that aren't objects: non-zero numbers,
+        // non-empty strings, empty arrays/objects. Real registries only
+        // ever emit an object here, but match JS semantics for
+        // defense-in-depth against a hostile/buggy registry.
+        let mut v = version("foo", "1.0.0");
+        for truthy in [
+            serde_json::json!(true),
+            serde_json::json!(1),
+            serde_json::json!("oidc:gh"),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            v.npm_user = Some(NpmUser {
+                trusted_publisher: Some(truthy.clone()),
+            });
+            assert_eq!(
+                evidence_for(&v),
+                Some(TrustEvidence::TrustedPublisher),
+                "{truthy:?} should be truthy"
+            );
+        }
     }
 
     #[test]
@@ -831,6 +901,23 @@ mod tests {
             err,
             TrustExcludeParseError::NameGlobWithVersions { .. }
         ));
+    }
+
+    #[test]
+    fn parse_lossy_keeps_valid_drops_invalid() {
+        let (rules, errors) = TrustExcludeRules::parse_lossy([
+            "good",
+            "bad@^1.0.0",
+            "@scope/also-good@1.0.0",
+            "is-*@nope",
+        ]);
+        // Two valid rules survive; two invalid surface as separate errors.
+        assert!(rules.matches("good", &node_semver::Version::parse("1.0.0").unwrap()));
+        assert!(rules.matches(
+            "@scope/also-good",
+            &node_semver::Version::parse("1.0.0").unwrap()
+        ));
+        assert_eq!(errors.len(), 2, "two malformed entries reported");
     }
 
     #[test]

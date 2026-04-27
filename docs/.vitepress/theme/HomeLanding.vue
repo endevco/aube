@@ -413,19 +413,20 @@ watch(progressBarEl, (el, previousEl) => {
             <i>blocked</i>
           </span>
           <span class="aube-script-row">
-            <b>trust downgrades</b>
-            <i>blocked</i>
+            <b>build scripts</b>
+            <i>deny by default</i>
           </span>
           <span class="aube-script-row">
-            <b>jailed builds</b>
+            <b>paranoid</b>
             <i>opt in</i>
           </span>
         </span>
         <strong>Supply-chain defaults across the install path.</strong>
         <span>
-          Lifecycle scripts denied until approved, trust downgrades caught at
-          resolve, and approved scripts run in a package-scoped jail. One
-          <code>paranoid: true</code> flips on the strict bundle.
+          Out of the box, exotic transitive deps are blocked and lifecycle
+          scripts wait for approval. One <code>paranoid: true</code> adds
+          trust-downgrade detection at resolve and runs approved scripts in a
+          package-scoped jail.
         </span>
         <span class="aube-proof-link">Security overview -></span>
       </a>
