@@ -192,7 +192,7 @@ cmd config help="Read and write settings in `.npmrc`" {
     flag --local help="Shortcut for `--location project`" {
         long_help "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why."
     }
-    flag --location help="Which `.npmrc` file(s) to list" default=merged {
+    flag --location help="Which `.npmrc` file(s) to list" {
         long_help "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config."
         arg <LOCATION> {
             choices merged user project global
@@ -240,7 +240,7 @@ cmd config help="Read and write settings in `.npmrc`" {
         flag --local help="Shortcut for `--location project`" {
             long_help "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why."
         }
-        flag --location help="Which `.npmrc` file(s) to list" default=merged {
+        flag --location help="Which `.npmrc` file(s) to list" {
             long_help "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config."
             arg <LOCATION> {
                 choices merged user project global

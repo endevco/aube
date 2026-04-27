@@ -38,5 +38,3 @@ Which `.npmrc` file(s) to list.
 - `user`
 - `project`
 - `global`
-
-**Default:** `merged`

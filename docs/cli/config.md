@@ -38,8 +38,6 @@ Which `.npmrc` file(s) to list.
 - `project`
 - `global`
 
-**Default:** `merged`
-
 ## Subcommands
 
 - [`aube config delete [--local] [--location <LOCATION>] <KEY>`](/cli/config/delete.md)
