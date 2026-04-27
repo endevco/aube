@@ -1426,18 +1426,6 @@ pub fn git_shallow_clone(
     // under different shallow settings can reuse each other's work,
     // and `import_directory` ignores `.git/` so the store sees
     // identical output either way.
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(url.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(commit.as_bytes());
-    let digest = hasher.finalize();
-    let key: String = digest
-        .as_bytes()
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let commit_short = commit.get(..commit.len().min(12)).unwrap_or(commit);
     // Keep git scratch out of world-writable /tmp. Predictable names
     // under $TMPDIR are the classic symlink pre-plant vector. Attacker
     // creates /tmp/aube-git-<k>-<c> as a symlink into $HOME/.ssh, then
@@ -1459,6 +1447,31 @@ pub fn git_shallow_clone(
             );
         }
     }
+    // Cache key derives from `(url, commit_input)`. When the caller
+    // passes an abbreviated SHA, the initial target lands under that
+    // key; after the clone, we re-key to the canonical full SHA so
+    // a follow-up call (typically the installer reading the
+    // lockfile-pinned full SHA) hits the same checkout instead of
+    // re-cloning.
+    let cache_key = |key_input: &str| -> (String, String) {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(url.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(key_input.as_bytes());
+        let digest = hasher.finalize();
+        let key: String = digest
+            .as_bytes()
+            .iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let short = key_input
+            .get(..key_input.len().min(12))
+            .unwrap_or(key_input)
+            .to_string();
+        (key, short)
+    };
+    let (key, commit_short) = cache_key(commit);
     let target = git_root.join(format!("aube-git-{key}-{commit_short}"));
 
     // Fast path: a previous call already finished this (url, commit)
@@ -1581,7 +1594,10 @@ pub fn git_shallow_clone(
     //    with ENOTEMPTY/EEXIST. Verify the existing target has our
     //    commit and reuse it; otherwise remove it and retry once.
     match aube_util::fs_atomic::rename_with_retry(&scratch, &target) {
-        Ok(()) => Ok((target, head_sha)),
+        Ok(()) => Ok((
+            canonicalize_clone_dir(&target, commit, &head_sha, &cache_key),
+            head_sha,
+        )),
         Err(_) => {
             if target.join(".git").is_dir()
                 && let Ok(out) = Command::new("git")
@@ -1593,7 +1609,10 @@ pub fn git_shallow_clone(
                 let head = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if git_commit_matches(&head, commit) {
                     let _ = std::fs::remove_dir_all(&scratch);
-                    return Ok((target, head));
+                    return Ok((
+                        canonicalize_clone_dir(&target, commit, &head, &cache_key),
+                        head,
+                    ));
                 }
             }
             // Stale target — clear and retry the rename. Any
@@ -1605,8 +1624,45 @@ pub fn git_shallow_clone(
                 let _ = std::fs::remove_dir_all(&scratch);
                 Error::Git(format!("rename clone into place: {e}"))
             })?;
-            Ok((target, head_sha))
+            Ok((
+                canonicalize_clone_dir(&target, commit, &head_sha, &cache_key),
+                head_sha,
+            ))
         }
+    }
+}
+
+/// Re-key an abbreviated-SHA cache directory to its canonical
+/// full-SHA path so a follow-up `git_shallow_clone` call (e.g. the
+/// installer reading the lockfile-pinned full SHA) reuses the
+/// existing checkout instead of cloning again. No-op when `commit`
+/// already matches `head_sha`. Best-effort: if the rename fails
+/// (cross-FS, race, perms), leaves the original path intact and
+/// the caller pays one extra clone next time.
+fn canonicalize_clone_dir(
+    target: &Path,
+    commit: &str,
+    head_sha: &str,
+    cache_key: &dyn Fn(&str) -> (String, String),
+) -> PathBuf {
+    if commit.eq_ignore_ascii_case(head_sha) {
+        return target.to_path_buf();
+    }
+    let parent = match target.parent() {
+        Some(p) => p,
+        None => return target.to_path_buf(),
+    };
+    let (key, short) = cache_key(head_sha);
+    let canonical = parent.join(format!("aube-git-{key}-{short}"));
+    if canonical.join(".git").is_dir() {
+        // Race: another caller already wrote the canonical entry.
+        // Drop our duplicate so disk doesn't bloat with two copies.
+        let _ = std::fs::remove_dir_all(target);
+        return canonical;
+    }
+    match aube_util::fs_atomic::rename_with_retry(target, &canonical) {
+        Ok(()) => canonical,
+        Err(_) => target.to_path_buf(),
     }
 }
 
