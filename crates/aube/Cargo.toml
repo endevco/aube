@@ -72,7 +72,7 @@ rayon = { workspace = true }
 tar = { workspace = true }
 tempfile = "3"
 diffy = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 pathdiff = "0.2"
 is_ci = "1"
 ci_info = "0.14"

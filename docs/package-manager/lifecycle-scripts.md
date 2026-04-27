@@ -77,8 +77,8 @@ jailBuilds: true
 
 With `jailBuilds` enabled, approved dependency `preinstall`, `install`, and
 `postinstall` scripts run with a scrubbed environment and a temporary `HOME`.
-On macOS, aube also applies a native Seatbelt profile that denies network
-access and restricts filesystem writes to the package directory and temporary
+On macOS and Linux, aube also applies a native jail that denies network access
+and restricts filesystem writes to the package directory and temporary
 directories.
 
 `jailBuilds` defaults to `false` today and is planned to default to `true` in
