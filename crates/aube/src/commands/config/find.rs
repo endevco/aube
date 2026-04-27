@@ -1,4 +1,4 @@
-use super::{setting_search_score, settings_meta};
+use super::{literal_aliases, setting_search_score, settings_meta};
 use clap::Args;
 
 #[derive(Debug, Args)]
@@ -33,7 +33,10 @@ pub fn run(args: FindArgs) -> miette::Result<()> {
     }
 
     for (_, meta) in matches.into_iter().take(20) {
-        let key = meta.npmrc_keys.first().copied().unwrap_or(meta.name);
+        let key = literal_aliases(meta.npmrc_keys)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| meta.name.to_string());
         println!("{} ({}) - {}", meta.name, key, meta.description);
     }
 

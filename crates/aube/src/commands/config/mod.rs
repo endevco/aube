@@ -14,11 +14,13 @@ mod get_cmd;
 mod list;
 #[path = "set.rs"]
 mod set_cmd;
+#[cfg(feature = "config-tui")]
 mod tui;
 
 use crate::commands::npmrc::{NpmrcEdit, user_npmrc_path};
 use aube_settings::meta as settings_meta;
 use clap::{Args, Subcommand, ValueEnum};
+use miette::miette;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Args)]
@@ -117,14 +119,56 @@ impl Location {
 
 pub async fn run(args: ConfigArgs) -> miette::Result<()> {
     match args.command {
-        Some(ConfigCommand::Get(a)) => get(a),
-        Some(ConfigCommand::Set(a)) => set(a),
-        Some(ConfigCommand::Delete(a)) => delete::run(a),
-        Some(ConfigCommand::Explain(a)) => explain::run(a),
-        Some(ConfigCommand::Find(a)) => find::run(a),
-        Some(ConfigCommand::List(a)) => list::run(a),
-        Some(ConfigCommand::Tui) => tui::run(),
+        Some(ConfigCommand::Get(a)) => {
+            reject_parent_list_args(&args.list, "get")?;
+            get(a)
+        }
+        Some(ConfigCommand::Set(a)) => {
+            reject_parent_list_args(&args.list, "set")?;
+            set(a)
+        }
+        Some(ConfigCommand::Delete(a)) => {
+            reject_parent_list_args(&args.list, "delete")?;
+            delete::run(a)
+        }
+        Some(ConfigCommand::Explain(a)) => {
+            reject_parent_list_args(&args.list, "explain")?;
+            explain::run(a)
+        }
+        Some(ConfigCommand::Find(a)) => {
+            reject_parent_list_args(&args.list, "find")?;
+            find::run(a)
+        }
+        Some(ConfigCommand::List(mut a)) => {
+            a.apply_parent(args.list);
+            list::run(a)
+        }
+        Some(ConfigCommand::Tui) => {
+            reject_parent_list_args(&args.list, "tui")?;
+            tui::run()
+        }
         None => list::run(args.list),
+    }
+}
+
+fn reject_parent_list_args(args: &list::ListArgs, subcommand: &str) -> miette::Result<()> {
+    if args.has_parent_overrides() {
+        Err(miette!(
+            "`aube config` list flags must be used with `aube config` or `aube config list`, not `aube config {subcommand}`"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(feature = "config-tui"))]
+mod tui {
+    use miette::miette;
+
+    pub fn run() -> miette::Result<()> {
+        Err(miette!(
+            "`aube config tui` was not enabled in this build; rebuild with the `config-tui` feature"
+        ))
     }
 }
 

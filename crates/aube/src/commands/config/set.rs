@@ -31,18 +31,29 @@ impl SetArgs {
 }
 
 pub fn run(args: SetArgs) -> miette::Result<()> {
-    let aliases = resolve_aliases(&args.key);
-    let write_key = preferred_write_key(&args.key, &aliases);
-    let path = args.effective_location().path()?;
+    set_value(&args.key, &args.value, args.effective_location(), true)
+}
+
+pub(super) fn set_value(
+    key: &str,
+    value: &str,
+    location: Location,
+    report: bool,
+) -> miette::Result<()> {
+    let aliases = resolve_aliases(key);
+    let write_key = preferred_write_key(key, &aliases);
+    let path = location.path()?;
     let mut edit = NpmrcEdit::load(&path)?;
     for alias in &aliases {
         if alias != &write_key {
             edit.remove(alias);
         }
     }
-    edit.set(&write_key, &args.value);
+    edit.set(&write_key, value);
     edit.save(&path)?;
-    eprintln!("set {}={} ({})", write_key, args.value, path.display());
+    if report {
+        eprintln!("set {}={} ({})", write_key, value, path.display());
+    }
     Ok(())
 }
 

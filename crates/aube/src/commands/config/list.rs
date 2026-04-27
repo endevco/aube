@@ -36,8 +36,8 @@ pub struct ListArgs {
     /// `merged` (default) walks `~/.npmrc` then the project's
     /// `.npmrc` with last-write-wins precedence, matching how install
     /// reads config.
-    #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
-    pub location: ListLocation,
+    #[arg(long, value_enum)]
+    pub location: Option<ListLocation>,
 }
 
 impl ListArgs {
@@ -45,7 +45,20 @@ impl ListArgs {
         if self.local {
             ListLocation::Project
         } else {
-            self.location
+            self.location.unwrap_or(ListLocation::Merged)
+        }
+    }
+
+    pub(super) fn has_parent_overrides(&self) -> bool {
+        self.all || self.json || self.local || self.location.is_some()
+    }
+
+    pub(super) fn apply_parent(&mut self, parent: Self) {
+        self.all |= parent.all;
+        self.json |= parent.json;
+        self.local |= parent.local;
+        if self.location.is_none() {
+            self.location = parent.location;
         }
     }
 }
@@ -87,7 +100,17 @@ pub fn run(args: ListArgs) -> miette::Result<()> {
     if args.json {
         let obj: serde_json::Map<String, serde_json::Value> = seen
             .into_iter()
-            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .map(|(k, v)| {
+                let value = if args.all {
+                    serde_json::json!({
+                        "value": v,
+                        "default": defaults.contains(&k),
+                    })
+                } else {
+                    serde_json::Value::String(v)
+                };
+                (k, value)
+            })
             .collect();
         let out = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
             .map_err(|e| miette!("failed to serialize config: {e}"))?;

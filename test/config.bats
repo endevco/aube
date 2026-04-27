@@ -139,6 +139,35 @@ teardown() {
 	assert_output --partial "auto-install-peers=true (default)"
 }
 
+@test "config list honors parent list flags" {
+	run aube config --all list
+	assert_success
+	assert_output --partial "auto-install-peers=true (default)"
+}
+
+@test "config rejects parent list flags with non-list subcommands" {
+	run aube config --all set registry https://registry.example.com/
+	assert_failure
+	assert_output --partial "list flags must be used with"
+}
+
+@test "config rejects parent list flags with tui subcommand" {
+	run aube config --json tui
+	assert_failure
+	assert_output --partial "list flags must be used with"
+}
+
+@test "config list subcommand location overrides parent location" {
+	echo "registry=https://user.example.com/" >"$HOME/.npmrc"
+	mkdir proj
+	echo "registry=https://project.example.com/" >proj/.npmrc
+	cd proj
+	run aube config --location project list --location user
+	assert_success
+	assert_output --partial "registry=https://user.example.com/"
+	refute_output --partial "project.example.com"
+}
+
 @test "config list --location project only reads project .npmrc" {
 	mkdir proj
 	echo "registry=https://user.example.com/" >"$HOME/.npmrc"
@@ -243,13 +272,15 @@ teardown() {
 	assert_output "true"
 }
 
-@test "config list --all --json emits defaults as plain values (no annotation)" {
+@test "config list --all --json marks default values" {
 	# Nothing is set — every row in the output is a default, and the JSON
-	# value must not contain the " (default)" suffix the text view uses.
-	run bash -c 'aube config list --all --json | jq -r ".[\"auto-install-peers\"]"'
+	# value should preserve the default-vs-explicit distinction.
+	run bash -c 'aube config list --all --json | jq -r ".[\"auto-install-peers\"].value"'
 	assert_success
-	# Plain string, not "true (default)".
-	refute_output --partial "(default)"
+	assert_output "true"
+	run bash -c 'aube config list --all --json | jq -r ".[\"auto-install-peers\"].default"'
+	assert_success
+	assert_output "true"
 
 	# The parallel text view should still annotate defaults, so the two
 	# outputs stay distinguishable for humans vs. machines.
