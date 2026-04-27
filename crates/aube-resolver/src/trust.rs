@@ -531,6 +531,28 @@ mod tests {
     }
 
     #[test]
+    fn evidence_falsy_provenance_is_none() {
+        // Symmetric with the trustedPublisher truthiness check —
+        // `dist.attestations.provenance` is also evaluated in JS
+        // boolean context in pnpm, so falsy values must not count
+        // as evidence. Real registries always emit an object here,
+        // but this guards against a hostile registry shipping
+        // `provenance: false` to bypass the no-downgrade check.
+        let mut v = version("foo", "1.0.0");
+        for falsy in [
+            serde_json::Value::Bool(false),
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(""),
+        ] {
+            v.dist.as_mut().unwrap().attestations = Some(Attestations {
+                provenance: Some(falsy.clone()),
+            });
+            assert_eq!(evidence_for(&v), None, "{falsy:?} should be falsy");
+        }
+    }
+
+    #[test]
     fn evidence_truthy_non_object_trusted_publisher_counts() {
         // JS truthy values that aren't objects: non-zero numbers,
         // non-empty strings, empty arrays/objects. Real registries only
