@@ -131,6 +131,13 @@ gtag('config', 'G-WD1RRC0F8C');`,
         ],
       },
       {
+        text: "Security",
+        items: [
+          { text: "Overview", link: "/security" },
+          { text: "Jailed builds", link: "/package-manager/jailed-builds" },
+        ],
+      },
+      {
         text: "Performance",
         items: [
           { text: "Benchmarks", link: "/benchmarks" },
