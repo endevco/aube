@@ -207,11 +207,11 @@ struct RawBunMeta {
     bin: serde_json::Value,
     /// Platform filters — bun writes arrays of `os` / `cpu` / `libc`
     /// entries on meta blocks for optional platform packages.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     os: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     cpu: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     libc: Vec<String>,
     /// Unknown per-entry meta fields preserved for round-trip
     /// (`deprecated`, `hasInstallScript`, anything new bun adds).
@@ -2903,6 +2903,31 @@ mod tests {
         assert_eq!(foo2.os, foo.os);
         assert_eq!(foo2.cpu, foo.cpu);
         assert_eq!(foo2.libc, foo.libc);
+    }
+
+    #[test]
+    fn test_parse_scalar_platform_metadata() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('a');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": { "": { "dependencies": { "@esbuild/darwin-arm64": "0.27.2" } } },
+  "packages": {
+    "@esbuild/darwin-arm64": ["@esbuild/darwin-arm64@0.27.2", "", {
+      "os": "darwin",
+      "cpu": "arm64",
+      "libc": "glibc"
+    }, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let pkg = &graph.packages["@esbuild/darwin-arm64@0.27.2"];
+        assert_eq!(pkg.os.as_slice(), &["darwin".to_string()]);
+        assert_eq!(pkg.cpu.as_slice(), &["arm64".to_string()]);
+        assert_eq!(pkg.libc.as_slice(), &["glibc".to_string()]);
     }
 
     /// Workspace-level `peerDependencies` must survive round-trip

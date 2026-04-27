@@ -168,6 +168,45 @@ EOF
 	[ "$first_lockfile" = "$second_lockfile" ]
 }
 
+@test "aube install honors git resolved URL from package-lock.json" {
+	sha="$(_make_git_repo "$TEST_TEMP_DIR/pkg-lock-git.git" pkglockgit 4.5.6)"
+
+	mkdir -p app
+	cd app
+	cat >package.json <<EOF
+{"name":"app","version":"0.0.0","dependencies":{"pkglockgit":"git+file://$TEST_TEMP_DIR/pkg-lock-git.git#$sha"}}
+EOF
+	cat >package-lock.json <<EOF
+{
+  "name": "app",
+  "version": "0.0.0",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "app",
+      "version": "0.0.0",
+      "dependencies": {
+        "pkglockgit": "git+file://$TEST_TEMP_DIR/pkg-lock-git.git#$sha"
+      }
+    },
+    "node_modules/pkglockgit": {
+      "version": "4.5.6",
+      "resolved": "git+file://$TEST_TEMP_DIR/pkg-lock-git.git#$sha"
+    }
+  }
+}
+EOF
+
+	run aube -v install
+	assert_success
+	assert_output --partial "package-lock.json: 1 packages"
+	assert_file_exists node_modules/pkglockgit/package.json
+	assert_file_exists node_modules/pkglockgit/index.js
+	run cat node_modules/pkglockgit/package.json
+	assert_output --partial '"version":"4.5.6"'
+}
+
 # Build a bare git repo whose tree has a `packages/<sub>/package.json`
 # instead of one at the root. Used to exercise the pnpm `&path:/<sub>`
 # selector that narrows a git dep to a subdirectory of the clone.

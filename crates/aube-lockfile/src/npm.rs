@@ -14,7 +14,7 @@
 //!
 //! v1 lockfiles (npm 5-6, uses nested `dependencies` tree) are rejected.
 
-use crate::{DepType, DirectDep, Error, LocalSource, LockedPackage, LockfileGraph};
+use crate::{DepType, DirectDep, Error, GitSource, LocalSource, LockedPackage, LockfileGraph};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -303,12 +303,15 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             let version = entry.version.clone().ok_or_else(|| {
                 Error::parse(path, format!("package '{install_name}' has no version"))
             })?;
-            (
-                entry,
-                version.clone(),
-                format!("{install_name}@{version}"),
-                None,
-            )
+            let local_source = entry
+                .resolved
+                .as_deref()
+                .and_then(local_git_source_from_resolved);
+            let dep_path = local_source.as_ref().map_or_else(
+                || format!("{install_name}@{version}"),
+                |l| l.dep_path(&install_name),
+            );
+            (entry, version.clone(), dep_path, local_source)
         };
         install_path_info.insert(
             install_path.clone(),
@@ -355,6 +358,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let tarball_url = package_entry
             .resolved
             .as_ref()
+            .filter(|_| local_source.is_none())
             .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
             .cloned();
 
@@ -534,6 +538,34 @@ fn dep_path_tail<'a>(name: &str, dep_path: &'a str) -> &'a str {
             );
             dep_path
         })
+}
+
+fn local_git_source_from_resolved(resolved: &str) -> Option<LocalSource> {
+    let (url, committish, subpath) = crate::parse_git_spec(resolved)?;
+    let resolved = committish.clone()?;
+    Some(LocalSource::Git(GitSource {
+        url,
+        committish,
+        resolved,
+        subpath,
+    }))
+}
+
+fn npm_resolved_field(pkg: &LockedPackage) -> Option<String> {
+    pkg.tarball_url.clone().or_else(|| match &pkg.local_source {
+        Some(LocalSource::Git(git)) => {
+            let url = if git.url.starts_with("git://") || git.url.starts_with("git+") {
+                git.url.clone()
+            } else {
+                format!("git+{}", git.url)
+            };
+            match &git.subpath {
+                Some(subpath) => Some(format!("{url}#{}&path:/{subpath}", git.resolved)),
+                None => Some(format!("{url}#{}", git.resolved)),
+            }
+        }
+        _ => None,
+    })
 }
 
 /// Resolve a transitive dep name from the perspective of a package at
@@ -721,7 +753,8 @@ struct WriteNpmPeerDepMeta {
 ///    entries always emit `resolved:` because the install-path name is
 ///    the alias — without the URL the consumer can't recover the real
 ///    registry location.
-///  - `file:` / `link:` / git sources aren't emitted yet.
+///  - Non-git local source entries (`file:`, `link:`, URL tarballs)
+///    aren't emitted yet. Git sources emit their pinned `resolved:` URL.
 ///  - Multiple workspace importers aren't emitted — only the root
 ///    importer's tree is walked. Workspace + npm-lockfile projects
 ///    should stay on `pnpm-lock.yaml` until this lands.
@@ -733,7 +766,16 @@ pub fn write(
     // Key packages by `name@version` (ignore peer-context suffix) so
     // lookups from parent deps resolve to one canonical entry even if
     // the graph has several contextualized variants.
-    let canonical = crate::build_canonical_map(graph);
+    let mut canonical = crate::build_canonical_map(graph);
+    for pkg in graph
+        .packages
+        .values()
+        .filter(|pkg| matches!(pkg.local_source, Some(LocalSource::Git(_))))
+    {
+        canonical
+            .entry(canonical_key_from_dep_path(&pkg.dep_path))
+            .or_insert(pkg);
+    }
 
     // Compute reachability for dev/optional flags. A package is
     // `dev: true` iff it's only reachable from dev roots; `optional:
@@ -857,7 +899,7 @@ pub fn write(
         // packument's `dist.tarball`) or carried through from a
         // prior parse of the same npm lockfile.
         let alias_name = pkg.alias_of.as_deref();
-        let resolved = pkg.tarball_url.clone();
+        let resolved = npm_resolved_field(pkg);
 
         // Round-trip `peerDependencies` so a subsequent read of the
         // rewritten lockfile still feeds the peer-context pass. Values
@@ -1267,6 +1309,151 @@ mod tests {
             root.iter()
                 .any(|d| d.name == "bar" && d.dep_type == DepType::Dev)
         );
+    }
+
+    #[test]
+    fn test_parse_git_resolved_package() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sha = "abcdef1234567890abcdef1234567890abcdef12";
+        let content = format!(
+            r#"{{
+            "name": "test",
+            "version": "1.0.0",
+            "lockfileVersion": 2,
+            "packages": {{
+                "": {{
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": {{ "git-only": "github:owner/repo#{sha}" }}
+                }},
+                "node_modules/git-only": {{
+                    "version": "1.2.3",
+                    "resolved": "git+ssh://git@github.com/owner/repo.git#{sha}",
+                    "integrity": "sha512-aaa"
+                }}
+            }}
+        }}"#
+        );
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let root = &graph.importers["."];
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "git-only");
+        assert!(!graph.packages.contains_key("git-only@1.2.3"));
+
+        let pkg = &graph.packages[&root[0].dep_path];
+        assert_eq!(pkg.name, "git-only");
+        assert_eq!(pkg.version, "1.2.3");
+        assert_eq!(pkg.integrity.as_deref(), Some("sha512-aaa"));
+        assert!(pkg.tarball_url.is_none());
+
+        let Some(LocalSource::Git(git)) = &pkg.local_source else {
+            panic!("expected git local source, got {:?}", pkg.local_source);
+        };
+        assert_eq!(git.url, "ssh://git@github.com/owner/repo.git");
+        assert_eq!(git.committish.as_deref(), Some(sha));
+        assert_eq!(git.resolved, sha);
+    }
+
+    #[test]
+    fn test_unpinned_git_resolved_url_is_not_locked_git_source() {
+        assert!(local_git_source_from_resolved("git+https://github.com/owner/repo.git").is_none());
+    }
+
+    #[test]
+    fn test_write_preserves_git_resolved_url() {
+        let sha = "abcdef1234567890abcdef1234567890abcdef12";
+        let mut graph = LockfileGraph::default();
+        let local = LocalSource::Git(GitSource {
+            url: "ssh://git@github.com/owner/repo.git".to_string(),
+            committish: Some(sha.to_string()),
+            resolved: sha.to_string(),
+            subpath: None,
+        });
+        let dep_path = local.dep_path("git-only");
+        graph.packages.insert(
+            dep_path.clone(),
+            LockedPackage {
+                name: "git-only".to_string(),
+                version: "1.2.3".to_string(),
+                dep_path: dep_path.clone(),
+                local_source: Some(local),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "git-only".to_string(),
+                dep_path,
+                dep_type: DepType::Production,
+                specifier: Some(format!("github:owner/repo#{sha}")),
+            }],
+        );
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("test".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [("git-only".to_string(), format!("github:owner/repo#{sha}"))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+
+        let body = std::fs::read_to_string(out.path()).unwrap();
+        assert!(
+            body.contains(&format!(
+                "\"resolved\": \"git+ssh://git@github.com/owner/repo.git#{sha}\""
+            )),
+            "expected git resolved URL emitted; got:\n{body}"
+        );
+
+        let reparsed = parse(out.path()).unwrap();
+        let pkg = &reparsed.packages[&graph.importers["."][0].dep_path];
+        assert!(matches!(pkg.local_source, Some(LocalSource::Git(_))));
+    }
+
+    #[test]
+    fn test_write_skips_non_git_local_sources() {
+        let local = LocalSource::Directory(PathBuf::from("vendor/local-dir"));
+        let dep_path = local.dep_path("local-dir");
+        let mut graph = LockfileGraph::default();
+        graph.packages.insert(
+            dep_path.clone(),
+            LockedPackage {
+                name: "local-dir".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path: dep_path.clone(),
+                local_source: Some(local),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "local-dir".to_string(),
+                dep_path,
+                dep_type: DepType::Production,
+                specifier: Some("file:vendor/local-dir".to_string()),
+            }],
+        );
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("test".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [("local-dir".to_string(), "file:vendor/local-dir".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+
+        let body = std::fs::read_to_string(out.path()).unwrap();
+        assert!(!body.contains("\"node_modules/local-dir\""));
     }
 
     #[test]
