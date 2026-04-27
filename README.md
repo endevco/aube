@@ -30,7 +30,7 @@
 
 **[Less disk use](https://aube.en.dev/package-manager/node-modules).** A global content-addressable store lets projects share package files instead of keeping a full copy of the same dependencies in every checkout.
 
-**[Secure defaults](https://aube.en.dev/package-manager/jailed-builds).** aube defaults to safer installs: new releases wait out a minimum age, exotic transitive dependencies are blocked, and approved lifecycle scripts can run in a package-scoped jail.
+**[Secure defaults](https://aube.en.dev/security).** aube defaults to safer installs: exotic transitive dependencies are blocked, dependency lifecycle scripts are denied unless approved, trust downgrades fail loudly, and approved scripts can run in a package-scoped jail. Set `paranoid: true` to turn on every supply-chain protection in one line.
 
 ## Install
 

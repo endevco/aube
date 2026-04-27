@@ -404,16 +404,16 @@ watch(progressBarEl, (el, previousEl) => {
         </span>
         <span class="aube-proof-link">node_modules layout -></span>
       </a>
-      <a class="aube-proof-item" href="/package-manager/jailed-builds">
+      <a class="aube-proof-item" href="/security">
         <span class="aube-proof-number">05</span>
         <span class="aube-proof-tag">secure</span>
         <span class="aube-proof-visual aube-proof-scripts" aria-hidden="true">
           <span class="aube-script-row aube-script-row-root">
-            <b>minimum age</b>
-            <i>on</i>
+            <b>exotic deps</b>
+            <i>blocked</i>
           </span>
           <span class="aube-script-row">
-            <b>exotic deps</b>
+            <b>trust downgrades</b>
             <i>blocked</i>
           </span>
           <span class="aube-script-row">
@@ -421,12 +421,13 @@ watch(progressBarEl, (el, previousEl) => {
             <i>opt in</i>
           </span>
         </span>
-        <strong>Jailed builds for dependency scripts.</strong>
+        <strong>Supply-chain defaults across the install path.</strong>
         <span>
-          Approve the packages that may build, then run lifecycle scripts with
-          a scrubbed env, temporary HOME, and package-glob permissions.
+          Lifecycle scripts denied until approved, trust downgrades caught at
+          resolve, and approved scripts run in a package-scoped jail. One
+          <code>paranoid: true</code> flips on the strict bundle.
         </span>
-        <span class="aube-proof-link">Jailed builds -></span>
+        <span class="aube-proof-link">Security overview -></span>
       </a>
     </section>
   </main>
