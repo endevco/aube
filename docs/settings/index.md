@@ -21,6 +21,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
+| [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
 | [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Fail install when a package's trust evidence weakens between releases. |
 | [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from `trustPolicy` checks. |
 | [`trustPolicyIgnoreAfter`](#setting-trustpolicyignoreafter) | `int` | Skip the trust check for versions older than this many minutes. |
@@ -297,6 +298,21 @@ Fail the install when no version satisfies the minimumReleaseAge cutoff.
 By default the resolver falls back to the lowest satisfying version when
 every candidate is younger than `minimumReleaseAge`. With this set, the
 resolver fails the install instead.
+
+### `paranoid` {#setting-paranoid}
+
+Turn on the strict-security setting bundle in one switch.
+
+- Type: `bool`
+- Default: `false`
+- Environment: `npm_config_paranoid`, `NPM_CONFIG_PARANOID`, `AUBE_PARANOID`
+- .npmrc keys: `paranoid`
+- Workspace YAML keys: `paranoid`
+
+When true, aube forces `trustPolicy = no-downgrade` and `jailBuilds = true`
+regardless of how those settings are configured individually. Use this when
+you want the strictest supply-chain posture without listing each setting.
+Set to `false` (the default) to honor the underlying settings as-is.
 
 ### `trustPolicy` {#setting-trustpolicy}
 

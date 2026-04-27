@@ -382,11 +382,18 @@ pub(crate) fn resolve_dependency_policy(
     merge_string_map_setting(ctx, "allowedDeprecatedVersions", &mut allowed_deprecated);
     policy.allowed_deprecated_versions = allowed_deprecated;
 
-    policy.trust_policy = match aube_settings::resolved::trust_policy(ctx) {
-        aube_settings::resolved::TrustPolicy::NoDowngrade => {
-            aube_resolver::TrustPolicy::NoDowngrade
+    // `paranoid=true` forces no-downgrade regardless of the explicit
+    // `trustPolicy` value — that's the whole point of the bundle switch.
+    let paranoid = aube_settings::resolved::paranoid(ctx);
+    policy.trust_policy = if paranoid {
+        aube_resolver::TrustPolicy::NoDowngrade
+    } else {
+        match aube_settings::resolved::trust_policy(ctx) {
+            aube_settings::resolved::TrustPolicy::NoDowngrade => {
+                aube_resolver::TrustPolicy::NoDowngrade
+            }
+            aube_settings::resolved::TrustPolicy::Off => aube_resolver::TrustPolicy::Off,
         }
-        aube_settings::resolved::TrustPolicy::Off => aube_resolver::TrustPolicy::Off,
     };
     // Parse trustPolicyExclude pattern-by-pattern so one malformed entry
     // doesn't drop the rest. The user needs visible feedback when their

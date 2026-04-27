@@ -90,7 +90,9 @@ impl JailBuildPolicy {
         ctx: &aube_settings::ResolveCtx<'_>,
         workspace: &aube_manifest::WorkspaceConfig,
     ) -> (Self, Vec<String>) {
-        let enabled = aube_settings::resolved::jail_builds(ctx);
+        // `paranoid=true` forces the jail on regardless of `jailBuilds`.
+        let enabled =
+            aube_settings::resolved::jail_builds(ctx) || aube_settings::resolved::paranoid(ctx);
         let jail_exclusions = aube_settings::resolved::jail_build_exclusions(ctx);
         let (denylist, denylist_warnings) = aube_scripts::BuildPolicy::denylist(&jail_exclusions);
         let mut warnings = denylist_warnings

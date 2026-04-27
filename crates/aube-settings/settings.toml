@@ -227,6 +227,22 @@ sources.workspaceYaml = ["minimumReleaseAgeStrict"]
 precedence = ["workspaceYaml", "npmrc"]
 examples = []
 
+[paranoid]
+description = "Turn on the strict-security setting bundle in one switch."
+type = "bool"
+default = "false"
+docs = """
+When true, aube forces `trustPolicy = no-downgrade` and `jailBuilds = true`
+regardless of how those settings are configured individually. Use this when
+you want the strictest supply-chain posture without listing each setting.
+Set to `false` (the default) to honor the underlying settings as-is.
+"""
+sources.cli = []
+sources.env = ["npm_config_paranoid", "NPM_CONFIG_PARANOID", "AUBE_PARANOID"]
+sources.npmrc = ["paranoid"]
+sources.workspaceYaml = ["paranoid"]
+examples = []
+
 [trustPolicy]
 description = "Fail install when a package's trust evidence weakens between releases."
 type = '"no-downgrade" | "off"'
