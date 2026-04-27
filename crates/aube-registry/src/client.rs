@@ -465,8 +465,7 @@ impl RegistryClient {
                     match read_body_capped(resp, cap, label).await {
                         Ok(bytes) => return Ok((bytes, started.elapsed())),
                         Err(err) if !is_last => {
-                            let is_timeout =
-                                matches!(&err, Error::Http(e) if e.is_timeout());
+                            let is_timeout = matches!(&err, Error::Http(e) if e.is_timeout());
                             if is_timeout && timeout_retries >= TIMEOUT_RETRY_CAP {
                                 return Err(err);
                             }
