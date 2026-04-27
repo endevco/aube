@@ -14,10 +14,19 @@ The fastest way to opt into the strict-security posture is one line:
 paranoid: true
 ```
 
-This forces both [`jailBuilds = true`](#jailed-lifecycle-scripts) and
-[`trustPolicy = no-downgrade`](#trust-policy) regardless of how those settings
-are configured individually. Use it when you want maximum protection without
-remembering each underlying setting name.
+This forces every setting in the strict bundle on, regardless of how each is
+configured individually:
+
+- [`jailBuilds = true`](#jailed-lifecycle-scripts)
+- [`trustPolicy = no-downgrade`](#trust-policy) (overrides explicit `off`)
+- `minimumReleaseAgeStrict = true` — turns the age gate into a hard fail
+  instead of "fall back to the lowest satisfying version"
+- `strictStoreIntegrity = true` — fail when a tarball ships without
+  `dist.integrity` instead of warning
+- `strictDepBuilds = true` — fail the install when a dep has unreviewed
+  build scripts instead of silently skipping
+
+Use it when you want maximum protection without listing each setting.
 
 ## Default-deny lifecycle scripts
 
@@ -102,7 +111,8 @@ trustPolicyExclude:
   - "is-*"                           # name glob (no version)
 ```
 
-Default: `off` today, planned to flip to `no-downgrade` in the next major.
+Default: `no-downgrade`. Set `trustPolicy: off` to disable, or use
+`trustPolicyExclude` for per-package opt-outs.
 
 Settings: [`trustPolicy`](/settings/#setting-trustpolicy),
 [`trustPolicyExclude`](/settings/#setting-trustpolicyexclude),
@@ -181,13 +191,14 @@ For most projects, the following is a good starting point:
 
 ```yaml
 # pnpm-workspace.yaml
-paranoid: true             # jailBuilds + trustPolicy=no-downgrade
-minimumReleaseAge: 1440    # 1 day
+paranoid: true             # bundles jailBuilds, no-downgrade, strict gates
 onlyBuiltDependencies:
   - esbuild
   - sharp
   # ...whatever your project actually needs to build
 ```
 
-Add `aube audit` to your CI pipeline so a newly disclosed CVE in a dependency
-fails the build instead of silently shipping.
+`trustPolicy=no-downgrade` and `minimumReleaseAge: 1440` (24h) are already
+default-on; `paranoid: true` adds the rest of the bundle on top. Pair this
+with `aube audit` in CI so a newly disclosed CVE fails the build instead of
+silently shipping.

@@ -80,7 +80,9 @@ fn resolve_minimum_release_age(
             .unwrap_or_default()
             .into_iter()
             .collect();
-    let strict = aube_settings::resolved::minimum_release_age_strict(ctx);
+    // `paranoid=true` forces the gate to be hard, not advisory.
+    let strict = aube_settings::resolved::minimum_release_age_strict(ctx)
+        || aube_settings::resolved::paranoid(ctx);
     Some(aube_resolver::MinimumReleaseAge {
         minutes,
         exclude,
@@ -270,7 +272,8 @@ pub(super) fn resolve_verify_store_integrity(ctx: &aube_settings::ResolveCtx<'_>
 /// promotes the warning to a hard error, which matters when a
 /// registry proxy or MITM could be stripping the integrity field.
 pub(super) fn resolve_strict_store_integrity(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
-    aube_settings::resolved::strict_store_integrity(ctx)
+    // `paranoid=true` promotes "missing dist.integrity" to a hard fail.
+    aube_settings::resolved::strict_store_integrity(ctx) || aube_settings::resolved::paranoid(ctx)
 }
 
 /// Resolve `strictStorePkgContentCheck` from `.npmrc`. Defaults to

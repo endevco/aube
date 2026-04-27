@@ -19,10 +19,10 @@ several more available as one-line opt-ins. Full reference:
 | --- | --- | --- |
 | `blockExoticSubdeps` | `true` | Transitive deps from `git+`, `file:`, or raw tarball URLs |
 | `allowBuilds` (deny-by-default) | `true` | Lifecycle scripts running without explicit approval |
-| `jailBuilds` | `false` (planned default `true` in v2) | Approved scripts with full filesystem / network / env |
-| `trustPolicy = no-downgrade` | `false` (planned default in v2) | Versions that lost provenance or trusted-publisher evidence |
-| `minimumReleaseAge` | `0` | Newly published versions before they have aged in the registry |
-| `paranoid` | `false` | Master switch — forces `jailBuilds` and `trustPolicy=no-downgrade` |
+| `trustPolicy = no-downgrade` | `true` | Versions that lost provenance or trusted-publisher evidence |
+| `minimumReleaseAge` | `1440` (24h) | Newly published versions before they have aged in the registry |
+| `jailBuilds` | `false` (planned `true` in v2) | Approved scripts with full filesystem / network / env |
+| `paranoid` | `false` | Master switch — forces `jailBuilds`, `trustPolicy=no-downgrade`, `minimumReleaseAgeStrict`, `strictStoreIntegrity`, `strictDepBuilds` |
 | Tarball integrity (SHA-512) | always on | Tampered tarballs in the registry or proxy cache |
 | Content-addressed store (BLAKE3) | always on | Drift between the store and the linked `node_modules` |
 | `aube audit` | n/a | Known CVEs against the resolved dependency tree |

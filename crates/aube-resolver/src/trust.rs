@@ -55,7 +55,7 @@ pub fn evidence_for(meta: &VersionMetadata) -> Option<TrustEvidence> {
         .as_ref()
         .and_then(|d| d.attestations.as_ref())
         .and_then(|a| a.provenance.as_ref())
-        .is_some()
+        .is_some_and(is_truthy)
     {
         return Some(TrustEvidence::Provenance);
     }

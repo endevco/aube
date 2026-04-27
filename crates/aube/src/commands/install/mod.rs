@@ -1364,7 +1364,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         resolve_strict_store_pkg_content_check(&settings_ctx);
     let side_effects_cache_setting = resolve_side_effects_cache(&settings_ctx);
     let side_effects_cache_readonly_setting = resolve_side_effects_cache_readonly(&settings_ctx);
-    let strict_dep_builds_setting = aube_settings::resolved::strict_dep_builds(&settings_ctx);
+    // `paranoid=true` forces unreviewed dep build scripts to error
+    // instead of being silently skipped.
+    let strict_dep_builds_setting = aube_settings::resolved::strict_dep_builds(&settings_ctx)
+        || aube_settings::resolved::paranoid(&settings_ctx);
     let required_scripts =
         aube_settings::resolved::required_scripts(&settings_ctx).unwrap_or_default();
     validate_required_scripts(&cwd, &manifest, &required_scripts)?;

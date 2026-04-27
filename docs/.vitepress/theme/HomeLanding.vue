@@ -409,24 +409,24 @@ watch(progressBarEl, (el, previousEl) => {
         <span class="aube-proof-tag">secure</span>
         <span class="aube-proof-visual aube-proof-scripts" aria-hidden="true">
           <span class="aube-script-row aube-script-row-root">
-            <b>exotic deps</b>
+            <b>trust downgrades</b>
             <i>blocked</i>
+          </span>
+          <span class="aube-script-row">
+            <b>new releases</b>
+            <i>24h cooling</i>
           </span>
           <span class="aube-script-row">
             <b>build scripts</b>
             <i>deny by default</i>
           </span>
-          <span class="aube-script-row">
-            <b>paranoid</b>
-            <i>opt in</i>
-          </span>
         </span>
         <strong>Supply-chain defaults across the install path.</strong>
         <span>
-          Out of the box, exotic transitive deps are blocked and lifecycle
-          scripts wait for approval. One <code>paranoid: true</code> adds
-          trust-downgrade detection at resolve and runs approved scripts in a
-          package-scoped jail.
+          Trust downgrades fail at resolve, new releases sit out a 24h cooling
+          window, lifecycle scripts wait for approval, and exotic transitive
+          deps are blocked. <code>paranoid: true</code> adds the build jail
+          and turns the soft gates into hard fails.
         </span>
         <span class="aube-proof-link">Security overview -></span>
       </a>

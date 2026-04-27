@@ -309,9 +309,15 @@ Turn on the strict-security setting bundle in one switch.
 - .npmrc keys: `paranoid`
 - Workspace YAML keys: `paranoid`
 
-When true, aube forces `trustPolicy = no-downgrade` and `jailBuilds = true`
-regardless of how those settings are configured individually. Use this when
-you want the strictest supply-chain posture without listing each setting.
+When true, aube forces every individual setting in the strict-security
+bundle on, regardless of how each is configured individually:
+
+- `trustPolicy = no-downgrade` (overrides explicit `off`)
+- `jailBuilds = true`
+- `minimumReleaseAgeStrict = true` (makes the age gate hard, not advisory)
+- `strictStoreIntegrity = true` (fail on missing `dist.integrity`)
+- `strictDepBuilds = true` (fail when deps have unreviewed build scripts)
+
 Set to `false` (the default) to honor the underlying settings as-is.
 
 ### `trustPolicy` {#setting-trustpolicy}
@@ -319,18 +325,17 @@ Set to `false` (the default) to honor the underlying settings as-is.
 Fail install when a package's trust evidence weakens between releases.
 
 - Type: `"no-downgrade" | "off"`
-- Default: `"off"`
+- Default: `"no-downgrade"`
 - Environment: `npm_config_trust_policy`, `NPM_CONFIG_TRUST_POLICY`, `AUBE_TRUST_POLICY`
 - .npmrc keys: `trustPolicy`, `trust-policy`
 - Workspace YAML keys: `trustPolicy`
 
-When `no-downgrade`, aube rejects a version that carries weaker trust evidence
-than any earlier-published version of the same package. Recognized evidence:
-npm trusted-publisher (`_npmUser.trustedPublisher`) outranks sigstore provenance
-(`dist.attestations.provenance`). Set to `off` to disable.
-
-This defaults to `off` today and is planned to default to `no-downgrade` in
-the next major version.
+When `no-downgrade` (the default), aube rejects a version that carries weaker
+trust evidence than any earlier-published version of the same package.
+Recognized evidence: npm trusted-publisher (`_npmUser.trustedPublisher`)
+outranks sigstore provenance (`dist.attestations.provenance`). Set to `off`
+to disable, or use `trustPolicyExclude` to whitelist specific packages or
+versions.
 
 ### `trustPolicyExclude` {#setting-trustpolicyexclude}
 
