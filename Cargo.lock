@@ -380,6 +380,9 @@ name = "aube-scripts"
 version = "1.3.0"
 dependencies = [
  "aube-manifest",
+ "landlock",
+ "libc",
+ "seccompiler",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1231,6 +1234,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -2123,6 +2146,17 @@ dependencies = [
  "miette",
  "num",
  "winnow 0.6.24",
+]
+
+[[package]]
+name = "landlock"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49fefd6652c57d68aaa32544a4c0e642929725bdc1fd929367cdeb673ab81088"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3368,6 +3402,15 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "secrecy"

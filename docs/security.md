@@ -58,9 +58,10 @@ Settings: [`allowBuilds`](/settings/#setting-allowbuilds). The
 
 When a dependency is approved to build, jailing keeps it from getting your
 full filesystem, network, and environment. On macOS aube wraps the script with
-a Seatbelt profile that denies network and limits writes to the package
-directory; on Linux and Windows the env is scrubbed and `HOME` is redirected
-to a temporary directory.
+a Seatbelt profile; on Linux it applies Landlock and seccomp before exec. Both
+deny network access and limit writes to package and jail-owned temporary
+directories. On Windows the env is scrubbed and `HOME` is redirected to a
+temporary directory.
 
 ```yaml
 jailBuilds: true

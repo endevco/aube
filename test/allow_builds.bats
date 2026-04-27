@@ -177,7 +177,7 @@ jailBuilds: true
 jailBuildExclusions:
   - aube-test-*
 YAML
-	run aube install
+	run env AUBE_AUTH_TOKEN= NPM_TOKEN= NODE_AUTH_TOKEN= GITHUB_TOKEN= aube install
 	assert_success
 	run sh -c 'cat $(find -L node_modules -name jail-package-marker.txt -type f | head -n1)'
 	assert_success
@@ -215,9 +215,9 @@ YAML
 	assert_output --partial "aube-jail"
 }
 
-@test "jailBuilds prevents dep scripts from writing to INIT_CWD on macOS" {
-	if [ "$(uname -s)" != "Darwin" ]; then
-		skip "native build jail filesystem enforcement is macOS-only today"
+@test "jailBuilds prevents dep scripts from writing to INIT_CWD on supported platforms" {
+	if [ "$(uname -s)" != "Darwin" ] && [ "$(uname -s)" != "Linux" ]; then
+		skip "native build jail filesystem enforcement is only supported on macOS and Linux today"
 	fi
 	cat >package.json <<'JSON'
 {
@@ -239,9 +239,9 @@ YAML
 	assert_file_not_exists aube-builds-marker.txt
 }
 
-@test "jailBuildPermissions glob can grant matching packages write access on macOS" {
-	if [ "$(uname -s)" != "Darwin" ]; then
-		skip "native build jail filesystem enforcement is macOS-only today"
+@test "jailBuildPermissions glob can grant matching packages write access on supported platforms" {
+	if [ "$(uname -s)" != "Darwin" ] && [ "$(uname -s)" != "Linux" ]; then
+		skip "native build jail filesystem enforcement is only supported on macOS and Linux today"
 	fi
 	cat >package.json <<'JSON'
 {
@@ -267,9 +267,9 @@ YAML
 	assert_file_exists aube-builds-marker.txt
 }
 
-@test "jailBuilds denies dep script network sockets on macOS" {
-	if [ "$(uname -s)" != "Darwin" ]; then
-		skip "native build jail network enforcement is macOS-only today"
+@test "jailBuilds denies dep script network sockets on supported platforms" {
+	if [ "$(uname -s)" != "Darwin" ] && [ "$(uname -s)" != "Linux" ]; then
+		skip "native build jail network enforcement is only supported on macOS and Linux today"
 	fi
 	cat >package.json <<'JSON'
 {

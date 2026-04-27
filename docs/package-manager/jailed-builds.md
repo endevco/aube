@@ -99,12 +99,13 @@ disables the jail, and does not bypass the build approval policy.
 
 ## Native enforcement
 
-The jail uses the same lightweight strategy as mise on macOS:
+The jail uses the same lightweight strategy as mise:
 
 - macOS: generate a Seatbelt profile and run scripts through `sandbox-exec` to
   deny network access and writes outside the package / temporary directories.
-- Linux: environment and HOME isolation are enabled today. Landlock and seccomp
-  native enforcement are planned.
+- Linux: apply Landlock write restrictions and a seccomp network filter in the
+  child process before it execs the script. If the kernel cannot enforce the
+  requested jail, the script fails instead of running unsandboxed.
 - Windows: start with environment scrubbing, a temporary home directory, and an
   unsupported-native-jail warning until there is a good OS-native policy.
 

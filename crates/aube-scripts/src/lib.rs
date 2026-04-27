@@ -14,6 +14,9 @@
 
 pub mod policy;
 
+#[cfg(target_os = "linux")]
+mod linux_jail;
+
 pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError, pattern_matches};
 
 use aube_manifest::PackageJson;
@@ -263,7 +266,29 @@ fn spawn_jailed_shell(
     cmd
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn spawn_jailed_shell(
+    script_cmd: &str,
+    settings: &ScriptSettings,
+    jail: &ScriptJail,
+    home: &Path,
+) -> tokio::process::Command {
+    let mut cmd = spawn_shell_with_settings(script_cmd, settings);
+    let jail = jail.clone();
+    let home = home.to_path_buf();
+    unsafe {
+        cmd.pre_exec(move || {
+            linux_jail::apply_landlock(&jail, &home).map_err(std::io::Error::other)?;
+            if !jail.network {
+                linux_jail::apply_seccomp_net_filter().map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn spawn_jailed_shell(
     script_cmd: &str,
     settings: &ScriptSettings,
@@ -476,6 +501,9 @@ fn apply_jail_env(
     cmd.env_clear();
     cmd.env("PATH", path_env)
         .env("HOME", home)
+        .env("TMPDIR", home)
+        .env("TMP", home)
+        .env("TEMP", home)
         .env("npm_lifecycle_event", script_name);
     if std::env::var_os("INIT_CWD").is_none() {
         cmd.env("INIT_CWD", project_root);

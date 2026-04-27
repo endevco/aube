@@ -1691,9 +1691,10 @@ default = "false"
 docs = """
 When enabled, dependency lifecycle scripts that pass the active
 `allowBuilds` / `onlyBuiltDependencies` policy run with a scrubbed
-environment and temporary HOME. On macOS, aube also wraps the script
-with a native Seatbelt profile that denies network access and limits
-filesystem writes to the package directory and temporary directories.
+environment and temporary HOME. On macOS, aube wraps the script with a
+native Seatbelt profile. On Linux, aube applies Landlock and seccomp in
+the child before exec. Both deny network access and limit filesystem
+writes to the package directory and temporary directories.
 Root lifecycle scripts are not jailed.
 
 This defaults to `false` today and is planned to default to `true` in
@@ -1742,8 +1743,8 @@ extra readable paths, extra writable paths, or network access.
 
 `env` entries are exact variable names inherited from the parent process.
 Use this sparingly: explicit env grants can expose secrets. `write` entries
-are added to the macOS Seatbelt write allowlist today. `read` entries are
-accepted now and reserved for the stricter read-deny profile; reads are
+are added to the native write allowlist on macOS and Linux. `read` entries
+are accepted now and reserved for the stricter read-deny profile; reads are
 currently unrestricted.
 """
 sources.cli = []
