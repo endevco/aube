@@ -3,6 +3,7 @@ pub mod dep_path_filename;
 pub mod graph_hash;
 pub mod merge;
 pub mod npm;
+mod override_match;
 pub mod pnpm;
 pub mod yarn;
 
@@ -1218,6 +1219,8 @@ impl LockfileGraph {
             .filter_map(|d| d.specifier.as_deref().map(|s| (d.name.as_str(), s)))
             .collect();
 
+        let override_rules = override_match::compile(effective_overrides);
+
         // Optionals the previous resolve recorded as intentionally
         // skipped on this importer's platform — keyed by name, value
         // is the specifier captured at that time. Distinct from
@@ -1284,16 +1287,17 @@ impl LockfileGraph {
                 }
                 Some(locked_spec) if *locked_spec != spec => {
                     // pnpm rewrites the importer specifier to the
-                    // override-applied value when a bare-name override
-                    // fires, so a pnpm-generated lockfile shows
-                    // `specifier: 4.17.21` even though `package.json`
-                    // still reads `^4.17.0`. Accept that as fresh when
-                    // the effective override for this name matches the
-                    // lockfile's recorded spec — otherwise any
-                    // pnpm-written lockfile with overrides reads stale
-                    // on every frozen install.
-                    if let Some(override_spec) = effective_overrides.get(name.as_str())
-                        && override_spec == locked_spec
+                    // override-applied value when an override fires on
+                    // a direct dep, so a pnpm-generated lockfile shows
+                    // `specifier: ">=3.0.5"` even though `package.json`
+                    // still reads `^3.0.4`. Accept that as fresh when
+                    // an override for this name (bare or version-keyed)
+                    // resolves to the lockfile's recorded spec —
+                    // otherwise any pnpm-written lockfile with
+                    // overrides reads stale on every frozen install.
+                    if let Some(override_spec) =
+                        override_match::apply(&override_rules, name.as_str(), spec)
+                        && override_spec == *locked_spec
                     {
                         continue;
                     }
@@ -2636,6 +2640,40 @@ mod drift_tests {
         graph.overrides.insert("lodash".into(), "4.17.21".into());
         let mut ws_overrides = BTreeMap::new();
         ws_overrides.insert("lodash".into(), "4.17.21".into());
+        assert_eq!(
+            graph.check_drift(&manifest, &ws_overrides, &[], &BTreeMap::new()),
+            DriftStatus::Fresh,
+        );
+    }
+
+    #[test]
+    fn fresh_when_version_keyed_override_rewrites_importer_spec() {
+        // Discussion #352: an override keyed by name+range
+        // (`plist@<3.0.5` → `>=3.0.5`) rewrites the importer specifier
+        // the same way bare-name overrides do. The drift check has to
+        // parse the key and compare-by-rule, not by raw map lookup,
+        // otherwise pnpm-written lockfiles read stale on every frozen
+        // install when version-conditional overrides are in play.
+        let manifest = make_manifest(&[("plist", "^3.0.4")]);
+        let mut importers = BTreeMap::new();
+        importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "plist".into(),
+                dep_path: "plist@3.0.6".into(),
+                dep_type: DepType::Production,
+                specifier: Some(">=3.0.5".into()),
+            }],
+        );
+        let mut graph = LockfileGraph {
+            importers,
+            ..Default::default()
+        };
+        graph
+            .overrides
+            .insert("plist@<3.0.5".into(), ">=3.0.5".into());
+        let mut ws_overrides = BTreeMap::new();
+        ws_overrides.insert("plist@<3.0.5".into(), ">=3.0.5".into());
         assert_eq!(
             graph.check_drift(&manifest, &ws_overrides, &[], &BTreeMap::new()),
             DriftStatus::Fresh,
