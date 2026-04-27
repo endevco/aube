@@ -3190,6 +3190,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     };
     if !virtual_store_only {
         let mut pkg_json_cache = bin_linking::PkgJsonCache::new();
+        let mut ws_pkg_json_cache = bin_linking::WsPkgJsonCache::new();
         let ws_dirs_for_bins = has_workspace.then_some(&ws_dirs);
         link_bins(
             &cwd,
@@ -3201,6 +3202,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             shim_opts,
             &mut pkg_json_cache,
             ws_dirs_for_bins,
+            &mut ws_pkg_json_cache,
         )?;
         // Root importer's own `bin` (discussion #228). Runs after
         // `link_bins` so a self-bin overrides a same-named dep bin.
@@ -3245,7 +3247,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 for dep in deps {
                     if let Some(ws_dir) = ws_dirs.get(&dep.name) {
                         bin_linking::link_bins_for_workspace_dep(
-                            &bin_dir, ws_dir, &dep.name, shim_opts,
+                            &mut ws_pkg_json_cache,
+                            &bin_dir,
+                            ws_dir,
+                            &dep.name,
+                            shim_opts,
                         )?;
                     } else {
                         link_bins_for_dep(
