@@ -168,6 +168,17 @@ teardown() {
 	refute_output --partial "project.example.com"
 }
 
+@test "config list subcommand location overrides parent local shortcut" {
+	echo "registry=https://user.example.com/" >"$HOME/.npmrc"
+	mkdir proj
+	echo "registry=https://project.example.com/" >proj/.npmrc
+	cd proj
+	run aube config --local list --location user
+	assert_success
+	assert_output --partial "registry=https://user.example.com/"
+	refute_output --partial "project.example.com"
+}
+
 @test "config list --location project only reads project .npmrc" {
 	mkdir proj
 	echo "registry=https://user.example.com/" >"$HOME/.npmrc"

@@ -56,7 +56,9 @@ impl ListArgs {
     pub(super) fn apply_parent(&mut self, parent: Self) {
         self.all |= parent.all;
         self.json |= parent.json;
-        self.local |= parent.local;
+        if self.location.is_none() && !self.local {
+            self.local = parent.local;
+        }
         if self.location.is_none() {
             self.location = parent.location;
         }
