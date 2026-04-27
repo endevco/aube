@@ -1,6 +1,7 @@
 use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 pub(crate) type PkgJsonCache = BTreeMap<String, Option<serde_json::Value>>;
 
@@ -187,24 +188,62 @@ pub(super) fn link_bins(
     placements: Option<&aube_linker::HoistedPlacements>,
     shim_opts: aube_linker::BinShimOptions,
     cache: &mut PkgJsonCache,
+    ws_dirs: Option<&BTreeMap<String, PathBuf>>,
 ) -> miette::Result<()> {
     let bin_dir = project_dir.join(modules_dir_name).join(".bin");
     std::fs::create_dir_all(&bin_dir).into_diagnostic()?;
 
     for dep in graph.root_deps() {
-        link_bins_for_dep(
-            cache,
-            aube_dir,
-            &bin_dir,
-            graph,
-            &dep.dep_path,
-            &dep.name,
-            virtual_store_dir_max_length,
-            placements,
-            shim_opts,
-        )?;
+        if let Some(ws_dir) = ws_dirs.and_then(|m| m.get(&dep.name)) {
+            link_bins_for_workspace_dep(&bin_dir, ws_dir, &dep.name, shim_opts)?;
+        } else {
+            link_bins_for_dep(
+                cache,
+                aube_dir,
+                &bin_dir,
+                graph,
+                &dep.dep_path,
+                &dep.name,
+                virtual_store_dir_max_length,
+                placements,
+                shim_opts,
+            )?;
+        }
     }
 
+    Ok(())
+}
+
+/// Link bins declared by a `workspace:` dep into the importer's
+/// `.bin/`. Workspace deps don't get a `.aube/<dep_path>/` materialization
+/// (the linker symlinks them straight into the importer's `node_modules/`),
+/// so `link_bins_for_dep` finds nothing on disk and silently skips. Read
+/// the workspace package's own `package.json` and shim each bin entry,
+/// matching pnpm's behavior of exposing workspace bins to dependent
+/// packages' npm scripts.
+pub(super) fn link_bins_for_workspace_dep(
+    bin_dir: &Path,
+    ws_dir: &Path,
+    name: &str,
+    shim_opts: aube_linker::BinShimOptions,
+) -> miette::Result<()> {
+    let pkg_json_path = ws_dir.join("package.json");
+    let content = match std::fs::read_to_string(&pkg_json_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(miette!(
+                "failed to read package.json for workspace dep {name} at {}: {e}",
+                pkg_json_path.display()
+            ));
+        }
+    };
+    let pkg_json = aube_manifest::parse_json::<serde_json::Value>(&pkg_json_path, content)
+        .map_err(miette::Report::new)
+        .wrap_err_with(|| format!("failed to parse package.json for workspace dep {name}"))?;
+    if let Some(bin) = pkg_json.get("bin") {
+        link_bin_entries(bin_dir, ws_dir, Some(name), bin, shim_opts)?;
+    }
     Ok(())
 }
 
@@ -489,6 +528,7 @@ mod tests {
             None,
             aube_linker::BinShimOptions::default(),
             &mut PkgJsonCache::new(),
+            None,
         )
         .unwrap();
 
