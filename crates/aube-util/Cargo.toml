@@ -11,4 +11,5 @@ description = "Shared helpers reused across aube crates (semantic hashing, async
 [dependencies]
 rustc-hash = { workspace = true }
 blake3 = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

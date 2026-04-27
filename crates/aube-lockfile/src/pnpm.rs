@@ -1515,11 +1515,11 @@ struct RawPackageInfo {
     engines: BTreeMap<String, String>,
     peer_dependencies: Option<BTreeMap<String, String>>,
     peer_dependencies_meta: Option<BTreeMap<String, RawPeerDepMeta>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     os: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     cpu: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     libc: Vec<String>,
     #[serde(default)]
     has_bin: bool,
@@ -1910,6 +1910,46 @@ snapshots:
         let host = graph.packages.get("host@1.0.0").unwrap();
         assert_eq!(host.dependencies.get("native").unwrap(), "1.0.0");
         assert_eq!(host.optional_dependencies.get("native").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn parse_package_platform_fields_accept_scalar_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &lockfile_path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      sass-embedded-linux-arm64:
+        specifier: 1.99.0
+        version: 1.99.0
+
+packages:
+  sass-embedded-linux-arm64@1.99.0:
+    resolution: {integrity: sha512-native}
+    engines: {node: '>=14.0.0'}
+    cpu: arm64
+    os: linux
+    libc: glibc
+
+snapshots:
+  sass-embedded-linux-arm64@1.99.0: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&lockfile_path).unwrap();
+        let pkg = graph
+            .packages
+            .get("sass-embedded-linux-arm64@1.99.0")
+            .unwrap();
+        assert_eq!(pkg.os.as_slice(), &["linux".to_string()]);
+        assert_eq!(pkg.cpu.as_slice(), &["arm64".to_string()]);
+        assert_eq!(pkg.libc.as_slice(), &["glibc".to_string()]);
     }
 
     #[test]

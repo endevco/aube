@@ -420,6 +420,7 @@ version = "1.2.1"
 dependencies = [
  "blake3",
  "rustc-hash",
+ "serde",
  "serde_json",
 ]
 

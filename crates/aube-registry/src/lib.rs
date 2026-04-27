@@ -1,39 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
-/// npm allows the `os`, `cpu`, and `libc` fields on a package version
-/// to be either a single string (e.g. `"libc": "glibc"`) or an array
-/// of strings (e.g. `"libc": ["glibc"]`). An explicit `null` is also
-/// treated as "no constraint", same as the field being absent — some
-/// packuments emit it. Napi-rs additionally publishes `"libc": [null]`
-/// on its Windows/macOS native-binding packages (e.g.
-/// `@oxc-parser/binding-win32-x64-msvc`), meaning "no libc constraint";
-/// drop null array entries so that shape round-trips to an empty vec
-/// instead of failing the whole packument parse. Normalize all shapes
-/// to a `Vec<String>` so the platform filter doesn't have to care.
-fn string_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrSeq {
-        String(String),
-        Seq(Vec<serde_json::Value>),
-    }
-    Ok(match Option::<StringOrSeq>::deserialize(deserializer)? {
-        None => Vec::new(),
-        Some(StringOrSeq::String(s)) => vec![s],
-        Some(StringOrSeq::Seq(v)) => v
-            .into_iter()
-            .filter_map(|e| match e {
-                serde_json::Value::String(s) => Some(s),
-                _ => None,
-            })
-            .collect(),
-    })
-}
-
 /// Deserialize a `BTreeMap<String, String>` tolerant to any non-string
 /// value — both at the whole-map level (`"dist-tags": null` → empty
 /// map) and at the value level (`{"latest": null}` or
@@ -153,11 +120,11 @@ pub struct VersionMetadata {
     #[serde(default, alias = "bundleDependencies")]
     pub bundled_dependencies: Option<BundledDependencies>,
     pub dist: Option<Dist>,
-    #[serde(default, deserialize_with = "string_or_seq")]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     pub os: Vec<String>,
-    #[serde(default, deserialize_with = "string_or_seq")]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     pub cpu: Vec<String>,
-    #[serde(default, deserialize_with = "string_or_seq")]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     pub libc: Vec<String>,
     /// `engines:` from the package manifest (e.g. `{node: ">=8"}`).
     /// Round-tripped into the lockfile so pnpm-compatible output can
