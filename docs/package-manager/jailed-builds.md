@@ -103,9 +103,11 @@ The jail uses the same lightweight strategy as mise:
 
 - macOS: generate a Seatbelt profile and run scripts through `sandbox-exec` to
   deny network access and writes outside the package / temporary directories.
-- Linux: apply Landlock write restrictions and a seccomp network filter in the
-  child process before it execs the script. If the kernel cannot enforce the
-  requested jail, the script fails instead of running unsandboxed.
+- Linux: apply Landlock write restrictions (kernel ≥ 5.19, Landlock ABI v2) and
+  a seccomp network filter in the child process before it execs the script. If
+  the kernel cannot enforce the requested jail, the script fails instead of
+  running unsandboxed. Landlock v2 does not gate `truncate()` on otherwise
+  read-only paths; build scripts that need that protection require kernel ≥ 6.2.
 - Windows: start with environment scrubbing, a temporary home directory, and an
   unsupported-native-jail warning until there is a good OS-native policy.
 

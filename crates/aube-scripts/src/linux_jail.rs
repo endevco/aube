@@ -37,7 +37,21 @@ fn add_rule_with_canonical(
 }
 
 pub(crate) fn apply_landlock(jail: &ScriptJail, home: &Path) -> Result<(), String> {
-    let abi = ABI::V3;
+    // Must run before restrict_self() so a setuid exec inside the jail
+    // cannot pick up privileges that would shadow the Landlock domain.
+    // Also needed on the network: true path, where the seccomp filter
+    // (which used to set this) is skipped.
+    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if ret != 0 {
+        return Err(format!(
+            "failed to set PR_SET_NO_NEW_PRIVS: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // ABI v2 (kernel >= 5.19) covers every write-restriction this policy
+    // needs and unblocks the LTS kernels that ship 5.15-6.1 (Ubuntu 22.04,
+    // Debian 12, RHEL 9). v3 only adds LANDLOCK_ACCESS_FS_TRUNCATE.
+    let abi = ABI::V2;
     let read_access = AccessFs::from_read(abi);
     let full_access = read_access | AccessFs::from_write(abi);
     let mut ruleset = Ruleset::default()
@@ -48,7 +62,12 @@ pub(crate) fn apply_landlock(jail: &ScriptJail, home: &Path) -> Result<(), Strin
         .map_err(|e| format!("failed to create jail ruleset: {e}"))?;
 
     ruleset = add_rule(ruleset, Path::new("/"), read_access)?;
-    for path in [Path::new("/dev"), jail.package_dir.as_path(), home] {
+    for path in [
+        Path::new("/dev"),
+        jail.package_dir.as_path(),
+        home,
+        std::env::temp_dir().as_path(),
+    ] {
         ruleset = add_rule_with_canonical(ruleset, path, full_access)?;
     }
     for path in &jail.write_paths {
@@ -68,14 +87,6 @@ pub(crate) fn apply_landlock(jail: &ScriptJail, home: &Path) -> Result<(), Strin
 }
 
 pub(crate) fn apply_seccomp_net_filter() -> Result<(), String> {
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        return Err(format!(
-            "failed to set PR_SET_NO_NEW_PRIVS: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-
     let target_arch = TargetArch::try_from(std::env::consts::ARCH)
         .map_err(|e| format!("unsupported architecture for jail network filter: {e}"))?;
     let socket_rule_inet = SeccompRule::new(vec![
