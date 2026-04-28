@@ -14,7 +14,7 @@ use aube_registry::config::normalize_registry_url_pub;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 
 pub const AFTER_LONG_HELP: &str = "\
 Examples:
@@ -288,58 +288,31 @@ fn select_fix_rows(rows: &[Row]) -> miette::Result<Vec<Row>> {
         return Ok(rows.to_vec());
     }
 
-    eprintln!("Select advisories to fix:");
+    let mut picker = demand::MultiSelect::new("Choose which vulnerabilities to fix")
+        .description("Space to toggle, Enter to confirm")
+        .filterable(true)
+        .min(1);
     for (idx, row) in rows.iter().enumerate() {
-        eprintln!("  {}. {} {} {}", idx + 1, row.severity, row.name, row.title);
-    }
-    eprint!("Advisories to fix (comma-separated, blank for all): ");
-    std::io::stderr().flush().into_diagnostic()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).into_diagnostic()?;
-    let input = input.trim();
-    if input.is_empty() {
-        return Ok(rows.to_vec());
-    }
-
-    let mut selected = Vec::new();
-    let mut seen = BTreeSet::new();
-    for part in input.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let (start, end) = parse_selection_part(part, rows.len())?;
-        for idx in start..=end {
-            if seen.insert(idx) {
-                selected.push(rows[idx - 1].clone());
-            }
+        let label = format!(
+            "{} {} {} {}",
+            row.severity, row.name, row.vulnerable_versions, row.title
+        );
+        let mut option = demand::DemandOption::new(idx).label(&label).selected(true);
+        if !row.url.is_empty() {
+            option = option.description(&row.url);
         }
+        picker = picker.option(option);
     }
-    if selected.is_empty() {
-        return Err(miette!("no advisories selected"));
-    }
-    Ok(selected)
-}
-
-fn parse_selection_part(part: &str, len: usize) -> miette::Result<(usize, usize)> {
-    let parse_idx = |raw: &str| -> miette::Result<usize> {
-        let idx = raw
-            .parse::<usize>()
-            .into_diagnostic()
-            .wrap_err_with(|| format!("invalid advisory selection `{raw}`"))?;
-        if idx == 0 || idx > len {
-            return Err(miette!("advisory selection `{idx}` is out of range"));
+    let picked = match picker.run() {
+        Ok(picked) => picked,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => std::process::exit(130),
+        Err(e) => {
+            return Err(e)
+                .into_diagnostic()
+                .wrap_err("failed to read audit selection");
         }
-        Ok(idx)
     };
-    if let Some((start, end)) = part.split_once('-') {
-        let start = parse_idx(start.trim())?;
-        let end = parse_idx(end.trim())?;
-        if start > end {
-            return Err(miette!("invalid advisory selection range `{part}`"));
-        }
-        Ok((start, end))
-    } else {
-        let idx = parse_idx(part)?;
-        Ok((idx, idx))
-    }
+    Ok(picked.into_iter().map(|idx| rows[idx].clone()).collect())
 }
 
 fn render_fix_remaining(selected: &[Row], remaining: &[Row]) {
