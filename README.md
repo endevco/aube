@@ -40,6 +40,15 @@ The recommended path is mise:
 mise use -g aube
 ```
 
+mise can also manage the [Node.js versions](https://mise.jdx.dev/lang/node.html)
+your projects need. If your projects already pin Node through `package.json`
+(`devEngines.runtime`), `.nvmrc`, or `.node-version`, enable mise's
+idiomatic version-file support for Node:
+
+```sh
+mise settings add idiomatic_version_file_enable_tools node
+```
+
 Check that it is on your `PATH`:
 
 ```sh
@@ -55,8 +64,14 @@ mise use aube
 aube is also published on npm:
 
 ```sh
-npm install -g @endevco/aube
+npm install -g --ignore-scripts=false @endevco/aube
+npx --ignore-scripts=false @endevco/aube --version
 ```
+
+The npm package uses an install script to fetch native binaries for
+performance. The npm commands above include the flag that keeps that
+working even if your npm config disables scripts. We still recommend mise
+for the smoothest install and runtime management path.
 
 Homebrew installs come from the Endev tap:
 

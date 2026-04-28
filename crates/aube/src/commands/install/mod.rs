@@ -69,7 +69,7 @@ pub struct InstallArgs {
     /// Mirrors pnpm's `install --force`.
     #[arg(long)]
     pub force: bool,
-    /// Skip running `.pnpmfile.cjs` hooks for this install
+    /// Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install
     #[arg(long)]
     pub ignore_pnpmfile: bool,
     /// Skip lifecycle scripts (no-op; aube already skips by default)
@@ -304,7 +304,7 @@ pub struct InstallOptions {
     /// Which dep sections to keep in the materialized graph
     /// (`--prod` / `--dev` / `--no-optional`, in any valid combo).
     pub dep_selection: DepSelection,
-    /// `--ignore-pnpmfile`: don't load or execute `.pnpmfile.cjs`
+    /// `--ignore-pnpmfile`: don't load or execute `.pnpmfile.mjs` / `.pnpmfile.cjs`
     /// hooks for this install, even if one exists in the project root.
     pub ignore_pnpmfile: bool,
     /// `--ignore-scripts`: skip root lifecycle scripts (`preinstall`,
@@ -3336,8 +3336,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             placements_ref,
         )?;
         if !unreviewed.is_empty() {
+            let review_names = allow_build_review_names(&unreviewed);
+            aube_manifest::workspace::add_to_allow_builds(&cwd, &review_names, false)
+                .into_diagnostic()
+                .wrap_err("failed to update allowBuilds review entries")?;
             return Err(miette!(
-                "dependencies with build scripts must be reviewed before install:\n{}\nhelp: add them to `allowBuilds` / `onlyBuiltDependencies`, set `neverBuiltDependencies`, or set `strictDepBuilds=false`",
+                "dependencies with build scripts must be reviewed before install:\n{}\nhelp: set them to true or false in `allowBuilds`, or set `strictDepBuilds=false`",
                 unreviewed
                     .into_iter()
                     .map(|pkg| format!("  - {pkg}"))
@@ -3638,6 +3642,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             placements_ref,
         )?;
         if !unreviewed.is_empty() {
+            let review_names = allow_build_review_names(&unreviewed);
+            aube_manifest::workspace::add_to_allow_builds(&cwd, &review_names, false)
+                .into_diagnostic()
+                .wrap_err("failed to update allowBuilds review entries")?;
             // Cap the inline list so a napi-rs / prebuilt-variants tree
             // (tens of per-platform binding packages) doesn't splat into
             // one hard-to-scan line. Users who want the full list run
@@ -3661,6 +3669,46 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     }
 
     Ok(())
+}
+
+fn allow_build_review_names(specs: &[String]) -> Vec<String> {
+    specs
+        .iter()
+        .map(|spec| package_name_from_spec_key(spec))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn package_name_from_spec_key(spec: &str) -> String {
+    if spec.starts_with('@') {
+        if let Some((name, _)) = spec.rsplit_once('@')
+            && !name.is_empty()
+        {
+            return name.to_string();
+        }
+        return spec.to_string();
+    }
+    spec.split_once('@')
+        .map(|(name, _)| name.to_string())
+        .unwrap_or_else(|| spec.to_string())
+}
+
+#[cfg(test)]
+mod allow_build_review_tests {
+    use super::package_name_from_spec_key;
+
+    #[test]
+    fn package_name_from_spec_key_handles_scoped_names() {
+        assert_eq!(package_name_from_spec_key("@scope/pkg@1.2.3"), "@scope/pkg");
+        assert_eq!(package_name_from_spec_key("@scope/pkg"), "@scope/pkg");
+    }
+
+    #[test]
+    fn package_name_from_spec_key_handles_unscoped_names() {
+        assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
+        assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
+    }
 }
 
 fn print_already_up_to_date() {

@@ -25,19 +25,23 @@ aube rebuild
 
 Supported policy fields — aube reads all of these at install time:
 
-In `pnpm-workspace.yaml` (pnpm v10+ home for these settings, and what
-`aube approve-builds` writes to):
+In `pnpm-workspace.yaml` (pnpm v11's build-review map, and what aube writes
+to):
 
 ```yaml
-onlyBuiltDependencies:
-  - sharp
-neverBuiltDependencies:
-  - untrusted-package
 allowBuilds:
   esbuild: true
+  sharp: true
+  untrusted-package: false
 ```
 
-In `package.json` (pnpm v9 / legacy — still honored as a read source).
+The old `onlyBuiltDependencies` and `neverBuiltDependencies` list keys are
+still honored as read-only compatibility inputs, but new approvals go into
+`allowBuilds`. When install sees an unreviewed dependency build, it adds that
+package to `allowBuilds` with `false`; `aube approve-builds` flips reviewed
+entries to `true`.
+
+In `package.json` (legacy — still honored as a read source).
 Every key under `pnpm.*` is also accepted under `aube.*`; when both are
 present for the same key, `aube.*` wins. Disjoint entries from either
 namespace merge.
@@ -46,10 +50,9 @@ namespace merge.
 {
   "aube": {
     "allowBuilds": {
-      "esbuild": true
-    },
-    "onlyBuiltDependencies": ["sharp"],
-    "neverBuiltDependencies": ["untrusted-package"]
+      "esbuild": true,
+      "untrusted-package": false
+    }
   }
 }
 ```

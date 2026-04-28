@@ -26,9 +26,16 @@ One of: `low`, `moderate`, `high`, `critical`. Default: `low`.
 
 Only audit `devDependencies`
 
-### `--fix`
+### `--fix <FIX>`
 
-Write package.json overrides that force vulnerable packages to patched versions
+Fix advisories.
+
+Bare `--fix` writes package.json overrides for backwards compatibility. `--fix=update` refreshes the lockfile without writing overrides.
+
+**Choices:**
+
+- `update`
+- `override`
 
 ### `--ignore… <ID>`
 
@@ -47,6 +54,10 @@ Useful when audit checks run in CI and the registry has a hiccup.
 Drop advisories for which no non-vulnerable version is available in the package's packument.
 
 Same "best non-vulnerable" logic as `--fix`: an advisory is kept only when an upgrade path exists.
+
+### `-i --interactive`
+
+Pick which advisories to fix interactively
 
 ### `--json`
 

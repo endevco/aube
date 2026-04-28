@@ -106,7 +106,7 @@ cmd add help="Add a dependency" {
     }
     arg "[PACKAGES]…" help="Package(s) to add" required=#false var=#true
 }
-cmd approve-builds help="Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`" {
+cmd approve-builds help="Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`" {
     flag --all help="Approve every pending ignored build without prompting"
     flag "-g --global" help="Operate on globally-installed packages instead of the current project"
     arg "[PKG]…" help="Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op" required=#false var=#true
@@ -120,7 +120,12 @@ cmd audit help="Check installed packages against the registry advisory DB" {
         }
     }
     flag "-D --dev" help="Only audit `devDependencies`"
-    flag --fix help="Write package.json overrides that force vulnerable packages to patched versions"
+    flag --fix help="Fix advisories" {
+        long_help "Fix advisories.\n\nBare `--fix` writes package.json overrides for backwards compatibility. `--fix=update` refreshes the lockfile without writing overrides."
+        arg <FIX> {
+            choices update override
+        }
+    }
     flag --ignore help="Drop advisories whose ID matches one of these values" var=#true {
         long_help "Drop advisories whose ID matches one of these values.\n\nMatches against the numeric npm advisory `id`, `github_advisory_id` (`GHSA-…`), and any entry in `cves[]` (case-insensitive). Repeatable; comma-separated values are also accepted."
         arg <ID>
@@ -131,6 +136,7 @@ cmd audit help="Check installed packages against the registry advisory DB" {
     flag --ignore-unfixable help="Drop advisories for which no non-vulnerable version is available in the package's packument" {
         long_help "Drop advisories for which no non-vulnerable version is available in the package's packument.\n\nSame \"best non-vulnerable\" logic as `--fix`: an advisory is kept only when an upgrade path exists."
     }
+    flag "-i --interactive" help="Pick which advisories to fix interactively"
     flag --json help="Emit the report as JSON (pnpm-compatible shape) instead of a table"
     flag --no-optional help="Skip `optionalDependencies`"
     flag "-P --prod --production" help="Only audit `dependencies` and `optionalDependencies`"
@@ -413,7 +419,7 @@ cmd install help="Install all dependencies" {
     flag --force help="Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted" {
         long_help "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`."
     }
-    flag --ignore-pnpmfile help="Skip running `.pnpmfile.cjs` hooks for this install"
+    flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
     flag --lockfile-only help="Resolve dependencies and write the lockfile, but don't link `node_modules`" {
         long_help "Resolve dependencies and write the lockfile, but don't link `node_modules`.\n\nUseful for CI workflows that only update the lockfile."

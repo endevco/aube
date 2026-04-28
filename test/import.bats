@@ -94,6 +94,17 @@ teardown() {
 	assert_dir_exists "node_modules/@sindresorhus/is"
 }
 
+@test "aube install smoke installs messy bun.lock fixture and doesn't change lockfile" {
+	cp -R "$PROJECT_ROOT/fixtures/import-bun-messy/." .
+	cp bun.lock bun.lock.before
+
+	run aube install
+	assert_success
+
+	run cmp -s bun.lock bun.lock.before
+	assert_success
+}
+
 @test "aube import refuses to overwrite existing aube-lock.yaml" {
 	cp "$PROJECT_ROOT/fixtures/import-npm/package.json" .
 	cp "$PROJECT_ROOT/fixtures/import-npm/package-lock.json" .

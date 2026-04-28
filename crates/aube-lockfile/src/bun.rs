@@ -404,14 +404,18 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             if let Some(target_key) = resolve_nested_bun(key, dep_name, &key_info)
                 && let Some((dname, dver)) = key_info.get(&target_key)
             {
-                resolved.insert(dep_name.clone(), format!("{dname}@{dver}"));
+                let target_dep_path = format!("{dname}@{dver}");
+                resolved.insert(
+                    dep_name.clone(),
+                    crate::npm::dep_path_tail(dname, &target_dep_path).to_string(),
+                );
             }
         }
         resolved_by_dep_path.insert(dep_path, resolved);
     }
     for (dep_path, deps) in resolved_by_dep_path {
         if let Some(pkg) = packages.get_mut(&dep_path) {
-            // Transfer resolved dep_paths onto `dependencies` (the
+            // Transfer resolved dep_path tails onto `dependencies` (the
             // combined map) and onto `optional_dependencies` for the
             // subset the parser flagged on first pass. Matches the
             // pnpm parser's split so every downstream consumer
@@ -1335,7 +1339,9 @@ pub fn write(
         let mut opt_deps_obj = serde_json::Map::new();
         for (dep_name, dep_value) in &pkg.dependencies {
             let canonical_key = crate::npm::child_canonical_key(dep_name, dep_value);
-            if !canonical.contains_key(&canonical_key) && !workspace_dep_paths.contains(dep_value) {
+            if !canonical.contains_key(&canonical_key)
+                && !workspace_dep_paths.contains(&canonical_key)
+            {
                 continue;
             }
             let rendered = pkg
@@ -1781,7 +1787,7 @@ mod tests {
         assert_eq!(foo.integrity.as_deref(), Some(sri_foo.as_str()));
         assert_eq!(
             foo.dependencies.get("nested").map(String::as_str),
-            Some("nested@3.1.0")
+            Some("3.1.0")
         );
 
         let root = graph.importers.get(".").unwrap();
@@ -1793,6 +1799,66 @@ mod tests {
         assert!(
             root.iter()
                 .any(|d| d.name == "bar" && d.dep_type == DepType::Dev)
+        );
+    }
+
+    #[test]
+    fn test_parse_bun_lifecycle_deps_as_dep_path_tails() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri_bufferutil = fake_sri('a');
+        let sri_node_gyp_build = fake_sri('b');
+        let sri_electron = fake_sri('c');
+        let sri_electron_get = fake_sri('d');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "bufferutil": "4.0.9",
+        "electron": "39.2.7"
+      }
+    }
+  },
+  "packages": {
+    "bufferutil": ["bufferutil@4.0.9", "", { "dependencies": { "node-gyp-build": "^4.3.0" } }, "SRI_BUFFERUTIL"],
+    "node-gyp-build": ["node-gyp-build@4.8.4", "", { "bin": { "node-gyp-build": "bin.js" } }, "SRI_NODE_GYP_BUILD"],
+    "electron": ["electron@39.2.7", "", { "dependencies": { "@electron/get": "^2.0.0" } }, "SRI_ELECTRON"],
+    "@electron/get": ["@electron/get@2.0.3", "", {}, "SRI_ELECTRON_GET"]
+  }
+}"#
+        .replace("SRI_BUFFERUTIL", &sri_bufferutil)
+        .replace("SRI_NODE_GYP_BUILD", &sri_node_gyp_build)
+        .replace("SRI_ELECTRON", &sri_electron)
+        .replace("SRI_ELECTRON_GET", &sri_electron_get);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        let bufferutil = &graph.packages["bufferutil@4.0.9"];
+        assert_eq!(
+            bufferutil
+                .dependencies
+                .get("node-gyp-build")
+                .map(String::as_str),
+            Some("4.8.4")
+        );
+
+        let electron = &graph.packages["electron@39.2.7"];
+        assert_eq!(
+            electron
+                .dependencies
+                .get("@electron/get")
+                .map(String::as_str),
+            Some("2.0.3")
+        );
+
+        let root = graph.importers.get(".").unwrap();
+        assert!(
+            root.iter()
+                .any(|d| d.name == "bufferutil" && d.dep_path == "bufferutil@4.0.9")
+        );
+        assert!(
+            root.iter()
+                .any(|d| d.name == "electron" && d.dep_path == "electron@39.2.7")
         );
     }
 
@@ -1825,7 +1891,7 @@ mod tests {
         let foo = &graph.packages["foo@1.0.0"];
         assert_eq!(
             foo.dependencies.get("bar").map(String::as_str),
-            Some("bar@1.0.0")
+            Some("1.0.0")
         );
 
         // Root direct bar is the hoisted 2.0.0
@@ -1887,7 +1953,7 @@ mod tests {
         let vfs = &graph.packages[vfs_key];
         assert_eq!(
             vfs.dependencies.get("dep").map(String::as_str),
-            Some("dep@1.0.0")
+            Some("1.0.0")
         );
         // No SRI-shaped hash on the github entry → integrity stays None.
         assert!(vfs.integrity.is_none());
@@ -1993,7 +2059,7 @@ mod tests {
                 .dependencies
                 .get("bar")
                 .map(String::as_str),
-            Some("bar@1.0.0")
+            Some("1.0.0")
         );
     }
 
@@ -2352,8 +2418,7 @@ mod tests {
                 version: "workspace:packages/app".to_string(),
                 dep_path: "app@workspace:packages/app".to_string(),
                 local_source: Some(LocalSource::Link(PathBuf::from("packages/app"))),
-                dependencies: [("lib".to_string(), "lib@workspace:packages/lib".to_string())]
-                    .into(),
+                dependencies: [("lib".to_string(), "workspace:packages/lib".to_string())].into(),
                 declared_dependencies: [("lib".to_string(), "workspace:*".to_string())].into(),
                 ..Default::default()
             },
@@ -2482,7 +2547,7 @@ mod tests {
                 name: "foo".to_string(),
                 version: "1.0.0".to_string(),
                 dep_path: "foo@1.0.0".to_string(),
-                dependencies: [("bar".to_string(), "bar@2.0.0".to_string())]
+                dependencies: [("bar".to_string(), "2.0.0".to_string())]
                     .into_iter()
                     .collect(),
                 ..Default::default()

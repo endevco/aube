@@ -60,18 +60,37 @@ pub async fn run(args: PatchCommitArgs) -> Result<()> {
         .into_diagnostic()
         .map_err(|e| miette!("failed to create {}: {e}", abs_dir.display()))?;
     let abs_path = abs_dir.join(&file_name);
-    std::fs::write(&abs_path, &patch)
+    // Snapshot any existing patch so a re-patch can be rolled back to
+    // the previous content if the manifest write fails. atomic_write
+    // replaces unconditionally, so without the snapshot a re-patch
+    // failure would leave the manifest pointing at a path that lost
+    // its old content.
+    let prior_patch = std::fs::read(&abs_path).ok();
+    aube_util::fs_atomic::atomic_write(&abs_path, patch.as_bytes())
         .into_diagnostic()
         .map_err(|e| miette!("failed to write {}: {e}", abs_path.display()))?;
 
-    // Use forward slashes in the manifest entry — the field is portable
+    // Use forward slashes in the manifest entry. Field is portable
     // across platforms and pnpm always writes it that way.
     let rel_path = format!(
         "{}/{file_name}",
         rel_dir.to_string_lossy().replace('\\', "/")
     );
     let key = format!("{}@{}", state.name, state.version);
-    upsert_patched_dependency(&cwd, &key, &rel_path)?;
+    // Manifest write failure means the patch on disk is not
+    // referenced anywhere. Restore the prior patch if there was one
+    // (re-patch path), else remove the orphan.
+    if let Err(e) = upsert_patched_dependency(&cwd, &key, &rel_path) {
+        match prior_patch {
+            Some(bytes) => {
+                let _ = aube_util::fs_atomic::atomic_write(&abs_path, &bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&abs_path);
+            }
+        }
+        return Err(e);
+    }
 
     eprintln!("Wrote {}", abs_path.display());
     eprintln!("Recorded {key} -> {rel_path} in package.json");

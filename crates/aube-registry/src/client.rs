@@ -1038,11 +1038,15 @@ impl RegistryClient {
         // Tarball URLs may point to any registry, try to match auth.
         // Pass the full tarball URL through so longest-prefix matching
         // in `registry_config_for` can find path-scoped auth entries
-        // (e.g. `//host/artifactory/npm/`). Retries cover transient
-        // 5xx / 429 / connection errors; see [`Self::send_with_retry`].
+        // (e.g. `//host/artifactory/npm/`). Tarballs are already gzip
+        // archives, so ask intermediaries not to wrap them in HTTP
+        // content encoding that can fail independently of the payload.
+        // Retries cover transient 5xx / 429 / connection errors; see
+        // [`Self::send_with_retry`].
         let (bytes, body_elapsed) = self
             .retry_bytes_body_read(url, self.fetch_policy.tarball_max_bytes, || {
                 self.authed_get(url, url)
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity")
             })
             .await?;
         warn_slow_tarball(
@@ -1664,7 +1668,7 @@ mod retry_tests {
     //! Timeouts use sub-second values so the suite stays fast.
     use super::*;
     use crate::config::FetchPolicy;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client_with(server: &MockServer, policy: FetchPolicy) -> RegistryClient {
@@ -1858,6 +1862,34 @@ mod retry_tests {
 
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn tarball_fetch_requests_identity_encoding() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pkg.tgz"))
+            .and(header("accept-encoding", "identity"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"tgz bytes".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 5_000,
+            retries: 0,
+            retry_factor: 1,
+            retry_min_timeout_ms: 1,
+            retry_max_timeout_ms: 1,
+            ..FetchPolicy::default()
+        };
+        let client = client_with(&server, policy);
+        let url = format!("{}/pkg.tgz", server.uri());
+        let bytes = client
+            .fetch_tarball_bytes(&url)
+            .await
+            .expect("tarball fetch should succeed");
+        assert_eq!(&bytes[..], b"tgz bytes");
     }
 
     #[tokio::test]

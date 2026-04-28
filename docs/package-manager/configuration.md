@@ -93,7 +93,7 @@ piggy-backing on the pnpm namespace:
     "overrides": { "lodash": "4.17.21" },
     "catalog": { "react": "^18.0.0" },
     "supportedArchitectures": { "os": ["current", "linux"] },
-    "onlyBuiltDependencies": ["sharp"],
+    "allowBuilds": { "sharp": true },
     "patchedDependencies": { "foo@1.0.0": "patches/foo.patch" },
     "peerDependencyRules": { "ignoreMissing": ["react-native"] }
   }
@@ -111,7 +111,9 @@ Merge semantics when both namespaces are present:
   `neverBuiltDependencies`, `ignoredOptionalDependencies`,
   `peerDependencyRules.ignoreMissing`, `peerDependencyRules.allowAny`,
   `updateConfig.ignoreDependencies`, `supportedArchitectures.{os,cpu,libc}`):
-  entries from both namespaces union.
+  entries from both namespaces union. `onlyBuiltDependencies` and
+  `neverBuiltDependencies` are legacy build-policy inputs; new review state is
+  written to `allowBuilds`.
 - Top-level npm-standard keys (`overrides`, `packageExtensions`,
   `allowedDeprecatedVersions`, `updateConfig`) still take highest
   precedence, so the `aube.*` alias doesn't change existing npm /

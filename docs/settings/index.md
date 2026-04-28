@@ -17,7 +17,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`updateConfig.ignoreDependencies`](#setting-updateconfig-ignoredependencies) | `list<string>` | List of packages to ignore during update checks. |
 | [`supportedArchitectures`](#setting-supportedarchitectures) | `object` | Specify architectures for optional dependency installation. |
 | [`ignoredOptionalDependencies`](#setting-ignoredoptionaldependencies) | `list<string>` | Skip optional dependencies by name. |
-| [`pnpmfilePath`](#setting-pnpmfilepath) | `string` | Location of the pnpmfile.cjs hook file. |
+| [`pnpmfilePath`](#setting-pnpmfilepath) | `string` | Location of the pnpmfile hook file. |
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
@@ -242,18 +242,19 @@ from `--no-optional`, which drops *all* optional deps at install time.
 
 ### `pnpmfilePath` {#setting-pnpmfilepath}
 
-Location of the pnpmfile.cjs hook file.
+Location of the pnpmfile hook file.
 
 - Type: `string`
 - Default: `undefined`
 - Environment: `AUBE_PNPMFILE_PATH`
 - Workspace YAML keys: `pnpmfilePath`
 
-Workspace-scoped override for the `.pnpmfile.cjs` discovery path.
-Defaults to `<project>/.pnpmfile.cjs`. Relative paths resolve against
-the workspace root; absolute paths are used as-is. A path that points
-at a missing file is a hard miss — aube emits a warning and runs with
-no pnpmfile rather than silently falling back to the default.
+Workspace-scoped override for the pnpmfile discovery path. Defaults to
+`<project>/.pnpmfile.mjs` when present, otherwise `<project>/.pnpmfile.cjs`.
+Relative paths resolve against the workspace root; absolute paths are used
+as-is. A path that points at a missing file is a hard miss — aube emits a
+warning and runs with no pnpmfile rather than silently falling back to the
+default.
 
 ### `minimumReleaseAge` {#setting-minimumreleaseage}
 
@@ -349,7 +350,8 @@ Packages exempt from `trustPolicy` checks.
 
 Patterns: `name`, `name@1.0.0`, `name@1.0.0 || 1.0.1` (exact versions only —
 no `^`/`~`/`>=`), `is-*` (name glob, no version), `@scope/name@1.0.0`.
-Empty list disables exclusions.
+Empty list disables user-provided exclusions; aube still applies its built-in
+exclusions for known registry provenance metadata churn.
 
 ### `trustPolicyIgnoreAfter` {#setting-trustpolicyignoreafter}
 
@@ -1827,9 +1829,9 @@ aube never runs dependency lifecycle scripts unless the package is
 listed in `allowBuilds` or `--dangerously-allow-all-builds` is set.
 With `strictDepBuilds = true`, an install that sees unreviewed build
 scripts fails after linking and before any dependency build scripts run.
-Add reviewed packages to `allowBuilds` / `onlyBuiltDependencies`, add
-intentionally skipped packages to `neverBuiltDependencies`, or leave the
-default `strictDepBuilds=false` behavior to skip unreviewed builds.
+Add reviewed packages to `allowBuilds` with `true`, keep intentionally
+skipped packages as `false`, or leave the default `strictDepBuilds=false`
+behavior to skip unreviewed builds.
 
 ### `allowBuilds` {#setting-allowbuilds}
 
@@ -1840,12 +1842,14 @@ Explicitly allow or disallow script execution per package.
 - .npmrc keys: `allowBuilds`, `allow-builds`
 - Workspace YAML keys: `allowBuilds`
 
-Per-package allowlist for dependency lifecycle scripts. Read from
-`package.json`'s `pnpm.allowBuilds` field and `aube-workspace.yaml`'s
+Per-package review map for dependency lifecycle scripts. Read from
+`package.json`'s `pnpm.allowBuilds` field and workspace yaml's
 `allowBuilds`. Keys are package name patterns (`esbuild`, `@scope/*`,
 `pkg@1.0.0 || 2.0.0`); values are `true` to allow `preinstall` /
-`install` / `postinstall` scripts for that package or `false` to block
-them. Packages not listed are skipped by default (aube's safe default).
+`install` / `postinstall` scripts for that package or `false` to record
+an intentional skip. Packages not listed are skipped by default, and
+install adds unreviewed build packages to workspace `allowBuilds` as
+`false` for later review.
 
 Examples:
 

@@ -130,10 +130,15 @@ fn index_files_match_metadata(index: &PackageIndex, verify_all: bool) -> bool {
 }
 
 fn stored_file_matches_metadata(file: &StoredFile) -> bool {
-    let Ok(metadata) = file.store_path.metadata() else {
-        return false;
-    };
-    file.size.is_none_or(|size| metadata.len() == size)
+    file.size
+        .map(|size| cas_file_matches_len(&file.store_path, size))
+        .unwrap_or_else(|| file.store_path.exists())
+}
+
+fn cas_file_matches_len(path: &Path, expected_len: u64) -> bool {
+    path.metadata()
+        .map(|metadata| metadata.len() == expected_len)
+        .unwrap_or(false)
 }
 
 impl Store {
@@ -687,15 +692,16 @@ impl Store {
     }
 
     /// Atomically create `path` without overwriting an existing CAS entry.
-    /// `AlreadyExists` is a no-op — in a CAS, same path = same bytes by
-    /// construction. Non-empty files are written through a sibling temp file
-    /// and persisted with no-clobber semantics so an interrupted import cannot
-    /// leave a torn file at the content-addressed path. We intentionally do
-    /// not fsync every CAS file: cold installs import tens of thousands of
-    /// files, and package-index loading rejects missing/truncated entries so
-    /// they can be fetched again. `NotFound` means a concurrent prune or a
-    /// missed `ensure_shards_exist` removed the parent shard; recreate it and
-    /// retry exactly once before surfacing.
+    /// `AlreadyExists` is a no-op here; callers that know the expected content
+    /// length must verify it before trusting a reused path. Non-empty files are
+    /// written through a sibling temp file and persisted with no-clobber
+    /// semantics so an interrupted import cannot leave a torn file at the
+    /// content-addressed path. We intentionally do not fsync every CAS file:
+    /// cold installs import tens of thousands of files, and package-index
+    /// loading rejects missing/truncated entries so they can be fetched again.
+    /// `NotFound` means a concurrent prune or a missed `ensure_shards_exist`
+    /// removed the parent shard; recreate it and retry exactly once before
+    /// surfacing.
     fn create_cas_file(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
         fn do_create_and_write(path: &Path, content: Option<&[u8]>) -> Result<(), Error> {
             if let Some(bytes) = content {
@@ -771,6 +777,23 @@ impl Store {
         // means another writer already materialized this content (same
         // hash = same bytes), so we skip and share the entry.
         Self::create_cas_file(&store_path, Some(content))?;
+        if !cas_file_matches_len(&store_path, content.len() as u64) {
+            let _ = xx::file::remove_file(&store_path);
+            Self::create_cas_file(&store_path, Some(content))?;
+            if !cas_file_matches_len(&store_path, content.len() as u64) {
+                let actual_len = store_path.metadata().map(|metadata| metadata.len()).ok();
+                return Err(Error::Io(
+                    store_path.clone(),
+                    std::io::Error::other(format!(
+                        "CAS entry has wrong size after import: expected {} bytes, got {}",
+                        content.len(),
+                        actual_len
+                            .map(|len| format!("{len} bytes"))
+                            .unwrap_or_else(|| "missing file".to_owned())
+                    )),
+                ));
+            }
+        }
 
         if executable {
             // Behavior note: this branch now runs unconditionally when
@@ -2129,6 +2152,24 @@ mod tests {
         // Importing same content returns same hash (idempotent)
         let stored2 = store.import_bytes(content, false).unwrap();
         assert_eq!(stored.hex_hash, stored2.hex_hash);
+    }
+
+    #[test]
+    fn test_import_bytes_repairs_truncated_existing_cas_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+
+        let content = br#"{"name":"@babel/helper-string-parser","version":"7.27.1"}"#;
+        let hex_hash = blake3_hex(content);
+        let store_path = store.file_path_from_hex(&hex_hash);
+        std::fs::write(&store_path, b"").unwrap();
+
+        let stored = store.import_bytes(content, false).unwrap();
+
+        assert_eq!(stored.hex_hash, hex_hash);
+        assert_eq!(stored.size, Some(content.len() as u64));
+        assert_eq!(std::fs::read(&stored.store_path).unwrap(), content);
     }
 
     #[test]

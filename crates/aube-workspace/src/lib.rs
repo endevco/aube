@@ -129,12 +129,30 @@ fn glob_workspace_pattern(project_dir: &Path, pattern: &str) -> Vec<PathBuf> {
             if entry.components().any(|c| c.as_os_str() == "node_modules") {
                 continue;
             }
-            if let Some(parent) = entry.parent() {
+            if let Some(parent) = entry.parent()
+                && is_under_project(project_dir, parent)
+            {
                 packages.push(parent.to_path_buf());
             }
         }
     }
     packages
+}
+
+/// Check that `candidate` resolves underneath `project_dir`. Patterns
+/// containing `..` (e.g. `../sibling`) lexically still start with the
+/// project prefix but escape the root via parent components. pnpm
+/// rejects these and so do we. Falls back to lexical compare when
+/// canonicalization fails (permission error, mid-walk race) so a path
+/// the glob already returned still gets a containment check.
+fn is_under_project(project_dir: &Path, candidate: &Path) -> bool {
+    if let (Ok(root), Ok(child)) = (project_dir.canonicalize(), candidate.canonicalize()) {
+        return child.starts_with(root);
+    }
+    let no_parent_dir = candidate
+        .components()
+        .all(|c| !matches!(c, std::path::Component::ParentDir));
+    no_parent_dir && candidate.starts_with(project_dir)
 }
 
 fn workspace_pattern_root(project_dir: &Path, pattern: &str) -> PathBuf {

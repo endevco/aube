@@ -329,18 +329,34 @@ pub fn apply_peer_contexts(
     const MAX_ITERATIONS: usize = 16;
     let mut current = canonical;
     let mut converged = false;
-    let key_set_hash = |g: &LockfileGraph| -> u64 {
-        aube_util::hash::ordered_seq_hash(g.packages.keys().map(String::as_str))
+    // Hash both keys and dependency tails. A peer-context iteration can
+    // rewrite a dependency value to point at an existing key without
+    // adding a new key, so a key-only convergence test ships partially
+    // rewritten tails. Linker reads tails directly to locate sibling
+    // symlink targets, stale tails produce broken `node_modules`.
+    let graph_hash = |g: &LockfileGraph| -> u64 {
+        let total_deps: usize = g.packages.values().map(|p| p.dependencies.len()).sum();
+        let mut tokens: Vec<&str> = Vec::with_capacity(g.packages.len() * 3 + total_deps * 2);
+        for (k, pkg) in &g.packages {
+            tokens.push(k.as_str());
+            tokens.push("\x1f");
+            for (name, tail) in &pkg.dependencies {
+                tokens.push(name.as_str());
+                tokens.push(tail.as_str());
+            }
+            tokens.push("\x1e");
+        }
+        aube_util::hash::ordered_seq_hash(tokens.iter().copied())
     };
     for i in 0..MAX_ITERATIONS {
-        let before = key_set_hash(&current);
+        let before = graph_hash(&current);
         let after_once = apply_peer_contexts_once(current, options);
         let next = if options.dedupe_peer_dependents {
             dedupe_peer_variants(after_once)
         } else {
             after_once
         };
-        if before == key_set_hash(&next) {
+        if before == graph_hash(&next) {
             tracing::debug!("peer-context pass converged after {i} iteration(s)");
             current = next;
             converged = true;
