@@ -96,10 +96,20 @@ pub(crate) fn apply_seccomp_net_filter() -> Result<(), String> {
     // Pure default-deny on the socket family axis would require
     // libseccomp's per-syscall default action, which seccompiler does
     // not expose. Until that lands, enumerate the dangerous families
-    // explicitly and keep AF_UNIX flowing for node + node-gyp IPC.
-    // Filesystem reach via AF_UNIX is bounded by the landlock policy
-    // above, which never grants write under /var/run or /run, so
-    // docker.sock and friends stay unreachable.
+    // explicitly and keep AF_UNIX flowing for node + node-gyp IPC
+    // (socketpair stdio, worker_threads).
+    //
+    // Known residual gap: AF_UNIX `connect()` to filesystem socket
+    // paths (e.g. /var/run/docker.sock) is NOT covered by Landlock
+    // ABI v2. The v2 policy only filters VFS open/write hooks, the
+    // unix socket connect path bypasses them by passing sun_path
+    // inline in sockaddr_un. LANDLOCK_ACCESS_FS_CONNECT_UNIX lands
+    // in v5 (kernel 6.10+); the policy here pins v2 to keep LTS
+    // kernels (Ubuntu 22.04, Debian 12, RHEL 9) covered. On a host
+    // with /var/run/docker.sock and a kernel below 6.10, an approved
+    // postinstall could still reach the docker daemon. Mitigations:
+    // run installs in a namespace where the socket is bind-mounted
+    // away, or set jail.network=true and rely on host firewalling.
     let mk_family_rule = |family: i32| -> Result<SeccompRule, String> {
         SeccompRule::new(vec![
             SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, family as u64)
