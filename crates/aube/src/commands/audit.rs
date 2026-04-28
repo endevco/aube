@@ -288,6 +288,19 @@ fn select_fix_rows(rows: &[Row]) -> miette::Result<Vec<Row>> {
         return Ok(rows.to_vec());
     }
 
+    let picked = match advisory_picker(rows).run() {
+        Ok(picked) => picked,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => std::process::exit(130),
+        Err(e) => {
+            return Err(e)
+                .into_diagnostic()
+                .wrap_err("failed to read audit selection");
+        }
+    };
+    Ok(picked.into_iter().map(|idx| rows[idx].clone()).collect())
+}
+
+fn advisory_picker(rows: &[Row]) -> demand::MultiSelect<'_, usize> {
     let mut picker = demand::MultiSelect::new("Choose which vulnerabilities to fix")
         .description("Space to toggle, Enter to confirm")
         .filterable(true)
@@ -303,16 +316,7 @@ fn select_fix_rows(rows: &[Row]) -> miette::Result<Vec<Row>> {
         }
         picker = picker.option(option);
     }
-    let picked = match picker.run() {
-        Ok(picked) => picked,
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => std::process::exit(130),
-        Err(e) => {
-            return Err(e)
-                .into_diagnostic()
-                .wrap_err("failed to read audit selection");
-        }
-    };
-    Ok(picked.into_iter().map(|idx| rows[idx].clone()).collect())
+    picker
 }
 
 fn render_fix_remaining(selected: &[Row], remaining: &[Row]) {
@@ -663,6 +667,9 @@ fn update_direct_manifest_specs(
         if old == new {
             continue;
         }
+        if spec_satisfies_version(spec, new) {
+            continue;
+        }
         let next = rewrite_specifier(spec, &real_name, new, None);
         if next != *spec {
             *spec = next;
@@ -731,6 +738,15 @@ fn spec_range(spec: &str) -> &str {
     } else {
         spec
     }
+}
+
+fn spec_satisfies_version(spec: &str, version: &str) -> bool {
+    let Ok(version) = node_semver::Version::parse(version) else {
+        return false;
+    };
+    node_semver::Range::parse(spec_range(spec))
+        .ok()
+        .is_some_and(|range| version.satisfies(&range))
 }
 
 fn range_prefix(spec: &str) -> &'static str {
@@ -990,6 +1006,50 @@ mod tests {
             best_non_vulnerable(&packument, &["<1.5.0".to_string()]),
             Some("1.5.0".to_string())
         );
+    }
+
+    #[test]
+    fn audit_picker_preselects_every_advisory() {
+        let rows = vec![
+            Row {
+                name: "is-number".to_string(),
+                severity: Severity::High,
+                title: "number advisory".to_string(),
+                vulnerable_versions: "<7.0.0".to_string(),
+                url: "https://example.test/number".to_string(),
+            },
+            Row {
+                name: "is-odd".to_string(),
+                severity: Severity::Moderate,
+                title: "odd advisory".to_string(),
+                vulnerable_versions: "<3.0.0".to_string(),
+                url: String::new(),
+            },
+        ];
+
+        let picker = advisory_picker(&rows);
+
+        assert_eq!(picker.min, 1);
+        assert!(picker.filterable);
+        assert_eq!(picker.options.len(), 2);
+        assert!(picker.options.iter().all(|option| option.selected));
+        assert_eq!(picker.options[0].item, 0);
+        assert_eq!(
+            picker.options[0].label,
+            "high is-number <7.0.0 number advisory"
+        );
+        assert_eq!(
+            picker.options[0].description.as_deref(),
+            Some("https://example.test/number")
+        );
+        assert_eq!(picker.options[1].item, 1);
+    }
+
+    #[test]
+    fn audit_update_keeps_manifest_range_when_new_version_satisfies_it() {
+        assert!(spec_satisfies_version(">=0.1.0", "7.0.0"));
+        assert!(spec_satisfies_version("npm:is-number@>=0.1.0", "7.0.0"));
+        assert!(!spec_satisfies_version("3.0.0", "7.0.0"));
     }
 
     #[test]

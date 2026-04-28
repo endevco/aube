@@ -898,9 +898,9 @@ impl Resolver {
                 if let Some(matched_ver) = resolved_versions.get(&task.name).and_then(|versions| {
                     versions
                         .iter()
-                        .find(|v| version_satisfies(v, &task.range))
-                        .filter(|v| {
-                            !is_vulnerable(task.registry_name(), v, &self.vulnerable_ranges)
+                        .find(|v| {
+                            version_satisfies(v, &task.range)
+                                && !is_vulnerable(task.registry_name(), v, &self.vulnerable_ranges)
                         })
                         .cloned()
                 }) {
