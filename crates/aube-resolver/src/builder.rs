@@ -29,6 +29,7 @@ impl Resolver {
             catalogs: BTreeMap::new(),
             read_package_hook: None,
             dependency_policy: DependencyPolicy::default(),
+            vulnerable_ranges: BTreeMap::new(),
             git_shallow_hosts: Vec::new(),
             peers_suffix_max_length: 1000,
             dedupe_peer_dependents: true,
@@ -65,6 +66,7 @@ impl Resolver {
                 catalogs: BTreeMap::new(),
                 read_package_hook: None,
                 dependency_policy: DependencyPolicy::default(),
+                vulnerable_ranges: BTreeMap::new(),
                 git_shallow_hosts: Vec::new(),
                 peers_suffix_max_length: 1000,
                 dedupe_peer_dependents: true,
@@ -255,6 +257,14 @@ impl Resolver {
     /// and `blockExoticSubdeps`.
     pub fn with_dependency_policy(mut self, policy: DependencyPolicy) -> Self {
         self.dependency_policy = policy;
+        self
+    }
+
+    /// Prefer non-vulnerable versions for the supplied audit ranges.
+    /// Used by `audit --fix=update` to reuse the normal resolver while
+    /// steering only vulnerable packages away from affected versions.
+    pub fn with_vulnerable_ranges(mut self, ranges: BTreeMap<String, Vec<String>>) -> Self {
+        self.vulnerable_ranges = ranges;
         self
     }
 

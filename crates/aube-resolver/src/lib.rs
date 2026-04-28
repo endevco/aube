@@ -131,6 +131,13 @@ pub struct Resolver {
     /// `--ignore-pnpmfile` was not set.
     read_package_hook: Option<Box<dyn ReadPackageHook>>,
     dependency_policy: DependencyPolicy,
+    /// Advisory ranges to avoid when resolving audit fixes. The map is
+    /// keyed by registry package name and values are npm semver ranges
+    /// from `vulnerable_versions`. When a clean satisfying version
+    /// exists, it wins over locked/sibling reuse and the normal highest
+    /// pick; if not, resolution falls back to the ordinary pick so the
+    /// caller can report the advisory as remaining.
+    vulnerable_ranges: BTreeMap<String, Vec<String>>,
     /// Hosts for which aube performs shallow git clones, mirroring
     /// pnpm's `git-shallow-hosts`. When a git dep's URL host is in
     /// this list, the store attempts `git fetch --depth 1 origin

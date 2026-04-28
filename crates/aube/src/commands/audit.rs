@@ -5,7 +5,7 @@
 //! `/-/npm/v1/security/advisories/bulk` endpoint, and prints the matching
 //! advisories. Mirrors `pnpm audit`'s default table layout and `--json` shape.
 //!
-//! Pure read: no lockfile writes, no `node_modules/` touches, no project lock.
+//! Read-only unless `--fix` is passed.
 
 use super::DepFilter;
 use aube_registry::Packument;
@@ -14,6 +14,7 @@ use aube_registry::config::normalize_registry_url_pub;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{IsTerminal, Write};
 
 pub const AFTER_LONG_HELP: &str = "\
 Examples:
@@ -51,9 +52,12 @@ pub struct AuditArgs {
     #[arg(short = 'D', long, conflicts_with = "prod")]
     pub dev: bool,
 
-    /// Write package.json overrides that force vulnerable packages to patched versions.
-    #[arg(long)]
-    pub fix: bool,
+    /// Fix advisories.
+    ///
+    /// Bare `--fix` writes package.json overrides for backwards compatibility.
+    /// `--fix=update` refreshes the lockfile without writing overrides.
+    #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "override")]
+    pub fix: Option<FixMode>,
 
     /// Drop advisories whose ID matches one of these values.
     ///
@@ -77,6 +81,10 @@ pub struct AuditArgs {
     /// only when an upgrade path exists.
     #[arg(long)]
     pub ignore_unfixable: bool,
+
+    /// Pick which advisories to fix interactively.
+    #[arg(short = 'i', long)]
+    pub interactive: bool,
 
     /// Emit the report as JSON (pnpm-compatible shape) instead of a table.
     #[arg(long)]
@@ -115,6 +123,15 @@ pub enum Severity {
     Moderate,
     High,
     Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum FixMode {
+    /// Refresh the lockfile to patched versions allowed by existing ranges.
+    Update,
+    /// Write package.json overrides that force patched versions.
+    Override,
 }
 
 pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Result<()> {
@@ -211,8 +228,41 @@ pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Re
 
     let rows = flatten_advisories(&raw, args.audit_level);
 
-    if args.fix && !rows.is_empty() {
-        write_fix_overrides(&cwd, &rows, &client).await?;
+    if args.interactive && args.json {
+        return Err(miette!("--interactive cannot be used with --json"));
+    }
+
+    let fix_mode = args.fix.or(args.interactive.then_some(FixMode::Override));
+    if let Some(mode) = fix_mode
+        && !rows.is_empty()
+    {
+        let selected = if args.interactive {
+            select_fix_rows(&rows)?
+        } else {
+            rows.clone()
+        };
+        match mode {
+            FixMode::Update => {
+                let remaining = write_fix_lockfile_update(
+                    &cwd,
+                    &manifest,
+                    &graph,
+                    filter,
+                    args.no_optional,
+                    &selected,
+                )
+                .await?;
+                if remaining.is_empty() {
+                    return Ok(());
+                }
+                render_fix_remaining(&selected, &remaining);
+                std::process::exit(1);
+            }
+            FixMode::Override => {
+                write_fix_overrides(&cwd, &selected, &client).await?;
+                return Ok(());
+            }
+        }
     }
 
     if args.json {
@@ -230,6 +280,81 @@ pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Re
     } else {
         // pnpm-compat: exit 1 when any advisory matches the threshold.
         std::process::exit(1);
+    }
+}
+
+fn select_fix_rows(rows: &[Row]) -> miette::Result<Vec<Row>> {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(rows.to_vec());
+    }
+
+    eprintln!("Select advisories to fix:");
+    for (idx, row) in rows.iter().enumerate() {
+        eprintln!("  {}. {} {} {}", idx + 1, row.severity, row.name, row.title);
+    }
+    eprint!("Advisories to fix (comma-separated, blank for all): ");
+    std::io::stderr().flush().into_diagnostic()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).into_diagnostic()?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(rows.to_vec());
+    }
+
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for part in input.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (start, end) = parse_selection_part(part, rows.len())?;
+        for idx in start..=end {
+            if seen.insert(idx) {
+                selected.push(rows[idx - 1].clone());
+            }
+        }
+    }
+    if selected.is_empty() {
+        return Err(miette!("no advisories selected"));
+    }
+    Ok(selected)
+}
+
+fn parse_selection_part(part: &str, len: usize) -> miette::Result<(usize, usize)> {
+    let parse_idx = |raw: &str| -> miette::Result<usize> {
+        let idx = raw
+            .parse::<usize>()
+            .into_diagnostic()
+            .wrap_err_with(|| format!("invalid advisory selection `{raw}`"))?;
+        if idx == 0 || idx > len {
+            return Err(miette!("advisory selection `{idx}` is out of range"));
+        }
+        Ok(idx)
+    };
+    if let Some((start, end)) = part.split_once('-') {
+        let start = parse_idx(start.trim())?;
+        let end = parse_idx(end.trim())?;
+        if start > end {
+            return Err(miette!("invalid advisory selection range `{part}`"));
+        }
+        Ok((start, end))
+    } else {
+        let idx = parse_idx(part)?;
+        Ok((idx, idx))
+    }
+}
+
+fn render_fix_remaining(selected: &[Row], remaining: &[Row]) {
+    let fixed = selected.len().saturating_sub(remaining.len());
+    eprintln!(
+        "{} fixed, {} remain.",
+        pluralizer::pluralize("vulnerability", fixed as isize, true),
+        remaining.len()
+    );
+    if !remaining.is_empty() {
+        eprintln!();
+        eprintln!("Remaining vulnerabilities:");
+        for row in remaining {
+            eprintln!("- ({}) \"{}\" {}", row.severity, row.title, row.name);
+        }
     }
 }
 
@@ -433,6 +558,269 @@ async fn write_fix_overrides(
     Ok(())
 }
 
+async fn write_fix_lockfile_update(
+    cwd: &std::path::Path,
+    manifest: &aube_manifest::PackageJson,
+    graph: &aube_lockfile::LockfileGraph,
+    filter: DepFilter,
+    no_optional: bool,
+    rows: &[Row],
+) -> miette::Result<Vec<Row>> {
+    let vulnerable_ranges = vulnerable_ranges_by_name(rows);
+    let vulnerable_names: BTreeSet<String> = vulnerable_ranges.keys().cloned().collect();
+    let before = resolved_versions_by_name(graph, filter, no_optional, &vulnerable_names);
+    let mut resolver_manifest = manifest.clone();
+    widen_vulnerable_direct_pins(&mut resolver_manifest, graph, &vulnerable_ranges);
+
+    let workspace_catalogs = super::load_workspace_catalogs(cwd)?;
+    let mut resolver = super::build_resolver(cwd, &resolver_manifest, workspace_catalogs)
+        .with_vulnerable_ranges(vulnerable_ranges.clone());
+    let new_graph = resolver
+        .resolve(&resolver_manifest, Some(graph))
+        .await
+        .map_err(miette::Report::new)
+        .wrap_err("failed to resolve audit fixes")?;
+
+    let after = resolved_versions_by_name(&new_graph, filter, no_optional, &vulnerable_names);
+    let remaining: Vec<Row> = rows
+        .iter()
+        .filter(|row| {
+            after.get(&row.name).is_some_and(|versions| {
+                versions.iter().any(|version| {
+                    version_is_vulnerable(version, std::slice::from_ref(&row.vulnerable_versions))
+                })
+            })
+        })
+        .cloned()
+        .collect();
+    let fixed = fixed_package_names(rows, &remaining, &before, &after);
+
+    if fixed.is_empty() {
+        eprintln!("No audit lockfile updates available.");
+        return Ok(remaining);
+    }
+
+    let mut output_manifest = manifest.clone();
+    if update_direct_manifest_specs(&mut output_manifest, graph, &new_graph, &fixed) {
+        let manifest_path = cwd.join("package.json");
+        super::write_manifest_dep_sections(&manifest_path, &output_manifest)?;
+        eprintln!("Updated package.json");
+    }
+
+    super::write_and_log_lockfile(cwd, &new_graph, &output_manifest)?;
+    for name in &fixed {
+        let old = before
+            .get(name)
+            .map(|v| v.iter().cloned().collect::<Vec<_>>().join(", "))
+            .unwrap_or_else(|| "(not locked)".to_string());
+        let new = after
+            .get(name)
+            .map(|v| v.iter().cloned().collect::<Vec<_>>().join(", "))
+            .unwrap_or_else(|| "(removed)".to_string());
+        eprintln!("  {name}: {old} -> {new}");
+    }
+    eprintln!("Updated lockfile for {} package(s).", fixed.len());
+    Ok(remaining)
+}
+
+fn vulnerable_ranges_by_name(rows: &[Row]) -> BTreeMap<String, Vec<String>> {
+    let mut vulnerable_ranges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        vulnerable_ranges
+            .entry(row.name.clone())
+            .or_default()
+            .push(row.vulnerable_versions.clone());
+    }
+    vulnerable_ranges
+}
+
+fn fixed_package_names(
+    selected: &[Row],
+    remaining: &[Row],
+    before: &BTreeMap<String, BTreeSet<String>>,
+    after: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let remaining_names: BTreeSet<&str> = remaining.iter().map(|row| row.name.as_str()).collect();
+    selected
+        .iter()
+        .filter(|row| !remaining_names.contains(row.name.as_str()))
+        .filter(|row| before.get(&row.name) != after.get(&row.name))
+        .map(|row| row.name.clone())
+        .collect()
+}
+
+fn widen_vulnerable_direct_pins(
+    manifest: &mut aube_manifest::PackageJson,
+    graph: &aube_lockfile::LockfileGraph,
+    vulnerable_ranges: &BTreeMap<String, Vec<String>>,
+) {
+    let direct_versions = direct_versions_by_name(graph);
+    for (key, spec) in mutable_manifest_dep_entries(manifest) {
+        let real_name = real_name_for_spec(&key, spec);
+        let Some(version) = direct_versions.get(&real_name) else {
+            continue;
+        };
+        let Some(ranges) = vulnerable_ranges.get(&real_name) else {
+            continue;
+        };
+        if !version_is_vulnerable(version, ranges) || !looks_like_exact_version(spec_range(spec)) {
+            continue;
+        }
+        *spec = rewrite_specifier(spec, &real_name, version, Some("^"));
+    }
+}
+
+fn update_direct_manifest_specs(
+    manifest: &mut aube_manifest::PackageJson,
+    old_graph: &aube_lockfile::LockfileGraph,
+    new_graph: &aube_lockfile::LockfileGraph,
+    fixed_names: &BTreeSet<String>,
+) -> bool {
+    let before = direct_versions_by_name(old_graph);
+    let after = direct_versions_by_name(new_graph);
+    let mut wrote_any = false;
+    for (key, spec) in mutable_manifest_dep_entries(manifest) {
+        let real_name = real_name_for_spec(&key, spec);
+        if !fixed_names.contains(&real_name) {
+            continue;
+        }
+        let (Some(old), Some(new)) = (before.get(&real_name), after.get(&real_name)) else {
+            continue;
+        };
+        if old == new {
+            continue;
+        }
+        let next = rewrite_specifier(spec, &real_name, new, None);
+        if next != *spec {
+            *spec = next;
+            wrote_any = true;
+        }
+    }
+    wrote_any
+}
+
+fn direct_versions_by_name(graph: &aube_lockfile::LockfileGraph) -> BTreeMap<String, String> {
+    graph
+        .root_deps()
+        .iter()
+        .filter_map(|dep| {
+            graph
+                .get_package(&dep.dep_path)
+                .map(|pkg| (pkg.registry_name().to_string(), pkg.version.clone()))
+        })
+        .collect()
+}
+
+fn mutable_manifest_dep_entries(
+    manifest: &mut aube_manifest::PackageJson,
+) -> impl Iterator<Item = (String, &mut String)> {
+    manifest
+        .dependencies
+        .iter_mut()
+        .chain(manifest.dev_dependencies.iter_mut())
+        .chain(manifest.optional_dependencies.iter_mut())
+        .map(|(key, spec)| (key.clone(), spec))
+}
+
+fn real_name_for_spec(manifest_key: &str, spec: &str) -> String {
+    if let Some(rest) = spec.strip_prefix("npm:") {
+        if let Some(at_idx) = rest.rfind('@') {
+            return rest[..at_idx].to_string();
+        }
+        return rest.to_string();
+    }
+    manifest_key.to_string()
+}
+
+fn rewrite_specifier(
+    original: &str,
+    real_name: &str,
+    resolved_version: &str,
+    force_prefix: Option<&str>,
+) -> String {
+    let (range, is_alias) = if let Some(rest) = original.strip_prefix("npm:") {
+        (rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(""), true)
+    } else {
+        (original, false)
+    };
+    let prefix = force_prefix.unwrap_or_else(|| range_prefix(range));
+    let versioned = format!("{prefix}{resolved_version}");
+    if is_alias {
+        format!("npm:{real_name}@{versioned}")
+    } else {
+        versioned
+    }
+}
+
+fn spec_range(spec: &str) -> &str {
+    if let Some(rest) = spec.strip_prefix("npm:") {
+        rest.rsplit_once('@').map(|(_, range)| range).unwrap_or("")
+    } else {
+        spec
+    }
+}
+
+fn range_prefix(spec: &str) -> &'static str {
+    let trimmed = spec.trim_start();
+    if trimmed.starts_with('^') {
+        "^"
+    } else if trimmed.starts_with('~') {
+        "~"
+    } else if trimmed.starts_with(">=") {
+        ">="
+    } else if trimmed.starts_with("<=") {
+        "<="
+    } else if trimmed.starts_with('>') {
+        ">"
+    } else if trimmed.starts_with('<') {
+        "<"
+    } else if trimmed.starts_with('=') {
+        "="
+    } else {
+        ""
+    }
+}
+
+fn looks_like_exact_version(spec: &str) -> bool {
+    let mut chars = spec.trim_start().chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_digit() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+}
+
+fn resolved_versions_by_name(
+    graph: &aube_lockfile::LockfileGraph,
+    filter: DepFilter,
+    no_optional: bool,
+    names: &BTreeSet<String>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let closure = super::collect_dep_closure(graph, filter, no_optional);
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for pkg in closure.values() {
+        let name = pkg.registry_name();
+        if names.contains(name) {
+            out.entry(name.to_string())
+                .or_default()
+                .insert(pkg.version.clone());
+        }
+    }
+    out
+}
+
+fn version_is_vulnerable(version: &str, vulnerable_versions: &[String]) -> bool {
+    let Ok(version) = node_semver::Version::parse(version) else {
+        return false;
+    };
+    vulnerable_versions
+        .iter()
+        .filter_map(|range| node_semver::Range::parse(range).ok())
+        .any(|range| version.satisfies(&range))
+}
+
 /// Atomic package.json write via tempfile + rename. Crash or Ctrl+C
 fn best_non_vulnerable(packument: &Packument, vulnerable_versions: &[String]) -> Option<String> {
     let vulnerable: Vec<node_semver::Range> = vulnerable_versions
@@ -459,7 +847,7 @@ fn best_non_vulnerable(packument: &Packument, vulnerable_versions: &[String]) ->
 
 /// Reachable packages from the filtered roots, keyed by `dep_path`.
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Row {
     name: String,
     severity: Severity,
