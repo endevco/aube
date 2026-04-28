@@ -285,7 +285,7 @@ impl TrustExcludeRules {
             rules: names
                 .iter()
                 .map(|name| TrustExcludeRule {
-                    name_matcher: NameMatcher::Exact((*name).to_string()),
+                    name_matcher: NameMatcher::compile(name),
                     exact_versions: None,
                 })
                 .collect(),
