@@ -269,15 +269,29 @@
           },
           {
             "name": "fix",
-            "usage": "--fix",
-            "help": "Write package.json overrides that force vulnerable packages to patched versions",
-            "help_first_line": "Write package.json overrides that force vulnerable packages to patched versions",
+            "usage": "--fix <FIX>",
+            "help": "Fix advisories",
+            "help_long": "Fix advisories.\n\nBare `--fix` writes package.json overrides for backwards compatibility. `--fix=update` refreshes the lockfile without writing overrides.",
+            "help_first_line": "Fix advisories",
             "short": [],
             "long": [
               "fix"
             ],
             "hide": false,
-            "global": false
+            "global": false,
+            "arg": {
+              "name": "FIX",
+              "usage": "<FIX>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false,
+              "choices": {
+                "choices": [
+                  "update",
+                  "override"
+                ]
+              }
+            }
           },
           {
             "name": "ignore",
@@ -322,6 +336,20 @@
             "short": [],
             "long": [
               "ignore-unfixable"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "interactive",
+            "usage": "-i --interactive",
+            "help": "Pick which advisories to fix interactively",
+            "help_first_line": "Pick which advisories to fix interactively",
+            "short": [
+              "i"
+            ],
+            "long": [
+              "interactive"
             ],
             "hide": false,
             "global": false

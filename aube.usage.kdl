@@ -120,7 +120,12 @@ cmd audit help="Check installed packages against the registry advisory DB" {
         }
     }
     flag "-D --dev" help="Only audit `devDependencies`"
-    flag --fix help="Write package.json overrides that force vulnerable packages to patched versions"
+    flag --fix help="Fix advisories" {
+        long_help "Fix advisories.\n\nBare `--fix` writes package.json overrides for backwards compatibility. `--fix=update` refreshes the lockfile without writing overrides."
+        arg <FIX> {
+            choices update override
+        }
+    }
     flag --ignore help="Drop advisories whose ID matches one of these values" var=#true {
         long_help "Drop advisories whose ID matches one of these values.\n\nMatches against the numeric npm advisory `id`, `github_advisory_id` (`GHSA-…`), and any entry in `cves[]` (case-insensitive). Repeatable; comma-separated values are also accepted."
         arg <ID>
@@ -131,6 +136,7 @@ cmd audit help="Check installed packages against the registry advisory DB" {
     flag --ignore-unfixable help="Drop advisories for which no non-vulnerable version is available in the package's packument" {
         long_help "Drop advisories for which no non-vulnerable version is available in the package's packument.\n\nSame \"best non-vulnerable\" logic as `--fix`: an advisory is kept only when an upgrade path exists."
     }
+    flag "-i --interactive" help="Pick which advisories to fix interactively"
     flag --json help="Emit the report as JSON (pnpm-compatible shape) instead of a table"
     flag --no-optional help="Skip `optionalDependencies`"
     flag "-P --prod --production" help="Only audit `dependencies` and `optionalDependencies`"
