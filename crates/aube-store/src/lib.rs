@@ -525,6 +525,43 @@ impl Store {
         self.cached_indices_inner(false, false)
     }
 
+    pub fn cached_indices_for_unverified(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Vec<CachedIndexEntry>, Error> {
+        self.cached_indices_for_inner(name, version, false, true)
+    }
+
+    fn cached_indices_for_inner(
+        &self,
+        name: &str,
+        version: &str,
+        verify_files: bool,
+        json_fallback: bool,
+    ) -> Result<Vec<CachedIndexEntry>, Error> {
+        let json = || self.cached_indices_json_for(name, version, verify_files);
+        let mut out = match self.cached_indices_for_sqlite(name, version, verify_files) {
+            Ok(out) => out,
+            Err(e) if json_fallback => {
+                let out = json();
+                if out.is_empty() {
+                    return Err(e);
+                }
+                return Ok(out);
+            }
+            Err(e) => return Err(e),
+        };
+        let mut seen: std::collections::BTreeSet<_> =
+            out.iter().map(|entry| entry.integrity.clone()).collect();
+        out.extend(
+            json()
+                .into_iter()
+                .filter(|entry| seen.insert(entry.integrity.clone())),
+        );
+        Ok(out)
+    }
+
     fn cached_indices_inner(
         &self,
         verify_files: bool,
@@ -591,6 +628,39 @@ impl Store {
             .collect())
     }
 
+    fn cached_indices_for_sqlite(
+        &self,
+        name: &str,
+        version: &str,
+        verify_files: bool,
+    ) -> Result<Vec<CachedIndexEntry>, Error> {
+        let entries = self.with_index_db(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT integrity, data FROM package_index WHERE name = ?1 AND version = ?2 ORDER BY integrity",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![name, version], |row| {
+                let integrity: String = row.get(0)?;
+                let data: Vec<u8> = row.get(1)?;
+                Ok((integrity, data))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        Ok(entries
+            .into_iter()
+            .filter_map(|(integrity, data)| {
+                let index = rmp_serde::from_slice::<PackageIndex>(&data).ok()?;
+                (!verify_files || index_files_match_metadata(&index, verify_files)).then_some(
+                    CachedIndexEntry {
+                        name: name.to_string(),
+                        version: version.to_string(),
+                        integrity: short_integrity_key(&integrity),
+                        index,
+                    },
+                )
+            })
+            .collect())
+    }
+
     fn cached_indices_json(&self, verify_files: bool) -> Vec<CachedIndexEntry> {
         let mut out = Vec::new();
         self.collect_json_indices_in(&self.index_dir(), None, verify_files, &mut out);
@@ -601,6 +671,48 @@ impl Store {
                     let integrity = path.file_name().and_then(|s| s.to_str()).map(str::to_owned);
                     self.collect_json_indices_in(&path, integrity, verify_files, &mut out);
                 }
+            }
+        }
+        out
+    }
+
+    fn cached_indices_json_for(
+        &self,
+        name: &str,
+        version: &str,
+        verify_files: bool,
+    ) -> Vec<CachedIndexEntry> {
+        let Some(safe_name) = validate_and_encode_name(name) else {
+            return Vec::new();
+        };
+        if !validate_version(version) {
+            return Vec::new();
+        }
+        let filename = format!("{safe_name}@{version}.json");
+        let mut out = Vec::new();
+        self.collect_json_index_at(
+            self.index_dir().join(&filename),
+            name,
+            version,
+            None,
+            verify_files,
+            &mut out,
+        );
+        if let Ok(entries) = std::fs::read_dir(self.index_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let integrity = path.file_name().and_then(|s| s.to_str()).map(str::to_owned);
+                self.collect_json_index_at(
+                    path.join(&filename),
+                    name,
+                    version,
+                    integrity,
+                    verify_files,
+                    &mut out,
+                );
             }
         }
         out
@@ -641,6 +753,34 @@ impl Store {
                     index,
                 });
             }
+        }
+    }
+
+    fn collect_json_index_at(
+        &self,
+        path: PathBuf,
+        name: &str,
+        version: &str,
+        integrity: Option<String>,
+        verify_files: bool,
+        out: &mut Vec<CachedIndexEntry>,
+    ) {
+        if !path.is_file() {
+            return;
+        }
+        let Ok(mut buf) = xx::file::read(&path) else {
+            return;
+        };
+        let Ok(index) = simd_json::serde::from_slice::<PackageIndex>(&mut buf) else {
+            return;
+        };
+        if !verify_files || index_files_match_metadata(&index, verify_files) {
+            out.push(CachedIndexEntry {
+                name: name.to_string(),
+                version: version.to_string(),
+                integrity,
+                index,
+            });
         }
     }
 
@@ -2557,6 +2697,90 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
 
         let entries = store.cached_indices().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].integrity.as_deref(), Some("ee26b0dd4af7e749"));
+    }
+
+    #[test]
+    fn test_cached_indices_for_unverified_targets_name_and_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let target = store.import_bytes(b"target", false).unwrap();
+        let mut target_index = PackageIndex::new();
+        target_index.insert("index.js".to_string(), target);
+
+        let other = store.import_bytes(b"other", false).unwrap();
+        let mut other_index = PackageIndex::new();
+        other_index.insert("other.js".to_string(), other);
+
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &target_index)
+            .unwrap();
+        store
+            .save_index("pkg", "2.0.0", Some(TEST_INTEGRITY), &other_index)
+            .unwrap();
+        store
+            .save_index("other", "1.0.0", Some(TEST_INTEGRITY), &other_index)
+            .unwrap();
+
+        let entries = store.cached_indices_for_unverified("pkg", "1.0.0").unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "pkg");
+        assert_eq!(entries[0].version, "1.0.0");
+        assert!(entries[0].index.contains_key("index.js"));
+    }
+
+    #[test]
+    fn test_cached_indices_for_unverified_reads_matching_json_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let stored = store.import_bytes(b"legacy json content", false).unwrap();
+        let mut index = PackageIndex::new();
+        index.insert("index.js".to_string(), stored);
+
+        let path = store
+            .index_path("pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+
+        let unrelated = store
+            .index_path("pkg", "2.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
+        std::fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+        std::fs::write(unrelated, b"not package index json").unwrap();
+
+        let entries = store.cached_indices_for_unverified("pkg", "1.0.0").unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "pkg");
+        assert_eq!(entries[0].version, "1.0.0");
+        assert_eq!(entries[0].integrity.as_deref(), Some("ee26b0dd4af7e749"));
+    }
+
+    #[test]
+    fn test_cached_indices_for_unverified_prefers_sqlite_over_duplicate_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let stored = store.import_bytes(b"content", false).unwrap();
+        let mut index = PackageIndex::new();
+        index.insert("index.js".to_string(), stored);
+
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+        let path = store
+            .index_path("pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+
+        let entries = store.cached_indices_for_unverified("pkg", "1.0.0").unwrap();
+
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].integrity.as_deref(), Some("ee26b0dd4af7e749"));
     }
