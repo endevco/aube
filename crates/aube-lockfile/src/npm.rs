@@ -527,7 +527,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     Ok(graph)
 }
 
-fn dep_path_tail<'a>(name: &str, dep_path: &'a str) -> &'a str {
+pub(crate) fn dep_path_tail<'a>(name: &str, dep_path: &'a str) -> &'a str {
     dep_path
         .strip_prefix(name)
         .and_then(|rest| rest.strip_prefix('@'))
