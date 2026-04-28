@@ -1670,8 +1670,7 @@ mod multicall_tests {
 
     fn temp_shim(name: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir should be created");
-        std::fs::write(dir.path().join(name), "#!/tmp/aube.exe\n")
-            .expect("shim should be written");
+        std::fs::write(dir.path().join(name), "#!/tmp/aube.exe\n").expect("shim should be written");
         dir
     }
 
