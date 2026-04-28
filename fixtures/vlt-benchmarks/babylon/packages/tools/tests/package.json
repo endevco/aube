@@ -1,0 +1,43 @@
+{
+    "name": "@tools/tests",
+    "private": true,
+    "version": "1.0.0",
+    "types": "dist/index",
+    "main": "dist/index",
+    "module": "dist/index",
+    "files": [
+        "dist",
+        "src"
+    ],
+    "scripts": {
+        "test": "jest --runInBand -c ../../../jest.config.ts",
+        "test:debug": "set DEBUG=true && npm run test",
+        "update": "jest -u",
+        "build": "node ./build.js",
+        "analyse": "webpack --profile --json > stats.json",
+        "generate-file-size-report": "node ./scripts/generateFileSizes.js",
+        "test:playwright": "playwright test --config ../../../playwright.config.ts"
+    },
+    "devDependencies": {
+        "@dev/core": "^1.0.0",
+        "@dev/gui": "^1.0.0",
+        "@dev/loaders": "^1.0.0",
+        "@dev/materials": "^1.0.0",
+        "@dev/serializers": "^1.0.0",
+        "@dev/shared-ui-components": "^1.0.0",
+        "@tools/test-tools": "^1.0.0",
+        "@types/jest": "^27.4.0",
+        "@types/jest-image-snapshot": "^4.3.1",
+        "@types/react": "^18.0.0",
+        "@types/react-dom": "^18.0.0",
+        "browserstack-local": "^1.5.5",
+        "jest": "^29.7.0",
+        "jest-puppeteer": "^10.0.1",
+        "puppeteer": "^22.1.0",
+        "sass": "^1.62.1"
+    },
+    "optionalDependencies": {
+        "jest-image-snapshot": "^6.1.0"
+    },
+    "sideEffects": false
+}

@@ -1,0 +1,51 @@
+{
+    "name": "@dev/shared-ui-components",
+    "private": true,
+    "version": "1.0.0",
+    "types": "dist/index",
+    "main": "dist/index",
+    "module": "dist/index",
+    "files": [
+        "dist",
+        "src"
+    ],
+    "scripts": {
+        "build": "npm run clean && npm run compile",
+        "clean": "rimraf dist && rimraf *.tsbuildinfo -g",
+        "precompile": "npm run compile:assets",
+        "compile": "npm run compile:source",
+        "compile:source": "tsc -b tsconfig.build.json",
+        "compile:assets": "build-tools -c process-assets",
+        "watch:assets": "build-tools -c process-assets --watch",
+        "watch:source": "tsc -b tsconfig.build.json -w",
+        "watch": "build-tools -c dev-watch --packages \"shared-ui-components\" -wa"
+    },
+    "peerDependencies": {
+        "@fluentui/react-components": "^9.70.0",
+        "@fluentui/react-icons": "^2.0.310",
+        "@fortawesome/fontawesome-svg-core": "^6.1.0",
+        "@fortawesome/free-solid-svg-icons": "^6.1.0",
+        "@fortawesome/react-fontawesome": "^0.2.0",
+        "@types/react": "^18.0.0",
+        "@types/react-dom": "^18.0.0",
+        "react": "^18.2.0",
+        "react-dnd": "15.0.1",
+        "react-dnd-touch-backend": "15.0.1",
+        "react-dom": "^18.2.0"
+    },
+    "devDependencies": {
+        "@babel/core": "^7.17.9",
+        "@dev/core": "^1.0.0",
+        "@dev/gui": "^1.0.0",
+        "@fluentui/react-components": "^9.70.0",
+        "@fluentui/react-icons": "^2.0.310",
+        "@fortawesome/fontawesome-svg-core": "^6.1.0",
+        "@fortawesome/free-solid-svg-icons": "^6.0.0",
+        "@fortawesome/react-fontawesome": "^0.2.0",
+        "sass": "^1.62.1"
+    },
+    "sideEffects": false,
+    "resolutions": {
+        "webpack": "^5.98.0"
+    }
+}

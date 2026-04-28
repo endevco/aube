@@ -225,9 +225,24 @@ fn cutoff_iso8601(minutes_ago: u64) -> Option<String> {
 /// Each rule is `<name>` (matches all versions, supports `*` glob in
 /// the name) or `<name>@<exact-version>[ || <exact-version>]…` (no
 /// ranges, no name globs combined with versions).
-#[derive(Debug, Clone, Default)]
+pub const DEFAULT_TRUST_POLICY_EXCLUDES: &[&str] = &[
+    "chokidar",
+    "eslint-import-resolver-typescript",
+    "semver",
+    "ua-parser-js",
+    "undici-types",
+    "vite",
+];
+
+#[derive(Debug, Clone)]
 pub struct TrustExcludeRules {
     rules: Vec<TrustExcludeRule>,
+}
+
+impl Default for TrustExcludeRules {
+    fn default() -> Self {
+        Self::from_name_excludes(DEFAULT_TRUST_POLICY_EXCLUDES)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +280,24 @@ pub enum TrustExcludeParseError {
 }
 
 impl TrustExcludeRules {
+    fn from_name_excludes(names: &[&str]) -> Self {
+        Self {
+            rules: names
+                .iter()
+                .map(|name| TrustExcludeRule {
+                    name_matcher: NameMatcher::Exact((*name).to_string()),
+                    exact_versions: None,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn with_defaults_and_user_rules(user_rules: Self) -> Self {
+        let mut rules = Self::default();
+        rules.rules.extend(user_rules.rules);
+        rules
+    }
+
     pub fn parse<I, S>(patterns: I) -> Result<Self, TrustExcludeParseError>
     where
         I: IntoIterator<Item = S>,
@@ -892,6 +925,18 @@ mod tests {
         assert!(r.matches("foo", &node_semver::Version::parse("1.0.0").unwrap()));
         assert!(r.matches("foo", &node_semver::Version::parse("99.0.0").unwrap()));
         assert!(!r.matches("bar", &node_semver::Version::parse("1.0.0").unwrap()));
+    }
+
+    #[test]
+    fn default_excludes_known_provenance_churn_packages() {
+        let r = TrustExcludeRules::default();
+        for package in DEFAULT_TRUST_POLICY_EXCLUDES {
+            assert!(
+                r.matches(package, &node_semver::Version::parse("1.0.0").unwrap()),
+                "{package} should be globally excluded"
+            );
+        }
+        assert!(!r.matches("left-pad", &node_semver::Version::parse("1.0.0").unwrap()));
     }
 
     #[test]
