@@ -861,3 +861,4 @@ cmd why help="Print reverse dependency chains explaining why a package is instal
     flag --parseable help="Tab-separated output: one line per chain, `importer\\tdep_type\\tname@ver\\t...`"
     arg <PACKAGE> help="Package name to search for (exact match against package names)"
 }
+

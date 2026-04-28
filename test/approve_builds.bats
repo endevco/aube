@@ -197,7 +197,7 @@ JSON
   }
 }
 JSON
-cat >pnpm-workspace.yaml <<'YAML'
+	cat >pnpm-workspace.yaml <<'YAML'
 packages:
   - 'packages/*'
 allowBuilds:
