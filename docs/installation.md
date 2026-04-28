@@ -10,6 +10,18 @@ mise use -g aube
 
 This installs `aube` on your PATH and lets mise manage future upgrades.
 
+::: tip
+We recommend mise because it can manage `aube` and your
+[Node.js runtime](https://mise.jdx.dev/lang/node.html) from the same
+toolchain. If your projects already pin Node through `package.json`
+(`devEngines.runtime`) or files such as `.nvmrc` and
+`.node-version`, opt mise into reading those idiomatic version files:
+
+```sh
+mise settings add idiomatic_version_file_enable_tools node
+```
+:::
+
 ## From crates.io
 
 If you already have a Rust toolchain installed, you can install the
@@ -40,18 +52,21 @@ The tap formula builds from source and installs shell completions.
 aube is also published on npm as `@endevco/aube`:
 
 ```sh
-npm install -g @endevco/aube
-# or
-npx @endevco/aube --version
+npm install -g --ignore-scripts=false @endevco/aube
+npx --ignore-scripts=false @endevco/aube --version
 ```
 
 ::: warning
-The `preinstall` script drops the platform-appropriate native binary
-into place. If you install with `--ignore-scripts`, that step is
-skipped and every `aube` invocation goes through a node shim instead
-— which defeats the whole point of having a fast, native CLI. It also
-won't work in offline/air-gapped caches. Use any other install method
-for those environments.
+The npm package relies on its `preinstall` script to fetch the
+platform-specific native binary and wire up the `aube`, `aubr`, and `aubx`
+commands. That native binary is what gives aube its startup and install
+performance; without the script, npm can leave the package installed
+without working commands. The npm commands above pass
+`--ignore-scripts=false` so it still works for users with
+`ignore-scripts=true` in their npm config.
+
+We recommend installing with mise if you want the native binary without npm
+lifecycle-script behavior.
 :::
 
 ## Ubuntu (PPA)
