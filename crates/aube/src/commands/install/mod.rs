@@ -3195,6 +3195,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         link_bins(
             &cwd,
             &modules_dir_name,
+            Some(&store),
             &aube_dir,
             &graph_for_link,
             virtual_store_dir_max_length,
@@ -3256,6 +3257,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     } else {
                         link_bins_for_dep(
                             &mut pkg_json_cache,
+                            Some(&store),
                             &aube_dir,
                             &bin_dir,
                             &graph_for_link,
@@ -3364,6 +3366,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         let ran = run_dep_lifecycle_scripts(
             &cwd,
             &modules_dir_name,
+            &store,
             &aube_dir,
             &graph_for_link,
             &build_policy,

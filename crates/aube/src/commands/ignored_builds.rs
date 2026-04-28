@@ -191,13 +191,10 @@ fn has_lifecycle_scripts(
     let Some(index) = store.load_index(name, version, integrity) else {
         return false;
     };
-    let Some(stored) = index.get("package.json") else {
+    let Some(raw_manifest) = store.load_index_manifest(name, version, integrity) else {
         return false;
     };
-    let Ok(content) = std::fs::read_to_string(&stored.store_path) else {
-        return false;
-    };
-    let Ok(manifest) = serde_json::from_str::<aube_manifest::PackageJson>(&content) else {
+    let Ok(manifest) = serde_json::from_value::<aube_manifest::PackageJson>(raw_manifest) else {
         return false;
     };
     if aube_scripts::DEP_LIFECYCLE_HOOKS

@@ -185,7 +185,7 @@ fn collect_hashes_from_dir(dir: &std::path::Path, seen: &mut std::collections::H
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(index): Result<aube_store::PackageIndex, _> = serde_json::from_str(&content) else {
+        let Ok(index) = aube_store::parse_index_json(&content) else {
             continue;
         };
         for stored in index.values() {
@@ -346,7 +346,7 @@ fn verify_indices_in_dir(
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(index): Result<aube_store::PackageIndex, _> = serde_json::from_str(&content) else {
+        let Ok(index) = aube_store::parse_index_json(&content) else {
             continue;
         };
 

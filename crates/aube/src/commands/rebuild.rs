@@ -64,6 +64,7 @@ pub async fn run(
         }
 
         if policy.has_any_allow_rule() {
+            let store = super::open_store(&cwd)?;
             let child_concurrency =
                 aube_settings::resolved::child_concurrency(&settings_ctx) as usize;
             let (jail_policy, jail_policy_warnings) =
@@ -89,7 +90,6 @@ pub async fn run(
             };
             let side_effects_cache_root =
                 if aube_settings::resolved::side_effects_cache(&settings_ctx) {
-                    let store = super::open_store(&cwd)?;
                     Some(super::install::side_effects_cache_root(&store))
                 } else {
                     None
@@ -117,6 +117,7 @@ pub async fn run(
             super::install::run_dep_lifecycle_scripts(
                 &cwd,
                 &modules_dir_name,
+                &store,
                 &aube_dir,
                 &graph,
                 &policy,

@@ -98,6 +98,35 @@ pub struct StoredFile {
 /// Index of all files in a package, keyed by relative path within the package.
 pub type PackageIndex = BTreeMap<String, StoredFile>;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PackageIndexV2 {
+    #[serde(default = "package_index_schema_version")]
+    schema_version: u8,
+    files: PackageIndex,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PackageIndexDisk {
+    V2(PackageIndexV2),
+    V1(PackageIndex),
+}
+
+fn package_index_schema_version() -> u8 {
+    2
+}
+
+impl PackageIndexDisk {
+    fn into_parts(self) -> (PackageIndex, Option<serde_json::Value>) {
+        match self {
+            Self::V2(index) => (index.files, index.manifest),
+            Self::V1(files) => (files, None),
+        }
+    }
+}
+
 fn index_files_match_metadata(index: &PackageIndex, verify_all: bool) -> bool {
     let mut files = index.values();
     if verify_all {
@@ -114,6 +143,30 @@ fn stored_file_matches_metadata(file: &StoredFile) -> bool {
         return false;
     };
     file.size.is_none_or(|size| metadata.len() == size)
+}
+
+fn parse_cached_index(buf: &mut [u8]) -> Option<(PackageIndex, Option<serde_json::Value>)> {
+    simd_json::serde::from_slice::<PackageIndexDisk>(buf)
+        .ok()
+        .map(PackageIndexDisk::into_parts)
+}
+
+pub fn parse_index_json(content: &str) -> Result<PackageIndex, serde_json::Error> {
+    let disk: PackageIndexDisk = serde_json::from_str(content)?;
+    Ok(disk.into_parts().0)
+}
+
+pub fn index_to_pretty_json(index: &PackageIndex) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(index)
+}
+
+fn manifest_from_index(index: &PackageIndex) -> Option<serde_json::Value> {
+    let stored = index.get("package.json")?;
+    let bytes = std::fs::read(&stored.store_path).ok()?;
+    let mut buf = bytes.clone();
+    simd_json::serde::from_slice::<serde_json::Value>(&mut buf)
+        .or_else(|_| serde_json::from_slice(&bytes))
+        .ok()
 }
 
 impl Store {
@@ -211,6 +264,7 @@ impl Store {
         integrity: Option<&str>,
     ) -> Option<PackageIndex> {
         self.load_index_inner(name, version, integrity, false)
+            .map(|(index, _)| index)
     }
 
     /// Load a package index, optionally verifying that all store files still exist.
@@ -222,6 +276,22 @@ impl Store {
         integrity: Option<&str>,
     ) -> Option<PackageIndex> {
         self.load_index_inner(name, version, integrity, true)
+            .map(|(index, _)| index)
+    }
+
+    /// Load the cached package manifest bundled into the package index.
+    ///
+    /// Old v1 index files did not carry manifest JSON, so this falls
+    /// back to the `package.json` CAS entry when present. New v2 cache
+    /// writes avoid that read on warm installs.
+    pub fn load_index_manifest(
+        &self,
+        name: &str,
+        version: &str,
+        integrity: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        let (index, manifest) = self.load_index_inner(name, version, integrity, false)?;
+        manifest.or_else(|| manifest_from_index(&index))
     }
 
     fn load_index_inner(
@@ -230,17 +300,17 @@ impl Store {
         version: &str,
         integrity: Option<&str>,
         verify_files: bool,
-    ) -> Option<PackageIndex> {
+    ) -> Option<(PackageIndex, Option<serde_json::Value>)> {
         let index_path = self.index_path(name, version, integrity)?;
         let mut buf = xx::file::read(&index_path).ok()?;
-        let index: PackageIndex = simd_json::serde::from_slice(&mut buf).ok()?;
+        let (index, manifest) = parse_cached_index(&mut buf)?;
         if !index_files_match_metadata(&index, verify_files) {
             trace!("cache stale: {name}@{version}");
             let _ = xx::file::remove_file(&index_path);
             return None;
         }
         trace!("cache hit: {name}@{version}");
-        Some(index)
+        Some((index, manifest))
     }
 
     /// Save a package index to the cache.
@@ -259,8 +329,13 @@ impl Store {
                 "refusing to cache: invalid coordinate {name:?}@{version:?} or integrity {integrity:?}"
             ))
         })?;
+        let disk = PackageIndexV2 {
+            schema_version: package_index_schema_version(),
+            files: index.clone(),
+            manifest: manifest_from_index(index),
+        };
         let json =
-            serde_json::to_string(index).map_err(|e| Error::Tar(format!("serialize: {e}")))?;
+            serde_json::to_string(&disk).map_err(|e| Error::Tar(format!("serialize: {e}")))?;
         xx::file::write(&index_path, json).map_err(|e| Error::Xx(e.to_string()))?;
         trace!("cached index: {name}@{version}");
         Ok(())
@@ -1877,6 +1952,47 @@ mod tests {
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("index.js"));
+    }
+
+    #[test]
+    fn test_index_cache_bundles_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        let index = index_with_manifest(&store, "test-pkg", "1.0.0");
+
+        store
+            .save_index("test-pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+
+        let manifest = store
+            .load_index_manifest("test-pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
+        assert_eq!(
+            manifest.get("name").and_then(|v| v.as_str()),
+            Some("test-pkg")
+        );
+        assert_eq!(
+            manifest.get("version").and_then(|v| v.as_str()),
+            Some("1.0.0")
+        );
+    }
+
+    #[test]
+    fn test_index_cache_accepts_v1_json_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        let stored = store.import_bytes(b"test file", false).unwrap();
+        let mut index = BTreeMap::new();
+        index.insert("index.js".to_string(), stored);
+        let path = store
+            .index_path("test-pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
+        xx::file::write(&path, serde_json::to_string(&index).unwrap()).unwrap();
+
+        let loaded = store
+            .load_index("test-pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .unwrap();
         assert!(loaded.contains_key("index.js"));
     }
 

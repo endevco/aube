@@ -126,7 +126,9 @@ fn read_materialized_pkg_json(
 #[allow(clippy::too_many_arguments)]
 fn read_materialized_pkg_json_cached(
     cache: &mut PkgJsonCache,
+    store: Option<&aube_store::Store>,
     aube_dir: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
     dep_path: &str,
     name: &str,
     virtual_store_dir_max_length: usize,
@@ -134,6 +136,14 @@ fn read_materialized_pkg_json_cached(
 ) -> miette::Result<Option<serde_json::Value>> {
     if let Some(value) = cache.get(dep_path) {
         return Ok(value.clone());
+    }
+    if let Some(store) = store
+        && let Some(pkg) = graph.packages.get(dep_path)
+        && let Some(value) =
+            store.load_index_manifest(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
+    {
+        cache.insert(dep_path.to_string(), Some(value.clone()));
+        return Ok(Some(value));
     }
     let value = read_materialized_pkg_json(
         aube_dir,
@@ -152,6 +162,7 @@ fn read_materialized_pkg_json_cached(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn link_bins_for_dep(
     cache: &mut PkgJsonCache,
+    store: Option<&aube_store::Store>,
     aube_dir: &std::path::Path,
     bin_dir: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
@@ -170,7 +181,9 @@ pub(super) fn link_bins_for_dep(
     );
     if let Some(pkg_json) = read_materialized_pkg_json_cached(
         cache,
+        store,
         aube_dir,
+        graph,
         dep_path,
         name,
         virtual_store_dir_max_length,
@@ -187,6 +200,7 @@ pub(super) fn link_bins_for_dep(
 pub(super) fn link_bins(
     project_dir: &std::path::Path,
     modules_dir_name: &str,
+    store: Option<&aube_store::Store>,
     aube_dir: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
     virtual_store_dir_max_length: usize,
@@ -205,6 +219,7 @@ pub(super) fn link_bins(
         } else {
             link_bins_for_dep(
                 cache,
+                store,
                 aube_dir,
                 &bin_dir,
                 graph,
@@ -335,6 +350,7 @@ pub(crate) fn link_dep_bins(
             // the target pkg_json is absent, so just call through.
             link_bins_for_dep(
                 cache,
+                None,
                 aube_dir,
                 &bin_dir,
                 graph,
@@ -544,6 +560,7 @@ mod tests {
         link_bins(
             project_dir,
             "node_modules",
+            None,
             &aube_dir,
             &graph,
             120,

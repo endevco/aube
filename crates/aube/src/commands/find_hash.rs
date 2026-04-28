@@ -17,7 +17,6 @@
 
 use clap::Args;
 use miette::{IntoDiagnostic, miette};
-use std::collections::BTreeMap;
 
 pub const AFTER_LONG_HELP: &str = "\
 Examples:
@@ -172,9 +171,7 @@ fn scan_one_level(
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(index): Result<BTreeMap<String, aube_store::StoredFile>, _> =
-            serde_json::from_str(&content)
-        else {
+        let Ok(index) = aube_store::parse_index_json(&content) else {
             continue;
         };
         for (rel_path, file) in index {

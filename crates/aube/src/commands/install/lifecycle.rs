@@ -261,13 +261,14 @@ pub(super) fn resolve_link_strategy(
 /// `prepare` is skipped for deps (pnpm does the same).
 ///
 /// `package_indices` gives us the stored `package.json` for each dep
-/// without a second disk read, and the actual execution cwd is
+/// without rereading the materialized package on warm installs, and the actual execution cwd is
 /// `node_modules/.aube/<dep_path>/node_modules/<name>` — i.e. the
 /// linked dir inside the virtual store.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_dep_lifecycle_scripts(
     project_dir: &std::path::Path,
     modules_dir_name: &str,
+    store: &aube_store::Store,
     aube_dir: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
     policy: &aube_scripts::BuildPolicy,
@@ -327,39 +328,30 @@ pub(crate) async fn run_dep_lifecycle_scripts(
             );
             continue;
         }
-        // Read the dep's `package.json` directly from its materialized
-        // location. Previously we looked it up via `package_indices`,
-        // but the fetch phase now skips `load_index` for packages
-        // whose virtual-store entry already exists (which is every
-        // package on a no-op re-install), so the map is sparse and
-        // many dep_paths legitimately won't have an entry. The
-        // on-disk file is hardlinked to the same bytes the store
-        // would have pointed us at.
-        //
-        // `NotFound` is the only error we swallow here: some packages
-        // legitimately ship without a top-level `package.json` (or
-        // the field gets stripped by linkers that treat the virtual
-        // store as opaque), and we shouldn't fail the install over
-        // that. Every other I/O error — permission denied, disk
-        // corruption, short reads — surfaces as a hard failure so
-        // the user sees the real problem instead of a silently
-        // skipped `node-gyp rebuild` or similar.
-        let pkg_json_path = package_dir.join("package.json");
-        let pkg_json_content = match std::fs::read_to_string(&pkg_json_path) {
-            Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                return Err(miette!(
-                    "failed to read package.json for {} at {}: {}",
-                    pkg.name,
-                    pkg_json_path.display(),
-                    e
-                ));
-            }
+        let dep_manifest = if let Some(raw) =
+            store.load_index_manifest(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
+        {
+            serde_json::from_value::<aube_manifest::PackageJson>(raw)
+                .into_diagnostic()
+                .wrap_err_with(|| format!("failed to parse cached package.json for {}", pkg.name))?
+        } else {
+            let pkg_json_path = package_dir.join("package.json");
+            let pkg_json_content = match std::fs::read_to_string(&pkg_json_path) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(miette!(
+                        "failed to read package.json for {} at {}: {}",
+                        pkg.name,
+                        pkg_json_path.display(),
+                        e
+                    ));
+                }
+            };
+            aube_manifest::PackageJson::parse(&pkg_json_path, pkg_json_content)
+                .map_err(miette::Report::new)
+                .wrap_err_with(|| format!("failed to parse package.json for {}", pkg.name))?
         };
-        let dep_manifest = aube_manifest::PackageJson::parse(&pkg_json_path, pkg_json_content)
-            .map_err(miette::Report::new)
-            .wrap_err_with(|| format!("failed to parse package.json for {}", pkg.name))?;
         // `has_dep_lifecycle_work` also accounts for the implicit
         // `node-gyp rebuild` fallback: a package with a top-level
         // `binding.gyp` and no `install`/`preinstall` script still has

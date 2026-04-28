@@ -94,7 +94,7 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     };
     let content = std::fs::read_to_string(&index_path)
         .map_err(|e| miette!("failed to read {}: {e}", index_path.display()))?;
-    let index: aube_store::PackageIndex = serde_json::from_str(&content)
+    let index = aube_store::parse_index_json(&content)
         .into_diagnostic()
         .map_err(|e| {
             miette!(
@@ -102,7 +102,7 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
             )
         })?;
 
-    let json = serde_json::to_string_pretty(&index)
+    let json = aube_store::index_to_pretty_json(&index)
         .into_diagnostic()
         .map_err(|e| miette!("failed to serialize index: {e}"))?;
     println!("{json}");
