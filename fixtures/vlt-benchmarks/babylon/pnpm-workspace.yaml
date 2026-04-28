@@ -1,3 +1,0 @@
-linkWorkspacePackages: true
-packages:
-  - "packages/**/*"

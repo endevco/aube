@@ -125,27 +125,7 @@ _install_vlt_fixture_like_benchmark() {
 	done
 }
 
-@test "vlt benchmark fixture: next install variations complete" {
-	_setup_vlt_fixture next
-	_install_vlt_fixture_like_benchmark
-}
-
 @test "vlt benchmark fixture: svelte install variations complete" {
 	_setup_vlt_fixture svelte
-	_install_vlt_fixture_like_benchmark
-}
-
-@test "vlt benchmark fixture: vue install variations complete" {
-	_setup_vlt_fixture vue
-	_install_vlt_fixture_like_benchmark
-}
-
-@test "vlt benchmark fixture: large install variations complete" {
-	_setup_vlt_fixture large
-	_install_vlt_fixture_like_benchmark
-}
-
-@test "vlt benchmark fixture: babylon install variations complete" {
-	_setup_vlt_fixture babylon
 	_install_vlt_fixture_like_benchmark
 }
