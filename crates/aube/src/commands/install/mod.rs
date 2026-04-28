@@ -4,7 +4,6 @@ use crate::state;
 use aube_lockfile::DriftStatus;
 use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use miette::{Context, IntoDiagnostic, miette};
-use rayon::prelude::*;
 use std::collections::BTreeMap;
 
 mod bin_linking;
@@ -790,30 +789,43 @@ where
         NeedsFetch,
     }
 
-    // Parallel index check (rayon)
-    let check_results: Vec<_> = packages
-        .par_iter()
+    let mut check_results = Vec::new();
+    let mut index_check_packages = Vec::new();
+    for (dep_path, pkg) in packages
+        .iter()
         .filter(|(_, pkg)| pkg.local_source.is_none())
-        .map(|(dep_path, pkg)| {
-            if !skip_already_linked_shortcut {
-                let entry_name = dep_path_to_filename(dep_path, virtual_store_dir_max_length);
-                if aube_dir.join(&entry_name).exists() {
-                    return (dep_path.clone(), pkg, CheckResult::AlreadyLinked);
-                }
+    {
+        if !skip_already_linked_shortcut {
+            let entry_name = dep_path_to_filename(dep_path, virtual_store_dir_max_length);
+            if aube_dir.join(&entry_name).exists() {
+                check_results.push((dep_path.clone(), pkg, CheckResult::AlreadyLinked));
+                continue;
             }
-            // Keyed by registry name so two npm-aliases of the same
-            // real package share one store index entry instead of
-            // wastefully double-fetching under the alias. Integrity
-            // is part of the cache key so a different tarball served
-            // under the same (name, version) — e.g. a github codeload
-            // archive vs. the npm-published bytes — can't return the
-            // wrong file list.
-            match store.load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref()) {
-                Some(index) => (dep_path.clone(), pkg, CheckResult::Cached(index)),
-                None => (dep_path.clone(), pkg, CheckResult::NeedsFetch),
-            }
+        }
+        index_check_packages.push((dep_path, pkg));
+    }
+    let index_lookups: Vec<_> = index_check_packages
+        .iter()
+        .map(|(_, pkg)| aube_store::PackageIndexLookup {
+            name: pkg.registry_name(),
+            version: &pkg.version,
+            integrity: pkg.integrity.as_deref(),
         })
         .collect();
+    for ((dep_path, pkg), index) in index_check_packages
+        .into_iter()
+        .zip(store.load_indices(&index_lookups))
+    {
+        // Keyed by registry name so two npm-aliases of the same real
+        // package share one store index entry instead of wastefully
+        // double-fetching under the alias. Integrity is part of the
+        // cache key so a different tarball served under the same
+        // (name, version) can't return the wrong file list.
+        match index {
+            Some(index) => check_results.push((dep_path.clone(), pkg, CheckResult::Cached(index))),
+            None => check_results.push((dep_path.clone(), pkg, CheckResult::NeedsFetch)),
+        }
+    }
 
     let mut indices: BTreeMap<String, aube_store::PackageIndex> = BTreeMap::new();
 

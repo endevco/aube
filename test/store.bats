@@ -62,10 +62,8 @@ EOF
 	assert_success
 	assert_output --partial "is-odd@3.0.1"
 
-	# The cached index should exist for the added package. The
-	# on-disk layout is `$HOME/.cache/aube/index/<16 hex>/<name>@<ver>.json`
-	# — find any such file matching the name and version.
-	run bash -c 'compgen -G "$HOME/.cache/aube/index/*/is-odd@3.0.1.json"'
+	# The cached index should exist for the added package.
+	run aube cat-index is-odd@3.0.1
 	assert_success
 
 	# Also sanity-check `store status` returns clean after an add.
@@ -85,12 +83,8 @@ EOF
 	assert_success
 
 	# Pick one of the files the cached index points at and corrupt it.
-	# Integrity-keyed entries live at
-	# `<index>/<16 hex>/<name>@<ver>.json` — walk two levels to find
-	# the actual file.
-	index="$(find "$HOME/.cache/aube/index" -mindepth 2 -maxdepth 2 -name 'is-odd@3.0.1.json' -print -quit)"
-	assert_file_exists "$index"
-	store_path="$(grep -o '"store_path":"[^"]*"' "$index" | head -n1 | sed 's/.*":"//;s/"$//')"
+	store_path="$(aube cat-index is-odd@3.0.1 | jq -r 'to_entries[0].value.store_path')"
+	assert_file_exists "$store_path"
 	echo "garbage" >"$store_path"
 
 	run aube store status
@@ -108,12 +102,10 @@ EOF
 	run aube store add is-odd@3.0.1
 	assert_success
 
-	# Drop the cached index so every file the `add` just wrote becomes
+	# Drop the cached index DB so every file the `add` just wrote becomes
 	# unreferenced. Without this the prune loop would `continue` on every
-	# file and never exercise the deletion branch. Integrity-keyed
-	# files live under `<16 hex>/<name>@<ver>.json` — glob the whole
-	# subdir layout.
-	rm "$HOME/.cache/aube/index"/*/is-odd@3.0.1.json
+	# file and never exercise the deletion branch.
+	rm -f "$HOME/.cache/aube/index-v2.sqlite"*
 
 	run aube store prune
 	assert_success

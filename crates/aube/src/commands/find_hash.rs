@@ -17,6 +17,7 @@
 
 use clap::Args;
 use miette::{IntoDiagnostic, miette};
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 pub const AFTER_LONG_HELP: &str = "\
@@ -77,15 +78,15 @@ pub async fn run(args: FindHashArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root_or_cwd()?;
     let store = crate::commands::open_store(&cwd)?;
 
-    let index_dir = store.index_dir();
-    if !index_dir.exists() {
+    let entries = store
+        .cached_indices_unverified()
+        .map_err(|e| miette!("failed to read cached indices: {e}"))?;
+    let matches = scan_cached_indices(&entries, &target_hex);
+    if matches.is_empty() && entries.is_empty() {
         return Err(miette!(
-            "index cache is empty at {}\nhelp: run `aube install` or `aube fetch` first to populate the store",
-            index_dir.display()
+            "index cache is empty\nhelp: run `aube install` or `aube fetch` first to populate the store"
         ));
     }
-
-    let matches = scan_index_dir(&index_dir, &target_hex)?;
 
     // Always print the output before deciding the exit status, so scripts
     // that pipe `find-hash --json` into `jq` still get parseable output
@@ -112,6 +113,23 @@ pub async fn run(args: FindHashArgs) -> miette::Result<()> {
     Ok(())
 }
 
+fn scan_cached_indices(entries: &[aube_store::CachedIndexEntry], target_hex: &str) -> Vec<Match> {
+    let mut matches = Vec::new();
+    for entry in entries {
+        for (rel_path, file) in &entry.index {
+            if file.hex_hash == target_hex {
+                matches.push(Match {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                    path: rel_path.clone(),
+                });
+            }
+        }
+    }
+    matches.sort_by(|a, b| (&a.name, &a.version, &a.path).cmp(&(&b.name, &b.version, &b.path)));
+    matches
+}
+
 /// Walk every `*.json` file in the cache dir — both at the root
 /// (integrity-less entries) and one level down under `<integrity-hex>/`
 /// subdirs (integrity-keyed entries) — parse each as a `PackageIndex`,
@@ -119,6 +137,7 @@ pub async fn run(args: FindHashArgs) -> miette::Result<()> {
 /// Cache entries that fail to parse or whose filename can't be decoded
 /// into `{name}@{version}` are skipped silently — the cache is a
 /// best-effort artifact, not a source of truth.
+#[cfg(test)]
 fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Result<Vec<Match>> {
     let mut matches: Vec<Match> = Vec::new();
     scan_one_level(index_dir, target_hex, &mut matches)?;
@@ -142,6 +161,7 @@ fn scan_index_dir(index_dir: &std::path::Path, target_hex: &str) -> miette::Resu
     Ok(matches)
 }
 
+#[cfg(test)]
 fn scan_one_level(
     dir: &std::path::Path,
     target_hex: &str,
@@ -210,6 +230,7 @@ fn scan_one_level(
 ///
 /// Integrity (when present) lives in the parent directory name, not
 /// the filename, so no suffix stripping is needed here.
+#[cfg(test)]
 fn split_stem(stem: &str) -> Option<(String, String)> {
     let at = stem.rfind('@')?;
     if at == 0 {

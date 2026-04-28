@@ -42,65 +42,40 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root_or_cwd()?;
     let store = crate::commands::open_store(&cwd)?;
 
-    // Read the cached index file directly instead of routing through
-    // `Store::load_index` — that helper silently *deletes* the cache
-    // entry if it detects the underlying store files are missing, which
-    // would be a surprising mutation from a read-only introspection
-    // command (the user would see "no cached index" when the JSON was
-    // in fact present the moment before and has now been removed).
-    // Re-serialize the parsed index so the output is pretty-printed the
-    // same way load_index would have given us.
     // Validate through the same grammar `Store::save_index` enforces
     // so a user passing `aube cat-index ../../evil 1.0.0` gets a clear
-    // refusal instead of a surprising path outside `index_dir()`.
-    let safe_name = aube_store::validate_and_encode_name(name)
+    // refusal instead of a surprising path outside the cache.
+    let _safe_name = aube_store::validate_and_encode_name(name)
         .ok_or_else(|| miette!("invalid package name: {name:?}"))?;
     if !aube_store::validate_version(version) {
         return Err(miette!("invalid version: {version:?}"));
     }
-    // Look in the integrity-less slot at the index root and in every
-    // `<16 hex>/` subdir. The filename we're looking for is always
-    // `{safe_name}@{version}.json` — the integrity (when present)
-    // lives in the parent directory name, not the filename, so we
-    // never have to reason about how `+` composes with the version.
-    let filename = format!("{safe_name}@{version}.json");
-    let matches = scan_matches(&store.index_dir(), &filename)?;
-    let index_path = match matches.as_slice() {
+    let matches: Vec<_> = store
+        .cached_indices_unverified()
+        .map_err(|e| miette!("failed to read cached indices: {e}"))?
+        .into_iter()
+        .filter(|entry| entry.name == name && entry.version == version)
+        .collect();
+    let index = match matches.as_slice() {
         [] => {
             return Err(miette!(
                 "no cached index for {name}@{version}\nhelp: run `aube fetch` or `aube install` to populate the store first"
             ));
         }
-        [p] => p.clone(),
+        [entry] => &entry.index,
         many => {
-            // Two different tarballs were fetched under the same
-            // (name, version). Print the integrity directory of each
-            // so the user knows which distinct sources exist; they
-            // can pick one via a direct read of the file.
             let mut msg = format!(
                 "{} distinct cached tarballs for {name}@{version}:\n",
                 many.len()
             );
-            for p in many {
-                msg.push_str("  ");
-                msg.push_str(&p.display().to_string());
-                msg.push('\n');
+            for entry in many {
+                let integrity = entry.integrity.as_deref().unwrap_or("<none>");
+                msg.push_str(&format!("- integrity: {integrity}\n"));
             }
-            msg.push_str(
-                "help: read the specific file directly, or re-run `aube fetch` in the project whose tarball you want.",
-            );
+            msg.push_str("help: re-run `aube fetch` in the project whose tarball you want.");
             return Err(miette!("{msg}"));
         }
     };
-    let content = std::fs::read_to_string(&index_path)
-        .map_err(|e| miette!("failed to read {}: {e}", index_path.display()))?;
-    let index: aube_store::PackageIndex = serde_json::from_str(&content)
-        .into_diagnostic()
-        .map_err(|e| {
-            miette!(
-                "cached index for {name}@{version} is corrupt: {e}\nhelp: re-run `aube fetch` to regenerate it"
-            )
-        })?;
 
     let json = serde_json::to_string_pretty(&index)
         .into_diagnostic()
@@ -114,6 +89,7 @@ pub async fn run(args: CatIndexArgs) -> miette::Result<()> {
 /// at the index-root for the integrity-less entry, then peeks into
 /// each `<16 hex>/` subdir for the integrity-keyed variants. Returns
 /// the discovered paths sorted for stable output.
+#[cfg(test)]
 fn scan_matches(
     index_dir: &std::path::Path,
     filename: &str,
