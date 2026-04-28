@@ -570,15 +570,15 @@ async fn write_fix_lockfile_update(
         })
         .cloned()
         .collect();
-    let fixed = fixed_package_names(rows, &remaining, &before, &after);
+    let updated = updated_package_names(rows, &before, &after);
 
-    if fixed.is_empty() {
+    if updated.is_empty() {
         eprintln!("No audit lockfile updates available.");
         return Ok(remaining);
     }
 
     let mut output_manifest = manifest.clone();
-    if update_direct_manifest_specs(&mut output_manifest, graph, &new_graph, &fixed) {
+    if update_direct_manifest_specs(&mut output_manifest, graph, &new_graph, &updated) {
         let manifest_path = cwd.join("package.json");
         super::write_manifest_dep_sections(&manifest_path, &output_manifest)?;
         eprintln!("Updated package.json");
@@ -586,7 +586,7 @@ async fn write_fix_lockfile_update(
 
     sync_root_dep_specifiers(&mut new_graph, &output_manifest);
     super::write_and_log_lockfile(cwd, &new_graph, &output_manifest)?;
-    for name in &fixed {
+    for name in &updated {
         let old = before
             .get(name)
             .map(|v| v.iter().cloned().collect::<Vec<_>>().join(", "))
@@ -597,7 +597,7 @@ async fn write_fix_lockfile_update(
             .unwrap_or_else(|| "(removed)".to_string());
         eprintln!("  {name}: {old} -> {new}");
     }
-    eprintln!("Updated lockfile for {} package(s).", fixed.len());
+    eprintln!("Updated lockfile for {} package(s).", updated.len());
     Ok(remaining)
 }
 
@@ -612,16 +612,13 @@ fn vulnerable_ranges_by_name(rows: &[Row]) -> BTreeMap<String, Vec<String>> {
     vulnerable_ranges
 }
 
-fn fixed_package_names(
+fn updated_package_names(
     selected: &[Row],
-    remaining: &[Row],
     before: &BTreeMap<String, BTreeSet<String>>,
     after: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeSet<String> {
-    let remaining_names: BTreeSet<&str> = remaining.iter().map(|row| row.name.as_str()).collect();
     selected
         .iter()
-        .filter(|row| !remaining_names.contains(row.name.as_str()))
         .filter(|row| before.get(&row.name) != after.get(&row.name))
         .map(|row| row.name.clone())
         .collect()
@@ -652,14 +649,14 @@ fn update_direct_manifest_specs(
     manifest: &mut aube_manifest::PackageJson,
     old_graph: &aube_lockfile::LockfileGraph,
     new_graph: &aube_lockfile::LockfileGraph,
-    fixed_names: &BTreeSet<String>,
+    updated_names: &BTreeSet<String>,
 ) -> bool {
     let before = direct_versions_by_name(old_graph);
     let after = direct_versions_by_name(new_graph);
     let mut wrote_any = false;
     for (key, spec) in mutable_manifest_dep_entries(manifest) {
         let real_name = real_name_for_spec(&key, spec);
-        if !fixed_names.contains(&real_name) {
+        if !updated_names.contains(&real_name) {
             continue;
         }
         let (Some(old), Some(new)) = (before.get(&real_name), after.get(&real_name)) else {
@@ -1109,6 +1106,30 @@ mod tests {
         assert_eq!(
             rewrite_specifier("npm:is-number@^1.0.0 || ^2.0.0", "is-number", "7.0.0", None),
             "npm:is-number@>=7.0.0"
+        );
+    }
+
+    #[test]
+    fn audit_update_tracks_partially_fixed_package_updates() {
+        let rows = vec![Row {
+            name: "is-number".to_string(),
+            severity: Severity::High,
+            title: "number advisory".to_string(),
+            vulnerable_versions: "<7.0.0".to_string(),
+            url: String::new(),
+        }];
+        let before = BTreeMap::from([(
+            "is-number".to_string(),
+            BTreeSet::from(["3.0.0".to_string()]),
+        )]);
+        let after = BTreeMap::from([(
+            "is-number".to_string(),
+            BTreeSet::from(["7.0.0".to_string()]),
+        )]);
+
+        assert_eq!(
+            updated_package_names(&rows, &before, &after),
+            BTreeSet::from(["is-number".to_string()])
         );
     }
 
