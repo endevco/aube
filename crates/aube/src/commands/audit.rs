@@ -552,7 +552,7 @@ async fn write_fix_lockfile_update(
     let workspace_catalogs = super::load_workspace_catalogs(cwd)?;
     let mut resolver = super::build_resolver(cwd, &resolver_manifest, workspace_catalogs)
         .with_vulnerable_ranges(vulnerable_ranges.clone());
-    let new_graph = resolver
+    let mut new_graph = resolver
         .resolve(&resolver_manifest, Some(graph))
         .await
         .map_err(miette::Report::new)
@@ -584,6 +584,7 @@ async fn write_fix_lockfile_update(
         eprintln!("Updated package.json");
     }
 
+    sync_root_dep_specifiers(&mut new_graph, &output_manifest);
     super::write_and_log_lockfile(cwd, &new_graph, &output_manifest)?;
     for name in &fixed {
         let old = before
@@ -643,7 +644,7 @@ fn widen_vulnerable_direct_pins(
         if !version_is_vulnerable(version, ranges) || !looks_like_exact_version(spec_range(spec)) {
             continue;
         }
-        *spec = rewrite_specifier(spec, &real_name, version, Some("^"));
+        *spec = rewrite_specifier(spec, &real_name, version, Some(">="));
     }
 }
 
@@ -677,6 +678,37 @@ fn update_direct_manifest_specs(
         }
     }
     wrote_any
+}
+
+fn sync_root_dep_specifiers(
+    graph: &mut aube_lockfile::LockfileGraph,
+    manifest: &aube_manifest::PackageJson,
+) {
+    let Some(deps) = graph.importers.get_mut(".") else {
+        return;
+    };
+    for dep in deps {
+        if let Some(spec) = manifest_spec_for_dep(manifest, dep) {
+            dep.specifier = Some(spec);
+        }
+    }
+}
+
+fn manifest_spec_for_dep(
+    manifest: &aube_manifest::PackageJson,
+    dep: &aube_lockfile::DirectDep,
+) -> Option<String> {
+    let section = match dep.dep_type {
+        aube_lockfile::DepType::Production => &manifest.dependencies,
+        aube_lockfile::DepType::Dev => &manifest.dev_dependencies,
+        aube_lockfile::DepType::Optional => &manifest.optional_dependencies,
+    };
+    section.get(&dep.name).cloned().or_else(|| {
+        section
+            .iter()
+            .find(|(key, spec)| real_name_for_spec(key, spec) == dep.name)
+            .map(|(_, spec)| spec.clone())
+    })
 }
 
 fn direct_versions_by_name(graph: &aube_lockfile::LockfileGraph) -> BTreeMap<String, String> {
@@ -723,13 +755,25 @@ fn rewrite_specifier(
     } else {
         (original, false)
     };
-    let prefix = force_prefix.unwrap_or_else(|| range_prefix(range));
+    let prefix = force_prefix.unwrap_or_else(|| rewrite_prefix(range));
     let versioned = format!("{prefix}{resolved_version}");
     if is_alias {
         format!("npm:{real_name}@{versioned}")
     } else {
         versioned
     }
+}
+
+fn rewrite_prefix(spec: &str) -> &'static str {
+    if is_compound_range(spec) {
+        ">="
+    } else {
+        range_prefix(spec)
+    }
+}
+
+fn is_compound_range(spec: &str) -> bool {
+    spec.contains("||") || spec.split_whitespace().nth(1).is_some()
 }
 
 fn spec_range(spec: &str) -> &str {
@@ -1050,6 +1094,22 @@ mod tests {
         assert!(spec_satisfies_version(">=0.1.0", "7.0.0"));
         assert!(spec_satisfies_version("npm:is-number@>=0.1.0", "7.0.0"));
         assert!(!spec_satisfies_version("3.0.0", "7.0.0"));
+    }
+
+    #[test]
+    fn audit_update_rewrites_compound_ranges_to_safe_floor() {
+        assert_eq!(
+            rewrite_specifier("^1.0.0 || ^2.0.0", "is-number", "7.0.0", None),
+            ">=7.0.0"
+        );
+        assert_eq!(
+            rewrite_specifier(">=1.0.0 <7.0.0", "is-number", "7.0.0", None),
+            ">=7.0.0"
+        );
+        assert_eq!(
+            rewrite_specifier("npm:is-number@^1.0.0 || ^2.0.0", "is-number", "7.0.0", None),
+            "npm:is-number@>=7.0.0"
+        );
     }
 
     #[test]

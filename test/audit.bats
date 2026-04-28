@@ -198,6 +198,37 @@ _write_audit_update_fixture() {
 	EOF
 }
 
+_write_audit_update_exact_fixture() {
+	cat >package.json <<-'EOF'
+		{
+		  "name": "audit-update-exact-fixture",
+		  "version": "1.0.0",
+		  "dependencies": { "is-number": "3.0.0" }
+		}
+	EOF
+	cat >aube-lock.yaml <<-'EOF'
+		lockfileVersion: '9.0'
+
+		settings:
+		  autoInstallPeers: true
+		  excludeLinksFromLockfile: false
+
+		importers:
+		  .:
+		    dependencies:
+		      is-number:
+		        specifier: 3.0.0
+		        version: 3.0.0
+
+		packages:
+		  is-number@3.0.0:
+		    resolution: {integrity: sha512-4cboCqIpliH+mAvFNegjZQ4kgKc3ZUhQVr3HvWbSh5q3WH2v82ct+T2Y1hdU5Gdtorx/cLifQjqCbL7bpznLTg==}
+
+		snapshots:
+		  is-number@3.0.0: {}
+	EOF
+}
+
 @test "aube audit --fix writes package.json overrides" {
 	_install_audit_fixture
 	_start_audit_server
@@ -258,6 +289,24 @@ _write_audit_update_fixture() {
 	assert_success
 
 	run node -e 'const p=require("./package.json"); if (p.overrides) process.exit(1)'
+	assert_success
+}
+
+@test "aube audit --fix=update keeps exact pins aligned with lockfile specifiers" {
+	_write_audit_update_exact_fixture
+	_start_audit_server
+	port="$(cat audit-server-port)"
+	echo "registry=http://127.0.0.1:${port}/" >.npmrc
+
+	run aube audit --fix=update
+	_stop_audit_server
+	assert_success
+	assert_output --partial "Updated lockfile for 1 package"
+
+	run node -e 'const p=require("./package.json"); if (p.dependencies["is-number"] !== "7.0.0") process.exit(1)'
+	assert_success
+
+	run grep 'specifier: 7.0.0' aube-lock.yaml
 	assert_success
 }
 
