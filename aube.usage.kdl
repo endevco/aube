@@ -413,7 +413,7 @@ cmd install help="Install all dependencies" {
     flag --force help="Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted" {
         long_help "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`."
     }
-    flag --ignore-pnpmfile help="Skip running `.pnpmfile.cjs` hooks for this install"
+    flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
     flag --lockfile-only help="Resolve dependencies and write the lockfile, but don't link `node_modules`" {
         long_help "Resolve dependencies and write the lockfile, but don't link `node_modules`.\n\nUseful for CI workflows that only update the lockfile."
