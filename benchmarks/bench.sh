@@ -248,8 +248,7 @@ done
 #   - one shared `prepare_tpl` that sets the on-disk state for the
 #     tool's project dir (wiping `node_modules`, dropping back the
 #     saved lockfile, etc.)
-#   - a per-tool command template looked up in the `CMDS_<scenario>`
-#     associative array
+#   - a per-tool command template looked up by `cmd_template`
 #
 # Template placeholders:
 #   {project}       — project directory
@@ -272,9 +271,6 @@ expand_template() {
 	tpl="${tpl//\{lockfile_dest\}/$lockfile_dest}"
 	echo "$tpl"
 }
-
-# Per-tool install invocations, keyed by `<scenario>:<tool>`.
-declare -A CMDS
 
 # Per-tool boilerplate factored out of the `CMDS` declarations below.
 # Every bun invocation threads the same hermetic environment
@@ -309,56 +305,64 @@ AUBE_ENV_GVS_OFF="$AUBE_ENV npm_config_enable_global_virtual_store=false"
 # Plus an "add" scenario that exercises the incremental add path and an
 # "install-test" scenario that measures install + script dispatch end-to-end.
 
-# Scenario 1: Fresh install, warm cache -------------------------------------
-CMDS["gvs-warm:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
-CMDS["gvs-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
-CMDS["gvs-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
-CMDS["gvs-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
-CMDS["gvs-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
-
-# Scenario 2: Fresh install, cold cache -------------------------------------
-CMDS["gvs-cold:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
-CMDS["gvs-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
-CMDS["gvs-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
-CMDS["gvs-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
-CMDS["gvs-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
-
-# Scenario 3: CI install, warm cache (aube GVS disabled) --------------------
-CMDS["ci-warm:aube"]="cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
-CMDS["ci-warm:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
-CMDS["ci-warm:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
-CMDS["ci-warm:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
-CMDS["ci-warm:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
-
-# Scenario 4: CI install, cold cache (aube GVS disabled) --------------------
-CMDS["ci-cold:aube"]="cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
-CMDS["ci-cold:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
-CMDS["ci-cold:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
-CMDS["ci-cold:pnpm"]="cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
-CMDS["ci-cold:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
-
-# Scenario 5: install + run test (warm store+cache, wiped node_modules) -----
-# Each tool does "install then run the `test` script" via its own idiomatic
-# command. aube has no install-test alias because `aube test` auto-installs
-# before running the script; pnpm and npm ship `install-test`; bun and yarn
-# need an explicit chain. The fixture's `test` script is the POSIX shell
-# no-op `:`, so this measures install + script dispatch, not test-runtime work.
-CMDS["install-test:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} test >/dev/null 2>&1"
-CMDS["install-test:bun"]="cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1 && HOME={home} BUN_INSTALL={home}/.bun {bin} run test >/dev/null 2>&1"
-# `npm install-test` (the `install` variant, not `ci`) is the right
-# command for the "already installed" semantics this scenario uses —
-# `npm install` skips work when node_modules matches package-lock,
-# whereas `npm ci` deletes node_modules every run by design.
-CMDS["install-test:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install-test --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
-CMDS["install-test:pnpm"]="cd {project} && HOME={home} {bin} install-test --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
-CMDS["install-test:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1 && HOME={home} YARN_CACHE_FOLDER={cache} {bin} test >/dev/null 2>&1"
-
-# Scenario 6: add a dependency (warm store+cache, existing lockfile) --------
-CMDS["add:aube"]="cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
-CMDS["add:bun"]="cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
-CMDS["add:npm"]="cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
-CMDS["add:pnpm"]="cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
-CMDS["add:yarn"]="cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} add is-odd --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
+cmd_template() {
+	case "$1:$2" in
+	gvs-warm:aube | gvs-cold:aube)
+		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
+		;;
+	gvs-warm:bun | gvs-cold:bun | ci-warm:bun | ci-cold:bun)
+		echo "cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
+		;;
+	gvs-warm:npm | ci-warm:npm)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
+		;;
+	gvs-warm:pnpm | gvs-cold:pnpm | ci-warm:pnpm | ci-cold:pnpm)
+		echo "cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
+		;;
+	gvs-warm:yarn | ci-warm:yarn)
+		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
+		;;
+	gvs-cold:npm | ci-cold:npm)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
+		;;
+	gvs-cold:yarn | ci-cold:yarn)
+		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
+		;;
+	ci-warm:aube | ci-cold:aube)
+		echo "cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
+		;;
+	install-test:aube)
+		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} test >/dev/null 2>&1"
+		;;
+	install-test:bun)
+		echo "cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1 && HOME={home} BUN_INSTALL={home}/.bun {bin} run test >/dev/null 2>&1"
+		;;
+	install-test:npm)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install-test --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
+		;;
+	install-test:pnpm)
+		echo "cd {project} && HOME={home} {bin} install-test --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
+		;;
+	install-test:yarn)
+		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1 && HOME={home} YARN_CACHE_FOLDER={cache} {bin} test >/dev/null 2>&1"
+		;;
+	add:aube)
+		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
+		;;
+	add:bun)
+		echo "cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
+		;;
+	add:npm)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
+		;;
+	add:pnpm)
+		echo "cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
+		;;
+	add:yarn)
+		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} add is-odd --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
+		;;
+	esac
+}
 
 run_bench() {
 	local bench_name=$1
@@ -375,7 +379,8 @@ run_bench() {
 		local lockfile_dest
 		lockfile_dest="$project/$(lockfile_name_for "$tool")"
 
-		local cmd_tpl=${CMDS["$bench_name:$tool"]:-}
+		local cmd_tpl
+		cmd_tpl=$(cmd_template "$bench_name" "$tool")
 		if [ -z "$cmd_tpl" ]; then
 			echo "warning: no $bench_name command for $tool — skipping" >&2
 			continue
@@ -424,7 +429,8 @@ run_bench_preinstall() {
 		local lockfile_dest
 		lockfile_dest="$project/$(lockfile_name_for "$tool")"
 
-		local cmd_tpl=${CMDS["$bench_name:$tool"]:-}
+		local cmd_tpl
+		cmd_tpl=$(cmd_template "$bench_name" "$tool")
 		if [ -z "$cmd_tpl" ]; then
 			echo "warning: no $bench_name command for $tool — skipping" >&2
 			continue
