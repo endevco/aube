@@ -86,7 +86,8 @@ fn today_utc() -> (i32, u32, u32) {
         .unwrap_or_default()
         .as_secs()
         / 86_400;
-    civil_from_days(days as i64)
+    let days = i64::try_from(days).unwrap_or(i64::MAX);
+    civil_from_days(days)
 }
 
 fn civil_from_days(days: i64) -> (i32, u32, u32) {

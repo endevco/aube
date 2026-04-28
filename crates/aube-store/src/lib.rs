@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 pub const SHA512_INTEGRITY_PREFIX: &str = "sha512-";
@@ -63,7 +63,8 @@ thread_local! {
 }
 
 static INDEX_DB_INIT_LOCK: Mutex<()> = Mutex::new(());
-static INDEX_DB_WRITE_LOCK: Mutex<()> = Mutex::new(());
+static INDEX_DB_WRITE_LOCKS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 // build.rs scans these markers and flips the cfg once the date is reached.
 macro_rules! remove_after {
@@ -254,9 +255,14 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
     ) -> Result<T, Error> {
-        let _guard = INDEX_DB_WRITE_LOCK
+        let db_path = self.index_db_path();
+        let lock = INDEX_DB_WRITE_LOCKS
             .lock()
-            .map_err(|e| Error::Xx(e.to_string()))?;
+            .map_err(|e| Error::Xx(e.to_string()))?
+            .entry(db_path)
+            .or_default()
+            .clone();
+        let _guard = lock.lock().map_err(|e| Error::Xx(e.to_string()))?;
         self.with_index_db(f)
     }
 
@@ -339,6 +345,11 @@ impl Store {
         self.load_index_inner(name, version, integrity, true)
     }
 
+    /// Load package indexes for install/fetch hot paths.
+    ///
+    /// Like [`load_index`](Self::load_index), this is allowed to clean
+    /// up stale legacy JSON fallback entries. Read-only callers should
+    /// use the `cached_indices*_unverified` APIs instead.
     pub fn load_indices(&self, lookups: &[PackageIndexLookup<'_>]) -> Vec<Option<PackageIndex>> {
         let mut indices = self.load_indices_sqlite(lookups).unwrap_or_else(|| {
             std::iter::repeat_with(|| None)
@@ -396,12 +407,12 @@ impl Store {
         integrity_key: &str,
         verify_files: bool,
     ) -> Option<PackageIndex> {
-        let data: Vec<u8> = self
+        let (rowid, data): (i64, Vec<u8>) = self
             .with_index_db(|conn| {
                 conn.query_row(
-                    "SELECT data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
+                    "SELECT rowid, data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
                     rusqlite::params![name, version, integrity_key],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
             })
             .ok()?;
@@ -410,8 +421,8 @@ impl Store {
             trace!("cache stale: {name}@{version}");
             let _ = self.with_index_db_write(|conn| {
                 conn.execute(
-                    "DELETE FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3 AND data = ?4",
-                    rusqlite::params![name, version, integrity_key, data],
+                    "DELETE FROM package_index WHERE rowid = ?1",
+                    rusqlite::params![rowid],
                 )
             });
             return None;
@@ -426,7 +437,7 @@ impl Store {
     ) -> Option<Vec<Option<PackageIndex>>> {
         let (out, stale) = self.with_index_db(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
+                "SELECT rowid, data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
             )?;
             let mut out = Vec::with_capacity(lookups.len());
             let mut stale = Vec::new();
@@ -441,13 +452,13 @@ impl Store {
                     out.push(None);
                     continue;
                 };
-                let data = stmt
+                let row = stmt
                     .query_row(
                         rusqlite::params![lookup.name, lookup.version, integrity_key],
-                        |row| row.get::<_, Vec<u8>>(0),
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
                     )
                     .ok();
-                let Some(data) = data else {
+                let Some((rowid, data)) = row else {
                     out.push(None);
                     continue;
                 };
@@ -460,23 +471,18 @@ impl Store {
                     out.push(Some(index));
                 } else {
                     trace!("cache stale: {}@{}", lookup.name, lookup.version);
-                    stale.push((
-                        lookup.name.to_string(),
-                        lookup.version.to_string(),
-                        integrity_key,
-                        data,
-                    ));
+                    stale.push(rowid);
                     out.push(None);
                 }
             }
             Ok((out, stale))
         })
         .ok()?;
-        for (name, version, integrity_key, data) in stale {
+        for rowid in stale {
             let _ = self.with_index_db_write(|conn| {
                 conn.execute(
-                    "DELETE FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3 AND data = ?4",
-                    rusqlite::params![name, version, integrity_key, data],
+                    "DELETE FROM package_index WHERE rowid = ?1",
+                    rusqlite::params![rowid],
                 )
             });
         }
@@ -499,7 +505,11 @@ impl Store {
                 "refusing to cache: invalid coordinate {name:?}@{version:?} or integrity {integrity:?}"
             ))
         })?;
-        let integrity_key = Self::index_integrity_key(integrity).unwrap_or_default();
+        let integrity_key = Self::index_integrity_key(integrity).ok_or_else(|| {
+            Error::Tar(format!(
+                "refusing to cache: invalid integrity {integrity:?}"
+            ))
+        })?;
         let data =
             rmp_serde::to_vec_named(index).map_err(|e| Error::Tar(format!("serialize: {e}")))?;
         self.with_index_db_write(|conn| {
