@@ -34,6 +34,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 yaml_serde = "0.10.4"
 simd-json = "0.17"
+rmp-serde = "1"
+rusqlite = { version = "0.39", features = ["bundled"] }
 toml = "0.8"
 
 # CLI

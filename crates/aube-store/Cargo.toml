@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-include = ["src/**/*.rs"]
+include = ["build.rs", "src/**/*.rs"]
 
 [dependencies]
 aube-util = { workspace = true }
@@ -22,6 +22,8 @@ tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 simd-json = { workspace = true }
+rmp-serde = { workspace = true }
+rusqlite = { workspace = true }
 xx = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
