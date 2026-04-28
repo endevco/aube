@@ -111,6 +111,33 @@ EOF
 	refute_output --partial 'cjs pnpmfile should not have run'
 }
 
+@test "pnpmfile: .pnpmfile.mjs named hooks win when default has no hooks" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-pnpmfile-mjs-mixed-exports",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+EOF
+
+	cat >.pnpmfile.mjs <<'EOF'
+export const hooks = {
+  afterAllResolved(lockfile, context) {
+    context.log('named hooks export ran');
+    return lockfile;
+  },
+};
+export default { source: 'tooling-only' };
+EOF
+
+	run aube install
+	assert_success
+	assert_output --partial 'default export has no hooks; using named hooks export'
+	assert_output --partial 'named hooks export ran'
+}
+
 @test "pnpmfile: readPackage hook mutates transitive dependencies before enqueue" {
 	cat >package.json <<'EOF'
 {

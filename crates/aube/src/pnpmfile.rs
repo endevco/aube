@@ -181,19 +181,26 @@ fn apply(wire: LockfileWire, graph: &mut LockfileGraph) {
     }
 }
 
-const SHIM: &str = r#"
+const LOAD_PNPMFILE_JS: &str = r#"
 const path = require('path');
 const { pathToFileURL } = require('url');
-const pnpmfile = process.env.AUBE_PNPMFILE;
-const hookName = process.env.AUBE_HOOK;
-let chunks = [];
 async function loadPnpmfile(file) {
   const resolved = path.resolve(file);
   const mod = resolved.endsWith('.mjs')
     ? await import(pathToFileURL(resolved).href)
     : require(resolved);
+  if (mod && mod.default && !mod.default.hooks && mod.hooks) {
+    console.error('[pnpmfile] default export has no hooks; using named hooks export');
+    return mod;
+  }
   return (mod && (mod.default || mod)) || {};
 }
+"#;
+
+const SHIM: &str = r#"
+const pnpmfile = process.env.AUBE_PNPMFILE;
+const hookName = process.env.AUBE_HOOK;
+let chunks = [];
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('end', async () => {
   try {
@@ -217,6 +224,10 @@ process.stdin.on('end', async () => {
 });
 "#;
 
+fn after_all_resolved_shim() -> String {
+    format!("{LOAD_PNPMFILE_JS}{SHIM}")
+}
+
 /// Run the `afterAllResolved` hook against a resolved lockfile graph.
 /// Mutations to `packages[].dependencies` and `packages[].peerDependencies`
 /// are applied in place. All other fields are round-tripped but
@@ -234,7 +245,7 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
 
     let mut cmd = tokio::process::Command::new("node");
     cmd.arg("-e")
-        .arg(SHIM)
+        .arg(after_all_resolved_shim())
         .env("AUBE_PNPMFILE", pnpmfile)
         .env("AUBE_HOOK", "afterAllResolved")
         .stdin(std::process::Stdio::piped())
@@ -299,17 +310,8 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
 /// the interleaving hazards you'd otherwise get from async readline
 /// callbacks.
 const READ_PACKAGE_SHIM: &str = r#"
-const path = require('path');
-const { pathToFileURL } = require('url');
 const readline = require('readline');
 const pnpmfile = process.env.AUBE_PNPMFILE;
-async function loadPnpmfile(file) {
-  const resolved = path.resolve(file);
-  const mod = resolved.endsWith('.mjs')
-    ? await import(pathToFileURL(resolved).href)
-    : require(resolved);
-  return (mod && (mod.default || mod)) || {};
-}
 const ctx = {
   log: (...args) => console.error('[pnpmfile]', ...args),
 };
@@ -347,6 +349,10 @@ main().catch((err) => {
   process.exit(1);
 });
 "#;
+
+fn read_package_shim() -> String {
+    format!("{LOAD_PNPMFILE_JS}{READ_PACKAGE_SHIM}")
+}
 
 /// Long-lived node child that answers `readPackage` calls one at a
 /// time. Owned by the install command for the span of a single
@@ -395,7 +401,7 @@ impl ReadPackageHost {
         );
         let mut cmd = tokio::process::Command::new("node");
         cmd.arg("-e")
-            .arg(READ_PACKAGE_SHIM)
+            .arg(read_package_shim())
             .env("AUBE_PNPMFILE", pnpmfile)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -510,6 +516,17 @@ mod tests {
         assert_eq!(
             found.as_deref(),
             Some(dir.path().join(PNPMFILE_CJS_NAME).as_path())
+        );
+    }
+
+    #[test]
+    fn detect_returns_mjs_when_only_mjs_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_MJS_NAME), "").unwrap();
+        let found = detect(dir.path(), None);
+        assert_eq!(
+            found.as_deref(),
+            Some(dir.path().join(PNPMFILE_MJS_NAME).as_path())
         );
     }
 
