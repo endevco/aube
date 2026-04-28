@@ -3,11 +3,12 @@ extern crate log;
 
 pub mod dirs;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -62,7 +63,12 @@ thread_local! {
     static INDEX_DBS: RefCell<BTreeMap<PathBuf, rusqlite::Connection>> = const { RefCell::new(BTreeMap::new()) };
 }
 
-static INDEX_DB_INIT_LOCK: Mutex<()> = Mutex::new(());
+// Schema/WAL setup is one-time per DB path per process. Subsequent
+// per-thread opens skip the heavyweight init and just attach to the
+// already-initialized file, so par_iter readers don't serialize
+// behind each other.
+static INDEX_DB_SCHEMA_INIT: LazyLock<Mutex<std::collections::BTreeSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(std::collections::BTreeSet::new()));
 static INDEX_DB_WRITE_LOCKS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
@@ -203,17 +209,22 @@ impl Store {
         self.cache_dir.join("index-v2.sqlite")
     }
 
-    fn open_index_db(&self) -> Result<rusqlite::Connection, Error> {
-        let db_path = self.index_db_path();
+    fn ensure_index_db_schema(&self, db_path: &Path) -> Result<(), Error> {
+        let mut initialized = INDEX_DB_SCHEMA_INIT
+            .lock()
+            .map_err(|e| Error::Xx(e.to_string()))?;
+        if initialized.contains(db_path) {
+            return Ok(());
+        }
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.to_path_buf(), e))?;
         }
-        let conn = rusqlite::Connection::open(&db_path).map_err(|e| Error::Xx(e.to_string()))?;
-        conn.busy_timeout(Duration::from_secs(5))
-            .map_err(|e| Error::Xx(e.to_string()))?;
+        let conn = rusqlite::Connection::open(db_path).map_err(|e| Error::Xx(e.to_string()))?;
+        // WAL is persistent on the file once set, so subsequent opens
+        // don't need to reassert it. CREATE TABLE IF NOT EXISTS is
+        // safe to run only on the first open per process.
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS package_index (
                name TEXT NOT NULL,
                version TEXT NOT NULL,
@@ -223,6 +234,18 @@ impl Store {
              );",
         )
         .map_err(|e| Error::Xx(e.to_string()))?;
+        initialized.insert(db_path.to_path_buf());
+        Ok(())
+    }
+
+    fn open_index_db(&self) -> Result<rusqlite::Connection, Error> {
+        let db_path = self.index_db_path();
+        self.ensure_index_db_schema(&db_path)?;
+        let conn = rusqlite::Connection::open(&db_path).map_err(|e| Error::Xx(e.to_string()))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|e| Error::Xx(e.to_string()))?;
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")
+            .map_err(|e| Error::Xx(e.to_string()))?;
         Ok(conn)
     }
 
@@ -231,19 +254,13 @@ impl Store {
         f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
     ) -> Result<T, Error> {
         let db_path = self.index_db_path();
+        // Schema is initialized exactly once per DB path per process,
+        // so per-thread first-opens here are just a `Connection::open`
+        // plus two cheap pragmas — no init-lock contention.
         INDEX_DBS.with(|dbs| {
             if !dbs.borrow().contains_key(&db_path) {
-                {
-                    // Connections are thread-local, but opening several
-                    // connections to the same new DB concurrently can race
-                    // SQLite's WAL/schema initialization and surface spurious
-                    // `database is locked` errors during parallel imports.
-                    let _guard = INDEX_DB_INIT_LOCK
-                        .lock()
-                        .map_err(|e| Error::Xx(e.to_string()))?;
-                    dbs.borrow_mut()
-                        .insert(db_path.clone(), self.open_index_db()?);
-                }
+                let conn = self.open_index_db()?;
+                dbs.borrow_mut().insert(db_path.clone(), conn);
             }
             let dbs = dbs.borrow();
             let conn = dbs.get(&db_path).expect("connection inserted above");
@@ -345,23 +362,117 @@ impl Store {
         self.load_index_inner(name, version, integrity, true)
     }
 
-    /// Load package indexes for install/fetch hot paths.
+    /// Load package indexes for install/fetch hot paths in bulk.
     ///
+    /// One sqlite round-trip pulls every matching row's msgpack blob
+    /// into memory; rayon then decodes them in parallel and runs the
+    /// metadata check. JSON fallback fires only for lookups that
+    /// missed both sqlite and the legacy on-disk JSON cache.
     /// Like [`load_index`](Self::load_index), this is allowed to clean
     /// up stale legacy JSON fallback entries. Read-only callers should
     /// use the `cached_indices*_unverified` APIs instead.
     pub fn load_indices(&self, lookups: &[PackageIndexLookup<'_>]) -> Vec<Option<PackageIndex>> {
-        let mut indices = self.load_indices_sqlite(lookups).unwrap_or_else(|| {
-            std::iter::repeat_with(|| None)
-                .take(lookups.len())
-                .collect()
-        });
-        for (lookup, index) in lookups.iter().zip(&mut indices) {
-            if index.is_none() {
-                *index = self.load_index_json(lookup.name, lookup.version, lookup.integrity, false);
+        let mut blobs = self.bulk_load_index_blobs(lookups).unwrap_or_default();
+        let mut decoded: Vec<Option<PackageIndex>> = lookups
+            .par_iter()
+            .map(|lookup| {
+                let key = (
+                    lookup.name.to_string(),
+                    lookup.version.to_string(),
+                    Self::index_integrity_key(lookup.integrity)?,
+                );
+                let data = blobs.get(&key)?;
+                let index: PackageIndex = rmp_serde::from_slice(data).ok()?;
+                if !index_files_match_metadata(&index, false) {
+                    return None;
+                }
+                Some(index)
+            })
+            .collect();
+        // Drop blobs once decoding is complete — parallel msgpack
+        // decode peaks memory; freeing the source map promptly keeps
+        // RSS bounded for very large lockfiles.
+        blobs.clear();
+        for (lookup, slot) in lookups.iter().zip(&mut decoded) {
+            if slot.is_none() {
+                *slot = self.load_index_json(lookup.name, lookup.version, lookup.integrity, false);
             }
         }
-        indices
+        decoded
+    }
+
+    /// Bulk-fetch raw msgpack blobs for every lookup the install
+    /// driver will need. Issues one sqlite query (filtered by package
+    /// name, which the primary key already indexes) and trims the
+    /// result down to the exact (name, version, integrity) triples
+    /// the caller asked for.
+    fn bulk_load_index_blobs(
+        &self,
+        lookups: &[PackageIndexLookup<'_>],
+    ) -> Option<HashMap<(String, String, String), Vec<u8>>> {
+        if lookups.is_empty() {
+            return Some(HashMap::new());
+        }
+        let mut wanted: HashMap<(String, String, String), ()> =
+            HashMap::with_capacity(lookups.len());
+        let mut names: Vec<&str> = Vec::with_capacity(lookups.len());
+        for lookup in lookups {
+            if validate_and_encode_name(lookup.name).is_none() || !validate_version(lookup.version)
+            {
+                continue;
+            }
+            let Some(integrity_key) = Self::index_integrity_key(lookup.integrity) else {
+                continue;
+            };
+            wanted.insert(
+                (
+                    lookup.name.to_string(),
+                    lookup.version.to_string(),
+                    integrity_key,
+                ),
+                (),
+            );
+            names.push(lookup.name);
+        }
+        if wanted.is_empty() {
+            return Some(HashMap::new());
+        }
+        // Build "?,?,?,..." placeholder list. SQLite's default
+        // SQLITE_LIMIT_VARIABLE_NUMBER is 32766, well above any
+        // realistic dependency count. De-dupe names so a graph with
+        // many versions of the same package only binds one parameter.
+        names.sort();
+        names.dedup();
+        let placeholders = std::iter::repeat_n("?", names.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT name, version, integrity, data FROM package_index WHERE name IN ({placeholders})"
+        );
+        let blobs = self
+            .with_index_db(|conn| {
+                let mut stmt = conn.prepare(&sql)?;
+                let params = rusqlite::params_from_iter(names.iter().copied());
+                let rows = stmt.query_map(params, |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    ))
+                })?;
+                let mut map = HashMap::with_capacity(wanted.len());
+                for row in rows {
+                    let (name, version, integrity, data) = row?;
+                    let key = (name, version, integrity);
+                    if wanted.contains_key(&key) {
+                        map.insert(key, data);
+                    }
+                }
+                Ok(map)
+            })
+            .ok()?;
+        Some(blobs)
     }
 
     fn load_index_inner(
@@ -407,10 +518,16 @@ impl Store {
         integrity_key: &str,
         verify_files: bool,
     ) -> Option<PackageIndex> {
+        // `prepare_cached` parks the prepared statement on the
+        // connection so the singleton path (one-off lookups outside
+        // the bulk install/fetch flow) only pays parse/plan cost
+        // once per worker thread.
         let (rowid, data): (i64, Vec<u8>) = self
             .with_index_db(|conn| {
-                conn.query_row(
+                let mut stmt = conn.prepare_cached(
                     "SELECT rowid, data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
+                )?;
+                stmt.query_row(
                     rusqlite::params![name, version, integrity_key],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
@@ -429,68 +546,6 @@ impl Store {
         }
         trace!("cache hit: {name}@{version}");
         Some(index)
-    }
-
-    fn load_indices_sqlite(
-        &self,
-        lookups: &[PackageIndexLookup<'_>],
-    ) -> Option<Vec<Option<PackageIndex>>> {
-        let (out, stale) = self.with_index_db(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT rowid, data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
-            )?;
-            let mut out = Vec::with_capacity(lookups.len());
-            let mut stale = Vec::new();
-            for lookup in lookups {
-                if validate_and_encode_name(lookup.name).is_none()
-                    || !validate_version(lookup.version)
-                {
-                    out.push(None);
-                    continue;
-                }
-                let Some(integrity_key) = Self::index_integrity_key(lookup.integrity) else {
-                    out.push(None);
-                    continue;
-                };
-                let row = stmt
-                    .query_row(
-                        rusqlite::params![lookup.name, lookup.version, integrity_key],
-                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
-                    )
-                    .ok();
-                let Some((rowid, data)) = row else {
-                    out.push(None);
-                    continue;
-                };
-                let Ok(index) = rmp_serde::from_slice::<PackageIndex>(&data) else {
-                    out.push(None);
-                    continue;
-                };
-                if index_files_match_metadata(&index, false) {
-                    trace!("cache hit: {}@{}", lookup.name, lookup.version);
-                    out.push(Some(index));
-                } else {
-                    trace!("cache stale: {}@{}", lookup.name, lookup.version);
-                    stale.push(rowid);
-                    out.push(None);
-                }
-            }
-            Ok((out, stale))
-        })
-        .ok()?;
-        if !stale.is_empty() {
-            let _ = self.with_index_db_write(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                for rowid in &stale {
-                    tx.execute(
-                        "DELETE FROM package_index WHERE rowid = ?1",
-                        rusqlite::params![rowid],
-                    )?;
-                }
-                tx.commit()
-            });
-        }
-        Some(out)
     }
 
     /// Save a package index to the cache.

@@ -22,6 +22,7 @@ tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 simd-json = { workspace = true }
+rayon = { workspace = true }
 rmp-serde = { workspace = true }
 rusqlite = { workspace = true }
 xx = { workspace = true }

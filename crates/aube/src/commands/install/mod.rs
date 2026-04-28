@@ -4,6 +4,7 @@ use crate::state;
 use aube_lockfile::DriftStatus;
 use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use miette::{Context, IntoDiagnostic, miette};
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 
 mod bin_linking;
@@ -789,8 +790,18 @@ where
         NeedsFetch,
     }
 
-    let mut check_results = Vec::new();
-    let mut index_check_packages = Vec::new();
+    // Two-stage classification:
+    //   1. Filter out AlreadyLinked entries serially (cheap fs stat).
+    //   2. Bulk-fetch sqlite blobs for the remaining set in one query,
+    //      then decode + run the metadata check in parallel.
+    // This avoids per-thread sqlite contention on the hot warm-cache
+    // path. Keyed by registry name so two npm-aliases of the same
+    // real package share one store index entry; integrity is part of
+    // the cache key so a tarball served under the same (name, version)
+    // but different bytes can't return the wrong file list.
+    let mut check_results: Vec<(String, &aube_lockfile::LockedPackage, CheckResult)> =
+        Vec::with_capacity(packages.len());
+    let mut index_check_packages: Vec<(&String, &aube_lockfile::LockedPackage)> = Vec::new();
     for (dep_path, pkg) in packages
         .iter()
         .filter(|(_, pkg)| pkg.local_source.is_none())
@@ -812,20 +823,16 @@ where
             integrity: pkg.integrity.as_deref(),
         })
         .collect();
-    for ((dep_path, pkg), index) in index_check_packages
-        .into_iter()
-        .zip(store.load_indices(&index_lookups))
-    {
-        // Keyed by registry name so two npm-aliases of the same real
-        // package share one store index entry instead of wastefully
-        // double-fetching under the alias. Integrity is part of the
-        // cache key so a different tarball served under the same
-        // (name, version) can't return the wrong file list.
-        match index {
-            Some(index) => check_results.push((dep_path.clone(), pkg, CheckResult::Cached(index))),
-            None => check_results.push((dep_path.clone(), pkg, CheckResult::NeedsFetch)),
-        }
-    }
+    let indices = store.load_indices(&index_lookups);
+    let classified: Vec<_> = index_check_packages
+        .par_iter()
+        .zip(indices.into_par_iter())
+        .map(|((dep_path, pkg), index)| match index {
+            Some(index) => ((*dep_path).clone(), *pkg, CheckResult::Cached(index)),
+            None => ((*dep_path).clone(), *pkg, CheckResult::NeedsFetch),
+        })
+        .collect();
+    check_results.extend(classified);
 
     let mut indices: BTreeMap<String, aube_store::PackageIndex> = BTreeMap::new();
 
