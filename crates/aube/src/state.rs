@@ -872,12 +872,22 @@ fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
     // invalidate too) but correct.
     hasher.update(b"npmrc=");
     {
-        let path = project_dir.join(".npmrc");
-        hasher.update(b".npmrc\x1f");
-        if let Ok(bytes) = std::fs::read(&path) {
-            hasher.update(&bytes);
+        let mut paths: Vec<PathBuf> = vec![project_dir.join(".npmrc")];
+        // User-level `~/.npmrc` also drives `registry=` and `_authToken`
+        // (see `aube_registry::config::load_npmrc_entries`). Hash it so
+        // a token swap or registry change invalidates the fast-path
+        // verdict the same way a project-level edit does.
+        if let Some(home) = aube_util::env::home_dir() {
+            paths.push(home.join(".npmrc"));
         }
-        hasher.update(b"\x1e");
+        for path in &paths {
+            hasher.update(path.as_os_str().as_encoded_bytes());
+            hasher.update(b"\x1f");
+            if let Ok(bytes) = std::fs::read(path) {
+                hasher.update(&bytes);
+            }
+            hasher.update(b"\x1e");
+        }
     }
     hasher.update(b"\0");
     // OS + arch + libc. Optional deps filter by these. Swap host
