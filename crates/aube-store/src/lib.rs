@@ -478,12 +478,16 @@ impl Store {
             Ok((out, stale))
         })
         .ok()?;
-        for rowid in stale {
+        if !stale.is_empty() {
             let _ = self.with_index_db_write(|conn| {
-                conn.execute(
-                    "DELETE FROM package_index WHERE rowid = ?1",
-                    rusqlite::params![rowid],
-                )
+                let tx = conn.unchecked_transaction()?;
+                for rowid in &stale {
+                    tx.execute(
+                        "DELETE FROM package_index WHERE rowid = ?1",
+                        rusqlite::params![rowid],
+                    )?;
+                }
+                tx.commit()
             });
         }
         Some(out)
