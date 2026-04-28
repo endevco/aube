@@ -349,7 +349,8 @@ Packages exempt from `trustPolicy` checks.
 
 Patterns: `name`, `name@1.0.0`, `name@1.0.0 || 1.0.1` (exact versions only —
 no `^`/`~`/`>=`), `is-*` (name glob, no version), `@scope/name@1.0.0`.
-Empty list disables exclusions.
+Empty list disables user-provided exclusions; aube still applies its built-in
+exclusions for known registry provenance metadata churn.
 
 ### `trustPolicyIgnoreAfter` {#setting-trustpolicyignoreafter}
 
