@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/aube-resolver-v1.3.0...aube-resolver-v1.4.0) - 2026-04-28
+
+### Added
+
+- *(audit)* support update fix mode ([#363](https://github.com/endevco/aube/pull/363))
+
+### Fixed
+
+- *(resolver)* trust benchmark fixture churn packages ([#370](https://github.com/endevco/aube/pull/370))
+- roundup of critical/high audit findings ([#361](https://github.com/endevco/aube/pull/361))
+- *(resolver)* exclude provenance churn packages ([#360](https://github.com/endevco/aube/pull/360))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.3.0](https://github.com/endevco/aube/compare/aube-resolver-v1.2.1...aube-resolver-v1.3.0) - 2026-04-27
 
 ### Added

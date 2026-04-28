@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/aube-linker-v1.3.0...aube-linker-v1.4.0) - 2026-04-28
+
+### Fixed
+
+- *(linker)* expose hidden hoist from global store ([#358](https://github.com/endevco/aube/pull/358))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.2.1](https://github.com/endevco/aube/compare/aube-linker-v1.2.0...aube-linker-v1.2.1) - 2026-04-26
 
 ### Fixed

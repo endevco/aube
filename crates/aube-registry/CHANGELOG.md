@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/aube-registry-v1.3.0...aube-registry-v1.4.0) - 2026-04-28
+
+### Fixed
+
+- *(registry)* request identity encoding for tarballs ([#356](https://github.com/endevco/aube/pull/356))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.3.0](https://github.com/endevco/aube/compare/aube-registry-v1.2.1...aube-registry-v1.3.0) - 2026-04-27
 
 ### Added

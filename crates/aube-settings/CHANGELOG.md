@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/aube-settings-v1.3.0...aube-settings-v1.4.0) - 2026-04-28
+
+### Added
+
+- *(install)* adopt pnpm 11 allowBuilds reviews ([#364](https://github.com/endevco/aube/pull/364))
+- *(pnpmfile)* support esm pnpmfiles ([#362](https://github.com/endevco/aube/pull/362))
+- *(scripts)* enforce build jails on linux ([#350](https://github.com/endevco/aube/pull/350))
+
+### Fixed
+
+- *(resolver)* exclude provenance churn packages ([#360](https://github.com/endevco/aube/pull/360))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.3.0](https://github.com/endevco/aube/compare/aube-settings-v1.2.1...aube-settings-v1.3.0) - 2026-04-27
 
 ### Added

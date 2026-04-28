@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/aube-workspace-v1.3.0...aube-workspace-v1.4.0) - 2026-04-28
+
+### Fixed
+
+- roundup of critical/high audit findings ([#361](https://github.com/endevco/aube/pull/361))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.2.1](https://github.com/endevco/aube/compare/aube-workspace-v1.2.0...aube-workspace-v1.2.1) - 2026-04-26
 
 ### Fixed

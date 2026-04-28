@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.3.0...aube-lockfile-v1.4.0) - 2026-04-28
+
+### Fixed
+
+- *(lockfile)* store bun dependency tails ([#355](https://github.com/endevco/aube/pull/355))
+- *(lockfile)* apply overrides before frozen-lockfile spec comparison ([#354](https://github.com/endevco/aube/pull/354))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.3.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.2.1...aube-lockfile-v1.3.0) - 2026-04-27
 
 ### Fixed

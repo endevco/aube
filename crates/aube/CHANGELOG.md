@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/endevco/aube/compare/v1.3.0...v1.4.0) - 2026-04-28
+
+### Added
+
+- *(audit)* support update fix mode ([#363](https://github.com/endevco/aube/pull/363))
+- *(install)* adopt pnpm 11 allowBuilds reviews ([#364](https://github.com/endevco/aube/pull/364))
+- *(pnpmfile)* support esm pnpmfiles ([#362](https://github.com/endevco/aube/pull/362))
+- *(scripts)* enforce build jails on linux ([#350](https://github.com/endevco/aube/pull/350))
+
+### Fixed
+
+- *(npm)* preserve extensionless bin shims ([#369](https://github.com/endevco/aube/pull/369))
+- roundup of critical/high audit findings ([#361](https://github.com/endevco/aube/pull/361))
+- *(resolver)* exclude provenance churn packages ([#360](https://github.com/endevco/aube/pull/360))
+- *(linker)* link workspace bins into dependent packages ([#353](https://github.com/endevco/aube/pull/353))
+- *(packaging)* include README on published aube crate ([#349](https://github.com/endevco/aube/pull/349))
+
+### Other
+
+- warn about npm install caveats ([#368](https://github.com/endevco/aube/pull/368))
+
 ## [1.3.0](https://github.com/endevco/aube/compare/v1.2.1...v1.3.0) - 2026-04-27
 
 ### Added
