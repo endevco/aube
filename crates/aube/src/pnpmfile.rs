@@ -315,10 +315,6 @@ const pnpmfile = process.env.AUBE_PNPMFILE;
 const ctx = {
   log: (...args) => console.error('[pnpmfile]', ...args),
 };
-const rl = readline.createInterface({
-  input: process.stdin,
-  crlfDelay: Infinity,
-});
 process.stdout.on('error', (e) => {
   if (e && e.code === 'EPIPE') process.exit(0);
 });
@@ -326,6 +322,10 @@ async function main() {
   const mod = await loadPnpmfile(pnpmfile);
   const hooks = (mod && mod.hooks) || {};
   const readPackage = hooks.readPackage;
+  const rl = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  });
   for await (const line of rl) {
     if (!line) continue;
     let id = null;
