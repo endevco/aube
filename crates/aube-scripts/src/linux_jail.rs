@@ -89,42 +89,59 @@ pub(crate) fn apply_landlock(jail: &ScriptJail, home: &Path) -> Result<(), Strin
 pub(crate) fn apply_seccomp_net_filter() -> Result<(), String> {
     let target_arch = TargetArch::try_from(std::env::consts::ARCH)
         .map_err(|e| format!("unsupported architecture for jail network filter: {e}"))?;
-    // Default-deny on socket family. Old code allowlisted nothing and
-    // denied only AF_INET / AF_INET6, leaving AF_NETLINK, AF_PACKET,
-    // AF_VSOCK, AF_XDP, AF_ALG, AF_BLUETOOTH, and every other family
-    // open. Flip to allowlist: AF_UNIX (node and node-gyp need it for
-    // stdio and worker IPC) is the only family `socket()` and
-    // `socketpair()` may pass with. Every other family returns EPERM,
-    // matching the errno the original AF_INET deny used so existing
-    // fixtures still recognise the denial.
-    //
-    // mismatch_action only fires for syscalls listed in `rules`, so
-    // non-socket syscalls (open, write, ...) keep flowing.
-    let allow_unix = SeccompRule::new(vec![
-        SeccompCondition::new(
-            0,
-            SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Eq,
-            libc::AF_UNIX as u64,
-        )
-        .map_err(|e| format!("failed to build jail network filter: {e}"))?,
-    ])
-    .map_err(|e| format!("failed to build jail network filter: {e}"))?;
+    // seccompiler's mismatch_action is the default for every syscall
+    // the BPF program sees, not just the ones in `rules`. Setting it
+    // to Errno would make every non-socket syscall (open, write, mmap,
+    // ...) also return EPERM and kill the jailed shell at startup.
+    // Pure default-deny on the socket family axis would require
+    // libseccomp's per-syscall default action, which seccompiler does
+    // not expose. Until that lands, enumerate the dangerous families
+    // explicitly and keep AF_UNIX flowing for node + node-gyp IPC.
+    // Filesystem reach via AF_UNIX is bounded by the landlock policy
+    // above, which never grants write under /var/run or /run, so
+    // docker.sock and friends stay unreachable.
+    let mk_family_rule = |family: i32| -> Result<SeccompRule, String> {
+        SeccompRule::new(vec![
+            SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, family as u64)
+                .map_err(|e| format!("failed to build jail network filter: {e}"))?,
+        ])
+        .map_err(|e| format!("failed to build jail network filter: {e}"))
+    };
+    let denied_families = [
+        libc::AF_INET,
+        libc::AF_INET6,
+        libc::AF_NETLINK,
+        libc::AF_PACKET,
+        libc::AF_VSOCK,
+        libc::AF_XDP,
+        libc::AF_ALG,
+        libc::AF_BLUETOOTH,
+        libc::AF_RDS,
+        libc::AF_CAN,
+        libc::AF_TIPC,
+        libc::AF_IB,
+        libc::AF_NFC,
+    ];
+    let mut family_rules = Vec::with_capacity(denied_families.len());
+    for fam in denied_families {
+        family_rules.push(mk_family_rule(fam)?);
+    }
 
     let mut rules = BTreeMap::new();
     #[allow(clippy::useless_conversion)]
     for syscall in [libc::SYS_socket, libc::SYS_socketpair].map(i64::from) {
-        rules.insert(syscall, vec![allow_unix.clone()]);
+        rules.insert(syscall, family_rules.clone());
     }
 
     // SeccompFilter::new arg order: rules, mismatch_action, match_action,
-    // arch. mismatch fires when a listed syscall is called with args
-    // that no rule matches (non-AF_UNIX socket call -> EPERM). match
-    // fires when a rule matches (AF_UNIX socket call -> Allow).
+    // arch. mismatch_action is the global fallback (must be Allow so
+    // unrelated syscalls keep flowing). match_action fires for the
+    // listed denied families and returns EPERM, matching the errno
+    // the original filter used and the test fixtures recognise.
     let filter: BpfProgram = SeccompFilter::new(
         rules,
-        SeccompAction::Errno(libc::EPERM as u32),
         SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
         target_arch,
     )
     .map_err(|e| format!("failed to build jail network filter: {e}"))?
