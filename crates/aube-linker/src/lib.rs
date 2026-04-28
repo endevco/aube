@@ -228,6 +228,72 @@ pub(crate) fn sweep_stale_top_level_entries(
     }
 }
 
+/// Sweep broken entries from a shared hidden-hoist directory without
+/// deleting live links owned by other projects. The GVS hidden hoist is
+/// global, so "not in this project's graph" is not stale enough: another
+/// project may still need that link. Only entries whose target no longer
+/// exists (or non-link junk) are reclaimed here; current-project names are
+/// still target-reconciled by `reconcile_top_level_link` below.
+pub(crate) fn sweep_dead_hidden_hoist_entries(hidden: &Path) {
+    let Ok(entries) = std::fs::read_dir(hidden) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if name_str.starts_with('@') {
+            match std::fs::symlink_metadata(&path) {
+                Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {
+                    sweep_dead_hidden_hoist_scope(&path);
+                    if std::fs::read_dir(&path)
+                        .map(|mut d| d.next().is_none())
+                        .unwrap_or(false)
+                    {
+                        let _ = std::fs::remove_dir(&path);
+                    }
+                }
+                Ok(_) => sweep_dead_hidden_hoist_entry(&path),
+                Err(_) => {}
+            }
+            continue;
+        }
+        sweep_dead_hidden_hoist_entry(&path);
+    }
+}
+
+fn sweep_dead_hidden_hoist_scope(scope_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(scope_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        sweep_dead_hidden_hoist_entry(&entry.path());
+    }
+}
+
+fn sweep_dead_hidden_hoist_entry(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() && path.exists() => {}
+        Ok(md) if md.file_type().is_symlink() => {
+            try_remove_entry(path);
+        }
+        Ok(md) if md.is_dir() => {
+            try_remove_entry(path);
+        }
+        Ok(_) => {
+            try_remove_entry(path);
+        }
+        Err(_) => {}
+    }
+}
+
 /// Classify `link_path` against `expected` without the double-check
 /// (`read_link` then `exists`) that ate ~1.4k ENOENT syscalls per
 /// install on the medium fixture. Fresh means "points at expected
@@ -1891,9 +1957,8 @@ impl Linker {
             )?;
         }
 
-        // Hidden hoist targets the shared `.aube/node_modules/`
-        // regardless of importer, so a single sweep here is
-        // sufficient for the whole workspace.
+        // Hidden hoist is shared across importers, so a single sweep
+        // here is sufficient for the whole workspace.
         self.link_hidden_hoist(&aube_dir, graph)?;
 
         if let Err(e) = write_applied_patches(&root_nm, &curr_applied) {
@@ -1904,11 +1969,12 @@ impl Linker {
         Ok(stats)
     }
 
-    /// Populate (or sweep) the hidden modules directory at
-    /// `aube_dir/node_modules/<name>`. When `self.hoist` is enabled,
-    /// walks every non-local package in the graph and creates a
-    /// symlink for names that match `hoist_patterns` into the
-    /// corresponding `.aube/<dep_path>/node_modules/<name>` entry.
+    /// Populate (or sweep) the hidden modules directories at
+    /// `aube_dir/node_modules/<name>` and, in global-virtual-store mode,
+    /// `virtual_store/node_modules/<name>`. When `self.hoist` is
+    /// enabled, walks every non-local package in the graph and creates
+    /// a symlink for names that match `hoist_patterns` into each
+    /// corresponding virtual-store package entry.
     /// When disabled, wipes the directory so previously-hoisted
     /// symlinks don't keep resolving through Node's parent walk.
     ///
@@ -1918,35 +1984,84 @@ impl Linker {
     /// `.aube/react@18/node_modules/react/`) walk up through
     /// `.aube/node_modules/` during require resolution, which is the
     /// only consumer of these links — nothing inside the user's own
-    /// `node_modules/<name>` view is affected.
+    /// `node_modules/<name>` view is affected. In GVS mode, many
+    /// toolchains canonicalize the package path into
+    /// `~/.cache/aube/virtual-store/<hash>/node_modules/<name>`, so we
+    /// mirror the hidden hoist under the shared virtual-store root too.
     fn link_hidden_hoist(&self, aube_dir: &Path, graph: &LockfileGraph) -> Result<(), Error> {
-        let hidden = aube_dir.join("node_modules");
+        self.link_hidden_hoist_at(aube_dir, aube_dir, graph, false, true)?;
+        if self.use_global_virtual_store {
+            self.link_hidden_hoist_at(
+                &self.virtual_store,
+                &self.virtual_store,
+                graph,
+                true,
+                false,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn link_hidden_hoist_at(
+        &self,
+        hidden_root: &Path,
+        source_root: &Path,
+        graph: &LockfileGraph,
+        use_hashed_subdirs: bool,
+        sweep_stale_entries: bool,
+    ) -> Result<(), Error> {
+        let hidden = hidden_root.join("node_modules");
+        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let packages: Vec<_> = if self.hoist {
+            graph
+                .packages
+                .iter()
+                .filter_map(|(dep_path, pkg)| {
+                    if pkg.local_source.is_some() || !self.hoist_matches(&pkg.name) {
+                        return None;
+                    }
+                    // First-writer-wins on name clashes across versions.
+                    // BTree iteration over `graph.packages` gives a
+                    // deterministic tiebreaker across runs.
+                    claimed.insert(pkg.name.clone()).then_some((dep_path, pkg))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         if !self.hoist {
             // Previous install may have populated this tree with
-            // hoist=true. Nuke it so Node doesn't keep resolving
-            // phantom deps through the stale symlinks.
-            remove_hidden_hoist_tree(&hidden);
+            // hoist=true. Drop entries so Node doesn't keep resolving
+            // phantom deps through the stale symlinks. Project-local
+            // hidden hoist owns the whole tree and can remove it in
+            // one shot; the shared GVS mirror only reclaims broken
+            // entries because live links may belong to another project.
+            if sweep_stale_entries {
+                remove_hidden_hoist_tree(&hidden);
+            } else {
+                sweep_dead_hidden_hoist_entries(&hidden);
+            }
             return Ok(());
         }
         // Wipe before repopulating so a dependency removed from the
         // graph (or a pattern that no longer matches) doesn't linger.
-        remove_hidden_hoist_tree(&hidden);
-        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (dep_path, pkg) in &graph.packages {
-            if pkg.local_source.is_some() {
-                continue;
-            }
-            if !self.hoist_matches(&pkg.name) {
-                continue;
-            }
-            // First-writer-wins on name clashes across versions. BTree
-            // iteration over `graph.packages` gives a deterministic
-            // tiebreaker across runs (earliest `name@version` key).
-            if !claimed.insert(pkg.name.clone()) {
-                continue;
-            }
-            let source_dir = aube_dir
-                .join(self.aube_dir_entry_name(dep_path))
+        // The shared GVS hidden hoist only prunes broken entries:
+        // removing live cross-project links would make the directory
+        // last-writer-wins for sequential installs.
+        if sweep_stale_entries {
+            remove_hidden_hoist_tree(&hidden);
+        } else {
+            sweep_dead_hidden_hoist_entries(&hidden);
+        }
+        for (dep_path, pkg) in packages {
+            let source_subdir = if use_hashed_subdirs {
+                self.virtual_store_subdir(dep_path)
+            } else {
+                self.aube_dir_entry_name(dep_path)
+            };
+            let source_dir = source_root
+                .join(source_subdir)
                 .join("node_modules")
                 .join(&pkg.name);
             if !source_dir.exists() {
@@ -1959,6 +2074,9 @@ impl Linker {
             let link_parent = target_dir.parent().unwrap_or(&hidden);
             let rel_target = pathdiff::diff_paths(&source_dir, link_parent)
                 .unwrap_or_else(|| source_dir.clone());
+            if reconcile_top_level_link(&target_dir, &rel_target)? {
+                continue;
+            }
             sys::create_dir_link(&rel_target, &target_dir)
                 .map_err(|e| Error::Io(target_dir.clone(), e))?;
             trace!("hidden-hoist: {}", pkg.name);
@@ -3523,6 +3641,111 @@ mod tests {
 
         let bar_global = virtual_store.join("bar@2.0.0/node_modules/bar/index.js");
         assert!(bar_global.exists());
+    }
+
+    #[test]
+    fn test_global_virtual_store_gets_hidden_hoist() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let (store, indices) = setup_store_with_files(dir.path());
+        let virtual_store = store.virtual_store_dir();
+        let linker = Linker::new_with_gvs(&store, LinkStrategy::Copy, true);
+        let mut graph = make_graph();
+        graph
+            .packages
+            .get_mut("foo@1.0.0")
+            .unwrap()
+            .dependencies
+            .clear();
+
+        linker.link_all(&project_dir, &graph, &indices).unwrap();
+
+        let project_hidden = project_dir.join("node_modules/.aube/node_modules/bar");
+        assert!(project_hidden.symlink_metadata().unwrap().is_symlink());
+
+        let global_hidden = virtual_store.join("node_modules/bar");
+        assert!(global_hidden.symlink_metadata().unwrap().is_symlink());
+
+        let from_real_store = virtual_store.join("foo@1.0.0/node_modules/bar/index.js");
+        assert!(
+            !from_real_store.exists(),
+            "bar is not a declared sibling of foo in this fixture"
+        );
+        let fallback = virtual_store.join("node_modules/bar/index.js");
+        assert_eq!(
+            std::fs::read_to_string(fallback).unwrap(),
+            "module.exports = 'bar';"
+        );
+    }
+
+    #[test]
+    fn test_global_virtual_store_hidden_hoist_prunes_only_dead_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let (store, indices) = setup_store_with_files(dir.path());
+        let virtual_store = store.virtual_store_dir();
+        let hidden = virtual_store.join("node_modules");
+        std::fs::create_dir_all(&hidden).unwrap();
+        let dotfile = hidden.join(".sentinel");
+        std::fs::write(&dotfile, "shared").unwrap();
+        let stale = hidden.join("stale");
+        std::fs::write(&stale, "old").unwrap();
+        let stale_scope = hidden.join("@stale-scope");
+        std::fs::write(&stale_scope, "old").unwrap();
+        let external_target = virtual_store.join("external@1.0.0/node_modules/external");
+        std::fs::create_dir_all(&external_target).unwrap();
+        let external_link = hidden.join("external");
+        sys::create_dir_link(
+            &pathdiff::diff_paths(&external_target, &hidden).unwrap(),
+            &external_link,
+        )
+        .unwrap();
+        let dead_link = hidden.join("dead");
+        sys::create_dir_link(
+            Path::new("../missing@1.0.0/node_modules/missing"),
+            &dead_link,
+        )
+        .unwrap();
+
+        let linker = Linker::new_with_gvs(&store, LinkStrategy::Copy, true);
+        linker
+            .link_all(&project_dir, &make_graph(), &indices)
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(dotfile).unwrap(), "shared");
+        assert!(!stale.exists());
+        assert!(stale_scope.symlink_metadata().is_err());
+        assert!(external_link.symlink_metadata().unwrap().is_symlink());
+        assert!(dead_link.symlink_metadata().is_err());
+        assert!(hidden.join("bar").symlink_metadata().unwrap().is_symlink());
+    }
+
+    #[test]
+    fn test_global_virtual_store_hidden_hoist_disabled_keeps_live_shared_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let (store, indices) = setup_store_with_files(dir.path());
+        let virtual_store = store.virtual_store_dir();
+        let linker = Linker::new_with_gvs(&store, LinkStrategy::Copy, true);
+        linker
+            .link_all(&project_dir, &make_graph(), &indices)
+            .unwrap();
+
+        let global_hidden = virtual_store.join("node_modules/bar");
+        assert!(global_hidden.symlink_metadata().unwrap().is_symlink());
+
+        Linker::new_with_gvs(&store, LinkStrategy::Copy, true)
+            .with_hoist(false)
+            .link_all(&project_dir, &make_graph(), &indices)
+            .unwrap();
+
+        assert!(global_hidden.symlink_metadata().unwrap().is_symlink());
     }
 
     #[test]
