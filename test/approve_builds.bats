@@ -145,8 +145,8 @@ JSON
 
 @test "approve-builds --all in npm-style monorepo writes pnpm-workspace allowBuilds" {
 	# An npm/yarn-style monorepo carries `workspaces` directly in
-	# package.json. approve-builds in that shape must not pollute
-	# the tree with a pnpm-workspace.yaml the user never asked for.
+	# package.json. Under pnpm v11 semantics aube creates
+	# pnpm-workspace.yaml to hold the allowBuilds review map.
 	mkdir -p packages/app
 	cat >package.json <<'JSON'
 {

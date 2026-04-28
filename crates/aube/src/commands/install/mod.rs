@@ -3670,14 +3670,33 @@ fn allow_build_review_names(specs: &[String]) -> Vec<String> {
 
 fn package_name_from_spec_key(spec: &str) -> String {
     if spec.starts_with('@') {
-        return spec
-            .rsplit_once('@')
-            .map(|(name, _)| name.to_string())
-            .unwrap_or_else(|| spec.to_string());
+        if let Some((name, _)) = spec.rsplit_once('@')
+            && !name.is_empty()
+        {
+            return name.to_string();
+        }
+        return spec.to_string();
     }
     spec.split_once('@')
         .map(|(name, _)| name.to_string())
         .unwrap_or_else(|| spec.to_string())
+}
+
+#[cfg(test)]
+mod allow_build_review_tests {
+    use super::package_name_from_spec_key;
+
+    #[test]
+    fn package_name_from_spec_key_handles_scoped_names() {
+        assert_eq!(package_name_from_spec_key("@scope/pkg@1.2.3"), "@scope/pkg");
+        assert_eq!(package_name_from_spec_key("@scope/pkg"), "@scope/pkg");
+    }
+
+    #[test]
+    fn package_name_from_spec_key_handles_unscoped_names() {
+        assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
+        assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
+    }
 }
 
 fn print_already_up_to_date() {

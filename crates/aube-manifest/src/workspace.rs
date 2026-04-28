@@ -628,7 +628,12 @@ fn write_to_yaml(
     })?;
 
     for name in names {
-        allow_builds.insert(Value::String(name.clone()), Value::Bool(allowed));
+        let key = Value::String(name.clone());
+        if allowed {
+            allow_builds.insert(key, Value::Bool(true));
+        } else {
+            allow_builds.entry(key).or_insert(Value::Bool(false));
+        }
     }
 
     let raw = yaml_serde::to_string(&doc)
@@ -894,6 +899,31 @@ patchedDependencies:
         let config = WorkspaceConfig::load(dir.path()).unwrap();
         assert!(matches!(
             config.allow_builds.get("esbuild"),
+            Some(yaml_serde::Value::Bool(false))
+        ));
+    }
+
+    #[test]
+    fn add_to_allow_builds_false_does_not_revoke_approved_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "allowBuilds:\n  esbuild: true\n",
+        )
+        .unwrap();
+        add_to_allow_builds(
+            dir.path(),
+            &["sharp".to_string(), "esbuild".to_string()],
+            false,
+        )
+        .unwrap();
+        let config = WorkspaceConfig::load(dir.path()).unwrap();
+        assert!(matches!(
+            config.allow_builds.get("esbuild"),
+            Some(yaml_serde::Value::Bool(true))
+        ));
+        assert!(matches!(
+            config.allow_builds.get("sharp"),
             Some(yaml_serde::Value::Bool(false))
         ));
     }
