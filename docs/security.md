@@ -36,9 +36,9 @@ lifecycle scripts unless you've approved them explicitly:
 
 ```yaml
 # pnpm-workspace.yaml
-onlyBuiltDependencies:
-  - esbuild
-  - sharp
+allowBuilds:
+  esbuild: true
+  sharp: true
 ```
 
 Or interactively:
@@ -50,9 +50,9 @@ aube approve-builds
 Root-package lifecycle scripts (your own project's) still run normally — the
 boundary is dependency code.
 
-Settings: [`allowBuilds`](/settings/#setting-allowbuilds). The
-`onlyBuiltDependencies` and `neverBuiltDependencies` allowlists live in
-`package.json` or `pnpm-workspace.yaml`, mirroring pnpm's shape.
+Settings: [`allowBuilds`](/settings/#setting-allowbuilds). Install adds
+unreviewed build packages to `pnpm-workspace.yaml` as `false`; approving them
+flips the entry to `true`.
 
 ## Jailed lifecycle scripts
 
@@ -193,9 +193,9 @@ For most projects, the following is a good starting point:
 ```yaml
 # pnpm-workspace.yaml
 paranoid: true             # bundles jailBuilds, no-downgrade, strict gates
-onlyBuiltDependencies:
-  - esbuild
-  - sharp
+allowBuilds:
+  esbuild: true
+  sharp: true
   # ...whatever your project actually needs to build
 ```
 

@@ -347,7 +347,7 @@ enum Commands {
     /// Add a dependency
     #[command(visible_alias = "a")]
     Add(commands::add::AddArgs),
-    /// Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`
+    /// Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`
     ApproveBuilds(commands::approve_builds::ApproveBuildsArgs),
     /// Check installed packages against the registry advisory DB
     #[command(after_long_help = commands::audit::AFTER_LONG_HELP)]

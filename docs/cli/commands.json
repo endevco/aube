@@ -208,7 +208,7 @@
         ],
         "mounts": [],
         "hide": false,
-        "help": "Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`",
+        "help": "Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`",
         "name": "approve-builds",
         "aliases": [],
         "hidden_aliases": [],

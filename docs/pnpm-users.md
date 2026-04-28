@@ -72,10 +72,10 @@ projects).
   yet gets `aube-lock.yaml`. If it already has `pnpm-lock.yaml` (or any
   other supported lockfile — `package-lock.json`, `npm-shrinkwrap.json`,
   `yarn.lock`, `bun.lock`), aube reads and writes that file in place.
-  Install / add / remove / update never touch workspace YAML. The one
-  exception is `aube approve-builds`, which writes approvals into
-  `pnpm-workspace.yaml`'s `onlyBuiltDependencies` (matching pnpm v10+),
-  creating the file if missing. aube does not generate an
+  Install auto-adds unreviewed dependency builds to
+  `pnpm-workspace.yaml`'s `allowBuilds` with `false`; `aube approve-builds`
+  flips reviewed entries to `true` (matching pnpm v11), creating the file
+  if missing. aube does not generate an
   `aube-workspace.yaml` for you — create it yourself if you want the
   aube-named variant.
 - **Build approvals.** Dependency lifecycle script approval follows pnpm

@@ -66,8 +66,8 @@ can drop in against the same `yarn.lock`.
   `pnpm-workspace.yaml` when the project already has one).
 - Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
   not run by default. Yarn runs them for every dependency; aube runs them
-  only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
-  `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
+  only for packages approved in `allowBuilds`; legacy
+  `pnpm.onlyBuiltDependencies` entries are still honored. This follows
   the pnpm v11 model. Approved dependency builds can also run in a
   [jail](/package-manager/jailed-builds) with package-specific env, path,
   and network permissions.

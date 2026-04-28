@@ -1827,9 +1827,9 @@ aube never runs dependency lifecycle scripts unless the package is
 listed in `allowBuilds` or `--dangerously-allow-all-builds` is set.
 With `strictDepBuilds = true`, an install that sees unreviewed build
 scripts fails after linking and before any dependency build scripts run.
-Add reviewed packages to `allowBuilds` / `onlyBuiltDependencies`, add
-intentionally skipped packages to `neverBuiltDependencies`, or leave the
-default `strictDepBuilds=false` behavior to skip unreviewed builds.
+Add reviewed packages to `allowBuilds` with `true`, keep intentionally
+skipped packages as `false`, or leave the default `strictDepBuilds=false`
+behavior to skip unreviewed builds.
 
 ### `allowBuilds` {#setting-allowbuilds}
 
@@ -1840,12 +1840,14 @@ Explicitly allow or disallow script execution per package.
 - .npmrc keys: `allowBuilds`, `allow-builds`
 - Workspace YAML keys: `allowBuilds`
 
-Per-package allowlist for dependency lifecycle scripts. Read from
-`package.json`'s `pnpm.allowBuilds` field and `aube-workspace.yaml`'s
+Per-package review map for dependency lifecycle scripts. Read from
+`package.json`'s `pnpm.allowBuilds` field and workspace yaml's
 `allowBuilds`. Keys are package name patterns (`esbuild`, `@scope/*`,
 `pkg@1.0.0 || 2.0.0`); values are `true` to allow `preinstall` /
-`install` / `postinstall` scripts for that package or `false` to block
-them. Packages not listed are skipped by default (aube's safe default).
+`install` / `postinstall` scripts for that package or `false` to record
+an intentional skip. Packages not listed are skipped by default, and
+install adds unreviewed build packages to workspace `allowBuilds` as
+`false` for later review.
 
 Examples:
 

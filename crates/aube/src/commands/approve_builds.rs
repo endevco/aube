@@ -1,20 +1,14 @@
-//! `aube approve-builds` — write packages into
-//! `pnpm-workspace.yaml`'s `onlyBuiltDependencies` so their install
-//! scripts run on the next `aube install`.
+//! `aube approve-builds` — flip packages to `true` in
+//! `pnpm-workspace.yaml`'s `allowBuilds` map so their install scripts
+//! run on the next `aube install`.
 //!
 //! Walks the lockfile via `ignored_builds::collect_ignored`, presents an
 //! interactive multi-select picker (or approves everything under
 //! `--all`), then merges the selections into the workspace yaml's
-//! `onlyBuiltDependencies` sequence. Matches pnpm v10+, which moved
-//! build approvals out of `package.json`'s `pnpm.allowBuilds` and
-//! into `pnpm-workspace.yaml`. Entries are added as bare package names
-//! so a future resolution of the same dep under a different version
-//! keeps working without re-prompting.
-//!
-//! Existing projects with `pnpm.allowBuilds` in `package.json` still
-//! have those entries honored at install time — the install-time
-//! build policy reads both sources — so this change is a write-target
-//! swap, not a read-side break.
+//! `allowBuilds` map. Matches pnpm v11, which collapsed the old
+//! allow/deny list keys into one review map. Entries are added as bare
+//! package names so a future resolution of the same dep under a
+//! different version keeps working without re-prompting.
 
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
@@ -63,7 +57,7 @@ fn run_project(cwd: &Path, all: bool, packages: Vec<String>) -> miette::Result<(
         return Ok(());
     }
 
-    let written = aube_manifest::workspace::add_to_only_built_dependencies(cwd, &selected)
+    let written = aube_manifest::workspace::add_to_allow_builds(cwd, &selected, true)
         .into_diagnostic()
         .wrap_err("failed to update workspace yaml")?;
 
@@ -120,10 +114,9 @@ fn run_global(args: ApproveBuildsArgs) -> miette::Result<()> {
     let mut approved = 0usize;
     let mut written_dirs = 0usize;
     for (install_dir, names) in selected {
-        let written =
-            aube_manifest::workspace::add_to_only_built_dependencies(&install_dir, &names)
-                .into_diagnostic()
-                .wrap_err("failed to update global install workspace yaml")?;
+        let written = aube_manifest::workspace::add_to_allow_builds(&install_dir, &names, true)
+            .into_diagnostic()
+            .wrap_err("failed to update global install workspace yaml")?;
         written_dirs += 1;
         approved += names.len();
         println!(

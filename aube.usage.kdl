@@ -106,7 +106,7 @@ cmd add help="Add a dependency" {
     }
     arg "[PACKAGES]…" help="Package(s) to add" required=#false var=#true
 }
-cmd approve-builds help="Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`" {
+cmd approve-builds help="Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`" {
     flag --all help="Approve every pending ignored build without prompting"
     flag "-g --global" help="Operate on globally-installed packages instead of the current project"
     arg "[PKG]…" help="Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op" required=#false var=#true
@@ -861,4 +861,3 @@ cmd why help="Print reverse dependency chains explaining why a package is instal
     flag --parseable help="Tab-separated output: one line per chain, `importer\\tdep_type\\tname@ver\\t...`"
     arg <PACKAGE> help="Package name to search for (exact match against package names)"
 }
-

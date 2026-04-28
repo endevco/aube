@@ -2,7 +2,7 @@
 
 Dependency lifecycle scripts are one of the sharpest supply-chain edges in a
 JavaScript install. aube already keeps dependency scripts skipped until a
-project approves them with `allowBuilds` / `onlyBuiltDependencies`. Jailed
+project approves them with `allowBuilds`. Jailed
 builds add a second boundary: approved packages may build, but they do
 not automatically get the user's full filesystem, network, and environment.
 
@@ -48,8 +48,8 @@ jailBuildPermissions:
 
 ## Default profile
 
-When `jailBuilds` is enabled and a dependency is approved through `allowBuilds` or
-`onlyBuiltDependencies`, aube runs its `preinstall`, `install`, and
+When `jailBuilds` is enabled and a dependency is approved through `allowBuilds`,
+aube runs its `preinstall`, `install`, and
 `postinstall` scripts with a default native jail profile:
 
 | Capability | Default |

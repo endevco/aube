@@ -3,7 +3,7 @@
 
 - **Usage**: `aube approve-builds [--all] [-g --global] [PKG]…`
 
-Approve ignored dependency build scripts and record them in `pnpm-workspace.yaml`'s `onlyBuiltDependencies`
+Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`
 
 ## Arguments
 

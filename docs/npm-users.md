@@ -42,8 +42,8 @@ installs keep writing `aube-lock.yaml`.
   [`nodeLinker: hoisted`](/settings/#setting-nodelinker).
 - Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
   not run by default. npm runs them for every dependency; aube runs them
-  only for packages you've explicitly allowlisted via `pnpm.allowBuilds`,
-  `pnpm.onlyBuiltDependencies`, or `aube approve-builds`. This follows
+  only for packages approved in `allowBuilds`; legacy
+  `pnpm.onlyBuiltDependencies` entries are still honored. This follows
   the pnpm v11 model. Approved dependency builds can also run in a
   [jail](/package-manager/jailed-builds) with package-specific env, path,
   and network permissions.
