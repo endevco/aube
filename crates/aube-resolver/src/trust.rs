@@ -227,7 +227,10 @@ fn cutoff_iso8601(minutes_ago: u64) -> Option<String> {
 /// ranges, no name globs combined with versions).
 pub const DEFAULT_TRUST_POLICY_EXCLUDES: &[&str] = &[
     "chokidar",
+    "eslint-config-prettier",
     "eslint-import-resolver-typescript",
+    "react-redux",
+    "reselect",
     "semver",
     "ua-parser-js",
     "undici-types",
