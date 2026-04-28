@@ -65,6 +65,27 @@ thread_local! {
 static INDEX_DB_INIT_LOCK: Mutex<()> = Mutex::new(());
 static INDEX_DB_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+// build.rs scans these markers and flips the cfg once the date is reached.
+macro_rules! remove_after {
+    ($date:literal, $cfg:ident, $message:literal) => {
+        #[cfg($cfg)]
+        compile_error!(concat!(
+            "temporary compatibility code [",
+            stringify!($cfg),
+            "] reached removal date ",
+            $date,
+            ": ",
+            $message
+        ));
+    };
+}
+
+remove_after!(
+    "2026-05-19",
+    aube_remove_after_legacy_json_index_cache,
+    "remove legacy package index JSON fallback"
+);
+
 fn blake3_hex(content: &[u8]) -> String {
     B3_HASHER.with(|cell| {
         let mut h = cell.borrow_mut();

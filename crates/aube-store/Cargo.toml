@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-include = ["src/**/*.rs"]
+include = ["build.rs", "src/**/*.rs"]
 
 [dependencies]
 aube-util = { workspace = true }
