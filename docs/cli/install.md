@@ -35,7 +35,7 @@ Mirrors pnpm's `install --force`.
 
 ### `--ignore-pnpmfile`
 
-Skip running `.pnpmfile.cjs` hooks for this install
+Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install
 
 ### `--ignore-scripts`
 

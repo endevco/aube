@@ -75,6 +75,42 @@ EOF
 	assert_success
 }
 
+@test "pnpmfile: .pnpmfile.mjs takes priority over .pnpmfile.cjs" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-pnpmfile-mjs",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+EOF
+
+	cat >.pnpmfile.cjs <<'EOF'
+module.exports = {
+  hooks: {
+    afterAllResolved() {
+      throw new Error('cjs pnpmfile should not have run');
+    },
+  },
+};
+EOF
+
+	cat >.pnpmfile.mjs <<'EOF'
+export const hooks = {
+  afterAllResolved(lockfile, context) {
+    context.log('hello from mjs pnpmfile');
+    return lockfile;
+  },
+};
+EOF
+
+	run aube install
+	assert_success
+	assert_output --partial 'hello from mjs pnpmfile'
+	refute_output --partial 'cjs pnpmfile should not have run'
+}
+
 @test "pnpmfile: readPackage hook mutates transitive dependencies before enqueue" {
 	cat >package.json <<'EOF'
 {
@@ -110,6 +146,41 @@ EOF
 	assert_output --partial 'is-odd@3.0.1: {}'
 	# is-number must never have been resolved, since the hook removed
 	# the edge before transitives were enqueued.
+	run grep 'is-number' aube-lock.yaml
+	assert_failure
+}
+
+@test "pnpmfile: readPackage hook runs from .pnpmfile.mjs" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-read-package-mjs",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+EOF
+
+	cat >.pnpmfile.mjs <<'EOF'
+export default {
+  hooks: {
+    readPackage(pkg, context) {
+      if (pkg.name === 'is-odd') {
+        context.log('mjs readPackage saw is-odd');
+        pkg.dependencies = {};
+      }
+      return pkg;
+    },
+  },
+};
+EOF
+
+	run aube install
+	assert_success
+	assert_output --partial 'mjs readPackage saw is-odd'
+
+	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep 'is-odd@3.0.1'"
+	assert_output --partial 'is-odd@3.0.1: {}'
 	run grep 'is-number' aube-lock.yaml
 	assert_failure
 }

@@ -156,15 +156,16 @@ examples = []
 typedAccessorUnused = true
 
 [pnpmfilePath]
-description = "Location of the pnpmfile.cjs hook file."
+description = "Location of the pnpmfile hook file."
 type = "string"
 default = "undefined"
 docs = """
-Workspace-scoped override for the `.pnpmfile.cjs` discovery path.
-Defaults to `<project>/.pnpmfile.cjs`. Relative paths resolve against
-the workspace root; absolute paths are used as-is. A path that points
-at a missing file is a hard miss — aube emits a warning and runs with
-no pnpmfile rather than silently falling back to the default.
+Workspace-scoped override for the pnpmfile discovery path. Defaults to
+`<project>/.pnpmfile.mjs` when present, otherwise `<project>/.pnpmfile.cjs`.
+Relative paths resolve against the workspace root; absolute paths are used
+as-is. A path that points at a missing file is a hard miss — aube emits a
+warning and runs with no pnpmfile rather than silently falling back to the
+default.
 """
 sources.cli = []
 sources.env = ["AUBE_PNPMFILE_PATH"]

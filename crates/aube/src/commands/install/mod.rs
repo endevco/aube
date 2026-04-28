@@ -70,7 +70,7 @@ pub struct InstallArgs {
     /// Mirrors pnpm's `install --force`.
     #[arg(long)]
     pub force: bool,
-    /// Skip running `.pnpmfile.cjs` hooks for this install
+    /// Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install
     #[arg(long)]
     pub ignore_pnpmfile: bool,
     /// Skip lifecycle scripts (no-op; aube already skips by default)
@@ -305,7 +305,7 @@ pub struct InstallOptions {
     /// Which dep sections to keep in the materialized graph
     /// (`--prod` / `--dev` / `--no-optional`, in any valid combo).
     pub dep_selection: DepSelection,
-    /// `--ignore-pnpmfile`: don't load or execute `.pnpmfile.cjs`
+    /// `--ignore-pnpmfile`: don't load or execute `.pnpmfile.mjs` / `.pnpmfile.cjs`
     /// hooks for this install, even if one exists in the project root.
     pub ignore_pnpmfile: bool,
     /// `--ignore-scripts`: skip root lifecycle scripts (`preinstall`,

@@ -2291,8 +2291,8 @@
           {
             "name": "ignore-pnpmfile",
             "usage": "--ignore-pnpmfile",
-            "help": "Skip running `.pnpmfile.cjs` hooks for this install",
-            "help_first_line": "Skip running `.pnpmfile.cjs` hooks for this install",
+            "help": "Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install",
+            "help_first_line": "Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install",
             "short": [],
             "long": [
               "ignore-pnpmfile"

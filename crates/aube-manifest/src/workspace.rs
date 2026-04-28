@@ -186,8 +186,9 @@ pub struct WorkspaceConfig {
     #[serde(default, rename = "ignoredOptionalDependencies")]
     pub ignored_optional_dependencies: Vec<String>,
 
-    /// Override for the `.pnpmfile.cjs` path. pnpm v10 lets users
-    /// point at a non-default location; aube's default is `cwd/.pnpmfile.cjs`.
+    /// Override for the pnpmfile path. pnpm lets users point at a
+    /// non-default location; aube's default is `cwd/.pnpmfile.mjs`
+    /// when present, otherwise `cwd/.pnpmfile.cjs`.
     /// Relative paths resolve against the workspace root.
     #[serde(default, rename = "pnpmfilePath")]
     pub pnpmfile_path: Option<String>,

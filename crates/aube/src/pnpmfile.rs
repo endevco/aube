@@ -1,6 +1,7 @@
 //! pnpmfile.js hook support.
 //!
-//! Shells out to `node` to run hooks from a project's `.pnpmfile.cjs`,
+//! Shells out to `node` to run hooks from a project's `.pnpmfile.mjs`
+//! or `.pnpmfile.cjs`,
 //! matching pnpm's hook interface closely enough that existing
 //! pnpmfiles that use `hooks.afterAllResolved` work unchanged. We
 //! pipe a JSON representation of the resolved lockfile to a small
@@ -34,19 +35,21 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
-pub const PNPMFILE_NAME: &str = ".pnpmfile.cjs";
+pub const PNPMFILE_MJS_NAME: &str = ".pnpmfile.mjs";
+pub const PNPMFILE_CJS_NAME: &str = ".pnpmfile.cjs";
 
 /// Return the path to the project's pnpmfile if one exists.
 ///
 /// `workspace_pnpmfile_path` is the `pnpmfilePath` override from
 /// `pnpm-workspace.yaml` (pnpm v10 lets users keep the hook file
 /// outside the project root). When set, it wins over the default
-/// `cwd/.pnpmfile.cjs`; relative paths resolve against `cwd`. An
+/// `cwd/.pnpmfile.mjs` (preferred) or `cwd/.pnpmfile.cjs`; relative paths
+/// resolve against `cwd`. An
 /// override that points at a missing file is a hard miss (returns
 /// `None`) rather than silently falling back, and emits a warning —
 /// without the log the user can't tell their typo from "no pnpmfile
 /// configured at all". The missing-default case stays silent because
-/// "no .pnpmfile.cjs" is the common case, not a misconfiguration.
+/// "no pnpmfile" is the common case, not a misconfiguration.
 pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathBuf> {
     if let Some(rel) = workspace_pnpmfile_path {
         let p = cwd.join(rel);
@@ -59,8 +62,13 @@ pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathB
         }
         return Some(p);
     }
-    let p = cwd.join(PNPMFILE_NAME);
-    p.is_file().then_some(p)
+    for name in [PNPMFILE_MJS_NAME, PNPMFILE_CJS_NAME] {
+        let p = cwd.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -175,14 +183,22 @@ fn apply(wire: LockfileWire, graph: &mut LockfileGraph) {
 
 const SHIM: &str = r#"
 const path = require('path');
+const { pathToFileURL } = require('url');
 const pnpmfile = process.env.AUBE_PNPMFILE;
 const hookName = process.env.AUBE_HOOK;
 let chunks = [];
+async function loadPnpmfile(file) {
+  const resolved = path.resolve(file);
+  const mod = resolved.endsWith('.mjs')
+    ? await import(pathToFileURL(resolved).href)
+    : require(resolved);
+  return (mod && (mod.default || mod)) || {};
+}
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('end', async () => {
   try {
     const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    const mod = require(path.resolve(pnpmfile));
+    const mod = await loadPnpmfile(pnpmfile);
     const hooks = (mod && mod.hooks) || {};
     const fn = hooks[hookName];
     let result = input;
@@ -284,11 +300,16 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
 /// callbacks.
 const READ_PACKAGE_SHIM: &str = r#"
 const path = require('path');
+const { pathToFileURL } = require('url');
 const readline = require('readline');
 const pnpmfile = process.env.AUBE_PNPMFILE;
-const mod = require(path.resolve(pnpmfile));
-const hooks = (mod && mod.hooks) || {};
-const readPackage = hooks.readPackage;
+async function loadPnpmfile(file) {
+  const resolved = path.resolve(file);
+  const mod = resolved.endsWith('.mjs')
+    ? await import(pathToFileURL(resolved).href)
+    : require(resolved);
+  return (mod && (mod.default || mod)) || {};
+}
 const ctx = {
   log: (...args) => console.error('[pnpmfile]', ...args),
 };
@@ -300,6 +321,9 @@ process.stdout.on('error', (e) => {
   if (e && e.code === 'EPIPE') process.exit(0);
 });
 async function main() {
+  const mod = await loadPnpmfile(pnpmfile);
+  const hooks = (mod && mod.hooks) || {};
+  const readPackage = hooks.readPackage;
   for await (const line of rl) {
     if (!line) continue;
     let id = null;
@@ -481,11 +505,23 @@ mod tests {
     #[test]
     fn detect_returns_default_when_present_and_no_override() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(PNPMFILE_NAME), "").unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
         let found = detect(dir.path(), None);
         assert_eq!(
             found.as_deref(),
-            Some(dir.path().join(PNPMFILE_NAME).as_path())
+            Some(dir.path().join(PNPMFILE_CJS_NAME).as_path())
+        );
+    }
+
+    #[test]
+    fn detect_prefers_mjs_over_cjs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_MJS_NAME), "").unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
+        let found = detect(dir.path(), None);
+        assert_eq!(
+            found.as_deref(),
+            Some(dir.path().join(PNPMFILE_MJS_NAME).as_path())
         );
     }
 
@@ -515,7 +551,7 @@ mod tests {
         // than silently falling back to `.pnpmfile.cjs` — otherwise the
         // user thinks their hooks are running when they aren't.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(PNPMFILE_NAME), "").unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
         assert!(detect(dir.path(), Some("typo/missing.cjs")).is_none());
     }
 }
