@@ -1,9 +1,13 @@
 // Fetch the platform-matching @endevco/aube-<os>-<arch> sub-package at
 // install time and hardlink (or copy) its three binaries into ./bin so
-// npm's `bin` wrapper resolves directly to the native executable. This
+// npm's `bin` wrapper resolves directly to the native executable. The root
+// package's bin targets are stable `./bin/<name>` paths so npm/npx can create
+// shims without reading a rewritten package.json. On Windows, npm's generated
+// `.cmd` shim needs a shebang target it can execute, so `./bin/<name>` is a
+// tiny text file whose interpreter is the native `./bin/<name>.exe`. This
 // mirrors https://www.npmjs.com/package/@jdxcode/mise — the preinstall
-// approach avoids the JS shim at runtime and keeps `package-lock.json`
-// free of six optional-dependency entries that are mostly skipped.
+// approach avoids the JS shim at runtime and keeps `package-lock.json` free
+// of six optional-dependency entries that are mostly skipped.
 //
 // Must stay CommonJS and use only the Node.js stdlib — it runs *before*
 // any dependency is installed, so nothing from node_modules is reachable.
@@ -51,7 +55,7 @@ function main() {
             return;
         }
         try {
-            linkSubpkgBins(subpkgName, platform, pjson);
+            linkSubpkgBins(subpkgName, platform);
             process.exit(0);
         } catch (e) {
             console.error('[@endevco/aube] preinstall failed: ' + (e && e.message ? e.message : e));
@@ -60,7 +64,7 @@ function main() {
     });
 }
 
-function linkSubpkgBins(subpkgName, platform, pjson) {
+function linkSubpkgBins(subpkgName, platform) {
     var subpkgJsonPath = require.resolve(subpkgName + '/package.json');
     var subpkg = JSON.parse(fs.readFileSync(subpkgJsonPath, 'utf8'));
     var subpkgDir = path.dirname(subpkgJsonPath);
@@ -68,14 +72,10 @@ function linkSubpkgBins(subpkgName, platform, pjson) {
     var binDir = path.resolve(__dirname, 'bin');
     try { fs.mkdirSync(binDir); } catch (e) { if (e.code !== 'EEXIST') throw e; }
 
-    var rootPkgJsonPath = path.resolve(__dirname, 'package.json');
-    var rootPkg = JSON.parse(fs.readFileSync(rootPkgJsonPath, 'utf8'));
-    var rootPkgChanged = false;
-
     Object.keys(subpkg.bin).forEach(function(name) {
         var srcRel = subpkg.bin[name];
         var src = path.resolve(subpkgDir, srcRel);
-        var destBasename = path.basename(srcRel);
+        var destBasename = platform === 'win32' ? name + '.exe' : name;
         var dest = path.resolve(binDir, destBasename);
 
         try { fs.unlinkSync(dest); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -89,22 +89,12 @@ function linkSubpkgBins(subpkgName, platform, pjson) {
         }
         if (platform !== 'win32') {
             try { fs.chmodSync(dest, 0o755); } catch (_) {}
-        }
-
-        // Keep root package.json's `bin` entry aligned with the filename
-        // we actually wrote. Matters on Windows, where the sub-package's
-        // bin ends in `.exe` — the root's original `./bin/<name>` entry
-        // would leave the npm bin wrapper pointing at a missing file.
-        var desiredBin = './bin/' + destBasename;
-        if (rootPkg.bin[name] !== desiredBin) {
-            rootPkg.bin[name] = desiredBin;
-            rootPkgChanged = true;
+        } else {
+            var shim = path.resolve(binDir, name);
+            try { fs.unlinkSync(shim); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+            fs.writeFileSync(shim, '#!' + dest.replace(/\\/g, '/') + '\n');
         }
     });
-
-    if (rootPkgChanged) {
-        fs.writeFileSync(rootPkgJsonPath, JSON.stringify(rootPkg, null, 2) + '\n');
-    }
 }
 
 main();

@@ -31,6 +31,7 @@ use tracing_subscriber::prelude::*;
 /// Shims are installed as hardlinks (or copies on Windows) that point at the
 /// same `aube` executable; dispatch happens purely at runtime via basename.
 fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
+    normalize_npm_interpreter_shim_argv(&mut args);
     let Some(argv0) = args.first() else {
         return args;
     };
@@ -57,6 +58,32 @@ fn rewrite_multicall_argv(mut args: Vec<OsString>) -> Vec<OsString> {
     }
     args.insert(1, OsString::from(subcommand));
     args
+}
+
+/// npm's Windows `.cmd` shim can only execute extensioned native binaries.
+/// The npm package keeps extensionless `bin` targets for Unix, so on Windows
+/// `bin/aube` is a tiny shebang file whose interpreter is `bin/aube.exe`.
+/// npm invokes that as `aube.exe bin/aube ...`; drop the shebang file and use
+/// it as argv[0] so multicall dispatch still sees `aubr` / `aubx`.
+fn normalize_npm_interpreter_shim_argv(args: &mut Vec<OsString>) {
+    let Some(shim) = args.get(1).cloned() else {
+        return;
+    };
+    let shim_path = std::path::Path::new(&shim);
+    let Some(stem) = shim_path.file_stem().and_then(|s| s.to_str()) else {
+        return;
+    };
+    if !matches!(stem, "aube" | "aubr" | "aubx") {
+        return;
+    }
+    let Ok(bytes) = std::fs::read(shim_path) else {
+        return;
+    };
+    if !bytes.starts_with(b"#!") {
+        return;
+    }
+    args[0] = shim;
+    args.remove(1);
 }
 
 #[derive(Parser)]
@@ -1641,6 +1668,13 @@ mod multicall_tests {
         strs.iter().map(OsString::from).collect()
     }
 
+    fn temp_shim(name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        std::fs::write(dir.path().join(name), "#!/tmp/aube.exe\n")
+            .expect("shim should be written");
+        dir
+    }
+
     #[test]
     fn aube_passes_through_unchanged() {
         assert_eq!(
@@ -1707,6 +1741,35 @@ mod multicall_tests {
         assert_eq!(
             rewrite_multicall_argv(os(&["aubx.exe", "-V"])),
             os(&["aube", "-V"])
+        );
+    }
+
+    #[test]
+    fn npm_interpreter_shim_path_is_dropped() {
+        let dir = temp_shim("aube");
+        let shim = dir.path().join("aube");
+        let shim_os = shim.clone().into_os_string();
+        assert_eq!(
+            rewrite_multicall_argv(vec![
+                OsString::from("aube.exe"),
+                shim.into_os_string(),
+                OsString::from("--version"),
+            ]),
+            vec![shim_os, OsString::from("--version")]
+        );
+    }
+
+    #[test]
+    fn npm_interpreter_shim_preserves_multicall_dispatch() {
+        let dir = temp_shim("aubr");
+        let shim = dir.path().join("aubr");
+        assert_eq!(
+            rewrite_multicall_argv(vec![
+                OsString::from("aubr.exe"),
+                shim.into_os_string(),
+                OsString::from("build"),
+            ]),
+            os(&["aube", "run", "build"])
         );
     }
 }
