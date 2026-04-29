@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.4.0...aube-lockfile-v1.5.0) - 2026-04-29
+
+### Fixed
+
+- *(cli,linker,lockfile)* patch-commit destination, CRLF patches, npm-alias catalog ([#384](https://github.com/endevco/aube/pull/384))
+- *(lockfile)* preserve pnpm registry tarball urls ([#378](https://github.com/endevco/aube/pull/378))
+- *(lockfile)* hoist npm workspace links to root importer deps ([#374](https://github.com/endevco/aube/pull/374))
+
+### Other
+
+- *(lockfile)* add property roundtrip coverage ([#376](https://github.com/endevco/aube/pull/376))
+
 ## [1.4.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.3.0...aube-lockfile-v1.4.0) - 2026-04-28
 
 ### Fixed

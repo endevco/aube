@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0](https://github.com/endevco/aube/compare/aube-settings-v1.4.0...aube-settings-v1.5.0) - 2026-04-29
+
+### Fixed
+
+- *(resolver)* require structured trust evidence ([#379](https://github.com/endevco/aube/pull/379))
+
 ## [1.4.0](https://github.com/endevco/aube/compare/aube-settings-v1.3.0...aube-settings-v1.4.0) - 2026-04-28
 
 ### Added

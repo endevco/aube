@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0](https://github.com/endevco/aube/compare/aube-scripts-v1.4.0...aube-scripts-v1.5.0) - 2026-04-29
+
+### Fixed
+
+- *(workspace)* default-write aube-workspace.yaml instead of pnpm-workspace.yaml ([#382](https://github.com/endevco/aube/pull/382))
+
 ## [1.4.0](https://github.com/endevco/aube/compare/aube-scripts-v1.3.0...aube-scripts-v1.4.0) - 2026-04-28
 
 ### Added

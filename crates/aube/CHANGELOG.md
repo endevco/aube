@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0](https://github.com/endevco/aube/compare/v1.4.0...v1.5.0) - 2026-04-29
+
+### Added
+
+- *(cli)* add dependency graph query command ([#380](https://github.com/endevco/aube/pull/380))
+
+### Fixed
+
+- *(cli,linker,lockfile)* patch-commit destination, CRLF patches, npm-alias catalog ([#384](https://github.com/endevco/aube/pull/384))
+- *(workspace)* default-write aube-workspace.yaml instead of pnpm-workspace.yaml ([#382](https://github.com/endevco/aube/pull/382))
+- *(resolver)* bound resolved package stream ([#377](https://github.com/endevco/aube/pull/377))
+
+### Other
+
+- *(bench)* add install phase timings ([#381](https://github.com/endevco/aube/pull/381))
+
 ## [1.4.0](https://github.com/endevco/aube/compare/v1.3.0...v1.4.0) - 2026-04-28
 
 ### Added
