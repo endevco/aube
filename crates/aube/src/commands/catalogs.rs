@@ -11,6 +11,7 @@
 //! rather than in either command module.
 
 use aube_settings::resolved::CatalogMode;
+use miette::WrapErr;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -122,16 +123,16 @@ fn range_compatible(
 /// package)` pairs that were dropped so the caller can surface a
 /// one-line summary.
 ///
-/// The rewrite is a plain `yaml_serde` round trip: comments and custom
-/// layout are not preserved. Callers gate this on `cleanupUnusedCatalogs`
-/// so the destructive rewrite only happens when the user opted in.
+/// Goes through `aube_manifest::workspace::edit_workspace_yaml`, which
+/// no-ops the rewrite when the closure produces no structural change —
+/// catalog cleanup runs on every install under `cleanupUnusedCatalogs`
+/// and we don't want to strip user comments on the steady-state pass
+/// where every declared entry is still referenced.
 pub(crate) fn prune_unused_catalog_entries(
     workspace_path: &Path,
     declared: &BTreeMap<String, BTreeMap<String, String>>,
     used: &BTreeMap<String, BTreeMap<String, aube_lockfile::CatalogEntry>>,
 ) -> miette::Result<Vec<(String, String)>> {
-    use miette::{Context, IntoDiagnostic};
-
     let mut unused: Vec<(String, String)> = Vec::new();
     for (cat_name, entries) in declared {
         for pkg in entries.keys() {
@@ -148,88 +149,68 @@ pub(crate) fn prune_unused_catalog_entries(
         return Ok(unused);
     }
 
-    let text = std::fs::read_to_string(workspace_path)
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "failed to read {} for cleanupUnusedCatalogs",
-                workspace_path.display()
-            )
-        })?;
-    let mut value: yaml_serde::Value = yaml_serde::from_str(&text)
-        .into_diagnostic()
-        .wrap_err_with(|| format!("failed to parse {}", workspace_path.display()))?;
-
-    // An empty file deserializes to `null`; nothing to strip.
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    let Some(root) = value.as_mapping_mut() else {
-        return Ok(Vec::new());
-    };
-
-    for (cat_name, pkg_name) in &unused {
-        if cat_name == "default" {
-            if let Some(map) = root
-                .get_mut(yaml_serde::Value::String("catalog".to_string()))
+    aube_manifest::workspace::edit_workspace_yaml(workspace_path, |root| {
+        for (cat_name, pkg_name) in &unused {
+            if cat_name == "default" {
+                if let Some(map) = root
+                    .get_mut("catalog")
+                    .and_then(yaml_serde::Value::as_mapping_mut)
+                {
+                    map.shift_remove(pkg_name.as_str());
+                }
+            } else if let Some(catalogs) = root
+                .get_mut("catalogs")
                 .and_then(yaml_serde::Value::as_mapping_mut)
+                && let Some(map) = catalogs
+                    .get_mut(cat_name.as_str())
+                    .and_then(yaml_serde::Value::as_mapping_mut)
             {
-                map.remove(yaml_serde::Value::String(pkg_name.clone()));
+                map.shift_remove(pkg_name.as_str());
             }
-        } else if let Some(catalogs) = root
-            .get_mut(yaml_serde::Value::String("catalogs".to_string()))
-            .and_then(yaml_serde::Value::as_mapping_mut)
-            && let Some(map) = catalogs
-                .get_mut(yaml_serde::Value::String(cat_name.clone()))
-                .and_then(yaml_serde::Value::as_mapping_mut)
+        }
+        // Drop now-empty containers so the file doesn't grow meaningless
+        // `catalog: {}` / `catalogs:` headers.
+        if root
+            .get("catalog")
+            .and_then(yaml_serde::Value::as_mapping)
+            .is_some_and(yaml_serde::Mapping::is_empty)
         {
-            map.remove(yaml_serde::Value::String(pkg_name.clone()));
+            root.shift_remove("catalog");
         }
-    }
-
-    // Drop now-empty catalog containers so the file doesn't grow
-    // meaningless `catalog: {}` / `catalogs:` headers.
-    let empty_default = root
-        .get(yaml_serde::Value::String("catalog".to_string()))
-        .and_then(yaml_serde::Value::as_mapping)
-        .is_some_and(yaml_serde::Mapping::is_empty);
-    if empty_default {
-        root.remove(yaml_serde::Value::String("catalog".to_string()));
-    }
-    if let Some(catalogs) = root
-        .get_mut(yaml_serde::Value::String("catalogs".to_string()))
-        .and_then(yaml_serde::Value::as_mapping_mut)
-    {
-        let to_drop: Vec<yaml_serde::Value> = catalogs
-            .iter()
-            .filter_map(|(k, v)| match v.as_mapping() {
-                Some(m) if m.is_empty() => Some(k.clone()),
-                _ => None,
-            })
-            .collect();
-        for key in to_drop {
-            catalogs.remove(key);
+        if let Some(catalogs) = root
+            .get_mut("catalogs")
+            .and_then(yaml_serde::Value::as_mapping_mut)
+        {
+            let to_drop: Vec<String> = catalogs
+                .iter()
+                .filter_map(|(k, v)| {
+                    let key = k.as_str()?;
+                    match v.as_mapping() {
+                        Some(m) if m.is_empty() => Some(key.to_string()),
+                        _ => None,
+                    }
+                })
+                .collect();
+            for key in to_drop {
+                catalogs.shift_remove(key.as_str());
+            }
         }
-    }
-    let empty_named = root
-        .get(yaml_serde::Value::String("catalogs".to_string()))
-        .and_then(yaml_serde::Value::as_mapping)
-        .is_some_and(yaml_serde::Mapping::is_empty);
-    if empty_named {
-        root.remove(yaml_serde::Value::String("catalogs".to_string()));
-    }
-
-    let new_text = yaml_serde::to_string(&value)
-        .into_diagnostic()
-        .wrap_err("failed to serialize workspace yaml after cleanupUnusedCatalogs")?;
-    aube_util::fs_atomic::atomic_write(workspace_path, new_text.as_bytes())
-        .into_diagnostic()
-        .wrap_err_with(|| {
-            format!(
-                "failed to write {} after cleanupUnusedCatalogs",
-                workspace_path.display()
-            )
-        })?;
+        if root
+            .get("catalogs")
+            .and_then(yaml_serde::Value::as_mapping)
+            .is_some_and(yaml_serde::Mapping::is_empty)
+        {
+            root.shift_remove("catalogs");
+        }
+        Ok(())
+    })
+    .map_err(miette::Report::new)
+    .wrap_err_with(|| {
+        format!(
+            "failed to write {} after cleanupUnusedCatalogs",
+            workspace_path.display()
+        )
+    })?;
     Ok(unused)
 }
 

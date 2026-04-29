@@ -617,76 +617,80 @@ pub fn add_to_allow_builds(
 
 /// Insert or replace a single `patchedDependencies` entry in the
 /// workspace yaml at `path`. Creates the file (and the
-/// `patchedDependencies` mapping) if needed. No-ops (and returns the
-/// path untouched) when `key` already maps to `rel_patch_path` —
-/// yaml_serde's round-trip drops comments, so we must avoid rewriting
-/// the file when nothing actually changes.
+/// `patchedDependencies` mapping) if needed. The shared
+/// [`edit_workspace_yaml`] helper skips the rewrite when the closure
+/// produces no structural change, so an idempotent re-record after
+/// editing the patch file leaves yaml comments intact.
 pub fn upsert_workspace_patched_dependency(
     path: &Path,
     key: &str,
     rel_patch_path: &str,
-) -> Result<std::path::PathBuf, crate::Error> {
-    if read_workspace_patched_dependencies(path)?
-        .get(key)
-        .and_then(yaml_serde::Value::as_str)
-        == Some(rel_patch_path)
-    {
-        return Ok(path.to_path_buf());
-    }
-    edit_patched_dependencies_yaml(path, |map| {
-        map.insert(
+) -> Result<PathBuf, crate::Error> {
+    edit_workspace_yaml(path, |map| {
+        let pd_map = workspace_yaml_submap(map, "patchedDependencies", path)?;
+        pd_map.insert(
             yaml_serde::Value::String(key.to_string()),
             yaml_serde::Value::String(rel_patch_path.to_string()),
         );
+        Ok(())
     })
 }
 
 /// Drop a `patchedDependencies` entry from the workspace yaml at
-/// `path`. Returns `Ok(true)` when the entry existed (and the file was
-/// rewritten), `Ok(false)` when the file was missing or had no such
-/// entry. The presence check happens *before* opening the file for a
-/// rewrite — yaml_serde's round-trip strips user comments, and
-/// `aube patch-remove` is called with both yaml and json destinations
-/// regardless of where the patch actually lives, so we must skip the
-/// write when there's nothing to remove. When the removal empties
-/// `patchedDependencies`, the key is dropped from the document so we
+/// `path`. Returns `Ok(true)` when the entry was removed (and the
+/// file was rewritten). When the removal empties
+/// `patchedDependencies` we drop the key from the document so we
 /// don't leave a `patchedDependencies: {}` stub behind.
 pub fn remove_workspace_patched_dependency(path: &Path, key: &str) -> Result<bool, crate::Error> {
-    if !read_workspace_patched_dependencies(path)?.contains_key(key) {
-        return Ok(false);
-    }
-    edit_patched_dependencies_yaml(path, |map| {
-        map.shift_remove(key);
+    let mut existed = false;
+    edit_workspace_yaml(path, |map| {
+        let pd_map = workspace_yaml_submap(map, "patchedDependencies", path)?;
+        existed = pd_map.shift_remove(key).is_some();
+        if pd_map.is_empty() {
+            map.shift_remove("patchedDependencies");
+        }
+        Ok(())
     })?;
-    Ok(true)
+    Ok(existed)
 }
 
-/// Read the `patchedDependencies` map directly from a workspace yaml
-/// file. Returns an empty map when the file is missing, empty, or has
-/// no `patchedDependencies` key. Used as a peek before write so the
-/// upsert/remove paths can avoid a yaml_serde round-trip (and the
-/// comment loss it implies) when nothing would actually change.
-fn read_workspace_patched_dependencies(path: &Path) -> Result<yaml_serde::Mapping, crate::Error> {
-    if !path.exists() {
-        return Ok(yaml_serde::Mapping::new());
-    }
-    let content =
-        std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
-    if content.trim().is_empty() {
-        return Ok(yaml_serde::Mapping::new());
-    }
-    let value: yaml_serde::Value = crate::parse_yaml(path, content)?;
-    Ok(value
-        .as_mapping()
-        .and_then(|m| m.get("patchedDependencies"))
-        .and_then(yaml_serde::Value::as_mapping)
-        .cloned()
-        .unwrap_or_default())
+/// Get the inner mapping for a top-level workspace-yaml key, creating
+/// it if absent. Errors when the key exists but isn't a mapping (a
+/// hand-edited file shape we shouldn't silently replace).
+fn workspace_yaml_submap<'a>(
+    map: &'a mut yaml_serde::Mapping,
+    key: &str,
+    path: &Path,
+) -> Result<&'a mut yaml_serde::Mapping, crate::Error> {
+    let entry = map
+        .entry(yaml_serde::Value::String(key.to_string()))
+        .or_insert_with(|| yaml_serde::Value::Mapping(yaml_serde::Mapping::new()));
+    entry.as_mapping_mut().ok_or_else(|| {
+        crate::Error::YamlParse(path.to_path_buf(), format!("`{key}` must be a mapping"))
+    })
 }
 
-fn edit_patched_dependencies_yaml<F>(path: &Path, f: F) -> Result<std::path::PathBuf, crate::Error>
+/// Apply `f` to the parsed top-level mapping of the workspace yaml at
+/// `path` and write it back. The helper exists so every workspace-yaml
+/// writer (allowBuilds, patchedDependencies, catalog cleanup, future
+/// settings) shares one comment-preserving rule: **the file is left
+/// untouched whenever `f` produces no structural change**.
+///
+/// `yaml_serde` is not a comment-preserving parser — every round trip
+/// strips user-authored comments and reflows the layout. That means a
+/// "no-op" edit (inserting an entry that already exists, removing one
+/// that isn't there, re-recording an unchanged value) would still
+/// rewrite the file and silently destroy the comments the workspace
+/// yaml was chosen to host.
+///
+/// Comparing the parsed `Value` before and after the closure catches
+/// all of those cases without needing per-call peeks. When `f` does
+/// produce a structural change, the user has explicitly asked for a
+/// rewrite and the comment loss is unavoidable until aube migrates to
+/// a comment-preserving YAML library.
+pub fn edit_workspace_yaml<F>(path: &Path, f: F) -> Result<PathBuf, crate::Error>
 where
-    F: FnOnce(&mut yaml_serde::Mapping),
+    F: FnOnce(&mut yaml_serde::Mapping) -> Result<(), crate::Error>,
 {
     use yaml_serde::{Mapping, Value};
 
@@ -709,75 +713,10 @@ where
         )
     })?;
 
-    let pd_key = Value::String("patchedDependencies".to_string());
-    let entry = map
-        .entry(pd_key.clone())
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    let pd_map = entry.as_mapping_mut().ok_or_else(|| {
-        crate::Error::YamlParse(
-            path.to_path_buf(),
-            "`patchedDependencies` must be a mapping".to_string(),
-        )
-    })?;
-
-    f(pd_map);
-
-    if pd_map.is_empty() {
-        map.shift_remove("patchedDependencies");
-    }
-
-    let raw = yaml_serde::to_string(&doc)
-        .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
-    let indented = indent_block_sequences(&raw);
-    aube_util::fs_atomic::atomic_write(path, indented.as_bytes())
-        .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
-    Ok(path.to_path_buf())
-}
-
-fn write_to_yaml(
-    path: &Path,
-    names: &[String],
-    allowed: bool,
-) -> Result<std::path::PathBuf, crate::Error> {
-    use yaml_serde::{Mapping, Value};
-
-    let mut doc: Value = if path.exists() {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
-        if content.trim().is_empty() {
-            Value::Mapping(Mapping::new())
-        } else {
-            crate::parse_yaml(path, content)?
-        }
-    } else {
-        Value::Mapping(Mapping::new())
-    };
-
-    let map = doc.as_mapping_mut().ok_or_else(|| {
-        crate::Error::YamlParse(
-            path.to_path_buf(),
-            "top-level yaml must be a mapping".to_string(),
-        )
-    })?;
-
-    let key = Value::String("allowBuilds".to_string());
-    let existing = map
-        .entry(key.clone())
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    let allow_builds = existing.as_mapping_mut().ok_or_else(|| {
-        crate::Error::YamlParse(
-            path.to_path_buf(),
-            "`allowBuilds` must be a mapping".to_string(),
-        )
-    })?;
-
-    for name in names {
-        let key = Value::String(name.clone());
-        if allowed {
-            allow_builds.insert(key, Value::Bool(true));
-        } else {
-            allow_builds.entry(key).or_insert(Value::Bool(false));
-        }
+    let before = map.clone();
+    f(map)?;
+    if *map == before {
+        return Ok(path.to_path_buf());
     }
 
     let raw = yaml_serde::to_string(&doc)
@@ -791,6 +730,23 @@ fn write_to_yaml(
     aube_util::fs_atomic::atomic_write(path, indented.as_bytes())
         .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
     Ok(path.to_path_buf())
+}
+
+fn write_to_yaml(path: &Path, names: &[String], allowed: bool) -> Result<PathBuf, crate::Error> {
+    edit_workspace_yaml(path, |map| {
+        let allow_builds = workspace_yaml_submap(map, "allowBuilds", path)?;
+        for name in names {
+            let key = yaml_serde::Value::String(name.clone());
+            if allowed {
+                allow_builds.insert(key, yaml_serde::Value::Bool(true));
+            } else {
+                allow_builds
+                    .entry(key)
+                    .or_insert(yaml_serde::Value::Bool(false));
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Bump every block-sequence item line (`- ...`) by two spaces. Leaves
@@ -1275,5 +1231,64 @@ updateConfig:
         std::fs::write(&path, original).unwrap();
         upsert_workspace_patched_dependency(&path, "a@1.0.0", "patches/a@1.0.0.patch").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn add_to_allow_builds_does_not_rewrite_when_already_approved() {
+        // Re-approving an already-approved name must leave the file
+        // (and its yaml comments) untouched. `aube approve-builds` and
+        // the install-time auto-deny seed both call into this path on
+        // every invocation, so steady-state runs must not strip
+        // comments.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "# why we trust this build\nallowBuilds:\n  # esbuild ships native bindings\n  esbuild: true\n";
+        std::fs::write(&path, original).unwrap();
+        let written = add_to_allow_builds(dir.path(), &["esbuild".to_string()], true).unwrap();
+        assert_eq!(written, path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn add_to_allow_builds_does_not_rewrite_when_seeding_existing_review_entry() {
+        // The install-time review seed (`allowed=false`) should not
+        // overwrite a name that is already on the allow list — but
+        // also must not rewrite the file just to confirm that.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "allowBuilds:\n  # already approved\n  esbuild: true\n";
+        std::fs::write(&path, original).unwrap();
+        add_to_allow_builds(dir.path(), &["esbuild".to_string()], false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn edit_workspace_yaml_preserves_comments_on_no_op() {
+        // Direct test of the shared helper: a closure that doesn't
+        // mutate the parsed structure must leave the file byte-equal,
+        // including comments yaml_serde would otherwise strip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "# header comment\npackages:\n  # workspace globs\n  - 'pkgs/*'\n";
+        std::fs::write(&path, original).unwrap();
+        edit_workspace_yaml(&path, |_map| Ok(())).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn edit_workspace_yaml_writes_when_structure_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "packages:\n  - 'pkgs/*'\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            map.insert(
+                yaml_serde::Value::String("foo".to_string()),
+                yaml_serde::Value::String("bar".to_string()),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("foo: bar"));
     }
 }
