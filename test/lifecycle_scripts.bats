@@ -117,8 +117,10 @@ JSON
 	assert_failure
 	assert_output --partial "dependencies with build scripts must be reviewed"
 	assert_output --partial "dep-with-build@1.0.0"
-	assert_file_exists aube-workspace.yaml
-	run grep -q 'dep-with-build: false' aube-workspace.yaml
+	# No yaml + no pnpm namespace in package.json → seed lands in
+	# package.json#aube.allowBuilds.
+	assert_file_not_exists aube-workspace.yaml
+	run grep -q '"dep-with-build": false' package.json
 	assert_success
 }
 

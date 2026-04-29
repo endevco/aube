@@ -44,8 +44,9 @@ EOF
 	run aube patch-commit "$edit_dir"
 	assert_success
 	assert [ -f patches/is-odd@3.0.1.patch ]
-	# The recorded entry should land in pnpm.patchedDependencies.
-	run node -e 'console.log(require("./package.json").pnpm.patchedDependencies["is-odd@3.0.1"])'
+	# No `pnpm` namespace in the test's package.json, so the
+	# unified writer rule lands the entry under `aube.patchedDependencies`.
+	run node -e 'console.log(require("./package.json").aube.patchedDependencies["is-odd@3.0.1"])'
 	assert_output "patches/is-odd@3.0.1.patch"
 
 	# The linked package should now contain the sentinel.
@@ -57,7 +58,7 @@ EOF
 	run aube patch-remove is-odd@3.0.1
 	assert_success
 	assert [ ! -f patches/is-odd@3.0.1.patch ]
-	run node -e 'const p = require("./package.json"); console.log(p.pnpm ? Object.keys(p.pnpm.patchedDependencies||{}).length : 0)'
+	run node -e 'const p = require("./package.json"); console.log(p.aube ? Object.keys(p.aube.patchedDependencies||{}).length : 0)'
 	assert_output "0"
 	run grep -q "patched-by-aube-test" node_modules/is-odd/index.js
 	assert_failure

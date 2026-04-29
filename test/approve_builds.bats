@@ -121,18 +121,20 @@ JSON
 	run aube install
 	assert_success
 	assert_file_not_exists aube-builds-marker.txt
-	assert_file_exists aube-workspace.yaml
-	run grep -q 'allowBuilds:' aube-workspace.yaml
+	# No yaml on disk and no `pnpm` namespace in package.json, so the
+	# install-time auto-deny seed writes to package.json#aube.allowBuilds.
+	assert_file_not_exists aube-workspace.yaml
+	run grep -q '"allowBuilds"' package.json
 	assert_success
-	run grep -q 'aube-test-builds-marker: false' aube-workspace.yaml
+	run grep -q '"aube-test-builds-marker": false' package.json
 	assert_success
 
 	run aube approve-builds --all
 	assert_success
 	assert_output --partial "aube-test-builds-marker"
-	assert_output --partial "aube-workspace.yaml"
+	assert_output --partial "package.json"
 
-	run grep -q 'aube-test-builds-marker: true' aube-workspace.yaml
+	run grep -q '"aube-test-builds-marker": true' package.json
 	assert_success
 	run grep -q 'onlyBuiltDependencies' package.json
 	assert_failure
@@ -143,10 +145,12 @@ JSON
 	assert_file_exists aube-builds-marker.txt
 }
 
-@test "approve-builds --all in npm-style monorepo writes aube-workspace allowBuilds" {
+@test "approve-builds --all in npm-style monorepo writes package.json allowBuilds" {
 	# An npm/yarn-style monorepo carries `workspaces` directly in
-	# package.json. aube creates `aube-workspace.yaml` from scratch
-	# to hold the allowBuilds review map (parallels `aube-lock.yaml`).
+	# package.json. With no workspace yaml and no `pnpm` namespace,
+	# the unified writer rule lands the review map in
+	# package.json#aube.allowBuilds rather than spawning a fresh
+	# aube-workspace.yaml.
 	mkdir -p packages/app
 	cat >package.json <<'JSON'
 {
@@ -172,16 +176,16 @@ JSON
 	assert_success
 	assert_output --partial "aube-test-builds-marker"
 
-	assert_file_exists aube-workspace.yaml
+	assert_file_not_exists aube-workspace.yaml
 	assert_file_not_exists pnpm-workspace.yaml
 
-	run grep -q 'allowBuilds:' aube-workspace.yaml
+	run grep -q '"allowBuilds"' package.json
 	assert_success
-	run grep -q 'aube-test-builds-marker: true' aube-workspace.yaml
+	run grep -q '"aube-test-builds-marker": true' package.json
 	assert_success
 
-	# Round-trip: a re-install must honor the policy stored under
-	# allowBuilds and run the previously-skipped postinstall.
+	# Round-trip: a re-install must honor the policy and run the
+	# previously-skipped postinstall.
 	run aube install
 	assert_success
 	assert_file_exists aube-builds-marker.txt
