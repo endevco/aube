@@ -3,7 +3,12 @@
 //! Mirrors pnpm's `failIfTrustDowngraded`
 //! (resolving/npm-resolver/src/trustChecks.ts), verified against pnpm's
 //! own test suite. Two trust-evidence sources, ranked
-//! `TrustedPublisher (2) > Provenance (1)`. The check runs immediately
+//! `TrustedPublisher (2) > Provenance (1)`. aube only accepts the
+//! structured metadata shapes npm emits after server-side checks:
+//! `_npmUser.trustedPublisher` must name a publisher id, and
+//! `dist.attestations.provenance` must name an SLSA provenance predicate.
+//! This is metadata-shape validation, not install-time cryptographic
+//! verification of the attestation bundle. The check runs immediately
 //! after a version is picked from a packument: if any strictly older
 //! version of the same package had stronger trust evidence, the install
 //! fails. Pre-2010 packuments without per-version `time` entries error
@@ -38,15 +43,13 @@ impl TrustEvidence {
 }
 
 /// Strongest trust evidence carried by a single version's metadata.
-/// Mirrors pnpm's `getTrustEvidence`: `_npmUser.trustedPublisher`
-/// outranks `dist.attestations.provenance`. JS-style truthiness on the
-/// trustedPublisher value: any non-null, non-`false` value counts.
+/// `_npmUser.trustedPublisher` outranks `dist.attestations.provenance`.
 pub fn evidence_for(meta: &VersionMetadata) -> Option<TrustEvidence> {
     if meta
         .npm_user
         .as_ref()
         .and_then(|u| u.trusted_publisher.as_ref())
-        .is_some_and(is_truthy)
+        .is_some_and(is_trusted_publisher)
     {
         return Some(TrustEvidence::TrustedPublisher);
     }
@@ -55,30 +58,30 @@ pub fn evidence_for(meta: &VersionMetadata) -> Option<TrustEvidence> {
         .as_ref()
         .and_then(|d| d.attestations.as_ref())
         .and_then(|a| a.provenance.as_ref())
-        .is_some_and(is_truthy)
+        .is_some_and(is_provenance)
     {
         return Some(TrustEvidence::Provenance);
     }
     None
 }
 
-/// JS-style truthiness for `_npmUser.trustedPublisher`. Pnpm's check
-/// is `manifest._npmUser?.trustedPublisher`, which evaluates the value
-/// in a boolean context — so we have to reject every JS falsy value,
-/// not just `null`/`false`. Falsy: `null`, `false`, `0`, `""`, `NaN`.
-/// Truthy: every object (including `{}`), every array (including `[]`),
-/// every non-zero number, every non-empty string. In practice the
-/// field is always either an object or absent, but matching JS
-/// semantics keeps a hostile registry from sneaking trust evidence
-/// past us via `0` or an empty string.
-fn is_truthy(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Null => false,
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::Number(n) => n.as_f64().is_none_or(|f| f != 0.0 && !f.is_nan()),
-        serde_json::Value::String(s) => !s.is_empty(),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => true,
-    }
+fn is_trusted_publisher(v: &serde_json::Value) -> bool {
+    v.as_object()
+        .and_then(|o| o.get("id"))
+        .and_then(|id| id.as_str())
+        .is_some_and(|id| !id.is_empty())
+}
+
+fn is_provenance(v: &serde_json::Value) -> bool {
+    v.as_object()
+        .and_then(|o| o.get("predicateType"))
+        .and_then(|predicate| predicate.as_str())
+        .is_some_and(|predicate| {
+            predicate
+                .strip_prefix("https://slsa.dev/provenance/v")
+                .and_then(|suffix| suffix.chars().next())
+                .is_some_and(|c| c.is_ascii_digit())
+        })
 }
 
 #[derive(Debug)]
@@ -514,7 +517,9 @@ mod tests {
     fn with_provenance(mut v: VersionMetadata) -> VersionMetadata {
         let dist = v.dist.as_mut().unwrap();
         dist.attestations = Some(Attestations {
-            provenance: Some(serde_json::json!({"predicateType": "slsa"})),
+            provenance: Some(serde_json::json!({
+                "predicateType": "https://slsa.dev/provenance/v1"
+            })),
         });
         v
     }
@@ -563,67 +568,66 @@ mod tests {
     }
 
     #[test]
-    fn evidence_falsy_trusted_publisher_is_none() {
+    fn evidence_malformed_trusted_publisher_is_none() {
         let mut v = version("foo", "1.0.0");
-        for falsy in [
+        for malformed in [
             serde_json::Value::Bool(false),
             serde_json::Value::Null,
             serde_json::json!(0),
             serde_json::json!(0.0),
             serde_json::json!(""),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"id": ""}),
         ] {
             v.npm_user = Some(NpmUser {
-                trusted_publisher: Some(falsy.clone()),
+                trusted_publisher: Some(malformed.clone()),
             });
-            assert_eq!(evidence_for(&v), None, "{falsy:?} should be falsy");
+            assert_eq!(
+                evidence_for(&v),
+                None,
+                "{malformed:?} should not count as trusted-publisher evidence"
+            );
         }
     }
 
     #[test]
-    fn evidence_falsy_provenance_is_none() {
-        // Symmetric with the trustedPublisher truthiness check —
-        // `dist.attestations.provenance` is also evaluated in JS
-        // boolean context in pnpm, so falsy values must not count
-        // as evidence. Real registries always emit an object here,
-        // but this guards against a hostile registry shipping
-        // `provenance: false` to bypass the no-downgrade check.
+    fn evidence_malformed_provenance_is_none() {
         let mut v = version("foo", "1.0.0");
-        for falsy in [
+        for malformed in [
             serde_json::Value::Bool(false),
             serde_json::Value::Null,
             serde_json::json!(0),
             serde_json::json!(""),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"predicateType": ""}),
+            serde_json::json!({"predicateType": "https://slsa.dev/provenance/"}),
+            serde_json::json!({"predicateType": "https://slsa.dev/provenance/v"}),
+            serde_json::json!({"predicateType": "https://slsa.dev/provenance/latest"}),
+            serde_json::json!({"predicateType": "https://example.com/provenance/v1"}),
         ] {
             v.dist.as_mut().unwrap().attestations = Some(Attestations {
-                provenance: Some(falsy.clone()),
+                provenance: Some(malformed.clone()),
             });
-            assert_eq!(evidence_for(&v), None, "{falsy:?} should be falsy");
+            assert_eq!(
+                evidence_for(&v),
+                None,
+                "{malformed:?} should not count as provenance evidence"
+            );
         }
     }
 
     #[test]
-    fn evidence_truthy_non_object_trusted_publisher_counts() {
-        // JS truthy values that aren't objects: non-zero numbers,
-        // non-empty strings, empty arrays/objects. Real registries only
-        // ever emit an object here, but match JS semantics for
-        // defense-in-depth against a hostile/buggy registry.
+    fn evidence_structured_trusted_publisher_counts() {
         let mut v = version("foo", "1.0.0");
-        for truthy in [
-            serde_json::json!(true),
-            serde_json::json!(1),
-            serde_json::json!("oidc:gh"),
-            serde_json::json!([]),
-            serde_json::json!({}),
-        ] {
-            v.npm_user = Some(NpmUser {
-                trusted_publisher: Some(truthy.clone()),
-            });
-            assert_eq!(
-                evidence_for(&v),
-                Some(TrustEvidence::TrustedPublisher),
-                "{truthy:?} should be truthy"
-            );
-        }
+        v.npm_user = Some(NpmUser {
+            trusted_publisher: Some(serde_json::json!({
+                "id": "github",
+                "oidcConfigId": "oidc:example"
+            })),
+        });
+        assert_eq!(evidence_for(&v), Some(TrustEvidence::TrustedPublisher));
     }
 
     #[test]

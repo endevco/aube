@@ -954,7 +954,9 @@ async fn trust_policy_no_downgrade_blocks_downgraded_install() {
         .insert("3.0.0".to_string(), "2025-03-01T00:00:00.000Z".to_string());
     let v2 = packument.versions.get_mut("2.0.0").unwrap();
     v2.dist.as_mut().unwrap().attestations = Some(Attestations {
-        provenance: Some(serde_json::json!({"predicateType": "slsa"})),
+        provenance: Some(serde_json::json!({
+            "predicateType": "https://slsa.dev/provenance/v1"
+        })),
     });
     let body = serde_json::to_vec(&packument).unwrap();
 

@@ -85,13 +85,17 @@ Full reference: [Jailed builds](/package-manager/jailed-builds).
 ## Trust policy
 
 `trustPolicy = no-downgrade` blocks installs of a version that carries weaker
-trust evidence than any earlier-published version of the same package. Two
-evidence sources, ranked:
+trust evidence than any earlier-published version of the same package. aube
+only counts the structured metadata shape npm emits after registry-side checks:
 
 1. **npm trusted-publisher** — package was published via OIDC from a trusted
-   CI provider (`_npmUser.trustedPublisher`).
+   CI provider (`_npmUser.trustedPublisher.id`).
 2. **Sigstore provenance** — package was published with `npm publish
-   --provenance` (`dist.attestations.provenance`).
+   --provenance` (`dist.attestations.provenance.predicateType` with an SLSA
+   provenance URI).
+
+This install-time policy validates the registry metadata shape; it does not
+cryptographically verify the attached attestation bundle.
 
 A trust downgrade may indicate a supply-chain incident: publisher account
 takeover, repository tampering, or a malicious co-maintainer publishing

@@ -194,10 +194,9 @@ pub struct PeerDepMeta {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NpmUser {
-    /// Truthy when the publish came from an npm "trusted publisher"
-    /// (e.g. GitHub Actions OIDC). Pnpm's trust-policy check treats
-    /// presence of any non-null value here as the strongest evidence
-    /// (rank 2, above provenance attestations).
+    /// Structured npm trusted-publisher evidence for publishes that came
+    /// through OIDC-backed automation (e.g. GitHub Actions). aube's
+    /// trust-policy check requires an object with a non-empty `id`.
     #[serde(default, rename = "trustedPublisher")]
     pub trusted_publisher: Option<serde_json::Value>,
 }
@@ -208,9 +207,10 @@ pub struct Dist {
     pub integrity: Option<String>,
     pub shasum: Option<String>,
     /// Sigstore attestations block. The trust-policy check reads
-    /// `dist.attestations.provenance` as a rank-1 trust-evidence
-    /// signal (`npm publish --provenance`). Existence is the only
-    /// signal we read — neither pnpm nor aube validates the bundle.
+    /// `dist.attestations.provenance` as rank-1 trust evidence when
+    /// it is an object with an SLSA provenance `predicateType`. aube
+    /// validates this metadata shape during install; it does not
+    /// cryptographically verify the attached attestation bundle.
     #[serde(default)]
     pub attestations: Option<Attestations>,
 }
