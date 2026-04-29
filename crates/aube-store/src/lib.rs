@@ -146,6 +146,11 @@ pub struct PackageIndexLookup<'a> {
     pub integrity: Option<&'a str>,
 }
 
+/// Sidecar pointer for a sqlite-stored package index: byte offset
+/// into `index-v2.dat` and length of the msgpack blob there.
+type SidecarSlice = (i64, i64);
+type SidecarKey = (String, String, String);
+
 fn index_files_match_metadata(index: &PackageIndex, verify_all: bool) -> bool {
     let mut files = index.values();
     if verify_all {
@@ -209,6 +214,10 @@ impl Store {
         self.cache_dir.join("index-v2.sqlite")
     }
 
+    fn index_data_path(&self) -> PathBuf {
+        self.cache_dir.join("index-v2.dat")
+    }
+
     fn ensure_index_db_schema(&self, db_path: &Path) -> Result<(), Error> {
         let mut initialized = INDEX_DB_SCHEMA_INIT
             .lock()
@@ -219,17 +228,31 @@ impl Store {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.to_path_buf(), e))?;
         }
+        // Touch the sidecar so mmap can succeed on first open.
+        let dat_path = self.index_data_path();
+        if !dat_path.exists() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&dat_path)
+                .map_err(|e| Error::Io(dat_path.clone(), e))?;
+        }
         let conn = rusqlite::Connection::open(db_path).map_err(|e| Error::Xx(e.to_string()))?;
         // WAL is persistent on the file once set, so subsequent opens
         // don't need to reassert it. CREATE TABLE IF NOT EXISTS is
-        // safe to run only on the first open per process.
+        // safe to run only on the first open per process. The blob
+        // bytes live in a sidecar file (`index-v2.dat`) so reads can
+        // mmap the whole pile and slice — sqlite holds only the
+        // (name, version, integrity) → (offset, length) index.
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS package_index (
                name TEXT NOT NULL,
                version TEXT NOT NULL,
                integrity TEXT NOT NULL,
-               data BLOB NOT NULL,
+               data_offset INTEGER NOT NULL,
+               data_length INTEGER NOT NULL,
                PRIMARY KEY (name, version, integrity)
              );",
         )
@@ -281,6 +304,50 @@ impl Store {
             .clone();
         let _guard = lock.lock().map_err(|e| Error::Xx(e.to_string()))?;
         self.with_index_db(f)
+    }
+
+    /// mmap the sidecar `.dat` file. Returns `None` if the file is
+    /// missing or empty (e.g. fresh cache with no entries yet).
+    /// Callers slice into the returned mmap by `(offset, length)`
+    /// pulled from sqlite.
+    fn map_index_data(&self) -> Option<memmap2::Mmap> {
+        let path = self.index_data_path();
+        let file = std::fs::File::open(&path).ok()?;
+        let len = file.metadata().ok()?.len();
+        if len == 0 {
+            return None;
+        }
+        // SAFETY: The sidecar is append-only; existing bytes are
+        // never overwritten or truncated, and we only read mapped
+        // bytes that sqlite reports as written. Concurrent appenders
+        // extend the file but our mmap covers a fixed prefix.
+        unsafe { memmap2::Mmap::map(&file).ok() }
+    }
+
+    /// Append a blob to the sidecar `.dat` and return its offset.
+    /// Must be called under [`INDEX_DB_WRITE_LOCK`] so the offset
+    /// returned matches the byte range visible to readers via
+    /// the sqlite row's `(offset, length)`. Callers SQL-insert that
+    /// pair *after* the bytes are durably appended; if the process
+    /// dies between append and insert, the bytes are orphaned but
+    /// the cache stays consistent (subsequent lookup is a miss).
+    fn append_index_data(&self, blob: &[u8]) -> Result<u64, Error> {
+        use std::io::{Seek, Write};
+        let path = self.index_data_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| Error::Io(path.clone(), e))?;
+        let offset = file
+            .seek(std::io::SeekFrom::End(0))
+            .map_err(|e| Error::Io(path.clone(), e))?;
+        file.write_all(blob)
+            .map_err(|e| Error::Io(path.clone(), e))?;
+        Ok(offset)
     }
 
     fn index_integrity_key(integrity: Option<&str>) -> Option<String> {
@@ -364,15 +431,20 @@ impl Store {
 
     /// Load package indexes for install/fetch hot paths in bulk.
     ///
-    /// One sqlite round-trip pulls every matching row's msgpack blob
-    /// into memory; rayon then decodes them in parallel and runs the
-    /// metadata check. JSON fallback fires only for lookups that
-    /// missed both sqlite and the legacy on-disk JSON cache.
-    /// Like [`load_index`](Self::load_index), this is allowed to clean
-    /// up stale legacy JSON fallback entries. Read-only callers should
-    /// use the `cached_indices*_unverified` APIs instead.
+    /// One sqlite query pulls every matching row's `(offset, length)`
+    /// — small fixed-size data sqlite materializes quickly — and an
+    /// mmap of the sidecar `.dat` file lets rayon workers slice into
+    /// the page-cached bytes without per-row allocations. Decode +
+    /// metadata check then run in parallel. JSON fallback fires only
+    /// for lookups that missed both sqlite and the legacy on-disk
+    /// JSON cache.
+    /// Like [`load_index`](Self::load_index), this is allowed to
+    /// clean up stale legacy JSON fallback entries. Read-only callers
+    /// should use the `cached_indices*_unverified` APIs instead.
     pub fn load_indices(&self, lookups: &[PackageIndexLookup<'_>]) -> Vec<Option<PackageIndex>> {
-        let mut blobs = self.bulk_load_index_blobs(lookups).unwrap_or_default();
+        let offsets: HashMap<SidecarKey, SidecarSlice> =
+            self.bulk_load_index_offsets(lookups).unwrap_or_default();
+        let mmap = self.map_index_data();
         let mut decoded: Vec<Option<PackageIndex>> = lookups
             .par_iter()
             .map(|lookup| {
@@ -381,18 +453,18 @@ impl Store {
                     lookup.version.to_string(),
                     Self::index_integrity_key(lookup.integrity)?,
                 );
-                let data = blobs.get(&key)?;
-                let index: PackageIndex = rmp_serde::from_slice(data).ok()?;
+                let &(offset, length) = offsets.get(&key)?;
+                let mmap = mmap.as_ref()?;
+                let start = offset as usize;
+                let end = start.checked_add(length as usize)?;
+                let bytes = mmap.get(start..end)?;
+                let index: PackageIndex = rmp_serde::from_slice(bytes).ok()?;
                 if !index_files_match_metadata(&index, false) {
                     return None;
                 }
                 Some(index)
             })
             .collect();
-        // Drop blobs once decoding is complete — parallel msgpack
-        // decode peaks memory; freeing the source map promptly keeps
-        // RSS bounded for very large lockfiles.
-        blobs.clear();
         for (lookup, slot) in lookups.iter().zip(&mut decoded) {
             if slot.is_none() {
                 *slot = self.load_index_json(lookup.name, lookup.version, lookup.integrity, false);
@@ -401,15 +473,16 @@ impl Store {
         decoded
     }
 
-    /// Bulk-fetch raw msgpack blobs for every lookup the install
-    /// driver will need. Issues one sqlite query (filtered by package
-    /// name, which the primary key already indexes) and trims the
-    /// result down to the exact (name, version, integrity) triples
-    /// the caller asked for.
-    fn bulk_load_index_blobs(
+    /// Bulk-fetch `(offset, length)` sidecar pointers for every
+    /// lookup the install driver will need. Issues one sqlite query
+    /// filtered by package name and trims the result down to the
+    /// exact `(name, version, integrity)` triples the caller asked
+    /// for. Pulling fixed-size integers (rather than the multi-KB
+    /// blob bytes) keeps the sqlite VM iter cost small.
+    fn bulk_load_index_offsets(
         &self,
         lookups: &[PackageIndexLookup<'_>],
-    ) -> Option<HashMap<(String, String, String), Vec<u8>>> {
+    ) -> Option<HashMap<SidecarKey, SidecarSlice>> {
         if lookups.is_empty() {
             return Some(HashMap::new());
         }
@@ -437,19 +510,20 @@ impl Store {
         if wanted.is_empty() {
             return Some(HashMap::new());
         }
-        // Build "?,?,?,..." placeholder list. SQLite's default
-        // SQLITE_LIMIT_VARIABLE_NUMBER is 32766, well above any
-        // realistic dependency count. De-dupe names so a graph with
-        // many versions of the same package only binds one parameter.
+        // SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER is 32766, well
+        // above any realistic dependency count. De-dupe names so a
+        // graph with many versions of the same package only binds one
+        // parameter.
         names.sort();
         names.dedup();
         let placeholders = std::iter::repeat_n("?", names.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT name, version, integrity, data FROM package_index WHERE name IN ({placeholders})"
+            "SELECT name, version, integrity, data_offset, data_length \
+             FROM package_index WHERE name IN ({placeholders})"
         );
-        let blobs = self
+        let offsets = self
             .with_index_db(|conn| {
                 let mut stmt = conn.prepare(&sql)?;
                 let params = rusqlite::params_from_iter(names.iter().copied());
@@ -458,21 +532,22 @@ impl Store {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
                     ))
                 })?;
                 let mut map = HashMap::with_capacity(wanted.len());
                 for row in rows {
-                    let (name, version, integrity, data) = row?;
+                    let (name, version, integrity, offset, length) = row?;
                     let key = (name, version, integrity);
                     if wanted.contains_key(&key) {
-                        map.insert(key, data);
+                        map.insert(key, (offset, length));
                     }
                 }
                 Ok(map)
             })
             .ok()?;
-        Some(blobs)
+        Some(offsets)
     }
 
     fn load_index_inner(
@@ -522,18 +597,22 @@ impl Store {
         // connection so the singleton path (one-off lookups outside
         // the bulk install/fetch flow) only pays parse/plan cost
         // once per worker thread.
-        let (rowid, data): (i64, Vec<u8>) = self
+        let (rowid, offset, length): (i64, i64, i64) = self
             .with_index_db(|conn| {
                 let mut stmt = conn.prepare_cached(
-                    "SELECT rowid, data FROM package_index WHERE name = ?1 AND version = ?2 AND integrity = ?3",
+                    "SELECT rowid, data_offset, data_length FROM package_index \
+                     WHERE name = ?1 AND version = ?2 AND integrity = ?3",
                 )?;
-                stmt.query_row(
-                    rusqlite::params![name, version, integrity_key],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+                stmt.query_row(rusqlite::params![name, version, integrity_key], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
             })
             .ok()?;
-        let index: PackageIndex = rmp_serde::from_slice(&data).ok()?;
+        let mmap = self.map_index_data()?;
+        let start = offset as usize;
+        let end = start.checked_add(length as usize)?;
+        let bytes = mmap.get(start..end)?;
+        let index: PackageIndex = rmp_serde::from_slice(bytes).ok()?;
         if !index_files_match_metadata(&index, verify_files) {
             trace!("cache stale: {name}@{version}");
             let _ = self.with_index_db_write(|conn| {
@@ -571,10 +650,27 @@ impl Store {
         })?;
         let data =
             rmp_serde::to_vec_named(index).map_err(|e| Error::Tar(format!("serialize: {e}")))?;
-        self.with_index_db_write(|conn| {
+        let length = data.len() as i64;
+        // Hold the write lock across the sidecar append + sqlite
+        // insert so concurrent writers can't interleave bytes
+        // mid-blob and a row never points at uninitialized space.
+        // A crash between the two operations leaves orphaned bytes
+        // in the sidecar — safe, and gets reclaimed on the next
+        // compaction pass.
+        let write_lock = INDEX_DB_WRITE_LOCKS
+            .lock()
+            .map_err(|e| Error::Xx(e.to_string()))?
+            .entry(self.index_db_path())
+            .or_default()
+            .clone();
+        let _guard = write_lock.lock().map_err(|e| Error::Xx(e.to_string()))?;
+        let offset = self.append_index_data(&data)? as i64;
+        self.with_index_db(|conn| {
             conn.execute(
-                "INSERT OR REPLACE INTO package_index (name, version, integrity, data) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![name, version, integrity_key, data],
+                "INSERT OR REPLACE INTO package_index \
+                 (name, version, integrity, data_offset, data_length) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![name, version, integrity_key, offset, length],
             )
         })?;
         let _ = std::fs::remove_file(index_path);
@@ -670,21 +766,29 @@ impl Store {
 
     fn cached_indices_sqlite(&self, verify_files: bool) -> Result<Vec<CachedIndexEntry>, Error> {
         let entries = self.with_index_db(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT name, version, integrity, data FROM package_index")?;
+            let mut stmt = conn.prepare(
+                "SELECT name, version, integrity, data_offset, data_length FROM package_index",
+            )?;
             let rows = stmt.query_map([], |row| {
-                let name: String = row.get(0)?;
-                let version: String = row.get(1)?;
-                let integrity: String = row.get(2)?;
-                let data: Vec<u8> = row.get(3)?;
-                Ok((name, version, integrity, data))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })?;
+        let mmap = self.map_index_data();
         Ok(entries
             .into_iter()
-            .filter_map(|(name, version, integrity, data)| {
-                let index = rmp_serde::from_slice::<PackageIndex>(&data).ok()?;
+            .filter_map(|(name, version, integrity, offset, length)| {
+                let mmap = mmap.as_ref()?;
+                let start = offset as usize;
+                let end = start.checked_add(length as usize)?;
+                let bytes = mmap.get(start..end)?;
+                let index = rmp_serde::from_slice::<PackageIndex>(bytes).ok()?;
                 (!verify_files || index_files_match_metadata(&index, verify_files)).then_some(
                     CachedIndexEntry {
                         name,
@@ -705,19 +809,27 @@ impl Store {
     ) -> Result<Vec<CachedIndexEntry>, Error> {
         let entries = self.with_index_db(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT integrity, data FROM package_index WHERE name = ?1 AND version = ?2 ORDER BY integrity",
+                "SELECT integrity, data_offset, data_length FROM package_index \
+                 WHERE name = ?1 AND version = ?2 ORDER BY integrity",
             )?;
             let rows = stmt.query_map(rusqlite::params![name, version], |row| {
-                let integrity: String = row.get(0)?;
-                let data: Vec<u8> = row.get(1)?;
-                Ok((integrity, data))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
         })?;
+        let mmap = self.map_index_data();
         Ok(entries
             .into_iter()
-            .filter_map(|(integrity, data)| {
-                let index = rmp_serde::from_slice::<PackageIndex>(&data).ok()?;
+            .filter_map(|(integrity, offset, length)| {
+                let mmap = mmap.as_ref()?;
+                let start = offset as usize;
+                let end = start.checked_add(length as usize)?;
+                let bytes = mmap.get(start..end)?;
+                let index = rmp_serde::from_slice::<PackageIndex>(bytes).ok()?;
                 (!verify_files || index_files_match_metadata(&index, verify_files)).then_some(
                     CachedIndexEntry {
                         name: name.to_string(),
