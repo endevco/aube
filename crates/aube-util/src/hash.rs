@@ -39,6 +39,7 @@ where
 }
 
 pub const INSTALL_SHAPE_FIELDS: &[&str] = &[
+    "aube",
     "bundleDependencies",
     "bundledDependencies",
     "catalog",
