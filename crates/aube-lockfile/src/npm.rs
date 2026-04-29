@@ -523,6 +523,55 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         push_direct(dep_name, DepType::Optional, &mut direct);
     }
 
+    // npm symlinks every workspace member (and any other top-level
+    // `npm install ../local-pkg` link) into the root `node_modules/`
+    // regardless of what the root manifest declares. Each one shows
+    // up in the lockfile as `node_modules/<name>: { link: true,
+    // resolved: "<rel>" }`. Surface those as direct deps of the
+    // root importer so the linker recreates the same symlinks on
+    // `aube install`. Without this, builds that resolve workspace
+    // packages from the repo root (Angular CLI / Nx / many monorepo
+    // build tools) silently break when migrating npm-managed
+    // workspaces over to aube — the root `node_modules/<ws-pkg>`
+    // entry simply isn't created. Sorted by name for deterministic
+    // ordering.
+    let already_added: BTreeSet<&str> = direct.iter().map(|d| d.name.as_str()).collect();
+    let mut workspace_links: Vec<DirectDep> = Vec::new();
+    for (install_path, raw_entry) in &raw.packages {
+        if !raw_entry.link {
+            continue;
+        }
+        let Some(rest) = install_path.strip_prefix("node_modules/") else {
+            continue;
+        };
+        // Only consider top-level entries: `node_modules/<name>` or
+        // `node_modules/@scope/<name>`. A nested `node_modules/`
+        // segment means this is a non-hoisted nested link, not a
+        // root symlink.
+        if rest.contains("/node_modules/") {
+            continue;
+        }
+        let segments = rest.split('/').count();
+        let expected = if rest.starts_with('@') { 2 } else { 1 };
+        if segments != expected {
+            continue;
+        }
+        let Some(info) = install_path_info.get(install_path) else {
+            continue;
+        };
+        if already_added.contains(info.name.as_str()) {
+            continue;
+        }
+        workspace_links.push(DirectDep {
+            name: info.name.clone(),
+            dep_path: info.dep_path.clone(),
+            dep_type: DepType::Production,
+            specifier: None,
+        });
+    }
+    workspace_links.sort_by(|a, b| a.name.cmp(&b.name));
+    direct.extend(workspace_links);
+
     graph.importers.insert(".".to_string(), direct);
     Ok(graph)
 }
@@ -2543,6 +2592,82 @@ mod tests {
             Some("5.4.1")
         );
         assert!(!graph.packages.contains_key("@scope/app@0.68.1"));
+    }
+
+    /// npm workspaces that aren't listed in the root manifest's
+    /// `dependencies`/`devDependencies` still get a `node_modules/<name>`
+    /// link entry in the lockfile — npm symlinks every workspace member
+    /// at the workspace root regardless. The siemens/element repo
+    /// (https://github.com/siemens/element) hits this: its 11 workspace
+    /// projects under `projects/*` aren't declared as deps of the root
+    /// `package.json`, so the linker had nothing to link at the root and
+    /// `node_modules/@siemens/element-ng` (and friends) silently went
+    /// missing — breaking Angular CLI builds that resolve workspace
+    /// libraries from the repo root.
+    #[test]
+    fn test_parse_workspace_links_undeclared_in_root_deps() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "workspace-root",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "workspace-root",
+                    "version": "1.0.0",
+                    "workspaces": ["projects/element-ng", "projects/charts-ng"],
+                    "dependencies": { "chalk": "^5.4.1" }
+                },
+                "node_modules/@siemens/element-ng": {
+                    "resolved": "projects/element-ng",
+                    "link": true
+                },
+                "node_modules/@siemens/charts-ng": {
+                    "resolved": "projects/charts-ng",
+                    "link": true
+                },
+                "node_modules/chalk": {
+                    "version": "5.4.1",
+                    "integrity": "sha512-chalk"
+                },
+                "projects/element-ng": {
+                    "name": "@siemens/element-ng",
+                    "version": "21.0.0"
+                },
+                "projects/charts-ng": {
+                    "name": "@siemens/charts-ng",
+                    "version": "21.0.0"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let importer = &graph.importers["."];
+
+        let names: Vec<&str> = importer.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"chalk"));
+        assert!(
+            names.contains(&"@siemens/element-ng"),
+            "workspace package `@siemens/element-ng` should be a direct dep of root \
+             so the linker creates `node_modules/@siemens/element-ng`, even though \
+             the root manifest doesn't list it; got importer deps {names:?}"
+        );
+        assert!(
+            names.contains(&"@siemens/charts-ng"),
+            "workspace package `@siemens/charts-ng` should be a direct dep of root; \
+             got importer deps {names:?}"
+        );
+
+        // Each workspace dep_path round-trips through LocalSource::Link.
+        let element_ng = importer
+            .iter()
+            .find(|d| d.name == "@siemens/element-ng")
+            .unwrap();
+        assert_eq!(
+            graph.packages[&element_ng.dep_path].local_source,
+            Some(LocalSource::Link(PathBuf::from("projects/element-ng")))
+        );
     }
 
     /// npm copies `funding:` verbatim from each package's
