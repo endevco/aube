@@ -45,6 +45,7 @@ pub mod peers;
 pub mod prune;
 pub mod publish;
 pub mod publish_provenance;
+pub mod query;
 pub mod rebuild;
 pub mod recursive;
 pub mod remove;

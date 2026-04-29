@@ -3970,6 +3970,87 @@
         "hidden_aliases": [],
         "examples": []
       },
+      "query": {
+        "full_cmd": [
+          "query"
+        ],
+        "usage": "query [FLAGS] <SELECTOR>",
+        "subcommands": {},
+        "args": [
+          {
+            "name": "SELECTOR",
+            "usage": "<SELECTOR>",
+            "help": "Selector expression. Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`",
+            "help_first_line": "Selector expression. Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`",
+            "required": true,
+            "double_dash": "Optional",
+            "hide": false
+          }
+        ],
+        "flags": [
+          {
+            "name": "dev",
+            "usage": "-D --dev",
+            "help": "Only match devDependency roots and their transitive deps",
+            "help_first_line": "Only match devDependency roots and their transitive deps",
+            "short": [
+              "D"
+            ],
+            "long": [
+              "dev"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "prod",
+            "usage": "-P --prod",
+            "help": "Only match production/optional roots and their transitive deps",
+            "help_first_line": "Only match production/optional roots and their transitive deps",
+            "short": [
+              "P"
+            ],
+            "long": [
+              "prod",
+              "production"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "json",
+            "usage": "--json",
+            "help": "Emit a JSON array instead of the default text layout",
+            "help_first_line": "Emit a JSON array instead of the default text layout",
+            "short": [],
+            "long": [
+              "json"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "parseable",
+            "usage": "--parseable",
+            "help": "Emit tab-separated rows: dep_path, name, version, source, flags",
+            "help_first_line": "Emit tab-separated rows: dep_path, name, version, source, flags",
+            "short": [],
+            "long": [
+              "parseable"
+            ],
+            "hide": false,
+            "global": false
+          }
+        ],
+        "mounts": [],
+        "hide": false,
+        "help": "Query packages in the resolved dependency graph",
+        "name": "query",
+        "aliases": [],
+        "hidden_aliases": [],
+        "after_help_long": "Examples:\n\n  # Every reachable package\n  $ aube query '*'\n\n  # Exact package name\n  $ aube query '[name=react]'\n\n  # Direct prod dependencies with install scripts\n  $ aube query ':prod:scripts'\n\n  # Local file/link/git/tarball dependencies\n  $ aube query ':type(file), :type(link), :type(git), :type(remote)'\n\n  # Machine-readable\n  $ aube query ':bin' --json\n",
+        "examples": []
+      },
       "rebuild": {
         "full_cmd": [
           "rebuild"
