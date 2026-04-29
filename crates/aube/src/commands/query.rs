@@ -13,6 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const AFTER_LONG_HELP: &str = "\
+Inspired by vlt's dependency selector model, but currently local-only:
+selectors read aube's lockfile graph without registry or security-service calls.
+
 Examples:
 
   # Every reachable package

@@ -4048,7 +4048,7 @@
         "name": "query",
         "aliases": [],
         "hidden_aliases": [],
-        "after_help_long": "Examples:\n\n  # Every reachable package\n  $ aube query '*'\n\n  # Exact package name\n  $ aube query '[name=react]'\n\n  # Direct prod dependencies with install scripts\n  $ aube query ':prod:scripts'\n\n  # Local file/link/git/tarball dependencies\n  $ aube query ':type(file), :type(link), :type(git), :type(remote)'\n\n  # Machine-readable\n  $ aube query ':bin' --json\n",
+        "after_help_long": "Inspired by vlt's dependency selector model, but currently local-only:\nselectors read aube's lockfile graph without registry or security-service calls.\n\nExamples:\n\n  # Every reachable package\n  $ aube query '*'\n\n  # Exact package name\n  $ aube query '[name=react]'\n\n  # Direct prod dependencies with install scripts\n  $ aube query ':prod:scripts'\n\n  # Local file/link/git/tarball dependencies\n  $ aube query ':type(file), :type(link), :type(git), :type(remote)'\n\n  # Machine-readable\n  $ aube query ':bin' --json\n",
         "examples": []
       },
       "rebuild": {

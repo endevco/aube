@@ -29,6 +29,9 @@ Emit a JSON array instead of the default text layout
 
 Emit tab-separated rows: dep_path, name, version, source, flags
 
+Inspired by vlt's dependency selector model, but currently local-only:
+selectors read aube's lockfile graph without registry or security-service calls.
+
 Examples:
 
   # Every reachable package

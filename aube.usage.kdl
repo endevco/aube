@@ -658,7 +658,7 @@ cmd purge help="Alias for `clean` — remove `node_modules` across every workspa
     flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)"
 }
 cmd query help="Query packages in the resolved dependency graph" {
-    after_long_help "Examples:\n\n  # Every reachable package\n  $ aube query '*'\n\n  # Exact package name\n  $ aube query '[name=react]'\n\n  # Direct prod dependencies with install scripts\n  $ aube query ':prod:scripts'\n\n  # Local file/link/git/tarball dependencies\n  $ aube query ':type(file), :type(link), :type(git), :type(remote)'\n\n  # Machine-readable\n  $ aube query ':bin' --json\n"
+    after_long_help "Inspired by vlt's dependency selector model, but currently local-only:\nselectors read aube's lockfile graph without registry or security-service calls.\n\nExamples:\n\n  # Every reachable package\n  $ aube query '*'\n\n  # Exact package name\n  $ aube query '[name=react]'\n\n  # Direct prod dependencies with install scripts\n  $ aube query ':prod:scripts'\n\n  # Local file/link/git/tarball dependencies\n  $ aube query ':type(file), :type(link), :type(git), :type(remote)'\n\n  # Machine-readable\n  $ aube query ':bin' --json\n"
     flag "-D --dev" help="Only match devDependency roots and their transitive deps"
     flag "-P --prod --production" help="Only match production/optional roots and their transitive deps"
     flag --json help="Emit a JSON array instead of the default text layout"
