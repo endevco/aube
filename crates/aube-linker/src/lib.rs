@@ -2908,7 +2908,10 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
         let patched_lf = diffy::apply(&normalized, &parsed)
             .map_err(|e| format!("failed to apply patch for {rel}: {e}"))?;
         let patched = if was_crlf {
-            patched_lf.replace('\n', "\r\n")
+            // Promote bare `\n` to `\r\n`, then collapse any `\r\r\n`
+            // back so a patch line containing a literal `\r` byte (rare
+            // but legal for binary-ish text) doesn't gain a second CR.
+            patched_lf.replace('\n', "\r\n").replace("\r\r\n", "\r\n")
         } else {
             patched_lf
         };
@@ -3354,6 +3357,28 @@ mod patch_tests {
         apply_multi_file_patch(&pkg, patch).unwrap();
         let bytes = std::fs::read(pkg.join("a.txt")).unwrap();
         assert_eq!(bytes, b"one\r\nTWO\r\nthree\r\n");
+    }
+
+    #[test]
+    fn crlf_restore_preserves_embedded_cr_byte() {
+        // A patch line that adds a literal `\r` byte mid-line must not
+        // gain a second `\r` when we re-CRLF the output. Naive
+        // `replace('\n', "\r\n")` would turn `\r\n` into `\r\r\n`; the
+        // `\r\r\n` collapse undoes that.
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("a.txt"), b"one\r\ntwo\r\n").unwrap();
+        let patch = "diff --git a/a.txt b/a.txt\n\
+                     --- a/a.txt\n\
+                     +++ b/a.txt\n\
+                     @@ -1,2 +1,2 @@\n\
+                     -one\n\
+                     +has\rcr\n\
+                     \x20two\n";
+        apply_multi_file_patch(&pkg, patch).unwrap();
+        let bytes = std::fs::read(pkg.join("a.txt")).unwrap();
+        assert_eq!(bytes, b"has\rcr\r\ntwo\r\n");
     }
 
     #[test]

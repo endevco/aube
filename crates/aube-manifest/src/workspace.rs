@@ -617,13 +617,22 @@ pub fn add_to_allow_builds(
 
 /// Insert or replace a single `patchedDependencies` entry in the
 /// workspace yaml at `path`. Creates the file (and the
-/// `patchedDependencies` mapping) if needed. Returns the file that
-/// was written.
+/// `patchedDependencies` mapping) if needed. No-ops (and returns the
+/// path untouched) when `key` already maps to `rel_patch_path` —
+/// yaml_serde's round-trip drops comments, so we must avoid rewriting
+/// the file when nothing actually changes.
 pub fn upsert_workspace_patched_dependency(
     path: &Path,
     key: &str,
     rel_patch_path: &str,
 ) -> Result<std::path::PathBuf, crate::Error> {
+    if read_workspace_patched_dependencies(path)?
+        .get(key)
+        .and_then(yaml_serde::Value::as_str)
+        == Some(rel_patch_path)
+    {
+        return Ok(path.to_path_buf());
+    }
     edit_patched_dependencies_yaml(path, |map| {
         map.insert(
             yaml_serde::Value::String(key.to_string()),
@@ -635,18 +644,44 @@ pub fn upsert_workspace_patched_dependency(
 /// Drop a `patchedDependencies` entry from the workspace yaml at
 /// `path`. Returns `Ok(true)` when the entry existed (and the file was
 /// rewritten), `Ok(false)` when the file was missing or had no such
-/// entry. When the removal empties `patchedDependencies`, the key is
-/// dropped from the document so we don't leave a `patchedDependencies: {}`
-/// stub behind.
+/// entry. The presence check happens *before* opening the file for a
+/// rewrite — yaml_serde's round-trip strips user comments, and
+/// `aube patch-remove` is called with both yaml and json destinations
+/// regardless of where the patch actually lives, so we must skip the
+/// write when there's nothing to remove. When the removal empties
+/// `patchedDependencies`, the key is dropped from the document so we
+/// don't leave a `patchedDependencies: {}` stub behind.
 pub fn remove_workspace_patched_dependency(path: &Path, key: &str) -> Result<bool, crate::Error> {
-    if !path.exists() {
+    if !read_workspace_patched_dependencies(path)?.contains_key(key) {
         return Ok(false);
     }
-    let mut existed = false;
     edit_patched_dependencies_yaml(path, |map| {
-        existed = map.shift_remove(key).is_some();
+        map.shift_remove(key);
     })?;
-    Ok(existed)
+    Ok(true)
+}
+
+/// Read the `patchedDependencies` map directly from a workspace yaml
+/// file. Returns an empty map when the file is missing, empty, or has
+/// no `patchedDependencies` key. Used as a peek before write so the
+/// upsert/remove paths can avoid a yaml_serde round-trip (and the
+/// comment loss it implies) when nothing would actually change.
+fn read_workspace_patched_dependencies(path: &Path) -> Result<yaml_serde::Mapping, crate::Error> {
+    if !path.exists() {
+        return Ok(yaml_serde::Mapping::new());
+    }
+    let content =
+        std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    if content.trim().is_empty() {
+        return Ok(yaml_serde::Mapping::new());
+    }
+    let value: yaml_serde::Value = crate::parse_yaml(path, content)?;
+    Ok(value
+        .as_mapping()
+        .and_then(|m| m.get("patchedDependencies"))
+        .and_then(yaml_serde::Value::as_mapping)
+        .cloned()
+        .unwrap_or_default())
 }
 
 fn edit_patched_dependencies_yaml<F>(path: &Path, f: F) -> Result<std::path::PathBuf, crate::Error>
@@ -1212,5 +1247,33 @@ updateConfig:
         .unwrap();
         let removed = remove_workspace_patched_dependency(&path, "missing@9.9.9").unwrap();
         assert!(!removed);
+    }
+
+    #[test]
+    fn remove_workspace_patched_dependency_does_not_rewrite_when_key_absent() {
+        // yaml_serde's round-trip drops comments. `aube patch-remove`
+        // calls remove on both the workspace yaml and package.json
+        // regardless of where the patch lives, so a no-op remove must
+        // not touch the file (and lose the user's comments).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "# top-level comment\npatchedDependencies:\n  # patch annotation\n  \"a@1.0.0\": patches/a@1.0.0.patch\n";
+        std::fs::write(&path, original).unwrap();
+        let removed = remove_workspace_patched_dependency(&path, "missing@9.9.9").unwrap();
+        assert!(!removed);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_does_not_rewrite_when_value_unchanged() {
+        // Same comment-preservation argument as the remove case: an
+        // idempotent re-record after editing the patch file should not
+        // strip yaml comments.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "# top-level comment\npatchedDependencies:\n  # patch annotation\n  \"a@1.0.0\": patches/a@1.0.0.patch\n";
+        std::fs::write(&path, original).unwrap();
+        upsert_workspace_patched_dependency(&path, "a@1.0.0", "patches/a@1.0.0.patch").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 }

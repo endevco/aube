@@ -219,22 +219,28 @@ pub fn upsert_patched_dependency(cwd: &Path, key: &str, rel_patch_path: &str) ->
 }
 
 /// Drop an entry from `patchedDependencies` in whichever file declares
-/// it. Returns `true` if the entry existed.
+/// it. Returns `true` if the entry existed. Each side peeks before
+/// rewriting so a remove that targets only one location doesn't churn
+/// the other (the workspace yaml in particular can hold user-authored
+/// comments that yaml_serde's round-trip would discard).
 pub fn remove_patched_dependency(cwd: &Path, key: &str) -> Result<bool> {
-    let mut removed_from_ws = false;
     let ws_target = aube_manifest::workspace::workspace_yaml_target(cwd);
-    if ws_target.exists() {
-        removed_from_ws =
-            aube_manifest::workspace::remove_workspace_patched_dependency(&ws_target, key)
-                .map_err(miette::Report::new)
-                .wrap_err_with(|| format!("failed to write {}", ws_target.display()))?;
-    }
-    let mut removed_from_pkg = false;
-    if cwd.join("package.json").exists() {
+    let removed_from_ws = if ws_target.exists() {
+        aube_manifest::workspace::remove_workspace_patched_dependency(&ws_target, key)
+            .map_err(miette::Report::new)
+            .wrap_err_with(|| format!("failed to write {}", ws_target.display()))?
+    } else {
+        false
+    };
+    let removed_from_pkg = if read_package_json_patched_dependencies(cwd)?.contains_key(key) {
+        let mut existed = false;
         edit_patched_dependencies(cwd, |map| {
-            removed_from_pkg = map.remove(key).is_some();
+            existed = map.remove(key).is_some();
         })?;
-    }
+        existed
+    } else {
+        false
+    };
     Ok(removed_from_ws || removed_from_pkg)
 }
 
