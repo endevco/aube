@@ -682,20 +682,25 @@ pub fn remove_setting_entry(cwd: &Path, key: &str, entry_key: &str) -> Result<bo
 }
 
 /// Mutate a namespaced map setting (e.g. `patchedDependencies`,
-/// `allowBuilds`) inside `package.json` and write back. Picks the
-/// namespace by looking at the existing manifest:
+/// `allowBuilds`) inside `package.json` and write back.
 ///
-/// - If `pnpm` is already declared in `package.json`, write under
-///   `pnpm.<key>` so we don't fragment the user's chosen namespace.
-/// - Otherwise write under `aube.<key>` — aube's native namespace.
-///   The read side already gives `aube.*` precedence over `pnpm.*`,
-///   so a fresh project doesn't have to inherit pnpm-branded keys.
+/// The closure receives a **merged** view of `pnpm.<key>` and
+/// `aube.<key>`, with `aube.*` winning on key conflict — the same
+/// precedence the read side already uses. After the closure runs,
+/// the merged result is written to a single namespace and the other
+/// is cleared, so a future read sees exactly one source of truth and
+/// can never silently shadow a stale entry. This matters because
+/// pnpm-aware tools (and pnpm itself) can introduce a `pnpm` key into
+/// a manifest after aube has already populated `aube.<key>`; without
+/// the merge-and-collapse, a re-record would leave the new value in
+/// `pnpm.<key>` while the stale `aube.<key>` entry kept winning on
+/// read.
 ///
-/// Creates the namespace and the inner `<key>` map as needed, drops
-/// them again when they end up empty (so a remove-last-entry call
-/// doesn't leave a `"<ns>": { "<key>": {} }` stub behind), and skips
-/// the rewrite entirely when the closure produced no structural
-/// change. Mirrors the no-op-skip guarantee of [`edit_workspace_yaml`].
+/// The chosen namespace follows [`config_write_target`]'s rule:
+/// `pnpm` if a `pnpm` namespace is already declared in the manifest,
+/// `aube` otherwise. Empty namespaces and inner maps are scrubbed,
+/// and the rewrite is skipped entirely when nothing structural
+/// changes — mirrors the no-op-skip guarantee of [`edit_workspace_yaml`].
 pub fn edit_setting_map<F>(cwd: &Path, key: &str, f: F) -> Result<(), crate::Error>
 where
     F: FnOnce(&mut serde_json::Map<String, serde_json::Value>),
@@ -709,32 +714,61 @@ where
     })?;
     let before = obj.clone();
 
-    let ns = if obj.contains_key("pnpm") {
+    // Build the merged view (pnpm first, aube overrides on conflict)
+    // before mutating, so the closure sees the same map the install
+    // path would.
+    let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for ns in ["pnpm", "aube"] {
+        if let Some(inner) = obj
+            .get(ns)
+            .and_then(serde_json::Value::as_object)
+            .and_then(|m| m.get(key))
+            .and_then(serde_json::Value::as_object)
+        {
+            for (k, v) in inner {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    f(&mut merged);
+
+    let chosen_ns = if obj.contains_key("pnpm") {
         "pnpm"
     } else {
         "aube"
     };
+    let other_ns = if chosen_ns == "pnpm" { "aube" } else { "pnpm" };
 
-    let ns_value = obj
-        .entry(ns.to_string())
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    let ns_obj = ns_value
-        .as_object_mut()
-        .ok_or_else(|| crate::Error::YamlParse(path.clone(), format!("`{ns}` is not an object")))?;
-    let inner = ns_obj
-        .entry(key.to_string())
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    let inner_obj = inner.as_object_mut().ok_or_else(|| {
-        crate::Error::YamlParse(path.clone(), format!("`{ns}.{key}` is not an object"))
-    })?;
-
-    f(inner_obj);
-
-    if inner_obj.is_empty() {
-        ns_obj.remove(key);
+    // Drop `<key>` from the other namespace so the post-write state
+    // has one source of truth.
+    let mut other_ns_empty_after = false;
+    if let Some(other_obj) = obj.get_mut(other_ns).and_then(|v| v.as_object_mut()) {
+        other_obj.remove(key);
+        other_ns_empty_after = other_obj.is_empty();
     }
-    if ns_obj.is_empty() {
-        obj.remove(ns);
+    if other_ns_empty_after {
+        obj.remove(other_ns);
+    }
+
+    // Write merged into the chosen namespace, or scrub it if empty.
+    if merged.is_empty() {
+        let mut chosen_ns_empty_after = false;
+        if let Some(chosen_obj) = obj.get_mut(chosen_ns).and_then(|v| v.as_object_mut()) {
+            chosen_obj.remove(key);
+            chosen_ns_empty_after = chosen_obj.is_empty();
+        }
+        if chosen_ns_empty_after {
+            obj.remove(chosen_ns);
+        }
+    } else {
+        let chosen_value = obj
+            .entry(chosen_ns.to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let chosen_obj = chosen_value.as_object_mut().ok_or_else(|| {
+            crate::Error::YamlParse(path.clone(), format!("`{chosen_ns}` is not an object"))
+        })?;
+        chosen_obj.insert(key.to_string(), serde_json::Value::Object(merged));
     }
 
     if *obj == before {

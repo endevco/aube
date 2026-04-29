@@ -332,6 +332,35 @@ mod tests {
     }
 
     #[test]
+    fn upsert_collapses_shadow_when_other_namespace_holds_stale_entry() {
+        // A pnpm-aware tool can add a `pnpm` namespace after aube has
+        // already populated `aube.patchedDependencies`. Without the
+        // merge-and-collapse below, the next `aube patch-commit` would
+        // write to `pnpm.patchedDependencies` while the stale
+        // `aube.patchedDependencies.<key>` entry shadowed it on read
+        // (aube.* wins on conflict). Pin the post-write invariant:
+        // exactly one namespace holds the entry.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            "{\"aube\":{\"patchedDependencies\":{\"a@1.0.0\":\"patches/old.patch\"}},\"pnpm\":{\"someKey\":1}}\n",
+        )
+        .unwrap();
+        upsert_patched_dependency(dir.path(), "a@1.0.0", "patches/new.patch").unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // Entry migrated to pnpm.patchedDependencies, with the new value.
+        assert_eq!(
+            parsed["pnpm"]["patchedDependencies"]["a@1.0.0"],
+            "patches/new.patch"
+        );
+        // Stale aube.patchedDependencies entry is gone — no shadow.
+        assert!(parsed["aube"]["patchedDependencies"].is_null());
+        // The user's other pnpm config is preserved.
+        assert_eq!(parsed["pnpm"]["someKey"], 1);
+    }
+
+    #[test]
     fn upsert_writes_to_pnpm_namespace_when_pnpm_already_present() {
         let dir = tempfile::tempdir().unwrap();
         // User already has a pnpm-namespaced setting (allowBuilds);
