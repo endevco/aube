@@ -2591,10 +2591,17 @@ fn validate_index_key(key: &str) -> Result<(), Error> {
                 return Err(Error::UnsafeIndexKey(key.to_string()));
             }
             std::path::Component::Normal(os) => {
-                if let Some(s) = os.to_str()
-                    && s.contains(':')
+                #[cfg(windows)]
                 {
-                    return Err(Error::UnsafeIndexKey(key.to_string()));
+                    if let Some(s) = os.to_str()
+                        && s.contains(':')
+                    {
+                        return Err(Error::UnsafeIndexKey(key.to_string()));
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = os;
                 }
             }
             std::path::Component::CurDir => {}
@@ -4031,6 +4038,12 @@ mod tests {
         validate_index_key("a/b/c/d/e/f.js").unwrap();
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn validate_index_key_accepts_posix_colon_filename() {
+        validate_index_key("dist/__mocks__/package-json:version.d.ts").unwrap();
+    }
+
     #[test]
     fn validate_index_key_rejects_empty() {
         assert!(matches!(
@@ -4075,6 +4088,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     #[test]
     fn validate_index_key_rejects_windows_drive() {
         assert!(matches!(

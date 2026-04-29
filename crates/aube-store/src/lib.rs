@@ -658,10 +658,8 @@ impl Store {
 /// eventual `pkg_dir.join(key)` file outside the package root:
 /// `..` anywhere in the remaining path, absolute paths, Windows
 /// drive prefixes, backslash separators smuggled inside a single
-/// component, NUL bytes, and `:` (which `Path::components` surfaces
-/// as `Normal("C:evil")` on unix where it wouldn't parse as a
-/// drive prefix). Non-UTF-8 paths are also rejected because the
-/// stored index is a JSON map keyed by string.
+/// component, and NUL bytes. Non-UTF-8 paths are also rejected because
+/// the stored index is a JSON map keyed by string.
 ///
 /// `Ok(None)` means the entry stripped down to the wrapper itself
 /// and should be skipped by the caller.
@@ -719,12 +717,7 @@ fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
                         "tarball entry path contains non-UTF-8 bytes: {raw:?}"
                     ))
                 })?;
-                if s.is_empty()
-                    || s.contains('\0')
-                    || s.contains('\\')
-                    || s.contains('/')
-                    || s.contains(':')
-                {
+                if s.is_empty() || s.contains('\0') || s.contains('\\') || s.contains('/') {
                     return Err(Error::Tar(format!(
                         "tarball entry path contains a malformed component: {raw:?}"
                     )));
@@ -739,6 +732,13 @@ fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
                 // publisher's problem to validate.
                 #[cfg(windows)]
                 {
+                    // `:` is an alternate data stream separator on
+                    // NTFS and is rejected by Windows path creation.
+                    if s.contains(':') {
+                        return Err(Error::Tar(format!(
+                            "tarball entry path contains a malformed component: {raw:?}"
+                        )));
+                    }
                     // NTFS reserved device names. `CON`, `con.txt`,
                     // `CON.tar.gz` all resolve to the console
                     // device. Writing one either fails with
@@ -2474,6 +2474,20 @@ mod tests {
         assert!(index.contains_key("index.js"));
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn test_import_tarball_accepts_posix_colon_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let tarball = build_tarball(
+            "package/dist/__mocks__/package-json:version.d.ts",
+            b"export {};",
+        );
+        let index = store.import_tarball(&tarball).unwrap();
+        assert!(index.contains_key("dist/__mocks__/package-json:version.d.ts"));
+    }
+
     #[test]
     fn test_import_tarball_rejects_per_entry_cap_exceeded() {
         // A single entry with a declared size past the per-entry cap
@@ -2668,10 +2682,9 @@ mod tests {
         assert!(matches!(err, Error::Tar(_)));
     }
 
+    #[cfg(windows)]
     #[test]
-    fn normalize_tar_entry_path_rejects_colon_smuggle() {
-        // On unix `C:evil` parses as `Normal("C:evil")`, not a
-        // Prefix. Reject defensively.
+    fn normalize_tar_entry_path_rejects_colon_on_windows() {
         let err = normalize_tar_entry_path(Path::new("package/C:evil")).unwrap_err();
         assert!(matches!(err, Error::Tar(_)));
     }
