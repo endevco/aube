@@ -208,7 +208,7 @@ pub(super) fn maybe_cleanup_unused_catalogs(
     if declared.is_empty() {
         return Ok(());
     }
-    let Some(ws_path) = super::super::catalogs::workspace_yaml_path(cwd) else {
+    let Some(ws_path) = aube_manifest::workspace::workspace_yaml_existing(cwd) else {
         return Ok(());
     };
     let dropped = super::super::catalogs::prune_unused_catalog_entries(&ws_path, declared, used)?;

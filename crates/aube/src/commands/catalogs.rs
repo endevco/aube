@@ -12,7 +12,7 @@
 
 use aube_settings::resolved::CatalogMode;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Outcome of matching an `aube add` spec against the default catalog.
 #[derive(Debug)]
@@ -115,20 +115,6 @@ fn range_compatible(
         return false;
     };
     version.satisfies(&catalog_parsed)
-}
-
-/// Locate the workspace yaml file (`aube-workspace.yaml` preferred,
-/// `pnpm-workspace.yaml` as fallback) inside `project_dir`. Returns
-/// `None` when neither file exists — callers treat that as "no catalogs
-/// declared, nothing to clean up".
-pub(crate) fn workspace_yaml_path(project_dir: &Path) -> Option<PathBuf> {
-    for name in ["aube-workspace.yaml", "pnpm-workspace.yaml"] {
-        let path = project_dir.join(name);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    None
 }
 
 /// Remove catalog entries from the workspace yaml that the freshly

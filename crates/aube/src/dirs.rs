@@ -79,7 +79,7 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
     // at $HOME so that never happens.
     let stop = home_stop_boundary();
     for dir in start.ancestors() {
-        if dir.join("aube-workspace.yaml").exists() || dir.join("pnpm-workspace.yaml").exists() {
+        if aube_manifest::workspace::workspace_yaml_existing(dir).is_some() {
             return Some(dir.to_path_buf());
         }
         let pkg = dir.join("package.json");
@@ -105,7 +105,7 @@ pub fn find_workspace_yaml_root(start: &Path) -> Option<PathBuf> {
     // Cap the walk at $HOME for the same reason as find_project_root.
     let stop = home_stop_boundary();
     for dir in start.ancestors() {
-        if dir.join("aube-workspace.yaml").exists() || dir.join("pnpm-workspace.yaml").exists() {
+        if aube_manifest::workspace::workspace_yaml_existing(dir).is_some() {
             return Some(dir.to_path_buf());
         }
         if stop.as_deref() == Some(dir) {

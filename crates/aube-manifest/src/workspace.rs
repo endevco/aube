@@ -558,9 +558,25 @@ pub fn load_both(
     Ok((typed, raw))
 }
 
-/// Resolve which workspace-yaml path `add_to_allow_builds` should
-/// mutate in `project_dir`. Existing `aube-workspace.yaml` wins
-/// over `pnpm-workspace.yaml`; when neither exists, create
+/// Path to the existing workspace yaml in `project_dir`, if any.
+/// `aube-workspace.yaml` wins over `pnpm-workspace.yaml` so an
+/// aube-native project's preferences override a co-existing pnpm
+/// fallback. Returns `None` when neither file exists — read-or-skip
+/// callers (catalog cleanup, ancestor walks) treat that as "nothing
+/// to read or rewrite".
+pub fn workspace_yaml_existing(project_dir: &Path) -> Option<PathBuf> {
+    for name in WORKSPACE_YAML_NAMES {
+        let path = project_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Resolve which workspace-yaml path a writer should mutate in
+/// `project_dir`. Existing `aube-workspace.yaml` wins over
+/// `pnpm-workspace.yaml`; when neither exists, create
 /// `aube-workspace.yaml` — aube's own filename, parallel to the
 /// `aube-lock.yaml` shape we use for the lockfile.
 ///
@@ -571,14 +587,12 @@ pub fn load_both(
 /// project's filesystem layout matches aube's overall naming
 /// (`aube-lock.yaml`, `aube-workspace.yaml`) rather than mixing
 /// vendor namespaces.
-pub fn workspace_yaml_target(project_dir: &Path) -> std::path::PathBuf {
-    for name in WORKSPACE_YAML_NAMES {
-        let path = project_dir.join(name);
-        if path.exists() {
-            return path;
-        }
-    }
-    project_dir.join("aube-workspace.yaml")
+///
+/// Use this for write-with-create call sites (allowBuilds,
+/// patchedDependencies). For read-or-skip callers, prefer
+/// [`workspace_yaml_existing`].
+pub fn workspace_yaml_target(project_dir: &Path) -> PathBuf {
+    workspace_yaml_existing(project_dir).unwrap_or_else(|| project_dir.join("aube-workspace.yaml"))
 }
 
 /// Merge `names` into the workspace's `allowBuilds` map.
