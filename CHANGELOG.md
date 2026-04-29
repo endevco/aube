@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+- `aube approve-builds` (and the install-time auto-seed of unreviewed
+  build scripts) now creates `aube-workspace.yaml` when no workspace
+  yaml exists in the project, parallel to the `aube-lock.yaml` shape
+  already used for the lockfile. Existing `pnpm-workspace.yaml` files
+  are still read and mutated in place — backward-compat with
+  pnpm-style projects is unchanged. Closes the asymmetry where the
+  lockfile got the `aube-` prefix but the workspace yaml didn't.
+
 ## [v1.0.0-beta.2](https://github.com/endevco/aube/releases/tag/v1.0.0-beta.2) - 2026-04-18
 
 ### Added

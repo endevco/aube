@@ -559,9 +559,18 @@ pub fn load_both(
 }
 
 /// Resolve which workspace-yaml path `add_to_allow_builds` should
-/// mutate in `project_dir`. Existing `aube-workspace.yaml` wins over
-/// `pnpm-workspace.yaml`; when neither exists, create
-/// `pnpm-workspace.yaml` to match pnpm's build-review behavior.
+/// mutate in `project_dir`. Existing `aube-workspace.yaml` wins
+/// over `pnpm-workspace.yaml`; when neither exists, create
+/// `aube-workspace.yaml` — aube's own filename, parallel to the
+/// `aube-lock.yaml` shape we use for the lockfile.
+///
+/// Background: aube reads both `aube-workspace.yaml` (preferred)
+/// and `pnpm-workspace.yaml` (fallback) for backward compatibility
+/// with pnpm-style repos that already ship the latter. The
+/// generated default flips to the aube-prefixed name so a fresh
+/// project's filesystem layout matches aube's overall naming
+/// (`aube-lock.yaml`, `aube-workspace.yaml`) rather than mixing
+/// vendor namespaces.
 pub fn workspace_yaml_target(project_dir: &Path) -> std::path::PathBuf {
     for name in WORKSPACE_YAML_NAMES {
         let path = project_dir.join(name);
@@ -569,7 +578,7 @@ pub fn workspace_yaml_target(project_dir: &Path) -> std::path::PathBuf {
             return path;
         }
     }
-    project_dir.join("pnpm-workspace.yaml")
+    project_dir.join("aube-workspace.yaml")
 }
 
 /// Merge `names` into the workspace's `allowBuilds` map.
@@ -577,7 +586,8 @@ pub fn workspace_yaml_target(project_dir: &Path) -> std::path::PathBuf {
 /// Write-target precedence:
 /// 1. `aube-workspace.yaml` if it exists — top-level `allowBuilds`.
 /// 2. `pnpm-workspace.yaml` if it exists — top-level `allowBuilds`.
-/// 3. Otherwise — create `pnpm-workspace.yaml` with top-level `allowBuilds`.
+/// 3. Otherwise — create `aube-workspace.yaml` with top-level
+///    `allowBuilds` (matches aube's `aube-lock.yaml` naming).
 ///
 /// `allowed=true` is used by `aube approve-builds`; `allowed=false` is
 /// used by install to seed unreviewed packages for later review. Returns
@@ -843,7 +853,13 @@ patchedDependencies:
     }
 
     #[test]
-    fn add_to_allow_builds_creates_pnpm_workspace_when_no_yaml() {
+    fn add_to_allow_builds_creates_aube_workspace_when_no_yaml() {
+        // When no workspace yaml exists yet, aube creates
+        // `aube-workspace.yaml` (parallels `aube-lock.yaml`).
+        // Existing `pnpm-workspace.yaml` files are still read +
+        // mutated in place — see
+        // `add_to_allow_builds_writes_to_existing_pnpm_workspace`
+        // for that branch.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("package.json"),
@@ -856,7 +872,7 @@ patchedDependencies:
             true,
         )
         .unwrap();
-        assert_eq!(path, dir.path().join("pnpm-workspace.yaml"));
+        assert_eq!(path, dir.path().join("aube-workspace.yaml"));
         let config = WorkspaceConfig::load(dir.path()).unwrap();
         assert!(matches!(
             config.allow_builds.get("esbuild"),
@@ -866,6 +882,31 @@ patchedDependencies:
             config.allow_builds.get("sharp"),
             Some(yaml_serde::Value::Bool(true))
         ));
+    }
+
+    #[test]
+    fn add_to_allow_builds_writes_to_existing_pnpm_workspace() {
+        // Pin the backward-compat behavior: a project that
+        // already ships `pnpm-workspace.yaml` (e.g. migrated
+        // from pnpm) keeps mutating the existing file in
+        // place rather than spawning a parallel
+        // `aube-workspace.yaml`. Without this, an `aube
+        // approve-builds` run would silently fork the config
+        // into two files.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"solo","version":"0.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'pnpm/*'\n",
+        )
+        .unwrap();
+        let path = add_to_allow_builds(dir.path(), &["esbuild".to_string()], true).unwrap();
+        assert_eq!(path, dir.path().join("pnpm-workspace.yaml"));
+        assert!(!dir.path().join("aube-workspace.yaml").exists());
     }
 
     #[test]
