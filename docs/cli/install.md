@@ -57,7 +57,7 @@ Companion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is
 
 Cap concurrent tarball downloads.
 
-Overrides `network-concurrency` from `.npmrc` / `aube-workspace.yaml` when set. Falls back to the built-in defaults otherwise (128 for the lockfile path, 64 for the streaming path).
+Overrides `network-concurrency` from `.npmrc` / `aube-workspace.yaml` when set. Falls back to an auto-scaled default of worker count x3, clamped to 16-64.
 
 ### `--no-optional`
 

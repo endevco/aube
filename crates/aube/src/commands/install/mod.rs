@@ -95,9 +95,8 @@ pub struct InstallArgs {
     /// Cap concurrent tarball downloads.
     ///
     /// Overrides `network-concurrency` from `.npmrc` /
-    /// `aube-workspace.yaml` when set. Falls back to the built-in
-    /// defaults otherwise (128 for the lockfile path, 64 for the
-    /// streaming path).
+    /// `aube-workspace.yaml` when set. Falls back to an auto-scaled
+    /// default of worker count x3, clamped to 16-64.
     #[arg(long, value_name = "N")]
     pub network_concurrency: Option<u64>,
     /// Skip optionalDependencies; don't install optional native modules
@@ -1404,10 +1403,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // front so every downstream fetch site (the lockfile path, the
     // streaming-resolver path, and the forthcoming `aube fetch`
     // bridge) reads the same values. `network_concurrency_setting`
-    // stays `Option<usize>` so each site can apply its own sensible
-    // fallback when the setting is absent (128 for the lockfile
-    // path's HTTP/2-friendly burst, 64 for the streaming path that
-    // overlaps with resolver packument fetches).
+    // stays `Option<usize>` so each site can apply the dynamic
+    // built-in fallback when the setting is absent.
     //
     // `sideEffectsCache` controls whether allowlisted dependency
     // lifecycle scripts can reuse a previously-cached post-build

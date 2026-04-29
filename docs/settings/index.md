@@ -1212,19 +1212,18 @@ regardless of which strategy produced it.
 Maximum concurrent HTTP(S) requests.
 
 - Type: `int`
-- Default: `128 (tarballs), 64 (packuments)`
+- Default: `auto (workers x3 clamped to 16-64)`
 - CLI flags: `network-concurrency`
 - Environment: `npm_config_network_concurrency`, `NPM_CONFIG_NETWORK_CONCURRENCY`, `AUBE_NETWORK_CONCURRENCY`
 - .npmrc keys: `network-concurrency`, `networkConcurrency`
 - Workspace YAML keys: `networkConcurrency`
 
 Caps the tokio semaphores that gate concurrent tarball downloads
-inside `crates/aube/src/commands/install.rs`. When set, both the
-lockfile-driven and streaming fetch paths use the configured value
-instead of the built-in defaults (128 for tarballs, 64 for the
-streaming path). The resolver's packument fetcher still uses its own
-internal cap for now; plumbing that cap through is tracked as a
-follow-up.
+inside `crates/aube/src/commands/install.rs`. When unset, aube
+matches pnpm's dynamic default: worker count x3, clamped to 16-64.
+Set this value explicitly to override the automatic scaling. The
+resolver's packument fetcher still uses its own internal cap for now;
+plumbing that cap through is tracked as a follow-up.
 
 Examples:
 

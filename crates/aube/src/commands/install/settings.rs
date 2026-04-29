@@ -252,11 +252,22 @@ pub(super) fn resolve_link_concurrency(ctx: &aube_settings::ResolveCtx<'_>) -> O
 }
 
 pub(super) fn default_lockfile_network_concurrency() -> usize {
-    if cfg!(target_os = "macos") { 24 } else { 128 }
+    default_network_concurrency()
 }
 
 pub(super) fn default_streaming_network_concurrency() -> usize {
-    if cfg!(target_os = "macos") { 24 } else { 64 }
+    default_network_concurrency()
+}
+
+fn default_network_concurrency() -> usize {
+    let workers = std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(4);
+    network_concurrency_for_workers(workers)
+}
+
+fn network_concurrency_for_workers(workers: usize) -> usize {
+    workers.saturating_mul(3).clamp(16, 64)
 }
 
 /// Resolve `verifyStoreIntegrity` from cli / env / `.npmrc` /
@@ -857,6 +868,19 @@ fn compile_peer_patterns(field: &str, raw: &[String]) -> Vec<glob::Pattern> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod network_concurrency_tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_default_matches_pnpm_worker_clamp() {
+        assert_eq!(network_concurrency_for_workers(1), 16);
+        assert_eq!(network_concurrency_for_workers(8), 24);
+        assert_eq!(network_concurrency_for_workers(24), 64);
+        assert_eq!(network_concurrency_for_workers(usize::MAX), 64);
+    }
 }
 
 #[cfg(test)]
