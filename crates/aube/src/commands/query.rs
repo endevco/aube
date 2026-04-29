@@ -315,18 +315,38 @@ impl Pseudo {
 fn parse_group(input: &str) -> miette::Result<Vec<Predicate>> {
     let mut out = Vec::new();
     for token in selector_tokens(input)? {
-        if token == "*" {
-            out.push(Predicate::Any);
-        } else if let Some(attr) = token.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            out.push(parse_attr(attr)?);
-        } else if token.starts_with(':') {
-            out.extend(parse_pseudos(&token)?);
-        } else if !token.is_empty() {
-            out.push(Predicate::Name(token));
-        }
+        out.extend(parse_compound_token(&token)?);
     }
     if out.is_empty() {
         return Err(miette!("empty query selector"));
+    }
+    Ok(out)
+}
+
+fn parse_compound_token(input: &str) -> miette::Result<Vec<Predicate>> {
+    let mut out = Vec::new();
+    let mut rest = input;
+    while !rest.is_empty() {
+        if let Some(after_star) = rest.strip_prefix('*') {
+            out.push(Predicate::Any);
+            rest = after_star;
+        } else if let Some(after_open) = rest.strip_prefix('[') {
+            let Some(close) = after_open.find(']') else {
+                return Err(miette!("unterminated attribute selector in {input:?}"));
+            };
+            out.push(parse_attr(&after_open[..close])?);
+            rest = &after_open[close + 1..];
+        } else if rest.starts_with(':') {
+            out.extend(parse_pseudos(rest)?);
+            rest = "";
+        } else {
+            let name_end = rest.find([':', '[']).unwrap_or(rest.len());
+            if name_end == 0 {
+                return Err(miette!("invalid query selector token {input:?}"));
+            }
+            out.push(Predicate::Name(rest[..name_end].to_string()));
+            rest = &rest[name_end..];
+        }
     }
     Ok(out)
 }
@@ -339,10 +359,11 @@ fn parse_attr(input: &str) -> miette::Result<Predicate> {
     if key.is_empty() {
         return Err(miette!("empty attribute selector"));
     }
-    Ok(Predicate::Attr {
-        key: key.to_ascii_lowercase(),
-        value,
-    })
+    let key = key.to_ascii_lowercase();
+    if value.is_some() && matches!(key.as_str(), "bin" | "deprecated") {
+        return Err(miette!("[{key}] does not support value comparisons"));
+    }
+    Ok(Predicate::Attr { key, value })
 }
 
 fn parse_pseudos(input: &str) -> miette::Result<Vec<Predicate>> {
@@ -662,6 +683,39 @@ mod tests {
                 Predicate::Pseudo(Pseudo::Scripts)
             ]
         );
+    }
+
+    #[test]
+    fn parses_compact_name_and_attr_pseudos() {
+        let selector = Selector::parse("react:peer:bin, [name=esbuild]:scripts").unwrap();
+        assert_eq!(
+            selector.groups[0],
+            vec![
+                Predicate::Name("react".to_string()),
+                Predicate::Pseudo(Pseudo::Peer),
+                Predicate::Pseudo(Pseudo::Bin),
+            ]
+        );
+        assert_eq!(
+            selector.groups[1],
+            vec![
+                Predicate::Attr {
+                    key: "name".to_string(),
+                    value: Some("esbuild".to_string()),
+                },
+                Predicate::Pseudo(Pseudo::Scripts),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_value_comparison_for_boolean_attributes() {
+        let err = Selector::parse("[bin=react-bin]").unwrap_err().to_string();
+        assert!(err.contains("[bin] does not support value comparisons"));
+        let err = Selector::parse("[deprecated=true]")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[deprecated] does not support value comparisons"));
     }
 
     #[test]

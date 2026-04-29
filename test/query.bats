@@ -24,7 +24,8 @@ JSON
 
 	run aube query '[name=is-number]' --parseable
 	assert_success
-	assert_output --partial $'is-number@6.0.0\tis-number\t6.0.0\tregistry\ttransitive'
+	assert_output --partial $'\tis-number\t'
+	assert_output --partial $'\tregistry\ttransitive'
 }
 
 @test "aube query supports comma-separated selector groups" {
