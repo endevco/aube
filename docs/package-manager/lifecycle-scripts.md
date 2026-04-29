@@ -25,8 +25,9 @@ aube rebuild
 
 Supported policy fields — aube reads all of these at install time:
 
-In `pnpm-workspace.yaml` (pnpm v11's build-review map, and what aube writes
-to):
+In `aube-workspace.yaml` or `pnpm-workspace.yaml` (pnpm v11's build-review
+map, and what aube writes to — aube creates `aube-workspace.yaml` from
+scratch, but mutates an existing `pnpm-workspace.yaml` in place):
 
 ```yaml
 allowBuilds:

@@ -117,8 +117,8 @@ JSON
 	assert_failure
 	assert_output --partial "dependencies with build scripts must be reviewed"
 	assert_output --partial "dep-with-build@1.0.0"
-	assert_file_exists pnpm-workspace.yaml
-	run grep -q 'dep-with-build: false' pnpm-workspace.yaml
+	assert_file_exists aube-workspace.yaml
+	run grep -q 'dep-with-build: false' aube-workspace.yaml
 	assert_success
 }
 

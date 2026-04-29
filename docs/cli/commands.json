@@ -208,7 +208,7 @@
         ],
         "mounts": [],
         "hide": false,
-        "help": "Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`",
+        "help": "Approve ignored dependency build scripts in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present) under `allowBuilds`",
         "name": "approve-builds",
         "aliases": [],
         "hidden_aliases": [],

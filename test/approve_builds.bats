@@ -121,18 +121,18 @@ JSON
 	run aube install
 	assert_success
 	assert_file_not_exists aube-builds-marker.txt
-	assert_file_exists pnpm-workspace.yaml
-	run grep -q 'allowBuilds:' pnpm-workspace.yaml
+	assert_file_exists aube-workspace.yaml
+	run grep -q 'allowBuilds:' aube-workspace.yaml
 	assert_success
-	run grep -q 'aube-test-builds-marker: false' pnpm-workspace.yaml
+	run grep -q 'aube-test-builds-marker: false' aube-workspace.yaml
 	assert_success
 
 	run aube approve-builds --all
 	assert_success
 	assert_output --partial "aube-test-builds-marker"
-	assert_output --partial "pnpm-workspace.yaml"
+	assert_output --partial "aube-workspace.yaml"
 
-	run grep -q 'aube-test-builds-marker: true' pnpm-workspace.yaml
+	run grep -q 'aube-test-builds-marker: true' aube-workspace.yaml
 	assert_success
 	run grep -q 'onlyBuiltDependencies' package.json
 	assert_failure
@@ -143,10 +143,10 @@ JSON
 	assert_file_exists aube-builds-marker.txt
 }
 
-@test "approve-builds --all in npm-style monorepo writes pnpm-workspace allowBuilds" {
+@test "approve-builds --all in npm-style monorepo writes aube-workspace allowBuilds" {
 	# An npm/yarn-style monorepo carries `workspaces` directly in
-	# package.json. Under pnpm v11 semantics aube creates
-	# pnpm-workspace.yaml to hold the allowBuilds review map.
+	# package.json. aube creates `aube-workspace.yaml` from scratch
+	# to hold the allowBuilds review map (parallels `aube-lock.yaml`).
 	mkdir -p packages/app
 	cat >package.json <<'JSON'
 {
@@ -172,12 +172,12 @@ JSON
 	assert_success
 	assert_output --partial "aube-test-builds-marker"
 
-	assert_file_exists pnpm-workspace.yaml
-	assert_file_not_exists aube-workspace.yaml
+	assert_file_exists aube-workspace.yaml
+	assert_file_not_exists pnpm-workspace.yaml
 
-	run grep -q 'allowBuilds:' pnpm-workspace.yaml
+	run grep -q 'allowBuilds:' aube-workspace.yaml
 	assert_success
-	run grep -q 'aube-test-builds-marker: true' pnpm-workspace.yaml
+	run grep -q 'aube-test-builds-marker: true' aube-workspace.yaml
 	assert_success
 
 	# Round-trip: a re-install must honor the policy stored under

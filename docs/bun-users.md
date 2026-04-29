@@ -50,9 +50,9 @@ future installs keep writing `aube-lock.yaml`.
   `trustedDependencies` array in addition to pnpm's
   `pnpm.allowBuilds` / `pnpm.onlyBuiltDependencies`, so an existing
   Bun manifest keeps running its install scripts without edits.
-  Install writes unreviewed packages into `pnpm-workspace.yaml`'s
-  `allowBuilds` with `false`; `aube approve-builds` flips reviewed entries
-  to `true`. Approved dependency builds can also run in a
+  Install writes unreviewed packages into `aube-workspace.yaml`'s
+  `allowBuilds` with `false` (or `pnpm-workspace.yaml` if one already
+  exists); `aube approve-builds` flips reviewed entries to `true`. Approved dependency builds can also run in a
   [jail](/package-manager/jailed-builds) with package-specific env, path,
   and network permissions.
 

@@ -35,7 +35,7 @@ supply-chain edge in a JavaScript install. aube does not run dependency
 lifecycle scripts unless you've approved them explicitly:
 
 ```yaml
-# pnpm-workspace.yaml
+# aube-workspace.yaml
 allowBuilds:
   esbuild: true
   sharp: true
@@ -51,8 +51,8 @@ Root-package lifecycle scripts (your own project's) still run normally — the
 boundary is dependency code.
 
 Settings: [`allowBuilds`](/settings/#setting-allowbuilds). Install adds
-unreviewed build packages to `pnpm-workspace.yaml` as `false`; approving them
-flips the entry to `true`.
+unreviewed build packages to `aube-workspace.yaml` (or `pnpm-workspace.yaml`
+if one already exists) as `false`; approving them flips the entry to `true`.
 
 ## Jailed lifecycle scripts
 
@@ -191,7 +191,7 @@ schema.
 For most projects, the following is a good starting point:
 
 ```yaml
-# pnpm-workspace.yaml
+# aube-workspace.yaml
 paranoid: true             # bundles jailBuilds, no-downgrade, strict gates
 allowBuilds:
   esbuild: true

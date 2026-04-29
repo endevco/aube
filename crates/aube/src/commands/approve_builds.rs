@@ -1,6 +1,7 @@
-//! `aube approve-builds` — flip packages to `true` in
-//! `pnpm-workspace.yaml`'s `allowBuilds` map so their install scripts
-//! run on the next `aube install`.
+//! `aube approve-builds` — flip packages to `true` in the workspace
+//! yaml's `allowBuilds` map so their install scripts run on the next
+//! `aube install`. Writes to `aube-workspace.yaml` by default, or
+//! mutates an existing `pnpm-workspace.yaml` in place.
 //!
 //! Walks the lockfile via `ignored_builds::collect_ignored`, presents an
 //! interactive multi-select picker (or approves everything under

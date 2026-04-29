@@ -374,7 +374,7 @@ enum Commands {
     /// Add a dependency
     #[command(visible_alias = "a")]
     Add(commands::add::AddArgs),
-    /// Approve ignored dependency build scripts in `pnpm-workspace.yaml`'s `allowBuilds`
+    /// Approve ignored dependency build scripts in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present) under `allowBuilds`
     ApproveBuilds(commands::approve_builds::ApproveBuildsArgs),
     /// Check installed packages against the registry advisory DB
     #[command(after_long_help = commands::audit::AFTER_LONG_HELP)]

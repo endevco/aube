@@ -57,9 +57,10 @@ contract and may diverge over time.
 aube never touches pnpm's `node_modules/.pnpm/` or `~/.pnpm-store/`. The two
 virtual stores can coexist under `node_modules`. For the lockfile and
 workspace YAML, aube reads and writes whichever file already exists on disk
-— `pnpm-lock.yaml` keeps getting updates in place, and `pnpm-workspace.yaml`
-is read in place (aube does not emit an `aube-workspace.yaml` for existing
-projects).
+— `pnpm-lock.yaml` keeps getting updates in place, and an existing
+`pnpm-workspace.yaml` is mutated in place (aube does not spawn a parallel
+`aube-workspace.yaml` alongside it). When neither workspace yaml exists,
+aube creates `aube-workspace.yaml`.
 
 ## What's different
 
@@ -72,12 +73,11 @@ projects).
   yet gets `aube-lock.yaml`. If it already has `pnpm-lock.yaml` (or any
   other supported lockfile — `package-lock.json`, `npm-shrinkwrap.json`,
   `yarn.lock`, `bun.lock`), aube reads and writes that file in place.
-  Install auto-adds unreviewed dependency builds to
-  `pnpm-workspace.yaml`'s `allowBuilds` with `false`; `aube approve-builds`
-  flips reviewed entries to `true` (matching pnpm v11), creating the file
-  if missing. aube does not generate an
-  `aube-workspace.yaml` for you — create it yourself if you want the
-  aube-named variant.
+  Install auto-adds unreviewed dependency builds to the workspace yaml's
+  `allowBuilds` map with `false`; `aube approve-builds` flips reviewed
+  entries to `true` (matching pnpm v11). When no workspace yaml exists,
+  aube creates `aube-workspace.yaml`; an existing `pnpm-workspace.yaml`
+  is mutated in place.
 - **Build approvals.** Dependency lifecycle script approval follows pnpm
   v11's allowlist model. Use explicit policy fields in `package.json` or
   `aube-workspace.yaml` to opt in. aube can also run approved dependency

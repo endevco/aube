@@ -8,8 +8,8 @@
 //!   from a native module) are SKIPPED by default. A package runs its
 //!   lifecycle scripts only if the active [`BuildPolicy`] allows it —
 //!   configured via `pnpm.allowBuilds` in `package.json`, `allowBuilds`
-//!   in `pnpm-workspace.yaml`, or the escape-hatch
-//!   `--dangerously-allow-all-builds` flag.
+//!   in `aube-workspace.yaml` (or `pnpm-workspace.yaml`), or the
+//!   escape-hatch `--dangerously-allow-all-builds` flag.
 //! - `--ignore-scripts` forces everything off, matching pnpm/npm.
 
 pub mod policy;

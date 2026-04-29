@@ -162,11 +162,12 @@ teardown() {
 	assert_output --partial "aube-test-builds-marker"
 	assert_output --partial "global install"
 
-	# Global installs use the same pnpm v11 review map as projects.
-	assert_file_exists "$install_dir/pnpm-workspace.yaml"
-	run grep -q 'allowBuilds:' "$install_dir/pnpm-workspace.yaml"
+	# Global installs use the same pnpm v11 review map as projects,
+	# written to aube-workspace.yaml (parallels aube-lock.yaml).
+	assert_file_exists "$install_dir/aube-workspace.yaml"
+	run grep -q 'allowBuilds:' "$install_dir/aube-workspace.yaml"
 	assert_success
-	run grep -q 'aube-test-builds-marker: true' "$install_dir/pnpm-workspace.yaml"
+	run grep -q 'aube-test-builds-marker: true' "$install_dir/aube-workspace.yaml"
 	assert_success
 
 	run aube -C "$install_dir" rebuild
