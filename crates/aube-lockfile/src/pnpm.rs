@@ -425,6 +425,13 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let local_source = pkg_info
             .and_then(|p| p.resolution.as_ref())
             .and_then(local_source_from_resolution);
+        // `lockfileIncludeTarballUrl` puts registry tarball URLs on
+        // ordinary `name@version` entries; only URL-keyed entries are
+        // true remote-tarball deps.
+        let local_source = match local_source {
+            Some(LocalSource::RemoteTarball(_)) if !version_is_http_url => None,
+            other => other,
+        };
 
         packages.insert(
             dep_path.clone(),
@@ -3102,6 +3109,253 @@ snapshots:
                 .unwrap()
                 .transitive_peer_dependencies,
             vec!["supports-color".to_string()]
+        );
+    }
+
+    #[test]
+    fn adversarial_native_pnpm_features_roundtrip_together() {
+        let yaml = r#"lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+  lockfileIncludeTarballUrl: true
+
+overrides:
+  is-number: 6.0.0
+  react: 'catalog:'
+
+patchedDependencies:
+  is-odd@3.0.1:
+    path: patches/is-odd@3.0.1.patch
+    hash: sha256-deadbeef
+
+catalogs:
+  default:
+    react:
+      specifier: ^18.2.0
+      version: 18.2.0
+  evens:
+    is-even:
+      specifier: ^1.0.0
+      version: 1.0.0
+
+importers:
+
+  .:
+    dependencies:
+      odd-alias:
+        specifier: npm:is-odd@3.0.1
+        version: is-odd@3.0.1
+      react:
+        specifier: 'catalog:'
+        version: 18.2.0
+    devDependencies:
+      peer-host:
+        specifier: 1.0.0
+        version: 1.0.0(@types/node@20.11.0)
+    optionalDependencies:
+      fsevents:
+        specifier: ^2.3.3
+        version: 2.3.3
+    skippedOptionalDependencies:
+      optional-native:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  '@types/node@20.11.0':
+    resolution: {integrity: sha512-types}
+
+  fsevents@2.3.3:
+    resolution: {integrity: sha512-fsevents, tarball: https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz}
+    os: [darwin]
+    cpu: [x64]
+
+  is-number@6.0.0:
+    resolution: {integrity: sha512-number}
+
+  is-odd@3.0.1:
+    resolution: {integrity: sha512-odd, tarball: https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz}
+
+  peer-host@1.0.0(@types/node@20.11.0):
+    resolution: {integrity: sha512-peer}
+    peerDependencies:
+      '@types/node': '>=20'
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
+
+  react@18.2.0:
+    resolution: {integrity: sha512-react}
+
+ignoredOptionalDependencies:
+  - optional-native
+
+snapshots:
+
+  '@types/node@20.11.0': {}
+
+  fsevents@2.3.3:
+    optional: true
+
+  is-number@6.0.0: {}
+
+  is-odd@3.0.1:
+    dependencies:
+      is-number: 6.0.0
+    transitivePeerDependencies:
+      - '@types/node'
+
+  peer-host@1.0.0(@types/node@20.11.0): {}
+
+  react@18.2.0: {}
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let graph = parse(&path).unwrap();
+
+        assert!(!graph.settings.auto_install_peers);
+        assert!(graph.settings.lockfile_include_tarball_url);
+        assert_eq!(graph.overrides.get("react").unwrap(), "catalog:");
+        assert_eq!(
+            graph.patched_dependencies.get("is-odd@3.0.1").unwrap(),
+            "patches/is-odd@3.0.1.patch"
+        );
+        assert_eq!(
+            graph.catalogs["evens"]["is-even"].specifier, "^1.0.0",
+            "named catalogs must survive parse"
+        );
+        assert!(
+            graph
+                .ignored_optional_dependencies
+                .contains("optional-native")
+        );
+        assert_eq!(
+            graph.skipped_optional_dependencies["."]["optional-native"],
+            "^1.0.0"
+        );
+
+        let root = graph.importers.get(".").expect("root importer");
+        let alias_dep = root.iter().find(|d| d.name == "odd-alias").unwrap();
+        assert_eq!(alias_dep.dep_path, "odd-alias@3.0.1");
+        assert_eq!(alias_dep.specifier.as_deref(), Some("npm:is-odd@3.0.1"));
+        let peer_dep = root.iter().find(|d| d.name == "peer-host").unwrap();
+        assert_eq!(peer_dep.dep_type, DepType::Dev);
+        let optional_dep = root.iter().find(|d| d.name == "fsevents").unwrap();
+        assert_eq!(optional_dep.dep_type, DepType::Optional);
+
+        let alias_pkg = graph.packages.get("odd-alias@3.0.1").unwrap();
+        assert_eq!(alias_pkg.alias_of.as_deref(), Some("is-odd"));
+        assert_eq!(
+            alias_pkg
+                .transitive_peer_dependencies
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["@types/node"]
+        );
+        let fsevents = graph.packages.get("fsevents@2.3.3").unwrap();
+        assert!(fsevents.optional);
+        assert_eq!(fsevents.os.as_slice(), ["darwin"]);
+        assert_eq!(fsevents.cpu.as_slice(), ["x64"]);
+        assert_eq!(
+            fsevents.tarball_url.as_deref(),
+            Some("https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz")
+        );
+        let peer_host = graph
+            .packages
+            .get("peer-host@1.0.0(@types/node@20.11.0)")
+            .unwrap();
+        assert_eq!(peer_host.peer_dependencies["@types/node"], ">=20");
+        assert!(peer_host.peer_dependencies_meta["@types/node"].optional);
+
+        let manifest = PackageJson {
+            name: Some("adversarial-native-pnpm".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [
+                ("odd-alias".to_string(), "npm:is-odd@3.0.1".to_string()),
+                ("react".to_string(), "catalog:".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            dev_dependencies: [("peer-host".to_string(), "1.0.0".to_string())]
+                .into_iter()
+                .collect(),
+            optional_dependencies: [("fsevents".to_string(), "^2.3.3".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = dir.path().join("out.yaml");
+        write(&out, &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(&out).unwrap();
+
+        for needle in [
+            "lockfileIncludeTarballUrl: true",
+            "overrides:",
+            "patchedDependencies:",
+            "catalogs:",
+            "skippedOptionalDependencies:",
+            "ignoredOptionalDependencies:",
+            "aliasOf: is-odd",
+            "peerDependencies:",
+            "peerDependenciesMeta:",
+            "transitivePeerDependencies:",
+            "optional: true",
+            "tarball: https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+        ] {
+            assert!(
+                written.contains(needle),
+                "missing {needle:?} in:\n{written}"
+            );
+        }
+
+        let overrides_at = written.find("\noverrides:").expect("overrides");
+        let patched_at = written
+            .find("\npatchedDependencies:")
+            .expect("patchedDependencies");
+        let catalogs_at = written.find("\ncatalogs:").expect("catalogs");
+        let importers_at = written.find("\nimporters:").expect("importers");
+        assert!(
+            overrides_at < patched_at && patched_at < catalogs_at && catalogs_at < importers_at,
+            "pnpm top-level section order drifted:\n{written}"
+        );
+        let packages_at = written.find("\npackages:").expect("packages");
+        let ignored_at = written
+            .find("\nignoredOptionalDependencies:")
+            .expect("ignored optional");
+        let snapshots_at = written.find("\nsnapshots:").expect("snapshots");
+        assert!(
+            packages_at < ignored_at && ignored_at < snapshots_at,
+            "ignoredOptionalDependencies must stay between packages and snapshots:\n{written}"
+        );
+
+        let reparsed = parse(&out).unwrap();
+        assert_eq!(
+            reparsed
+                .patched_dependencies
+                .get("is-odd@3.0.1")
+                .unwrap_or_else(|| panic!("patched deps lost after reparse:\n{written}")),
+            "patches/is-odd@3.0.1.patch"
+        );
+        assert_eq!(reparsed.catalogs["default"]["react"].version, "18.2.0");
+        assert_eq!(
+            reparsed
+                .packages
+                .get("odd-alias@3.0.1")
+                .unwrap_or_else(|| panic!("alias package lost after reparse:\n{written}"))
+                .alias_of
+                .as_deref(),
+            Some("is-odd")
+        );
+        assert!(reparsed.packages.get("fsevents@2.3.3").unwrap().optional);
+        assert_eq!(
+            reparsed.skipped_optional_dependencies["."]["optional-native"],
+            "^1.0.0"
         );
     }
 
