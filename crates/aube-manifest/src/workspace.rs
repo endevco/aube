@@ -601,6 +601,90 @@ pub fn add_to_allow_builds(
     write_to_yaml(&path, names, allowed)
 }
 
+/// Insert or replace a single `patchedDependencies` entry in the
+/// workspace yaml at `path`. Creates the file (and the
+/// `patchedDependencies` mapping) if needed. Returns the file that
+/// was written.
+pub fn upsert_workspace_patched_dependency(
+    path: &Path,
+    key: &str,
+    rel_patch_path: &str,
+) -> Result<std::path::PathBuf, crate::Error> {
+    edit_patched_dependencies_yaml(path, |map| {
+        map.insert(
+            yaml_serde::Value::String(key.to_string()),
+            yaml_serde::Value::String(rel_patch_path.to_string()),
+        );
+    })
+}
+
+/// Drop a `patchedDependencies` entry from the workspace yaml at
+/// `path`. Returns `Ok(true)` when the entry existed (and the file was
+/// rewritten), `Ok(false)` when the file was missing or had no such
+/// entry. When the removal empties `patchedDependencies`, the key is
+/// dropped from the document so we don't leave a `patchedDependencies: {}`
+/// stub behind.
+pub fn remove_workspace_patched_dependency(path: &Path, key: &str) -> Result<bool, crate::Error> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut existed = false;
+    edit_patched_dependencies_yaml(path, |map| {
+        existed = map.shift_remove(key).is_some();
+    })?;
+    Ok(existed)
+}
+
+fn edit_patched_dependencies_yaml<F>(path: &Path, f: F) -> Result<std::path::PathBuf, crate::Error>
+where
+    F: FnOnce(&mut yaml_serde::Mapping),
+{
+    use yaml_serde::{Mapping, Value};
+
+    let mut doc: Value = if path.exists() {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+        if content.trim().is_empty() {
+            Value::Mapping(Mapping::new())
+        } else {
+            crate::parse_yaml(path, content)?
+        }
+    } else {
+        Value::Mapping(Mapping::new())
+    };
+
+    let map = doc.as_mapping_mut().ok_or_else(|| {
+        crate::Error::YamlParse(
+            path.to_path_buf(),
+            "top-level yaml must be a mapping".to_string(),
+        )
+    })?;
+
+    let pd_key = Value::String("patchedDependencies".to_string());
+    let entry = map
+        .entry(pd_key.clone())
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    let pd_map = entry.as_mapping_mut().ok_or_else(|| {
+        crate::Error::YamlParse(
+            path.to_path_buf(),
+            "`patchedDependencies` must be a mapping".to_string(),
+        )
+    })?;
+
+    f(pd_map);
+
+    if pd_map.is_empty() {
+        map.shift_remove("patchedDependencies");
+    }
+
+    let raw = yaml_serde::to_string(&doc)
+        .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+    let indented = indent_block_sequences(&raw);
+    aube_util::fs_atomic::atomic_write(path, indented.as_bytes())
+        .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    Ok(path.to_path_buf())
+}
+
 fn write_to_yaml(
     path: &Path,
     names: &[String],
@@ -1055,5 +1139,64 @@ updateConfig:
                 .map(|u| u.ignore_dependencies.as_slice()),
             Some(["is-odd".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        upsert_workspace_patched_dependency(
+            &path,
+            "is-positive@3.1.0",
+            "patches/is-positive@3.1.0.patch",
+        )
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("patchedDependencies:"));
+        assert!(written.contains("is-positive@3.1.0"));
+        assert!(written.contains("patches/is-positive@3.1.0.patch"));
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_preserves_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "packages:\n  - 'pkgs/*'\noverrides:\n  foo: 1.0.0\n").unwrap();
+        upsert_workspace_patched_dependency(&path, "bar@2.0.0", "patches/bar@2.0.0.patch").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("packages:"));
+        assert!(written.contains("- 'pkgs/*'") || written.contains("- pkgs/*"));
+        assert!(written.contains("overrides:"));
+        assert!(written.contains("foo:"));
+        assert!(written.contains("patchedDependencies:"));
+        assert!(written.contains("bar@2.0.0"));
+    }
+
+    #[test]
+    fn remove_workspace_patched_dependency_drops_empty_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(
+            &path,
+            "patchedDependencies:\n  \"a@1.0.0\": patches/a@1.0.0.patch\n",
+        )
+        .unwrap();
+        let removed = remove_workspace_patched_dependency(&path, "a@1.0.0").unwrap();
+        assert!(removed);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("patchedDependencies"));
+    }
+
+    #[test]
+    fn remove_workspace_patched_dependency_missing_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(
+            &path,
+            "patchedDependencies:\n  \"a@1.0.0\": patches/a@1.0.0.patch\n",
+        )
+        .unwrap();
+        let removed = remove_workspace_patched_dependency(&path, "missing@9.9.9").unwrap();
+        assert!(!removed);
     }
 }

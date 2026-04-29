@@ -150,31 +150,107 @@ pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
     Ok(out)
 }
 
-/// Add or replace an entry in `pnpm.patchedDependencies`, preserving
-/// the rest of `package.json`. Writes the file back with a trailing
-/// newline.
-pub fn upsert_patched_dependency(cwd: &Path, key: &str, rel_patch_path: &str) -> Result<()> {
-    edit_patched_dependencies(cwd, |map| {
-        map.insert(
-            key.to_string(),
-            serde_json::Value::String(rel_patch_path.to_string()),
-        );
-    })
+/// Where the next `aube patch-commit` write should land. pnpm v10
+/// moved `patchedDependencies` out of `package.json` into the workspace
+/// yaml so users can document patches with YAML comments — when a
+/// project is already using the new home, append there. Otherwise fall
+/// back to `package.json` for projects that predate the move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PatchDestination {
+    PackageJson,
+    WorkspaceYaml(PathBuf),
 }
 
-/// Drop an entry from `pnpm.patchedDependencies`. Returns `true` if
-/// the entry existed.
+/// Pick which file `aube patch-commit` should mutate. Precedence:
+/// 1. Whichever file already declares any `patchedDependencies` wins.
+///    A workspace-yaml entry wins on a tie because aube's
+///    `load_patches` already gives the workspace yaml precedence on
+///    key conflict, so writing there keeps the live entry in sync.
+/// 2. Otherwise, prefer the workspace yaml when one exists on disk —
+///    matches pnpm v10+ convention.
+/// 3. Otherwise, default to `package.json`.
+fn patch_destination(cwd: &Path) -> PatchDestination {
+    let ws_target = aube_manifest::workspace::workspace_yaml_target(cwd);
+    let ws_has_patches = aube_manifest::workspace::WorkspaceConfig::load(cwd)
+        .map(|c| !c.patched_dependencies.is_empty())
+        .unwrap_or(false);
+    if ws_has_patches {
+        return PatchDestination::WorkspaceYaml(ws_target);
+    }
+    let pkg_has_patches = read_package_json_patched_dependencies(cwd)
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    if pkg_has_patches {
+        return PatchDestination::PackageJson;
+    }
+    if ws_target.exists() {
+        return PatchDestination::WorkspaceYaml(ws_target);
+    }
+    PatchDestination::PackageJson
+}
+
+/// Add or replace an entry in `patchedDependencies`. The destination is
+/// resolved by `patch_destination` — workspace yaml when the project is
+/// already using pnpm v10+ conventions, `package.json` otherwise.
+/// Returns the path that was rewritten so the caller can report it to
+/// the user.
+pub fn upsert_patched_dependency(cwd: &Path, key: &str, rel_patch_path: &str) -> Result<PathBuf> {
+    match patch_destination(cwd) {
+        PatchDestination::PackageJson => {
+            edit_patched_dependencies(cwd, |map| {
+                map.insert(
+                    key.to_string(),
+                    serde_json::Value::String(rel_patch_path.to_string()),
+                );
+            })?;
+            Ok(cwd.join("package.json"))
+        }
+        PatchDestination::WorkspaceYaml(path) => {
+            aube_manifest::workspace::upsert_workspace_patched_dependency(
+                &path,
+                key,
+                rel_patch_path,
+            )
+            .map_err(miette::Report::new)
+            .wrap_err_with(|| format!("failed to write {}", path.display()))?;
+            Ok(path)
+        }
+    }
+}
+
+/// Drop an entry from `patchedDependencies` in whichever file declares
+/// it. Returns `true` if the entry existed.
 pub fn remove_patched_dependency(cwd: &Path, key: &str) -> Result<bool> {
-    let mut existed = false;
-    edit_patched_dependencies(cwd, |map| {
-        existed = map.remove(key).is_some();
-    })?;
-    Ok(existed)
+    let mut removed_from_ws = false;
+    let ws_target = aube_manifest::workspace::workspace_yaml_target(cwd);
+    if ws_target.exists() {
+        removed_from_ws =
+            aube_manifest::workspace::remove_workspace_patched_dependency(&ws_target, key)
+                .map_err(miette::Report::new)
+                .wrap_err_with(|| format!("failed to write {}", ws_target.display()))?;
+    }
+    let mut removed_from_pkg = false;
+    if cwd.join("package.json").exists() {
+        edit_patched_dependencies(cwd, |map| {
+            removed_from_pkg = map.remove(key).is_some();
+        })?;
+    }
+    Ok(removed_from_ws || removed_from_pkg)
 }
 
-/// Read the current `pnpm.patchedDependencies` map from
-/// `package.json`. Returns an empty map if the field is absent.
+/// Read every declared `patchedDependencies` entry across both the
+/// workspace yaml and `package.json`, with workspace-yaml entries
+/// winning on key conflict (same precedence used by `load_patches`).
 pub fn read_patched_dependencies(cwd: &Path) -> Result<BTreeMap<String, String>> {
+    let mut out = read_package_json_patched_dependencies(cwd)?;
+    let ws_config = aube_manifest::workspace::WorkspaceConfig::load(cwd)
+        .map_err(miette::Report::new)
+        .wrap_err("failed to read workspace yaml")?;
+    out.extend(ws_config.patched_dependencies);
+    Ok(out)
+}
+
+fn read_package_json_patched_dependencies(cwd: &Path) -> Result<BTreeMap<String, String>> {
     let manifest_path = cwd.join("package.json");
     if !manifest_path.exists() {
         return Ok(BTreeMap::new());
@@ -300,5 +376,62 @@ mod tests {
     fn split_missing_version_errors() {
         assert!(split_patch_key("is-positive").is_err());
         assert!(split_patch_key("@babel/core").is_err());
+    }
+
+    #[test]
+    fn destination_prefers_workspace_yaml_when_it_already_holds_patches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "patchedDependencies:\n  \"a@1.0.0\": patches/a@1.0.0.patch\n",
+        )
+        .unwrap();
+        match patch_destination(dir.path()) {
+            PatchDestination::WorkspaceYaml(p) => {
+                assert_eq!(p, dir.path().join("pnpm-workspace.yaml"));
+            }
+            d => panic!("expected workspace yaml destination, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn destination_prefers_package_json_when_it_already_holds_patches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            "{\"pnpm\":{\"patchedDependencies\":{\"a@1.0.0\":\"patches/a@1.0.0.patch\"}}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'pkgs/*'\n",
+        )
+        .unwrap();
+        assert_eq!(patch_destination(dir.path()), PatchDestination::PackageJson);
+    }
+
+    #[test]
+    fn destination_prefers_workspace_yaml_when_present_and_neither_holds_patches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'pkgs/*'\n",
+        )
+        .unwrap();
+        match patch_destination(dir.path()) {
+            PatchDestination::WorkspaceYaml(p) => {
+                assert_eq!(p, dir.path().join("pnpm-workspace.yaml"));
+            }
+            d => panic!("expected workspace yaml destination, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn destination_falls_back_to_package_json_when_no_workspace_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        assert_eq!(patch_destination(dir.path()), PatchDestination::PackageJson);
     }
 }

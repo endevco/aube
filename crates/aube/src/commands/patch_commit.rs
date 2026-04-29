@@ -80,20 +80,27 @@ pub async fn run(args: PatchCommitArgs) -> Result<()> {
     // Manifest write failure means the patch on disk is not
     // referenced anywhere. Restore the prior patch if there was one
     // (re-patch path), else remove the orphan.
-    if let Err(e) = upsert_patched_dependency(&cwd, &key, &rel_path) {
-        match prior_patch {
-            Some(bytes) => {
-                let _ = aube_util::fs_atomic::atomic_write(&abs_path, &bytes);
+    let manifest_path = match upsert_patched_dependency(&cwd, &key, &rel_path) {
+        Ok(p) => p,
+        Err(e) => {
+            match prior_patch {
+                Some(bytes) => {
+                    let _ = aube_util::fs_atomic::atomic_write(&abs_path, &bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&abs_path);
+                }
             }
-            None => {
-                let _ = std::fs::remove_file(&abs_path);
-            }
+            return Err(e);
         }
-        return Err(e);
-    }
+    };
 
+    let manifest_label = manifest_path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| manifest_path.display().to_string());
     eprintln!("Wrote {}", abs_path.display());
-    eprintln!("Recorded {key} -> {rel_path} in package.json");
+    eprintln!("Recorded {key} -> {rel_path} in {manifest_label}");
 
     // Drop the snapshot tempdir now that we've captured the diff —
     // matches pnpm's behavior of cleaning up after a successful commit.
