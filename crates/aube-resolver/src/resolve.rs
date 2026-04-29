@@ -765,28 +765,30 @@ impl Resolver {
                             },
                         );
                         if let Some(ref tx) = self.resolved_tx {
-                            let _ = tx.send(ResolvedPackage {
-                                dep_path: dep_path.clone(),
-                                name: linked_name.clone(),
-                                version: real_version.clone(),
-                                integrity: None,
-                                tarball_url: None,
-                                // local_source deps aren't aliased —
-                                // `file:`/`link:` specifiers go
-                                // through the local-source branch,
-                                // not the `npm:` rewrite.
-                                alias_of: None,
-                                local_source: Some(local.clone()),
-                                // Local `file:`/`link:` packages never
-                                // carry npm-style platform constraints
-                                // — they're whatever the user points
-                                // at, so the fetch coordinator treats
-                                // them as unconstrained (always fetch).
-                                os: aube_lockfile::PlatformList::new(),
-                                cpu: aube_lockfile::PlatformList::new(),
-                                libc: aube_lockfile::PlatformList::new(),
-                                deprecated: None,
-                            });
+                            let _ = tx
+                                .send(ResolvedPackage {
+                                    dep_path: dep_path.clone(),
+                                    name: linked_name.clone(),
+                                    version: real_version.clone(),
+                                    integrity: None,
+                                    tarball_url: None,
+                                    // local_source deps aren't aliased —
+                                    // `file:`/`link:` specifiers go
+                                    // through the local-source branch,
+                                    // not the `npm:` rewrite.
+                                    alias_of: None,
+                                    local_source: Some(local.clone()),
+                                    // Local `file:`/`link:` packages never
+                                    // carry npm-style platform constraints
+                                    // — they're whatever the user points
+                                    // at, so the fetch coordinator treats
+                                    // them as unconstrained (always fetch).
+                                    os: aube_lockfile::PlatformList::new(),
+                                    cpu: aube_lockfile::PlatformList::new(),
+                                    libc: aube_lockfile::PlatformList::new(),
+                                    deprecated: None,
+                                })
+                                .await;
                         }
                         // Enqueue transitive deps of the local package
                         // (directories + tarballs only — `link:` deps
@@ -1028,32 +1030,34 @@ impl Resolver {
                             }
 
                             if let Some(ref tx) = self.resolved_tx {
-                                let _ = tx.send(ResolvedPackage {
-                                    dep_path: dep_path.clone(),
-                                    name: task.name.clone(),
-                                    version: version.clone(),
-                                    integrity: locked_pkg.integrity.clone(),
-                                    tarball_url: locked_pkg.tarball_url.clone(),
-                                    // Carry the alias identity
-                                    // through the reuse path — the
-                                    // existing `locked_pkg` already
-                                    // records it if the lockfile held
-                                    // an aliased entry, so the
-                                    // streaming fetch still hits the
-                                    // real registry name.
-                                    alias_of: locked_pkg.alias_of.clone(),
-                                    local_source: locked_pkg.local_source.clone(),
-                                    os: locked_pkg.os.clone(),
-                                    cpu: locked_pkg.cpu.clone(),
-                                    libc: locked_pkg.libc.clone(),
-                                    // Lockfile reuse skips the packument
-                                    // fetch, so we have no deprecation
-                                    // message to forward here. The
-                                    // `aube deprecations` command re-queries
-                                    // packuments live for the
-                                    // after-the-fact view.
-                                    deprecated: None,
-                                });
+                                let _ = tx
+                                    .send(ResolvedPackage {
+                                        dep_path: dep_path.clone(),
+                                        name: task.name.clone(),
+                                        version: version.clone(),
+                                        integrity: locked_pkg.integrity.clone(),
+                                        tarball_url: locked_pkg.tarball_url.clone(),
+                                        // Carry the alias identity
+                                        // through the reuse path — the
+                                        // existing `locked_pkg` already
+                                        // records it if the lockfile held
+                                        // an aliased entry, so the
+                                        // streaming fetch still hits the
+                                        // real registry name.
+                                        alias_of: locked_pkg.alias_of.clone(),
+                                        local_source: locked_pkg.local_source.clone(),
+                                        os: locked_pkg.os.clone(),
+                                        cpu: locked_pkg.cpu.clone(),
+                                        libc: locked_pkg.libc.clone(),
+                                        // Lockfile reuse skips the packument
+                                        // fetch, so we have no deprecation
+                                        // message to forward here. The
+                                        // `aube deprecations` command re-queries
+                                        // packuments live for the
+                                        // after-the-fact view.
+                                        deprecated: None,
+                                    })
+                                    .await;
                             }
 
                             // Carry declared peer deps forward from the
@@ -1530,19 +1534,21 @@ impl Resolver {
                 // for aliased packages where `name` alone (`h3-v2`)
                 // would 404.
                 if let Some(ref tx) = self.resolved_tx {
-                    let _ = tx.send(ResolvedPackage {
-                        dep_path: dep_path.clone(),
-                        name: task.name.clone(),
-                        version: version.clone(),
-                        integrity: integrity.clone(),
-                        tarball_url: tarball_url.clone(),
-                        alias_of: task.real_name.clone(),
-                        local_source: None,
-                        os: version_meta.os.iter().cloned().collect(),
-                        cpu: version_meta.cpu.iter().cloned().collect(),
-                        libc: version_meta.libc.iter().cloned().collect(),
-                        deprecated: deprecated_msg.clone(),
-                    });
+                    let _ = tx
+                        .send(ResolvedPackage {
+                            dep_path: dep_path.clone(),
+                            name: task.name.clone(),
+                            version: version.clone(),
+                            integrity: integrity.clone(),
+                            tarball_url: tarball_url.clone(),
+                            alias_of: task.real_name.clone(),
+                            local_source: None,
+                            os: version_meta.os.iter().cloned().collect(),
+                            cpu: version_meta.cpu.iter().cloned().collect(),
+                            libc: version_meta.libc.iter().cloned().collect(),
+                            deprecated: deprecated_msg.clone(),
+                        })
+                        .await;
                 }
 
                 // Capture the declared peer deps now so the post-pass can

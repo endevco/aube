@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 impl Resolver {
+    const DEFAULT_STREAM_CAPACITY: usize = 64;
+
     pub fn new(client: Arc<RegistryClient>) -> Self {
         Self {
             client,
@@ -43,10 +45,16 @@ impl Resolver {
     /// Create a resolver that streams resolved packages through a channel.
     /// Returns `(resolver, receiver)`. The receiver yields packages as they're
     /// discovered, allowing tarball fetches to start during resolution.
-    pub fn with_stream(
+    pub fn with_stream(client: Arc<RegistryClient>) -> (Self, mpsc::Receiver<ResolvedPackage>) {
+        Self::with_stream_capacity(client, Self::DEFAULT_STREAM_CAPACITY)
+    }
+
+    /// Create a streaming resolver with a bounded resolved-package buffer.
+    pub fn with_stream_capacity(
         client: Arc<RegistryClient>,
-    ) -> (Self, mpsc::UnboundedReceiver<ResolvedPackage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+        capacity: usize,
+    ) -> (Self, mpsc::Receiver<ResolvedPackage>) {
+        let (tx, rx) = mpsc::channel(capacity.max(1));
         (
             Self {
                 client,
