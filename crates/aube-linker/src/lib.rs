@@ -2891,10 +2891,27 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
             }
             continue;
         }
+        // git-style patches always use LF line endings, but published
+        // tarballs frequently ship files with CRLF (Windows editors,
+        // `core.autocrlf=true` checkouts). Diffy is byte-exact and
+        // refuses to match CRLF context against LF hunk lines, so we
+        // normalize the original to LF before applying and restore the
+        // CRLF on write. pnpm's patch applier does the same thing.
+        let was_crlf = original.contains("\r\n");
+        let normalized = if was_crlf {
+            original.replace("\r\n", "\n")
+        } else {
+            original
+        };
         let parsed = diffy::Patch::from_str(&section.body)
             .map_err(|e| format!("failed to parse patch for {rel}: {e}"))?;
-        let patched = diffy::apply(&original, &parsed)
+        let patched_lf = diffy::apply(&normalized, &parsed)
             .map_err(|e| format!("failed to apply patch for {rel}: {e}"))?;
+        let patched = if was_crlf {
+            patched_lf.replace('\n', "\r\n")
+        } else {
+            patched_lf
+        };
         // Break any reflink/hardlink to the global store before
         // writing the patched bytes — otherwise we'd silently mutate
         // every other project sharing this CAS file. Stage the write
@@ -3313,6 +3330,30 @@ mod patch_tests {
         let sections = split_patch_sections(patch);
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].rel_path.as_deref(), Some("path with spaces.js"));
+    }
+
+    #[test]
+    fn applies_lf_patch_against_crlf_file() {
+        // Tarballs published from Windows editors ship CRLF text. pnpm
+        // / git emit LF-only patches even against those files. Diffy is
+        // byte-exact, so the apply path normalizes CRLF -> LF before
+        // matching and restores CRLF on write.
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("a.txt"), b"one\r\ntwo\r\nthree\r\n").unwrap();
+
+        let patch = "diff --git a/a.txt b/a.txt\n\
+                     --- a/a.txt\n\
+                     +++ b/a.txt\n\
+                     @@ -1,3 +1,3 @@\n\
+                     \x20one\n\
+                     -two\n\
+                     +TWO\n\
+                     \x20three\n";
+        apply_multi_file_patch(&pkg, patch).unwrap();
+        let bytes = std::fs::read(pkg.join("a.txt")).unwrap();
+        assert_eq!(bytes, b"one\r\nTWO\r\nthree\r\n");
     }
 
     #[test]
