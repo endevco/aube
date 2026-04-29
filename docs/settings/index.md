@@ -336,7 +336,9 @@ trust evidence than any earlier-published version of the same package.
 Recognized evidence: structured npm trusted-publisher metadata
 (`_npmUser.trustedPublisher.id`) outranks structured SLSA provenance metadata
 (`dist.attestations.provenance.predicateType`). Set to `off` to disable, or
-use `trustPolicyExclude` to whitelist specific packages or versions.
+use `trustPolicyExclude` to whitelist specific packages or versions. This
+policy validates registry metadata shape; it does not cryptographically verify
+the attached attestation bundle.
 
 ### `trustPolicyExclude` {#setting-trustpolicyexclude}
 

@@ -94,6 +94,9 @@ only counts the structured metadata shape npm emits after registry-side checks:
    --provenance` (`dist.attestations.provenance.predicateType` with an SLSA
    provenance URI).
 
+This install-time policy validates the registry metadata shape; it does not
+cryptographically verify the attached attestation bundle.
+
 A trust downgrade may indicate a supply-chain incident: publisher account
 takeover, repository tampering, or a malicious co-maintainer publishing
 without the original CI flow.

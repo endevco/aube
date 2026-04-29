@@ -208,7 +208,9 @@ pub struct Dist {
     pub shasum: Option<String>,
     /// Sigstore attestations block. The trust-policy check reads
     /// `dist.attestations.provenance` as rank-1 trust evidence when
-    /// it is an object with an SLSA provenance `predicateType`.
+    /// it is an object with an SLSA provenance `predicateType`. aube
+    /// validates this metadata shape during install; it does not
+    /// cryptographically verify the attached attestation bundle.
     #[serde(default)]
     pub attestations: Option<Attestations>,
 }

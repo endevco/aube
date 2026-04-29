@@ -4,14 +4,15 @@
 //! (resolving/npm-resolver/src/trustChecks.ts), verified against pnpm's
 //! own test suite. Two trust-evidence sources, ranked
 //! `TrustedPublisher (2) > Provenance (1)`. aube only accepts the
-//! structured metadata shapes npm emits after server-side verification:
+//! structured metadata shapes npm emits after server-side checks:
 //! `_npmUser.trustedPublisher` must name a publisher id, and
 //! `dist.attestations.provenance` must name an SLSA provenance predicate.
-//! The check runs immediately after a version is picked from a packument:
-//! if any strictly older version of the same package had stronger trust
-//! evidence, the install fails. Pre-2010 packuments without per-version
-//! `time` entries error when the picked version isn't excluded — same as
-//! pnpm.
+//! This is metadata-shape validation, not install-time cryptographic
+//! verification of the attestation bundle. The check runs immediately
+//! after a version is picked from a packument: if any strictly older
+//! version of the same package had stronger trust evidence, the install
+//! fails. Pre-2010 packuments without per-version `time` entries error
+//! when the picked version isn't excluded — same as pnpm.
 
 use aube_registry::{Packument, VersionMetadata};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,7 +76,12 @@ fn is_provenance(v: &serde_json::Value) -> bool {
     v.as_object()
         .and_then(|o| o.get("predicateType"))
         .and_then(|predicate| predicate.as_str())
-        .is_some_and(|predicate| predicate.starts_with("https://slsa.dev/provenance/"))
+        .is_some_and(|predicate| {
+            predicate
+                .strip_prefix("https://slsa.dev/provenance/v")
+                .and_then(|suffix| suffix.chars().next())
+                .is_some_and(|c| c.is_ascii_digit())
+        })
 }
 
 #[derive(Debug)]
@@ -596,6 +602,9 @@ mod tests {
             serde_json::json!([]),
             serde_json::json!({}),
             serde_json::json!({"predicateType": ""}),
+            serde_json::json!({"predicateType": "https://slsa.dev/provenance/"}),
+            serde_json::json!({"predicateType": "https://slsa.dev/provenance/v"}),
+            serde_json::json!({"predicateType": "https://slsa.dev/provenance/latest"}),
             serde_json::json!({"predicateType": "https://example.com/provenance/v1"}),
         ] {
             v.dist.as_mut().unwrap().attestations = Some(Attestations {
