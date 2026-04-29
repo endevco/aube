@@ -497,6 +497,9 @@ enum Commands {
     ///
     /// A `purge` script in the root `package.json` overrides the built-in.
     Purge(commands::clean::CleanArgs),
+    /// Query packages in the resolved dependency graph
+    #[command(after_long_help = commands::query::AFTER_LONG_HELP)]
+    Query(commands::query::QueryArgs),
     /// Re-run root lifecycle scripts and allowlisted dependency builds
     #[command(visible_alias = "rb")]
     Rebuild(commands::rebuild::RebuildArgs),
@@ -820,6 +823,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             commands::publish::run(args, effective_filter.clone(), cli.registry.as_deref()).await?
         }
         Some(Commands::Purge(args)) => commands::clean::run_purge(args).await?,
+        Some(Commands::Query(args)) => commands::query::run(args, effective_filter.clone()).await?,
         Some(Commands::Rebuild(args)) => {
             commands::rebuild::run(args, effective_filter.clone()).await?
         }
