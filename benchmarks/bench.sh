@@ -463,6 +463,47 @@ run_bench_preinstall() {
 	done
 }
 
+PHASES_FILE="$BENCH_DIR/aube-install-phases.jsonl"
+: >"$PHASES_FILE"
+
+run_aube_phase_bench() {
+	local bench_name=$1
+	local prepare_tpl=$2
+
+	for i in "${!TOOLS[@]}"; do
+		local tool="${TOOLS[$i]}"
+		[ "$tool" = "aube" ] || continue
+
+		local project="${TOOL_PROJECTS[$i]}"
+		local bin="${TOOL_BINS[$i]}"
+		local home="${TOOL_HOMES[$i]}"
+		local store="${TOOL_STORES[$i]}"
+		local cache="${TOOL_CACHES[$i]}"
+		local lockfile="$BENCH_DIR/saved-lockfile-$tool"
+		local lockfile_dest
+		lockfile_dest="$project/$(lockfile_name_for "$tool")"
+
+		local prepare
+		prepare=$(expand_template "$prepare_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
+
+		local cmd_tpl
+		cmd_tpl=$(cmd_template "$bench_name" "$tool")
+		local cmd
+		cmd=$(expand_template "$cmd_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
+		cmd="${cmd/&& /&& AUBE_BENCH_PHASES_FILE=$PHASES_FILE AUBE_BENCH_SCENARIO=$bench_name }"
+
+		echo "  $bench_name"
+		if ! eval "$prepare"; then
+			echo "warning: phase timing prepare failed for $bench_name - skipping sample" >&2
+			continue
+		fi
+		if ! eval "$cmd"; then
+			echo "warning: phase timing run failed for $bench_name - skipping sample" >&2
+			continue
+		fi
+	done
+}
+
 # Directories to wipe in cold scenarios. Each pm has its own cache /
 # store layout, so we reset everything we know about to guarantee
 # a fresh download on every iteration.
@@ -472,6 +513,7 @@ COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.local/share/aube {home}/.n
 # + node_modules) and drop the saved lockfile back. Uses the per-tool
 # `lockfile_dest` placeholder so each pm gets its native filename.
 WARM_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb && cp {lockfile} {lockfile_dest}"
+COLD_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
 
 # ── Benchmark 1: Fresh install, warm cache ─────────────────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
@@ -489,8 +531,7 @@ run_bench "gvs-warm" "$WARM_PREP"
 
 echo ""
 echo "━━━ Benchmark 2: Fresh install (cold cache) ━━━"
-run_bench "gvs-cold" \
-	"rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
+run_bench "gvs-cold" "$COLD_PREP"
 
 # ── Benchmark 3: CI install, warm cache ────────────────────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
@@ -508,8 +549,20 @@ run_bench "ci-warm" "$WARM_PREP"
 
 echo ""
 echo "━━━ Benchmark 4: CI install (cold cache, GVS disabled) ━━━"
-run_bench "ci-cold" \
-	"rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
+run_bench "ci-cold" "$COLD_PREP"
+
+# ── Aube phase timing sample ───────────────────────────────────────────────
+# Hyperfine owns stdout/stderr and times whole commands. For attribution,
+# run aube once per install-shaped scenario with AUBE_BENCH_PHASES_FILE
+# enabled so the binary writes structured resolve/fetch/link/script/state
+# timings to JSONL, then summarize it at the end.
+
+echo ""
+echo "━━━ Aube install phase timings ━━━"
+run_aube_phase_bench "gvs-warm" "$WARM_PREP"
+run_aube_phase_bench "gvs-cold" "$COLD_PREP"
+run_aube_phase_bench "ci-warm" "$WARM_PREP"
+run_aube_phase_bench "ci-cold" "$COLD_PREP"
 
 # ── Benchmark 5: install + run test (developer loop) ───────────────────────
 # Warm store+cache, lockfile present, node_modules *already* populated.
@@ -547,6 +600,10 @@ TOOLS_CSV=$(
 	echo "${TOOLS[*]}"
 )
 BENCH_TOOLS="$TOOLS_CSV" node "$SCRIPT_DIR/generate-results.js" "$BENCH_DIR" "$RESULTS_MD"
+if [ -s "$PHASES_FILE" ]; then
+	echo ""
+	node "$SCRIPT_DIR/generate-phase-results.mjs" "$PHASES_FILE" "$BENCH_DIR/aube-install-phases.md"
+fi
 echo ""
 echo "Results saved to: $RESULTS_MD"
 echo ""

@@ -6,6 +6,7 @@ use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use miette::{Context, IntoDiagnostic, miette};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
+use std::io::Write;
 
 mod bin_linking;
 mod delta;
@@ -373,6 +374,62 @@ pub struct InstallOptions {
     /// selectors additionally skip `devDependencies` edges during
     /// graph traversal — see `aube_workspace::selector::EffectiveFilter`.
     pub workspace_filter: aube_workspace::selector::EffectiveFilter,
+}
+
+#[derive(Default)]
+struct InstallPhaseTimings {
+    path: Option<std::path::PathBuf>,
+    phases_ms: BTreeMap<&'static str, u128>,
+}
+
+impl InstallPhaseTimings {
+    fn from_env() -> Self {
+        Self {
+            path: std::env::var_os("AUBE_BENCH_PHASES_FILE").map(std::path::PathBuf::from),
+            phases_ms: BTreeMap::new(),
+        }
+    }
+
+    fn record(&mut self, phase: &'static str, elapsed: std::time::Duration) {
+        if self.path.is_some() {
+            self.phases_ms.insert(phase, elapsed.as_millis());
+        }
+    }
+
+    fn write(
+        &self,
+        cwd: &std::path::Path,
+        total: std::time::Duration,
+        packages: usize,
+        cached: usize,
+        fetched: usize,
+    ) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        let payload = serde_json::json!({
+            "cwd": cwd,
+            "scenario": std::env::var("AUBE_BENCH_SCENARIO").ok(),
+            "total_ms": total.as_millis(),
+            "packages": packages,
+            "cached": cached,
+            "fetched": fetched,
+            "phases_ms": self.phases_ms,
+        });
+        let Ok(line) = serde_json::to_string(&payload) else {
+            return;
+        };
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(file, "{line}");
+            }
+            Err(e) => tracing::debug!("failed to write install phase timings: {e}"),
+        }
+    }
 }
 
 impl InstallOptions {
@@ -1102,6 +1159,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     };
     let _lock = super::take_project_lock(&cwd)?;
     let start = std::time::Instant::now();
+    let mut phase_timings = InstallPhaseTimings::from_env();
 
     // `--force`: wipe the auto-install state file so the freshness
     // check in `ensure_installed` can't short-circuit the next run,
@@ -1433,6 +1491,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     have nothing to gate"). Dependency scripts are always
     //     skipped.
     if !opts.ignore_scripts && !lockfile_only_effective {
+        let phase_start = std::time::Instant::now();
         run_root_lifecycle(
             &cwd,
             &modules_dir_name,
@@ -1440,6 +1499,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             aube_scripts::LifecycleHook::PreInstall,
         )
         .await?;
+        phase_timings.record("root_preinstall", phase_start.elapsed());
     }
 
     // Progress UI. `None` on non-TTY stderr, in text mode (e.g. `-v`), or
@@ -2065,6 +2125,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 "phase:resolve (from lockfile) {:.1?}",
                 phase_start.elapsed()
             );
+            phase_timings.record("resolve", phase_start.elapsed());
 
             // Lockfile path: the total is known upfront, so seed the overall
             // bar with the full package count and enter the fetch phase.
@@ -2107,6 +2168,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 "phase:fetch {:.1?} ({fetched} packages)",
                 phase_start.elapsed()
             );
+            phase_timings.record("fetch", phase_start.elapsed());
 
             (graph, indices, cached, fetched)
         }
@@ -2477,6 +2539,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 p.set_phase("fetching");
             }
             tracing::debug!("phase:resolve (fresh) {:.1?}", phase_start.elapsed());
+            phase_timings.record("resolve", phase_start.elapsed());
 
             // Drop the resolver to close the channel, signaling fetch coordinator to finish
             drop(resolver);
@@ -2693,6 +2756,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 "phase:fetch {:.1?} ({fetched} packages, {cached} cached)",
                 fetch_phase_start.elapsed()
             );
+            phase_timings.record("fetch", fetch_phase_start.elapsed());
             // Drain the materializer; its stats get rolled into the
             // final link stats below. Errors abort the install just like
             // a failing link phase would.
@@ -2703,6 +2767,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 prewarm_stats.packages_linked,
                 prewarm_stats.files_linked,
             );
+            phase_timings.record("prewarm_gvs", materialize_phase_start.elapsed());
 
             // The fetch coordinator streamed `ResolvedPackage`s from the
             // resolver's *first pass*, which uses canonical `name@version`
@@ -2814,6 +2879,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     "catch-up fetch for {} package(s) deferred by the streaming filter but kept by filter_graph",
                     missing_packages.len()
                 );
+                let catchup_start = std::time::Instant::now();
                 let cwd_for_catchup_client = cwd.clone();
                 let catchup_network_mode = opts.network_mode;
                 let (catchup_indices, catchup_cached, catchup_fetched) = fetch_packages_with_root(
@@ -2842,6 +2908,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 indices.extend(catchup_indices);
                 cached += catchup_cached;
                 fetched += catchup_fetched;
+                phase_timings.record("catchup_fetch", catchup_start.elapsed());
             }
 
             (graph, indices, cached, fetched)
@@ -3133,6 +3200,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         phase_start.elapsed(),
         stats.files_linked
     );
+    phase_timings.record("link", phase_start.elapsed());
 
     // Apply `dependenciesMeta.<name>.injected` overrides. Only runs in
     // workspace + isolated mode: hoisted layouts don't have a
@@ -3163,6 +3231,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 inject_start.elapsed()
             );
         }
+        phase_timings.record("inject", inject_start.elapsed());
     }
 
     // 7. Link .bin entries (root + each workspace package).
@@ -3300,6 +3369,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             )?;
         }
         tracing::debug!("phase:link_bins {:.1?}", phase_start.elapsed());
+        phase_timings.record("link_bins", phase_start.elapsed());
     }
 
     // Tear down the progress display before running post-link lifecycle
@@ -3353,6 +3423,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     `(dep-graph, engine)` share a safe directory and divergent
     //     resolutions land at distinct paths.
     if !opts.ignore_scripts && build_policy.has_any_allow_rule() && !virtual_store_only {
+        let phase_start = std::time::Instant::now();
         let side_effects_cache_root =
             side_effects_cache_setting.then(|| side_effects_cache_root(store.as_ref()));
         let side_effects_cache = side_effects_cache_root
@@ -3381,6 +3452,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         if ran > 0 {
             tracing::debug!("allowBuilds: ran {ran} dep lifecycle script(s)");
         }
+        phase_timings.record("dep_lifecycle", phase_start.elapsed());
     }
 
     // 7b. Post-link root lifecycle hooks: install → postinstall → prepare.
@@ -3392,6 +3464,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     A hook that's not defined in package.json is a silent no-op.
     //     A hook that exits non-zero fails the install (fail-fast, matching pnpm).
     if !opts.ignore_scripts && !virtual_store_only {
+        let phase_start = std::time::Instant::now();
         for hook in [
             aube_scripts::LifecycleHook::Install,
             aube_scripts::LifecycleHook::PostInstall,
@@ -3399,6 +3472,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         ] {
             run_root_lifecycle(&cwd, &modules_dir_name, &manifest, hook).await?;
         }
+        phase_timings.record("root_lifecycle", phase_start.elapsed());
     }
 
     // 8. Write state file for auto-install tracking.
@@ -3416,6 +3490,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //    dep unmaterialized.
     let filtered_install = !opts.workspace_filter.is_empty() || opts.dep_selection.is_filtered();
     if !virtual_store_only && !filtered_install {
+        let phase_start = std::time::Instant::now();
         // Fingerprint every package in the final graph so the next
         // install can diff and skip unchanged entries. Missing or
         // stale fingerprints fall back to a full install on the
@@ -3537,6 +3612,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         )
         .into_diagnostic()
         .wrap_err("failed to write install state")?;
+        phase_timings.record("state", phase_start.elapsed());
     }
 
     // 8a. Sweep orphaned `.aube/<dep_path>` entries older than
@@ -3551,6 +3627,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let modules_cache_max_age_minutes =
         aube_settings::resolved::modules_cache_max_age(&settings_ctx);
     if modules_cache_max_age_minutes > 0 && !virtual_store_only {
+        let phase_start = std::time::Instant::now();
         let removed = sweep_orphaned_aube_entries(
             &aube_dir,
             &graph,
@@ -3560,6 +3637,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         if removed > 0 {
             tracing::debug!("modulesCacheMaxAge: swept {removed} orphaned .aube entry/entries");
         }
+        phase_timings.record("sweep", phase_start.elapsed());
     }
 
     let elapsed = start.elapsed();
@@ -3570,6 +3648,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         stats.packages_cached,
         stats.files_linked,
         stats.top_level_linked
+    );
+    phase_timings.write(
+        &cwd,
+        elapsed,
+        graph_for_link.packages.len(),
+        cached_count,
+        fetch_count,
     );
 
     if stats.packages_linked == 0
