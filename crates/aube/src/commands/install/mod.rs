@@ -2144,7 +2144,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // Set up streaming resolver with disk-backed packument cache.
             // Resolver options are applied via `configure_resolver` so the
             // `--lockfile-only` short-circuit produces an identical lockfile.
-            let (resolver, mut resolved_rx) = aube_resolver::Resolver::with_stream(client);
+            let fetch_network_concurrency =
+                network_concurrency_setting.unwrap_or_else(default_streaming_network_concurrency);
+            let (resolver, mut resolved_rx) =
+                aube_resolver::Resolver::with_stream_capacity(client, fetch_network_concurrency);
             let pnpmfile_path = (!opts.ignore_pnpmfile)
                 .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
                 .flatten();
@@ -2189,8 +2192,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_local_client = tarball_client.clone();
             let fetch_ignore_scripts = opts.ignore_scripts;
             let fetch_git_prepare_depth = opts.git_prepare_depth;
-            let fetch_network_concurrency =
-                network_concurrency_setting.unwrap_or_else(default_streaming_network_concurrency);
             let fetch_verify_integrity = verify_store_integrity_setting;
             let fetch_strict_integrity = strict_store_integrity_setting;
             let fetch_strict_pkg_content_check = strict_store_pkg_content_check_setting;
@@ -3682,23 +3683,6 @@ fn package_name_from_spec_key(spec: &str) -> String {
         .unwrap_or_else(|| spec.to_string())
 }
 
-#[cfg(test)]
-mod allow_build_review_tests {
-    use super::package_name_from_spec_key;
-
-    #[test]
-    fn package_name_from_spec_key_handles_scoped_names() {
-        assert_eq!(package_name_from_spec_key("@scope/pkg@1.2.3"), "@scope/pkg");
-        assert_eq!(package_name_from_spec_key("@scope/pkg"), "@scope/pkg");
-    }
-
-    #[test]
-    fn package_name_from_spec_key_handles_unscoped_names() {
-        assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
-        assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
-    }
-}
-
 fn print_already_up_to_date() {
     if clx::progress::output() == clx::progress::ProgressOutput::Text {
         return;
@@ -3921,4 +3905,21 @@ fn filter_graph_to_importers<const N: usize>(
         ..graph.clone()
     };
     filtered.filter_deps(|_| true)
+}
+
+#[cfg(test)]
+mod allow_build_review_tests {
+    use super::package_name_from_spec_key;
+
+    #[test]
+    fn package_name_from_spec_key_handles_scoped_names() {
+        assert_eq!(package_name_from_spec_key("@scope/pkg@1.2.3"), "@scope/pkg");
+        assert_eq!(package_name_from_spec_key("@scope/pkg"), "@scope/pkg");
+    }
+
+    #[test]
+    fn package_name_from_spec_key_handles_unscoped_names() {
+        assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
+        assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
+    }
 }

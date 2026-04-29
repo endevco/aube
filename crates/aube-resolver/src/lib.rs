@@ -64,7 +64,7 @@ pub struct Resolver {
     client: Arc<RegistryClient>,
     cache: FxHashMap<String, Packument>,
     /// Optional channel to stream resolved packages as they're discovered.
-    resolved_tx: Option<mpsc::UnboundedSender<ResolvedPackage>>,
+    resolved_tx: Option<mpsc::Sender<ResolvedPackage>>,
     /// Optional disk cache directory for packuments (with ETag revalidation).
     packument_cache_dir: Option<std::path::PathBuf>,
     /// Separate disk cache for full (non-corgi) packuments; only used
