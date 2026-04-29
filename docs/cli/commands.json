@@ -6036,7 +6036,7 @@
   "config": {
     "props": {}
   },
-  "version": "1.5.0",
+  "version": "1.5.1",
   "usage": "Usage: aube [OPTIONS] [COMMAND]",
   "complete": {},
   "about": "A fast Node.js package manager"
