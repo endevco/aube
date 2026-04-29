@@ -219,29 +219,31 @@ pub fn upsert_patched_dependency(cwd: &Path, key: &str, rel_patch_path: &str) ->
 }
 
 /// Drop an entry from `patchedDependencies` in whichever file declares
-/// it. Returns `true` if the entry existed. Each side peeks before
-/// rewriting so a remove that targets only one location doesn't churn
-/// the other (the workspace yaml in particular can hold user-authored
-/// comments that yaml_serde's round-trip would discard).
-pub fn remove_patched_dependency(cwd: &Path, key: &str) -> Result<bool> {
+/// it. Returns the files that were rewritten — empty when neither
+/// location held the entry. Each side peeks before rewriting so a
+/// remove that targets only one location doesn't churn the other (the
+/// workspace yaml in particular can hold user-authored comments that
+/// yaml_serde's round-trip would discard).
+pub fn remove_patched_dependency(cwd: &Path, key: &str) -> Result<Vec<PathBuf>> {
+    let mut rewritten = Vec::new();
     let ws_target = aube_manifest::workspace::workspace_yaml_target(cwd);
-    let removed_from_ws = if ws_target.exists() {
-        aube_manifest::workspace::remove_workspace_patched_dependency(&ws_target, key)
+    if ws_target.exists()
+        && aube_manifest::workspace::remove_workspace_patched_dependency(&ws_target, key)
             .map_err(miette::Report::new)
             .wrap_err_with(|| format!("failed to write {}", ws_target.display()))?
-    } else {
-        false
-    };
-    let removed_from_pkg = if read_package_json_patched_dependencies(cwd)?.contains_key(key) {
+    {
+        rewritten.push(ws_target);
+    }
+    if read_package_json_patched_dependencies(cwd)?.contains_key(key) {
         let mut existed = false;
         edit_patched_dependencies(cwd, |map| {
             existed = map.remove(key).is_some();
         })?;
-        existed
-    } else {
-        false
-    };
-    Ok(removed_from_ws || removed_from_pkg)
+        if existed {
+            rewritten.push(cwd.join("package.json"));
+        }
+    }
+    Ok(rewritten)
 }
 
 /// Read every declared `patchedDependencies` entry across both the
@@ -439,5 +441,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
         assert_eq!(patch_destination(dir.path()), PatchDestination::PackageJson);
+    }
+
+    #[test]
+    fn remove_returns_each_rewritten_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            "{\"pnpm\":{\"patchedDependencies\":{\"a@1.0.0\":\"patches/a@1.0.0.patch\"}}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "patchedDependencies:\n  \"a@1.0.0\": patches/a@1.0.0.patch\n",
+        )
+        .unwrap();
+        let rewritten = remove_patched_dependency(dir.path(), "a@1.0.0").unwrap();
+        let names: Vec<String> = rewritten
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(names, vec!["pnpm-workspace.yaml", "package.json"]);
+    }
+
+    #[test]
+    fn remove_returns_empty_when_neither_file_holds_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'pkgs/*'\n",
+        )
+        .unwrap();
+        let rewritten = remove_patched_dependency(dir.path(), "missing@9.9.9").unwrap();
+        assert!(rewritten.is_empty());
     }
 }

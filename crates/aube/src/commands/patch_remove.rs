@@ -23,7 +23,7 @@ pub async fn run(args: PatchRemoveArgs) -> Result<()> {
     let cwd = crate::dirs::project_root()?;
     let declared = read_patched_dependencies(&cwd)?;
     if declared.is_empty() {
-        return Err(miette!("no patches declared in package.json"));
+        return Err(miette!("no patches declared"));
     }
 
     let to_remove: Vec<String> = if args.packages.is_empty() {
@@ -46,8 +46,13 @@ pub async fn run(args: PatchRemoveArgs) -> Result<()> {
                 .map_err(|e| miette!("failed to remove {}: {e}", abs.display()))?;
             eprintln!("Removed {}", abs.display());
         }
-        remove_patched_dependency(&cwd, key)?;
-        eprintln!("Removed {key} from package.json");
+        for rewritten in remove_patched_dependency(&cwd, key)? {
+            let label = rewritten
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| rewritten.display().to_string());
+            eprintln!("Removed {key} from {label}");
+        }
     }
 
     let opts = crate::commands::install::InstallOptions::with_mode(
