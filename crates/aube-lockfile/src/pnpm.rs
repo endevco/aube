@@ -99,16 +99,26 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                     ..Default::default()
                 });
         } else {
-            let dep_path = if info.specifier.starts_with("npm:")
-                && let Some((real_name, resolved)) = parse_dep_path(&info.version)
+            // Detect npm-aliased deps purely from the shape of
+            // `version:`. pnpm encodes aliases as
+            // `<real_name>@<resolved>(peers…)` regardless of how the
+            // alias was declared:
+            //   - direct:  `specifier: npm:beamcoder-prebuild@0.7.1`
+            //   - catalog: `specifier: 'catalog:'` (the alias lives
+            //              in `pnpm-workspace.yaml#catalog`)
+            // The earlier `specifier.starts_with("npm:")` gate missed
+            // the catalog flavor and silently dropped those deps.
+            // Strip any peer suffix before parsing so `version:
+            // 18.2.0(react@18.2.0)` (a regular dep with peers) does
+            // not parse as `name="18.2.0(react"`.
+            let bare_version = info
+                .version
+                .split('(')
+                .next()
+                .unwrap_or(info.version.as_str());
+            let dep_path = if let Some((real_name, resolved)) = parse_dep_path(bare_version)
                 && real_name != name
             {
-                // npm-alias: importer key is the alias, `version:`
-                // is `<real>@<resolved>`. Re-key the dep_path under
-                // the alias so it lines up with the resolver-fresh
-                // shape; record the remap so the canonical-packages
-                // loop can synthesize a matching LockedPackage with
-                // `alias_of: Some(real_name)`.
                 let peer_suffix = info
                     .version
                     .find('(')
@@ -3417,6 +3427,68 @@ snapshots:
         let real = graph.packages.get("express@4.22.1").expect("real entry");
         assert_eq!(real.name, "express");
         assert!(real.alias_of.is_none());
+    }
+
+    #[test]
+    fn parse_synthesizes_npm_alias_from_pnpm_lockfile_catalog_specifier() {
+        // pnpm-resolved catalog aliases keep `specifier: 'catalog:'`
+        // in the importer block while the `version:` field already
+        // carries the resolved alias (`<real>@<resolved>`). The
+        // reader must detect the alias from the version shape alone
+        // — gating on `specifier.starts_with("npm:")` would silently
+        // drop the dep and leave node_modules empty.
+        // Repro:
+        //   https://github.com/endevco/aube/discussions/383#discussioncomment-16759640
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &path,
+            r#"
+lockfileVersion: '9.0'
+
+catalogs:
+  default:
+    beamcoder:
+      specifier: npm:beamcoder-prebuild@0.7.1-rc.18
+      version: 0.7.1-rc.18
+
+importers:
+  packages/app:
+    dependencies:
+      beamcoder:
+        specifier: 'catalog:'
+        version: beamcoder-prebuild@0.7.1-rc.18
+
+packages:
+  beamcoder-prebuild@0.7.1-rc.18:
+    resolution: {integrity: sha512-fake}
+
+snapshots:
+  beamcoder-prebuild@0.7.1-rc.18: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&path).unwrap();
+        let app = graph
+            .importers
+            .get("packages/app")
+            .expect("packages/app importer");
+        assert_eq!(app.len(), 1, "alias-resolved catalog dep must be parsed");
+        let dep = &app[0];
+        assert_eq!(dep.name, "beamcoder", "DirectDep keeps the alias name");
+        assert_eq!(
+            dep.dep_path, "beamcoder@0.7.1-rc.18",
+            "DirectDep dep_path is alias-keyed"
+        );
+        assert_eq!(dep.specifier.as_deref(), Some("catalog:"));
+
+        let pkg = graph
+            .packages
+            .get("beamcoder@0.7.1-rc.18")
+            .expect("synthesized alias-keyed package");
+        assert_eq!(pkg.name, "beamcoder");
+        assert_eq!(pkg.alias_of.as_deref(), Some("beamcoder-prebuild"));
     }
 
     #[test]
