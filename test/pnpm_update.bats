@@ -25,6 +25,7 @@ teardown() {
 			test/registry/storage/@pnpm.e2e/foo/package.json \
 			test/registry/storage/@pnpm.e2e/bar/package.json \
 			test/registry/storage/@pnpm.e2e/dep-of-pkg-with-1-dep/package.json \
+			test/registry/storage/@pnpm.e2e/has-prerelease/package.json \
 			test/registry/storage/@pnpm.e2e/pkg-with-1-dep/package.json 2>/dev/null || true
 	fi
 	_common_teardown
@@ -345,4 +346,38 @@ YAML
 	assert_success
 	run grep '"@pnpm.e2e/bar": "100.0.0"' project-2/package.json
 	assert_success
+}
+
+@test "aube update --latest <pkg>: downgrades prerelease to the latest dist-tag" {
+	# Ported from pnpm/test/update.ts:659 ('update with tag @latest will
+	# downgrade prerelease'). pnpm uses `pnpm update <pkg>@latest` to
+	# force the latest dist-tag; aube doesn't parse `<pkg>@<spec>` in
+	# update args (see PNPM_TEST_IMPORT.md), so translate to
+	# `aube update --latest <pkg>` — same effect: rewrite the manifest
+	# to track the resolved version, even when that downgrades a
+	# prerelease pin.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/has-prerelease' latest 2.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-prerelease-downgrade",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/has-prerelease@3.0.0-rc.0'
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	assert_success
+
+	run aube update --latest '@pnpm.e2e/has-prerelease'
+	assert_success
+
+	# Manifest now points at the dist-tag's resolved version.
+	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' package.json
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@2.0.0' aube-lock.yaml
+	assert_success
+	refute grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
 }
