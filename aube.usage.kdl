@@ -158,10 +158,10 @@ cmd cache subcommand_required=#true help="Inspect and manage the packument metad
         long_help "List configured registries from the project + user `.npmrc`.\n\nAube stores all packuments in a single flat directory (unlike pnpm's per-host layout), so this prints the registries you're currently configured to talk to rather than the registries that happen to be in the cache."
     }
     cmd prune help="Remove stale extracted primer files from the metadata cache" {
-        flag --dry-run help="Do not actually delete anything"
         flag --age-days help="Minimum age in days before an old primer file is removed" default="30" {
             arg <AGE_DAYS>
         }
+        flag --dry-run help="Do not actually delete anything"
     }
     cmd view help="View the cached metadata for a single package" {
         long_help "View the cached metadata for a single package.\n\nPrints a summary (versions, dist-tags, ETag, fetched-at) by default; `--json` dumps the raw cache file."

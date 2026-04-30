@@ -524,22 +524,10 @@
               "cache",
               "prune"
             ],
-            "usage": "cache prune [--dry-run] [--age-days <AGE_DAYS>]",
+            "usage": "cache prune [--age-days <AGE_DAYS>] [--dry-run]",
             "subcommands": {},
             "args": [],
             "flags": [
-              {
-                "name": "dry-run",
-                "usage": "--dry-run",
-                "help": "Do not actually delete anything",
-                "help_first_line": "Do not actually delete anything",
-                "short": [],
-                "long": [
-                  "dry-run"
-                ],
-                "hide": false,
-                "global": false
-              },
               {
                 "name": "age-days",
                 "usage": "--age-days <AGE_DAYS>",
@@ -561,6 +549,18 @@
                 "default": [
                   "30"
                 ]
+              },
+              {
+                "name": "dry-run",
+                "usage": "--dry-run",
+                "help": "Do not actually delete anything",
+                "help_first_line": "Do not actually delete anything",
+                "short": [],
+                "long": [
+                  "dry-run"
+                ],
+                "hide": false,
+                "global": false
               }
             ],
             "mounts": [],
