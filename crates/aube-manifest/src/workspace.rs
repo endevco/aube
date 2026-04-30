@@ -150,6 +150,13 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub merge_git_branch_lockfiles_branch_pattern: Option<Vec<String>>,
 
+    /// Write per-package lockfiles instead of one shared workspace lockfile.
+    /// Default `true` matches pnpm. The typed field is declared only so the
+    /// settings-meta parity test can see the workspace-yaml key — the
+    /// install path reads the value through `aube_settings::resolved`.
+    #[serde(default)]
+    pub shared_workspace_lockfile: Option<bool>,
+
     /// Cap on lockfile peer-ID suffix byte length before the resolver
     /// replaces the suffix with `_<sha256-hex>`. Default 1000 (pnpm
     /// parity). Same typed/raw duality as `child_concurrency` — see

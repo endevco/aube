@@ -1371,6 +1371,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // points at the actual conflict instead of falling through to the
     // generic "no lockfile found and --frozen-lockfile is set" path.
     let lockfile_enabled = aube_settings::resolved::lockfile(&settings_ctx);
+    // `sharedWorkspaceLockfile=false` flips the workspace-install layout:
+    // each member writes its own lockfile next to its `package.json`
+    // instead of a single root lockfile recording every importer. Only
+    // affects the lockfile *write* phase — the resolver still runs once
+    // over the whole workspace so `workspace:*` deps resolve correctly.
+    // The auto-install state file and frozen-lockfile fast path stay
+    // anchored at the workspace root, so installs under this layout
+    // re-resolve more eagerly than shared installs do.
+    let shared_workspace_lockfile =
+        aube_settings::resolved::shared_workspace_lockfile(&settings_ctx);
     // `enableModulesDir=false` is pnpm's persistent equivalent of
     // `--lockfile-only`: resolve + write the lockfile, but don't
     // populate `node_modules/` (no virtual store, no top-level
@@ -1908,16 +1918,21 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             }
         }
         let lo_write_kind = source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube);
-        let lo_written = aube_lockfile::write_lockfile_as(&cwd, &graph, &manifest, lo_write_kind)
-            .into_diagnostic()
-            .wrap_err("failed to write lockfile")?;
-        tracing::debug!(
-            "--lockfile-only: wrote {}",
-            lo_written
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| lo_written.display().to_string())
-        );
+        if shared_workspace_lockfile || !has_workspace {
+            let lo_written =
+                aube_lockfile::write_lockfile_as(&cwd, &graph, &manifest, lo_write_kind)
+                    .into_diagnostic()
+                    .wrap_err("failed to write lockfile")?;
+            tracing::debug!(
+                "--lockfile-only: wrote {}",
+                lo_written
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| lo_written.display().to_string())
+            );
+        } else {
+            write_per_project_lockfiles(&cwd, &graph, &manifests, lo_write_kind)?;
+        }
         // Prune unused catalog entries *after* the lockfile hits disk —
         // same ordering as the main install path below, so a
         // workspace-yaml write error can't block the command's
@@ -2881,19 +2896,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     }
                 }
                 let write_kind = source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube);
-                let written_path =
-                    aube_lockfile::write_lockfile_as(&cwd, &graph, &manifest, write_kind)
-                        .into_diagnostic()
-                        .wrap_err("failed to write lockfile")?;
-                // Log the basename (matches the format resolve.bats and
-                // similar tests assert against — e.g. "Wrote aube-lock.yaml").
-                tracing::debug!(
-                    "Wrote {}",
-                    written_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| written_path.display().to_string())
-                );
+                if shared_workspace_lockfile || !has_workspace {
+                    let written_path =
+                        aube_lockfile::write_lockfile_as(&cwd, &graph, &manifest, write_kind)
+                            .into_diagnostic()
+                            .wrap_err("failed to write lockfile")?;
+                    // Log the basename (matches the format resolve.bats and
+                    // similar tests assert against — e.g. "Wrote aube-lock.yaml").
+                    tracing::debug!(
+                        "Wrote {}",
+                        written_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| written_path.display().to_string())
+                    );
+                } else {
+                    write_per_project_lockfiles(&cwd, &graph, &manifests, write_kind)?;
+                }
             } else {
                 tracing::debug!("lockfile=false: skipping lockfile write");
             }
@@ -4039,6 +4058,51 @@ fn filter_graph_to_workspace_selection(
         ..graph.clone()
     };
     Ok(filtered.filter_deps(|_| true))
+}
+
+/// Write one lockfile per non-root workspace importer when
+/// `sharedWorkspaceLockfile=false` is set. Each lockfile contains
+/// only the importer's own deps (remapped to `.`) plus the transitive
+/// closure reachable from them. The workspace-root lockfile is not
+/// written under this layout.
+///
+/// Importers without a corresponding manifest entry are skipped — the
+/// resolver should never produce one, but defensive skipping keeps a
+/// stale graph entry from triggering a write into a directory that
+/// doesn't exist on disk.
+fn write_per_project_lockfiles(
+    workspace_root: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    workspace_manifests: &[(String, aube_manifest::PackageJson)],
+    write_kind: aube_lockfile::LockfileKind,
+) -> miette::Result<()> {
+    use miette::IntoDiagnostic;
+    for (importer_path, pkg_manifest) in workspace_manifests {
+        if importer_path == "." {
+            // The root manifest gets no per-project lockfile under
+            // sharedWorkspaceLockfile=false; it's the workspace anchor,
+            // not an installable importer.
+            continue;
+        }
+        let Some(subset) = graph.subset_to_importer(importer_path, |_| true) else {
+            tracing::debug!(
+                "sharedWorkspaceLockfile=false: skipping {importer_path} (no graph importer entry)"
+            );
+            continue;
+        };
+        let pkg_dir = workspace_root.join(importer_path);
+        let written = aube_lockfile::write_lockfile_as(&pkg_dir, &subset, pkg_manifest, write_kind)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to write per-project lockfile at {importer_path}"))?;
+        tracing::debug!(
+            "sharedWorkspaceLockfile=false: wrote {} for importer {importer_path}",
+            written
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| written.display().to_string())
+        );
+    }
+    Ok(())
 }
 
 fn filter_graph_to_importers<const N: usize>(

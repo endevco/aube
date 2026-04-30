@@ -552,3 +552,49 @@ _setup_shared_direct_dep_workspace() {
 	run test -L packages/app/node_modules/is-number
 	assert_success
 }
+
+@test "aube install: sharedWorkspaceLockfile=false writes per-project lockfiles" {
+	# Each workspace member gets its own lockfile next to its
+	# package.json; no root lockfile is written. Resolver still runs
+	# once over the whole workspace so workspace deps work.
+	cat >package.json <<-'JSON'
+		{ "name": "swl-root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		sharedWorkspaceLockfile: false
+		packages:
+		  - packages/*
+	YAML
+
+	mkdir -p packages/lib packages/app
+	cat >packages/lib/package.json <<-'JSON'
+		{ "name": "@test/lib", "version": "1.0.0", "dependencies": { "is-odd": "^3.0.1" } }
+	JSON
+	cat >packages/app/package.json <<-'JSON'
+		{ "name": "@test/app", "version": "1.0.0", "dependencies": { "is-even": "^1.0.0" } }
+	JSON
+
+	run aube install
+	assert_success
+
+	# Each importer has its own lockfile…
+	assert_file_exists packages/lib/aube-lock.yaml
+	assert_file_exists packages/app/aube-lock.yaml
+	# …and no root lockfile under this layout.
+	assert [ ! -e aube-lock.yaml ]
+
+	# Each per-project lockfile carries only its own importer (remapped
+	# to `.`). Pull the `importers:` block out and grep within it so the
+	# assertion isn't tripped by `time:` entries that survived the
+	# subset (per `subset_to_importer`'s metadata-preserving contract).
+	importers_lib="$(awk '/^importers:/,/^packages:/' packages/lib/aube-lock.yaml)"
+	importers_app="$(awk '/^importers:/,/^packages:/' packages/app/aube-lock.yaml)"
+	echo "$importers_lib" | grep -qF "is-odd:"
+	echo "$importers_lib" | grep -vqF "is-even:" || false
+	echo "$importers_app" | grep -qF "is-even:"
+	echo "$importers_app" | grep -vqF "is-odd:" || false
+
+	# node_modules still get linked correctly per package.
+	assert_file_exists packages/lib/node_modules/is-odd/index.js
+	assert_file_exists packages/app/node_modules/is-even/index.js
+}

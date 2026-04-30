@@ -43,8 +43,8 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
   - `readPackage` sync/async, hook removes a dep, hook overrides version, hook fails install, hook on workspace packages
 - [ ] `pnpm/test/install/lifecycleScripts.ts` (21 tests, 356 LOC) → fold into [test/lifecycle_scripts.bats](lifecycle_scripts.bats)
   - pre/postinstall ordering, exit-code propagation, env-var inheritance, script-not-found handling
-- [ ] `pnpm/test/saveCatalog.ts` (8 tests, 224 LOC) → [test/pnpm_savecatalog.bats](pnpm_savecatalog.bats) (7/8 ported, 1 skipped on `sharedWorkspaceLockfile=false`)
-  - Implements `aube add --save-catalog` and `--save-catalog-name=<name>`, plus `<pkg>@workspace:*` CLI parsing for `aube add`. Skipped: multi-lockfile workspaces (`sharedWorkspaceLockfile=false` not implemented in aube).
+- [x] `pnpm/test/saveCatalog.ts` (8 tests, 224 LOC) → [test/pnpm_savecatalog.bats](pnpm_savecatalog.bats) (8/8 ported)
+  - Implements `aube add --save-catalog` and `--save-catalog-name=<name>`, `<pkg>@workspace:*` CLI parsing for `aube add`, and `sharedWorkspaceLockfile=false` per-project lockfile writes.
 
 ## Phase 2 — depends on add_dist_tag helper
 

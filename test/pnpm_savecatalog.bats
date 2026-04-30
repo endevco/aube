@@ -102,9 +102,12 @@ YAML
 }
 
 @test "aube add --save-catalog: writes catalogs in a multi-lockfile workspace" {
-	skip "aube doesn't implement sharedWorkspaceLockfile=false (per-project lockfiles)"
 	# Ported from pnpm/test/saveCatalog.ts:213
+	# Adapted: root package.json added (aube requires it).
 
+	cat >package.json <<'JSON'
+{ "name": "save-catalog-multi-lockfile", "version": "0.0.0", "private": true }
+JSON
 	mkdir -p project-0 project-1
 	cat >project-0/package.json <<'JSON'
 { "name": "project-0", "version": "0.0.0", "dependencies": { "is-odd": "catalog:" } }
@@ -123,9 +126,11 @@ YAML
 
 	run aube install
 	assert_success
-	# Each project gets its own lockfile in this layout.
+	# Each non-root project gets its own lockfile; the workspace root
+	# does not.
 	assert_file_exists project-0/aube-lock.yaml
 	assert_file_exists project-1/aube-lock.yaml
+	assert [ ! -e aube-lock.yaml ]
 
 	run aube --filter=project-1 add --save-catalog is-even@^1.0.0
 	assert_success
