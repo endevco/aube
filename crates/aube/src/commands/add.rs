@@ -261,6 +261,19 @@ pub async fn run(
         crate::dirs::set_cwd(&root)?;
     }
 
+    // pnpm `install <pkg>` (= aube `add <pkg>`) creates an empty
+    // package.json when run in a directory with no manifest, so users
+    // can bootstrap a project with a single command. Match that: if no
+    // ancestor has a package.json (within the home boundary), write a
+    // minimal `{}` in cwd before resolving the project root. The
+    // `--global`/`-g` path returned earlier; `--workspace` already
+    // redirected to a known root above.
+    let initial_cwd = crate::dirs::cwd()?;
+    if crate::dirs::find_project_root(&initial_cwd).is_none() {
+        std::fs::write(initial_cwd.join("package.json"), "{}\n")
+            .into_diagnostic()
+            .wrap_err("failed to create package.json")?;
+    }
     let cwd = crate::dirs::project_root()?;
 
     // Refuse to add into a workspace root unless the caller opts out.
