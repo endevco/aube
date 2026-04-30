@@ -263,7 +263,7 @@ Some pnpm commands are intentionally out of scope. Runtime-management commands s
   </a>
 </p>
 
-Thanks to [Namespace](https://namespace.so) for providing GitHub Actions runners and caching for aube.
+Thanks to [Namespace](https://namespace.so) for providing CI for aube.
 
 ## Star History
 
