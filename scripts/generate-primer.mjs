@@ -12,7 +12,7 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 
 const top = Number(args.get('top') ?? 2000)
-const versionsArg = args.get('versions') ?? 'all'
+const versionsArg = args.get('versions') ?? '1000'
 const versions = versionsArg === 'all' ? Infinity : Number(versionsArg)
 const out = resolve(args.get('out') ?? `crates/aube-resolver/data/primer-top${top}.json`)
 const namesFile = args.get('names')

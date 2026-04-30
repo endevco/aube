@@ -12,6 +12,7 @@ use primer_schema::Seed;
 
 const DEV_TOP: usize = 100;
 const RELEASE_TOP: usize = 2000;
+const VERSION_CAP: usize = 1000;
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -22,7 +23,7 @@ fn main() {
             let top = primer_top();
             manifest_dir
                 .join("data")
-                .join(format!("primer-top{top}.rkyv.zst"))
+                .join(format!("primer-top{top}-v{VERSION_CAP}.rkyv.zst"))
         });
 
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_PATH");
@@ -82,7 +83,7 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) {
         .arg("--top")
         .arg(top.to_string())
         .arg("--versions")
-        .arg("all")
+        .arg(VERSION_CAP.to_string())
         .arg("--out")
         .arg(&json)
         .status()
