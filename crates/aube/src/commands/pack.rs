@@ -26,6 +26,7 @@ use aube_manifest::PackageJson;
 use clap::Args;
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use ignore::WalkBuilder;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use miette::{Context, IntoDiagnostic, miette};
 use serde::Serialize;
@@ -374,43 +375,76 @@ fn walk_subdir(project_dir: &Path, dir: &Path, out: &mut BTreeSet<String>) -> mi
     Ok(())
 }
 
-/// Top-level walker used when `files` is absent. Same as `walk_subdir`
-/// plus a root-level `.npmignore` / `.gitignore` check.
+/// Top-level walker used when `files` is absent. Combines the secret/junk
+/// blocklist (`is_npm_ignored`) and the root-level `.npmignore` /
+/// `.gitignore` matcher into one `filter_entry` so `WalkBuilder` prunes
+/// fully-ignored subtrees during traversal — a checked-in `dist/` with
+/// thousands of files is skipped without stat'ing them.
+///
+/// `WalkBuilder::add_ignore` is intentionally NOT used: it builds an
+/// internal matcher with an empty root, which mishandles anchored
+/// (`/dist/`) and prefix-pathed (`build/*.js`) patterns. Driving our own
+/// `Gitignore` rooted at `project_dir` keeps full gitignore semantics.
 fn walk_with_ignores(project_dir: &Path, out: &mut BTreeSet<String>) -> miette::Result<()> {
     let matcher = build_root_ignore(project_dir);
-    let mut collected: BTreeSet<String> = BTreeSet::new();
-    walk_subdir(project_dir, project_dir, &mut collected)?;
-    for rel in collected {
-        // matched_path_or_any_parents also walks ancestor directories, so
-        // a `dist/` pattern excludes everything underneath even though the
-        // walker collects file paths. Whitelist (`!pattern`) wins over
-        // a prior ignore, matching gitignore semantics.
-        let abs = project_dir.join(&rel);
-        if matcher.matched_path_or_any_parents(&abs, false).is_ignore() {
+    let mut builder = WalkBuilder::new(project_dir);
+    // Disable every ambient source (parent .gitignore, global excludes,
+    // hidden-file skipping). npm includes dotfiles by default; the
+    // secret/junk blocklist below is the actual gatekeeper for those.
+    builder
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        .parents(false)
+        .require_git(false)
+        .follow_links(false);
+
+    builder.filter_entry(move |entry| {
+        // Don't filter the project root itself — its file_name is the
+        // user's CWD basename and could spuriously match the blocklist
+        // (e.g. a project literally named `node_modules`).
+        if entry.depth() == 0 {
+            return true;
+        }
+        if is_npm_ignored(&entry.file_name().to_string_lossy()) {
+            return false;
+        }
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        !matcher.matched(entry.path(), is_dir).is_ignore()
+    });
+
+    for result in builder.build() {
+        let entry = result.map_err(|e| miette!("pack: walk failed: {e}"))?;
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
-        out.insert(rel);
+        let Ok(rel) = entry.path().strip_prefix(project_dir) else {
+            continue;
+        };
+        out.insert(normalize_rel(rel));
     }
     Ok(())
 }
 
 /// Build a gitignore matcher rooted at `project_dir` from `.npmignore`
 /// (preferred) or `.gitignore`. Returns an empty matcher when neither
-/// file exists or the file contains no usable patterns.
+/// file exists or the chosen file fails to parse.
 fn build_root_ignore(project_dir: &Path) -> Gitignore {
-    let candidate = project_dir.join(".npmignore");
-    let path = if candidate.is_file() {
-        candidate
+    let npmignore = project_dir.join(".npmignore");
+    let chosen = if npmignore.is_file() {
+        Some(npmignore)
     } else {
-        project_dir.join(".gitignore")
+        let gitignore = project_dir.join(".gitignore");
+        gitignore.is_file().then_some(gitignore)
     };
     let mut builder = GitignoreBuilder::new(project_dir);
-    if path.is_file() {
-        // `add` reports parse errors, but npm/pnpm tolerate malformed
-        // lines silently — surface them to tracing and keep going.
-        if let Some(err) = builder.add(&path) {
-            tracing::debug!("pack: ignored {} parse error: {err}", path.display());
-        }
+    if let Some(path) = chosen
+        && let Some(err) = builder.add(&path)
+    {
+        // npm/pnpm tolerate malformed lines silently; do the same.
+        tracing::debug!("pack: {} parse error: {err}", path.display());
     }
     builder.build().unwrap_or_else(|err| {
         tracing::debug!("pack: ignore matcher build failed: {err}");
