@@ -86,6 +86,9 @@ add_dist_tag() {
 	local pkg="$1" tag="$2" version="$3"
 	local file="$PROJECT_ROOT/test/registry/storage/${pkg}/package.json"
 	local tmp="${file}.tmp"
-	jq --arg t "$tag" --arg v "$version" '.["dist-tags"][$t] = $v' "$file" >"$tmp"
+	jq --arg t "$tag" --arg v "$version" '.["dist-tags"][$t] = $v' "$file" >"$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
 	mv "$tmp" "$file"
 }
