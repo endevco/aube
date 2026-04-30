@@ -233,6 +233,7 @@ impl Resolver {
                                 &packument,
                                 seed.etag.as_deref(),
                                 seed.last_modified.as_deref(),
+                                self.force_metadata_primer,
                             );
                         }
                         if needs_time && let Some(dir) = full_cache_dir.as_ref() {
@@ -242,6 +243,7 @@ impl Resolver {
                                 &packument,
                                 seed.etag.as_deref(),
                                 seed.last_modified.as_deref(),
+                                self.force_metadata_primer,
                             );
                         }
                     }

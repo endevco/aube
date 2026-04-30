@@ -213,6 +213,7 @@ impl RegistryClient {
         packument: &Packument,
         etag: Option<&str>,
         last_modified: Option<&str>,
+        fresh: bool,
     ) {
         let registry_url = self.config.registry_for(name);
         let Some(cache_path) = packument_cache_path(cache_dir, name, registry_url) else {
@@ -224,8 +225,8 @@ impl RegistryClient {
         let cached = CachedPackument {
             etag: etag.map(str::to_owned),
             last_modified: last_modified.map(str::to_owned),
-            fetched_at: 0,
-            max_age_secs: Some(0),
+            fetched_at: if fresh { now_secs() } else { 0 },
+            max_age_secs: (!fresh).then_some(0),
             packument: packument.clone(),
         };
         if let Err(e) = write_cached_packument(&cache_path, &cached) {
@@ -243,6 +244,7 @@ impl RegistryClient {
         packument: &Packument,
         etag: Option<&str>,
         last_modified: Option<&str>,
+        fresh: bool,
     ) {
         let registry_url = self.config.registry_for(name);
         let Some(cache_path) = packument_full_cache_path(cache_dir, name, registry_url) else {
@@ -257,8 +259,8 @@ impl RegistryClient {
         let cached = CachedFullPackument {
             etag: etag.map(str::to_owned),
             last_modified: last_modified.map(str::to_owned),
-            fetched_at: 0,
-            max_age_secs: Some(0),
+            fetched_at: if fresh { now_secs() } else { 0 },
+            max_age_secs: (!fresh).then_some(0),
             packument,
         };
         if let Err(e) = write_cached_full_packument(&cache_path, &cached) {
@@ -1722,6 +1724,65 @@ const RETRY_AFTER_CAP_SECS: u64 = 60;
 /// loop so a non-timeout failure (e.g. a 503 on the first attempt)
 /// never consumes the timeout budget.
 const TIMEOUT_RETRY_CAP: u32 = 1;
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+
+    fn packument() -> Packument {
+        Packument {
+            name: "demo".to_owned(),
+            modified: None,
+            versions: BTreeMap::new(),
+            dist_tags: BTreeMap::new(),
+            time: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn stale_primer_seed_revalidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = RegistryClient::new("https://registry.npmjs.org/");
+        let packument = packument();
+
+        client.seed_packument_cache(
+            "demo",
+            dir.path(),
+            &packument,
+            Some("etag"),
+            Some("last-modified"),
+            false,
+        );
+
+        let path = packument_cache_path(dir.path(), "demo", "https://registry.npmjs.org/").unwrap();
+        let cached = read_cached_packument(&path).unwrap();
+        assert_eq!(cached.fetched_at, 0);
+        assert_eq!(cached.max_age_secs, Some(0));
+        assert!(!cached_is_fresh(cached.fetched_at, cached.max_age_secs));
+    }
+
+    #[test]
+    fn fresh_primer_seed_skips_revalidation() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = RegistryClient::new("https://registry.npmjs.org/");
+        let packument = packument();
+
+        client.seed_packument_cache(
+            "demo",
+            dir.path(),
+            &packument,
+            Some("etag"),
+            Some("last-modified"),
+            true,
+        );
+
+        let path = packument_cache_path(dir.path(), "demo", "https://registry.npmjs.org/").unwrap();
+        let cached = read_cached_packument(&path).unwrap();
+        assert!(cached.fetched_at > 0);
+        assert_eq!(cached.max_age_secs, None);
+        assert!(cached_is_fresh(cached.fetched_at, cached.max_age_secs));
+    }
+}
 
 #[cfg(test)]
 mod retry_tests {
