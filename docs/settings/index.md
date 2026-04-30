@@ -61,6 +61,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | Skip local `link:` dependencies when writing the lockfile. |
 | [`gitBranchLockfile`](#setting-gitbranchlockfile) | `bool` | Generate branch-specific lockfile names (aube-lock.&lt;branch&gt;.yaml). |
 | [`mergeGitBranchLockfilesBranchPattern`](#setting-mergegitbranchlockfilesbranchpattern) | `list<string>` | Branch-name glob list for auto-merging branch lockfiles. |
+| [`sharedWorkspaceLockfile`](#setting-sharedworkspacelockfile) | `bool` | Write one lockfile per workspace package instead of a single shared root lockfile. |
 | [`peersSuffixMaxLength`](#setting-peerssuffixmaxlength) | `int` | Max length of the peer-ID suffix in lockfile dep_paths. |
 | [`gitShallowHosts`](#setting-gitshallowhosts) | `list<string>` | Hosts for which aube performs shallow git clones. |
 | [`networkConcurrency`](#setting-networkconcurrency) | `int` | Maximum concurrent HTTP(S) requests. |
@@ -1161,6 +1162,41 @@ same merge regardless of the pattern list.
 Conflict rule: when two branch lockfiles record the same `dep_path`
 with different `version` or `integrity`, the higher semver version
 wins and a warning is logged.
+
+### `sharedWorkspaceLockfile` {#setting-sharedworkspacelockfile}
+
+Write one lockfile per workspace package instead of a single shared root lockfile.
+
+- Type: `bool`
+- Default: `true`
+- Environment: `npm_config_shared_workspace_lockfile`, `NPM_CONFIG_SHARED_WORKSPACE_LOCKFILE`, `AUBE_SHARED_WORKSPACE_LOCKFILE`
+- .npmrc keys: `sharedWorkspaceLockfile`, `shared-workspace-lockfile`
+- Workspace YAML keys: `sharedWorkspaceLockfile`
+
+Default `true` matches pnpm: a workspace records every importer's
+resolved graph in a single root lockfile (`aube-lock.yaml` or
+`pnpm-lock.yaml`), so `aube install` from anywhere in the workspace
+sees every package's locked versions.
+
+Flip to `false` for the per-project layout: each workspace member
+gets its own lockfile next to its `package.json` containing only
+that member's importer (remapped to `.`) plus the transitive packages
+reachable from it. The workspace-root lockfile is not written.
+
+Set in `aube-workspace.yaml` / `pnpm-workspace.yaml`:
+
+```yaml
+sharedWorkspaceLockfile: false
+```
+
+Trade-offs to know about before flipping the default:
+- Auto-install freshness state (`node_modules/.aube-state`) and
+  the frozen-lockfile fast path are anchored at the workspace root,
+  so a `false` install re-resolves more aggressively than a shared
+  install would.
+- Workspace deps (`workspace:*`) still resolve correctly because
+  the resolver runs once over the whole workspace before lockfile
+  writes are split.
 
 ### `peersSuffixMaxLength` {#setting-peerssuffixmaxlength}
 
