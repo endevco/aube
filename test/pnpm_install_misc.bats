@@ -257,3 +257,58 @@ JSON
 	assert_dir_exists 'node_modules/@pnpm.e2e/with-same-file-in-different-cases'
 	assert_file_exists 'node_modules/@pnpm.e2e/with-same-file-in-different-cases/package.json'
 }
+
+@test "aube install --lockfile-only: terminates on circular peer dependencies" {
+	# Ported from pnpm/test/install/misc.ts:556 ('do not hang on circular
+	# peer dependencies', covers pnpm/pnpm#8720). pnpm's fixture is a
+	# 100+-package real-world workspace; we use the minimal shape that
+	# reproduces the cycle (two workspace packages peer-depending on each
+	# other) to keep the test hermetic. The regression guard is the
+	# resolver actually terminating — bounded by the fixed-point loop in
+	# aube-resolver/src/peer_context.rs (max 16 iterations).
+	mkdir -p packages/a packages/b
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "packages/*"
+YAML
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-circular-peers",
+  "version": "1.0.0",
+  "private": true
+}
+JSON
+	cat >packages/a/package.json <<'JSON'
+{
+  "name": "circular-a",
+  "version": "1.0.0",
+  "dependencies": { "circular-b": "workspace:*" },
+  "peerDependencies": { "circular-b": "workspace:*" }
+}
+JSON
+	cat >packages/b/package.json <<'JSON'
+{
+  "name": "circular-b",
+  "version": "1.0.0",
+  "dependencies": { "circular-a": "workspace:*" },
+  "peerDependencies": { "circular-a": "workspace:*" }
+}
+JSON
+
+	# Hard 60s ceiling — if the resolver regresses into a hang, fail fast
+	# instead of stalling the entire bats run. `timeout` is GNU-coreutils
+	# (Linux/CI); macOS ships it only via `brew install coreutils` as
+	# `gtimeout`. Probe for both, fall back to running uncovered if
+	# neither is on PATH (the in-resolver 16-iteration bound is still a
+	# hard guarantee).
+	local timeout_cmd=""
+	if command -v timeout >/dev/null 2>&1; then
+		timeout_cmd="timeout 60"
+	elif command -v gtimeout >/dev/null 2>&1; then
+		timeout_cmd="gtimeout 60"
+	fi
+	# shellcheck disable=SC2086 # intentional word-split: empty -> no wrapper
+	run $timeout_cmd aube install --lockfile-only
+	assert_success
+	assert_file_exists aube-lock.yaml
+}
