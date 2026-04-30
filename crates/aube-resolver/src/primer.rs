@@ -180,15 +180,14 @@ impl PrimerDist {
 }
 
 static GENERATED_AT: OnceLock<Option<String>> = OnceLock::new();
+static AUTO_PRUNED: OnceLock<()> = OnceLock::new();
 
 pub(crate) fn get(name: &str) -> Option<Seed> {
     let (_, offset, len) = PRIMER_INDEX
         .binary_search_by(|(candidate, _, _)| candidate.cmp(&name))
         .ok()
         .and_then(|idx| PRIMER_INDEX.get(idx))?;
-    if let Some(dir) = primer_cache_dir() {
-        auto_prune(&dir);
-    }
+    auto_prune_once();
     let end = offset.checked_add(*len)?;
     let compressed = PRIMER_BLOB.get(*offset..end)?;
     let archived = zstd::stream::decode_all(Cursor::new(compressed)).ok()?;
@@ -206,6 +205,14 @@ fn generated_at() -> Option<&'static String> {
             Some(crate::types::format_iso8601_utc(secs))
         })
         .as_ref()
+}
+
+fn auto_prune_once() {
+    AUTO_PRUNED.get_or_init(|| {
+        if let Some(dir) = primer_cache_dir() {
+            auto_prune(&dir);
+        }
+    });
 }
 
 fn auto_prune(dir: &Path) {

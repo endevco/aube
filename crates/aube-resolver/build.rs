@@ -118,7 +118,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_TOP");
     println!("cargo:rerun-if-changed={}", source.display());
 
-    if !source.is_file() && std::env::var_os("AUBE_PRIMER_PATH").is_none() {
+    if !source.is_file() {
+        if std::env::var_os("AUBE_PRIMER_PATH").is_some() {
+            panic!(
+                "AUBE_PRIMER_PATH does not point to a file: {}",
+                source.display()
+            );
+        }
         generate(&manifest_dir, &source, primer_top());
     }
 
@@ -134,7 +140,8 @@ fn main() {
         .as_secs();
     println!("cargo:rustc-env=AUBE_PRIMER_GENERATED_AT={generated_at}");
 
-    let bytes = std::fs::read(source).unwrap_or_default();
+    let bytes = std::fs::read(&source)
+        .unwrap_or_else(|e| panic!("failed to read primer {}: {e}", source.display()));
     write_package_blob(&out_dir, &bytes);
 }
 

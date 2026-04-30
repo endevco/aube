@@ -113,9 +113,6 @@ impl Resolver {
         if let Some(c) = published_by.as_deref() {
             tracing::debug!("minimumReleaseAge cutoff: {}", c);
         }
-        let primer_covers_cutoff = published_by
-            .as_deref()
-            .is_none_or(crate::primer::covers_cutoff);
 
         seed_direct_deps(
             manifests,
@@ -219,10 +216,13 @@ impl Resolver {
                         .minimum_release_age
                         .as_ref()
                         .is_none_or(|mra| !mra.exclude.contains(name));
-                    let use_metadata_primer = self.force_metadata_primer
-                        || (primer_covers_cutoff
-                            && primer_policy_allows_name
-                            && client.uses_default_npm_registry_for(&name_owned));
+                    let primer_covers_cutoff = published_by
+                        .as_deref()
+                        .is_none_or(crate::primer::covers_cutoff);
+                    let use_metadata_primer = (self.force_metadata_primer
+                        || client.uses_default_npm_registry_for(&name_owned))
+                        && primer_covers_cutoff
+                        && primer_policy_allows_name;
                     let force_metadata_primer = self.force_metadata_primer;
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
@@ -254,6 +254,27 @@ impl Resolver {
                                         dist
                                     });
                                 }
+                            }
+                            if needs_time {
+                                if let Some(dir) = full_cache_dir.as_ref() {
+                                    client.seed_full_packument_cache(
+                                        &name_owned,
+                                        dir,
+                                        &packument,
+                                        seed.etag.as_deref(),
+                                        seed.last_modified.as_deref(),
+                                        false,
+                                    );
+                                }
+                            } else if let Some(dir) = cache_dir.as_ref() {
+                                client.seed_packument_cache(
+                                    &name_owned,
+                                    dir,
+                                    &packument,
+                                    seed.etag.as_deref(),
+                                    seed.last_modified.as_deref(),
+                                    false,
+                                );
                             }
                             return Ok::<_, Error>((name_owned, packument));
                         }
