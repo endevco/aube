@@ -31,6 +31,12 @@ struct CachedFullPackument {
     packument: serde_json::Value,
 }
 
+#[derive(Debug, Default)]
+pub struct CachedPackumentLookup {
+    pub packument: Option<Packument>,
+    pub stale: bool,
+}
+
 fn cached_is_fresh(fetched_at: u64, max_age_secs: Option<u64>) -> bool {
     let age = now_secs().saturating_sub(fetched_at);
     let budget = max_age_secs.unwrap_or(PACKUMENT_TTL_SECS);
@@ -207,39 +213,51 @@ impl RegistryClient {
     }
 
     pub fn cached_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
+        self.cached_packument_lookup(name, cache_dir).packument
+    }
+
+    pub fn cached_packument_lookup(&self, name: &str, cache_dir: &Path) -> CachedPackumentLookup {
         let registry_url = self.config.registry_for(name).to_string();
-        let cache_path = packument_cache_path(cache_dir, name, &registry_url)?;
-        let cached = read_cached_packument(&cache_path)?;
+        let Some(cache_path) = packument_cache_path(cache_dir, name, &registry_url) else {
+            return CachedPackumentLookup::default();
+        };
+        let Some(cached) = read_cached_packument(&cache_path) else {
+            return CachedPackumentLookup::default();
+        };
         if self.trust_cached_packument(cached.fetched_at, cached.max_age_secs) {
-            return Some(cached.packument);
+            return CachedPackumentLookup {
+                packument: Some(cached.packument),
+                stale: false,
+            };
         }
-        None
+        CachedPackumentLookup {
+            packument: None,
+            stale: true,
+        }
     }
 
     pub fn has_stale_packument_cache(&self, name: &str, cache_dir: &Path) -> bool {
-        let registry_url = self.config.registry_for(name).to_string();
-        let Some(cache_path) = packument_cache_path(cache_dir, name, &registry_url) else {
-            return false;
-        };
-        read_cached_packument(&cache_path).is_some_and(|cached| {
-            !self.trust_cached_packument(cached.fetched_at, cached.max_age_secs)
-        })
+        self.cached_packument_lookup(name, cache_dir).stale
     }
 
     pub fn cached_full_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
+        self.cached_full_packument_lookup(name, cache_dir).packument
+    }
+
+    pub fn cached_full_packument_lookup(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+    ) -> CachedPackumentLookup {
         let registry_url = self.config.registry_for(name).to_string();
-        let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)?;
-        read_cached_full_packument_typed(&cache_path, self.force_cache())
+        let Some(cache_path) = packument_full_cache_path(cache_dir, name, &registry_url) else {
+            return CachedPackumentLookup::default();
+        };
+        read_cached_full_packument_typed_lookup(&cache_path, self.force_cache())
     }
 
     pub fn has_stale_full_packument_cache(&self, name: &str, cache_dir: &Path) -> bool {
-        let registry_url = self.config.registry_for(name).to_string();
-        let Some(cache_path) = packument_full_cache_path(cache_dir, name, &registry_url) else {
-            return false;
-        };
-        read_cached_full_packument(&cache_path).is_some_and(|cached| {
-            !self.trust_cached_packument(cached.fetched_at, cached.max_age_secs)
-        })
+        self.cached_full_packument_lookup(name, cache_dir).stale
     }
 
     pub fn seed_packument_cache(
@@ -1670,10 +1688,13 @@ fn read_cached_full_packument(path: &Path) -> Option<CachedFullPackument> {
 /// to deserialize the cached wrapper directly into a tiny typed struct
 /// holding `fetched_at` plus a fully-typed [`Packument`].
 ///
-/// Returns `None` on any error (file missing, parse error, stale
-/// cache) so the caller transparently falls back to the network /
-/// `Value` path.
-fn read_cached_full_packument_typed(path: &Path, force_cache: bool) -> Option<Packument> {
+/// Returns a missing lookup on file/parse errors, and a stale lookup
+/// when revalidation is needed, so callers can decide whether a primer
+/// fallback is safe without reading the cache a second time.
+fn read_cached_full_packument_typed_lookup(
+    path: &Path,
+    force_cache: bool,
+) -> CachedPackumentLookup {
     #[derive(Deserialize)]
     struct Typed {
         fetched_at: u64,
@@ -1682,12 +1703,26 @@ fn read_cached_full_packument_typed(path: &Path, force_cache: bool) -> Option<Pa
         packument: Packument,
     }
 
-    let mut content = std::fs::read(path).ok()?;
-    let typed: Typed = simd_json::serde::from_slice(&mut content).ok()?;
+    let Ok(mut content) = std::fs::read(path) else {
+        return CachedPackumentLookup::default();
+    };
+    let Ok(typed) = simd_json::serde::from_slice::<Typed>(&mut content) else {
+        return CachedPackumentLookup::default();
+    };
     if !force_cache && !cached_is_fresh(typed.fetched_at, typed.max_age_secs) {
-        return None;
+        return CachedPackumentLookup {
+            packument: None,
+            stale: true,
+        };
     }
-    Some(typed.packument)
+    CachedPackumentLookup {
+        packument: Some(typed.packument),
+        stale: false,
+    }
+}
+
+fn read_cached_full_packument_typed(path: &Path, force_cache: bool) -> Option<Packument> {
+    read_cached_full_packument_typed_lookup(path, force_cache).packument
 }
 
 fn write_cached_full_packument(path: &Path, cached: &CachedFullPackument) -> std::io::Result<()> {
@@ -1829,6 +1864,9 @@ mod seed_tests {
 
         client.seed_packument_cache("demo", dir.path(), &packument, None, None, false);
 
+        let lookup = client.cached_packument_lookup("demo", dir.path());
+        assert!(lookup.stale);
+        assert!(lookup.packument.is_none());
         assert!(client.has_stale_packument_cache("demo", dir.path()));
         assert!(client.cached_packument("demo", dir.path()).is_none());
     }

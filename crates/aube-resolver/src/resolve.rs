@@ -230,33 +230,21 @@ impl Resolver {
                             .acquire_owned()
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-                        let cache_is_stale = if needs_time {
-                            match full_cache_dir.as_ref() {
-                                Some(dir) => {
-                                    client.has_stale_full_packument_cache(&name_owned, dir)
-                                }
-                                None => false,
-                            }
-                        } else if let Some(ref dir) = cache_dir {
-                            client.has_stale_packument_cache(&name_owned, dir)
-                        } else {
-                            false
-                        };
                         let cached = if needs_time {
                             match full_cache_dir.as_ref() {
-                                Some(dir) => client.cached_full_packument(&name_owned, dir),
-                                None => None,
+                                Some(dir) => client.cached_full_packument_lookup(&name_owned, dir),
+                                None => Default::default(),
                             }
                         } else if let Some(ref dir) = cache_dir {
-                            client.cached_packument(&name_owned, dir)
+                            client.cached_packument_lookup(&name_owned, dir)
                         } else {
-                            None
+                            Default::default()
                         };
-                        if let Some(packument) = cached {
+                        if let Some(packument) = cached.packument {
                             return Ok::<_, Error>((name_owned, packument));
                         }
                         if use_metadata_primer
-                            && !cache_is_stale
+                            && !cached.stale
                             && let Some(seed) = crate::primer::get(&name_owned)
                         {
                             let mut packument = seed.packument();
