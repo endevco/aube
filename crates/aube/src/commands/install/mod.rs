@@ -4049,11 +4049,15 @@ fn guard_against_foreign_importers(
     importer_key: &str,
     graph: &aube_lockfile::LockfileGraph,
 ) -> Result<(), aube_lockfile::Error> {
+    // Caller gates on `importer_key != "."`, so any `"."` entry on
+    // disk is itself a project that ran `aube install` directly in
+    // `lockfile_dir` without `--lockfile-dir`. That entry would be
+    // dropped on write, so it counts as foreign.
     let foreign: Vec<&str> = graph
         .importers
         .keys()
         .map(String::as_str)
-        .filter(|k| *k != "." && *k != importer_key)
+        .filter(|k| *k != importer_key)
         .collect();
     if foreign.is_empty() {
         return Ok(());

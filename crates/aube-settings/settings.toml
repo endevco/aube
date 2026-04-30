@@ -1000,9 +1000,11 @@ docs = """
 By default the lockfile lives at `<project_root>/aube-lock.yaml`. Set
 this to relocate it. When the resolved path differs from the project
 root, the project becomes an importer keyed by its relative path
-(e.g. `project` if the lockfile is one directory above), so several
-unrelated projects can share a single committed lockfile without
-declaring a `pnpm-workspace.yaml`.
+(e.g. `project` if the lockfile is one directory above).
+
+Single-project relocation only — multi-project shared lockfiles
+require a `pnpm-workspace.yaml` workspace. Pointing two unrelated
+projects at the same `lockfileDir` is rejected at install time.
 
 Mirrors pnpm's `--lockfile-dir` / `lockfile-dir`. A relative path is
 resolved against the project root, not the current working directory.
