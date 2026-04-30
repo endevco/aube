@@ -2425,6 +2425,25 @@
             "global": false
           },
           {
+            "name": "lockfile-dir",
+            "usage": "--lockfile-dir <PATH>",
+            "help": "Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`",
+            "help_first_line": "Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`",
+            "short": [],
+            "long": [
+              "lockfile-dir"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PATH",
+              "usage": "<PATH>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "lockfile-only",
             "usage": "--lockfile-only",
             "help": "Resolve dependencies and write the lockfile, but don't link `node_modules`",
