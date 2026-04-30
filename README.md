@@ -265,6 +265,8 @@ Some pnpm commands are intentionally out of scope. Runtime-management commands s
 
 Thanks to [Buildkite](https://buildkite.com) for providing CI for aube.
 
+Thanks to [Namespace](https://namespace.so) for providing GitHub Actions runners and caching for aube.
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=endevco%2Faube&type=date&legend=top-left">
