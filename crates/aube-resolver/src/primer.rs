@@ -1,11 +1,19 @@
 use aube_manifest::BundledDependencies;
 use aube_registry::{Attestations, Dist, NpmUser, Packument, PeerDepMeta, VersionMetadata};
-use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
+
+#[path = "primer_schema.rs"]
+mod primer_schema;
+
+pub(crate) use primer_schema::Seed;
+use primer_schema::{
+    PrimerBundledDependencies, PrimerDist, PrimerPackument, PrimerPeerDepMeta,
+    PrimerVersionMetadata,
+};
 
 const PRIMER_FORMAT: &str = "rkyv-v1";
 const PRUNE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -19,25 +27,10 @@ pub struct PruneStats {
     pub bytes: u64,
 }
 
-#[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize)]
-pub(crate) struct Seed {
-    pub(crate) etag: Option<String>,
-    pub(crate) last_modified: Option<String>,
-    packument: PrimerPackument,
-}
-
 impl Seed {
     pub(crate) fn packument(&self) -> Packument {
         self.packument.to_packument()
     }
-}
-
-#[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize)]
-struct PrimerPackument {
-    name: String,
-    modified: Option<String>,
-    dist_tags: BTreeMap<String, String>,
-    versions: Vec<PrimerVersion>,
 }
 
 impl PrimerPackument {
@@ -64,33 +57,6 @@ impl PrimerPackument {
             time,
         }
     }
-}
-
-#[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize)]
-struct PrimerVersion {
-    version: String,
-    published_at: Option<String>,
-    metadata: PrimerVersionMetadata,
-}
-
-#[derive(Archive, Clone, Default, RkyvSerialize, RkyvDeserialize)]
-struct PrimerVersionMetadata {
-    dependencies: BTreeMap<String, String>,
-    peer_dependencies: BTreeMap<String, String>,
-    peer_dependencies_meta: BTreeMap<String, PrimerPeerDepMeta>,
-    optional_dependencies: BTreeMap<String, String>,
-    bundled_dependencies: Option<PrimerBundledDependencies>,
-    dist: Option<PrimerDist>,
-    os: Vec<String>,
-    cpu: Vec<String>,
-    libc: Vec<String>,
-    engines: BTreeMap<String, String>,
-    license: Option<String>,
-    funding_url: Option<String>,
-    bin: BTreeMap<String, String>,
-    has_install_script: bool,
-    deprecated: Option<String>,
-    trusted_publisher: bool,
 }
 
 impl PrimerVersionMetadata {
@@ -128,23 +94,12 @@ impl PrimerVersionMetadata {
     }
 }
 
-#[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize)]
-struct PrimerPeerDepMeta {
-    optional: bool,
-}
-
 impl PrimerPeerDepMeta {
     fn to_peer_dep_meta(&self) -> PeerDepMeta {
         PeerDepMeta {
             optional: self.optional,
         }
     }
-}
-
-#[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize)]
-enum PrimerBundledDependencies {
-    List(Vec<String>),
-    All(bool),
 }
 
 impl PrimerBundledDependencies {
@@ -154,14 +109,6 @@ impl PrimerBundledDependencies {
             Self::All(v) => BundledDependencies::All(*v),
         }
     }
-}
-
-#[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize)]
-struct PrimerDist {
-    tarball: String,
-    integrity: Option<String>,
-    shasum: Option<String>,
-    provenance: bool,
 }
 
 impl PrimerDist {

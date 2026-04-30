@@ -1,106 +1,17 @@
-use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod primer_schema {
+    include!("src/primer_schema.rs");
+}
+
+use primer_schema::Seed;
+
 const DEV_TOP: usize = 100;
 const RELEASE_TOP: usize = 2000;
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
-struct Seed {
-    #[serde(default, rename = "e")]
-    etag: Option<String>,
-    #[serde(default, rename = "lm")]
-    last_modified: Option<String>,
-    #[serde(rename = "p")]
-    packument: PrimerPackument,
-}
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
-struct PrimerPackument {
-    #[serde(rename = "n")]
-    name: String,
-    #[serde(default, rename = "m")]
-    modified: Option<String>,
-    #[serde(default, rename = "d")]
-    dist_tags: BTreeMap<String, String>,
-    #[serde(default, rename = "v")]
-    versions: Vec<PrimerVersion>,
-}
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
-struct PrimerVersion {
-    #[serde(rename = "v")]
-    version: String,
-    #[serde(default, rename = "t")]
-    published_at: Option<String>,
-    #[serde(default, rename = "m")]
-    metadata: PrimerVersionMetadata,
-}
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Default, Deserialize)]
-struct PrimerVersionMetadata {
-    #[serde(default, rename = "d")]
-    dependencies: BTreeMap<String, String>,
-    #[serde(default, rename = "p")]
-    peer_dependencies: BTreeMap<String, String>,
-    #[serde(default, rename = "pm")]
-    peer_dependencies_meta: BTreeMap<String, PrimerPeerDepMeta>,
-    #[serde(default, rename = "o")]
-    optional_dependencies: BTreeMap<String, String>,
-    #[serde(default, rename = "b")]
-    bundled_dependencies: Option<PrimerBundledDependencies>,
-    #[serde(default, rename = "dt")]
-    dist: Option<PrimerDist>,
-    #[serde(default)]
-    os: Vec<String>,
-    #[serde(default)]
-    cpu: Vec<String>,
-    #[serde(default)]
-    libc: Vec<String>,
-    #[serde(default, rename = "e")]
-    engines: BTreeMap<String, String>,
-    #[serde(default, rename = "l")]
-    license: Option<String>,
-    #[serde(default, rename = "f")]
-    funding_url: Option<String>,
-    #[serde(default)]
-    bin: BTreeMap<String, String>,
-    #[serde(default, rename = "h")]
-    has_install_script: bool,
-    #[serde(default, rename = "x")]
-    deprecated: Option<String>,
-    #[serde(default, rename = "u")]
-    trusted_publisher: bool,
-}
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
-struct PrimerPeerDepMeta {
-    #[serde(default)]
-    optional: bool,
-}
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
-#[serde(untagged)]
-enum PrimerBundledDependencies {
-    List(Vec<String>),
-    All(bool),
-}
-
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
-struct PrimerDist {
-    #[serde(rename = "t")]
-    tarball: String,
-    #[serde(default, rename = "i")]
-    integrity: Option<String>,
-    #[serde(default, rename = "s")]
-    shasum: Option<String>,
-    #[serde(default, rename = "a")]
-    provenance: bool,
-}
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
