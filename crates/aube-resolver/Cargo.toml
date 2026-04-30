@@ -17,7 +17,6 @@ aube-lockfile = { workspace = true }
 aube-store = { workspace = true }
 aube-util = { workspace = true }
 node-semver = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 simd-json = { workspace = true }
 rkyv = { workspace = true }
@@ -26,7 +25,6 @@ tar = { workspace = true }
 zstd = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
-blake3 = { workspace = true }
 pathdiff = "0.2"
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
