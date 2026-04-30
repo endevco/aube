@@ -581,7 +581,7 @@ impl ReadPackageHost {
         }))
     }
 
-    pub(crate) async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
+    async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
         self.next_id = self.next_id.wrapping_add(1);
         let id = self.next_id;
         let req = ReadPackageRequest { id, pkg: &pkg };
@@ -650,8 +650,13 @@ impl ReadPackageHook for ReadPackageHost {
 /// With a single host this is a thin wrapper over
 /// [`ReadPackageHost::call`]; the multi-host path is what makes the
 /// global-plus-local pnpm test cases (hooks.ts:135 and :176) pass.
+///
+/// Each host is paired with the pnpmfile path it was spawned from so a
+/// rejection from one node child surfaces with its source file in the
+/// error string — without it, the resolver-side error reads the same
+/// whether the global or local hook is to blame.
 pub struct ReadPackageHostChain {
-    hosts: Vec<ReadPackageHost>,
+    hosts: Vec<(PathBuf, ReadPackageHost)>,
 }
 
 impl ReadPackageHostChain {
@@ -663,7 +668,7 @@ impl ReadPackageHostChain {
         let mut hosts = Vec::new();
         for p in paths {
             if let Some(host) = ReadPackageHost::spawn(p).await? {
-                hosts.push(host);
+                hosts.push((p.clone(), host));
             }
         }
         if hosts.is_empty() {
@@ -674,8 +679,11 @@ impl ReadPackageHostChain {
 
     async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
         let mut current = pkg;
-        for host in &mut self.hosts {
-            current = host.call(current).await?;
+        for (path, host) in &mut self.hosts {
+            current = host
+                .call(current)
+                .await
+                .map_err(|e| format!("readPackage hook ({}): {e}", path.display()))?;
         }
         Ok(current)
     }
