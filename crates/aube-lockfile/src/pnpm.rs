@@ -237,13 +237,15 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 })
             });
             if let Some(snap) = snap
-                && let Some(deps) = snap.dependencies.clone()
+                && let Some(mut deps) = snap.dependencies.clone()
             {
+                rewrite_snapshot_alias_deps(&mut deps, &mut alias_remaps);
                 local_pkg.dependencies = deps;
             }
             if let Some(snap) = snap
-                && let Some(opt_deps) = snap.optional_dependencies.clone()
+                && let Some(mut opt_deps) = snap.optional_dependencies.clone()
             {
+                rewrite_snapshot_alias_deps(&mut opt_deps, &mut alias_remaps);
                 local_pkg.dependencies.extend(opt_deps.clone());
                 local_pkg.optional_dependencies = opt_deps;
             }
@@ -379,38 +381,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let mut dependencies = snapshot
             .and_then(|s| s.dependencies.clone())
             .unwrap_or_default();
-        // Detect npm-aliased transitive deps. pnpm encodes them as
-        // `<alias>: <real>@<resolved>(peers…)` inside a snapshot's
-        // dependency map (e.g. `string-width-cjs: string-width@4.2.3`
-        // for the `"string-width-cjs": "npm:string-width@^4.2.0"` dep
-        // declared by `@isaacs/cliui@8.0.2`). Aube stores transitive
-        // tails as bare resolved versions and synthesizes an alias-
-        // keyed package entry under `<alias>@<resolved>` with
-        // `alias_of=Some(real)`. Rewriting here keeps a single shape
-        // downstream: the linker computes `<dep_name>@<dep_tail>` and
-        // hits the synthetic alias entry, and the resolver's lockfile-
-        // reuse path enqueues transitives with `range = <resolved>`
-        // (not the malformed `string-width@4.2.3`) so a re-resolve
-        // doesn't try to find `string-width-cjs` versions matching a
-        // synthetic `<real>@<version>` range.
-        let mut rewrite_alias_values = |deps: &mut BTreeMap<String, String>| {
-            for (dep_name, dep_value) in deps.iter_mut() {
-                let bare = dep_value.split('(').next().unwrap_or(dep_value);
-                let Some((real_name, resolved)) = parse_dep_path(bare) else {
-                    continue;
-                };
-                if real_name == *dep_name {
-                    continue;
-                }
-                let peer_suffix = dep_value.find('(').map(|i| &dep_value[i..]).unwrap_or("");
-                let alias_dep_path = format!("{dep_name}@{resolved}{peer_suffix}");
-                let real_dep_path = dep_value.clone();
-                alias_remaps.push((alias_dep_path, real_dep_path, dep_name.clone(), real_name));
-                *dep_value = format!("{resolved}{peer_suffix}");
-            }
-        };
-        rewrite_alias_values(&mut dependencies);
-        rewrite_alias_values(&mut optional_dependencies);
+        rewrite_snapshot_alias_deps(&mut dependencies, &mut alias_remaps);
+        rewrite_snapshot_alias_deps(&mut optional_dependencies, &mut alias_remaps);
         dependencies.extend(optional_dependencies.clone());
         let bundled_dependencies = snapshot
             .and_then(|s| s.bundled_dependencies.clone())
@@ -533,7 +505,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             return Err(Error::parse(
                 path,
                 format!(
-                    "npm-alias importer references missing package {real_dep_path} (alias dep_path: {alias_dep_path})"
+                    "npm-alias references missing package {real_dep_path} (alias dep_path: {alias_dep_path})"
                 ),
             ));
         };
@@ -1181,6 +1153,41 @@ fn parse_dep_path(dep_path: &str) -> Option<(String, String)> {
         .to_string();
 
     Some((name, version))
+}
+
+/// Detect npm-aliased entries inside a snapshot's `dependencies` /
+/// `optionalDependencies` map and rewrite them to aube's internal shape.
+///
+/// pnpm encodes a transitive npm alias as `<alias>: <real>@<resolved>(peers…)`
+/// (e.g. `@isaacs/cliui@8.0.2` records `string-width-cjs: string-width@4.2.3`
+/// for its `"string-width-cjs": "npm:string-width@^4.2.0"` dep). Aube's
+/// linker keys sibling symlinks against `<dep_name>@<dep_value>`, so a raw
+/// pnpm value yields a broken `string-width-cjs@string-width@4.2.3` virtual
+/// store path. This helper rewrites the value to the bare resolved version
+/// (preserving any peer-context suffix) and pushes onto `alias_remaps` so
+/// the synthesis loop creates a `<alias>@<resolved>` `LockedPackage` with
+/// `alias_of=Some(real)`. After that the linker resolves the alias symlink
+/// to the synthetic dir and the resolver's lockfile-reuse path enqueues
+/// transitives with `range = <resolved>` (not the malformed
+/// `<real>@<resolved>` that no `<alias>` packument can satisfy).
+fn rewrite_snapshot_alias_deps(
+    deps: &mut BTreeMap<String, String>,
+    alias_remaps: &mut Vec<(String, String, String, String)>,
+) {
+    for (dep_name, dep_value) in deps.iter_mut() {
+        let bare = dep_value.split('(').next().unwrap_or(dep_value);
+        let Some((real_name, resolved)) = parse_dep_path(bare) else {
+            continue;
+        };
+        if real_name == *dep_name {
+            continue;
+        }
+        let peer_suffix = dep_value.find('(').map(|i| &dep_value[i..]).unwrap_or("");
+        let alias_dep_path = format!("{dep_name}@{resolved}{peer_suffix}");
+        let real_dep_path = dep_value.clone();
+        alias_remaps.push((alias_dep_path, real_dep_path, dep_name.clone(), real_name));
+        *dep_value = format!("{resolved}{peer_suffix}");
+    }
 }
 
 // -- Writable serde types for pnpm-lock.yaml v9 --
@@ -3707,5 +3714,63 @@ snapshots:
             .expect("synthesized alias entry with peer suffix");
         assert_eq!(alias.name, "alias-pkg");
         assert_eq!(alias.alias_of.as_deref(), Some("real-pkg"));
+    }
+
+    #[test]
+    fn parse_synthesizes_npm_alias_for_transitive_deps_of_local_packages() {
+        // The local-packages absorption loop runs before the main
+        // snapshot loop and pulls a `file:` workspace package's
+        // transitive deps directly out of `raw.snapshots`. Those
+        // values must go through the same alias rewrite as the main
+        // path, or a workspace package depending on
+        // `"string-width-cjs": "npm:string-width@^4.2.0"` would still
+        // produce the broken `string-width-cjs@string-width@4.2.3`
+        // virtual store path on install.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      local-pkg:
+        specifier: file:./local-pkg
+        version: file:./local-pkg
+
+packages:
+  local-pkg@file:./local-pkg:
+    resolution: {directory: ./local-pkg, type: directory}
+  string-width@4.2.3:
+    resolution: {integrity: sha512-fake}
+
+snapshots:
+  local-pkg@file:./local-pkg:
+    dependencies:
+      string-width-cjs: string-width@4.2.3
+  string-width@4.2.3: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&path).unwrap();
+        let local = graph
+            .packages
+            .values()
+            .find(|p| p.name == "local-pkg")
+            .expect("local-pkg entry");
+        assert_eq!(
+            local.dependencies.get("string-width-cjs").unwrap(),
+            "4.2.3",
+            "transitive alias on a local package gets rewritten too"
+        );
+        let alias = graph
+            .packages
+            .get("string-width-cjs@4.2.3")
+            .expect("synthesized alias entry from local package's transitive");
+        assert_eq!(alias.name, "string-width-cjs");
+        assert_eq!(alias.alias_of.as_deref(), Some("string-width"));
     }
 }
