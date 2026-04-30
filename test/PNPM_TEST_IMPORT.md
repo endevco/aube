@@ -37,7 +37,7 @@ Source: [/private/tmp/pnpm](https://github.com/pnpm/pnpm) checkout. Translation 
 
 Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm source file → aube target file, counts are pnpm's actual `test()` cases (not all will translate cleanly — expect 60-80% yield).
 
-- [ ] `pnpm/test/install/misc.ts` (37 tests, 645 LOC) → fold into [test/install.bats](install.bats) or new [test/install_pnpm_misc.bats](install_pnpm_misc.bats)
+- [ ] `pnpm/test/install/misc.ts` (37 tests, 645 LOC) → [test/pnpm_install_misc.bats](pnpm_install_misc.bats) (1/37 ported as worked example)
   - Highest-value targets: `--lockfile-only`, `--no-lockfile`, `--prefix`, case-sensitive FS, `STORE_VERSION` migrations
 - [ ] `pnpm/test/install/hooks.ts` (22 tests, 698 LOC) → fold into [test/pnpmfile.bats](pnpmfile.bats)
   - `readPackage` sync/async, hook removes a dep, hook overrides version, hook fails install, hook on workspace packages
@@ -82,6 +82,11 @@ These test pnpm-specific behavior aube doesn't replicate:
 
 ## Conventions for translations
 
-- Each translated test gets a comment pointing to the pnpm source: `# Ported from pnpm/test/install/misc.ts:42` so the audit trail is intact.
-- When a pnpm test asserts on a pnpm-internal detail (`.pnpm/` path, `STORE_VERSION` constant, `node_modules/.modules.yaml` shape), translate the *behavior* and assert on the aube equivalent (`.aube/`, store v1, `node_modules/.aube-state`). Never assert on pnpm-internal paths.
-- If a test exposes a real aube bug, file it in [Discussions](https://github.com/endevco/aube/discussions) and mark the test with `skip` + a link rather than blocking the import.
+See [test/pnpm_install_misc.bats](pnpm_install_misc.bats) for a worked example covering all the conventions below.
+
+- **File naming**: ported tests live in `test/pnpm_<source_file>.bats` (e.g. `pnpm/test/install/misc.ts` → `test/pnpm_install_misc.bats`). One bats file per pnpm source file. The file header comments cite the pnpm source path.
+- **Per-test citation**: each `@test` block opens with `# Ported from pnpm/test/<path>:<line>` so the audit trail is intact. If you adapt the test (e.g. substitute a package), note the substitution on the next line.
+- **`pnpm install <pkg>` ≈ `aube add <pkg>`**: pnpm overloads `install` to also add new deps. aube splits them. When porting, switch to `aube add` and call out the swap in the comment.
+- **Package substitutions**: pnpm tests lean on `is-positive`, `rimraf`, `@pnpm.e2e/*`. Until the e2e fixtures are mirrored (Phase 0), substitute equivalents already in [test/registry/storage/](registry/storage/) — `is-odd`, `is-even`, `is-number`, `semver`. Note the substitution in the test comment.
+- **Don't assert on pnpm-internal paths**: when a pnpm test asserts on `.pnpm/`, `STORE_VERSION`, `node_modules/.modules.yaml` etc., translate the *behavior* and assert on the aube equivalent (`.aube/`, store v1, `node_modules/.aube-state`).
+- **Surfaced bugs**: if a port exposes a real aube divergence, file it in [Discussions](https://github.com/endevco/aube/discussions) and mark the test with `skip "aube divergence: <link>"` rather than blocking the import.
