@@ -49,13 +49,19 @@ pub struct AddArgs {
     /// the target catalog, the existing entry is preserved (never
     /// overwritten); the manifest then gets `catalog:` only when the
     /// existing entry is compatible with the user's range.
-    #[arg(long, conflicts_with = "save_catalog_name")]
+    ///
+    /// Conflicts with `--no-save`: catalog mutations write to the
+    /// workspace yaml, which the `--no-save` restore path doesn't
+    /// snapshot — combining the two would silently leave an orphaned
+    /// catalog entry behind.
+    #[arg(long, conflicts_with_all = ["save_catalog_name", "no_save"])]
     pub save_catalog: bool,
     /// Save the new dependency into a *named* catalog (`catalogs.<name>`
     /// in the workspace yaml), writing `catalog:<name>` into
-    /// `package.json`. Same workspace/alias exclusions as
-    /// `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`.
-    #[arg(long, value_name = "NAME")]
+    /// `package.json`. Same workspace/alias exclusions and `--no-save`
+    /// conflict as `--save-catalog`. Mirrors `pnpm add
+    /// --save-catalog-name=<name>`.
+    #[arg(long, value_name = "NAME", conflicts_with = "no_save")]
     pub save_catalog_name: Option<String>,
     /// Add as a peer dependency (written to `peerDependencies` in
     /// package.json).

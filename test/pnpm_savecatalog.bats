@@ -331,3 +331,22 @@ YAML
 	run grep -F "is-odd: ^3.0.1" pnpm-workspace.yaml
 	assert_success
 }
+
+@test "aube add --save-catalog conflicts with --no-save" {
+	# `--no-save` snapshots and restores package.json + the lockfile,
+	# but the workspace yaml is outside that snapshot. Combining the
+	# two would orphan the catalog entry. clap should reject the combo
+	# up front rather than letting the install run silently corrupt
+	# pnpm-workspace.yaml.
+	cat >package.json <<'JSON'
+{ "name": "save-catalog-no-save-conflict", "version": "0.0.0" }
+JSON
+
+	run aube add --save-catalog --no-save is-odd
+	assert_failure
+	assert_output --partial "cannot be used with"
+
+	run aube add --save-catalog-name=foo --no-save is-odd
+	assert_failure
+	assert_output --partial "cannot be used with"
+}
