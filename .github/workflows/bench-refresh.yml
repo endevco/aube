@@ -23,6 +23,9 @@ concurrency:
   group: bench-refresh
   cancel-in-progress: true
 
+env:
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   # Gate: only run bench if `benchmarks/results.json` is pinned to an older
   # `aube` version than the workspace. A pure chore/docs push to main
@@ -67,7 +70,7 @@ jobs:
     name: Refresh benchmarks
     needs: check
     if: needs.check.outputs.drift == 'true'
-    runs-on: namespace-profile-endev-linux-amd64-large
+    runs-on: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
     permissions:
       contents: write
       pull-requests: write
