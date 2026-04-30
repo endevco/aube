@@ -51,7 +51,6 @@ struct CachedFullPackumentTyped {
     fetched_at: u64,
     max_age_secs: Option<u64>,
     packument: Packument,
-    raw: Vec<u8>,
 }
 
 fn cached_is_fresh(fetched_at: u64, max_age_secs: Option<u64>) -> bool {
@@ -925,27 +924,15 @@ impl RegistryClient {
                     let revalidated_max_age =
                         parse_cache_control_max_age(&resp).or(cached.max_age_secs);
                     let packument = cached.packument.clone();
-                    let mut raw = cached.raw.clone();
-                    let to_cache =
-                        match simd_json::serde::from_slice::<CachedFullPackument>(&mut raw) {
-                            Ok(mut to_cache) => {
-                                to_cache.fetched_at = now_secs();
-                                to_cache.max_age_secs = revalidated_max_age;
-                                to_cache
-                            }
-                            Err(_) => CachedFullPackument {
-                                etag: cached.etag.clone(),
-                                last_modified: cached.last_modified.clone(),
-                                fetched_at: now_secs(),
-                                max_age_secs: revalidated_max_age,
-                                packument: serde_json::to_value(&packument).map_err(|e| {
-                                    Error::Io(std::io::Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        e,
-                                    ))
-                                })?,
-                            },
-                        };
+                    let to_cache = CachedFullPackument {
+                        etag: cached.etag.clone(),
+                        last_modified: cached.last_modified.clone(),
+                        fetched_at: now_secs(),
+                        max_age_secs: revalidated_max_age,
+                        packument: serde_json::to_value(&packument).map_err(|e| {
+                            Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                        })?,
+                    };
                     if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
                         tracing::warn!(
                             "failed to write packument cache {}: {e}",
@@ -1905,7 +1892,6 @@ fn read_cached_full_packument_typed_lookup(
     let Ok(mut content) = std::fs::read(path) else {
         return CachedPackumentLookup::default();
     };
-    let raw = content.clone();
     let Ok(typed) = simd_json::serde::from_slice::<Typed>(&mut content) else {
         return CachedPackumentLookup::default();
     };
@@ -1915,7 +1901,6 @@ fn read_cached_full_packument_typed_lookup(
         fetched_at: typed.fetched_at,
         max_age_secs: typed.max_age_secs,
         packument: typed.packument,
-        raw,
     };
     if !force_cache && !cached_is_fresh(typed.fetched_at, typed.max_age_secs) {
         return CachedPackumentLookup {
