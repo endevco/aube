@@ -443,3 +443,37 @@ JSON
 	assert_success
 	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
 }
+
+@test "strict-peer-dependencies: peer-deps warning renders without crashing the resolver" {
+	# Ported from pnpm/test/install/misc.ts:541 ('do not fail to render
+	# peer dependencies warning, when cache was hit during peer
+	# resolution', covers pnpm/pnpm#8538). pnpm asserts status=0 + the
+	# warning string in stdout — pnpm warns by default. aube is silent
+	# by default (matching bun/npm/yarn) and `strict-peer-dependencies=
+	# true` is the escape hatch that surfaces the same diagnostic. Aube
+	# routes the diagnostic through a hard-fail, so this port asserts
+	# `assert_failure` + the warning string instead of pnpm's
+	# warn-and-succeed shape. The regression guard — that the warning
+	# renderer doesn't crash when peers are missing — is preserved
+	# either way. @udecode/plate-* substituted with the mirrored
+	# `@pnpm.e2e/abc-parent-with-missing-peers` (depends on `abc`,
+	# whose peer-a/peer-b/peer-c are unsatisfied).
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+auto-install-peers=false
+strict-peer-dependencies=true
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-peer-deps-warning",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/abc-parent-with-missing-peers": "1.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_failure
+	assert_output --partial "Issues with peer dependencies found"
+}
