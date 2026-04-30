@@ -217,7 +217,15 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
                  help: the package may ship the binary under a different name — try `aube dlx -p <package> <bin>`"
             ));
         }
-        tokio::process::Command::new(&bin_path)
+        // The linker writes three shims for every bin on Windows:
+        // `<name>.cmd`, `<name>.ps1`, and a bare extensionless sh shim
+        // (for use under bash / git-bash). CreateProcess can only
+        // launch real PE executables and `.cmd`/`.bat` files — handing
+        // it the sh shim fails with `%1 is not a valid Win32 application`
+        // (os error 193). Prefer the `.cmd` shim on Windows; on Unix
+        // the bare shim is the executable.
+        let exec_path = resolve_exec_shim(&bin_path);
+        tokio::process::Command::new(&exec_path)
             .args(&bin_args)
             .current_dir(&prev_cwd)
             .stderr(aube_scripts::child_stderr())
@@ -391,6 +399,32 @@ fn bin_name_for(command: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_string()
 }
 
+/// Pick the executable variant of a `node_modules/.bin/<name>` shim.
+///
+/// On Unix the bare path is a sh shebang script and is what we want.
+/// On Windows the linker writes three shim files for every bin —
+/// `<name>.cmd`, `<name>.ps1`, and a bare `<name>` sh shim — because
+/// the same `node_modules` may be shared with bash / git-bash. The
+/// bare shim is a sh script that CreateProcess can't execute (and so
+/// `Command::new` fails with `%1 is not a valid Win32 application`).
+/// Pick the `.cmd` shim, which is what npm/pnpm/yarn run.
+///
+/// We don't fall back to `.ps1` here: PowerShell scripts can't be
+/// launched by `Command::new` either (they need `powershell.exe -File`),
+/// and the linker always writes `.cmd` whenever it writes `.ps1`.
+fn resolve_exec_shim(bin_path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if bin_path.extension().is_none() {
+            let cmd_path = bin_path.with_extension("cmd");
+            if cmd_path.exists() {
+                return cmd_path;
+            }
+        }
+    }
+    bin_path.to_path_buf()
+}
+
 /// When the bin derived from the package name doesn't match the installed
 /// package's actual bin, fall back to reading the package's `bin` field to
 /// find the right name. Matches `npx`/`pnpm dlx` behavior so e.g.
@@ -458,6 +492,36 @@ mod tests {
         assert_eq!(bin_name_for("cowsay@1.5.0"), "cowsay");
         assert_eq!(bin_name_for("@scope/foo@2"), "foo");
         assert_eq!(bin_name_for("@scope/foo"), "foo");
+    }
+
+    #[test]
+    fn resolve_exec_shim_returns_bare_path_when_no_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("loner");
+        std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
+        assert_eq!(resolve_exec_shim(&bare), bare);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_exec_shim_prefers_cmd_sibling_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("cowsay");
+        let cmd_shim = tmp.path().join("cowsay.cmd");
+        std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&cmd_shim, b"@echo off\n").unwrap();
+        assert_eq!(resolve_exec_shim(&bare), cmd_shim);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_exec_shim_keeps_bare_path_on_unix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("cowsay");
+        let cmd_shim = tmp.path().join("cowsay.cmd");
+        std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&cmd_shim, b"@echo off\n").unwrap();
+        assert_eq!(resolve_exec_shim(&bare), bare);
     }
 
     #[test]
