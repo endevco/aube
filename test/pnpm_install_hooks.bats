@@ -178,6 +178,133 @@ EOF
 	assert_dir_exists node_modules/.aube/is-odd@0.1.2_is-number@3.0.0/node_modules/is-odd
 }
 
+@test "pnpmfile: readPackage hook fires during aube update" {
+	# Ported from pnpm/test/install/hooks.ts:263 ('readPackage hook during
+	# update'). pnpm relies on addDistTag to publish a newer version
+	# that `update` then resolves through the hook; aube's offline
+	# registry fixtures don't have an addDistTag analogue, so we instead
+	# run `update` from scratch with the hook already wired in. The
+	# hook's mutation must land in the lockfile that update writes —
+	# which it can only do if update's resolver attaches the readPackage
+	# host (the gap this test was added to close).
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-hooks-readpackage-during-update",
+  "version": "0.0.0",
+  "dependencies": { "is-even": "1.0.0" }
+}
+JSON
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === 'is-odd') {
+        pkg.dependencies = {}
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube update
+	assert_success
+	# Guard against the false-pass where `aube update` leaves no
+	# lockfile and the negative greps below trip on grep's
+	# exit-2-for-file-not-found rather than on the hook actually
+	# stripping the chain.
+	assert_file_exists aube-lock.yaml
+	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep '^  is-odd@'"
+	assert_output --partial 'is-odd@0.1.2: {}'
+	# The transitive chain (is-odd → is-number → kind-of) is gone
+	# because the hook stripped is-odd's deps before the resolver
+	# walked them. Without the readPackage host wired into update,
+	# is-number and kind-of would still appear.
+	run grep 'is-number' aube-lock.yaml
+	assert_failure
+	run grep 'kind-of' aube-lock.yaml
+	assert_failure
+}
+
+@test "pnpmfile: --ignore-pnpmfile during aube update" {
+	# Ported from pnpm/test/install/hooks.ts:338 ('ignore .pnpmfile.cjs
+	# during update when --ignore-pnpmfile is used').
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-hooks-ignore-pnpmfile-update",
+  "version": "0.0.0",
+  "dependencies": { "is-even": "1.0.0" }
+}
+JSON
+
+	# Step 1: install with NO pnpmfile — full transitive chain in the lockfile.
+	run aube install
+	assert_success
+
+	# Step 2: drop in a hook that would strip is-odd's deps.
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === 'is-odd') {
+        pkg.dependencies = {}
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	# With --ignore-pnpmfile the hook should NOT fire, so is-odd's
+	# transitive deps stay intact in the lockfile after update.
+	run aube update --ignore-pnpmfile
+	assert_success
+	run grep 'is-number' aube-lock.yaml
+	assert_success
+	run grep 'kind-of' aube-lock.yaml
+	assert_success
+}
+
+@test "pnpmfile: preResolution hook fires before resolve" {
+	# Ported from pnpm/test/install/hooks.ts:624 ('preResolution hook').
+	# The pnpm test asserts the hook receives a resolution context with
+	# currentLockfile / wantedLockfile / registries / lockfileDir /
+	# storeDir. We assert on a subset that's stable across aube's
+	# context shape — the existence of the file proves the hook fired,
+	# and the lockfileDir + registries fields prove we're passing the
+	# pnpm-shaped ctx, not just an empty object.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-hooks-preresolution",
+  "version": "0.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+const fs = require('fs')
+module.exports = {
+  hooks: {
+    preResolution (ctx) {
+      fs.writeFileSync('preresolution-fired.json', JSON.stringify(ctx))
+    }
+  }
+}
+EOF
+
+	run aube install
+	assert_success
+	assert_file_exists preresolution-fired.json
+	run cat preresolution-fired.json
+	assert_output --partial '"lockfileDir"'
+	assert_output --partial '"registries"'
+	assert_output --partial '"existsCurrentLockfile":false'
+}
+
 @test "pnpmfile: readPackage that returns undefined fails the install" {
 	skip "aube divergence: aube continues with the original manifest when readPackage returns undefined; pnpm fails the install. File a Discussion before un-skipping."
 	# Ported from pnpm/test/install/hooks.ts:68 ('readPackage hook makes

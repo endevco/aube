@@ -5310,6 +5310,18 @@
             }
           },
           {
+            "name": "ignore-pnpmfile",
+            "usage": "--ignore-pnpmfile",
+            "help": "Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update",
+            "help_first_line": "Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update",
+            "short": [],
+            "long": [
+              "ignore-pnpmfile"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "ignore-scripts",
             "usage": "--ignore-scripts",
             "help": "Skip lifecycle scripts",

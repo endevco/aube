@@ -71,8 +71,8 @@ pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathB
     None
 }
 
-#[derive(Serialize, Deserialize, Default)]
-struct LockfileWire {
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct LockfileWire {
     importers: BTreeMap<String, Vec<DirectDepWire>>,
     packages: BTreeMap<String, PackageWire>,
 }
@@ -224,39 +224,34 @@ process.stdin.on('end', async () => {
 });
 "#;
 
-fn after_all_resolved_shim() -> String {
+/// Generic shim used for any one-shot hook (`afterAllResolved`,
+/// `preResolution`, …). Dispatches on `process.env.AUBE_HOOK` so a new
+/// one-shot hook only needs a `run_one_shot_hook(.., name, ..)` call —
+/// don't add a parallel shim.
+fn one_shot_hook_shim() -> String {
     format!("{LOAD_PNPMFILE_JS}{SHIM}")
 }
 
-/// Run the `afterAllResolved` hook against a resolved lockfile graph.
-/// Mutations to `packages[].dependencies` and `packages[].peerDependencies`
-/// are applied in place. All other fields are round-tripped but
-/// ignored on the way back.
-pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) -> Result<()> {
-    let input = to_wire(graph);
-    let input_json = serde_json::to_vec(&input)
-        .into_diagnostic()
-        .wrap_err("failed to serialize lockfile for pnpmfile hook")?;
-
-    tracing::debug!(
-        "running pnpmfile hook afterAllResolved ({})",
-        pnpmfile.display()
-    );
+/// Spawn a one-shot `node` child running the shared shim for `hook_name`,
+/// pipe `input_json` in on stdin, and return the captured stdout. Shared
+/// scaffolding for `afterAllResolved` (which round-trips a lockfile) and
+/// `preResolution` (which fires-and-forgets a context object).
+async fn run_one_shot_hook(pnpmfile: &Path, hook_name: &str, input_json: &[u8]) -> Result<Vec<u8>> {
+    tracing::debug!("running pnpmfile hook {hook_name} ({})", pnpmfile.display());
 
     let mut cmd = tokio::process::Command::new("node");
     cmd.arg("-e")
-        .arg(after_all_resolved_shim())
+        .arg(one_shot_hook_shim())
         .env("AUBE_PNPMFILE", pnpmfile)
-        .env("AUBE_HOOK", "afterAllResolved")
+        .env("AUBE_HOOK", hook_name)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
-        // Match ReadPackageHost::spawn below. Without kill_on_drop
-        // the Node child keeps running when the parent future is
-        // cancelled. Install task panics or gets aborted, user
-        // Ctrl-C's aube, Node process stays alive running the
-        // afterAllResolved hook body until stdin closes on its own.
-        // Unlikely to bite in practice but zero-cost to guard.
+        // Match ReadPackageHost::spawn below. Without kill_on_drop the
+        // Node child keeps running when the parent future is cancelled
+        // (install panics, user Ctrl-C's, etc) and the hook body races
+        // on past stdin close. Unlikely to bite in practice but
+        // zero-cost to guard.
         .kill_on_drop(true);
 
     let mut child = cmd
@@ -270,10 +265,10 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
             .as_mut()
             .ok_or_else(|| miette!("failed to open stdin for pnpmfile node child"))?;
         stdin
-            .write_all(&input_json)
+            .write_all(input_json)
             .await
             .into_diagnostic()
-            .wrap_err("failed to write lockfile JSON to pnpmfile hook")?;
+            .wrap_err_with(|| format!("failed to write JSON to pnpmfile {hook_name} hook"))?;
         stdin
             .shutdown()
             .await
@@ -288,15 +283,87 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
         .wrap_err("pnpmfile hook child process failed")?;
     if !output.status.success() {
         return Err(miette!(
-            "pnpmfile hook `afterAllResolved` exited with status {}",
+            "pnpmfile hook `{hook_name}` exited with status {}",
             output.status
         ));
     }
+    Ok(output.stdout)
+}
 
-    let wire: LockfileWire = serde_json::from_slice(&output.stdout)
+/// Run the `afterAllResolved` hook against a resolved lockfile graph.
+/// Mutations to `packages[].dependencies` and `packages[].peerDependencies`
+/// are applied in place. All other fields are round-tripped but
+/// ignored on the way back.
+pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) -> Result<()> {
+    let input = to_wire(graph);
+    let input_json = serde_json::to_vec(&input)
+        .into_diagnostic()
+        .wrap_err("failed to serialize lockfile for pnpmfile hook")?;
+    let stdout = run_one_shot_hook(pnpmfile, "afterAllResolved", &input_json).await?;
+    let wire: LockfileWire = serde_json::from_slice(&stdout)
         .into_diagnostic()
         .wrap_err("pnpmfile hook returned invalid JSON from afterAllResolved")?;
     apply(wire, graph);
+    Ok(())
+}
+
+/// Snapshot passed to the `preResolution` hook before resolve starts.
+/// Mirrors pnpm's context shape (camelCase on the wire) so existing
+/// pnpmfiles can read the fields they expect.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreResolutionContext<'a> {
+    pub lockfile_dir: &'a Path,
+    pub store_dir: Option<&'a Path>,
+    pub current_lockfile: Option<LockfileWire>,
+    pub wanted_lockfile: Option<LockfileWire>,
+    pub exists_current_lockfile: bool,
+    pub exists_non_empty_wanted_lockfile: bool,
+    pub registries: BTreeMap<String, String>,
+}
+
+impl<'a> PreResolutionContext<'a> {
+    /// Build the snapshot for `lockfile_dir`. `existing` is the on-disk
+    /// lockfile graph (or `None` when there isn't one); both
+    /// `currentLockfile` and `wantedLockfile` are derived from it
+    /// because at preResolution time they're identical — pnpm only
+    /// diverges them after resolve has produced the wanted graph.
+    pub fn from_existing(
+        lockfile_dir: &'a Path,
+        store_dir: Option<&'a Path>,
+        existing: Option<&LockfileGraph>,
+        registries: BTreeMap<String, String>,
+    ) -> Self {
+        let wire = existing.map(to_wire);
+        let exists_current_lockfile = existing.is_some();
+        let exists_non_empty_wanted_lockfile = wire
+            .as_ref()
+            .is_some_and(|w| !w.importers.is_empty() || !w.packages.is_empty());
+        Self {
+            lockfile_dir,
+            store_dir,
+            current_lockfile: wire.clone(),
+            wanted_lockfile: wire,
+            exists_current_lockfile,
+            exists_non_empty_wanted_lockfile,
+            registries,
+        }
+    }
+}
+
+/// Run the `preResolution` hook before the resolver walks the graph.
+/// Fire-and-forget — the hook's return value is discarded by pnpm and
+/// by aube. Skips spawning `node` when the pnpmfile doesn't reference
+/// `preResolution` so a hook-less pnpmfile doesn't pay the per-install
+/// node-startup cost on every command.
+pub async fn run_pre_resolution(pnpmfile: &Path, ctx: &PreResolutionContext<'_>) -> Result<()> {
+    if !has_hook(pnpmfile, "preResolution").await? {
+        return Ok(());
+    }
+    let input_json = serde_json::to_vec(ctx)
+        .into_diagnostic()
+        .wrap_err("failed to serialize preResolution context")?;
+    run_one_shot_hook(pnpmfile, "preResolution", &input_json).await?;
     Ok(())
 }
 
@@ -392,7 +459,7 @@ impl ReadPackageHost {
     /// skip attaching a hook entirely in that case and save the
     /// per-call JSON round-trip), otherwise the live host.
     pub async fn spawn(pnpmfile: &Path) -> Result<Option<Self>> {
-        if !has_read_package_hook(pnpmfile).await? {
+        if !has_hook(pnpmfile, "readPackage").await? {
             return Ok(None);
         }
         tracing::debug!(
@@ -488,20 +555,19 @@ impl ReadPackageHook for ReadPackageHost {
     }
 }
 
-/// Quick scan of the pnpmfile source for a `readPackage` identifier.
-/// Avoids the cost of spawning a node child when the hook doesn't
-/// exist — the vast majority of pnpmfiles in the wild use only
-/// `afterAllResolved`. False positives are fine: if a pnpmfile
-/// references `readPackage` in a comment but doesn't export it, the
-/// child spawns, the hook is absent, and `readPackage` calls short-
-/// circuit through the `typeof ... === 'function'` check in the
-/// shim.
-async fn has_read_package_hook(pnpmfile: &Path) -> Result<bool> {
+/// Quick scan of the pnpmfile source for a hook identifier. Avoids
+/// the cost of spawning a node child when the hook doesn't exist —
+/// the vast majority of pnpmfiles use only `afterAllResolved`. False
+/// positives are fine: if a pnpmfile references the hook name in a
+/// comment but doesn't export it, the child spawns, the hook is
+/// absent, and the call short-circuits through the
+/// `typeof ... === 'function'` check in the shim.
+async fn has_hook(pnpmfile: &Path, name: &str) -> Result<bool> {
     let contents = tokio::fs::read_to_string(pnpmfile)
         .await
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to read pnpmfile at {}", pnpmfile.display()))?;
-    Ok(contents.contains("readPackage"))
+    Ok(contents.contains(name))
 }
 
 #[cfg(test)]

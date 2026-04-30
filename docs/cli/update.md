@@ -47,6 +47,10 @@ Dependency traversal depth.
 
 Parsed for pnpm compatibility.
 
+### `--ignore-pnpmfile`
+
+Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update
+
 ### `--ignore-scripts`
 
 Skip lifecycle scripts.

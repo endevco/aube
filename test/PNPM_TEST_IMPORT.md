@@ -4,7 +4,7 @@ Tracking the import of pnpm's test suite into aube's bats suite for parity cover
 
 Source: [pnpm/pnpm](https://github.com/pnpm/pnpm) checkout. Translation pattern: `prepare(manifest)` → write `package.json` + `cd`; `execPnpm([...])` → `aube ...`; `project.has(name)` → `assert_link_exists node_modules/$name`; `project.readLockfile()` → parse `aube-lock.yaml`.
 
-## Phase 0 — infrastructure
+## Phase 0 — infrastructure (done)
 
 - [x] Mirror the ~25 `@pnpm.e2e/*` fixture packages used by Tier 1 tests into [test/registry/storage/@pnpm.e2e/](registry/storage/@pnpm.e2e/) ([#424](https://github.com/endevco/aube/pull/424)). Procedure documented at the top of [test/registry/config.yaml](registry/config.yaml). All 24 packages mirrored.
 - [x] Add an `add_dist_tag` bash helper in [test/test_helper/common_setup.bash:84](test_helper/common_setup.bash) ([#422](https://github.com/endevco/aube/pull/422)).
@@ -18,10 +18,10 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
   - Remaining high-value: strict-store-pkg-content-check (516 — pnpm tampers with the cached manifest in the store and expects the next install to fail; aube parity depends on whether aube has an equivalent integrity check), install timeout, top-level-plugins (190 — needs `standard` package, not in registry).
   - Skipped (still need fixtures): peer-deps-warning (541 — needs `@udecode/plate-*`), circular-peer-deps (556), trust-policy (578-643 — pnpm-specific feature).
   - Documented divergences (don't port without aube-side fix): `--lockfile-dir` (112 — aube has no flag for placing the lockfile outside the project root).
-- [ ] `pnpm/test/install/hooks.ts` (22 tests, 698 LOC) → [test/pnpm_install_hooks.bats](pnpm_install_hooks.bats) (5/22 ported, 2 skipped divergences)
-  - Done: async readPackage on transitive (43), async afterAllResolved (498), syntax error in pnpmfile (292), require() of missing module (303), readPackage normalizes optional/peer/dev fields on transitive (528).
-  - Skipped (need fixtures): sync readPackage (18), custom pnpmfile location (85), global pnpmfile (110, 135, 176), workspace pnpmfile (217), readPackage during update (263), --ignore-pnpmfile cases (314, 338), context.log via ndjson reporter (366, 404), preResolution hook (624 — aube doesn't support), shared workspace lockfile (661).
-  - Documented divergences (don't port without aube-side fix): readPackage returning undefined fails install (68), readPackage on root project's manifest applies (551).
+- [ ] `pnpm/test/install/hooks.ts` (22 tests, 698 LOC) → [test/pnpm_install_hooks.bats](pnpm_install_hooks.bats) (8/22 ported, 2 skipped divergences)
+  - Done: async readPackage on transitive (43), async afterAllResolved (498), syntax error in pnpmfile (292), require() of missing module (303), readPackage normalizes optional/peer/dev fields on transitive (528), readPackage during `aube update` (263), `--ignore-pnpmfile` on `aube update` (338), `preResolution` hook fires before resolve (624).
+  - Not yet ported (Phase 0 unblocked): sync readPackage (18), custom pnpmfile location (85 — needs `--pnpmfile` CLI flag), global pnpmfile (110, 135, 176 — needs `--global-pnpmfile`), workspace pnpmfile (217), context.log via ndjson reporter (366, 404 — needs ndjson `pnpm:hook` log surface), shared workspace lockfile (661).
+  - Documented divergences (don't port without aube-side fix): readPackage returning undefined fails install (68), readPackage on root project's manifest applies (551). The 314 install-side --ignore-pnpmfile case is already covered by [test/pnpmfile.bats](pnpmfile.bats:215).
 - [ ] `pnpm/test/install/lifecycleScripts.ts` (21 tests, 356 LOC) → folded into [test/lifecycle_scripts.bats](lifecycle_scripts.bats) (8/21 ported, [#421](https://github.com/endevco/aube/pull/421))
   - Done: preinstall/postinstall/prepare stdout reaches the user (43, 56, 95), `npm_config_user_agent` set on lifecycle scripts (29), root postinstall NOT triggered by `aube add` / root prepare NOT triggered by `aube add` (69, 82), root postinstall NOT triggered by `aube remove` / `aube update`.
   - Remaining: exit-code propagation, env-var inheritance specifics, script-not-found handling, ordering edge cases.

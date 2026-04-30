@@ -836,6 +836,7 @@ cmd update help="Update dependencies" {
         long_help "Dependency traversal depth.\n\nParsed for pnpm compatibility."
         arg <DEPTH>
     }
+    flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update"
     flag --ignore-scripts help="Skip lifecycle scripts" {
         long_help "Skip lifecycle scripts.\n\nAccepted for pnpm parity — dep scripts are already gated by `allowBuilds`, so the flag is currently a no-op, but scripts that wrap `pnpm update --ignore-scripts` keep working without complaint."
     }

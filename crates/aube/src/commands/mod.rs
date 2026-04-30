@@ -435,6 +435,44 @@ pub(crate) fn make_client(cwd: &std::path::Path) -> aube_registry::client::Regis
     aube_registry::client::RegistryClient::from_config_with_policy(config, policy)
 }
 
+/// Run the pnpmfile `preResolution` hook before the resolver walks
+/// the graph. Builds a context snapshot (lockfile dir, store dir,
+/// existing lockfile, registry map) from the same sources the rest
+/// of the install pipeline consumes, so install and update see an
+/// identical hook contract.
+pub(crate) async fn run_pnpmfile_pre_resolution(
+    pnpmfile: &std::path::Path,
+    cwd: &std::path::Path,
+    existing: Option<&aube_lockfile::LockfileGraph>,
+) -> miette::Result<()> {
+    let config = load_npm_config(cwd);
+    let mut registries = std::collections::BTreeMap::new();
+    registries.insert("default".to_string(), config.registry);
+    for (scope, url) in config.scoped_registries {
+        registries.insert(scope, url);
+    }
+    // Honor `storeDir` from `.npmrc` / `pnpm-workspace.yaml` so the
+    // hook's `storeDir` field matches the path `open_store` operates
+    // on. Both branches return the user-facing root (without the
+    // `v1/files` CAS schema suffix) so a hook reading `storeDir`
+    // doesn't see different depths depending on whether the user set
+    // an override; the platform default's CAS path lives at
+    // `<root>/v1/files`, so we strip those two segments.
+    let store_dir = resolved_store_dir(cwd).or_else(|| {
+        aube_store::dirs::store_dir()
+            .and_then(|p| p.parent()?.parent().map(std::path::Path::to_path_buf))
+    });
+    let ctx = crate::pnpmfile::PreResolutionContext::from_existing(
+        cwd,
+        store_dir.as_deref(),
+        existing,
+        registries,
+    );
+    crate::pnpmfile::run_pre_resolution(pnpmfile, &ctx)
+        .await
+        .wrap_err("pnpmfile preResolution hook failed")
+}
+
 /// Build the standard resolver used by add/remove/update/dedupe: a
 /// shared `RegistryClient` wrapped in `Arc`, the shared packument
 /// cache directory, the given catalog map, and the dependency policy

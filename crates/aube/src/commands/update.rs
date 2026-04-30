@@ -42,6 +42,9 @@ pub struct UpdateArgs {
     /// Parsed for pnpm compatibility.
     #[arg(long)]
     pub depth: Option<String>,
+    /// Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update.
+    #[arg(long)]
+    pub ignore_pnpmfile: bool,
     /// Skip lifecycle scripts.
     ///
     /// Accepted for pnpm parity — dep scripts are already gated by
@@ -214,14 +217,44 @@ pub async fn run(
         filtered
     });
 
-    // Re-resolve the full dependency tree
+    // Re-resolve the full dependency tree. Wire the pnpmfile in so
+    // `readPackage` mutations apply during update (not just first
+    // install) and `afterAllResolved` gets a chance to rewrite the
+    // graph before we hand it to the lockfile writer; without this,
+    // `aube install` runs in frozen-prefer mode below and never
+    // re-evaluates the hook.
+    let pnpmfile_path = (!args.ignore_pnpmfile)
+        .then(|| {
+            let (ws, _) = aube_manifest::workspace::load_both(&cwd).unwrap_or_default();
+            crate::pnpmfile::detect(&cwd, ws.pnpmfile_path.as_deref())
+        })
+        .flatten();
+    if let Some(p) = pnpmfile_path.as_deref() {
+        super::run_pnpmfile_pre_resolution(p, &cwd, existing.as_ref()).await?;
+    }
+    let read_package_host = match pnpmfile_path.as_deref() {
+        Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
+            .await
+            .wrap_err("failed to start pnpmfile readPackage host")?,
+        None => None,
+    };
     let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
     let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
-    let graph = resolver
+    if let Some(host) = read_package_host {
+        resolver = resolver
+            .with_read_package_hook(Box::new(host) as Box<dyn aube_resolver::ReadPackageHook>);
+    }
+    let mut graph = resolver
         .resolve(&resolver_manifest, filtered_existing.as_ref())
         .await
         .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
+    drop(resolver);
+    if let Some(p) = pnpmfile_path.as_deref() {
+        crate::pnpmfile::run_after_all_resolved(p, &mut graph)
+            .await
+            .wrap_err("pnpmfile afterAllResolved hook failed")?;
+    }
 
     // Report what changed
     for manifest_key in &manifest_keys_to_update {
@@ -311,10 +344,16 @@ pub async fn run(
 
     super::write_and_log_lockfile(&cwd, &graph, &manifest)?;
 
-    install::run(install::InstallOptions::with_mode(
-        super::chained_frozen_mode(install::FrozenMode::Prefer),
-    ))
-    .await?;
+    // Propagate `--ignore-pnpmfile` into the chained install. Frozen-prefer
+    // normally short-circuits to a no-op fetch/link, but if the lockfile
+    // we just wrote falls out of sync (drift, manual edits, future
+    // chained calls) the install would re-resolve and re-attach the
+    // pnpmfile hook — silently overriding the flag the user passed to
+    // `aube update`.
+    let mut chained =
+        install::InstallOptions::with_mode(super::chained_frozen_mode(install::FrozenMode::Prefer));
+    chained.ignore_pnpmfile = args.ignore_pnpmfile;
+    install::run(chained).await?;
 
     Ok(())
 }

@@ -1879,6 +1879,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         let pnpmfile_path = (!opts.ignore_pnpmfile)
             .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
             .flatten();
+        if let Some(p) = pnpmfile_path.as_deref() {
+            super::run_pnpmfile_pre_resolution(p, &cwd, existing_for_resolver).await?;
+        }
         let read_package_host = match pnpmfile_path.as_deref() {
             Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
                 .await
@@ -2319,6 +2322,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let pnpmfile_path = (!opts.ignore_pnpmfile)
                 .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
                 .flatten();
+            if let Some(p) = pnpmfile_path.as_deref() {
+                super::run_pnpmfile_pre_resolution(p, &cwd, existing_for_resolver).await?;
+            }
             let read_package_host = match pnpmfile_path.as_deref() {
                 Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
                     .await
