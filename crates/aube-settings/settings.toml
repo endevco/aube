@@ -992,6 +992,27 @@ examples = [
   "echo 'lockfile=false' >> .npmrc && aube install",
 ]
 
+[lockfileDir]
+description = "Directory the lockfile is written to and read from."
+type = "path"
+default = "null"
+docs = """
+By default the lockfile lives at `<project_root>/aube-lock.yaml`. Set
+this to relocate it. When the resolved path differs from the project
+root, the project becomes an importer keyed by its relative path
+(e.g. `project` if the lockfile is one directory above), so several
+unrelated projects can share a single committed lockfile without
+declaring a `pnpm-workspace.yaml`.
+
+Mirrors pnpm's `--lockfile-dir` / `lockfile-dir`. A relative path is
+resolved against the project root, not the current working directory.
+"""
+sources.cli = ["lockfile-dir"]
+sources.env = ["npm_config_lockfile_dir", "NPM_CONFIG_LOCKFILE_DIR", "AUBE_LOCKFILE_DIR"]
+sources.npmrc = ["lockfile-dir", "lockfileDir"]
+sources.workspaceYaml = ["lockfileDir"]
+examples = ["aube install --lockfile-dir .."]
+
 [preferFrozenLockfile]
 description = "Perform a headless install if the lockfile already satisfies package.json."
 type = "bool"
