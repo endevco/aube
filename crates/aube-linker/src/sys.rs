@@ -79,7 +79,7 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
             })?;
             normalize_path(&parent.join(target))
         };
-        junction::create(abs_target, link)
+        create_junction_with_retry(&abs_target, link)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -89,6 +89,28 @@ pub fn create_dir_link(target: &Path, link: &Path) -> io::Result<()> {
             "directory links are not supported on this platform",
         ))
     }
+}
+
+#[cfg(windows)]
+fn create_junction_with_retry(target: &Path, link: &Path) -> io::Result<()> {
+    let mut attempt = 0;
+    let mut delay_ms = 50u64;
+    loop {
+        match junction::create(target, link) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_retriable_link_error(&e) && attempt < 9 => {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                delay_ms = (delay_ms * 2).min(2000);
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_retriable_link_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 /// Options controlling the shape of a generated bin entry.
