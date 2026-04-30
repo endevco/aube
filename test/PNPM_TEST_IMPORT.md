@@ -39,8 +39,10 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
 
 - [ ] `pnpm/test/install/misc.ts` (37 tests, 645 LOC) → [test/pnpm_install_misc.bats](pnpm_install_misc.bats) (1/37 ported as worked example)
   - Highest-value targets: `--lockfile-only`, `--no-lockfile`, `--prefix`, case-sensitive FS, `STORE_VERSION` migrations
-- [ ] `pnpm/test/install/hooks.ts` (22 tests, 698 LOC) → fold into [test/pnpmfile.bats](pnpmfile.bats)
-  - `readPackage` sync/async, hook removes a dep, hook overrides version, hook fails install, hook on workspace packages
+- [ ] `pnpm/test/install/hooks.ts` (22 tests, 698 LOC) → [test/pnpm_install_hooks.bats](pnpm_install_hooks.bats) (5/22 ported, 2 skipped divergences)
+  - Done: async readPackage on transitive (43), async afterAllResolved (498), syntax error in pnpmfile (292), require() of missing module (303), readPackage normalizes optional/peer/dev fields on transitive (528).
+  - Skipped (need fixtures): sync readPackage (18), custom pnpmfile location (85), global pnpmfile (110, 135, 176), workspace pnpmfile (217), readPackage during update (263), --ignore-pnpmfile cases (314, 338), context.log via ndjson reporter (366, 404), preResolution hook (624 — aube doesn't support), shared workspace lockfile (661).
+  - Documented divergences (don't port without aube-side fix): readPackage returning undefined fails install (68), readPackage on root project's manifest applies (551).
 - [ ] `pnpm/test/install/lifecycleScripts.ts` (21 tests, 356 LOC) → fold into [test/lifecycle_scripts.bats](lifecycle_scripts.bats)
   - pre/postinstall ordering, exit-code propagation, env-var inheritance, script-not-found handling
 - [ ] `pnpm/test/saveCatalog.ts` (8 tests, 224 LOC) → fold into [test/catalogs.bats](catalogs.bats)
