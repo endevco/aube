@@ -312,3 +312,134 @@ JSON
 	assert_success
 	assert_file_exists aube-lock.yaml
 }
+
+# Trust-policy block (pnpm misc.ts:578-643). pnpm's `--trust-policy=…`
+# CLI flag has no aube counterpart; aube reads `trustPolicy` from
+# `.npmrc` / `pnpm-workspace.yaml` / env (`AUBE_TRUST_POLICY`), so each
+# port writes a small `.npmrc` instead of passing a flag. Fixtures:
+# `@pnpm/e2e.test-provenance` mirrored at versions 0.0.0, 0.0.4 (with
+# SLSA provenance + GitHub trustedPublisher), 0.0.5 (no evidence — the
+# downgrade). `@pnpm.e2e/has-untrusted-optional-dep@1.0.0` already in
+# the registry, optionally depends on `@pnpm/e2e.test-provenance@0.0.5`.
+
+@test "trustPolicy=no-downgrade: install fails when picked version drops trust evidence" {
+	# Ported from pnpm/test/install/misc.ts:578.
+	# pnpm: --trust-policy=no-downgrade. aube: write to .npmrc.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-fail",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_failure
+	assert_output --partial "trust downgrade for @pnpm/e2e.test-provenance@0.0.5"
+	assert_file_not_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicy=off: install succeeds even on a downgraded version" {
+	# Ported from pnpm/test/install/misc.ts:589.
+	# Aube's default trustPolicy is no-downgrade; the test must explicitly
+	# turn it off to mirror pnpm's --trust-policy=off.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=off
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-off",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicyExclude with name@version: install succeeds for the listed version" {
+	# Ported from pnpm/test/install/misc.ts:600.
+	# pnpm: --trust-policy-exclude=@pnpm/e2e.test-provenance@0.0.5
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+trust-policy-exclude=@pnpm/e2e.test-provenance@0.0.5
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-exclude-version",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicyExclude with bare name: install succeeds for any version of that package" {
+	# Ported from pnpm/test/install/misc.ts:612.
+	# pnpm: --trust-policy-exclude=@pnpm/e2e.test-provenance (no version).
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+trust-policy-exclude=@pnpm/e2e.test-provenance
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-exclude-name",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicy=no-downgrade: install fails when an optional dep's trust evidence is downgraded" {
+	# Ported from pnpm/test/install/misc.ts:624. The hard-fail behavior
+	# is intentional even for optional deps — a supply-chain regression
+	# in an optional package is still a supply-chain regression.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-optional-fail",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm.e2e/has-untrusted-optional-dep@1.0.0
+	assert_failure
+	assert_output --partial "trust downgrade for @pnpm/e2e.test-provenance@0.0.5"
+}
+
+@test "trustPolicyIgnoreAfter: install succeeds when picked version is older than the cutoff" {
+	# Ported from pnpm/test/install/misc.ts:635.
+	# pnpm: --trust-policy-ignore-after=1440 (skip check for versions
+	# published more than 1 day ago). The mirrored 0.0.5 was published
+	# 2025-11-09, so the cutoff exempts it on any recent test run.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+trust-policy-ignore-after=1440
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-ignore-after",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
