@@ -1690,6 +1690,24 @@ pub fn extract_codeload_tarball(
     url: &str,
     commit: &str,
 ) -> Result<(PathBuf, String), Error> {
+    let git_root = crate::dirs::cache_dir()
+        .map(|d| d.join("git"))
+        .unwrap_or_else(std::env::temp_dir);
+    extract_codeload_tarball_at(&git_root, bytes, url, commit)
+}
+
+/// Inner form of [`extract_codeload_tarball`] that takes the cache
+/// root explicitly. Public callers go through the wrapper above so
+/// the cache root resolution is uniform; tests pass an in-test
+/// `tempfile::tempdir()` directly to avoid mutating `XDG_CACHE_HOME`,
+/// which `cargo test`'s default parallel scheduling would race
+/// across multiple tests in the same binary.
+fn extract_codeload_tarball_at(
+    git_root: &Path,
+    bytes: &[u8],
+    url: &str,
+    commit: &str,
+) -> Result<(PathBuf, String), Error> {
     use std::io::Read;
     validate_git_positional(url, "git url")?;
     validate_git_positional(commit, "git commit")?;
@@ -1700,15 +1718,11 @@ pub fn extract_codeload_tarball(
     }
     let head_sha = commit.to_ascii_lowercase();
 
-    let git_root = crate::dirs::cache_dir()
-        .map(|d| d.join("git"))
-        .unwrap_or_else(std::env::temp_dir);
-    std::fs::create_dir_all(&git_root).map_err(|e| Error::Io(git_root.clone(), e))?;
+    std::fs::create_dir_all(git_root).map_err(|e| Error::Io(git_root.to_path_buf(), e))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&git_root, std::fs::Permissions::from_mode(0o700))
-        {
+        if let Err(e) = std::fs::set_permissions(git_root, std::fs::Permissions::from_mode(0o700)) {
             warn!(
                 "failed to chmod 0700 {}: {e}. Git scratch dir may be world-accessible, check filesystem permissions",
                 git_root.display()
@@ -1742,8 +1756,8 @@ pub fn extract_codeload_tarball(
     // `git_shallow_clone`'s scratch dance.
     let scratch = tempfile::Builder::new()
         .prefix(&format!("aube-codeload-{key}-{short}."))
-        .tempdir_in(&git_root)
-        .map_err(|e| Error::Io(git_root.clone(), e))?
+        .tempdir_in(git_root)
+        .map_err(|e| Error::Io(git_root.to_path_buf(), e))?
         .keep();
 
     let extract_into = |target: &Path| -> Result<(), Error> {
@@ -1868,11 +1882,24 @@ pub fn extract_codeload_tarball(
                         .map_err(|e| Error::Io(dest.clone(), e))?;
                     #[cfg(windows)]
                     {
-                        // Windows symlink creation requires elevated
-                        // privileges; a git tarball that smuggles
-                        // symlinks shouldn't break install on Windows.
-                        let _ = link_target;
-                        let _ = dest;
+                        // Windows symlink creation requires SeCreateSymbolicLink
+                        // (Developer Mode or admin), which most install hosts
+                        // lack. Silently dropping the entry would leave a
+                        // half-extracted tree that the linker would walk
+                        // straight into a "missing file" error several
+                        // layers down with no breadcrumbs back to the git
+                        // dep that's actually broken. Surface it now —
+                        // packages that genuinely need symlinks can fall
+                        // through to the `git clone` path on the next
+                        // install attempt by removing the cached extract,
+                        // since `git clone` materializes symlinks via
+                        // git's own (admin-aware) write path.
+                        return Err(Error::Tar(format!(
+                            "tarball symlink {} -> {} not supported on Windows; \
+                             remove the codeload cache entry and retry to fall back to `git clone`",
+                            raw_path.display(),
+                            link_target.display()
+                        )));
                     }
                 }
                 _ => {
@@ -2664,15 +2691,13 @@ mod tests {
 
     #[test]
     fn extract_codeload_tarball_strips_wrapper_and_caches() {
+        // Each test gets its own private cache root via `tempfile`,
+        // so the three new codeload tests don't race on a process-wide
+        // `XDG_CACHE_HOME` mutation under `cargo test`'s default
+        // parallel scheduling. Windows surfaces the race as a
+        // PermissionDenied on a sibling test's already-dropped temp
+        // dir; Linux happens to schedule us out of it.
         let tmp = tempfile::tempdir().unwrap();
-        // Sandbox `cache_dir()` so the test cannot pollute the user's
-        // real `$XDG_CACHE_HOME/aube/`.
-        // SAFETY: tests run serially within this binary; `set_var`
-        // here only races with parallel `cargo test --test-threads`,
-        // and a contended XDG_CACHE_HOME is the worst-case outcome
-        // (test reads from a sibling test's cache dir).
-        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
-
         let sha = "abcdef0123456789abcdef0123456789abcdef01";
         let wrapper = format!("owner-repo-{}", &sha[..7]);
         let bytes = build_codeload_tarball(
@@ -2683,7 +2708,7 @@ mod tests {
             ],
         );
         let url = "https://github.com/owner/repo.git";
-        let (target, head) = extract_codeload_tarball(&bytes, url, sha).unwrap();
+        let (target, head) = extract_codeload_tarball_at(tmp.path(), &bytes, url, sha).unwrap();
         assert_eq!(head, sha);
         // Wrapper component is stripped — `package.json` lives at the
         // target root, not under `target/<wrapper>/package.json`.
@@ -2693,14 +2718,13 @@ mod tests {
 
         // Second call with the same (url, commit) reuses the cached
         // directory rather than re-extracting.
-        let (target2, _) = extract_codeload_tarball(&bytes, url, sha).unwrap();
+        let (target2, _) = extract_codeload_tarball_at(tmp.path(), &bytes, url, sha).unwrap();
         assert_eq!(target, target2);
     }
 
     #[test]
     fn extract_codeload_tarball_rejects_unsafe_paths() {
         let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
         let sha = "1111111111111111111111111111111111111111";
         // The tar crate's safe `set_path` rejects `..` paths up front,
         // so a crafted archive must be assembled with the header name
@@ -2722,7 +2746,8 @@ mod tests {
         let mut ar = tar::Builder::new(gz);
         ar.append(&h, &body[..]).unwrap();
         let bytes = ar.into_inner().unwrap().finish().unwrap();
-        let err = extract_codeload_tarball(&bytes, "https://example.com/r.git", sha).unwrap_err();
+        let err = extract_codeload_tarball_at(tmp.path(), &bytes, "https://example.com/r.git", sha)
+            .unwrap_err();
         assert!(
             matches!(err, Error::Tar(ref m) if m.contains("unsafe")),
             "expected Error::Tar with unsafe-path message, got {err:?}",
@@ -2736,10 +2761,10 @@ mod tests {
         // Branch / tag / abbreviated values must be pinned by an
         // upstream `git ls-remote` before reaching here.
         let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
         let bytes = build_codeload_tarball("wrapper", &[("ok", b"ok")]);
         let err =
-            extract_codeload_tarball(&bytes, "https://example.com/r.git", "abc1234").unwrap_err();
+            extract_codeload_tarball_at(tmp.path(), &bytes, "https://example.com/r.git", "abc1234")
+                .unwrap_err();
         assert!(matches!(err, Error::Git(ref m) if m.contains("40-char")));
     }
 
