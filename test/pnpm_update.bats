@@ -141,7 +141,8 @@ JSON
 	# Dev dep stays pinned at 100.0.0 — --prod skipped it.
 	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
 	assert_success
-	refute grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_failure
 	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0"' package.json
 	assert_success
 }
@@ -220,6 +221,10 @@ EOF
 	# Per-project lockfile carries the bumped version.
 	assert_file_exists project/aube-lock.yaml
 	run grep '@pnpm.e2e/foo@100.1.0' project/aube-lock.yaml
+	assert_success
+
+	# Manifest rewritten to track the new latest.
+	run grep '"@pnpm.e2e/foo": "\^100.1.0"' project/package.json
 	assert_success
 
 	# No shared root lockfile.
@@ -379,5 +384,6 @@ JSON
 	assert_success
 	run grep '@pnpm.e2e/has-prerelease@2.0.0' aube-lock.yaml
 	assert_success
-	refute grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	assert_failure
 }
