@@ -2020,9 +2020,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             )
         };
         super::run_pnpmfile_pre_resolution(&pnpmfile_paths, &cwd, existing_for_resolver).await?;
-        let read_package_host = crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths)
-            .await
-            .wrap_err("failed to start pnpmfile readPackage host")?;
+        let (read_package_host, read_package_forwarders) =
+            match crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths, &cwd)
+                .await
+                .wrap_err("failed to start pnpmfile readPackage host")?
+            {
+                Some((h, f)) => (Some(h), f),
+                None => (None, Vec::new()),
+            };
         let read_package_hook: Option<Box<dyn aube_resolver::ReadPackageHook>> =
             read_package_host.map(|h| Box::new(h) as Box<dyn aube_resolver::ReadPackageHook>);
         let mut resolver = configure_resolver(
@@ -2055,7 +2060,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
         drop(resolver);
-        crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &mut graph).await?;
+        // Drain the readPackage stderr forwarders so every `ctx.log`
+        // record they captured during resolve flushes to stdout before
+        // afterAllResolved emits its own pnpm:hook records — keeps
+        // resolve-time logs strictly ahead of post-resolve logs in the
+        // ndjson stream.
+        crate::pnpmfile::ReadPackageHostChain::drain_forwarders(read_package_forwarders).await;
+        crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &cwd, &mut graph).await?;
         // Same tarball-URL population pass as the main fetch branch —
         // keeps `--lockfile-only` and regular installs byte-identical.
         if lockfile_include_tarball_url {
@@ -2475,9 +2486,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             };
             super::run_pnpmfile_pre_resolution(&pnpmfile_paths, &cwd, existing_for_resolver)
                 .await?;
-            let read_package_host = crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths)
-                .await
-                .wrap_err("failed to start pnpmfile readPackage host")?;
+            let (read_package_host, read_package_forwarders) =
+                match crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths, &cwd)
+                    .await
+                    .wrap_err("failed to start pnpmfile readPackage host")?
+                {
+                    Some((h, f)) => (Some(h), f),
+                    None => (None, Vec::new()),
+                };
             let read_package_hook: Option<Box<dyn aube_resolver::ReadPackageHook>> =
                 read_package_host.map(|h| Box::new(h) as Box<dyn aube_resolver::ReadPackageHook>);
             let mut resolver = configure_resolver(
@@ -2778,7 +2794,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 return resolve_result.map(|_| unreachable!());
             }
             let mut graph = resolve_result.unwrap();
-            crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &mut graph).await?;
+            // Drop the resolver to close the channel, signaling the fetch
+            // coordinator to finish, then drain the readPackage stderr
+            // forwarders so every `ctx.log` record from resolve flushes
+            // to stdout before afterAllResolved emits its own pnpm:hook
+            // records. Doing this in the order drop → drain → hook keeps
+            // resolve-time logs strictly ahead of afterAllResolved-time
+            // logs in the ndjson stream.
+            drop(resolver);
+            crate::pnpmfile::ReadPackageHostChain::drain_forwarders(read_package_forwarders).await;
+            crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &cwd, &mut graph)
+                .await?;
             // Overlay per-package metadata the resolver can't recover
             // from abbreviated (corgi) packuments — `license`,
             // `funding_url`, bun's `configVersion` — from the
@@ -2798,9 +2824,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             }
             tracing::debug!("phase:resolve (fresh) {:.1?}", phase_start.elapsed());
             phase_timings.record("resolve", phase_start.elapsed());
-
-            // Drop the resolver to close the channel, signaling fetch coordinator to finish
-            drop(resolver);
 
             // Pipeline global-virtual-store materialization into the
             // fetch tail. `fetch_handle` streams each imported `(dep_path,

@@ -1401,6 +1401,7 @@ fn init_logging(cli: &Cli, effective_level: LogLevel) {
     let drop_timestamp = !matches!(effective_level, LogLevel::Debug | LogLevel::Trace);
     let registry = tracing_subscriber::registry().with(env_filter);
     if matches!(cli.reporter, Some(ReporterType::Ndjson)) {
+        crate::pnpmfile::set_ndjson_reporter(true);
         registry
             .with(
                 tracing_subscriber::fmt::layer()

@@ -247,9 +247,14 @@ pub async fn run(
         )
     };
     super::run_pnpmfile_pre_resolution(&pnpmfile_paths, &cwd, existing.as_ref()).await?;
-    let read_package_host = crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths)
-        .await
-        .wrap_err("failed to start pnpmfile readPackage host")?;
+    let (read_package_host, read_package_forwarders) =
+        match crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths, &cwd)
+            .await
+            .wrap_err("failed to start pnpmfile readPackage host")?
+        {
+            Some((h, f)) => (Some(h), f),
+            None => (None, Vec::new()),
+        };
     let workspace_catalogs = super::load_workspace_catalogs(&cwd)?;
     let mut resolver = super::build_resolver(&cwd, &manifest, workspace_catalogs);
     if let Some(host) = read_package_host {
@@ -262,7 +267,10 @@ pub async fn run(
         .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
     drop(resolver);
-    crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &mut graph).await?;
+    // Drain the readPackage stderr forwarders so resolve-time `ctx.log`
+    // records flush to stdout before afterAllResolved emits its own.
+    crate::pnpmfile::ReadPackageHostChain::drain_forwarders(read_package_forwarders).await;
+    crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &cwd, &mut graph).await?;
 
     // Report what changed
     for manifest_key in &manifest_keys_to_update {

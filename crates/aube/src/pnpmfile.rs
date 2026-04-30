@@ -26,6 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use aube_lockfile::LockfileGraph;
 use aube_registry::VersionMetadata;
@@ -33,10 +34,30 @@ use aube_resolver::ReadPackageHook;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 
 pub const PNPMFILE_MJS_NAME: &str = ".pnpmfile.mjs";
 pub const PNPMFILE_CJS_NAME: &str = ".pnpmfile.cjs";
+
+/// Flipped on by `main` when `--reporter=ndjson` is in effect. Read by
+/// the per-hook stderr forwarder to decide whether `ctx.log` records get
+/// re-emitted as `pnpm:hook` ndjson on stdout (machine-readable mode) or
+/// fall back to a friendly `[pnpmfile] message` on stderr.
+static NDJSON_REPORTER: AtomicBool = AtomicBool::new(false);
+
+pub fn set_ndjson_reporter(on: bool) {
+    NDJSON_REPORTER.store(on, Ordering::Relaxed);
+}
+
+fn ndjson_reporter() -> bool {
+    NDJSON_REPORTER.load(Ordering::Relaxed)
+}
+
+/// Sentinel our shims prepend to every `ctx.log` line they write to
+/// stderr. Internal contract between the shim and this crate; chosen to
+/// be unique enough that user-authored `console.error` output (require()
+/// stack traces, hook-body diagnostics) never collides.
+const HOOK_LOG_SENTINEL: &str = "__AUBE_HOOK_LOG__ ";
 
 /// Return the path to the project's pnpmfile if one exists.
 ///
@@ -256,6 +277,7 @@ async function loadPnpmfile(file) {
 const SHIM: &str = r#"
 const pnpmfile = process.env.AUBE_PNPMFILE;
 const hookName = process.env.AUBE_HOOK;
+const SENTINEL = '__AUBE_HOOK_LOG__ ';
 let chunks = [];
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('end', async () => {
@@ -267,7 +289,10 @@ process.stdin.on('end', async () => {
     let result = input;
     if (typeof fn === 'function') {
       const ctx = {
-        log: (...args) => console.error('[pnpmfile]', ...args),
+        log: (...args) => {
+          const message = args.map((a) => typeof a === 'string' ? a : require('util').inspect(a)).join(' ');
+          process.stderr.write(SENTINEL + JSON.stringify({hook: hookName, message}) + '\n');
+        },
       };
       const out = await fn(input, ctx);
       if (out && typeof out === 'object') result = out;
@@ -288,11 +313,95 @@ fn one_shot_hook_shim() -> String {
     format!("{LOAD_PNPMFILE_JS}{SHIM}")
 }
 
+/// Drain the child's stderr line-by-line. Lines tagged with
+/// `HOOK_LOG_SENTINEL` are `ctx.log` records: in ndjson reporter mode
+/// they're enriched with `prefix` (project root) and `from` (pnpmfile
+/// path) and re-emitted as `{"name":"pnpm:hook",…}` on stdout, matching
+/// pnpm's `--reporter=ndjson` surface. In default mode they fall back to
+/// the legacy `[pnpmfile] message` format on stderr. Untagged lines are
+/// passed through verbatim so require()-time errors and user
+/// `console.error` calls keep working unchanged.
+fn spawn_stderr_forwarder(
+    stderr: ChildStderr,
+    prefix: PathBuf,
+    from: PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut stdout = tokio::io::stdout();
+        let mut stderr_w = tokio::io::stderr();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(rest) = line.strip_prefix(HOOK_LOG_SENTINEL) {
+                forward_hook_log(rest, &prefix, &from, &mut stdout, &mut stderr_w).await;
+            } else {
+                let _ = stderr_w.write_all(line.as_bytes()).await;
+                let _ = stderr_w.write_all(b"\n").await;
+            }
+        }
+    })
+}
+
+#[derive(Deserialize)]
+struct HookLogRecord {
+    hook: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct PnpmHookLog<'a> {
+    name: &'a str,
+    prefix: &'a str,
+    from: &'a str,
+    hook: &'a str,
+    message: &'a str,
+}
+
+async fn forward_hook_log(
+    payload: &str,
+    prefix: &Path,
+    from: &Path,
+    stdout: &mut tokio::io::Stdout,
+    stderr_w: &mut tokio::io::Stderr,
+) {
+    let Ok(rec) = serde_json::from_str::<HookLogRecord>(payload) else {
+        // Malformed sentinel record. Pass the original line through so
+        // the user sees something rather than swallowing it silently.
+        let _ = stderr_w.write_all(HOOK_LOG_SENTINEL.as_bytes()).await;
+        let _ = stderr_w.write_all(payload.as_bytes()).await;
+        let _ = stderr_w.write_all(b"\n").await;
+        return;
+    };
+    if ndjson_reporter() {
+        let out = PnpmHookLog {
+            name: "pnpm:hook",
+            prefix: prefix.to_str().unwrap_or(""),
+            from: from.to_str().unwrap_or(""),
+            hook: &rec.hook,
+            message: &rec.message,
+        };
+        if let Ok(s) = serde_json::to_string(&out) {
+            let _ = stdout.write_all(s.as_bytes()).await;
+            let _ = stdout.write_all(b"\n").await;
+            let _ = stdout.flush().await;
+        }
+    } else {
+        let line = format!("[pnpmfile] {}\n", rec.message);
+        let _ = stderr_w.write_all(line.as_bytes()).await;
+    }
+}
+
 /// Spawn a one-shot `node` child running the shared shim for `hook_name`,
 /// pipe `input_json` in on stdin, and return the captured stdout. Shared
 /// scaffolding for `afterAllResolved` (which round-trips a lockfile) and
-/// `preResolution` (which fires-and-forgets a context object).
-async fn run_one_shot_hook(pnpmfile: &Path, hook_name: &str, input_json: &[u8]) -> Result<Vec<u8>> {
+/// `preResolution` (which fires-and-forgets a context object). `prefix`
+/// is the project root used to enrich `ctx.log` records when the ndjson
+/// reporter is active.
+async fn run_one_shot_hook(
+    pnpmfile: &Path,
+    prefix: &Path,
+    hook_name: &str,
+    input_json: &[u8],
+) -> Result<Vec<u8>> {
     tracing::debug!("running pnpmfile hook {hook_name} ({})", pnpmfile.display());
 
     let mut cmd = tokio::process::Command::new("node");
@@ -302,7 +411,7 @@ async fn run_one_shot_hook(pnpmfile: &Path, hook_name: &str, input_json: &[u8]) 
         .env("AUBE_HOOK", hook_name)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::piped())
         // Match ReadPackageHost::spawn below. Without kill_on_drop the
         // Node child keeps running when the parent future is cancelled
         // (install panics, user Ctrl-C's, etc) and the hook body races
@@ -314,6 +423,11 @@ async fn run_one_shot_hook(pnpmfile: &Path, hook_name: &str, input_json: &[u8]) 
         .spawn()
         .into_diagnostic()
         .wrap_err("failed to spawn `node` for pnpmfile hook — is node installed and on PATH?")?;
+
+    let forwarder = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_stderr_forwarder(stderr, prefix.to_path_buf(), pnpmfile.to_path_buf()));
 
     {
         let stdin = child
@@ -337,6 +451,12 @@ async fn run_one_shot_hook(pnpmfile: &Path, hook_name: &str, input_json: &[u8]) 
         .await
         .into_diagnostic()
         .wrap_err("pnpmfile hook child process failed")?;
+    // Drain any remaining buffered stderr lines before returning, so
+    // their `pnpm:hook` records aren't reordered after the install
+    // step that follows this hook.
+    if let Some(handle) = forwarder {
+        let _ = handle.await;
+    }
     if !output.status.success() {
         return Err(miette!(
             "pnpmfile hook `{hook_name}` exited with status {}",
@@ -349,13 +469,18 @@ async fn run_one_shot_hook(pnpmfile: &Path, hook_name: &str, input_json: &[u8]) 
 /// Run the `afterAllResolved` hook against a resolved lockfile graph.
 /// Mutations to `packages[].dependencies` and `packages[].peerDependencies`
 /// are applied in place. All other fields are round-tripped but
-/// ignored on the way back.
-pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) -> Result<()> {
+/// ignored on the way back. `prefix` is the project root used to enrich
+/// `ctx.log` records under `--reporter=ndjson`.
+pub async fn run_after_all_resolved(
+    pnpmfile: &Path,
+    prefix: &Path,
+    graph: &mut LockfileGraph,
+) -> Result<()> {
     let input = to_wire(graph);
     let input_json = serde_json::to_vec(&input)
         .into_diagnostic()
         .wrap_err("failed to serialize lockfile for pnpmfile hook")?;
-    let stdout = run_one_shot_hook(pnpmfile, "afterAllResolved", &input_json).await?;
+    let stdout = run_one_shot_hook(pnpmfile, prefix, "afterAllResolved", &input_json).await?;
     let wire: LockfileWire = serde_json::from_slice(&stdout)
         .into_diagnostic()
         .wrap_err("pnpmfile hook returned invalid JSON from afterAllResolved")?;
@@ -365,13 +490,16 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
 
 /// Run `afterAllResolved` for each pnpmfile in `paths` in order. pnpm
 /// runs the global hook first and the local hook second, so local
-/// mutations land on top. Empty list is a no-op.
+/// mutations land on top. Empty list is a no-op. `prefix` is the
+/// project root used to enrich `ctx.log` records under
+/// `--reporter=ndjson`; the same value flows through every entry.
 pub async fn run_after_all_resolved_chain(
     paths: &[PathBuf],
+    prefix: &Path,
     graph: &mut LockfileGraph,
 ) -> Result<()> {
     for p in paths {
-        run_after_all_resolved(p, graph)
+        run_after_all_resolved(p, prefix, graph)
             .await
             .wrap_err_with(|| format!("pnpmfile afterAllResolved hook failed ({})", p.display()))?;
     }
@@ -426,28 +554,35 @@ impl<'a> PreResolutionContext<'a> {
 /// Fire-and-forget — the hook's return value is discarded by pnpm and
 /// by aube. Skips spawning `node` when the pnpmfile doesn't reference
 /// `preResolution` so a hook-less pnpmfile doesn't pay the per-install
-/// node-startup cost on every command.
-pub async fn run_pre_resolution(pnpmfile: &Path, ctx: &PreResolutionContext<'_>) -> Result<()> {
+/// node-startup cost on every command. `prefix` is the project root
+/// used to enrich `ctx.log` records under `--reporter=ndjson`.
+pub async fn run_pre_resolution(
+    pnpmfile: &Path,
+    prefix: &Path,
+    ctx: &PreResolutionContext<'_>,
+) -> Result<()> {
     if !has_hook(pnpmfile, "preResolution").await? {
         return Ok(());
     }
     let input_json = serde_json::to_vec(ctx)
         .into_diagnostic()
         .wrap_err("failed to serialize preResolution context")?;
-    run_one_shot_hook(pnpmfile, "preResolution", &input_json).await?;
+    run_one_shot_hook(pnpmfile, prefix, "preResolution", &input_json).await?;
     Ok(())
 }
 
 /// Run `preResolution` for each pnpmfile in `paths` (global first,
 /// then local). pnpm fires both hooks against the same context, so we
 /// don't thread state between them — each hook gets the original
-/// pre-resolve snapshot.
+/// pre-resolve snapshot. `prefix` is the project root used to enrich
+/// `ctx.log` records under `--reporter=ndjson`.
 pub async fn run_pre_resolution_chain(
     paths: &[PathBuf],
+    prefix: &Path,
     ctx: &PreResolutionContext<'_>,
 ) -> Result<()> {
     for p in paths {
-        run_pre_resolution(p, ctx)
+        run_pre_resolution(p, prefix, ctx)
             .await
             .wrap_err_with(|| format!("pnpmfile preResolution hook failed ({})", p.display()))?;
     }
@@ -466,8 +601,12 @@ pub async fn run_pre_resolution_chain(
 const READ_PACKAGE_SHIM: &str = r#"
 const readline = require('readline');
 const pnpmfile = process.env.AUBE_PNPMFILE;
+const SENTINEL = '__AUBE_HOOK_LOG__ ';
 const ctx = {
-  log: (...args) => console.error('[pnpmfile]', ...args),
+  log: (...args) => {
+    const message = args.map((a) => typeof a === 'string' ? a : require('util').inspect(a)).join(' ');
+    process.stderr.write(SENTINEL + JSON.stringify({hook: 'readPackage', message}) + '\n');
+  },
 };
 process.stdout.on('error', (e) => {
   if (e && e.code === 'EPIPE') process.exit(0);
@@ -513,9 +652,18 @@ fn read_package_shim() -> String {
 /// resolve, then dropped (which kills the child). Implements
 /// [`ReadPackageHook`] so the resolver can call it directly from its
 /// hot loop.
+///
+/// The stderr forwarder JoinHandle is intentionally returned alongside
+/// the host (not stored inside) so callers can `await` it after
+/// dropping the host — that drain step is what makes sure every
+/// `ctx.log` record reaches stdout before the next install phase
+/// starts emitting its own output. Aborting in Drop would race the
+/// forwarder against any sentinel lines still sitting in the OS pipe
+/// buffer at host-teardown time.
 pub struct ReadPackageHost {
     // Held only so Drop kills the child when the host is torn down;
-    // `kill_on_drop(true)` above wires the actual kill.
+    // `kill_on_drop(true)` above wires the actual kill, which closes
+    // the child's stderr write end and lets the forwarder EOF cleanly.
     #[allow(dead_code)]
     child: Child,
     stdin: ChildStdin,
@@ -523,6 +671,12 @@ pub struct ReadPackageHost {
     next_id: u64,
     line_buf: String,
 }
+
+/// Forwarder JoinHandle returned from [`ReadPackageHost::spawn`].
+/// `await` it (via [`ReadPackageHost::drain_forwarder`]) after
+/// dropping the host so all buffered `ctx.log` records flush to
+/// stdout before the next install phase runs.
+pub type ReadPackageForwarder = tokio::task::JoinHandle<()>;
 
 #[derive(Serialize)]
 struct ReadPackageRequest<'a> {
@@ -544,8 +698,14 @@ impl ReadPackageHost {
     /// Spawn the node child for `pnpmfile`. Returns `Ok(None)` if the
     /// pnpmfile does not declare a `readPackage` hook (callers can
     /// skip attaching a hook entirely in that case and save the
-    /// per-call JSON round-trip), otherwise the live host.
-    pub async fn spawn(pnpmfile: &Path) -> Result<Option<Self>> {
+    /// per-call JSON round-trip), otherwise the live host paired with
+    /// the stderr forwarder JoinHandle (see [`ReadPackageForwarder`]).
+    /// `prefix` is the project root used to enrich `ctx.log` records
+    /// under `--reporter=ndjson`.
+    pub async fn spawn(
+        pnpmfile: &Path,
+        prefix: &Path,
+    ) -> Result<Option<(Self, ReadPackageForwarder)>> {
         if !has_hook(pnpmfile, "readPackage").await? {
             return Ok(None);
         }
@@ -559,7 +719,7 @@ impl ReadPackageHost {
             .env("AUBE_PNPMFILE", pnpmfile)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd.spawn().into_diagnostic().wrap_err(
             "failed to spawn `node` for pnpmfile readPackage hook — is node installed and on PATH?",
@@ -572,13 +732,31 @@ impl ReadPackageHost {
             .stdout
             .take()
             .ok_or_else(|| miette!("failed to open stdout for pnpmfile readPackage host"))?;
-        Ok(Some(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-            next_id: 0,
-            line_buf: String::new(),
-        }))
+        let stderr = child.stderr.take().ok_or_else(|| {
+            miette!("failed to open stderr for pnpmfile readPackage host (Stdio::piped lost?)")
+        })?;
+        let forwarder =
+            spawn_stderr_forwarder(stderr, prefix.to_path_buf(), pnpmfile.to_path_buf());
+        Ok(Some((
+            Self {
+                child,
+                stdin,
+                stdout: BufReader::new(stdout),
+                next_id: 0,
+                line_buf: String::new(),
+            },
+            forwarder,
+        )))
+    }
+
+    /// Drain the forwarder, surfacing any task-panic via `tracing::warn!`.
+    /// Call after the host has been dropped (or otherwise torn down) so
+    /// every `ctx.log` record flushes to stdout before subsequent
+    /// install phases emit their own output.
+    pub async fn drain_forwarder(forwarder: ReadPackageForwarder) {
+        if let Err(e) = forwarder.await {
+            tracing::warn!("pnpmfile readPackage stderr forwarder task failed: {e}");
+        }
     }
 
     async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
@@ -663,18 +841,34 @@ impl ReadPackageHostChain {
     /// Spawn one node child per pnpmfile in `paths` that declares a
     /// `readPackage` hook. Returns `Ok(None)` when nothing in the chain
     /// uses the hook (saves the resolver from per-call JSON
-    /// round-trips), otherwise the live chain.
-    pub async fn spawn(paths: &[PathBuf]) -> Result<Option<Self>> {
+    /// round-trips), otherwise the live chain paired with one
+    /// [`ReadPackageForwarder`] per spawned host. `prefix` is the
+    /// project root used to enrich `ctx.log` records under
+    /// `--reporter=ndjson`; the same value flows to every host.
+    pub async fn spawn(
+        paths: &[PathBuf],
+        prefix: &Path,
+    ) -> Result<Option<(Self, Vec<ReadPackageForwarder>)>> {
         let mut hosts = Vec::new();
+        let mut forwarders = Vec::new();
         for p in paths {
-            if let Some(host) = ReadPackageHost::spawn(p).await? {
+            if let Some((host, forwarder)) = ReadPackageHost::spawn(p, prefix).await? {
                 hosts.push((p.clone(), host));
+                forwarders.push(forwarder);
             }
         }
         if hosts.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Self { hosts }))
+        Ok(Some((Self { hosts }, forwarders)))
+    }
+
+    /// Drain every forwarder JoinHandle returned by [`spawn`]. Logs any
+    /// task panic via `tracing::warn!` rather than swallowing it.
+    pub async fn drain_forwarders(forwarders: Vec<ReadPackageForwarder>) {
+        for f in forwarders {
+            ReadPackageHost::drain_forwarder(f).await;
+        }
     }
 
     async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {

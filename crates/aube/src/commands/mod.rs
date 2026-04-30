@@ -493,7 +493,7 @@ pub(crate) async fn run_pnpmfile_pre_resolution(
         existing,
         registries,
     );
-    crate::pnpmfile::run_pre_resolution_chain(paths, &ctx)
+    crate::pnpmfile::run_pre_resolution_chain(paths, cwd, &ctx)
         .await
         .wrap_err("pnpmfile preResolution hook failed")
 }

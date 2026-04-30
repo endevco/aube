@@ -4,11 +4,13 @@
 # See test/PNPM_TEST_IMPORT.md for translation conventions.
 #
 # Coverage focus: .pnpmfile.cjs hook behavior — readPackage (sync/async),
-# afterAllResolved (async), pnpmfile load-time error paths, and the
-# `--pnpmfile` / `--global-pnpmfile` CLI flags. The `@pnpm.e2e/*`
-# fixtures landed in #424; tests that don't strictly need the e2e shape
-# still substitute lighter in-tree packages (is-even / is-odd) where
-# the behavior is package-agnostic.
+# afterAllResolved (sync/async), preResolution, the `--pnpmfile` /
+# `--global-pnpmfile` CLI flags, the ndjson `pnpm:hook` log surface, and
+# pnpmfile load-time error paths. The Tier 1 `@pnpm.e2e/*` fixtures are
+# mirrored under test/registry/storage/, so newer ports use them
+# directly; older ports lean on in-tree generic fixtures (is-odd,
+# is-even, is-positive, is-negative) where the behavior is
+# package-agnostic.
 
 setup() {
 	load 'test_helper/common_setup'
@@ -366,6 +368,7 @@ EOF
 	refute_output --partial '"dependencies"'
 }
 
+
 # Helper: assert that a specific @pnpm.e2e/dep-of-pkg-with-1-dep version
 # was materialized in the project. The pnpm tests use `project.storeHas`
 # which checks pnpm's content-addressed store — aube's CAS layout is
@@ -461,10 +464,12 @@ EOF
 	# Ported from pnpm/test/install/hooks.ts:135
 	# ('readPackage hook from global pnpmfile and local pnpmfile').
 	# Substitution: pnpm uses `is-positive@1.0.0`/`is-positive@3.0.0` —
-	# we don't mirror is-positive yet, so use is-number@3.0.0/7.0.0
-	# (already mirrored). Verifies pnpm's composition order: global runs
-	# first, local runs second, so a field both hooks touch ends up at
-	# the local value while a field only the global hook sets survives.
+	# both versions are now mirrored under test/registry/storage/, but
+	# this port predates that fixture and uses is-number@3.0.0/7.0.0
+	# instead, which fits the same two-distinct-versions shape. Verifies
+	# pnpm's composition order: global runs first, local runs second, so
+	# a field both hooks touch ends up at the local value while a field
+	# only the global hook sets survives.
 	mkdir -p project
 	cd project
 	cat >package.json <<'JSON'
@@ -567,4 +572,99 @@ EOF
 	run jq -r .version "node_modules/.aube/@pnpm.e2e+pkg-with-1-dep@100.0.0/node_modules/is-number/package.json"
 	assert_success
 	assert_output 3.0.0
+}
+
+@test "pnpmfile: readPackage ctx.log surfaces as pnpm:hook ndjson on stdout" {
+	# Ported from pnpm/test/install/hooks.ts:366 ('pnpmfile: pass log
+	# function to readPackage hook'). pnpm uses `addDistTag` to set
+	# latest=100.1.0 so 100.1.0 would be installed without the hook;
+	# aube's storage already serves dep-of-pkg-with-1-dep@100.0.0/100.1.0
+	# under the `^100.0.0` constraint that pkg-with-1-dep@100.1.0 declares,
+	# so the hook's pin to 100.0.0 is a downgrade either way and we don't
+	# need to mutate storage dist-tags.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-hooks-readpackage-ndjson-log",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.1.0" }
+}
+JSON
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg, ctx) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+        ctx.log('@pnpm.e2e/dep-of-pkg-with-1-dep pinned to 100.0.0')
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install --reporter=ndjson
+	assert_success
+	install_stdout="$output"
+	# Hook actually fired: the pin reroutes resolution from 100.1.0 to
+	# 100.0.0. Without context.log being honored on stdout, this stays
+	# the only ground truth, so guard it explicitly. `run` clobbers
+	# `$output` (with grep's empty stdout under -q), but we already
+	# stashed install_stdout above so the jq parse below is unaffected.
+	run grep -q '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	# pnpm:hook ndjson record on stdout. Same shape as pnpm:
+	# {name,prefix,from,hook,message}. Use jq to parse line-by-line and
+	# pick the record whose `name == "pnpm:hook"`.
+	hook_log=$(printf '%s\n' "$install_stdout" | jq -c 'select(.name == "pnpm:hook")' 2>/dev/null | head -n 1)
+	[ -n "$hook_log" ] || {
+		echo "no pnpm:hook record in stdout"
+		echo "stdout was: $install_stdout"
+		false
+	}
+	[ "$(printf '%s' "$hook_log" | jq -r '.hook')" = readPackage ]
+	[ "$(printf '%s' "$hook_log" | jq -r '.message')" = '@pnpm.e2e/dep-of-pkg-with-1-dep pinned to 100.0.0' ]
+	# `prefix` and `from` are pnpm-shaped — non-empty paths.
+	[ -n "$(printf '%s' "$hook_log" | jq -r '.prefix')" ]
+	[ -n "$(printf '%s' "$hook_log" | jq -r '.from')" ]
+}
+
+@test "pnpmfile: afterAllResolved ctx.log surfaces as pnpm:hook ndjson on stdout" {
+	# Ported from pnpm/test/install/hooks.ts:468 ('pnpmfile: run
+	# afterAllResolved hook'). Uses pnpm's @pnpm.e2e/pkg-with-1-dep
+	# fixture verbatim to match the pnpm test exactly.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-hooks-afterallresolved-ndjson-log",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.1.0" }
+}
+JSON
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    afterAllResolved (lockfile, ctx) {
+      ctx.log('All resolved')
+      return lockfile
+    }
+  }
+}
+EOF
+
+	run aube install --reporter=ndjson
+	assert_success
+	hook_log=$(printf '%s\n' "$output" | jq -c 'select(.name == "pnpm:hook" and .hook == "afterAllResolved")' 2>/dev/null | head -n 1)
+	[ -n "$hook_log" ] || {
+		echo "no afterAllResolved pnpm:hook record in stdout"
+		echo "stdout was: $output"
+		false
+	}
+	[ "$(printf '%s' "$hook_log" | jq -r '.message')" = 'All resolved' ]
+	[ -n "$(printf '%s' "$hook_log" | jq -r '.prefix')" ]
+	[ -n "$(printf '%s' "$hook_log" | jq -r '.from')" ]
 }
