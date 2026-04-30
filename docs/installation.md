@@ -154,11 +154,6 @@ against the workspace, so any of `mise.toml`, `.tool-versions`,
 honored — no separate `actions/setup-node` step required.
 :::
 
-Supported runners: `ubuntu-latest`, `ubuntu-*-arm`, `macos-latest`,
-`windows-latest`. macOS x86_64 (`macos-13`) is not covered by the
-prebuilt binaries — fall back to `cargo install aube --locked` or use
-`macos-latest` (arm64).
-
 See the [`setup-aube` README](https://github.com/endevco/setup-aube#readme)
 for the full input/output reference.
 
