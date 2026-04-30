@@ -37,8 +37,11 @@ Source: [pnpm/pnpm](https://github.com/pnpm/pnpm) checkout. Translation pattern:
 
 Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm source file → aube target file, counts are pnpm's actual `test()` cases (not all will translate cleanly — expect 60-80% yield).
 
-- [ ] `pnpm/test/install/misc.ts` (37 tests, 645 LOC) → [test/pnpm_install_misc.bats](pnpm_install_misc.bats) (1/37 ported as worked example)
-  - Highest-value targets: `--lockfile-only`, `--no-lockfile`, `--prefix`, case-sensitive FS, `STORE_VERSION` migrations
+- [ ] `pnpm/test/install/misc.ts` (37 tests, 645 LOC) → [test/pnpm_install_misc.bats](pnpm_install_misc.bats) (5/37 ported)
+  - Done: `--save-exact + --save-dev` (line 124), `--use-stderr` (73), `lockfile=false` in pnpm-workspace.yaml (83), `--prefix` (97), spec-preserved-verbatim (150).
+  - Remaining high-value: case-sensitive FS, `--lockfile-dir`, `STORE_VERSION` migrations, CI-mode env override, install timeout.
+  - Skipped (need fixtures): bin-files-found-by-lifecycle (36), case-insensitive-FS (163), top-level-plugins (190), run-js-bin (219), peer-deps-warning (541), circular-peer-deps (556), trust-policy (578-643).
+  - Documented divergences (don't port without aube-side fix): create-package.json-if-missing (233 — aube errors), `pnpm add` with no name exits 1 (245 — aube exits 0), `package.yaml` manifest (136 — aube doesn't support).
 - [ ] `pnpm/test/install/hooks.ts` (22 tests, 698 LOC) → [test/pnpm_install_hooks.bats](pnpm_install_hooks.bats) (5/22 ported, 2 skipped divergences)
   - Done: async readPackage on transitive (43), async afterAllResolved (498), syntax error in pnpmfile (292), require() of missing module (303), readPackage normalizes optional/peer/dev fields on transitive (528).
   - Skipped (need fixtures): sync readPackage (18), custom pnpmfile location (85), global pnpmfile (110, 135, 176), workspace pnpmfile (217), readPackage during update (263), --ignore-pnpmfile cases (314, 338), context.log via ndjson reporter (366, 404), preResolution hook (624 — aube doesn't support), shared workspace lockfile (661).
