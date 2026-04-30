@@ -6,32 +6,8 @@ Source: [pnpm/pnpm](https://github.com/pnpm/pnpm) checkout. Translation pattern:
 
 ## Phase 0 — infrastructure
 
-- [ ] Mirror the ~25 `@pnpm.e2e/*` fixture packages used by Tier 1 tests into [test/registry/storage/](registry/storage/). Procedure already documented at the top of [test/registry/config.yaml](registry/config.yaml). Packages needed:
-  - [ ] `@pnpm.e2e/abc`
-  - [ ] `@pnpm.e2e/abc-grand-parent-with-c`
-  - [ ] `@pnpm.e2e/abc-parent-with-ab`
-  - [ ] `@pnpm.e2e/abc-parent-with-missing-peers`
-  - [ ] `@pnpm.e2e/bar`
-  - [ ] `@pnpm.e2e/cli-with-node-engine`
-  - [ ] `@pnpm.e2e/dep-of-pkg-with-1-dep`
-  - [ ] `@pnpm.e2e/foo`
-  - [ ] `@pnpm.e2e/foobar`
-  - [ ] `@pnpm.e2e/has-untrusted-optional-dep`
-  - [ ] `@pnpm.e2e/hello-world-js-bin`
-  - [ ] `@pnpm.e2e/install-script-example`
-  - [ ] `@pnpm.e2e/peer-a`
-  - [ ] `@pnpm.e2e/peer-b`
-  - [ ] `@pnpm.e2e/peer-c`
-  - [ ] `@pnpm.e2e/pkg-that-uses-plugins`
-  - [ ] `@pnpm.e2e/pkg-with-1-dep`
-  - [ ] `@pnpm.e2e/pkg-with-good-optional`
-  - [ ] `@pnpm.e2e/plugin-example`
-  - [ ] `@pnpm.e2e/postinstall-calls-pnpm`
-  - [ ] `@pnpm.e2e/pre-and-postinstall-scripts-example`
-  - [ ] `@pnpm.e2e/print-version`
-  - [ ] `@pnpm.e2e/support-different-architectures`
-  - [ ] `@pnpm.e2e/with-same-file-in-different-cases`
-- [ ] Add an `add_dist_tag` bash helper in [test/test_helper/](test_helper/) that mutates `test/registry/storage/<pkg>/package.json` to set a dist-tag (Verdaccio re-reads on next request). Needed by ~10 files; heaviest in update.ts (50 uses).
+- [x] Mirror the ~25 `@pnpm.e2e/*` fixture packages used by Tier 1 tests into [test/registry/storage/@pnpm.e2e/](registry/storage/@pnpm.e2e/) ([#424](https://github.com/endevco/aube/pull/424)). Procedure documented at the top of [test/registry/config.yaml](registry/config.yaml). All 24 packages mirrored.
+- [x] Add an `add_dist_tag` bash helper in [test/test_helper/common_setup.bash:84](test_helper/common_setup.bash) ([#422](https://github.com/endevco/aube/pull/422)).
 
 ## Phase 1 — Tier 1 translations (~88 tests, highest signal density)
 
@@ -46,12 +22,13 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
   - Done: async readPackage on transitive (43), async afterAllResolved (498), syntax error in pnpmfile (292), require() of missing module (303), readPackage normalizes optional/peer/dev fields on transitive (528).
   - Skipped (need fixtures): sync readPackage (18), custom pnpmfile location (85), global pnpmfile (110, 135, 176), workspace pnpmfile (217), readPackage during update (263), --ignore-pnpmfile cases (314, 338), context.log via ndjson reporter (366, 404), preResolution hook (624 — aube doesn't support), shared workspace lockfile (661).
   - Documented divergences (don't port without aube-side fix): readPackage returning undefined fails install (68), readPackage on root project's manifest applies (551).
-- [ ] `pnpm/test/install/lifecycleScripts.ts` (21 tests, 356 LOC) → fold into [test/lifecycle_scripts.bats](lifecycle_scripts.bats)
-  - pre/postinstall ordering, exit-code propagation, env-var inheritance, script-not-found handling
+- [ ] `pnpm/test/install/lifecycleScripts.ts` (21 tests, 356 LOC) → folded into [test/lifecycle_scripts.bats](lifecycle_scripts.bats) (8/21 ported, [#421](https://github.com/endevco/aube/pull/421))
+  - Done: preinstall/postinstall/prepare stdout reaches the user (43, 56, 95), `npm_config_user_agent` set on lifecycle scripts (29), root postinstall NOT triggered by `aube add` / root prepare NOT triggered by `aube add` (69, 82), root postinstall NOT triggered by `aube remove` / `aube update`.
+  - Remaining: exit-code propagation, env-var inheritance specifics, script-not-found handling, ordering edge cases.
 - [x] `pnpm/test/saveCatalog.ts` (8 tests, 224 LOC) → [test/pnpm_savecatalog.bats](pnpm_savecatalog.bats) (8/8 ported)
   - Implements `aube add --save-catalog` and `--save-catalog-name=<name>`, `<pkg>@workspace:*` CLI parsing for `aube add`, and `sharedWorkspaceLockfile=false` per-project lockfile writes.
 
-## Phase 2 — depends on add_dist_tag helper
+## Phase 2 — unblocked (`add_dist_tag` helper landed in [#422](https://github.com/endevco/aube/pull/422))
 
 - [ ] `pnpm/test/update.ts` (22 tests, 50 dist-tag uses) → fold into [test/update.bats](update.bats)
 - [ ] `pnpm/test/recursive/update.ts` (5 tests, 2 dist-tag uses)
@@ -92,6 +69,6 @@ See [test/pnpm_install_misc.bats](pnpm_install_misc.bats) for a worked example c
 - **File naming**: ported tests live in `test/pnpm_<source_file>.bats` (e.g. `pnpm/test/install/misc.ts` → `test/pnpm_install_misc.bats`). One bats file per pnpm source file. The file header comments cite the pnpm source path.
 - **Per-test citation**: each `@test` block opens with `# Ported from pnpm/test/<path>:<line>` so the audit trail is intact. If you adapt the test (e.g. substitute a package), note the substitution on the next line.
 - **`pnpm install <pkg>` ≈ `aube add <pkg>`**: pnpm overloads `install` to also add new deps. aube splits them. When porting, switch to `aube add` and call out the swap in the comment.
-- **Package substitutions**: pnpm tests lean on `is-positive`, `rimraf`, `@pnpm.e2e/*`. Until the e2e fixtures are mirrored (Phase 0), substitute equivalents already in [test/registry/storage/](registry/storage/) — `is-odd`, `is-even`, `is-number`, `semver`. Note the substitution in the test comment.
+- **Package substitutions**: pnpm tests lean on `is-positive`, `rimraf`, `@pnpm.e2e/*`. The Tier 1 `@pnpm.e2e/*` fixtures are mirrored in [test/registry/storage/@pnpm.e2e/](registry/storage/@pnpm.e2e/) — use them when the test needs the specific shape (peer chains, lifecycle hooks, plugin-host trees). For generic deps where any leaf will do, prefer in-tree fixtures (`is-odd`, `is-even`, `is-number`, `semver`) and note the substitution in the test comment.
 - **Don't assert on pnpm-internal paths**: when a pnpm test asserts on `.pnpm/`, `STORE_VERSION`, `node_modules/.modules.yaml` etc., translate the *behavior* and assert on the aube equivalent (`.aube/`, store v1, `node_modules/.aube-state`).
 - **Surfaced bugs**: if a port exposes a real aube divergence, file it in [Discussions](https://github.com/endevco/aube/discussions) and mark the test with `skip "aube divergence: <link>"` rather than blocking the import.
