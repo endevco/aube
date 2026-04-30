@@ -310,3 +310,175 @@ JSON
 	assert_success
 	assert_file_exists aube-transitive-bin-probe.txt
 }
+
+# -- Ported from pnpm/test/install/lifecycleScripts.ts ------------------------
+#
+# Existing aube tests above cover most of pnpm's filesystem-marker assertions
+# (preinstall ran / postinstall ran / prepare ran / exit-non-zero fails install
+# / --ignore-scripts skips hooks / npm_package_* env vars). The block below
+# adds the orthogonal stdout-visibility assertions from pnpm's suite (the
+# script's echo reaches the user), plus three parity tests that previously
+# documented divergences and now ride the corresponding fixes:
+# `npm_config_user_agent` is exported, and root postinstall/prepare no longer
+# fire on `aube add <pkg>`.
+
+@test "aube install: preinstall script stdout reaches the user" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:43
+	# ('preinstall is executed before general installation').
+	# Complements the existing filesystem-marker test by also asserting
+	# that the script's echoed output makes it through aube's progress UI.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-preinstall-stdout",
+  "version": "1.0.0",
+  "scripts": {
+    "preinstall": "echo HELLO_FROM_PREINSTALL"
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_output --partial "HELLO_FROM_PREINSTALL"
+}
+
+@test "aube install: postinstall script stdout reaches the user" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:56
+	# ('postinstall is executed after general installation').
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-postinstall-stdout",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "echo HELLO_FROM_POSTINSTALL"
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_output --partial "HELLO_FROM_POSTINSTALL"
+}
+
+@test "aube install: prepare script stdout reaches the user (argumentless install)" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:95
+	# ('prepare is executed after argumentless installation').
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-prepare-stdout",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "echo HELLO_FROM_PREPARE"
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_output --partial "HELLO_FROM_PREPARE"
+}
+
+@test "aube: lifecycle scripts receive npm_config_user_agent" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:29
+	# ('lifecycle script runs with the correct user agent').
+	# aube exports the same env var so dep build scripts (husky,
+	# unrs-resolver, node-pre-gyp, etc.) can detect the running PM.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-user-agent",
+  "version": "1.0.0",
+  "scripts": {
+    "preinstall": "node -e 'console.log(\"UA=\" + (process.env.npm_config_user_agent || \"\"))'"
+  }
+}
+JSON
+	run aube install
+	assert_success
+	# pnpm asserts the user agent starts with `${pkgName}/${pkgVersion}`.
+	assert_output --regexp "UA=aube/[0-9]+\.[0-9]+\.[0-9]+"
+}
+
+@test "aube add: root postinstall is NOT triggered when adding a named dep" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:69
+	# ('postinstall is not executed after named installation').
+	# pnpm's contract: lifecycle hooks only run during an argumentless
+	# `install` — `pnpm install <pkg>` (i.e. `aube add <pkg>`) skips
+	# them so adding a single dep doesn't re-run codegen / build steps.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-named-postinstall",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"fs\").writeFileSync(\"postinstall.marker\", \"ran\")'"
+  }
+}
+JSON
+	run aube add is-odd@3.0.1
+	assert_success
+	assert [ ! -e postinstall.marker ]
+}
+
+@test "aube add: root prepare is NOT triggered when adding a named dep" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:82
+	# ('prepare is not executed after installation with arguments').
+	# Same contract as the postinstall case above.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-named-prepare",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "node -e 'require(\"fs\").writeFileSync(\"prepare.marker\", \"ran\")'"
+  }
+}
+JSON
+	run aube add is-odd@3.0.1
+	assert_success
+	assert [ ! -e prepare.marker ]
+}
+
+@test "aube remove: root postinstall is NOT triggered" {
+	# Same pnpm contract as the `aube add` cases — root hooks fire only
+	# on argumentless `aube install`. `pnpm remove <pkg>` is a chained
+	# operation that must not re-run them.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-remove",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"fs\").writeFileSync(\"postinstall.marker\", \"ran\")'"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	# Seed node_modules with --ignore-scripts so the marker isn't written
+	# during setup, then exercise `aube remove` under regular settings.
+	run aube install --ignore-scripts
+	assert_success
+	rm -f postinstall.marker
+
+	run aube remove is-odd
+	assert_success
+	assert [ ! -e postinstall.marker ]
+}
+
+@test "aube update: root postinstall is NOT triggered" {
+	# Same pnpm contract — `aube update` is a chained operation.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-update",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"fs\").writeFileSync(\"postinstall.marker\", \"ran\")'"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	run aube install --ignore-scripts
+	assert_success
+	rm -f postinstall.marker
+
+	run aube update
+	assert_success
+	assert [ ! -e postinstall.marker ]
+}

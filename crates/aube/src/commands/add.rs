@@ -409,6 +409,9 @@ pub async fn run(
     // new dep. Wrapping in a `Result` so the restore step below runs
     // even on failure — a network error mid-resolve would otherwise
     // leave the mutated `package.json` on disk, breaking `--no-save`.
+    // `with_mode()` already skips root lifecycle hooks (chained-call
+    // contract) so `aube add` doesn't re-run the root postinstall /
+    // prepare on every invocation.
     let pipeline_result: miette::Result<()> = install::run(install::InstallOptions::with_mode(
         super::chained_frozen_mode(install::FrozenMode::Fix),
     ))

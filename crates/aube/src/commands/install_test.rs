@@ -38,7 +38,13 @@ pub async fn run(script_args: ScriptArgs) -> miette::Result<()> {
             None,
             aube_settings::resolved::prefer_frozen_lockfile(&ctx),
         );
-        install::run(install::InstallOptions::with_mode(mode)).await?;
+        // `install-test` is a pnpm-compat alias for `install && test`,
+        // so the install phase needs to behave like argumentless `aube
+        // install` — including running root lifecycle hooks. Override
+        // the chained-call default that `with_mode()` sets.
+        let mut opts = install::InstallOptions::with_mode(mode);
+        opts.skip_root_lifecycle = false;
+        install::run(opts).await?;
     }
 
     run_script(

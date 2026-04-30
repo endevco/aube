@@ -409,6 +409,50 @@ pub fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     1
 }
 
+/// User agent string exported to lifecycle scripts as
+/// `npm_config_user_agent`. Mirrors pnpm's format
+/// (`<name>/<version> <os> <arch>`) so dep build scripts that sniff
+/// the env var to detect the running PM (e.g. `husky`,
+/// `unrs-resolver`) recognize aube without falling back to npm-mode.
+/// OS/arch use Node's `process.platform` / `process.arch` vocabulary
+/// (`darwin`/`linux`/`win32`, `x64`/`arm64`), not Rust's native
+/// `std::env::consts::{OS,ARCH}` values, so tools that parse the full
+/// UA string identify the platform the same way npm/yarn/pnpm do.
+pub fn aube_user_agent() -> String {
+    format!(
+        "aube/{} {} {}",
+        env!("CARGO_PKG_VERSION"),
+        node_platform(),
+        node_arch(),
+    )
+}
+
+fn node_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    }
+}
+
+fn node_arch() -> &'static str {
+    // Mappings from Rust's `std::env::consts::ARCH` to Node's
+    // `process.arch`. Common arches first; the rare ones at the bottom
+    // exist so the test below stays a real guarantee on every host
+    // Rust ships, not just x64/arm64. Pass-through covers `arm`,
+    // `mips`, `riscv64`, `s390x` — those tokens match between the two
+    // vocabularies.
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "ia32",
+        "powerpc" => "ppc",
+        "powerpc64" => "ppc64",
+        "loongarch64" => "loong64",
+        other => other,
+    }
+}
+
 fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &ScriptSettings) {
     // Strip credentials that aube itself owns before we spawn any
     // lifecycle script. AUBE_AUTH_TOKEN is aube's own registry login
@@ -417,6 +461,11 @@ fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &Scrip
     // flows ("npm publish" in a postpublish script) genuinely need
     // them. Matches what pnpm does today.
     cmd.env_remove("AUBE_AUTH_TOKEN");
+    // pnpm parity: every lifecycle script gets `npm_config_user_agent`
+    // so dep postinstalls can detect the running PM. Set here (not at
+    // spawn time) so it flows through both the jailed and the
+    // non-jailed paths.
+    cmd.env("npm_config_user_agent", aube_user_agent());
     if let Some(node_options) = settings.node_options.as_deref() {
         cmd.env("NODE_OPTIONS", node_options);
     }
@@ -881,6 +930,49 @@ pub enum Error {
     Spawn(String, String),
     #[error("script `{script}` exited with code {code:?}")]
     NonZeroExit { script: String, code: Option<i32> },
+}
+
+#[cfg(test)]
+mod user_agent_tests {
+    use super::*;
+
+    #[test]
+    fn user_agent_uses_node_style_platform_and_arch() {
+        let ua = aube_user_agent();
+        // Format: "aube/<version> <platform> <arch>"
+        assert!(ua.starts_with("aube/"), "unexpected prefix: {ua}");
+        let parts: Vec<&str> = ua.split(' ').collect();
+        assert_eq!(parts.len(), 3, "expected 3 space-separated fields: {ua}");
+        // Platform must be a Node-style token, not Rust's `macos`/`windows`.
+        let platform = parts[1];
+        assert!(
+            matches!(
+                platform,
+                "darwin" | "linux" | "win32" | "freebsd" | "openbsd" | "netbsd" | "dragonfly"
+            ),
+            "platform `{platform}` should follow Node's `process.platform` vocabulary"
+        );
+        // Arch must be a Node-style token, not Rust's `x86_64`/`aarch64`.
+        // Allowlist is the union of mapped outputs (`node_arch`) and the
+        // pass-through tokens that already match Node's vocabulary.
+        let arch = parts[2];
+        assert!(
+            matches!(
+                arch,
+                "x64"
+                    | "arm64"
+                    | "ia32"
+                    | "arm"
+                    | "ppc"
+                    | "ppc64"
+                    | "loong64"
+                    | "mips"
+                    | "riscv64"
+                    | "s390x"
+            ),
+            "arch `{arch}` should follow Node's `process.arch` vocabulary"
+        );
+    }
 }
 
 #[cfg(test)]
