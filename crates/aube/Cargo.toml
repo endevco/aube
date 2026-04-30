@@ -67,6 +67,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 flate2 = { workspace = true }
 glob = { workspace = true }
+ignore = { workspace = true }
 node-semver = { workspace = true }
 rayon = { workspace = true }
 tar = { workspace = true }

@@ -11,7 +11,9 @@
 //!   2. Otherwise: walk the project, skip the npm standard-ignore list
 //!      (`.git/`, `node_modules/`, `*.tgz`, CI dotfiles, etc.), and
 //!      respect a root-level `.npmignore` (or `.gitignore` if no
-//!      `.npmignore` exists) with line-based prefix matching.
+//!      `.npmignore` exists) with full gitignore semantics — negation
+//!      (`!pattern`), anchoring (`/pattern`), and globs (`*`, `**`,
+//!      `?`, `[abc]`) — via the `ignore` crate.
 //!
 //! In both cases `package.json`, `README*`, `LICENSE*`/`LICENCE*`, and the
 //! `main` entry are always included — matching npm's "always-on" list.
@@ -24,6 +26,7 @@ use aube_manifest::PackageJson;
 use clap::Args;
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use miette::{Context, IntoDiagnostic, miette};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -374,14 +377,16 @@ fn walk_subdir(project_dir: &Path, dir: &Path, out: &mut BTreeSet<String>) -> mi
 /// Top-level walker used when `files` is absent. Same as `walk_subdir`
 /// plus a root-level `.npmignore` / `.gitignore` check.
 fn walk_with_ignores(project_dir: &Path, out: &mut BTreeSet<String>) -> miette::Result<()> {
-    let ignore_lines = read_root_ignore(project_dir);
+    let matcher = build_root_ignore(project_dir);
     let mut collected: BTreeSet<String> = BTreeSet::new();
     walk_subdir(project_dir, project_dir, &mut collected)?;
     for rel in collected {
-        if ignore_lines
-            .iter()
-            .any(|line| matches_ignore_line(line, &rel))
-        {
+        // matched_path_or_any_parents also walks ancestor directories, so
+        // a `dist/` pattern excludes everything underneath even though the
+        // walker collects file paths. Whitelist (`!pattern`) wins over
+        // a prior ignore, matching gitignore semantics.
+        let abs = project_dir.join(&rel);
+        if matcher.matched_path_or_any_parents(&abs, false).is_ignore() {
             continue;
         }
         out.insert(rel);
@@ -389,38 +394,28 @@ fn walk_with_ignores(project_dir: &Path, out: &mut BTreeSet<String>) -> miette::
     Ok(())
 }
 
-/// Read `.npmignore` (preferred) or `.gitignore` from the project root.
-/// Blank lines and comments are dropped.
-fn read_root_ignore(project_dir: &Path) -> Vec<String> {
+/// Build a gitignore matcher rooted at `project_dir` from `.npmignore`
+/// (preferred) or `.gitignore`. Returns an empty matcher when neither
+/// file exists or the file contains no usable patterns.
+fn build_root_ignore(project_dir: &Path) -> Gitignore {
     let candidate = project_dir.join(".npmignore");
-    let candidate = if candidate.is_file() {
+    let path = if candidate.is_file() {
         candidate
     } else {
         project_dir.join(".gitignore")
     };
-    let Ok(content) = std::fs::read_to_string(&candidate) else {
-        return Vec::new();
-    };
-    content
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect()
-}
-
-/// Simple prefix/suffix/substring match against one .npmignore line.
-/// Not a full gitignore implementation — good enough for common patterns
-/// like `dist/`, `*.log`, `tests/`. Patterns that rely on `!` negation or
-/// nested globs are honored on a best-effort basis only.
-fn matches_ignore_line(line: &str, rel: &str) -> bool {
-    let line = line.trim_start_matches('/');
-    if let Some(ext) = line.strip_prefix("*.") {
-        return rel.ends_with(&format!(".{ext}"));
+    let mut builder = GitignoreBuilder::new(project_dir);
+    if path.is_file() {
+        // `add` reports parse errors, but npm/pnpm tolerate malformed
+        // lines silently — surface them to tracing and keep going.
+        if let Some(err) = builder.add(&path) {
+            tracing::debug!("pack: ignored {} parse error: {err}", path.display());
+        }
     }
-    if let Some(prefix) = line.strip_suffix('/') {
-        return rel == prefix || rel.starts_with(&format!("{prefix}/"));
-    }
-    rel == line || rel.starts_with(&format!("{line}/"))
+    builder.build().unwrap_or_else(|err| {
+        tracing::debug!("pack: ignore matcher build failed: {err}");
+        Gitignore::empty()
+    })
 }
 
 fn is_npm_ignored(name: &str) -> bool {
@@ -599,12 +594,111 @@ mod tests {
         assert!(!is_npm_ignored("src"));
     }
 
+    fn write_tree(root: &Path, files: &[&str]) {
+        for rel in files {
+            let p = root.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, b"x").unwrap();
+        }
+    }
+
+    fn collected(root: &Path) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        walk_with_ignores(root, &mut out).unwrap();
+        out
+    }
+
     #[test]
-    fn ignore_line_matches_directories_and_suffixes() {
-        assert!(matches_ignore_line("dist/", "dist/main.js"));
-        assert!(matches_ignore_line("dist/", "dist"));
-        assert!(!matches_ignore_line("dist/", "distant/file"));
-        assert!(matches_ignore_line("*.log", "error.log"));
-        assert!(!matches_ignore_line("*.log", "error.txt"));
+    fn npmignore_directory_pattern_excludes_subtree() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(
+            dir.path(),
+            &[
+                "src/main.js",
+                "dist/bundle.js",
+                "dist/nested/x.js",
+                "keep.js",
+            ],
+        );
+        std::fs::write(dir.path().join(".npmignore"), "dist/\n").unwrap();
+        let got = collected(dir.path());
+        assert!(got.contains("src/main.js"));
+        assert!(got.contains("keep.js"));
+        assert!(!got.contains("dist/bundle.js"));
+        assert!(!got.contains("dist/nested/x.js"));
+    }
+
+    #[test]
+    fn npmignore_glob_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(dir.path(), &["a.log", "nested/b.log", "keep.txt"]);
+        std::fs::write(dir.path().join(".npmignore"), "*.log\n").unwrap();
+        let got = collected(dir.path());
+        assert!(got.contains("keep.txt"));
+        assert!(!got.contains("a.log"));
+        assert!(!got.contains("nested/b.log"));
+    }
+
+    #[test]
+    fn npmignore_negation_re_includes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(dir.path(), &["build/a.js", "build/keep.js", "build/c.js"]);
+        std::fs::write(
+            dir.path().join(".npmignore"),
+            "build/*.js\n!build/keep.js\n",
+        )
+        .unwrap();
+        let got = collected(dir.path());
+        assert!(got.contains("build/keep.js"));
+        assert!(!got.contains("build/a.js"));
+        assert!(!got.contains("build/c.js"));
+    }
+
+    #[test]
+    fn npmignore_anchored_pattern_only_matches_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(dir.path(), &["dist/a.js", "vendor/dist/b.js"]);
+        std::fs::write(dir.path().join(".npmignore"), "/dist/\n").unwrap();
+        let got = collected(dir.path());
+        assert!(!got.contains("dist/a.js"));
+        assert!(got.contains("vendor/dist/b.js"));
+    }
+
+    #[test]
+    fn npmignore_double_star_matches_any_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(
+            dir.path(),
+            &["a/__tests__/x.js", "a/b/__tests__/y.js", "a/keep.js"],
+        );
+        std::fs::write(dir.path().join(".npmignore"), "**/__tests__/\n").unwrap();
+        let got = collected(dir.path());
+        assert!(got.contains("a/keep.js"));
+        assert!(!got.contains("a/__tests__/x.js"));
+        assert!(!got.contains("a/b/__tests__/y.js"));
+    }
+
+    #[test]
+    fn gitignore_used_when_no_npmignore() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(dir.path(), &["a.tmp", "keep.js"]);
+        std::fs::write(dir.path().join(".gitignore"), "*.tmp\n").unwrap();
+        let got = collected(dir.path());
+        assert!(got.contains("keep.js"));
+        assert!(!got.contains("a.tmp"));
+    }
+
+    #[test]
+    fn npmignore_takes_precedence_over_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(dir.path(), &["a.tmp", "b.bak"]);
+        // .gitignore would block *.bak; .npmignore should win and only block *.tmp.
+        std::fs::write(dir.path().join(".gitignore"), "*.bak\n").unwrap();
+        std::fs::write(dir.path().join(".npmignore"), "*.tmp\n").unwrap();
+        let got = collected(dir.path());
+        assert!(got.contains("b.bak"));
+        assert!(!got.contains("a.tmp"));
     }
 }
