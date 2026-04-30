@@ -212,17 +212,17 @@ impl Resolver {
                     let client = self.client.clone();
                     let cache_dir = self.packument_cache_dir.clone();
                     let full_cache_dir = self.packument_full_cache_dir.clone();
-                    let primer_policy_allows_name = self
+                    let minimum_release_age_excludes_name = self
                         .minimum_release_age
                         .as_ref()
-                        .is_none_or(|mra| !mra.exclude.contains(name));
-                    let primer_covers_cutoff = published_by
-                        .as_deref()
-                        .is_none_or(crate::primer::covers_cutoff);
+                        .is_some_and(|mra| mra.exclude.contains(name));
+                    let primer_covers_cutoff = minimum_release_age_excludes_name
+                        || published_by
+                            .as_deref()
+                            .is_none_or(crate::primer::covers_cutoff);
                     let use_metadata_primer = (self.force_metadata_primer
                         || client.uses_default_npm_registry_for(&name_owned))
-                        && primer_covers_cutoff
-                        && primer_policy_allows_name;
+                        && primer_covers_cutoff;
                     let force_metadata_primer = self.force_metadata_primer;
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
@@ -230,7 +230,7 @@ impl Resolver {
                             .acquire_owned()
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-                        let cached = if needs_time {
+                        let mut cached = if needs_time {
                             match full_cache_dir.as_ref() {
                                 Some(dir) => client.cached_full_packument_lookup(&name_owned, dir),
                                 None => Default::default(),
@@ -240,7 +240,7 @@ impl Resolver {
                         } else {
                             Default::default()
                         };
-                        if let Some(packument) = cached.packument {
+                        if let Some(packument) = cached.packument.take() {
                             return Ok::<_, Error>((name_owned, packument));
                         }
                         if use_metadata_primer
@@ -285,13 +285,19 @@ impl Resolver {
                             match full_cache_dir.as_ref() {
                                 Some(dir) => {
                                     client
-                                        .fetch_packument_with_time_cached(&name_owned, dir)
+                                        .fetch_packument_with_time_cached_after_lookup(
+                                            &name_owned,
+                                            dir,
+                                            cached,
+                                        )
                                         .await
                                 }
                                 None => client.fetch_packument(&name_owned).await,
                             }
                         } else if let Some(ref dir) = cache_dir {
-                            client.fetch_packument_cached(&name_owned, dir).await
+                            client
+                                .fetch_packument_cached_after_lookup(&name_owned, dir, cached)
+                                .await
                         } else {
                             client.fetch_packument(&name_owned).await
                         }

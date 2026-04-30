@@ -35,6 +35,23 @@ struct CachedFullPackument {
 pub struct CachedPackumentLookup {
     pub packument: Option<Packument>,
     pub stale: bool,
+    cached: Option<CachedPackumentLookupEntry>,
+}
+
+#[derive(Debug)]
+enum CachedPackumentLookupEntry {
+    Abbreviated(CachedPackument),
+    Full(CachedFullPackumentTyped),
+}
+
+#[derive(Debug)]
+struct CachedFullPackumentTyped {
+    etag: Option<String>,
+    last_modified: Option<String>,
+    fetched_at: u64,
+    max_age_secs: Option<u64>,
+    packument: Packument,
+    raw: Vec<u8>,
 }
 
 fn cached_is_fresh(fetched_at: u64, max_age_secs: Option<u64>) -> bool {
@@ -212,10 +229,6 @@ impl RegistryClient {
         self.registry_url_for(name).trim_end_matches('/') == "https://registry.npmjs.org"
     }
 
-    pub fn cached_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
-        self.cached_packument_lookup(name, cache_dir).packument
-    }
-
     pub fn cached_packument_lookup(&self, name: &str, cache_dir: &Path) -> CachedPackumentLookup {
         let registry_url = self.config.registry_for(name).to_string();
         let Some(cache_path) = packument_cache_path(cache_dir, name, &registry_url) else {
@@ -228,20 +241,14 @@ impl RegistryClient {
             return CachedPackumentLookup {
                 packument: Some(cached.packument),
                 stale: false,
+                cached: None,
             };
         }
         CachedPackumentLookup {
             packument: None,
             stale: true,
+            cached: Some(CachedPackumentLookupEntry::Abbreviated(cached)),
         }
-    }
-
-    pub fn has_stale_packument_cache(&self, name: &str, cache_dir: &Path) -> bool {
-        self.cached_packument_lookup(name, cache_dir).stale
-    }
-
-    pub fn cached_full_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
-        self.cached_full_packument_lookup(name, cache_dir).packument
     }
 
     pub fn cached_full_packument_lookup(
@@ -254,10 +261,6 @@ impl RegistryClient {
             return CachedPackumentLookup::default();
         };
         read_cached_full_packument_typed_lookup(&cache_path, self.force_cache())
-    }
-
-    pub fn has_stale_full_packument_cache(&self, name: &str, cache_dir: &Path) -> bool {
-        self.cached_full_packument_lookup(name, cache_dir).stale
     }
 
     pub fn seed_packument_cache(
@@ -847,6 +850,174 @@ impl RegistryClient {
         Ok(packument)
     }
 
+    pub async fn fetch_packument_with_time_cached_after_lookup(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+        lookup: CachedPackumentLookup,
+    ) -> Result<Packument, Error> {
+        match lookup.cached {
+            Some(CachedPackumentLookupEntry::Full(cached)) => {
+                self.revalidate_full_packument_typed(name, cache_dir, cached)
+                    .await
+            }
+            _ => self.fetch_packument_with_time_cached(name, cache_dir).await,
+        }
+    }
+
+    async fn revalidate_full_packument_typed(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+        cached: CachedFullPackumentTyped,
+    ) -> Result<Packument, Error> {
+        let force_cache = self.force_cache();
+        if force_cache || cached_is_fresh(cached.fetched_at, cached.max_age_secs) {
+            return Ok(cached.packument);
+        }
+        if self.network_mode == NetworkMode::Offline {
+            return Err(Error::Offline(format!("packument for {name}")));
+        }
+
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)
+            .ok_or_else(|| Error::InvalidName(name.to_string()))?;
+        let (url, registry_url) = self.packument_url(name);
+        let label = format!("packument {name}");
+        let started = std::time::Instant::now();
+        let max_attempts = self.fetch_policy.retries.saturating_add(1);
+
+        for attempt in 0..max_attempts {
+            let is_last = attempt + 1 >= max_attempts;
+            match {
+                let mut req = self
+                    .authed_get(&url, registry_url)
+                    .header("Accept", PACKUMENT_FULL_ACCEPT);
+                if let Some(ref etag) = cached.etag {
+                    req = req.header("If-None-Match", etag);
+                }
+                if let Some(ref lm) = cached.last_modified {
+                    req = req.header("If-Modified-Since", lm);
+                }
+                req
+            }
+            .send()
+            .await
+            {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
+                    let wait = retry_after_from(&resp)
+                        .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        status = resp.status().as_u16(),
+                        label,
+                        "retrying HTTP request after transient failure",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                    self.maybe_warn_slow_metadata(&label, started);
+                    return Err(Error::NotFound(name.to_string()));
+                }
+                Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
+                    let revalidated_max_age =
+                        parse_cache_control_max_age(&resp).or(cached.max_age_secs);
+                    let packument = cached.packument.clone();
+                    let mut raw = cached.raw.clone();
+                    let to_cache =
+                        match simd_json::serde::from_slice::<CachedFullPackument>(&mut raw) {
+                            Ok(mut to_cache) => {
+                                to_cache.fetched_at = now_secs();
+                                to_cache.max_age_secs = revalidated_max_age;
+                                to_cache
+                            }
+                            Err(_) => CachedFullPackument {
+                                etag: cached.etag.clone(),
+                                last_modified: cached.last_modified.clone(),
+                                fetched_at: now_secs(),
+                                max_age_secs: revalidated_max_age,
+                                packument: serde_json::to_value(&packument).map_err(|e| {
+                                    Error::Io(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        e,
+                                    ))
+                                })?,
+                            },
+                        };
+                    if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                        tracing::warn!(
+                            "failed to write packument cache {}: {e}",
+                            cache_path.display()
+                        );
+                    }
+                    self.maybe_warn_slow_metadata(&label, started);
+                    return Ok(packument);
+                }
+                Ok(resp) => {
+                    let (etag, last_modified) = extract_cache_headers(&resp);
+                    let max_age_secs = parse_cache_control_max_age(&resp);
+                    let resp = resp.error_for_status()?;
+                    check_body_cap(&resp, self.fetch_policy.packument_max_bytes, &label)?;
+                    match parse_full_response::<serde_json::Value>(resp).await {
+                        Ok(value) => {
+                            let to_cache = CachedFullPackument {
+                                etag,
+                                last_modified,
+                                fetched_at: now_secs(),
+                                max_age_secs,
+                                packument: value.clone(),
+                            };
+                            if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                                tracing::warn!(
+                                    "failed to write packument cache {}: {e}",
+                                    cache_path.display()
+                                );
+                            }
+                            let packument: Packument =
+                                serde_json::from_value(value).map_err(|e| {
+                                    Error::Io(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        e,
+                                    ))
+                                })?;
+                            self.maybe_warn_slow_metadata(&label, started);
+                            return Ok(packument);
+                        }
+                        Err(err) if !is_last => {
+                            let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_attempts,
+                                backoff_ms = wait.as_millis() as u64,
+                                error = %err,
+                                label,
+                                "retrying HTTP request after response body decode error",
+                            );
+                            tokio::time::sleep(wait).await;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                Err(err) if !is_last => {
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label,
+                        "retrying HTTP request after transport error",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+        unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
+    }
+
     /// Fetch the abbreviated packument for a package (corgi format).
     pub async fn fetch_packument(&self, name: &str) -> Result<Packument, Error> {
         if self.network_mode == NetworkMode::Offline {
@@ -940,7 +1111,33 @@ impl RegistryClient {
         let cache_path = packument_cache_path(cache_dir, name, &registry_url)
             .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let cached = read_cached_packument(&cache_path);
+        self.fetch_packument_cached_with_entry(name, cache_path, cached)
+            .await
+    }
 
+    pub async fn fetch_packument_cached_after_lookup(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+        lookup: CachedPackumentLookup,
+    ) -> Result<Packument, Error> {
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_cache_path(cache_dir, name, &registry_url)
+            .ok_or_else(|| Error::InvalidName(name.to_string()))?;
+        let cached = match lookup.cached {
+            Some(CachedPackumentLookupEntry::Abbreviated(cached)) => Some(cached),
+            _ => read_cached_packument(&cache_path),
+        };
+        self.fetch_packument_cached_with_entry(name, cache_path, cached)
+            .await
+    }
+
+    async fn fetch_packument_cached_with_entry(
+        &self,
+        name: &str,
+        cache_path: PathBuf,
+        cached: Option<CachedPackument>,
+    ) -> Result<Packument, Error> {
         // Fast path: trust the cache if it's still fresh.
         // Move out of the wrapper to avoid cloning the Packument.
         // --prefer-offline / --offline extend "fresh" to "any cached entry"
@@ -1697,6 +1894,8 @@ fn read_cached_full_packument_typed_lookup(
 ) -> CachedPackumentLookup {
     #[derive(Deserialize)]
     struct Typed {
+        etag: Option<String>,
+        last_modified: Option<String>,
         fetched_at: u64,
         #[serde(default)]
         max_age_secs: Option<u64>,
@@ -1706,18 +1905,29 @@ fn read_cached_full_packument_typed_lookup(
     let Ok(mut content) = std::fs::read(path) else {
         return CachedPackumentLookup::default();
     };
+    let raw = content.clone();
     let Ok(typed) = simd_json::serde::from_slice::<Typed>(&mut content) else {
         return CachedPackumentLookup::default();
+    };
+    let typed = CachedFullPackumentTyped {
+        etag: typed.etag,
+        last_modified: typed.last_modified,
+        fetched_at: typed.fetched_at,
+        max_age_secs: typed.max_age_secs,
+        packument: typed.packument,
+        raw,
     };
     if !force_cache && !cached_is_fresh(typed.fetched_at, typed.max_age_secs) {
         return CachedPackumentLookup {
             packument: None,
             stale: true,
+            cached: Some(CachedPackumentLookupEntry::Full(typed)),
         };
     }
     CachedPackumentLookup {
         packument: Some(typed.packument),
         stale: false,
+        cached: None,
     }
 }
 
@@ -1867,8 +2077,6 @@ mod seed_tests {
         let lookup = client.cached_packument_lookup("demo", dir.path());
         assert!(lookup.stale);
         assert!(lookup.packument.is_none());
-        assert!(client.has_stale_packument_cache("demo", dir.path()));
-        assert!(client.cached_packument("demo", dir.path()).is_none());
     }
 
     #[test]
