@@ -84,12 +84,12 @@ pub struct ViewArgs {
 
 #[derive(Debug, Args)]
 pub struct PruneArgs {
-    /// Do not actually delete anything.
-    #[arg(long)]
-    pub dry_run: bool,
     /// Minimum age in days before an old primer file is removed.
     #[arg(long, default_value_t = 30)]
     pub age_days: u64,
+    /// Do not actually delete anything.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 pub async fn run(args: CacheArgs) -> miette::Result<()> {
