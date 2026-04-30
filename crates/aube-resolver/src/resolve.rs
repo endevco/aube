@@ -153,6 +153,7 @@ impl Resolver {
         // but cost an extra round trip for active packages whose top-level
         // `modified` timestamp was newer than the cutoff. Clean installs of
         // modern dependency graphs are dominated by those active packages.
+
         // In-flight packument fetches. The spawned task returns the
         // `(name, packument)` tuple so `join_next` gives us back the
         // identity of whichever fetch landed next without a side
