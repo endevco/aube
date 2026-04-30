@@ -42,6 +42,16 @@ Snapshot `package.json` and the lockfile, link the named packages into `node_mod
 
 Handy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest.
 
+### `--save-catalog`
+
+Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.
+
+Workspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.
+
+### `--save-catalog-name <NAME>`
+
+Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`
+
 ### `--save-peer`
 
 Add as a peer dependency (written to `peerDependencies` in package.json).

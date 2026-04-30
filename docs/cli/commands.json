@@ -107,6 +107,38 @@
             "global": false
           },
           {
+            "name": "save-catalog",
+            "usage": "--save-catalog",
+            "help": "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`",
+            "help_long": "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.\n\nWorkspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.",
+            "help_first_line": "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`",
+            "short": [],
+            "long": [
+              "save-catalog"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "save-catalog-name",
+            "usage": "--save-catalog-name <NAME>",
+            "help": "Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`",
+            "help_first_line": "Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`",
+            "short": [],
+            "long": [
+              "save-catalog-name"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "NAME",
+              "usage": "<NAME>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "save-peer",
             "usage": "--save-peer",
             "help": "Add as a peer dependency (written to `peerDependencies` in package.json)",
