@@ -125,14 +125,14 @@ This installs the `aube` binary into `~/.cargo/bin`.
 ## GitHub Actions
 
 For CI workflows, use the
-[`endevco/setup-aube`](https://github.com/endevco/setup-aube) Action.
+[`endevco/aube-action`](https://github.com/endevco/aube-action) Action.
 It downloads the prebuilt aube binary that matches the runner's OS and
 architecture, adds it to `PATH`, and (optionally) installs Node.js
 inline via [mise](https://mise.jdx.dev) so a single step covers both
 the package manager and the runtime:
 
 ```yaml
-- uses: endevco/setup-aube@v1
+- uses: endevco/aube-action@v1
 - run: aube install
 ```
 
@@ -140,7 +140,7 @@ Pin a specific aube version, install Node, and run `aube install` in
 one go:
 
 ```yaml
-- uses: endevco/setup-aube@v1
+- uses: endevco/aube-action@v1
   with:
     version: 1.5.1         # or "latest"
     node-version: "22"     # or "auto" to read mise.toml / .tool-versions / .nvmrc
@@ -154,7 +154,7 @@ against the workspace, so any of `mise.toml`, `.tool-versions`,
 honored — no separate `actions/setup-node` step required.
 :::
 
-See the [`setup-aube` README](https://github.com/endevco/setup-aube#readme)
+See the [`aube-action` README](https://github.com/endevco/aube-action#readme)
 for the full input/output reference.
 
 ## Verify
