@@ -519,6 +519,58 @@
             "hidden_aliases": [],
             "examples": []
           },
+          "prune": {
+            "full_cmd": [
+              "cache",
+              "prune"
+            ],
+            "usage": "cache prune [--dry-run] [--age-days <AGE_DAYS>]",
+            "subcommands": {},
+            "args": [],
+            "flags": [
+              {
+                "name": "dry-run",
+                "usage": "--dry-run",
+                "help": "Do not actually delete anything",
+                "help_first_line": "Do not actually delete anything",
+                "short": [],
+                "long": [
+                  "dry-run"
+                ],
+                "hide": false,
+                "global": false
+              },
+              {
+                "name": "age-days",
+                "usage": "--age-days <AGE_DAYS>",
+                "help": "Minimum age in days before an old primer file is removed",
+                "help_first_line": "Minimum age in days before an old primer file is removed",
+                "short": [],
+                "long": [
+                  "age-days"
+                ],
+                "hide": false,
+                "global": false,
+                "arg": {
+                  "name": "AGE_DAYS",
+                  "usage": "<AGE_DAYS>",
+                  "required": true,
+                  "double_dash": "Optional",
+                  "hide": false
+                },
+                "default": [
+                  "30"
+                ]
+              }
+            ],
+            "mounts": [],
+            "hide": false,
+            "help": "Remove stale extracted primer files from the metadata cache",
+            "name": "prune",
+            "aliases": [],
+            "hidden_aliases": [],
+            "examples": []
+          },
           "view": {
             "full_cmd": [
               "cache",

@@ -10,4 +10,5 @@ Inspect and manage the packument metadata cache
 - [`aube cache delete <PATTERNS>…`](/cli/cache/delete.md)
 - [`aube cache list [PATTERNS]…`](/cli/cache/list.md)
 - [`aube cache list-registries`](/cli/cache/list-registries.md)
+- [`aube cache prune [--dry-run] [--age-days <AGE_DAYS>]`](/cli/cache/prune.md)
 - [`aube cache view [--json] <NAME>`](/cli/cache/view.md)
