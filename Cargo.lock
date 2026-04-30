@@ -237,6 +237,7 @@ dependencies = [
  "flate2",
  "glob",
  "hex",
+ "ignore",
  "is_ci",
  "libc",
  "miette",

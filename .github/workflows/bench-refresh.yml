@@ -67,7 +67,7 @@ jobs:
     name: Refresh benchmarks
     needs: check
     if: needs.check.outputs.drift == 'true'
-    runs-on: namespace-profile-endev-linux-amd64
+    runs-on: namespace-profile-endev-linux-amd64-large
     permissions:
       contents: write
       pull-requests: write

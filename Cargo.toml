@@ -56,6 +56,11 @@ hex = "0.4"
 xx = { version = "2", features = ["fslock"] }
 reflink-copy = "0.1"
 glob = "0.3"
+# BurntSushi's gitignore matcher (from ripgrep). Used by `aube pack` /
+# `aube publish` to honor `.npmignore` / `.gitignore` with full
+# semantics (negation, anchoring, globs, **). Already in the build via
+# clx → tera → globwalk, so making it a direct dep is essentially free.
+ignore = "0.4"
 landlock = "0.4"
 # NTFS junctions (Windows-only) — used for `node_modules` directory
 # links so installs work without Developer Mode or admin rights.
