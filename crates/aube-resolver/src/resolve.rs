@@ -115,7 +115,7 @@ impl Resolver {
         }
         let primer_covers_cutoff = published_by
             .as_deref()
-            .is_some_and(crate::primer::covers_cutoff);
+            .is_none_or(crate::primer::covers_cutoff);
 
         seed_direct_deps(
             manifests,
