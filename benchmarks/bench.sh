@@ -17,6 +17,11 @@ set -euo pipefail
 #   WARMUP       — warmup runs before timing (default: 1)
 #   RUNS         — timed runs per benchmark (default: 10)
 #   RESULTS_JSON — override the structured JSON output path
+#   BENCH_TOOLS  — comma-separated tools to include
+#                  (default: aube,bun,pnpm,npm,yarn)
+#   BENCH_SCENARIOS — comma-separated scenario keys to run
+#                     (default: all)
+#   BENCH_PHASES — set to 0 to skip aube phase timing samples
 #
 #   BENCH_HERMETIC=1 — route all registry traffic through a local
 #                      Verdaccio instance pre-populated from npmjs. This
@@ -29,6 +34,8 @@ set -euo pipefail
 #                      integer bytes/s). Defaults to `500mbit` in mise
 #                      tasks; routes traffic through a tiny token-bucket
 #                      proxy in front of Verdaccio.
+#   BENCH_LATENCY    — optional fixed response latency for the throttle
+#                      proxy. Defaults to `50ms` in mise tasks.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -41,6 +48,9 @@ BUN_BIN="$(command -v bun || true)"
 BENCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aube-bench.XXXXXX")"
 WARMUP="${WARMUP:-1}"
 RUNS="${RUNS:-10}"
+BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn}"
+BENCH_SCENARIOS="${BENCH_SCENARIOS:-gvs-warm,gvs-cold,ci-warm,ci-cold,install-test,add}"
+BENCH_PHASES="${BENCH_PHASES:-1}"
 
 # ── Validation ──────────────────────────────────────────────────────────────
 
@@ -58,9 +68,10 @@ fi
 # ── Optional hermetic registry ─────────────────────────────────────────────
 # BENCH_HERMETIC=1 routes all registry traffic through a local
 # Verdaccio instance (populated from npmjs on first run, offline after).
-# BENCH_BANDWIDTH=<rate> puts a throttling proxy in front so cold-cache
-# numbers reflect a simulated internet link rather than loopback disk
-# speed. See benchmarks/hermetic.bash for the lifecycle details.
+# BENCH_BANDWIDTH=<rate> and BENCH_LATENCY=<delay> put a throttling
+# proxy in front so cold-cache numbers reflect a simulated internet
+# link rather than loopback disk speed. See benchmarks/hermetic.bash
+# for the lifecycle details.
 
 BENCH_REGISTRY_URL=""
 if [ "${BENCH_HERMETIC:-0}" = "1" ]; then
@@ -85,6 +96,10 @@ TOOL_CACHES=()
 
 register_tool() {
 	local name=$1 bin=$2
+	case ",$BENCH_TOOLS," in
+	*,"$name",*) ;;
+	*) return ;;
+	esac
 	if [ -z "$bin" ] || [ ! -x "$bin" ]; then
 		echo "warning: $name not found on \$PATH — skipping" >&2
 		return
@@ -95,6 +110,17 @@ register_tool() {
 	TOOL_HOMES+=("$BENCH_DIR/home-$name")
 	TOOL_STORES+=("$BENCH_DIR/store-$name")
 	TOOL_CACHES+=("$BENCH_DIR/cache-$name")
+}
+
+run_scenario() {
+	local name=$1
+	case ",$BENCH_SCENARIOS," in
+	*,"$name",*) ;;
+	*) return ;;
+	esac
+
+	shift
+	"$@"
 }
 
 # Order matters for the console output; keep aube first so the
@@ -523,7 +549,7 @@ COLD_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube
 
 echo ""
 echo "━━━ Benchmark 1: Fresh install (warm cache) ━━━"
-run_bench "gvs-warm" "$WARM_PREP"
+run_scenario "gvs-warm" run_bench "gvs-warm" "$WARM_PREP"
 
 # ── Benchmark 2: Fresh install, cold cache ─────────────────────────────────
 # Lockfile present, but store and cache are empty.
@@ -531,7 +557,7 @@ run_bench "gvs-warm" "$WARM_PREP"
 
 echo ""
 echo "━━━ Benchmark 2: Fresh install (cold cache) ━━━"
-run_bench "gvs-cold" "$COLD_PREP"
+run_scenario "gvs-cold" run_bench "gvs-cold" "$COLD_PREP"
 
 # ── Benchmark 3: CI install, warm cache ────────────────────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
@@ -540,7 +566,7 @@ run_bench "gvs-cold" "$COLD_PREP"
 
 echo ""
 echo "━━━ Benchmark 3: CI install (warm cache, GVS disabled) ━━━"
-run_bench "ci-warm" "$WARM_PREP"
+run_scenario "ci-warm" run_bench "ci-warm" "$WARM_PREP"
 
 # ── Benchmark 4: CI install, cold cache ────────────────────────────────────
 # Lockfile present, but store and cache are empty.
@@ -549,7 +575,7 @@ run_bench "ci-warm" "$WARM_PREP"
 
 echo ""
 echo "━━━ Benchmark 4: CI install (cold cache, GVS disabled) ━━━"
-run_bench "ci-cold" "$COLD_PREP"
+run_scenario "ci-cold" run_bench "ci-cold" "$COLD_PREP"
 
 # ── Aube phase timing sample ───────────────────────────────────────────────
 # Hyperfine owns stdout/stderr and times whole commands. For attribution,
@@ -559,10 +585,12 @@ run_bench "ci-cold" "$COLD_PREP"
 
 echo ""
 echo "━━━ Aube install phase timings ━━━"
-run_aube_phase_bench "gvs-warm" "$WARM_PREP"
-run_aube_phase_bench "gvs-cold" "$COLD_PREP"
-run_aube_phase_bench "ci-warm" "$WARM_PREP"
-run_aube_phase_bench "ci-cold" "$COLD_PREP"
+if [ "$BENCH_PHASES" != "0" ]; then
+	run_scenario "gvs-warm" run_aube_phase_bench "gvs-warm" "$WARM_PREP"
+	run_scenario "gvs-cold" run_aube_phase_bench "gvs-cold" "$COLD_PREP"
+	run_scenario "ci-warm" run_aube_phase_bench "ci-warm" "$WARM_PREP"
+	run_scenario "ci-cold" run_aube_phase_bench "ci-cold" "$COLD_PREP"
+fi
 
 # ── Benchmark 5: install + run test (developer loop) ───────────────────────
 # Warm store+cache, lockfile present, node_modules *already* populated.
@@ -575,7 +603,7 @@ run_aube_phase_bench "ci-cold" "$COLD_PREP"
 
 echo ""
 echo "━━━ Benchmark 5: install + run test (already installed) ━━━"
-run_bench_preinstall "install-test"
+run_scenario "install-test" run_bench_preinstall "install-test"
 
 # ── Benchmark 6: Add dependency ────────────────────────────────────────────
 # Lockfile present, add a new dependency to trigger re-resolution.
@@ -586,7 +614,7 @@ run_bench_preinstall "install-test"
 
 echo ""
 echo "━━━ Benchmark 6: Add dependency ━━━"
-run_bench "add" \
+run_scenario "add" run_bench "add" \
 	"$WARM_PREP && cp $BENCH_DIR/original-package.json {project}/package.json"
 
 # ── Summary ────────────────────────────────────────────────────────────────
@@ -599,7 +627,7 @@ TOOLS_CSV=$(
 	IFS=,
 	echo "${TOOLS[*]}"
 )
-BENCH_TOOLS="$TOOLS_CSV" node "$SCRIPT_DIR/generate-results.js" "$BENCH_DIR" "$RESULTS_MD"
+BENCH_TOOLS="$TOOLS_CSV" BENCH_SCENARIOS="$BENCH_SCENARIOS" node "$SCRIPT_DIR/generate-results.js" "$BENCH_DIR" "$RESULTS_MD"
 if [ -s "$PHASES_FILE" ]; then
 	echo ""
 	node "$SCRIPT_DIR/generate-phase-results.mjs" "$PHASES_FILE" "$BENCH_DIR/aube-install-phases.md"

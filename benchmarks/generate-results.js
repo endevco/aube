@@ -30,6 +30,12 @@ const benchmarks = [
   ['install-test', 'npm install && npm run test'],
   ['add', 'Add dependency'],
 ]
+const SELECTED_BENCHMARKS = new Set(
+  (process.env.BENCH_SCENARIOS || benchmarks.map(([name]) => name).join(','))
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+)
 
 const TOOLS = (process.env.BENCH_TOOLS || 'aube,pnpm')
   .split(',')
@@ -110,7 +116,7 @@ const json = {
   rows: [],
 }
 
-benchmarks.forEach(([name, label], i) => {
+benchmarks.filter(([name]) => SELECTED_BENCHMARKS.has(name)).forEach(([name, label], i) => {
   const results = {}
   for (const tool of TOOLS) {
     results[tool] = readResult(benchDir, name, tool)
