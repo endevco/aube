@@ -154,6 +154,28 @@ JSON
 	assert_output --partial "Hello world!"
 }
 
+@test "aube add: a top-level bin can require a sibling top-level package" {
+	# Ported from pnpm/test/install/misc.ts:190 ('top-level packages should
+	# find the plugins they use'). Uses the @pnpm.e2e/pkg-that-uses-plugins
+	# and @pnpm.e2e/plugin-example fixtures from test/registry/storage/.
+	# pnpm runs `npm test`; we use `aube run test` to keep the assertion
+	# purely about aube's resolution wiring for top-level deps.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-top-level-plugins",
+  "version": "1.0.0",
+  "scripts": { "test": "pkg-that-uses-plugins" }
+}
+JSON
+
+	run aube add @pnpm.e2e/pkg-that-uses-plugins @pnpm.e2e/plugin-example
+	assert_success
+
+	run aube run test
+	assert_success
+	assert_output --partial "My plugin is @pnpm.e2e/plugin-example"
+}
+
 @test "aube add: creates package.json if there is none" {
 	# Ported from pnpm/test/install/misc.ts:233 ('create a package.json
 	# if there is none'). pnpm `install <pkg>` ≈ aube `add <pkg>`.
