@@ -55,8 +55,9 @@ JSON
 
 	run --separate-stderr aube --use-stderr add is-odd
 	assert_success
-	[ -z "$output" ]
-	[[ "$stderr" == *"is-odd"* ]]
+	assert [ -z "$output" ]
+	# `assert` can't wrap `[[ ... ]]` (bash keyword, not a command), so use grep.
+	assert grep -qF "is-odd" <<<"$stderr"
 }
 
 @test "aube add: lockfile=false in pnpm-workspace.yaml suppresses aube-lock.yaml" {
@@ -75,7 +76,7 @@ YAML
 	run aube add is-odd
 	assert_success
 	assert_file_exists node_modules/is-odd/index.js
-	assert [ ! -e aube-lock.yaml ]
+	assert_file_not_exists aube-lock.yaml
 }
 
 @test "aube install --prefix: runs install in the named subdirectory" {
