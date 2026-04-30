@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DEV_TOP: usize = 100;
-const RELEASE_TOP: usize = 1000;
+const RELEASE_TOP: usize = 2000;
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Deserialize)]
 struct Seed {
