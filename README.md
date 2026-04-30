@@ -258,12 +258,10 @@ Some pnpm commands are intentionally out of scope. Runtime-management commands s
 ## CI
 
 <p>
-  <a href="https://buildkite.com">
-    <img src="assets/buildkite-logo.svg" alt="Buildkite" width="180">
+  <a href="https://namespace.so">
+    <img src="assets/namespace-logo.svg" alt="Namespace" width="64">
   </a>
 </p>
-
-Thanks to [Buildkite](https://buildkite.com) for providing CI for aube.
 
 Thanks to [Namespace](https://namespace.so) for providing GitHub Actions runners and caching for aube.
 
