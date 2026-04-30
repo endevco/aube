@@ -136,9 +136,12 @@ YAML
 }
 
 @test "aube add --save-catalog: never adds a workspace: dep to the catalog" {
-	skip "aube add can't parse <pkg>@workspace:* CLI specs (parses workspace:* as a semver range)"
 	# Ported from pnpm/test/saveCatalog.ts:333
+	# Adapted: root package.json added (aube requires it).
 
+	cat >package.json <<'JSON'
+{ "name": "save-catalog-workspace-spec", "version": "0.0.0", "private": true }
+JSON
 	mkdir -p project-0 project-1
 	cat >project-0/package.json <<'JSON'
 { "name": "project-0", "version": "0.0.0" }

@@ -559,8 +559,15 @@ async fn update_manifest_for_add(
         })
         .collect::<miette::Result<Vec<_>>>()?;
 
+    // Skip packument fetches for `workspace:*` / `workspace:^` /
+    // `workspace:<range>` specs — they resolve against the local
+    // workspace, not the registry. Without this guard the parallel
+    // fetch below would 404 on the workspace package name.
     let mut handles = Vec::new();
     for spec in &parsed {
+        if aube_util::pkg::is_workspace_spec(&spec.range) {
+            continue;
+        }
         let client = client.clone();
         let name = spec.name.clone();
         let handle = tokio::spawn(async move {
@@ -581,8 +588,25 @@ async fn update_manifest_for_add(
 
     // Resolve each package and update manifest.
     for (spec, orig) in parsed.iter().zip(packages.iter()) {
-        let packument = packuments.get(&spec.name).unwrap();
         let pkg_name_for_manifest = spec.alias.as_deref().unwrap_or(&spec.name);
+
+        // Workspace-protocol specs (`pkg@workspace:*`, `pkg@workspace:^`,
+        // `pkg@workspace:1.2.0`) bypass the registry path entirely:
+        // resolve against the local workspace, write the user's spec
+        // verbatim to the manifest, and skip catalog logic (workspace
+        // deps are never catalogized).
+        if aube_util::pkg::is_workspace_spec(&spec.range) {
+            apply_workspace_spec_to_manifest(
+                cwd,
+                &mut manifest,
+                spec,
+                pkg_name_for_manifest,
+                &opts,
+            )?;
+            continue;
+        }
+
+        let packument = packuments.get(&spec.name).unwrap();
 
         eprintln!("Resolving {}@{}...", spec.name, spec.range);
 
@@ -802,6 +826,91 @@ async fn update_manifest_for_add(
         super::catalogs::upsert_catalog_entries(&yaml_path, &catalog_upserts)?;
     }
 
+    Ok(())
+}
+
+/// Resolve a `pkg@workspace:<range>` spec against the local workspace
+/// and write the user's spec verbatim into the manifest. Skips the
+/// registry path entirely — workspace specs only mean anything inside
+/// a workspace, so we look the package up in the workspace's
+/// `find_workspace_packages` set and error out clearly if it's missing.
+///
+/// Mirrors pnpm's `pnpm add foo@workspace:*` shape: the manifest entry
+/// keeps the literal `workspace:*` (or `workspace:^`, `workspace:~`,
+/// `workspace:1.2.0`, …) the user typed, which the install pipeline
+/// later resolves to a `link:../foo` symlink.
+fn apply_workspace_spec_to_manifest(
+    cwd: &Path,
+    manifest: &mut aube_manifest::PackageJson,
+    spec: &ParsedPkgSpec,
+    pkg_name_for_manifest: &str,
+    opts: &AddManifestOptions,
+) -> miette::Result<()> {
+    // Walk up to the workspace root — the cwd may be a subpackage,
+    // and `find_workspace_packages` is anchored at the root yaml. Fall
+    // back to cwd so a single-package project with no workspace yaml
+    // still surfaces a useful error from the package-lookup below.
+    let workspace_root = crate::dirs::find_workspace_yaml_root(cwd)
+        .or_else(|| crate::dirs::find_workspace_root(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let workspace_pkg_dirs = aube_workspace::find_workspace_packages(&workspace_root)
+        .into_diagnostic()
+        .wrap_err("failed to discover workspace packages")?;
+
+    // Match by the `name` field in each workspace package's manifest,
+    // not by directory name — pnpm semantics. Skip dirs whose
+    // package.json is unreadable.
+    let mut found_version: Option<String> = None;
+    for dir in &workspace_pkg_dirs {
+        let pkg_manifest = match aube_manifest::PackageJson::from_path(&dir.join("package.json")) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if pkg_manifest.name.as_deref() == Some(spec.name.as_str()) {
+            found_version = Some(pkg_manifest.version.unwrap_or_else(|| "0.0.0".to_string()));
+            break;
+        }
+    }
+    let Some(workspace_version) = found_version else {
+        return Err(miette!(
+            "no workspace package named `{}` found at or above {}; \
+             `workspace:` specs only resolve against local workspace packages",
+            spec.name,
+            workspace_root.display()
+        ));
+    };
+
+    eprintln!(
+        "  + {pkg_name_for_manifest}@{workspace_version} (specifier: {})",
+        spec.range
+    );
+
+    // Mirror the duplicate-section scrub the registry path does.
+    manifest.dependencies.remove(pkg_name_for_manifest);
+    manifest.optional_dependencies.remove(pkg_name_for_manifest);
+    if !opts.save_peer {
+        manifest.peer_dependencies.remove(pkg_name_for_manifest);
+    }
+    if !(opts.save_peer && opts.save_dev) {
+        manifest.dev_dependencies.remove(pkg_name_for_manifest);
+    }
+
+    let dep_name = pkg_name_for_manifest.to_string();
+    let specifier = spec.range.clone();
+    if opts.save_peer {
+        manifest
+            .peer_dependencies
+            .insert(dep_name.clone(), specifier.clone());
+        if opts.save_dev {
+            manifest.dev_dependencies.insert(dep_name, specifier);
+        }
+    } else if opts.save_dev {
+        manifest.dev_dependencies.insert(dep_name, specifier);
+    } else if opts.save_optional {
+        manifest.optional_dependencies.insert(dep_name, specifier);
+    } else {
+        manifest.dependencies.insert(dep_name, specifier);
+    }
     Ok(())
 }
 
