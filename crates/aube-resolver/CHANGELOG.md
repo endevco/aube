@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2](https://github.com/endevco/aube/compare/aube-resolver-v1.5.1...aube-resolver-v1.5.2) - 2026-04-30
+
+### Fixed
+
+- *(resolver)* detect host libc via /proc/self/maps ([#398](https://github.com/endevco/aube/pull/398))
+- *(install)* fetch hosted git deps over https, not ssh ([#394](https://github.com/endevco/aube/pull/394))
+
+### Other
+
+- *(resolver)* add bundled metadata primer ([#397](https://github.com/endevco/aube/pull/397))
+- thank Namespace for GitHub Actions runner support ([#412](https://github.com/endevco/aube/pull/412))
+- *(resolver)* fetch full metadata for age-gated resolves ([#391](https://github.com/endevco/aube/pull/391))
+- refresh benchmarks for v1.5.1 ([#392](https://github.com/endevco/aube/pull/392))
+
 ## [1.5.0](https://github.com/endevco/aube/compare/aube-resolver-v1.4.0...aube-resolver-v1.5.0) - 2026-04-29
 
 ### Fixed

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2](https://github.com/endevco/aube/compare/aube-manifest-v1.5.1...aube-manifest-v1.5.2) - 2026-04-30
+
+### Other
+
+- thank Namespace for GitHub Actions runner support ([#412](https://github.com/endevco/aube/pull/412))
+- refresh benchmarks for v1.5.1 ([#392](https://github.com/endevco/aube/pull/392))
+
 ## [1.5.0](https://github.com/endevco/aube/compare/aube-manifest-v1.4.0...aube-manifest-v1.5.0) - 2026-04-29
 
 ### Fixed
