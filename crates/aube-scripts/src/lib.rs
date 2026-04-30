@@ -414,13 +414,34 @@ pub fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
 /// (`<name>/<version> <os> <arch>`) so dep build scripts that sniff
 /// the env var to detect the running PM (e.g. `husky`,
 /// `unrs-resolver`) recognize aube without falling back to npm-mode.
+/// OS/arch use Node's `process.platform` / `process.arch` vocabulary
+/// (`darwin`/`linux`/`win32`, `x64`/`arm64`), not Rust's native
+/// `std::env::consts::{OS,ARCH}` values, so tools that parse the full
+/// UA string identify the platform the same way npm/yarn/pnpm do.
 pub fn aube_user_agent() -> String {
     format!(
         "aube/{} {} {}",
         env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
+        node_platform(),
+        node_arch(),
     )
+}
+
+fn node_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    }
+}
+
+fn node_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "ia32",
+        other => other,
+    }
 }
 
 fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &ScriptSettings) {
@@ -900,6 +921,38 @@ pub enum Error {
     Spawn(String, String),
     #[error("script `{script}` exited with code {code:?}")]
     NonZeroExit { script: String, code: Option<i32> },
+}
+
+#[cfg(test)]
+mod user_agent_tests {
+    use super::*;
+
+    #[test]
+    fn user_agent_uses_node_style_platform_and_arch() {
+        let ua = aube_user_agent();
+        // Format: "aube/<version> <platform> <arch>"
+        assert!(ua.starts_with("aube/"), "unexpected prefix: {ua}");
+        let parts: Vec<&str> = ua.split(' ').collect();
+        assert_eq!(parts.len(), 3, "expected 3 space-separated fields: {ua}");
+        // Platform must be a Node-style token, not Rust's `macos`/`windows`.
+        let platform = parts[1];
+        assert!(
+            matches!(
+                platform,
+                "darwin" | "linux" | "win32" | "freebsd" | "openbsd" | "netbsd" | "dragonfly"
+            ),
+            "platform `{platform}` should follow Node's `process.platform` vocabulary"
+        );
+        // Arch must be a Node-style token, not Rust's `x86_64`/`aarch64`.
+        let arch = parts[2];
+        assert!(
+            matches!(
+                arch,
+                "x64" | "arm64" | "ia32" | "arm" | "ppc64" | "s390x" | "mips" | "mipsel"
+            ),
+            "arch `{arch}` should follow Node's `process.arch` vocabulary"
+        );
+    }
 }
 
 #[cfg(test)]
