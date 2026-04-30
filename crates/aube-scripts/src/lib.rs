@@ -436,10 +436,19 @@ fn node_platform() -> &'static str {
 }
 
 fn node_arch() -> &'static str {
+    // Mappings from Rust's `std::env::consts::ARCH` to Node's
+    // `process.arch`. Common arches first; the rare ones at the bottom
+    // exist so the test below stays a real guarantee on every host
+    // Rust ships, not just x64/arm64. Pass-through covers `arm`,
+    // `mips`, `riscv64`, `s390x` — those tokens match between the two
+    // vocabularies.
     match std::env::consts::ARCH {
         "x86_64" => "x64",
         "aarch64" => "arm64",
         "x86" => "ia32",
+        "powerpc" => "ppc",
+        "powerpc64" => "ppc64",
+        "loongarch64" => "loong64",
         other => other,
     }
 }
@@ -944,11 +953,22 @@ mod user_agent_tests {
             "platform `{platform}` should follow Node's `process.platform` vocabulary"
         );
         // Arch must be a Node-style token, not Rust's `x86_64`/`aarch64`.
+        // Allowlist is the union of mapped outputs (`node_arch`) and the
+        // pass-through tokens that already match Node's vocabulary.
         let arch = parts[2];
         assert!(
             matches!(
                 arch,
-                "x64" | "arm64" | "ia32" | "arm" | "ppc64" | "s390x" | "mips" | "mipsel"
+                "x64"
+                    | "arm64"
+                    | "ia32"
+                    | "arm"
+                    | "ppc"
+                    | "ppc64"
+                    | "loong64"
+                    | "mips"
+                    | "riscv64"
+                    | "s390x"
             ),
             "arch `{arch}` should follow Node's `process.arch` vocabulary"
         );
