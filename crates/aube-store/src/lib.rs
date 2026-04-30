@@ -1666,6 +1666,250 @@ fn canonicalize_clone_dir(
     }
 }
 
+/// Extract a codeload-style HTTPS tarball (e.g. the bytes of a GET to
+/// `https://codeload.github.com/<owner>/<repo>/tar.gz/<sha>`) into a
+/// deterministic per-(url, commit) cache directory and return a path
+/// shaped like `git_shallow_clone`'s output: the extracted tree at
+/// the top level, with the `<owner>-<repo>-<sha>/` wrapper component
+/// codeload adds stripped off so callers can join `subpath` and read
+/// `package.json` exactly the same way they do for a clone.
+///
+/// `commit` must be a 40-char SHA — codeload tarballs do not embed
+/// `.git/`, so there is no post-extraction `rev-parse HEAD` to verify
+/// the extracted tree is the requested commit. The lockfile resolver
+/// (or an upstream `git ls-remote`) is responsible for pinning a SHA
+/// before this is called. The returned `head_sha` is `commit`
+/// lowercased.
+///
+/// Cache layout uses a separate `aube-codeload-` prefix from the
+/// `aube-git-` prefix `git_shallow_clone` writes, so a per-dep
+/// fallback from one path to the other doesn't trip on the other
+/// caller's marker files.
+pub fn extract_codeload_tarball(
+    bytes: &[u8],
+    url: &str,
+    commit: &str,
+) -> Result<(PathBuf, String), Error> {
+    use std::io::Read;
+    validate_git_positional(url, "git url")?;
+    validate_git_positional(commit, "git commit")?;
+    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::Git(format!(
+            "extract_codeload_tarball: commit must be a full 40-char SHA, got {commit}"
+        )));
+    }
+    let head_sha = commit.to_ascii_lowercase();
+
+    let git_root = crate::dirs::cache_dir()
+        .map(|d| d.join("git"))
+        .unwrap_or_else(std::env::temp_dir);
+    std::fs::create_dir_all(&git_root).map_err(|e| Error::Io(git_root.clone(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&git_root, std::fs::Permissions::from_mode(0o700))
+        {
+            warn!(
+                "failed to chmod 0700 {}: {e}. Git scratch dir may be world-accessible, check filesystem permissions",
+                git_root.display()
+            );
+        }
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(url.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(head_sha.as_bytes());
+    let digest = hasher.finalize();
+    let key: String = digest
+        .as_bytes()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let short = head_sha[..12].to_string();
+    let target = git_root.join(format!("aube-codeload-{key}-{short}"));
+
+    // Reuse a prior successful extraction for this exact (url, commit).
+    // The atomic-rename pattern below makes a populated `target` always
+    // a complete tree — no half-extracted state to worry about.
+    if target.is_dir() {
+        return Ok((target, head_sha));
+    }
+
+    // Extract into a scratch dir and atomic-rename into place. Same
+    // failure-recovery and concurrent-install reasoning as
+    // `git_shallow_clone`'s scratch dance.
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("aube-codeload-{key}-{short}."))
+        .tempdir_in(&git_root)
+        .map_err(|e| Error::Io(git_root.clone(), e))?
+        .keep();
+
+    let extract_into = |target: &Path| -> Result<(), Error> {
+        let gz = flate2::read::GzDecoder::new(bytes);
+        let capped = CappedReader::new(gz, MAX_TARBALL_DECOMPRESSED_BYTES);
+        let buffered = std::io::BufReader::with_capacity(256 * 1024, capped);
+        let mut archive = tar::Archive::new(buffered);
+        let mut entries_seen: usize = 0;
+        for entry in archive.entries().map_err(|e| Error::Tar(e.to_string()))? {
+            entries_seen += 1;
+            if entries_seen > MAX_TARBALL_ENTRIES {
+                return Err(Error::Tar(format!(
+                    "tarball exceeds entry cap of {MAX_TARBALL_ENTRIES}"
+                )));
+            }
+            let mut entry = entry.map_err(|e| Error::Tar(e.to_string()))?;
+            let entry_type = entry.header().entry_type();
+            // Codeload archives carry directories, regular files, and
+            // (rarely) symlinks. Reject everything else for the same
+            // reason `import_tarball` does — the linker imports this
+            // tree into the store and we don't want the same node-tar
+            // CVE class biting us through the git path.
+            if matches!(
+                entry_type,
+                tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+            ) {
+                continue;
+            }
+            let raw_path = entry
+                .path()
+                .map_err(|e| Error::Tar(e.to_string()))?
+                .to_path_buf();
+            // Strip the leading `<owner>-<repo>-<sha>/` wrapper
+            // codeload prepends. If an entry is at depth 0 (the
+            // wrapper directory itself) just create the target dir;
+            // if at depth >= 1 lop off the first component.
+            let mut comps = raw_path.components();
+            let _wrapper = comps.next();
+            let rel: PathBuf = comps.collect();
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            // Reject any path that would escape the target (`..`,
+            // absolute) — `tar::Entry::unpack` does this internally
+            // but we're materializing manually so it's our job.
+            for c in rel.components() {
+                use std::path::Component;
+                if !matches!(c, Component::Normal(_)) {
+                    return Err(Error::Tar(format!(
+                        "tarball entry has unsafe path component: {}",
+                        raw_path.display()
+                    )));
+                }
+            }
+            let dest = target.join(&rel);
+            if entry_type.is_dir() {
+                std::fs::create_dir_all(&dest).map_err(|e| Error::Io(dest.clone(), e))?;
+                continue;
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+            }
+            match entry_type {
+                tar::EntryType::Regular | tar::EntryType::Continuous => {
+                    let declared = entry
+                        .header()
+                        .size()
+                        .map_err(|e| Error::Tar(e.to_string()))?;
+                    if declared > MAX_TARBALL_ENTRY_BYTES {
+                        return Err(Error::Tar(format!(
+                            "tarball entry exceeds per-entry cap: {declared} bytes > {MAX_TARBALL_ENTRY_BYTES}"
+                        )));
+                    }
+                    let mut out =
+                        std::fs::File::create(&dest).map_err(|e| Error::Io(dest.clone(), e))?;
+                    let mut limited = entry.by_ref().take(MAX_TARBALL_ENTRY_BYTES);
+                    std::io::copy(&mut limited, &mut out)
+                        .map_err(|e| Error::Io(dest.clone(), e))?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(mode) = entry.header().mode() {
+                            // Mask to 0o755 / 0o644 — codeload archives
+                            // sometimes carry executable bits; preserve
+                            // them so build scripts work, but never
+                            // honor setuid/setgid/sticky.
+                            let safe = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
+                            let _ = std::fs::set_permissions(
+                                &dest,
+                                std::fs::Permissions::from_mode(safe),
+                            );
+                        }
+                    }
+                }
+                tar::EntryType::Symlink => {
+                    let link_target = entry
+                        .link_name()
+                        .map_err(|e| Error::Tar(e.to_string()))?
+                        .ok_or_else(|| Error::Tar("symlink without target".into()))?
+                        .into_owned();
+                    // Reject absolute or `..`-laden symlink targets so
+                    // a hostile archive can't plant a link out of the
+                    // extraction tree. The store-import pass would
+                    // then resolve the link inside the prepared dir
+                    // and read whatever the attacker pointed at.
+                    if link_target.is_absolute()
+                        || link_target.components().any(|c| {
+                            matches!(
+                                c,
+                                std::path::Component::ParentDir | std::path::Component::RootDir
+                            )
+                        })
+                    {
+                        return Err(Error::Tar(format!(
+                            "tarball symlink {} -> {} escapes target",
+                            raw_path.display(),
+                            link_target.display()
+                        )));
+                    }
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&link_target, &dest)
+                        .map_err(|e| Error::Io(dest.clone(), e))?;
+                    #[cfg(windows)]
+                    {
+                        // Windows symlink creation requires elevated
+                        // privileges; a git tarball that smuggles
+                        // symlinks shouldn't break install on Windows.
+                        let _ = link_target;
+                        let _ = dest;
+                    }
+                }
+                _ => {
+                    return Err(Error::Tar(format!(
+                        "tarball entry type {entry_type:?} is not allowed"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    };
+
+    if let Err(e) = extract_into(&scratch) {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Err(e);
+    }
+
+    match aube_util::fs_atomic::rename_with_retry(&scratch, &target) {
+        Ok(()) => Ok((target, head_sha)),
+        Err(_) => {
+            // Two concurrent extracts of the same (url, commit) — the
+            // loser sees `target` already populated. Drop the loser's
+            // scratch and reuse the winner's directory.
+            if target.is_dir() {
+                let _ = std::fs::remove_dir_all(&scratch);
+                return Ok((target, head_sha));
+            }
+            let _ = std::fs::remove_dir_all(&target);
+            aube_util::fs_atomic::rename_with_retry(&scratch, &target).map_err(|e| {
+                let _ = std::fs::remove_dir_all(&scratch);
+                Error::Git(format!("rename codeload extract into place: {e}"))
+            })?;
+            Ok((target, head_sha))
+        }
+    }
+}
+
 fn git_commit_matches(actual: &str, requested: &str) -> bool {
     actual == requested
         || (requested.len() >= 7
@@ -2390,6 +2634,113 @@ mod tests {
         assert!(!git_commit_matches(full, "0b6ea5"));
         assert!(!git_commit_matches(full, "abc1234"));
         assert!(!git_commit_matches(full, "main"));
+    }
+
+    /// Build a minimal codeload-style `.tar.gz`: a wrapper directory
+    /// `<wrapper>/` followed by a few file entries inside it. Mirrors
+    /// the layout `https://codeload.github.com/<owner>/<repo>/tar.gz/<sha>`
+    /// produces in the wild.
+    fn build_codeload_tarball(wrapper: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut ar = tar::Builder::new(gz);
+        let mut dh = tar::Header::new_gnu();
+        dh.set_path(format!("{wrapper}/")).unwrap();
+        dh.set_size(0);
+        dh.set_mode(0o755);
+        dh.set_entry_type(tar::EntryType::Directory);
+        dh.set_cksum();
+        ar.append(&dh, std::io::empty()).unwrap();
+        for (path, content) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_path(format!("{wrapper}/{path}")).unwrap();
+            h.set_size(content.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            ar.append(&h, *content).unwrap();
+        }
+        let gz = ar.into_inner().unwrap();
+        gz.finish().unwrap()
+    }
+
+    #[test]
+    fn extract_codeload_tarball_strips_wrapper_and_caches() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Sandbox `cache_dir()` so the test cannot pollute the user's
+        // real `$XDG_CACHE_HOME/aube/`.
+        // SAFETY: tests run serially within this binary; `set_var`
+        // here only races with parallel `cargo test --test-threads`,
+        // and a contended XDG_CACHE_HOME is the worst-case outcome
+        // (test reads from a sibling test's cache dir).
+        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
+
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let wrapper = format!("owner-repo-{}", &sha[..7]);
+        let bytes = build_codeload_tarball(
+            &wrapper,
+            &[
+                ("package.json", br#"{"name":"x","version":"0.0.1"}"#),
+                ("src/index.js", b"module.exports = 1;\n"),
+            ],
+        );
+        let url = "https://github.com/owner/repo.git";
+        let (target, head) = extract_codeload_tarball(&bytes, url, sha).unwrap();
+        assert_eq!(head, sha);
+        // Wrapper component is stripped — `package.json` lives at the
+        // target root, not under `target/<wrapper>/package.json`.
+        assert!(target.join("package.json").is_file());
+        assert!(target.join("src/index.js").is_file());
+        assert!(!target.join(&wrapper).exists());
+
+        // Second call with the same (url, commit) reuses the cached
+        // directory rather than re-extracting.
+        let (target2, _) = extract_codeload_tarball(&bytes, url, sha).unwrap();
+        assert_eq!(target, target2);
+    }
+
+    #[test]
+    fn extract_codeload_tarball_rejects_unsafe_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
+        let sha = "1111111111111111111111111111111111111111";
+        // The tar crate's safe `set_path` rejects `..` paths up front,
+        // so a crafted archive must be assembled with the header name
+        // field written directly. This mirrors what a hostile
+        // codeload mirror could serve, and verifies our component
+        // check catches it before any byte lands on disk.
+        let body = b"pwn";
+        let mut h = tar::Header::new_gnu();
+        h.set_size(body.len() as u64);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        // GNU header `name[100]` — write directly to skip set_path's
+        // safety filter.
+        let raw = b"wrapper/../escape.txt";
+        let name = &mut h.as_gnu_mut().unwrap().name;
+        name[..raw.len()].copy_from_slice(raw);
+        h.set_cksum();
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut ar = tar::Builder::new(gz);
+        ar.append(&h, &body[..]).unwrap();
+        let bytes = ar.into_inner().unwrap().finish().unwrap();
+        let err = extract_codeload_tarball(&bytes, "https://example.com/r.git", sha).unwrap_err();
+        assert!(
+            matches!(err, Error::Tar(ref m) if m.contains("unsafe")),
+            "expected Error::Tar with unsafe-path message, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn extract_codeload_tarball_rejects_short_commit() {
+        // The cache layout assumes `commit` is the canonical 40-hex
+        // SHA, both for the cache key and as the returned head_sha.
+        // Branch / tag / abbreviated values must be pinned by an
+        // upstream `git ls-remote` before reaching here.
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
+        let bytes = build_codeload_tarball("wrapper", &[("ok", b"ok")]);
+        let err =
+            extract_codeload_tarball(&bytes, "https://example.com/r.git", "abc1234").unwrap_err();
+        assert!(matches!(err, Error::Git(ref m) if m.contains("40-char")));
     }
 
     #[test]

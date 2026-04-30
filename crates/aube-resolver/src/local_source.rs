@@ -222,70 +222,178 @@ pub(crate) fn should_block_exotic_subdep(
 }
 
 /// Turn a raw `GitSource` (committish parsed from the user's
-/// specifier, empty `resolved`) into a fully-resolved one by running
-/// `git ls-remote`, then shallow-cloning to read the package's own
-/// `package.json` for version + transitive deps. The clone lives in
-/// a commit-keyed temp directory; install-time materialization will
-/// either reuse the same directory or re-run the shallow clone.
+/// specifier, empty `resolved`) into a fully-resolved one by either
+/// fetching a hosted-tarball over HTTPS (github / gitlab / bitbucket
+/// public reads, matching what npm `pacote` and pnpm
+/// `gitHostedTarballFetcher` do) or, for any other host or any
+/// codeload-unreachable case, falling back to `git ls-remote` +
+/// shallow clone. The materialized tree lives in a commit-keyed temp
+/// directory shared with install-time materialization, so the same
+/// extraction or clone is never repeated within a single `aube
+/// install`.
+///
+/// Hosted-tarball routing matches npm/pnpm semantics: the lockfile's
+/// stored `url` is canonical-identity only — even when it carries an
+/// SSH form the user has no key for, we re-derive an HTTPS URL from
+/// the `(host, owner, repo)` tuple at fetch time. Returns the
+/// original URL unchanged in `LocalSource::Git.url` so a subsequent
+/// `aube install` produces the same lockfile bytes (cross-tool
+/// compat with pnpm / npm / yarn).
 pub(crate) async fn resolve_git_source(
     name: &str,
     git: &aube_lockfile::GitSource,
     shallow: bool,
+    client: Option<&RegistryClient>,
 ) -> Result<(LocalSource, String, BTreeMap<String, String>), Error> {
-    // `git ls-remote` and the shallow clone both shell out and do
-    // network I/O that can easily take multiple seconds. Running
-    // them inline on the tokio worker thread would block any
-    // concurrently-scheduled async work (registry HTTP calls,
-    // other resolve tasks). Hand the whole sync sequence — which
-    // has no borrows on the resolver's state — off to a blocking
-    // thread via `spawn_blocking`.
-    let url = git.url.clone();
+    let original_url = git.url.clone();
     let committish = git.committish.clone();
     let subpath = git.subpath.clone();
-    let name_owned = name.to_string();
+    let hosted = aube_lockfile::parse_hosted_git(&original_url);
+    // Use the HTTPS form when talking to git for hosted hosts — the
+    // lockfile-canonical `git+ssh://git@…` URL would dial SSH and
+    // fail for users with no `~/.ssh/`. Non-hosted URLs go through
+    // unchanged so SSH-only setups keep working.
+    let runtime_url = hosted
+        .as_ref()
+        .map(|h| h.https_url())
+        .unwrap_or_else(|| original_url.clone());
+
+    // Resolve the committish to a 40-char SHA. `git_resolve_ref`
+    // short-circuits on a SHA and shells `git ls-remote` for branch /
+    // tag / HEAD. Passing the rewritten HTTPS URL means hosted
+    // branch/tag refs are pinnable from a host with no SSH key
+    // configured.
+    let runtime_url_for_ref = runtime_url.clone();
+    let committish_for_ref = committish.clone();
+    let name_for_ref = name.to_string();
+    let resolved_sha = tokio::task::spawn_blocking(move || -> Result<String, Error> {
+        let seed = aube_store::git_resolve_ref(&runtime_url_for_ref, committish_for_ref.as_deref())
+            .map_err(|e| Error::Registry(name_for_ref.clone(), e.to_string()))?;
+        // Only full SHAs survive — abbreviated user-written prefixes
+        // come back unchanged from `git_resolve_ref` and need to fall
+        // through to the clone path so `git checkout <prefix>` can
+        // expand them.
+        Ok(seed)
+    })
+    .await
+    .map_err(|e| {
+        Error::Registry(
+            name.to_string(),
+            format!("git ls-remote task panicked: {e}"),
+        )
+    })??;
+
+    let codeload_url = hosted.as_ref().and_then(|h| h.tarball_url(&resolved_sha));
+
+    // Try the codeload fast path when applicable. `client` is None for
+    // resolve paths that don't have a registry client wired up
+    // (`aube import`'s lockfile-only flow); those just fall through.
+    if let (Some(c), Some(url_to_fetch)) = (client, codeload_url.as_deref()) {
+        match c.fetch_tarball_bytes(url_to_fetch).await {
+            Ok(bytes) => {
+                // Extract into the commit-keyed cache and read the
+                // (possibly subpath-scoped) `package.json` like the
+                // clone path does. Return the original lockfile URL
+                // in `LocalSource::Git.url` for cross-tool round-trip.
+                let bytes_vec = bytes.to_vec();
+                let url_for_extract = original_url.clone();
+                let sha_for_extract = resolved_sha.clone();
+                let subpath_for_extract = subpath.clone();
+                let name_for_extract = name.to_string();
+                let extracted = tokio::task::spawn_blocking(move || -> Result<_, Error> {
+                    let (clone_dir, resolved) = aube_store::extract_codeload_tarball(
+                        &bytes_vec,
+                        &url_for_extract,
+                        &sha_for_extract,
+                    )
+                    .map_err(|e| Error::Registry(name_for_extract.clone(), e.to_string()))?;
+                    let pkg_root = match &subpath_for_extract {
+                        Some(sub) => clone_dir.join(sub),
+                        None => clone_dir.clone(),
+                    };
+                    let manifest_bytes =
+                        std::fs::read(pkg_root.join("package.json")).map_err(|e| {
+                            let where_ = subpath_for_extract
+                                .as_deref()
+                                .map(|s| format!(" at /{s}"))
+                                .unwrap_or_default();
+                            Error::Registry(
+                                name_for_extract.clone(),
+                                format!("read package.json in codeload extract{where_}: {e}"),
+                            )
+                        })?;
+                    let pj: aube_manifest::PackageJson = serde_json::from_slice(&manifest_bytes)
+                        .map_err(|e| Error::Registry(name_for_extract.clone(), e.to_string()))?;
+                    let version = pj.version.unwrap_or_else(|| "0.0.0".to_string());
+                    Ok((resolved, version, pj.dependencies))
+                })
+                .await
+                .map_err(|e| {
+                    Error::Registry(name.to_string(), format!("codeload extract panicked: {e}"))
+                })??;
+                return Ok((
+                    LocalSource::Git(aube_lockfile::GitSource {
+                        url: original_url,
+                        committish,
+                        resolved: extracted.0,
+                        subpath,
+                    }),
+                    extracted.1,
+                    extracted.2,
+                ));
+            }
+            Err(e) => {
+                // Codeload 404s on private repos (it doesn't accept
+                // npm-registry auth) — fall through to `git
+                // clone`, which inherits the user's git credential
+                // helper / ssh keys for private access.
+                tracing::debug!(
+                    name,
+                    url = %aube_util::url::redact_url(url_to_fetch),
+                    "codeload fetch failed, falling back to git clone: {e}",
+                );
+            }
+        }
+    }
+
+    // Fallback: shallow git clone over the rewritten HTTPS URL (or the
+    // original URL for non-hosted hosts). Same `spawn_blocking` dance
+    // the original implementation used.
+    let runtime_url_for_clone = runtime_url;
+    let original_url_for_lockfile = original_url.clone();
+    let resolved_sha_for_clone = resolved_sha.clone();
+    let subpath_for_clone = subpath.clone();
+    let name_for_clone = name.to_string();
     let (local, version, deps) = tokio::task::spawn_blocking(move || -> Result<_, Error> {
-        // `git_resolve_ref` resolves branch / tag / HEAD names to a
-        // 40-char SHA via `ls-remote`, but passes hex prefixes (i.e.
-        // user-written abbreviated commit SHAs) through unchanged
-        // because abbreviated commits aren't advertised as refs. The
-        // canonical full SHA is recovered from `git_shallow_clone`'s
-        // post-checkout `rev-parse HEAD`, so the lockfile always
-        // pins the full form.
-        let resolve_seed = aube_store::git_resolve_ref(&url, committish.as_deref())
-            .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-        let (clone_dir, resolved) = aube_store::git_shallow_clone(&url, &resolve_seed, shallow)
-            .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-        // `&path:/<sub>` narrows the package root to a subdirectory
-        // of the cloned repo (pnpm-compatible). The manifest, version,
-        // and transitive deps all come from the subdir's
-        // `package.json`, not the repo root's.
-        let pkg_root = match &subpath {
+        let (clone_dir, resolved) =
+            aube_store::git_shallow_clone(&runtime_url_for_clone, &resolved_sha_for_clone, shallow)
+                .map_err(|e| Error::Registry(name_for_clone.clone(), e.to_string()))?;
+        let pkg_root = match &subpath_for_clone {
             Some(sub) => clone_dir.join(sub),
             None => clone_dir.clone(),
         };
         let manifest_bytes = std::fs::read(pkg_root.join("package.json")).map_err(|e| {
-            let where_ = subpath
+            let where_ = subpath_for_clone
                 .as_deref()
                 .map(|s| format!(" at /{s}"))
                 .unwrap_or_default();
             Error::Registry(
-                name_owned.clone(),
+                name_for_clone.clone(),
                 format!("read package.json in clone{where_}: {e}"),
             )
         })?;
         let pj: aube_manifest::PackageJson = serde_json::from_slice(&manifest_bytes)
-            .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+            .map_err(|e| Error::Registry(name_for_clone.clone(), e.to_string()))?;
         let version = pj.version.unwrap_or_else(|| "0.0.0".to_string());
-        let deps = pj.dependencies;
         Ok((
             LocalSource::Git(aube_lockfile::GitSource {
-                url,
+                url: original_url_for_lockfile,
                 committish,
                 resolved,
-                subpath,
+                subpath: subpath_for_clone,
             }),
             version,
-            deps,
+            pj.dependencies,
         ))
     })
     .await

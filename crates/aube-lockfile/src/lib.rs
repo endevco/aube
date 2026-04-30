@@ -453,6 +453,149 @@ pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>, Option<Stri
     Some((url, committish, subpath))
 }
 
+/// A git URL that maps to one of the three "hosted" providers npm /
+/// pnpm both special-case (github / gitlab / bitbucket). For these
+/// hosts a public read can be served as a flat HTTPS tarball over
+/// `codeload.github.com` (or each host's equivalent), bypassing `git`
+/// entirely. The lockfile's stored URL is canonical-identity only —
+/// pnpm and npm both re-derive the fetch URL from `(host, owner,
+/// repo)` on every install rather than dialing whatever scheme
+/// happens to be in `resolved:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedGit {
+    pub host: HostedGitHost,
+    pub owner: String,
+    pub repo: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedGitHost {
+    GitHub,
+    GitLab,
+    Bitbucket,
+}
+
+impl HostedGit {
+    /// `https://github.com/<owner>/<repo>.git` — the form `git fetch`
+    /// can dial without an SSH key. Used as the runtime fetch URL when
+    /// the lockfile's stored URL is `git+ssh://git@…` (npm canonical
+    /// identity) but the actual install host has no SSH configured.
+    pub fn https_url(&self) -> String {
+        let host = self.host.host_domain();
+        format!("https://{host}/{}/{}.git", self.owner, self.repo)
+    }
+
+    /// `https://codeload.github.com/<owner>/<repo>/tar.gz/<sha>` (or
+    /// each host's equivalent) — a flat HTTPS tarball at the given
+    /// commit. Returns `None` unless `committish` is a 40-char hex
+    /// SHA, since the codeload path can't be verified after extraction
+    /// without `.git/` metadata. Branch / tag names round-trip through
+    /// `git ls-remote` to get pinned to a SHA first.
+    pub fn tarball_url(&self, committish: &str) -> Option<String> {
+        if committish.len() != 40 || !committish.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let sha = committish.to_ascii_lowercase();
+        Some(match self.host {
+            HostedGitHost::GitHub => format!(
+                "https://codeload.github.com/{}/{}/tar.gz/{sha}",
+                self.owner, self.repo
+            ),
+            HostedGitHost::GitLab => format!(
+                "https://gitlab.com/{}/{}/-/archive/{sha}/{}-{sha}.tar.gz",
+                self.owner, self.repo, self.repo
+            ),
+            HostedGitHost::Bitbucket => format!(
+                "https://bitbucket.org/{}/{}/get/{sha}.tar.gz",
+                self.owner, self.repo
+            ),
+        })
+    }
+}
+
+impl HostedGitHost {
+    fn from_domain(domain: &str) -> Option<Self> {
+        match domain {
+            "github.com" => Some(HostedGitHost::GitHub),
+            "gitlab.com" => Some(HostedGitHost::GitLab),
+            "bitbucket.org" => Some(HostedGitHost::Bitbucket),
+            _ => None,
+        }
+    }
+
+    pub fn host_domain(self) -> &'static str {
+        match self {
+            HostedGitHost::GitHub => "github.com",
+            HostedGitHost::GitLab => "gitlab.com",
+            HostedGitHost::Bitbucket => "bitbucket.org",
+        }
+    }
+}
+
+/// Parse a clone URL — in any form `parse_git_spec` accepts as input
+/// or produces as output — into its `(host, owner, repo)` components,
+/// when the host is one of the three providers npm / pnpm route
+/// through HTTPS tarballs. Returns `None` for any other host (including
+/// self-hosted GitLab / Gitea / Bitbucket Data Center): those still
+/// need a real `git clone` because no codeload-style HTTP archive is
+/// available.
+///
+/// Accepts:
+/// - `https://github.com/owner/repo[.git]`
+/// - `git+https://github.com/owner/repo[.git]`
+/// - `git://github.com/owner/repo[.git]`
+/// - `ssh://git@github.com/owner/repo[.git]`
+/// - `git+ssh://git@github.com/owner/repo[.git]` (npm canonical lockfile form)
+/// - `git@github.com:owner/repo[.git]` (scp shorthand, in case a caller
+///   parses raw lockfile fields without going through `parse_git_spec`)
+pub fn parse_hosted_git(url: &str) -> Option<HostedGit> {
+    let body = url.strip_prefix("git+").unwrap_or(url);
+    let after_scheme = if let Some(rest) = body.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = body.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = body.strip_prefix("ssh://") {
+        rest
+    } else if let Some(rest) = body.strip_prefix("git://") {
+        rest
+    } else {
+        // scp shorthand `user@host:path` — not produced by parse_git_spec
+        // but accepted defensively in case a raw lockfile string ever
+        // bypasses it.
+        let scp_path = parse_scp_url(body)?;
+        return parse_hosted_git(&scp_path);
+    };
+    // Strip optional `user@` (always `git@` for hosted forms).
+    let host_and_path = match after_scheme.split_once('@') {
+        Some((_, rest)) => rest,
+        None => after_scheme,
+    };
+    let (host, path) = host_and_path.split_once('/')?;
+    let host = HostedGitHost::from_domain(host)?;
+    // Take exactly two path segments: owner and repo. Anything beyond
+    // (subgroup-style GitLab paths) doesn't have a stable HTTPS tarball
+    // form on the three providers we care about, so refuse and let the
+    // caller fall back to clone.
+    let mut segs = path.splitn(3, '/');
+    let owner = segs.next()?;
+    let repo = segs.next()?;
+    if owner.is_empty() || repo.is_empty() || segs.next().is_some() {
+        return None;
+    }
+    let repo = repo
+        .strip_suffix(".git")
+        .unwrap_or(repo)
+        .trim_end_matches('/');
+    if repo.is_empty() {
+        return None;
+    }
+    Some(HostedGit {
+        host,
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+    })
+}
+
 fn parse_scp_url(body: &str) -> Option<String> {
     if body.contains("://") {
         return None;
@@ -2188,6 +2331,104 @@ mod git_spec_tests {
         assert_eq!(url, "https://github.com/org/dep.git");
         assert_eq!(committish.as_deref(), Some(sha));
         assert_eq!(subpath.as_deref(), Some("packages/special"));
+    }
+
+    #[test]
+    fn parse_hosted_git_recognizes_canonical_forms() {
+        // All these point at the same (github.com, owner, repo) tuple
+        // and must map to the same HostedGit so the runtime fetch URL
+        // doesn't depend on which scheme the lockfile happens to record.
+        let canonical = HostedGit {
+            host: HostedGitHost::GitHub,
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+        };
+        for spec in [
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo",
+            "http://github.com/owner/repo.git",
+            "git+https://github.com/owner/repo.git",
+            "git+https://github.com/owner/repo",
+            "git://github.com/owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "git+ssh://git@github.com/owner/repo.git",
+            "git@github.com:owner/repo.git",
+        ] {
+            assert_eq!(
+                parse_hosted_git(spec).as_ref(),
+                Some(&canonical),
+                "spec {spec} should map to canonical HostedGit",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_hosted_git_returns_none_for_non_hosted() {
+        // Self-hosted GitLab / Gitea / arbitrary hosts: no codeload
+        // template, so the codeload fast path doesn't apply.
+        for spec in [
+            "https://example.com/owner/repo.git",
+            "ssh://git@gitea.internal/owner/repo.git",
+            "git+ssh://git@gitlab.example.com/group/sub/repo.git",
+            "https://github.com/owner/repo/sub",
+            "https://github.com/owner",
+        ] {
+            assert!(
+                parse_hosted_git(spec).is_none(),
+                "spec {spec} must not match a hosted provider",
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_tarball_url_only_for_full_sha() {
+        let g = HostedGit {
+            host: HostedGitHost::GitHub,
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        };
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        assert_eq!(
+            g.tarball_url(sha).as_deref(),
+            Some("https://codeload.github.com/o/r/tar.gz/abcdef0123456789abcdef0123456789abcdef01"),
+        );
+        // Branch / tag / abbreviated SHA don't take the fast path —
+        // codeload accepts them but the wrapper-dir name varies and
+        // we can't verify a non-SHA committish post-extraction.
+        assert!(g.tarball_url("main").is_none());
+        assert!(g.tarball_url("v1.2.3").is_none());
+        assert!(g.tarball_url("abcdef0").is_none());
+    }
+
+    #[test]
+    fn hosted_tarball_url_per_provider() {
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let gitlab = HostedGit {
+            host: HostedGitHost::GitLab,
+            owner: "g".to_string(),
+            repo: "r".to_string(),
+        }
+        .tarball_url(sha)
+        .unwrap();
+        assert!(gitlab.starts_with("https://gitlab.com/g/r/-/archive/"));
+        assert!(gitlab.ends_with("/r-abcdef0123456789abcdef0123456789abcdef01.tar.gz"));
+        let bitbucket = HostedGit {
+            host: HostedGitHost::Bitbucket,
+            owner: "g".to_string(),
+            repo: "r".to_string(),
+        }
+        .tarball_url(sha)
+        .unwrap();
+        assert_eq!(
+            bitbucket,
+            "https://bitbucket.org/g/r/get/abcdef0123456789abcdef0123456789abcdef01.tar.gz",
+        );
+    }
+
+    #[test]
+    fn hosted_https_url_normalizes() {
+        let g = parse_hosted_git("git+ssh://git@github.com/owner/repo.git").unwrap();
+        assert_eq!(g.https_url(), "https://github.com/owner/repo.git");
     }
 
     #[test]

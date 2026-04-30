@@ -671,7 +671,7 @@ impl Resolver {
                     {
                         let shallow = aube_store::git_host_in_list(&g.url, &self.git_shallow_hosts);
                         let (resolved_local, version, deps) =
-                            resolve_git_source(&task.name, g, shallow)
+                            resolve_git_source(&task.name, g, shallow, Some(self.client.as_ref()))
                                 .await
                                 .map_err(|e| {
                                     Error::Registry(

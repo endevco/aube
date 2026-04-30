@@ -451,28 +451,88 @@ pub(super) async fn import_local_source(
             Ok(Some(index))
         }
         LocalSource::Git(g) => {
-            // Shallow-clone into a temp directory and hardlink-import
-            // into the store exactly like a `file:` directory. The
-            // resolver already pinned `g.resolved` to a full commit
-            // SHA, and `git_shallow_clone` is keyed by url+commit —
-            // if the resolver already cloned this (url, sha) pair
-            // during BFS, the call short-circuits and we reuse the
-            // existing checkout instead of cloning twice.
+            // Materialize the git dep into a commit-keyed cache
+            // directory and hardlink-import into the store exactly
+            // like a `file:` directory. The resolver already pinned
+            // `g.resolved` to a full commit SHA, so we route through
+            // the same hosted-tarball-then-clone fallback npm and
+            // pnpm use:
             //
-            // The clone shells out to `git` and does network I/O
-            // that can take multiple seconds, so hand it off to
-            // `spawn_blocking` instead of stalling whatever async
-            // task the install loop is driving.
+            //   1. github / gitlab / bitbucket public reads → a flat
+            //      HTTPS tarball over codeload (no `git` binary, no
+            //      SSH key required).
+            //   2. Anything else, plus codeload errors → shallow
+            //      `git clone` over HTTPS (rewritten from the stored
+            //      lockfile URL when the host is hosted, so an
+            //      `git+ssh://git@github.com/…` lockfile still works
+            //      on a host with no SSH key).
+            //   3. Non-hosted hosts → unchanged: clone whatever URL
+            //      the lockfile recorded, preserving SSH-only setups.
+            //
+            // Both the codeload extract and the clone share the
+            // `(url, commit)` cache so the resolver's earlier call
+            // for the same dep doesn't pay the network round-trip
+            // twice.
             let url = g.url.clone();
             let resolved = g.resolved.clone();
             let spec = local.specifier();
-            let shallow = aube_store::git_host_in_list(&url, git_shallow_hosts);
-            let (clone_dir, _head_sha) = tokio::task::spawn_blocking(move || {
-                aube_store::git_shallow_clone(&url, &resolved, shallow)
-            })
-            .await
-            .map_err(|e| miette!("git clone task panicked: {e}"))?
-            .map_err(|e| miette!("failed to clone {spec}: {e}"))?;
+            let hosted = aube_lockfile::parse_hosted_git(&url);
+            let runtime_url = hosted
+                .as_ref()
+                .map(|h| h.https_url())
+                .unwrap_or_else(|| url.clone());
+            let codeload_url = hosted.as_ref().and_then(|h| h.tarball_url(&resolved));
+
+            let mut clone_dir: Option<std::path::PathBuf> = None;
+            if let (Some(c), Some(url_to_fetch)) = (client, codeload_url.as_deref()) {
+                match c.fetch_tarball_bytes(url_to_fetch).await {
+                    Ok(bytes) => {
+                        let bytes_vec = bytes.to_vec();
+                        let url_for_extract = url.clone();
+                        let resolved_for_extract = resolved.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            aube_store::extract_codeload_tarball(
+                                &bytes_vec,
+                                &url_for_extract,
+                                &resolved_for_extract,
+                            )
+                        })
+                        .await
+                        .map_err(|e| miette!("codeload extract task panicked: {e}"))?
+                        {
+                            Ok((dir, _sha)) => clone_dir = Some(dir),
+                            Err(e) => {
+                                tracing::debug!(
+                                    %spec,
+                                    "codeload extract failed, falling back to git clone: {e}",
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            %spec,
+                            url = %aube_util::url::redact_url(url_to_fetch),
+                            "codeload fetch failed, falling back to git clone: {e}",
+                        );
+                    }
+                }
+            }
+
+            let clone_dir = if let Some(dir) = clone_dir {
+                dir
+            } else {
+                let shallow = aube_store::git_host_in_list(&runtime_url, git_shallow_hosts);
+                let url_for_clone = runtime_url.clone();
+                let resolved_for_clone = resolved.clone();
+                let (dir, _head_sha) = tokio::task::spawn_blocking(move || {
+                    aube_store::git_shallow_clone(&url_for_clone, &resolved_for_clone, shallow)
+                })
+                .await
+                .map_err(|e| miette!("git clone task panicked: {e}"))?
+                .map_err(|e| miette!("failed to clone {spec}: {e}"))?;
+                dir
+            };
 
             // `&path:/<sub>` narrows the package root to a
             // subdirectory of the cloned repo (pnpm-compatible).
