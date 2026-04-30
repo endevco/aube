@@ -1,7 +1,6 @@
 use aube_manifest::BundledDependencies;
 use aube_registry::{Attestations, Dist, NpmUser, Packument, PeerDepMeta, VersionMetadata};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +10,8 @@ use std::time::Duration;
 const PRIMER_FORMAT: &str = "rkyv-v1";
 const PRUNE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const AUTO_PRUNE_DENOMINATOR: u8 = 100;
+
+include!(concat!(env!("OUT_DIR"), "/primer_index.rs"));
 
 #[derive(Default)]
 pub struct PruneStats {
@@ -178,70 +179,40 @@ impl PrimerDist {
     }
 }
 
-static PRIMER: OnceLock<Option<FxHashMap<String, Seed>>> = OnceLock::new();
+static GENERATED_AT: OnceLock<Option<String>> = OnceLock::new();
 
 pub(crate) fn get(name: &str) -> Option<Seed> {
-    PRIMER
-        .get_or_init(load)
+    let (_, offset, len) = PRIMER_INDEX
+        .binary_search_by(|(candidate, _, _)| candidate.cmp(&name))
+        .ok()
+        .and_then(|idx| PRIMER_INDEX.get(idx))?;
+    if let Some(dir) = primer_cache_dir() {
+        auto_prune(&dir);
+    }
+    let end = offset.checked_add(*len)?;
+    let compressed = PRIMER_BLOB.get(*offset..end)?;
+    let archived = zstd::stream::decode_all(Cursor::new(compressed)).ok()?;
+    rkyv::from_bytes::<Seed, rkyv::rancor::Error>(&archived).ok()
+}
+
+pub(crate) fn covers_cutoff(cutoff: &str) -> bool {
+    generated_at().is_some_and(|generated_at| generated_at.as_str() >= cutoff)
+}
+
+fn generated_at() -> Option<&'static String> {
+    GENERATED_AT
+        .get_or_init(|| {
+            let secs = option_env!("AUBE_PRIMER_GENERATED_AT")?.parse().ok()?;
+            Some(crate::types::format_iso8601_utc(secs))
+        })
         .as_ref()
-        .and_then(|primer| primer.get(name).cloned())
 }
 
-fn load() -> Option<FxHashMap<String, Seed>> {
-    let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/primer.rkyv.zst"));
-    if bytes.is_empty() {
-        return Some(FxHashMap::default());
-    }
-    let archived = extracted_primer(bytes)
-        .and_then(|path| std::fs::read(path).ok())
-        .or_else(|| zstd::stream::decode_all(Cursor::new(bytes)).ok())?;
-    let primer = rkyv::from_bytes::<BTreeMap<String, Seed>, rkyv::rancor::Error>(&archived).ok()?;
-    Some(primer.into_iter().collect())
-}
-
-fn extracted_primer(compressed: &[u8]) -> Option<PathBuf> {
-    let dir = primer_cache_dir()?;
-    let filename = current_filename(compressed);
-    let path = dir.join(&filename);
-    auto_prune(&dir, &filename);
-    if path.is_file() {
-        return Some(path);
-    }
-    std::fs::create_dir_all(&dir).ok()?;
-    let tmp = dir.join(format!(".{filename}.tmp-{}", std::process::id()));
-    let decoded = zstd::stream::decode_all(Cursor::new(compressed)).ok()?;
-    if let Err(e) = write_atomically(&tmp, &path, &decoded) {
-        tracing::debug!(
-            "failed to extract bundled primer to {}: {e}",
-            path.display()
-        );
-        let _ = std::fs::remove_file(&tmp);
-        return None;
-    }
-    Some(path)
-}
-
-fn write_atomically(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    {
-        let mut file = std::fs::File::create(tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    match std::fs::rename(tmp, path) {
-        Ok(()) => Ok(()),
-        Err(_) if path.is_file() => {
-            let _ = std::fs::remove_file(tmp);
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn auto_prune(dir: &Path, current_filename: &str) {
+fn auto_prune(dir: &Path) {
     if !random_byte().is_multiple_of(AUTO_PRUNE_DENOMINATOR) {
         return;
     }
-    if let Err(e) = prune_old(dir, current_filename, PRUNE_AGE, false, true) {
+    if let Err(e) = prune_old(dir, PRUNE_AGE, false, true) {
         tracing::debug!("failed to prune old primer cache files: {e}");
     }
 }
@@ -250,13 +221,11 @@ pub fn prune_cache(dry_run: bool, age: Duration) -> std::io::Result<PruneStats> 
     let Some(dir) = primer_cache_dir() else {
         return Ok(PruneStats::default());
     };
-    let current = current_filename(include_bytes!(concat!(env!("OUT_DIR"), "/primer.rkyv.zst")));
-    prune_old(&dir, &current, age, dry_run, false)
+    prune_old(&dir, age, dry_run, false)
 }
 
 fn prune_old(
     dir: &Path,
-    current_filename: &str,
     age: Duration,
     dry_run: bool,
     check_sentinel: bool,
@@ -280,7 +249,7 @@ fn prune_old(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if name == current_filename || !is_primer_cache_file(name) {
+        if !is_primer_cache_file(name) {
             continue;
         }
         let metadata = entry.metadata()?;
@@ -308,7 +277,7 @@ fn touch(path: &Path) -> std::io::Result<()> {
 }
 
 fn is_primer_cache_file(name: &str) -> bool {
-    name.starts_with(&format!("{PRIMER_FORMAT}-")) && name.ends_with(".json")
+    name.starts_with(&format!("{PRIMER_FORMAT}-")) && name.ends_with(".rkyv")
 }
 
 fn random_byte() -> u8 {
@@ -317,11 +286,6 @@ fn random_byte() -> u8 {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     (nanos as u8) ^ (std::process::id() as u8)
-}
-
-fn current_filename(compressed: &[u8]) -> String {
-    let hash = blake3::hash(compressed).to_hex().to_string();
-    format!("{PRIMER_FORMAT}-{hash}.json")
 }
 
 fn primer_cache_dir() -> Option<PathBuf> {
@@ -349,35 +313,29 @@ mod tests {
 
     #[test]
     fn bundled_primer_loads() {
-        assert!(super::PRIMER.get_or_init(super::load).is_some());
+        let Some((name, _, _)) = PRIMER_INDEX.first() else {
+            return;
+        };
+        assert!(super::get(name).is_some());
     }
 
     #[test]
     fn primer_cache_file_match_is_narrow() {
-        assert!(is_primer_cache_file("rkyv-v1-abc.json"));
+        assert!(is_primer_cache_file("rkyv-v1-abc.rkyv"));
         assert!(!is_primer_cache_file(".auto_prune"));
         assert!(!is_primer_cache_file("rkyv-v1-abc.tmp"));
-        assert!(!is_primer_cache_file("other-v1-abc.json"));
+        assert!(!is_primer_cache_file("other-v1-abc.rkyv"));
     }
 
     #[test]
-    fn prune_keeps_current_and_removes_old_siblings() {
+    fn prune_removes_old_extracted_primer_files() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
-        std::fs::write(dir.join("rkyv-v1-current.json"), "{}").unwrap();
-        std::fs::write(dir.join("rkyv-v1-old.json"), "{}").unwrap();
+        std::fs::write(dir.join("rkyv-v1-old-0-old.rkyv"), "{}").unwrap();
         std::fs::write(dir.join("packument.json"), "{}").unwrap();
-        let stats = prune_old(
-            dir,
-            "rkyv-v1-current.json",
-            Duration::from_secs(0),
-            false,
-            false,
-        )
-        .unwrap();
+        let stats = prune_old(dir, Duration::from_secs(0), false, false).unwrap();
         assert_eq!(stats.files, 1);
-        assert!(dir.join("rkyv-v1-current.json").exists());
-        assert!(!dir.join("rkyv-v1-old.json").exists());
+        assert!(!dir.join("rkyv-v1-old-0-old.rkyv").exists());
         assert!(dir.join("packument.json").exists());
     }
 }

@@ -206,6 +206,22 @@ impl RegistryClient {
         self.registry_url_for(name) == "https://registry.npmjs.org/"
     }
 
+    pub fn cached_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_cache_path(cache_dir, name, &registry_url)?;
+        let cached = read_cached_packument(&cache_path)?;
+        if self.trust_cached_packument(cached.fetched_at, cached.max_age_secs) {
+            return Some(cached.packument);
+        }
+        None
+    }
+
+    pub fn cached_full_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
+        let registry_url = self.config.registry_for(name).to_string();
+        let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)?;
+        read_cached_full_packument_typed(&cache_path, self.force_cache())
+    }
+
     pub fn seed_packument_cache(
         &self,
         name: &str,
@@ -274,6 +290,17 @@ impl RegistryClient {
     /// Get the registry URL for a given package name (respects scoped registries).
     fn registry_url_for(&self, name: &str) -> &str {
         self.config.registry_for(name)
+    }
+
+    fn force_cache(&self) -> bool {
+        matches!(
+            self.network_mode,
+            NetworkMode::PreferOffline | NetworkMode::Offline
+        )
+    }
+
+    fn trust_cached_packument(&self, fetched_at: u64, max_age_secs: Option<u64>) -> bool {
+        self.force_cache() || cached_is_fresh(fetched_at, max_age_secs)
     }
 
     /// Build `{registry}/{encoded_name}` — the packument route. Scoped
@@ -606,10 +633,7 @@ impl RegistryClient {
 
         // --prefer-offline / --offline: trust any cached copy regardless of age.
         // --offline additionally forbids falling back to the network on a miss.
-        let force_cache = matches!(
-            self.network_mode,
-            NetworkMode::PreferOffline | NetworkMode::Offline
-        );
+        let force_cache = self.force_cache();
         if let Some(c) = cached.as_ref()
             && (force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs))
         {
@@ -767,10 +791,7 @@ impl RegistryClient {
         let registry_url = self.config.registry_for(name).to_string();
         let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)
             .ok_or_else(|| Error::InvalidName(name.to_string()))?;
-        let force_cache = matches!(
-            self.network_mode,
-            NetworkMode::PreferOffline | NetworkMode::Offline
-        );
+        let force_cache = self.force_cache();
         if let Some(packument) = read_cached_full_packument_typed(&cache_path, force_cache) {
             return Ok(packument);
         }
@@ -886,10 +907,7 @@ impl RegistryClient {
         // Move out of the wrapper to avoid cloning the Packument.
         // --prefer-offline / --offline extend "fresh" to "any cached entry"
         // so we skip revalidation and, for --offline, the network entirely.
-        let force_cache = matches!(
-            self.network_mode,
-            NetworkMode::PreferOffline | NetworkMode::Offline
-        );
+        let force_cache = self.force_cache();
         if let Some(c) = cached.as_ref()
             && (force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs))
         {

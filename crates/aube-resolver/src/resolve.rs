@@ -113,6 +113,9 @@ impl Resolver {
         if let Some(c) = published_by.as_deref() {
             tracing::debug!("minimumReleaseAge cutoff: {}", c);
         }
+        let primer_covers_cutoff = published_by
+            .as_deref()
+            .is_some_and(crate::primer::covers_cutoff);
 
         seed_direct_deps(
             manifests,
@@ -212,47 +215,48 @@ impl Resolver {
                     let client = self.client.clone();
                     let cache_dir = self.packument_cache_dir.clone();
                     let full_cache_dir = self.packument_full_cache_dir.clone();
-                    if (self.force_metadata_primer
-                        || client.uses_default_npm_registry_for(&name_owned))
-                        && let Some(seed) = crate::primer::get(name)
-                    {
-                        let mut packument = seed.packument();
-                        if self.force_metadata_primer {
-                            for version in packument.versions.values_mut() {
-                                let tarball = client.tarball_url(&version.name, &version.version);
-                                version.dist = version.dist.take().map(|mut dist| {
-                                    dist.tarball = tarball;
-                                    dist
-                                });
-                            }
-                        }
-                        if let Some(dir) = cache_dir.as_ref() {
-                            client.seed_packument_cache(
-                                &name_owned,
-                                dir,
-                                &packument,
-                                seed.etag.as_deref(),
-                                seed.last_modified.as_deref(),
-                                self.force_metadata_primer,
-                            );
-                        }
-                        if needs_time && let Some(dir) = full_cache_dir.as_ref() {
-                            client.seed_full_packument_cache(
-                                &name_owned,
-                                dir,
-                                &packument,
-                                seed.etag.as_deref(),
-                                seed.last_modified.as_deref(),
-                                self.force_metadata_primer,
-                            );
-                        }
-                    }
+                    let primer_policy_allows_name = self
+                        .minimum_release_age
+                        .as_ref()
+                        .is_none_or(|mra| !mra.exclude.contains(name));
+                    let use_metadata_primer = self.force_metadata_primer
+                        || (primer_covers_cutoff
+                            && primer_policy_allows_name
+                            && client.uses_default_npm_registry_for(&name_owned));
+                    let force_metadata_primer = self.force_metadata_primer;
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
                         let _permit = sem
                             .acquire_owned()
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+                        let cached = if needs_time {
+                            match full_cache_dir.as_ref() {
+                                Some(dir) => client.cached_full_packument(&name_owned, dir),
+                                None => None,
+                            }
+                        } else if let Some(ref dir) = cache_dir {
+                            client.cached_packument(&name_owned, dir)
+                        } else {
+                            None
+                        };
+                        if let Some(packument) = cached {
+                            return Ok::<_, Error>((name_owned, packument));
+                        }
+                        if use_metadata_primer && let Some(seed) = crate::primer::get(&name_owned) {
+                            let mut packument = seed.packument();
+                            if force_metadata_primer {
+                                for version in packument.versions.values_mut() {
+                                    let tarball =
+                                        client.tarball_url(&version.name, &version.version);
+                                    version.dist = version.dist.take().map(|mut dist| {
+                                        dist.tarball = tarball;
+                                        dist
+                                    });
+                                }
+                            }
+                            return Ok::<_, Error>((name_owned, packument));
+                        }
                         let packument = if needs_time {
                             match full_cache_dir.as_ref() {
                                 Some(dir) => {
