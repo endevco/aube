@@ -1696,6 +1696,59 @@ pub fn extract_codeload_tarball(
     extract_codeload_tarball_at(&git_root, bytes, url, commit)
 }
 
+/// Return the cached codeload extract for `(url, commit)` without
+/// touching the network. Callers should consult this *before*
+/// downloading a codeload tarball — once the resolver has populated
+/// the cache during BFS, the install-time materialization should
+/// reuse it instead of paying a second HTTPS round-trip only to have
+/// `extract_codeload_tarball` short-circuit and discard the bytes.
+/// Mirrors `git_shallow_clone`'s top-of-function fast path.
+///
+/// Returns `None` for any input that couldn't possibly correspond to
+/// a cached entry — invalid URL/commit shapes, abbreviated SHAs, no
+/// resolvable cache root — so callers can chain straight into the
+/// fetch path on `None` without untangling an `Err`.
+pub fn codeload_cache_lookup(url: &str, commit: &str) -> Option<(PathBuf, String)> {
+    let git_root = crate::dirs::cache_dir()
+        .map(|d| d.join("git"))
+        .unwrap_or_else(std::env::temp_dir);
+    let (target, head_sha) = codeload_cache_paths(&git_root, url, commit)?;
+    target.is_dir().then_some((target, head_sha))
+}
+
+/// Compute the deterministic `(target, head_sha)` pair for a
+/// `(url, commit)` cache lookup, without touching the FS. Returns
+/// `None` for any input shape that `extract_codeload_tarball` would
+/// reject with `Err`, so the lookup and write paths agree on which
+/// inputs even *can* have a cache entry.
+fn codeload_cache_paths(cache_root: &Path, url: &str, commit: &str) -> Option<(PathBuf, String)> {
+    if validate_git_positional(url, "git url").is_err()
+        || validate_git_positional(commit, "git commit").is_err()
+    {
+        return None;
+    }
+    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let head_sha = commit.to_ascii_lowercase();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(url.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(head_sha.as_bytes());
+    let digest = hasher.finalize();
+    let key: String = digest
+        .as_bytes()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let short = head_sha[..12].to_string();
+    Some((
+        cache_root.join(format!("aube-codeload-{key}-{short}")),
+        head_sha,
+    ))
+}
+
 /// Inner form of [`extract_codeload_tarball`] that takes the cache
 /// root explicitly. Public callers go through the wrapper above so
 /// the cache root resolution is uniform; tests pass an in-test
@@ -1709,14 +1762,16 @@ fn extract_codeload_tarball_at(
     commit: &str,
 ) -> Result<(PathBuf, String), Error> {
     use std::io::Read;
-    validate_git_positional(url, "git url")?;
-    validate_git_positional(commit, "git commit")?;
-    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(Error::Git(format!(
-            "extract_codeload_tarball: commit must be a full 40-char SHA, got {commit}"
-        )));
-    }
-    let head_sha = commit.to_ascii_lowercase();
+    let (target, head_sha) = codeload_cache_paths(git_root, url, commit).ok_or_else(|| {
+        Error::Git(format!(
+            "extract_codeload_tarball: invalid (url, commit) — commit must be a full 40-char SHA, got {commit}"
+        ))
+    })?;
+    let key_short = target
+        .file_name()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("aube-codeload-"))
+        .unwrap_or("");
 
     std::fs::create_dir_all(git_root).map_err(|e| Error::Io(git_root.to_path_buf(), e))?;
     #[cfg(unix)]
@@ -1730,20 +1785,6 @@ fn extract_codeload_tarball_at(
         }
     }
 
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(url.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(head_sha.as_bytes());
-    let digest = hasher.finalize();
-    let key: String = digest
-        .as_bytes()
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let short = head_sha[..12].to_string();
-    let target = git_root.join(format!("aube-codeload-{key}-{short}"));
-
     // Reuse a prior successful extraction for this exact (url, commit).
     // The atomic-rename pattern below makes a populated `target` always
     // a complete tree — no half-extracted state to worry about.
@@ -1755,7 +1796,7 @@ fn extract_codeload_tarball_at(
     // failure-recovery and concurrent-install reasoning as
     // `git_shallow_clone`'s scratch dance.
     let scratch = tempfile::Builder::new()
-        .prefix(&format!("aube-codeload-{key}-{short}."))
+        .prefix(&format!("aube-codeload-{key_short}."))
         .tempdir_in(git_root)
         .map_err(|e| Error::Io(git_root.to_path_buf(), e))?
         .keep();
@@ -2720,6 +2761,59 @@ mod tests {
         // directory rather than re-extracting.
         let (target2, _) = extract_codeload_tarball_at(tmp.path(), &bytes, url, sha).unwrap();
         assert_eq!(target, target2);
+    }
+
+    #[test]
+    fn codeload_cache_lookup_returns_target_only_after_extract() {
+        // Lookup must only report `Some` once the cache directory
+        // exists, so callers can use it to skip the HTTPS round-trip
+        // on resolver→installer reuse without falsely short-circuiting
+        // before the bytes have ever been fetched.
+        let tmp = tempfile::tempdir().unwrap();
+        let sha = "fedcba9876543210fedcba9876543210fedcba98";
+        let wrapper = format!("owner-repo-{}", &sha[..7]);
+        let url = "https://github.com/owner/repo.git";
+        let bytes = build_codeload_tarball(
+            &wrapper,
+            &[("package.json", br#"{"name":"x","version":"0.0.1"}"#)],
+        );
+
+        // Pre-extract miss.
+        let (expected_target, expected_sha) = codeload_cache_paths(tmp.path(), url, sha).unwrap();
+        assert!(!expected_target.exists());
+        // The public lookup uses the real `dirs::cache_dir()` so the
+        // test path can't drive it directly. Instead, drive the inner
+        // helper through the cache_paths function and verify the
+        // exists check parallels the `is_dir` filter `codeload_cache_lookup`
+        // applies. After extract, the lookup-equivalent must succeed.
+        let (target, head) = extract_codeload_tarball_at(tmp.path(), &bytes, url, sha).unwrap();
+        assert_eq!(target, expected_target);
+        assert_eq!(head, expected_sha);
+        assert!(target.is_dir(), "extract must populate the cache target");
+        // A second `extract_codeload_tarball_at` (the equivalent of a
+        // post-resolver install-time call) reuses the same dir without
+        // re-extracting — same cache path comes back.
+        let (target2, _) = extract_codeload_tarball_at(tmp.path(), &bytes, url, sha).unwrap();
+        assert_eq!(target, target2);
+    }
+
+    #[test]
+    fn codeload_cache_paths_rejects_invalid_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Abbreviated SHA — codeload extracts can't be verified for
+        // non-full-SHA committishes, so the cache key would be ambiguous.
+        assert!(codeload_cache_paths(tmp.path(), "https://example.com/r.git", "abc1234").is_none());
+        // Dash-prefixed URL — `validate_git_positional` rejects.
+        assert!(
+            codeload_cache_paths(
+                tmp.path(),
+                "--upload-pack=/tmp/evil",
+                "abcdef0123456789abcdef0123456789abcdef01"
+            )
+            .is_none()
+        );
+        // Branch name — not a SHA.
+        assert!(codeload_cache_paths(tmp.path(), "https://example.com/r.git", "main").is_none());
     }
 
     #[test]

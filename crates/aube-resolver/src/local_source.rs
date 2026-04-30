@@ -285,6 +285,43 @@ pub(crate) async fn resolve_git_source(
 
     let codeload_url = hosted.as_ref().and_then(|h| h.tarball_url(&resolved_sha));
 
+    // Cache hit fast path: skip the HTTPS round-trip when a prior call
+    // (the resolver's earlier visit to this dep, or a previous install)
+    // already populated the codeload cache. Mirrors `git_shallow_clone`'s
+    // top-of-function reuse check.
+    if codeload_url.is_some()
+        && let Some((clone_dir, _head_sha)) =
+            aube_store::codeload_cache_lookup(&original_url, &resolved_sha)
+    {
+        let pkg_root = match &subpath {
+            Some(sub) => clone_dir.join(sub),
+            None => clone_dir.clone(),
+        };
+        let manifest_bytes = std::fs::read(pkg_root.join("package.json")).map_err(|e| {
+            let where_ = subpath
+                .as_deref()
+                .map(|s| format!(" at /{s}"))
+                .unwrap_or_default();
+            Error::Registry(
+                name.to_string(),
+                format!("read package.json in cached codeload extract{where_}: {e}"),
+            )
+        })?;
+        let pj: aube_manifest::PackageJson = serde_json::from_slice(&manifest_bytes)
+            .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+        let version = pj.version.unwrap_or_else(|| "0.0.0".to_string());
+        return Ok((
+            LocalSource::Git(aube_lockfile::GitSource {
+                url: original_url,
+                committish,
+                resolved: resolved_sha,
+                subpath,
+            }),
+            version,
+            pj.dependencies,
+        ));
+    }
+
     // Try the codeload fast path when applicable. `client` is None for
     // resolve paths that don't have a registry client wired up
     // (`aube import`'s lockfile-only flow); those just fall through.

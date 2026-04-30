@@ -483,8 +483,18 @@ pub(super) async fn import_local_source(
                 .unwrap_or_else(|| url.clone());
             let codeload_url = hosted.as_ref().and_then(|h| h.tarball_url(&resolved));
 
-            let mut clone_dir: Option<std::path::PathBuf> = None;
-            if let (Some(c), Some(url_to_fetch)) = (client, codeload_url.as_deref()) {
+            // Cache hit fast path: skip the HTTPS round-trip when the
+            // resolver already populated the codeload cache for this
+            // (url, commit) pair earlier in the install. Mirrors
+            // `git_shallow_clone`'s top-of-function reuse check.
+            let mut clone_dir: Option<std::path::PathBuf> = if codeload_url.is_some() {
+                aube_store::codeload_cache_lookup(&url, &resolved).map(|(dir, _)| dir)
+            } else {
+                None
+            };
+            if clone_dir.is_none()
+                && let (Some(c), Some(url_to_fetch)) = (client, codeload_url.as_deref())
+            {
                 match c.fetch_tarball_bytes(url_to_fetch).await {
                     Ok(bytes) => {
                         let bytes_vec = bytes.to_vec();
