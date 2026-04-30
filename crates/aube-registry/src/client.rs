@@ -923,16 +923,24 @@ impl RegistryClient {
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
                     let revalidated_max_age =
                         parse_cache_control_max_age(&resp).or(cached.max_age_secs);
-                    let packument = cached.packument.clone();
-                    let to_cache = CachedFullPackument {
-                        etag: cached.etag.clone(),
-                        last_modified: cached.last_modified.clone(),
-                        fetched_at: now_secs(),
-                        max_age_secs: revalidated_max_age,
-                        packument: serde_json::to_value(&packument).map_err(|e| {
+                    let mut to_cache = if let Some(to_cache) =
+                        read_cached_full_packument(&cache_path)
+                    {
+                        to_cache
+                    } else {
+                        let packument = serde_json::to_value(&cached.packument).map_err(|e| {
                             Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-                        })?,
+                        })?;
+                        CachedFullPackument {
+                            etag: cached.etag.clone(),
+                            last_modified: cached.last_modified.clone(),
+                            fetched_at: cached.fetched_at,
+                            max_age_secs: cached.max_age_secs,
+                            packument,
+                        }
                     };
+                    to_cache.fetched_at = now_secs();
+                    to_cache.max_age_secs = revalidated_max_age;
                     if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
                         tracing::warn!(
                             "failed to write packument cache {}: {e}",
@@ -940,7 +948,7 @@ impl RegistryClient {
                         );
                     }
                     self.maybe_warn_slow_metadata(&label, started);
-                    return Ok(packument);
+                    return Ok(cached.packument);
                 }
                 Ok(resp) => {
                     let (etag, last_modified) = extract_cache_headers(&resp);
