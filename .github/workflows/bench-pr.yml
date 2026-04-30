@@ -20,7 +20,7 @@ env:
 jobs:
   bench:
     name: Compare PR performance
-    runs-on: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
+    runs-on: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=github-namespace-profile-endev-linux-amd64-endevco-aube
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

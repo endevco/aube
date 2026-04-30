@@ -32,7 +32,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+            runner: namespace-profile-endev-linux-amd64
           - os: macos-latest
             runner: namespace-profile-endev-macos-arm64
     runs-on: ${{ matrix.runner }}
@@ -58,7 +58,7 @@ jobs:
   # lint failures don't block the BATS jobs from starting against a
   # known-good binary.
   test-linux:
-    runs-on: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+    runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 30
     env:
       RUSTFLAGS: "-D warnings"

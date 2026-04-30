@@ -70,7 +70,7 @@ jobs:
     name: Refresh benchmarks
     needs: check
     if: needs.check.outputs.drift == 'true'
-    runs-on: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
+    runs-on: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=github-namespace-profile-endev-linux-amd64-endevco-aube
     permissions:
       contents: write
       pull-requests: write
