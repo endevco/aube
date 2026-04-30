@@ -12,6 +12,133 @@ pub use merge::{MergeReport, merge_branch_lockfiles};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Process-wide override for "where the lockfile lives". Set once at
+/// startup by `install::run` (or `add` via the same path) when the
+/// user passes `--lockfile-dir` (or sets `AUBE_LOCKFILE_DIR` /
+/// `lockfile-dir` in `.npmrc`); read by the boundary functions in this
+/// crate so every reader and writer redirects to the configured
+/// directory and rewrites the project's importer key from `.` to its
+/// path relative to the override. Unset = legacy behavior (lockfile
+/// lives next to `package.json`, importer key is `.`).
+///
+/// Mirrors pnpm's `--lockfile-dir`. Only honored by aube/pnpm-format
+/// reads and writes — npm/yarn/bun keep the lockfile in `project_dir`
+/// because their lockfiles have no notion of "importer keyed by
+/// relative path". Workspace projects must not combine the override
+/// with `pnpm-workspace.yaml`; the install entry point checks for that
+/// up front and errors out instead of silently picking one or the
+/// other.
+static LOCKFILE_DIR_OVERRIDE: OnceLock<std::sync::Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn lockfile_dir_cell() -> &'static std::sync::Mutex<Option<PathBuf>> {
+    LOCKFILE_DIR_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Set or clear the process-wide lockfile-dir override.
+pub fn set_lockfile_dir_override(dir: Option<PathBuf>) {
+    *lockfile_dir_cell()
+        .lock()
+        .expect("lockfile-dir lock poisoned") = dir;
+}
+
+/// Return the directory the lockfile should live in. The override when
+/// set, otherwise `project_dir` itself.
+pub fn lockfile_dir_for(project_dir: &Path) -> PathBuf {
+    lockfile_dir_cell()
+        .lock()
+        .expect("lockfile-dir lock poisoned")
+        .clone()
+        .unwrap_or_else(|| project_dir.to_path_buf())
+}
+
+/// Return the importer key the project should be filed under inside
+/// the lockfile. `"."` when no override (or the override resolves to
+/// `project_dir`), otherwise the project's path relative to the
+/// override, with forward slashes for lockfile-format consistency.
+///
+/// Falls back to `"."` when the relative path can't be computed (e.g.
+/// the two paths share no common ancestor on Windows).
+pub fn project_alias_for(project_dir: &Path) -> String {
+    let lf_dir = lockfile_dir_for(project_dir);
+    // Canonicalize both sides so `..` segments and macOS-style
+    // `/tmp` ↔ `/private/tmp` aliases resolve to the same form
+    // before the prefix comparison. Without this, an override like
+    // `--lockfile-dir ..` (literal `<cwd>/..`) or a `/tmp/...` cwd
+    // paired with a canonicalized override path would share no
+    // common prefix and the function would degrade to `.`.
+    let project_canonical =
+        std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let lf_canonical = std::fs::canonicalize(&lf_dir).unwrap_or(lf_dir);
+    if lf_canonical == project_canonical {
+        return ".".to_string();
+    }
+    // Manual relative-path computation so we don't pull in pathdiff.
+    let project_components: Vec<_> = project_canonical.components().collect();
+    let lf_components: Vec<_> = lf_canonical.components().collect();
+    let common = project_components
+        .iter()
+        .zip(lf_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 {
+        // No shared root — bail to "." rather than emit an absolute
+        // path as the importer key (would confuse every reader).
+        return ".".to_string();
+    }
+    let ups = lf_components.len().saturating_sub(common);
+    let downs = &project_components[common..];
+    let mut out = std::path::PathBuf::new();
+    for _ in 0..ups {
+        out.push("..");
+    }
+    for c in downs {
+        out.push(c.as_os_str());
+    }
+    if out.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        out.to_string_lossy().replace('\\', "/")
+    }
+}
+
+/// Rewrite the in-memory single-importer "." key to `alias`. No-op
+/// when `alias == "."`. Touches every importer-keyed map on the
+/// graph: `importers`, `skipped_optional_dependencies`. Multi-importer
+/// (workspace) graphs are unsupported when `alias != "."` and arrive
+/// here only after the install entry point has rejected the combo.
+fn rekey_importer_for_write(graph: &mut LockfileGraph, alias: &str) {
+    if alias == "." {
+        return;
+    }
+    if let Some(deps) = graph.importers.remove(".") {
+        graph.importers.insert(alias.to_string(), deps);
+    }
+    if let Some(skipped) = graph.skipped_optional_dependencies.remove(".") {
+        graph
+            .skipped_optional_dependencies
+            .insert(alias.to_string(), skipped);
+    }
+}
+
+/// Inverse of [`rekey_importer_for_write`]: bring a freshly-parsed
+/// graph back into the canonical "." in-memory shape. The install
+/// pipeline below this point reads `importers["."]` everywhere; this
+/// keeps that contract intact.
+fn rekey_importer_for_read(graph: &mut LockfileGraph, alias: &str) {
+    if alias == "." {
+        return;
+    }
+    if let Some(deps) = graph.importers.remove(alias) {
+        graph.importers.insert(".".to_string(), deps);
+    }
+    if let Some(skipped) = graph.skipped_optional_dependencies.remove(alias) {
+        graph
+            .skipped_optional_dependencies
+            .insert(".".to_string(), skipped);
+    }
+}
 
 /// Most npm packages declare zero or one entry in `os`, `cpu`,
 /// `libc`. Two inline `SmallVec` slots cover empty on construction
@@ -1704,9 +1831,33 @@ pub fn write_lockfile_as(
         LockfileKind::Pnpm => pnpm_lock_filename(project_dir),
         other => other.filename().to_string(),
     };
-    let path = project_dir.join(&filename);
+    // `--lockfile-dir`: the lockfile target dir may differ from the
+    // project root. The aube/pnpm formats track an importer-keyed
+    // graph, so we rekey the in-memory `"."` to the project's path
+    // relative to the override before writing. Other formats keep the
+    // legacy project-dir behavior — they have no importer concept,
+    // and pnpm itself only honors `--lockfile-dir` for its own format.
+    let alias = project_alias_for(project_dir);
+    let target_dir = match kind {
+        LockfileKind::Aube | LockfileKind::Pnpm => lockfile_dir_for(project_dir),
+        _ => project_dir.to_path_buf(),
+    };
+    let path = target_dir.join(&filename);
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.to_path_buf(), e))?;
+    }
     match kind {
-        LockfileKind::Aube | LockfileKind::Pnpm => pnpm::write(&path, graph, manifest)?,
+        LockfileKind::Aube | LockfileKind::Pnpm => {
+            if alias == "." {
+                pnpm::write(&path, graph, manifest)?
+            } else {
+                let mut rekeyed = graph.clone();
+                rekey_importer_for_write(&mut rekeyed, &alias);
+                pnpm::write(&path, &rekeyed, manifest)?
+            }
+        }
         LockfileKind::Npm | LockfileKind::NpmShrinkwrap => npm::write(&path, graph, manifest)?,
         LockfileKind::Yarn => yarn::write_classic(&path, graph, manifest)?,
         LockfileKind::YarnBerry => yarn::write_berry(&path, graph, manifest)?,
@@ -1841,12 +1992,19 @@ pub fn parse_lockfile_with_kind(
     manifest: &aube_manifest::PackageJson,
 ) -> Result<(LockfileGraph, LockfileKind), Error> {
     reject_bun_binary(project_dir)?;
+    let alias = project_alias_for(project_dir);
     for (path, kind) in lockfile_candidates(project_dir, /*include_aube=*/ true) {
         if !path.exists() {
             continue;
         }
         let kind = refine_yarn_kind(&path, kind);
-        let graph = parse_one(&path, kind, manifest)?;
+        let mut graph = parse_one(&path, kind, manifest)?;
+        // The aube/pnpm formats are the only ones that participate in
+        // `--lockfile-dir` rekeying; other formats have no importer
+        // map and were read from `project_dir` anyway.
+        if matches!(kind, LockfileKind::Aube | LockfileKind::Pnpm) {
+            rekey_importer_for_read(&mut graph, &alias);
+        }
         return Ok((graph, kind));
     }
     Err(Error::NotFound(project_dir.to_path_buf()))
@@ -1863,12 +2021,16 @@ pub fn parse_for_import(
     manifest: &aube_manifest::PackageJson,
 ) -> Result<(LockfileGraph, LockfileKind), Error> {
     reject_bun_binary(project_dir)?;
+    let alias = project_alias_for(project_dir);
     for (path, kind) in lockfile_candidates(project_dir, /*include_aube=*/ false) {
         if !path.exists() {
             continue;
         }
         let kind = refine_yarn_kind(&path, kind);
-        let graph = parse_one(&path, kind, manifest)?;
+        let mut graph = parse_one(&path, kind, manifest)?;
+        if matches!(kind, LockfileKind::Aube | LockfileKind::Pnpm) {
+            rekey_importer_for_read(&mut graph, &alias);
+        }
         return Ok((graph, kind));
     }
     Err(Error::NotFound(project_dir.to_path_buf()))
@@ -1889,6 +2051,11 @@ fn reject_bun_binary(project_dir: &Path) -> Result<(), Error> {
 }
 
 fn lockfile_candidates(project_dir: &Path, include_aube: bool) -> Vec<(PathBuf, LockfileKind)> {
+    // `--lockfile-dir` redirects aube and pnpm format reads/writes;
+    // npm/yarn/bun lockfiles stay anchored at the project root because
+    // their format has no importer-key concept and pnpm itself only
+    // honors `--lockfile-dir` for its own format.
+    let aube_pnpm_dir = lockfile_dir_for(project_dir);
     let mut out = Vec::new();
     if include_aube {
         // Prefer the branch-specific lockfile (if `gitBranchLockfile` is on
@@ -1896,9 +2063,9 @@ fn lockfile_candidates(project_dir: &Path, include_aube: bool) -> Vec<(PathBuf, 
         // so a freshly-enabled branch still picks up the base lockfile.
         let branch_name = aube_lock_filename(project_dir);
         if branch_name != "aube-lock.yaml" {
-            out.push((project_dir.join(&branch_name), LockfileKind::Aube));
+            out.push((aube_pnpm_dir.join(&branch_name), LockfileKind::Aube));
         }
-        out.push((project_dir.join("aube-lock.yaml"), LockfileKind::Aube));
+        out.push((aube_pnpm_dir.join("aube-lock.yaml"), LockfileKind::Aube));
     }
     // Preserve pnpm lockfiles in place. Branch-specific
     // `pnpm-lock.<branch>.yaml` mirrors the aube branch lockfile naming
@@ -1912,9 +2079,9 @@ fn lockfile_candidates(project_dir: &Path, include_aube: bool) -> Vec<(PathBuf, 
         s
     };
     if pnpm_branch != "pnpm-lock.yaml" {
-        out.push((project_dir.join(&pnpm_branch), LockfileKind::Pnpm));
+        out.push((aube_pnpm_dir.join(&pnpm_branch), LockfileKind::Pnpm));
     }
-    out.push((project_dir.join("pnpm-lock.yaml"), LockfileKind::Pnpm));
+    out.push((aube_pnpm_dir.join("pnpm-lock.yaml"), LockfileKind::Pnpm));
     out.push((project_dir.join("bun.lock"), LockfileKind::Bun));
     out.push((project_dir.join("yarn.lock"), LockfileKind::Yarn));
     out.push((

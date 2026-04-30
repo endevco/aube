@@ -992,6 +992,35 @@ examples = [
   "echo 'lockfile=false' >> .npmrc && aube install",
 ]
 
+[lockfileDir]
+description = "Directory where aube-lock.yaml is read from and written to."
+type = "path"
+default = "undefined"
+docs = """
+Relocates the lockfile away from the project root. When set, every
+`aube-lock.yaml` (or `pnpm-lock.yaml` etc.) read or write done by
+`aube install` / `aube add` resolves against this directory instead of
+the project's own root, and the project's importer key in the lockfile
+becomes its path relative to `lockfileDir` (e.g. `project` instead of
+`.`). Mirrors pnpm's `--lockfile-dir`.
+
+Other commands (`aube list`, `aube why`, `aube outdated`, …) keep
+reading from the project root unless they're explicitly invoked with
+the same setting in scope; this PR threads `lockfileDir` through
+install/add only. Workspace projects should not combine `lockfileDir`
+with `pnpm-workspace.yaml` — pnpm does not support that mix and aube
+errors out instead of silently picking one or the other.
+
+`node_modules/.aube-state` and the rest of the install state still
+live alongside `package.json` regardless of `lockfileDir` — only the
+lockfile itself moves.
+"""
+sources.cli = ["lockfile-dir"]
+sources.env = ["npm_config_lockfile_dir", "NPM_CONFIG_LOCKFILE_DIR", "AUBE_LOCKFILE_DIR"]
+sources.npmrc = ["lockfile-dir", "lockfileDir"]
+sources.workspaceYaml = ["lockfileDir"]
+examples = ["aube install --lockfile-dir ../"]
+
 [preferFrozenLockfile]
 description = "Perform a headless install if the lockfile already satisfies package.json."
 type = "bool"

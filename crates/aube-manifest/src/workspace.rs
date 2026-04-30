@@ -136,6 +136,15 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub prefer_frozen_lockfile: Option<bool>,
 
+    /// Directory where the lockfile is read from and written to. When
+    /// set, install rewrites the project's importer key to its path
+    /// relative to this directory. Mirrors pnpm's `--lockfile-dir` /
+    /// `lockfile-dir` setting. Declared as a typed field only so the
+    /// settings-meta parity test can see the workspace-yaml key — the
+    /// install path reads the value through `aube_settings::resolved`.
+    #[serde(default)]
+    pub lockfile_dir: Option<String>,
+
     /// Write a per-branch lockfile (`pnpm-lock.<branch>.yaml`) instead of
     /// the default `pnpm-lock.yaml`. Reduces merge conflicts on long-lived
     /// branches. Forward slashes in branch names are encoded as `!`.

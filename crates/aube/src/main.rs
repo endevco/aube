@@ -206,6 +206,18 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     include_workspace_root: bool,
 
+    /// Read and write the lockfile from a different directory than the
+    /// project root.
+    ///
+    /// The lockfile (`aube-lock.yaml` / `pnpm-lock.yaml`) is read from
+    /// and written to `<DIR>/<lockfile-name>` instead of
+    /// `<project>/<lockfile-name>`, and the project's importer key
+    /// inside the lockfile becomes its path relative to `<DIR>`
+    /// (e.g. `project` instead of `.`). Mirrors pnpm's `--lockfile-dir`.
+    /// Honored by `aube install` and `aube add`.
+    #[arg(long, global = true, value_name = "DIR")]
+    lockfile_dir: Option<std::path::PathBuf>,
+
     /// Set the log level. Logs at or above this level are shown.
     #[arg(long, global = true, value_name = "LEVEL", value_enum)]
     loglevel: Option<LogLevel>,
@@ -669,6 +681,48 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         std::env::set_current_dir(dir)
             .into_diagnostic()
             .wrap_err_with(|| format!("failed to change directory to {}", dir.display()))?;
+    }
+
+    // `--lockfile-dir` is plumbed two ways: (1) `AUBE_LOCKFILE_DIR` is
+    // exported so the settings system picks it up everywhere a
+    // `ResolveCtx` is built; (2) the aube-lockfile crate's process-wide
+    // override is set immediately so callers that touch the lockfile
+    // before `install::run` resolves settings (e.g. `add`'s `--no-save`
+    // snapshot path) still redirect. Resolve to an absolute path so
+    // downstream code doesn't have to re-anchor against a shifting cwd
+    // (workspace-root chdir, --prefix, etc.). Skip if the user already
+    // set the env var directly.
+    if let Some(lf_dir) = &cli.lockfile_dir {
+        let raw_abs = if lf_dir.is_absolute() {
+            lf_dir.clone()
+        } else {
+            std::env::current_dir()
+                .into_diagnostic()
+                .wrap_err("failed to read cwd for --lockfile-dir")?
+                .join(lf_dir)
+        };
+        // Canonicalize so `..` segments collapse before the alias
+        // computation runs. Without this, `--lockfile-dir ..` from
+        // `<root>/project` leaves the override at literally
+        // `<root>/project/..`, and the relative-path algorithm then
+        // emits `..` as the importer key instead of `project`.
+        // `canonicalize` requires the path to exist; the user would
+        // have to mkdir it before pointing aube at it anyway, so
+        // surfacing the IO error here is more useful than silently
+        // skipping the normalization.
+        let abs = std::fs::canonicalize(&raw_abs)
+            .into_diagnostic()
+            .wrap_err_with(|| {
+                format!(
+                    "--lockfile-dir: failed to canonicalize {}",
+                    raw_abs.display()
+                )
+            })?;
+        if std::env::var_os("AUBE_LOCKFILE_DIR").is_none() {
+            // SAFETY: single-threaded startup, before tokio runtime is built.
+            unsafe { std::env::set_var("AUBE_LOCKFILE_DIR", &abs) };
+        }
+        aube_lockfile::set_lockfile_dir_override(Some(abs));
     }
 
     if cli.version {

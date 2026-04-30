@@ -1405,6 +1405,26 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // re-resolve more eagerly than shared installs do.
     let shared_workspace_lockfile =
         aube_settings::resolved::shared_workspace_lockfile(&settings_ctx);
+    // `--lockfile-dir` (= `lockfileDir` setting) relocates lockfile
+    // reads/writes to a different directory than the project root and
+    // rewrites the importer key from `.` to the project's path
+    // relative to the override. The CLI flag in `main.rs` already
+    // exports `AUBE_LOCKFILE_DIR` and seeds the override so add.rs's
+    // `--no-save` snapshot path can see it; we re-resolve here so
+    // npmrc and `pnpm-workspace.yaml` sources also take effect, with
+    // settings precedence applied (cli > env > npmrc > workspace).
+    // The workspace-combo check fires later, once `has_workspace` is
+    // known, near where the manifests vector is assembled.
+    let lockfile_dir_setting = aube_settings::resolved::lockfile_dir(&settings_ctx);
+    if let Some(raw) = lockfile_dir_setting.as_deref() {
+        let path = std::path::PathBuf::from(raw);
+        let abs = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        };
+        aube_lockfile::set_lockfile_dir_override(Some(abs));
+    }
     // `enableModulesDir=false` is pnpm's persistent equivalent of
     // `--lockfile-only`: resolve + write the lockfile, but don't
     // populate `node_modules/` (no virtual store, no top-level
@@ -1617,6 +1637,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         .wrap_err("failed to discover workspace packages")?;
     let recursive_install = aube_settings::resolved::recursive_install(&settings_ctx);
     let has_workspace = !workspace_packages.is_empty();
+    // pnpm rejects `--lockfile-dir` in a workspace install; aube does
+    // the same so users don't get a silent half-applied install. The
+    // override would otherwise rekey only the root importer's `"."`
+    // and leave workspace member keys untouched, producing a lockfile
+    // that no install can subsequently read back.
+    if has_workspace && lockfile_dir_setting.is_some() {
+        aube_lockfile::set_lockfile_dir_override(None);
+        return Err(miette!(
+            "--lockfile-dir cannot be combined with a workspace \
+             (pnpm-workspace.yaml / aube-workspace.yaml). Pick one."
+        ));
+    }
     let link_all_workspace_importers =
         has_workspace && (recursive_install || !opts.workspace_filter.is_empty());
 

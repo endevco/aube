@@ -79,6 +79,33 @@ YAML
 	assert_file_not_exists aube-lock.yaml
 }
 
+@test "aube --lockfile-dir: writes the lockfile to a parent dir with a relative importer key" {
+	# Ported from pnpm/test/install/misc.ts:112 ('install with external
+	# lockfile directory'). pnpm's `install <pkg> --lockfile-dir ../`
+	# becomes aube's `add <pkg> --lockfile-dir ../`. is-positive
+	# substituted with is-odd.
+	mkdir project
+	cat >project/package.json <<'JSON'
+{
+  "name": "pnpm-misc-lockfile-dir",
+  "version": "1.0.0"
+}
+JSON
+
+	cd project || return
+	run aube --lockfile-dir .. add is-odd
+	assert_success
+	assert_file_exists node_modules/is-odd/index.js
+	# Lockfile must land in the parent dir, not next to package.json.
+	assert_file_exists ../aube-lock.yaml
+	assert_file_not_exists aube-lock.yaml
+	# Importer key in the lockfile is the project's path relative to
+	# the lockfile dir — `project` here, not `.` (which would mean
+	# the parent dir is itself the project).
+	run grep -E '^  project:$' ../aube-lock.yaml
+	assert_success
+}
+
 @test "aube install --prefix: runs install in the named subdirectory" {
 	# Ported from pnpm/test/install/misc.ts:97 ('install from any location
 	# via the --prefix flag'). rimraf substituted with is-odd; we don't
