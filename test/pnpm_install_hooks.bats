@@ -51,6 +51,14 @@ EOF
 	# be empty rather than pulling in is-number / kind-of.
 	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep '^  is-odd@'"
 	assert_output --partial 'is-odd@0.1.2: {}'
+	# Belt-and-braces: confirm the transitive chain is-odd → is-number
+	# → kind-of was actually short-circuited, not just hidden in the
+	# snapshot. A regression that empties the snapshot entry while still
+	# resolving the deps would otherwise sneak through.
+	run grep 'is-number' aube-lock.yaml
+	assert_failure
+	run grep 'kind-of' aube-lock.yaml
+	assert_failure
 }
 
 @test "pnpmfile: async afterAllResolved hook runs and is awaited" {
