@@ -212,6 +212,29 @@ impl Resolver {
                     let client = self.client.clone();
                     let cache_dir = self.packument_cache_dir.clone();
                     let full_cache_dir = self.packument_full_cache_dir.clone();
+                    if client.uses_default_npm_registry_for(&name_owned)
+                        && let Some(seed) = crate::primer::get(name)
+                    {
+                        let packument = seed.packument();
+                        if let Some(dir) = cache_dir.as_ref() {
+                            client.seed_packument_cache(
+                                &name_owned,
+                                dir,
+                                &packument,
+                                seed.etag.as_deref(),
+                                seed.last_modified.as_deref(),
+                            );
+                        }
+                        if needs_time && let Some(dir) = full_cache_dir.as_ref() {
+                            client.seed_full_packument_cache(
+                                &name_owned,
+                                dir,
+                                &packument,
+                                seed.etag.as_deref(),
+                                seed.last_modified.as_deref(),
+                            );
+                        }
+                    }
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
                         let _permit = sem

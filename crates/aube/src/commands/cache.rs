@@ -47,6 +47,8 @@ pub enum CacheCommand {
     /// currently configured to talk to rather than the registries that
     /// happen to be in the cache.
     ListRegistries,
+    /// Remove stale extracted primer files from the metadata cache.
+    Prune(PruneArgs),
     /// View the cached metadata for a single package.
     ///
     /// Prints a summary (versions, dist-tags, ETag, fetched-at) by
@@ -80,10 +82,21 @@ pub struct ViewArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct PruneArgs {
+    /// Do not actually delete anything.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Minimum age in days before an old primer file is removed.
+    #[arg(long, default_value_t = 30)]
+    pub age_days: u64,
+}
+
 pub async fn run(args: CacheArgs) -> miette::Result<()> {
     match args.command {
         CacheCommand::List(a) => list(a),
         CacheCommand::Delete(a) => delete(a),
+        CacheCommand::Prune(a) => prune(a),
         CacheCommand::View(a) => view(a),
         CacheCommand::ListRegistries => list_registries(),
     }
@@ -198,6 +211,23 @@ fn delete(args: DeleteArgs) -> miette::Result<()> {
     if deleted == 0 {
         return Err(miette!("no cached packages matched the given pattern(s)"));
     }
+    Ok(())
+}
+
+fn prune(args: PruneArgs) -> miette::Result<()> {
+    let age = std::time::Duration::from_secs(args.age_days.saturating_mul(24 * 60 * 60));
+    let stats = aube_resolver::prune_primer_cache(args.dry_run, age)
+        .into_diagnostic()
+        .map_err(|e| miette!("failed to prune primer cache: {e}"))?;
+    let label = if args.dry_run {
+        "would prune"
+    } else {
+        "pruned"
+    };
+    println!(
+        "primer cache {label} {} file(s), {} byte(s)",
+        stats.files, stats.bytes
+    );
     Ok(())
 }
 

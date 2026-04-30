@@ -202,6 +202,73 @@ impl RegistryClient {
         self.network_mode
     }
 
+    pub fn uses_default_npm_registry_for(&self, name: &str) -> bool {
+        self.registry_url_for(name) == "https://registry.npmjs.org/"
+    }
+
+    pub fn seed_packument_cache(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+        packument: &Packument,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) {
+        let registry_url = self.config.registry_for(name);
+        let Some(cache_path) = packument_cache_path(cache_dir, name, registry_url) else {
+            return;
+        };
+        if cache_path.exists() {
+            return;
+        }
+        let cached = CachedPackument {
+            etag: etag.map(str::to_owned),
+            last_modified: last_modified.map(str::to_owned),
+            fetched_at: 0,
+            max_age_secs: Some(0),
+            packument: packument.clone(),
+        };
+        if let Err(e) = write_cached_packument(&cache_path, &cached) {
+            tracing::debug!(
+                "failed to seed packument cache {} from bundled primer: {e}",
+                cache_path.display()
+            );
+        }
+    }
+
+    pub fn seed_full_packument_cache(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+        packument: &Packument,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) {
+        let registry_url = self.config.registry_for(name);
+        let Some(cache_path) = packument_full_cache_path(cache_dir, name, registry_url) else {
+            return;
+        };
+        if cache_path.exists() {
+            return;
+        }
+        let Ok(packument) = serde_json::to_value(packument) else {
+            return;
+        };
+        let cached = CachedFullPackument {
+            etag: etag.map(str::to_owned),
+            last_modified: last_modified.map(str::to_owned),
+            fetched_at: 0,
+            max_age_secs: Some(0),
+            packument,
+        };
+        if let Err(e) = write_cached_full_packument(&cache_path, &cached) {
+            tracing::debug!(
+                "failed to seed full packument cache {} from bundled primer: {e}",
+                cache_path.display()
+            );
+        }
+    }
+
     /// Get the registry URL for a given package name (respects scoped registries).
     fn registry_url_for(&self, name: &str) -> &str {
         self.config.registry_for(name)
