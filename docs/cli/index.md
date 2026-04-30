@@ -91,6 +91,12 @@ Include the workspace root in recursive workspace operations.
 
 Parsed for pnpm compatibility.
 
+### `--lockfile-dir <DIR>`
+
+Read and write the lockfile from a different directory than the project root.
+
+The lockfile (`aube-lock.yaml` / `pnpm-lock.yaml`) is read from and written to `<DIR>/<lockfile-name>` instead of `<project>/<lockfile-name>`, and the project's importer key inside the lockfile becomes its path relative to `<DIR>` (e.g. `project` instead of `.`). Mirrors pnpm's `--lockfile-dir`. Honored by `aube install` and `aube add`.
+
 ### `--loglevel <LEVEL>`
 
 Set the log level. Logs at or above this level are shown

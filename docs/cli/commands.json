@@ -5916,6 +5916,26 @@
         "global": true
       },
       {
+        "name": "lockfile-dir",
+        "usage": "--lockfile-dir <DIR>",
+        "help": "Read and write the lockfile from a different directory than the project root",
+        "help_long": "Read and write the lockfile from a different directory than the project root.\n\nThe lockfile (`aube-lock.yaml` / `pnpm-lock.yaml`) is read from and written to `<DIR>/<lockfile-name>` instead of `<project>/<lockfile-name>`, and the project's importer key inside the lockfile becomes its path relative to `<DIR>` (e.g. `project` instead of `.`). Mirrors pnpm's `--lockfile-dir`. Honored by `aube install` and `aube add`.",
+        "help_first_line": "Read and write the lockfile from a different directory than the project root",
+        "short": [],
+        "long": [
+          "lockfile-dir"
+        ],
+        "hide": false,
+        "global": true,
+        "arg": {
+          "name": "DIR",
+          "usage": "<DIR>",
+          "required": true,
+          "double_dash": "Optional",
+          "hide": false
+        }
+      },
+      {
         "name": "loglevel",
         "usage": "--loglevel <LEVEL>",
         "help": "Set the log level. Logs at or above this level are shown",

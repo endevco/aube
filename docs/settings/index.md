@@ -56,6 +56,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`maxsockets`](#setting-maxsockets) | `int` | Maximum concurrent connections per origin. |
 | [`strictSsl`](#setting-strictssl) | `bool` | Validate SSL certificates for HTTPS requests. |
 | [`lockfile`](#setting-lockfile) | `bool` | Read and generate aube-lock.yaml. |
+| [`lockfileDir`](#setting-lockfiledir) | `path` | Directory where aube-lock.yaml is read from and written to. |
 | [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | Perform a headless install if the lockfile already satisfies package.json. |
 | [`lockfileIncludeTarballUrl`](#setting-lockfileincludetarballurl) | `bool` | Add the full tarball URL to each lockfile entry. |
 | [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | Skip local `link:` dependencies when writing the lockfile. |
@@ -1031,6 +1032,39 @@ combined with `lockfile=false` is rejected as a contradiction.
 Examples:
 
 - `echo 'lockfile=false' >> .npmrc && aube install`
+
+### `lockfileDir` {#setting-lockfiledir}
+
+Directory where aube-lock.yaml is read from and written to.
+
+- Type: `path`
+- Default: `undefined`
+- CLI flags: `lockfile-dir`
+- Environment: `npm_config_lockfile_dir`, `NPM_CONFIG_LOCKFILE_DIR`, `AUBE_LOCKFILE_DIR`
+- .npmrc keys: `lockfile-dir`, `lockfileDir`
+- Workspace YAML keys: `lockfileDir`
+
+Relocates the lockfile away from the project root. When set, every
+`aube-lock.yaml` (or `pnpm-lock.yaml` etc.) read or write done by
+`aube install` / `aube add` resolves against this directory instead of
+the project's own root, and the project's importer key in the lockfile
+becomes its path relative to `lockfileDir` (e.g. `project` instead of
+`.`). Mirrors pnpm's `--lockfile-dir`.
+
+Other commands (`aube list`, `aube why`, `aube outdated`, …) keep
+reading from the project root unless they're explicitly invoked with
+the same setting in scope; this PR threads `lockfileDir` through
+install/add only. Workspace projects should not combine `lockfileDir`
+with `pnpm-workspace.yaml` — pnpm does not support that mix and aube
+errors out instead of silently picking one or the other.
+
+`node_modules/.aube-state` and the rest of the install state still
+live alongside `package.json` regardless of `lockfileDir` — only the
+lockfile itself moves.
+
+Examples:
+
+- `aube install --lockfile-dir ../`
 
 ### `preferFrozenLockfile` {#setting-preferfrozenlockfile}
 
