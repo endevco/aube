@@ -70,11 +70,11 @@ struct RawNpmPackage {
     peer_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     peer_dependencies_meta: BTreeMap<String, RawNpmPeerDepMeta>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     os: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     cpu: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
     libc: Vec<String>,
     /// Captured verbatim for round-trip. npm writes these on every
     /// package entry; dropping them on re-emit is one of the
@@ -1875,6 +1875,52 @@ mod tests {
         );
         assert_eq!(
             native.libc.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["glibc"]
+        );
+    }
+
+    /// npm sometimes emits `os` / `cpu` / `libc` as scalar strings instead
+    /// of arrays (e.g. `sass-embedded-linux-arm@1.99.0` ships
+    /// `"libc": "glibc"`). Verbatim-roundtripped into package-lock.json,
+    /// the field stays scalar — accept both shapes the same way the
+    /// pnpm + bun parsers already do.
+    #[test]
+    fn parse_npm_package_platform_fields_accept_scalar_strings() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "scalar-platform-root",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "scalar-platform-root",
+                    "version": "1.0.0",
+                    "dependencies": { "sass-embedded-linux-arm": "1.99.0" }
+                },
+                "node_modules/sass-embedded-linux-arm": {
+                    "version": "1.99.0",
+                    "resolved": "https://registry.npmjs.org/sass-embedded-linux-arm/-/sass-embedded-linux-arm-1.99.0.tgz",
+                    "integrity": "sha512-native",
+                    "cpu": "arm",
+                    "os": "linux",
+                    "libc": "glibc"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let pkg = &graph.packages["sass-embedded-linux-arm@1.99.0"];
+        assert_eq!(
+            pkg.os.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["linux"]
+        );
+        assert_eq!(
+            pkg.cpu.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["arm"]
+        );
+        assert_eq!(
+            pkg.libc.iter().map(String::as_str).collect::<Vec<_>>(),
             vec!["glibc"]
         );
     }
