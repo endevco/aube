@@ -186,7 +186,11 @@ pub(crate) struct Cli {
     /// Exponential backoff factor between retry attempts.
     ///
     /// Overrides `fetchRetryFactor` / `fetch-retry-factor` from
-    /// `.npmrc` / `aube-workspace.yaml` when set.
+    /// `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the
+    /// underlying `FetchPolicy.retry_factor` is `u32`, matching the
+    /// `int` type declared for `fetchRetryFactor` in `settings.toml`
+    /// and the `.npmrc` parser. Fractional values like `1.5` are
+    /// rejected by clap.
     #[arg(long, global = true, value_name = "N")]
     fetch_retry_factor: Option<u64>,
 
