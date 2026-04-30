@@ -379,17 +379,17 @@ pub struct InstallOptions {
     pub workspace_filter: aube_workspace::selector::EffectiveFilter,
     /// Skip the root package's `preinstall` / `install` / `postinstall` /
     /// `prepare` lifecycle hooks. pnpm parity: those hooks fire only on
-    /// argumentless `pnpm install`. Every other entry point — `add`,
-    /// `remove`, `update`, `dedupe`, `dlx`, patch tooling, the
-    /// `ensure_installed` auto-install before `run`/`test`, nested git
-    /// prepare installs — must skip them so a chained `aube add foo`
-    /// doesn't re-run an expensive root postinstall on every invocation.
-    /// Independent of `ignore_scripts`, which also skips dep scripts.
-    /// `with_mode()` defaults to `true` (chained-call constructor); the
-    /// argumentless `aube install` path threaded through
-    /// `InstallArgs::into_options` is the only construction site that
-    /// flips this back to `false`. `aube ci` and `aube deploy` build
-    /// `InstallOptions` literally and explicitly opt back in.
+    /// argumentless `pnpm install`. Every other user-facing entry point —
+    /// `add`, `remove`, `update`, `dedupe`, `dlx`, patch tooling, the
+    /// `ensure_installed` auto-install before `run`/`test` — must skip
+    /// them so a chained `aube add foo` doesn't re-run an expensive root
+    /// postinstall on every invocation. Independent of `ignore_scripts`,
+    /// which also skips dep scripts. `with_mode()` defaults to `true`
+    /// (chained-call constructor). The exceptions are argumentless
+    /// `aube install` (`InstallArgs::into_options`), `aube ci` /
+    /// `aube deploy` (literal struct constructions), and the nested
+    /// git-prepare install — that one's "root" IS the git dep itself and
+    /// running its `prepare` is the whole point.
     pub skip_root_lifecycle: bool,
 }
 

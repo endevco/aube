@@ -106,6 +106,12 @@ pub(super) async fn run_git_dep_prepare(
     opts.project_dir = Some(clone_dir.to_path_buf());
     opts.ignore_scripts = ignore_scripts;
     opts.git_prepare_depth = depth + 1;
+    // Override the chained-call default: this nested install's "root" IS
+    // the git dep itself, and running its `prepare` (plus
+    // pre/post-install) is the entire point of git-dep preparation.
+    // Treat this as if it were an argumentless `aube install` against the
+    // dep's clone directory.
+    opts.skip_root_lifecycle = false;
     let spec = spec.to_string();
     tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
