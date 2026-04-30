@@ -1,5 +1,4 @@
 use super::*;
-use crate::resolve::modified_allows_short_circuit;
 use aube_registry::{Dist, Packument, VersionMetadata};
 use miette::Diagnostic;
 
@@ -750,22 +749,8 @@ fn test_minimum_release_age_zero_disables() {
     assert!(mra.cutoff().is_none());
 }
 
-#[test]
-fn minimum_release_age_modified_short_circuit_requires_utc_timestamp() {
-    let cutoff = "2024-06-01T10:00:00.000Z";
-
-    assert!(modified_allows_short_circuit(
-        "2024-06-01T09:59:59.000Z",
-        cutoff
-    ));
-    assert!(!modified_allows_short_circuit(
-        "2024-06-01T10:00:00-05:00",
-        cutoff
-    ));
-}
-
 #[tokio::test]
-async fn minimum_release_age_uses_modified_to_skip_full_packument() {
+async fn minimum_release_age_fetches_full_packument_directly() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -831,28 +816,21 @@ async fn minimum_release_age_uses_modified_to_skip_full_packument() {
 }
 
 /// Regression: when both `minimumReleaseAge` and `trustPolicy=NoDowngrade`
-/// are active, the corgi-shortcircuit in `Resolver::resolve` must NOT
-/// fire — it would return an abbreviated packument without `time`,
-/// causing the trust check to fail with a spurious
-/// `TrustCheckMissingTime` for every version. Reported by Cursor Bugbot
-/// on PR #333.
+/// are active, the resolver must use a full packument with `time`;
+/// using an abbreviated corgi packument would make the trust check fail
+/// with a spurious `TrustCheckMissingTime` for every version. Reported
+/// by Cursor Bugbot on PR #333.
 #[tokio::test]
 async fn trust_policy_disables_minimum_release_age_short_circuit() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // Two packument bodies sharing one name. The corgi body (served to
-    // requests carrying the corgi Accept header) has `modified` set to
-    // an old timestamp and an empty `time` map — exactly what a real
-    // npmjs.org corgi response looks like. The full body has the same
-    // versions but a populated `time` map. With the bug present,
-    // `minimum_release_age_only` is true, the corgi response satisfies
-    // `modified_allows_short_circuit`, the corgi packument is returned
-    // early, and the trust check fails because `time["1.0.0"]` is
-    // missing. With the fix, `minimum_release_age_only` is forced
-    // false by `trust_policy == NoDowngrade`, the resolver bypasses
-    // the corgi-shortcircuit branch and goes straight to the full
-    // fetch, the trust check sees a populated `time`, finds no prior
-    // versions to compare against, and resolves cleanly.
+    // requests carrying the corgi Accept header) has an empty `time`
+    // map — exactly what a real npmjs.org corgi response looks like.
+    // The full body has the same versions but a populated `time` map.
+    // The resolver should go straight to the full fetch, the trust
+    // check should see a populated `time`, find no prior versions to
+    // compare against, and resolve cleanly.
     let mut corgi = make_packument("foo", &["1.0.0"], "1.0.0");
     corgi.modified = Some("2024-01-01T00:00:00.000Z".to_string());
     let corgi_body = serde_json::to_vec(&corgi).unwrap();

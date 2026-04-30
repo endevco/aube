@@ -148,17 +148,11 @@ impl Resolver {
             || self.minimum_release_age.is_some()
             || self.dependency_policy.trust_policy == crate::TrustPolicy::NoDowngrade)
             && !self.registry_supports_time_field;
-        // Gate for the corgi-shortcircuit at L219-235: when the only
-        // reason we need `time` is `minimumReleaseAge` AND the
-        // packument's top-level `modified` predates the cutoff, every
-        // version is old enough so we can skip the full-packument
-        // fetch. trustPolicy=NoDowngrade adds a second time requirement
-        // (per-version compare), so the shortcircuit must NOT fire when
-        // it's on — otherwise the trust check falls through to a
-        // spurious TrustCheckMissingTime on every version.
-        let minimum_release_age_only = self.resolution_mode != ResolutionMode::TimeBased
-            && self.minimum_release_age.is_some()
-            && self.dependency_policy.trust_policy != crate::TrustPolicy::NoDowngrade;
+        // When time data is required, fetch the full packument directly.
+        // The previous corgi-first shortcut saved bytes for old packages
+        // but cost an extra round trip for active packages whose top-level
+        // `modified` timestamp was newer than the cutoff. Clean installs of
+        // modern dependency graphs are dominated by those active packages.
         // In-flight packument fetches. The spawned task returns the
         // `(name, packument)` tuple so `join_next` gives us back the
         // identity of whichever fetch landed next without a side
@@ -217,7 +211,6 @@ impl Resolver {
                     let client = self.client.clone();
                     let cache_dir = self.packument_cache_dir.clone();
                     let full_cache_dir = self.packument_full_cache_dir.clone();
-                    let cutoff = published_by.clone();
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
                         let _permit = sem
@@ -225,23 +218,6 @@ impl Resolver {
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
                         let packument = if needs_time {
-                            if minimum_release_age_only
-                                && let (Some(dir), Some(cutoff)) =
-                                    (cache_dir.as_ref(), cutoff.as_deref())
-                                && full_cache_dir.is_some()
-                            {
-                                let packument = client
-                                    .fetch_packument_cached(&name_owned, dir)
-                                    .await
-                                    .map_err(|e| {
-                                        Error::Registry(name_owned.clone(), e.to_string())
-                                    })?;
-                                if packument.modified.as_deref().is_some_and(|modified| {
-                                    modified_allows_short_circuit(modified, cutoff)
-                                }) {
-                                    return Ok::<_, Error>((name_owned, packument));
-                                }
-                            }
                             match full_cache_dir.as_ref() {
                                 Some(dir) => {
                                     client
@@ -1985,10 +1961,6 @@ fn prefer_non_vulnerable_pick<'a>(
         }
     }
     best.map(|(_, meta)| meta).unwrap_or(fallback)
-}
-
-pub(crate) fn modified_allows_short_circuit(modified: &str, cutoff: &str) -> bool {
-    modified.ends_with('Z') && modified <= cutoff
 }
 
 /// Seed the BFS queue with direct deps from every importer manifest.
