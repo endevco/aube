@@ -157,11 +157,9 @@ YAML
 
 	run aube --filter=project-1 add --save-catalog "project-0@workspace:*"
 	assert_success
-	# project-0 is a local workspace package — must NOT land in the catalog
-	# even though --save-catalog was passed.
-	run grep -F "project-0:" pnpm-workspace.yaml
-	# pnpm-workspace.yaml's only `project-0:` reference should be in `packages:`,
-	# not under `catalog:`. Easiest assertion: no `catalog:` block exists.
+	# project-0 is a local workspace package — `--save-catalog` must NOT
+	# create a catalog entry for it. Easiest invariant: no `catalog:`
+	# top-level key was introduced.
 	run bash -c "grep -E '^catalog:' pnpm-workspace.yaml || true"
 	assert_output ""
 	# project-1's manifest writes `workspace:*`, not `catalog:`.
