@@ -67,10 +67,9 @@ updated JSON to refresh the chart above — the VitePress data loader at
 reads it at build time, so you don't need to edit `benchmarks.md` or
 hand-write any chart data.
 
-Benchmark runs use a hermetic local registry with the link throttled to
-a fixed 500mbit baseline plus 50ms of per-request latency — a "fast home
-broadband" shape — so two runs on different ISPs or CI runners produce
-comparable numbers:
+Benchmark runs use a hermetic local registry with the link shaped to a
+fixed 500mbit / 50ms baseline — a "fast home broadband" profile — so
+two runs on different ISPs or CI runners produce comparable numbers:
 
 ```sh
 flock /tmp/aube-bench.lock mise run bench

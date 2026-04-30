@@ -17,6 +17,7 @@ use primer_schema::{
 
 const PRIMER_FORMAT: &str = "rkyv-v1";
 const PRUNE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const AUTO_PRUNE_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
 const AUTO_PRUNE_DENOMINATOR: u8 = 100;
 
 include!(concat!(env!("OUT_DIR"), "/primer_index.rs"));
@@ -166,7 +167,7 @@ fn auto_prune(dir: &Path) {
     if !random_byte().is_multiple_of(AUTO_PRUNE_DENOMINATOR) {
         return;
     }
-    if let Err(e) = prune_old(dir, PRUNE_AGE, false, true) {
+    if let Err(e) = prune_old(dir, PRUNE_AGE, false, Some(AUTO_PRUNE_COOLDOWN)) {
         tracing::debug!("failed to prune old primer cache files: {e}");
     }
 }
@@ -175,25 +176,25 @@ pub fn prune_cache(dry_run: bool, age: Duration) -> std::io::Result<PruneStats> 
     let Some(dir) = primer_cache_dir() else {
         return Ok(PruneStats::default());
     };
-    prune_old(&dir, age, dry_run, false)
+    prune_old(&dir, age, dry_run, None)
 }
 
 fn prune_old(
     dir: &Path,
     age: Duration,
     dry_run: bool,
-    check_sentinel: bool,
+    sentinel_cooldown: Option<Duration>,
 ) -> std::io::Result<PruneStats> {
     let mut stats = PruneStats::default();
     std::fs::create_dir_all(dir)?;
     let sentinel = dir.join(".auto_prune");
-    if check_sentinel
+    if let Some(cooldown) = sentinel_cooldown
         && let Ok(modified) = sentinel.metadata().and_then(|m| m.modified())
-        && modified.elapsed().unwrap_or_default() < age
+        && modified.elapsed().unwrap_or_default() < cooldown
     {
         return Ok(stats);
     }
-    if check_sentinel {
+    if sentinel_cooldown.is_some() {
         touch(&sentinel)?;
     }
     let entries = std::fs::read_dir(dir)?;
@@ -287,9 +288,29 @@ mod tests {
         let dir = temp.path();
         std::fs::write(dir.join("rkyv-v1-old-0-old.rkyv"), "{}").unwrap();
         std::fs::write(dir.join("packument.json"), "{}").unwrap();
-        let stats = prune_old(dir, Duration::from_secs(0), false, false).unwrap();
+        let stats = prune_old(dir, Duration::from_secs(0), false, None).unwrap();
         assert_eq!(stats.files, 1);
         assert!(!dir.join("rkyv-v1-old-0-old.rkyv").exists());
         assert!(dir.join("packument.json").exists());
+    }
+
+    #[test]
+    fn prune_sentinel_uses_own_cooldown() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let primer_file = dir.join("rkyv-v1-old-0-old.rkyv");
+        std::fs::write(&primer_file, "{}").unwrap();
+        touch(&dir.join(".auto_prune")).unwrap();
+
+        let stats = prune_old(
+            dir,
+            Duration::from_secs(0),
+            false,
+            Some(Duration::from_secs(60)),
+        )
+        .unwrap();
+
+        assert_eq!(stats.files, 0);
+        assert!(primer_file.exists());
     }
 }

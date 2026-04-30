@@ -23,8 +23,8 @@
 #                           `6250000` (bytes/s as a bare integer).
 #                           When set, traffic goes through
 #                           throttle-proxy.mjs instead of direct.
-#   BENCH_LATENCY         — optional fixed per-request latency for the
-#                           throttle proxy, e.g. `50ms` or `1s`.
+#   BENCH_LATENCY         — optional fixed response latency for the
+#                           throttle proxy, e.g. `50ms`.
 #   BENCH_PROXY_PORT      — localhost port for the throttle proxy
 #                           (default: 4875).
 #
@@ -140,7 +140,12 @@ _hermetic_stop_verdaccio() {
 # aube is skipped when `$AUBE_BIN` isn't built yet, so warming is still
 # bootstrap-safe for CI flows that warm before compiling aube.
 _hermetic_warm() {
-	if [ -f "$HERMETIC_WARMED_SENTINEL" ]; then
+	local warm_sentinel="$HERMETIC_WARMED_SENTINEL"
+	if [ "${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn}" != "aube,bun,pnpm,npm,yarn" ]; then
+		warm_sentinel="$HERMETIC_STORAGE/.warmed.${BENCH_TOOLS//[^A-Za-z0-9_.-]/_}"
+	fi
+
+	if [ -f "$HERMETIC_WARMED_SENTINEL" ] || [ -f "$warm_sentinel" ]; then
 		return 0
 	fi
 
@@ -171,6 +176,10 @@ _hermetic_warm() {
 	_warm_one() {
 		local pm=$1 bin=$2
 		shift 2
+		case ",${BENCH_TOOLS:-}," in
+		,, | *,"$pm",*) ;;
+		*) return 0 ;;
+		esac
 		if [ -z "$bin" ] || { [ ! -x "$bin" ] && ! command -v "$bin" >/dev/null 2>&1; }; then
 			echo "  skip $pm (not available)" >&2
 			return 0
@@ -208,7 +217,7 @@ _hermetic_warm() {
 	unset -f _warm_one
 	rm -rf "$warm_root"
 	_hermetic_stop_verdaccio
-	: >"$HERMETIC_WARMED_SENTINEL"
+	: >"$warm_sentinel"
 	echo "Hermetic registry cache warmed." >&2
 }
 
@@ -218,19 +227,13 @@ _hermetic_warm() {
 # listening so we know when to return.
 _hermetic_start_proxy() {
 	local rate=$1
-	local latency=${2:-}
 	local upstream="http://127.0.0.1:$BENCH_VERDACCIO_PORT"
-	local args=(
-		"$HERMETIC_DIR/throttle-proxy.mjs"
-		--port "$BENCH_PROXY_PORT"
-		--upstream "$upstream"
-		--rate "$rate"
-	)
-	if [ -n "$latency" ]; then
-		args+=(--latency "$latency")
-	fi
 
-	node "${args[@]}" \
+	node "$HERMETIC_DIR/throttle-proxy.mjs" \
+		--port "$BENCH_PROXY_PORT" \
+		--upstream "$upstream" \
+		--rate "$rate" \
+		--latency "${BENCH_LATENCY:-0}" \
 		>"$BENCH_HERMETIC_CACHE/proxy.log" 2>&1 &
 	HERMETIC_PROXY_PID=$!
 	export HERMETIC_PROXY_PID
@@ -270,16 +273,12 @@ hermetic_start() {
 	fi
 
 	if [ -n "${BENCH_BANDWIDTH:-}" ]; then
-		if ! _hermetic_start_proxy "$BENCH_BANDWIDTH" "${BENCH_LATENCY:-}"; then
+		if ! _hermetic_start_proxy "$BENCH_BANDWIDTH"; then
 			_hermetic_stop_verdaccio
 			return 1
 		fi
 		export BENCH_REGISTRY_URL="http://127.0.0.1:$BENCH_PROXY_PORT"
-		local latency_label=""
-		if [ -n "${BENCH_LATENCY:-}" ]; then
-			latency_label=", latency $BENCH_LATENCY"
-		fi
-		echo "Hermetic registry: $BENCH_REGISTRY_URL (throttled to $BENCH_BANDWIDTH${latency_label} via proxy, upstream :$BENCH_VERDACCIO_PORT)" >&2
+		echo "Hermetic registry: $BENCH_REGISTRY_URL (throttled to $BENCH_BANDWIDTH, latency ${BENCH_LATENCY:-0}, upstream :$BENCH_VERDACCIO_PORT)" >&2
 	else
 		export BENCH_REGISTRY_URL="http://127.0.0.1:$BENCH_VERDACCIO_PORT"
 		echo "Hermetic registry: $BENCH_REGISTRY_URL (unthrottled)" >&2

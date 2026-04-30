@@ -6,6 +6,12 @@ on:
     # refreshed bench PR is waiting for review by start of workday (US/EU).
     - cron: "0 5 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rewrite benchmarks even when the aube version has not changed
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,16 +27,17 @@ jobs:
   # Gate: only run bench if `benchmarks/results.json` is pinned to an older
   # `aube` version than the workspace. A pure chore/docs push to main
   # doesn't invalidate bench numbers; we only care when a feat/fix/perf
-  # bump has landed since the last refresh.
+  # bump has landed since the last refresh. workflow_dispatch can force
+  # a rewrite when benchmark methodology changes but the version does not.
   check:
     name: Check version drift
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     outputs:
       drift: ${{ steps.drift.outputs.drift }}
       workspace: ${{ steps.drift.outputs.workspace }}
       bench: ${{ steps.drift.outputs.bench }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Compare workspace vs bench version
         id: drift
         run: |
@@ -39,38 +46,45 @@ jobs:
           BENCH=$(jq -r '.versions.aube // empty' benchmarks/results.json)
           echo "Workspace aube: $WORKSPACE"
           echo "Bench aube:     $BENCH"
+          echo "Force refresh:  $FORCE_REFRESH"
           if [ -z "$WORKSPACE" ]; then
             echo "::error::Could not read workspace aube version"
             exit 1
           fi
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
           echo "bench=$BENCH" >> "$GITHUB_OUTPUT"
-          if [ "$WORKSPACE" = "$BENCH" ]; then
+          if [ "$FORCE_REFRESH" = "true" ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          elif [ "$WORKSPACE" = "$BENCH" ]; then
             echo "drift=false" >> "$GITHUB_OUTPUT"
           else
             echo "drift=true" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
 
   refresh:
     name: Refresh benchmarks
     needs: check
     if: needs.check.outputs.drift == 'true'
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
-      - uses: jdx/mise-action@v2
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
+        with:
+          cache: rust
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
         env:
           MISE_LOCKED: "1"
-      - uses: Swatinem/rust-cache@v2
       - name: Restore hermetic bench registry cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/aube-bench/registry
           key: aube-bench-registry-${{ runner.os }}-v1
@@ -125,7 +139,7 @@ jobs:
           cat > /tmp/bench_body.md <<EOF
           ## 🤖 Refreshed benchmarks
 
-          \`benchmarks/results.json\` was pinned to aube \`${BENCH:-<unset>}\` but the workspace is now \`${WORKSPACE}\`. Re-ran \`mise run bench:bump\` on the hermetic Verdaccio registry (throttled per the mise task) and regenerated \`benchmarks/results.json\` plus the README \`BENCH_RATIOS\` block. The benchmark matrix pins aube's GVS mode via \`npm_config_enable_global_virtual_store=true|false\` (the auto-synthesized env alias for the \`enableGlobalVirtualStore\` setting), so GitHub Actions' inherited \`CI=true\` environment does not change whether aube runs with GVS enabled or disabled.
+          \`benchmarks/results.json\` was pinned to aube \`${BENCH:-<unset>}\`; the workspace is now \`${WORKSPACE}\`. Re-ran \`mise run bench:bump\` on the hermetic Verdaccio registry (500mbit / 50ms per the mise task) and regenerated \`benchmarks/results.json\` plus the README \`BENCH_RATIOS\` block. The benchmark matrix pins aube's GVS mode via \`npm_config_enable_global_virtual_store=true|false\` (the auto-synthesized env alias for the \`enableGlobalVirtualStore\` setting), so GitHub Actions' inherited \`CI=true\` environment does not change whether aube runs with GVS enabled or disabled.
 
           $(cat /tmp/bench_summary.md)
 

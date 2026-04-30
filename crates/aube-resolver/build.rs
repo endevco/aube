@@ -13,6 +13,8 @@ use primer_schema::Seed;
 const DEV_TOP: usize = 100;
 const RELEASE_TOP: usize = 2000;
 const VERSION_CAP: usize = 1000;
+const FAST_COMPRESSION_LEVEL: i32 = 10;
+const RELEASE_CI_COMPRESSION_LEVEL: i32 = 19;
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -93,7 +95,8 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) {
     let input = std::fs::read(&json).unwrap();
     let primer: BTreeMap<String, Seed> = serde_json::from_slice(&input).unwrap();
     let archived = rkyv::to_bytes::<rkyv::rancor::Error>(&primer).unwrap();
-    let compressed = zstd::stream::encode_all(Cursor::new(archived), 19).unwrap();
+    let compressed =
+        zstd::stream::encode_all(Cursor::new(archived), primer_compression_level()).unwrap();
     std::fs::write(source, compressed).unwrap();
     let _ = std::fs::remove_file(json);
 }
@@ -107,7 +110,9 @@ fn write_package_blob(out_dir: &Path, compressed: &[u8]) {
             rkyv::from_bytes::<BTreeMap<String, Seed>, rkyv::rancor::Error>(&archived).unwrap();
         for (name, seed) in primer {
             let archived = rkyv::to_bytes::<rkyv::rancor::Error>(&seed).unwrap();
-            let compressed = zstd::stream::encode_all(Cursor::new(archived), 10).unwrap();
+            let compressed =
+                zstd::stream::encode_all(Cursor::new(archived), primer_compression_level())
+                    .unwrap();
             let offset = blob.len();
             let len = compressed.len();
             blob.extend_from_slice(&compressed);
@@ -124,4 +129,15 @@ fn write_package_blob(out_dir: &Path, compressed: &[u8]) {
     }
     generated.push_str("];\n");
     std::fs::write(out_dir.join("primer_index.rs"), generated).unwrap();
+}
+
+fn primer_compression_level() -> i32 {
+    match std::env::var("PROFILE").as_deref() {
+        Ok("release" | "release-native" | "release-pgo")
+            if std::env::var_os("GITHUB_ACTIONS").is_some() =>
+        {
+            RELEASE_CI_COMPRESSION_LEVEL
+        }
+        _ => FAST_COMPRESSION_LEVEL,
+    }
 }

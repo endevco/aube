@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Bandwidth-throttling HTTP proxy for hermetic Aube benchmarks.
+// Bandwidth/latency-throttling HTTP proxy for hermetic Aube benchmarks.
 //
-// Sits between the package managers and the local Verdaccio instance,
-// applies a fixed per-request latency before response headers, and
-// applies a token-bucket rate limit on the response body so we can
-// measure install performance under a simulated internet link without
-// relying on OS-level traffic shaping.
+// Sits between the package managers and the local Verdaccio instance
+// and applies a fixed response latency plus token-bucket rate limit on
+// the response body so we can measure install performance under a
+// simulated internet link (e.g. 50 ms + 50 Mbit/s) without relying on
+// OS-level traffic shaping (which would need root and would vary
+// between macOS and Linux).
 //
 // Throttling is download-only on purpose: the request side of npm
 // installs is tiny (a GET with some headers); all the bytes are on the
@@ -30,7 +31,7 @@
 //   <n>                                  — bare integer, bytes/sec
 //
 // --latency units:
-//   <n>ms, <n>s, or a bare integer in milliseconds.
+//   <n>ms, <n>s, <n>                     — milliseconds unless suffixed with s
 
 import { createServer, request as httpRequest } from 'node:http';
 import { Transform } from 'node:stream';
@@ -80,23 +81,10 @@ function parseRate(raw) {
 // Returns milliseconds.
 function parseLatency(raw) {
 	if (!raw) return 0;
-	const m = String(raw).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([a-z]*)$/);
+	const m = String(raw).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(ms|s)?$/);
 	if (!m) throw new Error(`cannot parse latency: ${raw}`);
 	const n = Number(m[1]);
-	const unit = m[2];
-	switch (unit) {
-		case '':
-		case 'ms':
-			return Math.floor(n);
-		case 's':
-			return Math.floor(n * 1000);
-		default:
-			throw new Error(`unknown latency unit: ${unit}`);
-	}
-}
-
-function delay(ms) {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+	return Math.floor(m[2] === 's' ? n * 1000 : n);
 }
 
 // Token-bucket shared across every response. Refills to `capacity`
@@ -200,14 +188,28 @@ function main() {
 				path: clientReq.url,
 				headers,
 			},
-			async (upstreamRes) => {
+			(upstreamRes) => {
+				const forward = () => {
+					if (clientRes.destroyed) {
+						upstreamRes.destroy();
+						return;
+					}
+					try {
+						clientRes.writeHead(upstreamRes.statusCode, upstreamRes.headers);
+						upstreamRes.pipe(createThrottleStream(bucket)).pipe(clientRes);
+						upstreamRes.resume();
+					} catch (err) {
+						upstreamRes.destroy(err);
+						clientRes.destroy(err);
+					}
+				};
+
+				upstreamRes.pause();
 				if (latencyMs > 0) {
-					upstreamRes.pause();
-					await delay(latencyMs);
-					upstreamRes.resume();
+					setTimeout(forward, latencyMs);
+				} else {
+					forward();
 				}
-				clientRes.writeHead(upstreamRes.statusCode, upstreamRes.headers);
-				upstreamRes.pipe(createThrottleStream(bucket)).pipe(clientRes);
 			},
 		);
 
@@ -234,7 +236,7 @@ function main() {
 
 	server.listen(port, '127.0.0.1', () => {
 		const rateLabel = `${bytesPerSec} B/s (${((bytesPerSec * 8) / 1_000_000).toFixed(1)} Mbit/s)`;
-		const latencyLabel = latencyMs > 0 ? `, ${latencyMs}ms latency` : '';
+		const latencyLabel = latencyMs > 0 ? ` + ${latencyMs} ms latency` : '';
 		console.log(`throttle-proxy listening on 127.0.0.1:${port} → ${upstream.origin} @ ${rateLabel}${latencyLabel} (shared bucket)`);
 	});
 

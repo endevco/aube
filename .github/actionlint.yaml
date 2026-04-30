@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - namespace-profile-endev-linux-amd64
+    - namespace-profile-endev-linux-arm64
+    - namespace-profile-endev-macos-arm64

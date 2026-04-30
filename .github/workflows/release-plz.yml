@@ -17,7 +17,7 @@ jobs:
   # dependency order. Otherwise it's a no-op.
   release-plz-release:
     name: release-plz release
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     # Two commits landing on main in quick succession must not double-publish.
     concurrency:
       group: release-plz-release-${{ github.ref }}
@@ -27,15 +27,17 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
-      - uses: Swatinem/rust-cache@v2
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
+        with:
+          cache: rust
       - name: Run release-plz
         id: release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@1528104d2ca23787631a1c1f022abb64b34c1e11 # v0.5
         with:
           command: release
         env:
@@ -125,7 +127,7 @@ jobs:
     name: Publish release
     needs: [release-plz-release, upload-assets]
     if: ${{ always() && needs.release-plz-release.outputs.tag != '' && needs.release-plz-release.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: write
     steps:
@@ -143,15 +145,15 @@ jobs:
     name: Enhance release notes
     needs: [release-plz-release, publish-release]
     if: ${{ needs.release-plz-release.outputs.tag != '' }}
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: refs/tags/${{ needs.release-plz-release.outputs.tag }}
           submodules: recursive
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
         with:
           install_args: communique
       - name: Enhance GitHub release with communique
@@ -194,7 +196,7 @@ jobs:
   # an out-of-date `aube.usage.kdl`.
   release-plz-pr:
     name: release-plz PR
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: write
       pull-requests: write
@@ -202,7 +204,7 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
@@ -212,11 +214,13 @@ jobs:
       # of silently re-resolving `"latest"` pins and rewriting mise.lock.
       # release-plz refuses to run against a dirty tree, and intentional
       # lockfile bumps should land via their own PR.
-      - uses: jdx/mise-action@v2
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
+        with:
+          cache: rust
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
         env:
           MISE_LOCKED: "1"
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@7769b73c2ec98c38dfcf2e18c83cfd4880c038c1 # v2
         with:
           tool: release-plz
       - name: Configure git identity

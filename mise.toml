@@ -45,6 +45,14 @@ run = [
   "mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
 ]
 
+[tasks."bench:pr"]
+dir = "{{config_root}}"
+env = { RUNS = "3", WARMUP = "1", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms", BENCH_TOOLS = "aube,bun,pnpm", BENCH_SCENARIOS = "gvs-warm,ci-warm,ci-cold", BENCH_PHASES = "0" }
+run = [
+  "cargo build --release",
+  "mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh",
+]
+
 # Regenerate `benchmarks/results.json` (and the markdown summary) by
 # re-running the full hyperfine scenario matrix with a release build
 # and 10 runs × 3 warmups, then writing the structured output into

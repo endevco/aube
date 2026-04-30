@@ -20,7 +20,7 @@ env:
 
 jobs:
   publish-copr:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 150
     container:
       image: fedora:45
@@ -35,7 +35,7 @@ jobs:
           rpmdev-setuptree
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'release' && github.ref || inputs.tag }}
           fetch-depth: 0
@@ -78,7 +78,7 @@ jobs:
           COPR_API_TOKEN: ${{ secrets.COPR_API_TOKEN }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: copr-${{ env.VERSION }}
           path: artifacts/

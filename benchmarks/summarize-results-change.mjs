@@ -12,13 +12,16 @@ const after = JSON.parse(readFileSync(afterPath, 'utf8'))
 
 const beforeRows = new Map(before.rows.map((row) => [row.key, row]))
 const afterRows = new Map(after.rows.map((row) => [row.key, row]))
-const tools = ['aube', 'bun', 'pnpm']
+const tools = (after.managers || ['aube', 'bun', 'pnpm'])
+  .filter((tool) => before.managers?.includes(tool) !== false)
 
 function ms(value) {
+  if (value == null) return 'n/a'
   return `${value}ms`
 }
 
 function pct(beforeValue, afterValue) {
+  if (beforeValue == null || afterValue == null) return 'n/a'
   const change = ((afterValue - beforeValue) / beforeValue) * 100
   const sign = change > 0 ? '+' : ''
   return `${sign}${Math.round(change)}%`
@@ -26,6 +29,7 @@ function pct(beforeValue, afterValue) {
 
 function ratio(row, tool) {
   const values = row.values
+  if (values[tool] == null || values.aube == null) return null
   const speedup = values[tool] / values.aube
   return speedup < 2 ? `${speedup.toFixed(1)}x` : `${Math.round(speedup)}x`
 }
@@ -34,7 +38,10 @@ function ratioChange(key, tool) {
   const beforeRow = beforeRows.get(key)
   const afterRow = afterRows.get(key)
   if (!beforeRow || !afterRow) return null
-  return `${ratio(beforeRow, tool)} -> ${ratio(afterRow, tool)}`
+  const beforeRatio = ratio(beforeRow, tool)
+  const afterRatio = ratio(afterRow, tool)
+  if (!beforeRatio || !afterRatio) return null
+  return `${beforeRatio} -> ${afterRatio}`
 }
 
 const versionChanges = Object.keys(after.versions)
@@ -63,8 +70,16 @@ if (versionChanges.length > 0) {
   console.log(versionChanges.join('\n'))
   console.log()
 }
-console.log(`Public ratios: warm installs vs Bun ${ratioChange('gvs-warm', 'bun')}, vs pnpm ${ratioChange('gvs-warm', 'pnpm')}; repeat test vs Bun ${ratioChange('install-test', 'bun')}, vs pnpm ${ratioChange('install-test', 'pnpm')}.`)
-console.log()
-console.log('| Benchmark | aube | Bun | pnpm |')
-console.log('| --- | ---: | ---: | ---: |')
+const ratioChanges = [
+  ['warm installs vs Bun', ratioChange('gvs-warm', 'bun')],
+  ['warm installs vs pnpm', ratioChange('gvs-warm', 'pnpm')],
+  ['repeat test vs Bun', ratioChange('install-test', 'bun')],
+  ['repeat test vs pnpm', ratioChange('install-test', 'pnpm')],
+].filter(([, value]) => value)
+if (ratioChanges.length > 0) {
+  console.log(`Public ratios: ${ratioChanges.map(([label, value]) => `${label} ${value}`).join('; ')}.`)
+  console.log()
+}
+console.log(`| Benchmark | ${tools.join(' | ')} |`)
+console.log(`| --- | ${tools.map(() => '---:').join(' | ')} |`)
 console.log(table.join('\n'))
