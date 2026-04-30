@@ -118,6 +118,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`ignoreCompatibilityDb`](#setting-ignorecompatibilitydb) | `bool` | Disable pnpm's automatic dependency patching database. |
 | [`resolutionMode`](#setting-resolutionmode) | `"highest" \| "time-based" \| "lowest-direct"` | Dependency version resolution strategy. |
 | [`registrySupportsTimeField`](#setting-registrysupportstimefield) | `bool` | Whether the configured registry returns a `time` field in metadata. |
+| [`forceMetadataPrimer`](#setting-forcemetadataprimer) | `bool` | Force the bundled metadata primer on for custom registries. |
 | [`extendNodePath`](#setting-extendnodepath) | `bool` | Set NODE_PATH in command shims. |
 | [`deployAllFiles`](#setting-deployallfiles) | `bool` | Copy all files when deploying a workspace package. |
 | [`dedupeDirectDeps`](#setting-dedupedirectdeps) | `bool` | Skip symlinking workspace-root dependencies if identical across packages. |
@@ -2101,6 +2102,27 @@ resolution nor `minimumReleaseAge` is active, since nothing asks for
 Examples:
 
 - `echo 'registry-supports-time-field=true' >> .npmrc`
+
+### `forceMetadataPrimer` {#setting-forcemetadataprimer}
+
+Force the bundled metadata primer on for custom registries.
+
+- Type: `bool`
+- Default: `false`
+- Environment: `npm_config_force_metadata_primer`, `NPM_CONFIG_FORCE_METADATA_PRIMER`, `AUBE_FORCE_METADATA_PRIMER`
+- .npmrc keys: `force-metadata-primer`, `forceMetadataPrimer`
+
+By default aube only uses its bundled npm metadata primer when the
+effective registry is npmjs.org, because the primer is generated from
+npmjs metadata. Enable this for trusted npm-compatible mirrors and
+controlled benchmarks where the mirror serves the same packages but
+uses a different registry URL. When forced, aube rewrites primer
+tarball URLs to the configured registry before seeding the cache, so
+tarball bytes still come from the mirror rather than npmjs.org.
+
+Examples:
+
+- `echo 'force-metadata-primer=true' >> .npmrc`
 
 ### `extendNodePath` {#setting-extendnodepath}
 
