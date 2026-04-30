@@ -132,6 +132,13 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub lockfile: Option<bool>,
 
+    /// Directory the lockfile is written to and read from. When unset
+    /// or equal to the project root, behaves as before. When set to a
+    /// different directory, the project becomes an importer keyed by
+    /// its relative path (mirrors pnpm's `lockfile-dir`).
+    #[serde(default)]
+    pub lockfile_dir: Option<String>,
+
     /// Whether to prefer frozen lockfile (default: true).
     #[serde(default)]
     pub prefer_frozen_lockfile: Option<bool>,
