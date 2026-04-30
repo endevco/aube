@@ -257,3 +257,223 @@ JSON
 	assert_dir_exists 'node_modules/@pnpm.e2e/with-same-file-in-different-cases'
 	assert_file_exists 'node_modules/@pnpm.e2e/with-same-file-in-different-cases/package.json'
 }
+
+@test "aube install --lockfile-only: terminates on circular peer dependencies" {
+	# Ported from pnpm/test/install/misc.ts:556 ('do not hang on circular
+	# peer dependencies', covers pnpm/pnpm#8720). pnpm's fixture is a
+	# 100+-package real-world workspace; we use the minimal shape that
+	# reproduces the cycle (two workspace packages peer-depending on each
+	# other) to keep the test hermetic. The regression guard is the
+	# resolver actually terminating — bounded by the fixed-point loop in
+	# aube-resolver/src/peer_context.rs (max 16 iterations).
+	mkdir -p packages/a packages/b
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "packages/*"
+YAML
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-circular-peers",
+  "version": "1.0.0",
+  "private": true
+}
+JSON
+	cat >packages/a/package.json <<'JSON'
+{
+  "name": "circular-a",
+  "version": "1.0.0",
+  "dependencies": { "circular-b": "workspace:*" },
+  "peerDependencies": { "circular-b": "workspace:*" }
+}
+JSON
+	cat >packages/b/package.json <<'JSON'
+{
+  "name": "circular-b",
+  "version": "1.0.0",
+  "dependencies": { "circular-a": "workspace:*" },
+  "peerDependencies": { "circular-a": "workspace:*" }
+}
+JSON
+
+	# Hard 60s ceiling — if the resolver regresses into a hang, fail fast
+	# instead of stalling the entire bats run. `timeout` is GNU-coreutils
+	# (Linux/CI); macOS ships it only via `brew install coreutils` as
+	# `gtimeout`. Probe for both, fall back to running uncovered if
+	# neither is on PATH (the in-resolver 16-iteration bound is still a
+	# hard guarantee).
+	local timeout_cmd=""
+	if command -v timeout >/dev/null 2>&1; then
+		timeout_cmd="timeout 60"
+	elif command -v gtimeout >/dev/null 2>&1; then
+		timeout_cmd="gtimeout 60"
+	fi
+	# shellcheck disable=SC2086 # intentional word-split: empty -> no wrapper
+	run $timeout_cmd aube install --lockfile-only
+	assert_success
+	assert_file_exists aube-lock.yaml
+}
+
+# Trust-policy block (pnpm misc.ts:578-643). pnpm's `--trust-policy=…`
+# CLI flag has no aube counterpart; aube reads `trustPolicy` from
+# `.npmrc` / `pnpm-workspace.yaml` / env (`AUBE_TRUST_POLICY`), so each
+# port writes a small `.npmrc` instead of passing a flag. Fixtures:
+# `@pnpm/e2e.test-provenance` mirrored at versions 0.0.0, 0.0.4 (with
+# SLSA provenance + GitHub trustedPublisher), 0.0.5 (no evidence — the
+# downgrade). `@pnpm.e2e/has-untrusted-optional-dep@1.0.0` already in
+# the registry, optionally depends on `@pnpm/e2e.test-provenance@0.0.5`.
+
+@test "trustPolicy=no-downgrade: install fails when picked version drops trust evidence" {
+	# Ported from pnpm/test/install/misc.ts:578.
+	# pnpm: --trust-policy=no-downgrade. aube: write to .npmrc.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-fail",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_failure
+	assert_output --partial "trust downgrade for @pnpm/e2e.test-provenance@0.0.5"
+	assert_file_not_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicy=off: install succeeds even on a downgraded version" {
+	# Ported from pnpm/test/install/misc.ts:589.
+	# Aube's default trustPolicy is no-downgrade; the test must explicitly
+	# turn it off to mirror pnpm's --trust-policy=off.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=off
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-off",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicyExclude with name@version: install succeeds for the listed version" {
+	# Ported from pnpm/test/install/misc.ts:600.
+	# pnpm: --trust-policy-exclude=@pnpm/e2e.test-provenance@0.0.5
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+trust-policy-exclude=@pnpm/e2e.test-provenance@0.0.5
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-exclude-version",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicyExclude with bare name: install succeeds for any version of that package" {
+	# Ported from pnpm/test/install/misc.ts:612.
+	# pnpm: --trust-policy-exclude=@pnpm/e2e.test-provenance (no version).
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+trust-policy-exclude=@pnpm/e2e.test-provenance
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-exclude-name",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "trustPolicy=no-downgrade: install fails when an optional dep's trust evidence is downgraded" {
+	# Ported from pnpm/test/install/misc.ts:624. The hard-fail behavior
+	# is intentional even for optional deps — a supply-chain regression
+	# in an optional package is still a supply-chain regression.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-optional-fail",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm.e2e/has-untrusted-optional-dep@1.0.0
+	assert_failure
+	assert_output --partial "trust downgrade for @pnpm/e2e.test-provenance@0.0.5"
+}
+
+@test "trustPolicyIgnoreAfter: install succeeds when picked version is older than the cutoff" {
+	# Ported from pnpm/test/install/misc.ts:635.
+	# pnpm: --trust-policy-ignore-after=1440 (skip check for versions
+	# published more than 1 day ago). The mirrored 0.0.5 was published
+	# 2025-11-09, so the cutoff exempts it on any recent test run.
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+trust-policy=no-downgrade
+trust-policy-ignore-after=1440
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-trust-ignore-after",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add @pnpm/e2e.test-provenance@0.0.5
+	assert_success
+	assert_file_exists node_modules/@pnpm/e2e.test-provenance/package.json
+}
+
+@test "strict-peer-dependencies: peer-deps warning renders without crashing the resolver" {
+	# Ported from pnpm/test/install/misc.ts:541 ('do not fail to render
+	# peer dependencies warning, when cache was hit during peer
+	# resolution', covers pnpm/pnpm#8538). pnpm asserts status=0 + the
+	# warning string in stdout — pnpm warns by default. aube is silent
+	# by default (matching bun/npm/yarn) and `strict-peer-dependencies=
+	# true` is the escape hatch that surfaces the same diagnostic. Aube
+	# routes the diagnostic through a hard-fail, so this port asserts
+	# `assert_failure` + the warning string instead of pnpm's
+	# warn-and-succeed shape. The regression guard — that the warning
+	# renderer doesn't crash when peers are missing — is preserved
+	# either way. @udecode/plate-* substituted with the mirrored
+	# `@pnpm.e2e/abc-parent-with-missing-peers` (depends on `abc`,
+	# whose peer-a/peer-b/peer-c are unsatisfied).
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+auto-install-peers=false
+strict-peer-dependencies=true
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-peer-deps-warning",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/abc-parent-with-missing-peers": "1.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_failure
+	assert_output --partial "Issues with peer dependencies found"
+}
