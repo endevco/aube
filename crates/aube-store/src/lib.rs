@@ -98,6 +98,13 @@ pub struct StoredFile {
 /// Index of all files in a package, keyed by relative path within the package.
 pub type PackageIndex = BTreeMap<String, StoredFile>;
 
+/// Result of importing a package tarball into the CAS.
+#[derive(Debug)]
+pub struct ImportedTarball {
+    pub index: PackageIndex,
+    pub package_json: Option<Vec<u8>>,
+}
+
 fn index_files_match_metadata(index: &PackageIndex, verify_all: bool) -> bool {
     let mut files = index.values();
     if verify_all {
@@ -539,6 +546,15 @@ impl Store {
     /// Import a tarball (.tgz) into the store.
     /// Returns a PackageIndex mapping relative paths to stored files.
     pub fn import_tarball(&self, tarball_bytes: &[u8]) -> Result<PackageIndex, Error> {
+        Ok(self.import_tarball_with_manifest(tarball_bytes)?.index)
+    }
+
+    /// Import a tarball (.tgz) into the store, also returning the
+    /// decompressed `package.json` bytes when present.
+    pub fn import_tarball_with_manifest(
+        &self,
+        tarball_bytes: &[u8],
+    ) -> Result<ImportedTarball, Error> {
         use std::io::Read;
 
         // Caps defend against gzip bombs and lying tar headers. The
@@ -557,6 +573,7 @@ impl Store {
         let buffered = std::io::BufReader::with_capacity(256 * 1024, capped);
         let mut archive = tar::Archive::new(buffered);
         let mut index = BTreeMap::new();
+        let mut package_json = None;
         let mut entries_seen: usize = 0;
 
         // Serial walk — each tarball is decoded by one spawn_blocking
@@ -642,12 +659,17 @@ impl Store {
 
             let mode = entry.header().mode().unwrap_or(0o644);
             let executable = mode & 0o111 != 0;
-
             let stored = self.import_bytes(&content, executable)?;
+            if rel_path == "package.json" {
+                package_json = Some(content);
+            }
             index.insert(rel_path, stored);
         }
 
-        Ok(index)
+        Ok(ImportedTarball {
+            index,
+            package_json,
+        })
     }
 }
 
@@ -1106,12 +1128,38 @@ pub fn validate_pkg_content(
         .ok_or_else(|| Error::Tar("package.json missing from tarball".to_string()))?;
     let bytes =
         std::fs::read(&stored.store_path).map_err(|e| Error::Io(stored.store_path.clone(), e))?;
-    let v: serde_json::Value = {
-        let mut buf = bytes.clone();
-        simd_json::serde::from_slice(&mut buf)
-            .or_else(|_| serde_json::from_slice(&bytes))
-            .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?
-    };
+    validate_pkg_content_bytes(&bytes, expected_name, expected_version)
+}
+
+/// Cross-check package metadata using manifest bytes already read from a tarball.
+pub fn validate_pkg_content_bytes(
+    bytes: &[u8],
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<(), Error> {
+    let v: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?;
+    validate_pkg_content_manifest(v, expected_name, expected_version)
+}
+
+/// Cross-check package metadata using owned manifest bytes.
+pub fn validate_pkg_content_bytes_owned(
+    mut bytes: Vec<u8>,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<(), Error> {
+    let fallback = bytes.clone();
+    let v: serde_json::Value = simd_json::serde::from_slice(&mut bytes)
+        .or_else(|_| serde_json::from_slice(&fallback))
+        .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?;
+    validate_pkg_content_manifest(v, expected_name, expected_version)
+}
+
+fn validate_pkg_content_manifest(
+    v: serde_json::Value,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<(), Error> {
     let actual_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let actual_version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
     // Tolerate a leading `v` on the tarball's version (e.g. "v2.0.8").

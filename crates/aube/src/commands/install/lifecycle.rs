@@ -571,8 +571,8 @@ pub(super) fn import_verified_tarball(
             );
         }
     }
-    let index = store
-        .import_tarball(bytes)
+    let imported = store
+        .import_tarball_with_manifest(bytes)
         .map_err(|e| miette!("failed to import {display_name}@{version}: {e}"))?;
     // strictStorePkgContentCheck: cross-check the freshly stored
     // package.json against the resolver-asserted (name, version)
@@ -581,7 +581,10 @@ pub(super) fn import_verified_tarball(
     // in the tarball's own `package.json` — not the alias, or this
     // would fail every npm-aliased entry.
     if strict_pkg_content_check {
-        aube_store::validate_pkg_content(&index, registry_name, version)
+        let package_json = imported.package_json.ok_or_else(|| {
+            miette!("{display_name}@{version}: tarball extraction error: package.json missing from tarball")
+        })?;
+        aube_store::validate_pkg_content_bytes_owned(package_json, registry_name, version)
             .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
     }
     // Cache under `registry_name` so two aliases of the same real
@@ -591,10 +594,10 @@ pub(super) fn import_verified_tarball(
     // tarballs from different sources; when `None` falls back to the
     // plain name@version key so warm installs still find the cache
     // on integrity-stripping proxies.
-    if let Err(e) = store.save_index(registry_name, version, integrity, &index) {
+    if let Err(e) = store.save_index(registry_name, version, integrity, &imported.index) {
         tracing::warn!("Failed to cache index for {display_name}@{version}: {e}");
     }
-    Ok(index)
+    Ok(imported.index)
 }
 
 pub(super) fn validate_required_scripts(
