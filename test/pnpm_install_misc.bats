@@ -154,6 +154,42 @@ JSON
 	assert_output --partial "Hello world!"
 }
 
+@test "aube add: creates package.json if there is none" {
+	# Ported from pnpm/test/install/misc.ts:233 ('create a package.json
+	# if there is none'). pnpm `install <pkg>` ≈ aube `add <pkg>`.
+	# is-positive substituted with is-odd.
+
+	# Deliberately no package.json in cwd. _common_setup parks us in a
+	# fresh tmp dir with HOME isolated, so the find_project_root walk
+	# can't escape into the user's real home and find a package.json
+	# higher up.
+	run aube add is-odd@3.0.1
+	assert_success
+	assert_file_exists package.json
+	assert_file_exists node_modules/is-odd/index.js
+
+	run cat package.json
+	assert_output --partial '"is-odd"'
+	assert_output --partial '"3.0.1"'
+}
+
+@test "aube add: fails when no package name is provided" {
+	# Ported from pnpm/test/install/misc.ts:245 ('pnpm add should fail
+	# if no package name was provided'). Asserts exit code + error text;
+	# the wording is deliberately generic ('packages') so a future
+	# rephrasing won't break the test.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-add-no-name",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube add
+	assert_failure
+	assert_output --partial "no packages specified"
+}
+
 @test "aube add: a tarball with case-only filename collisions installs cleanly" {
 	# Ported from pnpm/test/install/misc.ts:163 ('don't fail on case
 	# insensitive filesystems when package has 2 files with same name').
