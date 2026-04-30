@@ -5891,7 +5891,7 @@
         "name": "fetch-retry-factor",
         "usage": "--fetch-retry-factor <N>",
         "help": "Exponential backoff factor between retry attempts",
-        "help_long": "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set.",
+        "help_long": "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`, matching the `int` type declared for `fetchRetryFactor` in `settings.toml` and the `.npmrc` parser. Fractional values like `1.5` are rejected by clap.",
         "help_first_line": "Exponential backoff factor between retry attempts",
         "short": [],
         "long": [

@@ -77,7 +77,7 @@ Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml`
 
 Exponential backoff factor between retry attempts.
 
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set.
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`, matching the `int` type declared for `fetchRetryFactor` in `settings.toml` and the `.npmrc` parser. Fractional values like `1.5` are rejected by clap.
 
 ### `--fetch-retry-maxtimeout <MS>`
 
