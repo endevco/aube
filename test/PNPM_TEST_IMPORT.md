@@ -43,8 +43,8 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
   - `readPackage` sync/async, hook removes a dep, hook overrides version, hook fails install, hook on workspace packages
 - [ ] `pnpm/test/install/lifecycleScripts.ts` (21 tests, 356 LOC) → fold into [test/lifecycle_scripts.bats](lifecycle_scripts.bats)
   - pre/postinstall ordering, exit-code propagation, env-var inheritance, script-not-found handling
-- [ ] `pnpm/test/saveCatalog.ts` (8 tests, 224 LOC) → [test/pnpm_savecatalog.bats](pnpm_savecatalog.bats) (8/8 stubbed; **blocked on `--save-catalog` / `--save-catalog-name` flags**)
-  - aube ships `catalogMode={prefer,strict,manual}` which rewrites manifest specs to `catalog:` when an entry already exists. The missing inverse is `--save-catalog`, which WRITES new entries INTO the workspace catalog as part of `aube add`. All 8 ports are full-body translations marked with `skip` until the flag lands; removing the skip line should validate the implementation.
+- [ ] `pnpm/test/saveCatalog.ts` (8 tests, 224 LOC) → [test/pnpm_savecatalog.bats](pnpm_savecatalog.bats) (6/8 ported, 2 skipped on independent feature gaps)
+  - Implements `aube add --save-catalog` and `--save-catalog-name=<name>`. Skipped: multi-lockfile workspaces (`sharedWorkspaceLockfile=false` not implemented in aube) and `<pkg>@workspace:*` CLI parsing (aube's add tries to parse `workspace:*` as a semver range).
 
 ## Phase 2 — depends on add_dist_tag helper
 

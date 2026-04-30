@@ -1,4 +1,4 @@
-use super::catalogs::{CatalogRewrite, decide_add_rewrite};
+use super::catalogs::{CatalogRewrite, CatalogUpsert, decide_add_rewrite, range_compatible};
 use super::install;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
@@ -38,6 +38,25 @@ pub struct AddArgs {
     /// manifest.
     #[arg(long, conflicts_with = "global")]
     pub no_save: bool,
+    /// Save the new dependency into the workspace's default catalog,
+    /// writing `catalog:` into `package.json` and seeding/upserting
+    /// the resolved range under `catalog:` in the workspace yaml.
+    /// Mirrors `pnpm add --save-catalog`.
+    ///
+    /// Workspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are
+    /// never catalogized — the manifest gets the original spec and
+    /// the catalog yaml is left alone. If the package is already in
+    /// the target catalog, the existing entry is preserved (never
+    /// overwritten); the manifest then gets `catalog:` only when the
+    /// existing entry is compatible with the user's range.
+    #[arg(long, conflicts_with = "save_catalog_name")]
+    pub save_catalog: bool,
+    /// Save the new dependency into a *named* catalog (`catalogs.<name>`
+    /// in the workspace yaml), writing `catalog:<name>` into
+    /// `package.json`. Same workspace/alias exclusions as
+    /// `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`.
+    #[arg(long, value_name = "NAME")]
+    pub save_catalog_name: Option<String>,
     /// Add as a peer dependency (written to `peerDependencies` in
     /// package.json).
     ///
@@ -234,7 +253,16 @@ pub async fn run(
         ignore_scripts: _,
         no_save,
         ignore_workspace_root_check,
+        save_catalog,
+        save_catalog_name,
     } = args;
+    let save_catalog_target = save_catalog_name.or_else(|| {
+        if save_catalog {
+            Some("default".to_string())
+        } else {
+            None
+        }
+    });
     let packages = &packages[..];
     if packages.is_empty() {
         return Err(miette!("no packages specified"));
@@ -347,6 +375,7 @@ pub async fn run(
             save_exact,
             save_optional,
             save_peer,
+            save_catalog: save_catalog_target,
         },
         !no_save,
     )
@@ -438,12 +467,17 @@ struct NoSaveSnapshot {
     lockfile_bytes: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct AddManifestOptions {
     save_dev: bool,
     save_exact: bool,
     save_optional: bool,
     save_peer: bool,
+    /// Target catalog for `--save-catalog` / `--save-catalog-name`.
+    /// `None` means neither flag was passed and the catalog yaml is
+    /// left untouched. `Some("default")` is `--save-catalog`;
+    /// `Some(other)` is `--save-catalog-name=<other>`.
+    save_catalog: Option<String>,
 }
 
 impl AddManifestOptions {
@@ -453,6 +487,13 @@ impl AddManifestOptions {
             save_exact: args.save_exact,
             save_optional: args.save_optional,
             save_peer: args.save_peer,
+            save_catalog: args.save_catalog_name.clone().or_else(|| {
+                if args.save_catalog {
+                    Some("default".to_string())
+                } else {
+                    None
+                }
+            }),
         }
     }
 }
@@ -493,6 +534,13 @@ async fn update_manifest_for_add(
     let default_catalog = workspace_catalogs.get("default");
     let manifest_path = cwd.join("package.json");
     let mut manifest = super::load_manifest(&manifest_path)?;
+
+    // `--save-catalog` / `--save-catalog-name` queue: each newly-added
+    // package that should land in a workspace catalog records its
+    // (catalog, package, range) here. Applied to the workspace yaml in
+    // a single pass after the manifest loop so the file is rewritten
+    // at most once per `aube add` invocation.
+    let mut catalog_upserts: Vec<CatalogUpsert> = Vec::new();
 
     // Parse all specs and fetch packuments concurrently.
     let client = std::sync::Arc::new(super::make_client(cwd));
@@ -618,56 +666,80 @@ async fn update_manifest_for_add(
         } else {
             spec.range.clone()
         };
-        // Apply `catalogMode`. Only the default catalog participates —
-        // named catalogs still require the user to write `catalog:<name>`
-        // explicitly. `npm:`/alias specs can't be re-expressed as a
-        // catalog reference, so they opt out regardless of mode.
-        let (specifier, display_version) = match decide_add_rewrite(
-            catalog_mode,
-            default_catalog,
-            &spec.name,
-            &spec.range,
-            spec.has_explicit_range,
-            &resolved_version,
-            needs_npm_prefix || is_jsr,
-        ) {
-            CatalogRewrite::Manual => (manual_specifier, resolved_version.clone()),
-            CatalogRewrite::UseDefaultCatalog => {
-                // The install will resolve against the catalog's range,
-                // not the user's original spec — so the printed version
-                // should reflect what actually lands in `node_modules`.
-                // `strict` + bare `aube add <pkg>` is the case this
-                // matters most for: the user never gave a range, so
-                // `resolved_version` comes from `latest` and can easily
-                // disagree with what the catalog entry picks. Fall back
-                // to `resolved_version` only when the catalog range
-                // can't resolve a version from the packument (shouldn't
-                // happen in practice, but we'd rather print something
-                // than fail the command on a display edge case).
-                let cat_range = default_catalog
-                    .and_then(|c| c.get(&spec.name))
-                    .cloned()
-                    .unwrap_or_default();
-                let catalog_version = highest_satisfying(&cat_range).unwrap_or_else(|| {
-                    tracing::debug!(
-                        "catalog range {cat_range:?} for {} did not match any packument version; \
-                         falling back to user-resolved version for display",
-                        spec.name
-                    );
-                    resolved_version.clone()
-                });
-                ("catalog:".to_string(), catalog_version)
-            }
-            CatalogRewrite::StrictMismatch {
-                pkg,
-                catalog_range,
-                user_range,
-            } => {
-                return Err(miette!(
-                    "catalogMode=strict: {pkg}@{user_range} does not match the \
-                     default catalog entry `{catalog_range}`. Update the catalog \
-                     or rerun with the catalog range."
-                ));
+        // `--save-catalog` / `--save-catalog-name` short-circuits the
+        // `catalogMode` decision: the user explicitly asked for the
+        // dep to land in a catalog. `npm:`, `jsr:`, `workspace:`, and
+        // pre-`catalog:` specs can't be re-expressed as a catalog
+        // reference, so they fall back to the manual specifier and the
+        // catalog yaml is left untouched (matches pnpm's `--save-catalog`
+        // behavior on workspace deps).
+        let exclude_from_catalog = needs_npm_prefix
+            || is_jsr
+            || aube_util::pkg::is_workspace_spec(&spec.range)
+            || aube_util::pkg::is_catalog_spec(&spec.range);
+        let (specifier, display_version) = if let Some(target) = opts.save_catalog.as_deref() {
+            decide_save_catalog(
+                target,
+                &workspace_catalogs,
+                spec,
+                exclude_from_catalog,
+                &manual_specifier,
+                &resolved_version,
+                &mut catalog_upserts,
+                highest_satisfying,
+            )
+        } else {
+            // Apply `catalogMode`. Only the default catalog participates —
+            // named catalogs still require the user to write `catalog:<name>`
+            // explicitly. `npm:`/alias specs can't be re-expressed as a
+            // catalog reference, so they opt out regardless of mode.
+            match decide_add_rewrite(
+                catalog_mode,
+                default_catalog,
+                &spec.name,
+                &spec.range,
+                spec.has_explicit_range,
+                &resolved_version,
+                needs_npm_prefix || is_jsr,
+            ) {
+                CatalogRewrite::Manual => (manual_specifier, resolved_version.clone()),
+                CatalogRewrite::UseDefaultCatalog => {
+                    // The install will resolve against the catalog's range,
+                    // not the user's original spec — so the printed version
+                    // should reflect what actually lands in `node_modules`.
+                    // `strict` + bare `aube add <pkg>` is the case this
+                    // matters most for: the user never gave a range, so
+                    // `resolved_version` comes from `latest` and can easily
+                    // disagree with what the catalog entry picks. Fall back
+                    // to `resolved_version` only when the catalog range
+                    // can't resolve a version from the packument (shouldn't
+                    // happen in practice, but we'd rather print something
+                    // than fail the command on a display edge case).
+                    let cat_range = default_catalog
+                        .and_then(|c| c.get(&spec.name))
+                        .cloned()
+                        .unwrap_or_default();
+                    let catalog_version = highest_satisfying(&cat_range).unwrap_or_else(|| {
+                        tracing::debug!(
+                            "catalog range {cat_range:?} for {} did not match any packument version; \
+                             falling back to user-resolved version for display",
+                            spec.name
+                        );
+                        resolved_version.clone()
+                    });
+                    ("catalog:".to_string(), catalog_version)
+                }
+                CatalogRewrite::StrictMismatch {
+                    pkg,
+                    catalog_range,
+                    user_range,
+                } => {
+                    return Err(miette!(
+                        "catalogMode=strict: {pkg}@{user_range} does not match the \
+                         default catalog entry `{catalog_range}`. Update the catalog \
+                         or rerun with the catalog range."
+                    ));
+                }
             }
         };
 
@@ -717,7 +789,97 @@ async fn update_manifest_for_add(
         eprintln!("Updated package.json");
     }
 
+    // Apply queued `--save-catalog` upserts. Lands once at the end of
+    // the per-package loop so the workspace yaml is rewritten at most
+    // once per command — `edit_workspace_yaml` no-ops when nothing
+    // structural changes (preserving comments under filtered/recursive
+    // re-runs that all target the same catalog).
+    if !catalog_upserts.is_empty() {
+        let yaml_root = crate::dirs::find_workspace_yaml_root(cwd)
+            .or_else(|| crate::dirs::find_workspace_root(cwd))
+            .unwrap_or_else(|| cwd.to_path_buf());
+        let yaml_path = aube_manifest::workspace::workspace_yaml_target(&yaml_root);
+        super::catalogs::upsert_catalog_entries(&yaml_path, &catalog_upserts)?;
+    }
+
     Ok(())
+}
+
+/// Decide what `aube add --save-catalog[=<name>]` should write to the
+/// manifest for one package, and queue any catalog-yaml mutation. Pulls
+/// the per-package logic out of `update_manifest_for_add` so the main
+/// loop stays readable.
+///
+/// Returns `(manifest_specifier, display_version)`. The display_version
+/// is what gets printed on the `+ pkg@<version>` line and reflects what
+/// will actually land in `node_modules` after install — not necessarily
+/// the version the user originally typed.
+#[allow(clippy::too_many_arguments)]
+fn decide_save_catalog(
+    target: &str,
+    workspace_catalogs: &super::CatalogMap,
+    spec: &ParsedPkgSpec,
+    exclude_from_catalog: bool,
+    manual_specifier: &str,
+    resolved_version: &str,
+    upserts: &mut Vec<CatalogUpsert>,
+    highest_satisfying: impl Fn(&str) -> Option<String>,
+) -> (String, String) {
+    if exclude_from_catalog {
+        return (manual_specifier.to_string(), resolved_version.to_string());
+    }
+    // Manifest specifier. `default` writes plain `catalog:`, named
+    // catalogs use `catalog:<name>` (matches pnpm).
+    let manifest_specifier = if target == "default" {
+        "catalog:".to_string()
+    } else {
+        format!("catalog:{target}")
+    };
+    let target_catalog = workspace_catalogs.get(target);
+    if let Some(existing_range) = target_catalog.and_then(|c| c.get(&spec.name)) {
+        // Already in target catalog — never overwrite.
+        let compatible = range_compatible(
+            &spec.range,
+            spec.has_explicit_range,
+            existing_range,
+            resolved_version,
+        );
+        if compatible {
+            // Catalog entry covers the user's range — manifest can use
+            // `catalog:` and the install will resolve through the
+            // existing entry. Display the catalog's resolved version
+            // for the same reason `decide_add_rewrite` does.
+            let catalog_version = highest_satisfying(existing_range).unwrap_or_else(|| {
+                tracing::debug!(
+                    "catalog range {existing_range:?} for {} did not match any \
+                     packument version; falling back to user-resolved version for display",
+                    spec.name
+                );
+                resolved_version.to_string()
+            });
+            return (manifest_specifier, catalog_version);
+        }
+        // Incompatible — preserve the existing catalog entry and fall
+        // back to writing the user's spec into the manifest. Matches
+        // pnpm/test/saveCatalog.ts:488 (the "never overwrites existing
+        // catalogs" test).
+        return (manual_specifier.to_string(), resolved_version.to_string());
+    }
+    // Not in target catalog — queue the addition. The catalog entry
+    // mirrors what we'd otherwise write to `package.json`: explicit
+    // user range as-is, dist-tags / no-range fall back to the saved
+    // prefix on the resolved version.
+    let entry_range = if spec.has_explicit_range {
+        spec.range.clone()
+    } else {
+        manual_specifier.to_string()
+    };
+    upserts.push(CatalogUpsert {
+        catalog: target.to_string(),
+        package: spec.name.clone(),
+        range: entry_range,
+    });
+    (manifest_specifier, resolved_version.to_string())
 }
 
 /// Resolve the on-disk lockfile path that a normal `add` would write
@@ -1007,6 +1169,8 @@ async fn run_global_inner(
         // regression without relying on the chdir-ordering invariant.
         ignore_workspace_root_check: true,
         workspace: false,
+        save_catalog: false,
+        save_catalog_name: None,
     };
     Box::pin(run(
         inner,

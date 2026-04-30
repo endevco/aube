@@ -97,7 +97,7 @@ pub(crate) fn decide_add_rewrite(
 /// that already standardized on catalog ranges — or (b) the catalog's
 /// range would also accept the version we just resolved, so swapping
 /// `catalog:` in won't silently install a different version.
-fn range_compatible(
+pub(crate) fn range_compatible(
     user_range: &str,
     has_explicit_range: bool,
     catalog_range: &str,
@@ -212,6 +212,83 @@ pub(crate) fn prune_unused_catalog_entries(
         )
     })?;
     Ok(unused)
+}
+
+/// One catalog entry queued by `aube add --save-catalog` /
+/// `--save-catalog-name`. The writer applies these in a single
+/// `edit_workspace_yaml` pass so the file is rewritten at most once
+/// per command, preserving comments when nothing structural changed.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogUpsert {
+    /// Catalog name. `"default"` writes under the top-level `catalog:`
+    /// key; any other name lands under `catalogs.<name>`.
+    pub catalog: String,
+    /// Package name (the manifest key that will reference `catalog:` /
+    /// `catalog:<catalog>`).
+    pub package: String,
+    /// Range to record in the catalog. Already includes any save-prefix
+    /// the caller wanted (e.g. `^1.0.0`, `1.2.3`, `~1.0.0`).
+    pub range: String,
+}
+
+/// Upsert a batch of catalog entries into the workspace yaml. Existing
+/// entries are NEVER overwritten — pnpm's `--save-catalog` treats the
+/// catalog as the source of truth and lets the caller fall back to the
+/// manual specifier when the entry exists. So this function only
+/// inserts; same-key skips fall through silently.
+///
+/// Goes through `edit_workspace_yaml`, which no-ops the rewrite when
+/// the closure produces no structural change. Empty `entries` is a
+/// no-op.
+pub(crate) fn upsert_catalog_entries(
+    workspace_path: &Path,
+    entries: &[CatalogUpsert],
+) -> miette::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    aube_manifest::workspace::edit_workspace_yaml(workspace_path, |root| {
+        for entry in entries {
+            let CatalogUpsert {
+                catalog,
+                package,
+                range,
+            } = entry;
+            let map = if catalog == "default" {
+                workspace_yaml_submap(root, "catalog", workspace_path)?
+            } else {
+                let catalogs = workspace_yaml_submap(root, "catalogs", workspace_path)?;
+                workspace_yaml_submap(catalogs, catalog.as_str(), workspace_path)?
+            };
+            map.entry(yaml_serde::Value::String(package.clone()))
+                .or_insert_with(|| yaml_serde::Value::String(range.clone()));
+        }
+        Ok(())
+    })
+    .map_err(miette::Report::new)
+    .wrap_err_with(|| {
+        format!(
+            "failed to write {} after --save-catalog",
+            workspace_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Inner-mapping accessor mirroring `aube-manifest::workspace::workspace_yaml_submap`,
+/// duplicated here so this crate doesn't have to re-export the private helper.
+/// Errors when the key exists but isn't a mapping.
+fn workspace_yaml_submap<'a>(
+    map: &'a mut yaml_serde::Mapping,
+    key: &str,
+    path: &Path,
+) -> Result<&'a mut yaml_serde::Mapping, aube_manifest::Error> {
+    let entry = map
+        .entry(yaml_serde::Value::String(key.to_string()))
+        .or_insert_with(|| yaml_serde::Value::Mapping(yaml_serde::Mapping::new()));
+    entry.as_mapping_mut().ok_or_else(|| {
+        aube_manifest::Error::YamlParse(path.to_path_buf(), format!("`{key}` must be a mapping"))
+    })
 }
 
 #[cfg(test)]

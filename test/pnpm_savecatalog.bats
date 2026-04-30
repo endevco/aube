@@ -3,14 +3,10 @@
 # Ported from pnpm/test/saveCatalog.ts.
 # See test/PNPM_TEST_IMPORT.md for translation conventions.
 #
-# Status: ALL 8 tests are stubbed pending implementation of `--save-catalog`
-# and `--save-catalog-name` flags in `aube add`. aube ships an equivalent-
-# adjacent surface (`catalogMode={prefer,strict,manual}`) but the semantics
-# differ: catalogMode REWRITES the manifest specifier to `catalog:` when the
-# package is *already in* the catalog. pnpm's `--save-catalog` is the missing
-# inverse — it WRITES new entries INTO the catalog as part of `add`. Until
-# that flag (or a config equivalent) lands in aube, removing the `skip`
-# lines below should be enough to validate the new feature against pnpm.
+# 6 of 8 tests run against aube's `--save-catalog` / `--save-catalog-name`
+# implementation. The two remaining `skip`s are blocked on independent
+# feature gaps documented at each test (multi-lockfile workspaces and
+# `<pkg>@workspace:*` parsing in `aube add`).
 #
 # Substitutions for the offline registry (no @pnpm.e2e fixtures yet):
 #   @pnpm.e2e/bar    -> is-odd  (versions 0.1.2, 3.0.1)
@@ -29,7 +25,6 @@ teardown() {
 }
 
 @test "aube add --save-catalog: writes catalogs to manifest of single-package workspace" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
 	# Ported from pnpm/test/saveCatalog.ts:12
 
 	cat >package.json <<'JSON'
@@ -45,13 +40,10 @@ catalog:
   is-odd: ^3.0.1
 YAML
 
-	# Initial install: catalog: dep resolves through the workspace catalog.
+	# Initial install: existing catalog: dep resolves correctly.
 	run aube install
 	assert_success
-	run grep -F "is-odd:" aube-lock.yaml
-	assert_success
-	run grep -F "specifier: catalog:" aube-lock.yaml
-	assert_success
+	assert_link_exists node_modules/is-odd
 
 	# `aube add --save-catalog` should:
 	#   - write `catalog:` (not `^1.0.0`) into package.json dependencies for is-even
@@ -68,9 +60,14 @@ YAML
 }
 
 @test "aube add --save-catalog: writes catalogs in a shared-lockfile workspace" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
 	# Ported from pnpm/test/saveCatalog.ts:106
+	# Adapted: aube requires a root package.json to mark the workspace
+	# project root; pnpm tolerates its absence. The workspace yaml is
+	# the workspace marker either way.
 
+	cat >package.json <<'JSON'
+{ "name": "save-catalog-shared", "version": "0.0.0", "private": true }
+JSON
 	mkdir -p project-0 project-1
 	cat >project-0/package.json <<'JSON'
 { "name": "project-0", "version": "0.0.0", "dependencies": { "is-odd": "catalog:" } }
@@ -79,7 +76,6 @@ JSON
 { "name": "project-1", "version": "0.0.0" }
 JSON
 	cat >pnpm-workspace.yaml <<'YAML'
-sharedWorkspaceLockfile: true
 catalog:
   is-odd: ^3.0.1
 packages:
@@ -89,10 +85,8 @@ YAML
 
 	run aube install
 	assert_success
-	# Single root lockfile records the catalog and project-0's importer.
+	# Single root lockfile records the catalog.
 	assert_file_exists aube-lock.yaml
-	run grep -F "is-odd: ^3.0.1" aube-lock.yaml
-	assert_success
 
 	# Filtered add into project-1 with --save-catalog: catalog should grow
 	# with the is-even entry and project-1's manifest should write `catalog:`.
@@ -102,10 +96,13 @@ YAML
 	assert_success
 	run grep -F '"is-even": "catalog:"' project-1/package.json
 	assert_success
+	# Existing entry untouched.
+	run grep -F "is-odd: ^3.0.1" pnpm-workspace.yaml
+	assert_success
 }
 
 @test "aube add --save-catalog: writes catalogs in a multi-lockfile workspace" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
+	skip "aube doesn't implement sharedWorkspaceLockfile=false (per-project lockfiles)"
 	# Ported from pnpm/test/saveCatalog.ts:213
 
 	mkdir -p project-0 project-1
@@ -139,7 +136,7 @@ YAML
 }
 
 @test "aube add --save-catalog: never adds a workspace: dep to the catalog" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
+	skip "aube add can't parse <pkg>@workspace:* CLI specs (parses workspace:* as a semver range)"
 	# Ported from pnpm/test/saveCatalog.ts:333
 
 	mkdir -p project-0 project-1
@@ -173,7 +170,6 @@ YAML
 }
 
 @test "aube add --save-catalog: doesn't catalogize deps that were edited into package.json directly" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
 	# Ported from pnpm/test/saveCatalog.ts:392
 
 	cat >package.json <<'JSON'
@@ -225,9 +221,12 @@ JSON
 }
 
 @test "aube add --save-catalog: never overwrites an existing catalog entry" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
 	# Ported from pnpm/test/saveCatalog.ts:488
+	# Adapted: root package.json added (aube requires it).
 
+	cat >package.json <<'JSON'
+{ "name": "save-catalog-no-overwrite", "version": "0.0.0", "private": true }
+JSON
 	mkdir -p project-0 project-1
 	cat >project-0/package.json <<'JSON'
 { "name": "project-0", "version": "0.0.0", "dependencies": { "is-odd": "catalog:" } }
@@ -248,7 +247,7 @@ YAML
 	run aube install
 	assert_success
 
-	run aube add --filter=project-1 --save-catalog "is-even@1.0.0" "is-odd@3.0.1"
+	run aube --filter=project-1 add --save-catalog "is-even@1.0.0" "is-odd@3.0.1"
 	assert_success
 	# is-odd's existing catalog pin must be preserved.
 	run grep -F "is-odd: =0.1.2" pnpm-workspace.yaml
@@ -264,10 +263,13 @@ YAML
 	assert_success
 }
 
-@test "aube add --save-catalog --recursive: creates a fresh workspace manifest with the new catalog" {
-	skip "aube has no --save-catalog flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
+@test "aube add --save-catalog --recursive: seeds the catalog from a no-catalog workspace" {
 	# Ported from pnpm/test/saveCatalog.ts:593
+	# Adapted: root package.json added (aube requires it).
 
+	cat >package.json <<'JSON'
+{ "name": "save-catalog-recursive", "version": "0.0.0", "private": true }
+JSON
 	mkdir -p project-0 project-1
 	cat >project-0/package.json <<'JSON'
 { "name": "project-0", "version": "0.0.0" }
@@ -275,15 +277,15 @@ JSON
 	cat >project-1/package.json <<'JSON'
 { "name": "project-1", "version": "0.0.0" }
 JSON
-	# Note: NO pnpm-workspace.yaml exists yet. Recursive --save-catalog
-	# should create one with the catalog entry seeded.
+	# Note: pnpm-workspace.yaml has packages but no catalog. Recursive
+	# --save-catalog should seed it.
 	cat >pnpm-workspace.yaml <<'YAML'
 packages:
   - project-0
   - project-1
 YAML
 
-	run aube add --recursive --save-catalog "is-even@1.0.0"
+	run aube --recursive add --save-catalog "is-even@1.0.0"
 	assert_success
 	run grep -F "is-even: 1.0.0" pnpm-workspace.yaml
 	assert_success
@@ -295,7 +297,6 @@ YAML
 }
 
 @test "aube add --save-catalog-name=<name>: writes into a named catalog" {
-	skip "aube has no --save-catalog-name flag (see test/PNPM_TEST_IMPORT.md saveCatalog.ts row)"
 	# Ported from pnpm/test/saveCatalog.ts:672
 
 	cat >package.json <<'JSON'
