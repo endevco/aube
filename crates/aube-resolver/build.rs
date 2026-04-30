@@ -39,7 +39,20 @@ fn main() {
                 source.display()
             );
         }
-        generate(&manifest_dir, &source, primer_top());
+        let script = manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .map(|w| w.join("scripts/generate-primer.mjs"));
+        match script {
+            Some(s) if s.is_file() => generate(&manifest_dir, &source, primer_top()),
+            _ => {
+                // Published crate (or downstream consumer without the workspace
+                // generator script) and no primer data file: ship an empty
+                // primer. Runtime falls back to network packument fetches.
+                write_package_blob(&out_dir, &[]);
+                return;
+            }
+        }
     }
 
     let generated_at = std::fs::metadata(&source)
