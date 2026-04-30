@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   # On every push to main: run `release-plz release`. If the current
   # workspace version has no tag yet (because the release PR was just

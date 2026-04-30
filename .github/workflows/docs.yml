@@ -21,6 +21,9 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   build:
     runs-on: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
