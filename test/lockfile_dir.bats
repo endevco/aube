@@ -82,6 +82,38 @@ JSON
 	assert_file_not_exists aube-lock.yaml
 }
 
+@test "aube install --lockfile-dir: refuses to write a lockfile already used by another project" {
+	# Multi-project shared lockfiles outside a workspace are out of
+	# scope here: silently overwriting the first project's importer
+	# entries (and orphan-stripping its packages) would be data-
+	# destructive. Loud-fail with a message that points at workspaces
+	# or per-project lockfile dirs.
+	mkdir alpha beta
+	cat >alpha/package.json <<'JSON'
+{
+  "name": "lfd-alpha",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+	cat >beta/package.json <<'JSON'
+{
+  "name": "lfd-beta",
+  "version": "1.0.0",
+  "dependencies": { "is-even": "1.0.0" }
+}
+JSON
+
+	(cd alpha && aube install --lockfile-dir .. --no-frozen-lockfile)
+	assert_file_exists aube-lock.yaml
+
+	cd beta || return
+	run aube install --lockfile-dir .. --no-frozen-lockfile
+	assert_failure
+	assert_output --partial "records importers from other projects"
+	assert_output --partial "alpha"
+}
+
 @test "aube install --lockfile-dir: warm install reads the relocated lockfile" {
 	# Round-trip: write once, wipe node_modules, install again. The
 	# second install must read the relocated lockfile (not regenerate)

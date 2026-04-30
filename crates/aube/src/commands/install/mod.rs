@@ -1368,15 +1368,19 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 
     // `--lockfile-dir` / `lockfileDir`: relocate `aube-lock.yaml` to a
     // different directory than the project root. The project becomes
-    // an importer keyed by its relative path from the lockfile dir
-    // (so several unrelated projects can share one committed
-    // lockfile). Defaults to the project root → importer key `.` →
-    // back-compat with every existing install.
+    // an importer keyed by its relative path from the lockfile dir.
+    // Defaults to the project root → importer key `.` → back-compat
+    // with every existing install. Multi-project shared lockfiles
+    // (`pnpm-workspace.yaml`, `sharedWorkspaceLockfile`) are out of
+    // scope here — see the read-side guard in
+    // `parse_lockfile_dir_remapped`.
     //
     // Relative paths resolve against the project root, not cwd
-    // (pnpm convention). Normalize so equality vs. `cwd` is reliable
-    // even when the user passed something like `./project/..`.
-    let (lockfile_dir, lockfile_importer_key) =
+    // (pnpm convention). Both sides are canonicalized so equality and
+    // `pathdiff` work regardless of symlinks or `./project/..` style
+    // inputs (`cwd` itself originates from `find_project_root`, which
+    // doesn't canonicalize).
+    let (lockfile_dir, lockfile_importer_key): (std::path::PathBuf, String) =
         match aube_settings::resolved::lockfile_dir(&settings_ctx) {
             Some(raw) => {
                 let raw_path = std::path::Path::new(&raw);
@@ -1393,10 +1397,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 let canon = std::fs::canonicalize(&resolved)
                     .into_diagnostic()
                     .wrap_err_with(|| format!("--lockfile-dir: {}", resolved.display()))?;
-                if canon == cwd {
+                let canon_cwd = std::fs::canonicalize(&cwd).into_diagnostic()?;
+                if canon == canon_cwd {
                     (cwd.clone(), ".".to_string())
                 } else {
-                    let key = pathdiff::diff_paths(&cwd, &canon)
+                    let key = pathdiff::diff_paths(&canon_cwd, &canon)
                         .map(|p| {
                             // Lockfile importer keys use forward slashes on every
                             // platform so committed lockfiles stay portable across
@@ -1412,7 +1417,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             miette!(
                                 "lockfile-dir {} cannot be related to project {}",
                                 canon.display(),
-                                cwd.display()
+                                canon_cwd.display()
                             )
                         })?;
                     (canon, key)
@@ -1420,6 +1425,25 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             }
             None => (cwd.clone(), ".".to_string()),
         };
+
+    // Fail fast on multi-project shared lockfiles (see
+    // `guard_against_foreign_importers`). The downstream lockfile-read
+    // sites only fire on `Fix`/`Prefer`/`--lockfile-only` paths, so a
+    // `--no-frozen-lockfile` install pointed at someone else's lockfile
+    // dir would silently overwrite their entries — this guard moves
+    // the check ahead of the resolver so it fires regardless of
+    // FrozenMode. `NotFound` means we're the first project writing
+    // here; that's exactly the supported case.
+    if lockfile_importer_key != "." {
+        match aube_lockfile::parse_lockfile(&lockfile_dir, &manifest) {
+            Ok(graph) => {
+                guard_against_foreign_importers(&lockfile_dir, &lockfile_importer_key, &graph)
+                    .map_err(miette::Report::new)?;
+            }
+            Err(aube_lockfile::Error::NotFound(_)) => {}
+            Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
+        }
+    }
 
     // `modulesDir` controls the project-level directory name that
     // holds the top-level `<name>` entries. Defaults to
@@ -4008,6 +4032,41 @@ fn parse_lockfile_dir_remapped_with_kind(
         graph.importers.insert(".".to_string(), deps);
     }
     Ok((graph, kind))
+}
+
+/// Refuse to operate on a `--lockfile-dir` lockfile that already
+/// records other importers besides the current project. This PR
+/// scopes `--lockfile-dir` to single-project relocation; multi-
+/// project shared lockfiles need workspace coordination (resolve
+/// every importer's deps in one pass, prune packages by union of all
+/// importers) which is out of scope. Without this guard, a second
+/// project pointed at the same dir would silently orphan-strip the
+/// first project's package entries on the next install. Loud-fail
+/// here so the user can move to a workspace setup or pick a
+/// different `lockfileDir`.
+fn guard_against_foreign_importers(
+    lockfile_dir: &std::path::Path,
+    importer_key: &str,
+    graph: &aube_lockfile::LockfileGraph,
+) -> Result<(), aube_lockfile::Error> {
+    let foreign: Vec<&str> = graph
+        .importers
+        .keys()
+        .map(String::as_str)
+        .filter(|k| *k != "." && *k != importer_key)
+        .collect();
+    if foreign.is_empty() {
+        return Ok(());
+    }
+    Err(aube_lockfile::Error::Parse(
+        lockfile_dir.to_path_buf(),
+        format!(
+            "lockfile already records importers from other projects ({}); \
+             aube does not yet support multi-project shared lockfiles outside a workspace. \
+             Use a `pnpm-workspace.yaml` workspace, or point each project at its own `--lockfile-dir`.",
+            foreign.join(", ")
+        ),
+    ))
 }
 
 /// Write `graph` to `lockfile_dir`, remapping the project's `"."`
