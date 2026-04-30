@@ -482,3 +482,135 @@ JSON
 	assert_success
 	assert [ ! -e postinstall.marker ]
 }
+
+# -- Dep build-policy ports from pnpm/test/install/lifecycleScripts.ts --------
+#
+# These four cover aube's `allowBuilds` review machinery. Tests the same
+# behavior pnpm verifies, with two divergences:
+#   - aube writes `false` for review placeholders, where pnpm writes the
+#     string `"set this to true or false"`. Same semantic (unreviewed,
+#     skipped); aube's value is more directly readable by automation.
+#   - aube's strict-dep-builds error reads "dependencies with build
+#     scripts must be reviewed before install"; pnpm's reads "Ignored
+#     build scripts:". Translated below.
+
+@test "aube add seeds an allowBuilds review placeholder for unreviewed dep build scripts" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:260
+	# ('ignored builds are auto-populated as placeholders in allowBuilds').
+	# pnpm writes `"set this to true or false"`; aube writes `false`. The
+	# review-required semantic is identical: a subsequent install with
+	# `strictDepBuilds=true` will fail until the user flips the value.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-allowbuilds-seed",
+  "version": "1.0.0"
+}
+JSON
+	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
+	assert_success
+	# No workspace yaml present and no `pnpm` namespace in package.json
+	# → seed lands in package.json#aube.allowBuilds.
+	assert_file_not_exists pnpm-workspace.yaml
+	assert_file_not_exists aube-workspace.yaml
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": false' package.json
+	assert_success
+}
+
+@test "aube add merges allowBuilds review placeholder with existing approvals in workspace yaml" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:268
+	# ('auto-populated placeholders are merged with existing allowBuilds').
+	# Pre-existing approval is preserved verbatim; the new build-script dep
+	# is appended as `false` (aube's review-required marker).
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-allowbuilds-merge",
+  "version": "1.0.0"
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+allowBuilds:
+  "@pnpm.e2e/install-script-example": true
+YAML
+	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
+	assert_success
+	run cat pnpm-workspace.yaml
+	assert_output --partial "'@pnpm.e2e/install-script-example': true"
+	assert_output --partial "'@pnpm.e2e/pre-and-postinstall-scripts-example': false"
+}
+
+@test "aube add fails with strictDepBuilds=true when a dep has unreviewed build scripts" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:226
+	# ('throw an error when strict-dep-builds is true and there are
+	# ignored scripts'). pnpm's error reads "Ignored build scripts:" and
+	# uses `--config.strict-dep-builds=true`; aube reads the setting from
+	# .npmrc / pnpm-workspace.yaml / env (no CLI surface) and surfaces a
+	# different error string (asserted below). Common contract: install
+	# fails, but the dep + lockfile are still written so the user can flip
+	# the placeholder to `true`/`false` and re-run.
+	# Append (don't overwrite) so the registry= line _common_setup wrote
+	# survives when AUBE_TEST_REGISTRY is set.
+	echo "strictDepBuilds=true" >>.npmrc
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-strict-dep-builds-registry",
+  "version": "1.0.0"
+}
+JSON
+	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
+	assert_failure
+	assert_output --partial "dependencies with build scripts must be reviewed"
+	assert_output --partial "@pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0"
+	# Dep is still written to package.json + lockfile (matches pnpm).
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": "1.0.0"' package.json
+	assert_success
+	assert_file_exists aube-lock.yaml
+	# Review placeholder seeded so the user can flip it.
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": false' package.json
+	assert_success
+}
+
+@test "strictDepBuilds fails even when side-effects are already cached" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:303
+	# ('strictDepBuilds fails for packages with cached side-effects (#11035)').
+	# Regression: a previously-approved build populates the side-effects
+	# cache. After removing the approval, the second install must still
+	# fail under strictDepBuilds=true rather than silently restoring the
+	# cached output.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-strict-cached",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pre-and-postinstall-scripts-example": "1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "@pnpm.e2e/pre-and-postinstall-scripts-example": true
+    }
+  }
+}
+JSON
+	# First install: build runs, side-effects cache populated.
+	run aube install
+	assert_success
+	assert_file_exists node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-postinstall.js
+
+	# Drop the approval and turn on strictDepBuilds. The cached output
+	# is in the store, but aube must still fail rather than silently
+	# restore it. Append so the registry= line survives.
+	echo "strictDepBuilds=true" >>.npmrc
+	echo "optimisticRepeatInstall=false" >>.npmrc
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-strict-cached",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pre-and-postinstall-scripts-example": "1.0.0"
+  }
+}
+JSON
+	run aube install
+	assert_failure
+	assert_output --partial "dependencies with build scripts must be reviewed"
+	assert_output --partial "@pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0"
+}
