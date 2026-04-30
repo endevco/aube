@@ -212,10 +212,20 @@ impl Resolver {
                     let client = self.client.clone();
                     let cache_dir = self.packument_cache_dir.clone();
                     let full_cache_dir = self.packument_full_cache_dir.clone();
-                    if client.uses_default_npm_registry_for(&name_owned)
+                    if (self.force_metadata_primer
+                        || client.uses_default_npm_registry_for(&name_owned))
                         && let Some(seed) = crate::primer::get(name)
                     {
-                        let packument = seed.packument();
+                        let mut packument = seed.packument();
+                        if self.force_metadata_primer {
+                            for version in packument.versions.values_mut() {
+                                let tarball = client.tarball_url(&version.name, &version.version);
+                                version.dist = version.dist.take().map(|mut dist| {
+                                    dist.tarball = tarball;
+                                    dist
+                                });
+                            }
+                        }
                         if let Some(dir) = cache_dir.as_ref() {
                             client.seed_packument_cache(
                                 &name_owned,

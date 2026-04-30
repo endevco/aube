@@ -38,6 +38,7 @@ impl Resolver {
             dedupe_peers: false,
             resolve_peers_from_workspace_root: true,
             registry_supports_time_field: false,
+            force_metadata_primer: false,
             packument_network_concurrency: None,
         }
     }
@@ -81,6 +82,7 @@ impl Resolver {
                 dedupe_peers: false,
                 resolve_peers_from_workspace_root: true,
                 registry_supports_time_field: false,
+                force_metadata_primer: false,
                 packument_network_concurrency: None,
             },
             rx,
@@ -188,6 +190,14 @@ impl Resolver {
     /// npmjs.org.
     pub fn with_registry_supports_time_field(mut self, value: bool) -> Self {
         self.registry_supports_time_field = value;
+        self
+    }
+
+    /// Force the bundled metadata primer on for npm-compatible
+    /// mirrors. Normally the primer only seeds npmjs.org cache entries
+    /// because it was generated from npmjs metadata.
+    pub fn with_force_metadata_primer(mut self, value: bool) -> Self {
+        self.force_metadata_primer = value;
         self
     }
 

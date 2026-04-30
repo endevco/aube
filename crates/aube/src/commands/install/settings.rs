@@ -382,6 +382,10 @@ fn resolve_registry_supports_time_field(ctx: &aube_settings::ResolveCtx<'_>) -> 
     aube_settings::resolved::registry_supports_time_field(ctx)
 }
 
+pub(crate) fn resolve_force_metadata_primer(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    aube_settings::resolved::force_metadata_primer(ctx)
+}
+
 pub(crate) fn resolve_dependency_policy(
     manifest: &aube_manifest::PackageJson,
     ctx: &aube_settings::ResolveCtx<'_>,
@@ -607,6 +611,7 @@ pub(super) fn configure_resolver(
     let dedupe_peers = resolve_dedupe_peers(settings_ctx);
     let resolve_peers_from_workspace_root_opt = resolve_peers_from_workspace_root(settings_ctx);
     let registry_supports_time_field = resolve_registry_supports_time_field(settings_ctx);
+    let force_metadata_primer = resolve_force_metadata_primer(settings_ctx);
     let (sup_os, sup_cpu, sup_libc) =
         aube_manifest::effective_supported_architectures(manifest, workspace_config);
     // aube-lock.yaml, pnpm-lock.yaml, and bun.lock are all committed,
@@ -698,6 +703,7 @@ pub(super) fn configure_resolver(
         .with_dedupe_peers(dedupe_peers)
         .with_resolve_peers_from_workspace_root(resolve_peers_from_workspace_root_opt)
         .with_registry_supports_time_field(registry_supports_time_field)
+        .with_force_metadata_primer(force_metadata_primer)
         .with_supported_architectures(supported_architectures)
         .with_overrides(effective_overrides)
         .with_ignored_optional_dependencies(ignored_optional)

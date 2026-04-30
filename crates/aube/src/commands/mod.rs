@@ -448,11 +448,17 @@ pub(crate) fn build_resolver(
     manifest: &aube_manifest::PackageJson,
     catalogs: CatalogMap,
 ) -> aube_resolver::Resolver {
-    let policy = with_settings_ctx(cwd, |ctx| install::resolve_dependency_policy(manifest, ctx));
+    let (policy, force_metadata_primer) = with_settings_ctx(cwd, |ctx| {
+        (
+            install::resolve_dependency_policy(manifest, ctx),
+            install::resolve_force_metadata_primer(ctx),
+        )
+    });
     aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd)))
         .with_packument_cache(packument_cache_dir())
         .with_catalogs(catalogs)
         .with_dependency_policy(policy)
+        .with_force_metadata_primer(force_metadata_primer)
 }
 
 /// Resolve [`aube_registry::config::FetchPolicy`] from the same

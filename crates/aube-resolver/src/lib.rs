@@ -191,6 +191,12 @@ pub struct Resolver {
     /// active, since the abbreviated path is already the only one
     /// running.
     registry_supports_time_field: bool,
+    /// Use the bundled metadata primer even when the configured
+    /// registry is not npmjs.org. Intended for npm-compatible mirrors
+    /// and controlled benchmarks; tarball URLs are rewritten to the
+    /// active registry before cache seeding so installs still fetch
+    /// package bytes from the configured source.
+    force_metadata_primer: bool,
     pub(crate) packument_network_concurrency: Option<usize>,
 }
 

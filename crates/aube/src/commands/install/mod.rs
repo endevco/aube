@@ -29,7 +29,7 @@ use lifecycle::{
     validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
-pub(crate) use settings::resolve_dependency_policy;
+pub(crate) use settings::{resolve_dependency_policy, resolve_force_metadata_primer};
 pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_root};
 
 use settings::{
