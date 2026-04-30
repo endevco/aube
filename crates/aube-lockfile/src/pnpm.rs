@@ -373,12 +373,44 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         };
 
         let snapshot = raw.snapshots.get(&dep_path);
-        let optional_dependencies = snapshot
+        let mut optional_dependencies = snapshot
             .and_then(|s| s.optional_dependencies.clone())
             .unwrap_or_default();
         let mut dependencies = snapshot
             .and_then(|s| s.dependencies.clone())
             .unwrap_or_default();
+        // Detect npm-aliased transitive deps. pnpm encodes them as
+        // `<alias>: <real>@<resolved>(peers…)` inside a snapshot's
+        // dependency map (e.g. `string-width-cjs: string-width@4.2.3`
+        // for the `"string-width-cjs": "npm:string-width@^4.2.0"` dep
+        // declared by `@isaacs/cliui@8.0.2`). Aube stores transitive
+        // tails as bare resolved versions and synthesizes an alias-
+        // keyed package entry under `<alias>@<resolved>` with
+        // `alias_of=Some(real)`. Rewriting here keeps a single shape
+        // downstream: the linker computes `<dep_name>@<dep_tail>` and
+        // hits the synthetic alias entry, and the resolver's lockfile-
+        // reuse path enqueues transitives with `range = <resolved>`
+        // (not the malformed `string-width@4.2.3`) so a re-resolve
+        // doesn't try to find `string-width-cjs` versions matching a
+        // synthetic `<real>@<version>` range.
+        let mut rewrite_alias_values = |deps: &mut BTreeMap<String, String>| {
+            for (dep_name, dep_value) in deps.iter_mut() {
+                let bare = dep_value.split('(').next().unwrap_or(dep_value);
+                let Some((real_name, resolved)) = parse_dep_path(bare) else {
+                    continue;
+                };
+                if real_name == *dep_name {
+                    continue;
+                }
+                let peer_suffix = dep_value.find('(').map(|i| &dep_value[i..]).unwrap_or("");
+                let alias_dep_path = format!("{dep_name}@{resolved}{peer_suffix}");
+                let real_dep_path = dep_value.clone();
+                alias_remaps.push((alias_dep_path, real_dep_path, dep_name.clone(), real_name));
+                *dep_value = format!("{resolved}{peer_suffix}");
+            }
+        };
+        rewrite_alias_values(&mut dependencies);
+        rewrite_alias_values(&mut optional_dependencies);
         dependencies.extend(optional_dependencies.clone());
         let bundled_dependencies = snapshot
             .and_then(|s| s.bundled_dependencies.clone())
@@ -3538,5 +3570,142 @@ snapshots:
             .expect("real entry");
         assert_eq!(real.name, "@types/node");
         assert!(real.alias_of.is_none());
+    }
+
+    #[test]
+    fn parse_synthesizes_npm_alias_for_transitive_deps() {
+        // pnpm encodes npm-aliased *transitive* deps as
+        // `<alias>: <real>@<resolved>` inside a snapshot's
+        // dependencies map (e.g. `@isaacs/cliui@8.0.2` declares
+        // `"string-width-cjs": "npm:string-width@^4.2.0"` and
+        // pnpm resolves it as `string-width-cjs: string-width@4.2.3`).
+        // The reader must rewrite the dep value to the resolved
+        // version and synthesize the alias-keyed package entry, or
+        // the linker creates a broken symlink to a non-existent
+        // `string-width-cjs@string-width@4.2.3` virtual store dir
+        // and the resolver's lockfile-reuse path enqueues a
+        // transitive task with a malformed `string-width@4.2.3`
+        // range that no string-width-cjs version can satisfy.
+        // Repro: https://github.com/stevelandeydescript/aube-bug-repros/tree/main/npm-alias-resolution-failure
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      jackspeak:
+        specifier: 4.1.1
+        version: 4.1.1
+
+packages:
+  '@isaacs/cliui@8.0.2':
+    resolution: {integrity: sha512-fake}
+  jackspeak@4.1.1:
+    resolution: {integrity: sha512-fake}
+  string-width@4.2.3:
+    resolution: {integrity: sha512-fake}
+  string-width@5.1.2:
+    resolution: {integrity: sha512-fake}
+
+snapshots:
+  '@isaacs/cliui@8.0.2':
+    dependencies:
+      string-width: 5.1.2
+      string-width-cjs: string-width@4.2.3
+  jackspeak@4.1.1:
+    dependencies:
+      '@isaacs/cliui': 8.0.2
+  string-width@4.2.3: {}
+  string-width@5.1.2: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&path).unwrap();
+
+        let cliui = graph
+            .packages
+            .get("@isaacs/cliui@8.0.2")
+            .expect("cliui entry");
+        assert_eq!(
+            cliui.dependencies.get("string-width-cjs").unwrap(),
+            "4.2.3",
+            "transitive alias dep value rewritten from `string-width@4.2.3` to bare `4.2.3`"
+        );
+        assert_eq!(cliui.dependencies.get("string-width").unwrap(), "5.1.2");
+
+        let alias = graph
+            .packages
+            .get("string-width-cjs@4.2.3")
+            .expect("synthesized alias-keyed package for transitive");
+        assert_eq!(alias.name, "string-width-cjs");
+        assert_eq!(alias.alias_of.as_deref(), Some("string-width"));
+        assert_eq!(alias.dep_path, "string-width-cjs@4.2.3");
+
+        let real = graph
+            .packages
+            .get("string-width@4.2.3")
+            .expect("real entry stays put");
+        assert_eq!(real.name, "string-width");
+        assert!(real.alias_of.is_none());
+    }
+
+    #[test]
+    fn parse_handles_npm_alias_for_transitive_deps_with_peer_suffix() {
+        // Aliased transitive whose alias target carries a peer
+        // suffix: `<alias>: <real>@<resolved>(peer@ver)`. The
+        // peer-context tail must follow through to the synthetic
+        // alias dep_path so the linker keys the same context.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        std::fs::write(
+            &path,
+            r#"
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      parent-pkg:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+  parent-pkg@1.0.0:
+    resolution: {integrity: sha512-fake}
+  real-pkg@2.0.0:
+    resolution: {integrity: sha512-fake}
+  peer-pkg@3.0.0:
+    resolution: {integrity: sha512-fake}
+
+snapshots:
+  parent-pkg@1.0.0:
+    dependencies:
+      alias-pkg: real-pkg@2.0.0(peer-pkg@3.0.0)
+  real-pkg@2.0.0(peer-pkg@3.0.0):
+    dependencies:
+      peer-pkg: 3.0.0
+  peer-pkg@3.0.0: {}
+"#,
+        )
+        .unwrap();
+
+        let graph = parse(&path).unwrap();
+        let parent = graph.packages.get("parent-pkg@1.0.0").expect("parent");
+        assert_eq!(
+            parent.dependencies.get("alias-pkg").unwrap(),
+            "2.0.0(peer-pkg@3.0.0)",
+            "peer-context suffix preserved on the rewritten alias dep value"
+        );
+        let alias = graph
+            .packages
+            .get("alias-pkg@2.0.0(peer-pkg@3.0.0)")
+            .expect("synthesized alias entry with peer suffix");
+        assert_eq!(alias.name, "alias-pkg");
+        assert_eq!(alias.alias_of.as_deref(), Some("real-pkg"));
     }
 }
