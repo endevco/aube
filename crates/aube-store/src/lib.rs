@@ -248,6 +248,31 @@ impl Store {
         Some(index)
     }
 
+    /// Delete the cached package index for `(name, version, integrity)` if
+    /// it exists. Used as a recovery hatch when the linker discovers a
+    /// CAS shard referenced by the index has gone missing — the cached
+    /// JSON points at a dead `store_path`, so the next install must
+    /// re-derive the index by re-importing the tarball.
+    ///
+    /// `Ok(true)` when an entry was removed; `Ok(false)` when there
+    /// was nothing to remove (or the coordinate was invalid). Errors
+    /// surface only on real I/O failure, not on the missing-file case.
+    pub fn invalidate_cached_index(
+        &self,
+        name: &str,
+        version: &str,
+        integrity: Option<&str>,
+    ) -> Result<bool, Error> {
+        let Some(index_path) = self.index_path(name, version, integrity) else {
+            return Ok(false);
+        };
+        match std::fs::remove_file(&index_path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Error::Io(index_path, e)),
+        }
+    }
+
     /// Save a package index to the cache.
     ///
     /// See [`load_index`](Self::load_index) for the semantics of
@@ -1971,6 +1996,49 @@ mod tests {
             store
                 .load_index_verified("pkg", "1.0.0", Some(TEST_INTEGRITY))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn test_invalidate_cached_index_removes_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        let stored = store.import_bytes(b"content", false).unwrap();
+        let mut index = BTreeMap::new();
+        index.insert("index.js".to_string(), stored);
+
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+        // First call removes the entry; second call sees it gone.
+        assert!(
+            store
+                .invalidate_cached_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .invalidate_cached_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .unwrap()
+        );
+        // load_index now misses, forcing a re-import on the next install.
+        assert!(
+            store
+                .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_invalidate_cached_index_returns_false_for_invalid_coordinate() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        // Empty name doesn't yield a valid index path; must not error.
+        assert!(
+            !store
+                .invalidate_cached_index("", "1.0.0", Some(TEST_INTEGRITY))
+                .unwrap()
         );
     }
 
