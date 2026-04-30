@@ -86,6 +86,14 @@ static SKIP_AUTO_INSTALL_ON_PM_MISMATCH: AtomicBool = AtomicBool::new(false);
 /// covers every registry touch point in one invocation.
 static REGISTRY_OVERRIDE: RwLock<Option<String>> = RwLock::new(None);
 
+/// Process-wide CLI flag bag for `--fetch-timeout` / `--fetch-retries` /
+/// `--fetch-retry-factor` / `--fetch-retry-mintimeout` /
+/// `--fetch-retry-maxtimeout`. Threaded into `resolve_fetch_policy`'s
+/// `ResolveCtx::cli` so any caller of `make_client` (install, add,
+/// publish, audit, …) honors the global flags without each touching the
+/// fetch wiring directly. Empty when no flags were set.
+static FETCH_CLI_OVERRIDES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct GlobalOutputFlags {
     pub silent: bool,
@@ -96,6 +104,17 @@ static GLOBAL_OUTPUT: OnceLock<GlobalOutputFlags> = OnceLock::new();
 pub(crate) fn set_registry_override(url: Option<String>) {
     *REGISTRY_OVERRIDE.write().expect("registry lock poisoned") =
         url.map(|u| aube_registry::config::normalize_registry_url_pub(&u));
+}
+
+/// Record the `--fetch-*` global flag bag once per process. Idempotent
+/// — second calls (e.g. from a unit test that re-runs `async_main`) are
+/// silently ignored, matching the other `set_global_*` helpers.
+pub(crate) fn set_fetch_cli_overrides(flags: Vec<(String, String)>) {
+    let _ = FETCH_CLI_OVERRIDES.set(flags);
+}
+
+pub(crate) fn fetch_cli_overrides() -> &'static [(String, String)] {
+    FETCH_CLI_OVERRIDES.get().map(Vec::as_slice).unwrap_or(&[])
 }
 
 pub(crate) fn set_skip_auto_install_on_package_manager_mismatch(skip: bool) {
@@ -421,10 +440,10 @@ pub(crate) fn with_settings_ctx<T>(
 /// Also resolves the `fetch*` settings (timeout + retries + backoff)
 /// from the full cli > env > npmrc > workspace precedence chain and
 /// threads the resulting [`aube_registry::config::FetchPolicy`] into
-/// the client. `.npmrc` is the canonical source for these today, but
-/// going through the settings resolver means env-var overrides like
-/// `NPM_CONFIG_FETCH_TIMEOUT` and future CLI flags Just Work without
-/// touching this function again.
+/// the client. The CLI bag comes from [`fetch_cli_overrides`], which
+/// `async_main` populates from the global `--fetch-timeout`,
+/// `--fetch-retries`, and `--fetch-retry-{factor,mintimeout,maxtimeout}`
+/// flags before any command runs.
 pub(crate) fn make_client(cwd: &std::path::Path) -> aube_registry::client::RegistryClient {
     let config = load_npm_config(cwd);
     tracing::debug!("registry: {}", config.registry);
@@ -514,7 +533,7 @@ pub(crate) fn resolve_fetch_policy(cwd: &std::path::Path) -> aube_registry::conf
         npmrc: &npmrc,
         workspace_yaml: &workspace_yaml,
         env: &env,
-        cli: &[],
+        cli: fetch_cli_overrides(),
     };
     aube_registry::config::FetchPolicy::from_ctx(&ctx)
 }

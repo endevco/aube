@@ -1241,10 +1241,10 @@ a second attempt could double-apply or race.
 Backoff is governed by `fetchRetryFactor`, `fetchRetryMintimeout`,
 `fetchRetryMaxtimeout`.
 """
-sources.cli = []
+sources.cli = ["fetch-retries"]
 sources.env = ["npm_config_fetch_retries", "NPM_CONFIG_FETCH_RETRIES", "AUBE_FETCH_RETRIES"]
 sources.npmrc = ["fetch-retries", "fetchRetries"]
-examples = []
+examples = ["aube install --fetch-retries=5"]
 
 [fetchRetryFactor]
 description = "Exponential backoff factor for fetch retries."
@@ -1256,7 +1256,7 @@ Multiplier used between retry attempts. Attempt `n` waits
 milliseconds before retrying. With the defaults (factor=10,
 min=10000ms, max=60000ms), the sequence is 10s → 60s → 60s.
 """
-sources.cli = []
+sources.cli = ["fetch-retry-factor"]
 sources.env = ["npm_config_fetch_retry_factor", "NPM_CONFIG_FETCH_RETRY_FACTOR", "AUBE_FETCH_RETRY_FACTOR"]
 sources.npmrc = ["fetch-retry-factor", "fetchRetryFactor"]
 examples = []
@@ -1266,7 +1266,7 @@ description = "Minimum retry timeout in milliseconds."
 type = "int"
 default = "10000"
 docs = "Lower bound on the computed retry backoff. See `fetchRetryFactor`."
-sources.cli = []
+sources.cli = ["fetch-retry-mintimeout"]
 sources.env = ["npm_config_fetch_retry_mintimeout", "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT", "AUBE_FETCH_RETRY_MINTIMEOUT"]
 sources.npmrc = ["fetch-retry-mintimeout", "fetchRetryMintimeout"]
 examples = []
@@ -1276,7 +1276,7 @@ description = "Maximum retry timeout in milliseconds."
 type = "int"
 default = "60000"
 docs = "Upper bound on the computed retry backoff. See `fetchRetryFactor`."
-sources.cli = []
+sources.cli = ["fetch-retry-maxtimeout"]
 sources.env = ["npm_config_fetch_retry_maxtimeout", "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT", "AUBE_FETCH_RETRY_MAXTIMEOUT"]
 sources.npmrc = ["fetch-retry-maxtimeout", "fetchRetryMaxtimeout"]
 examples = []
@@ -1291,10 +1291,10 @@ Per-request HTTP timeout, applied via `reqwest`'s single-knob
 exceeds this limit fails with a transport error, which is then
 retriable (see `fetchRetries`). Default matches npm's 5 minutes.
 """
-sources.cli = []
+sources.cli = ["fetch-timeout"]
 sources.env = ["npm_config_fetch_timeout", "NPM_CONFIG_FETCH_TIMEOUT", "AUBE_FETCH_TIMEOUT"]
 sources.npmrc = ["fetch-timeout", "fetchTimeout"]
-examples = []
+examples = ["aube add lodash --fetch-timeout=60000"]
 
 [fetchWarnTimeoutMs]
 description = "Warn if a metadata request exceeds this threshold (ms)."

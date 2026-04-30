@@ -90,3 +90,22 @@ teardown() {
 	assert_success
 	assert_dir_exists node_modules
 }
+
+@test "--fetch-timeout / --fetch-retries CLI flags are accepted and honored" {
+	# Smoke-tests the global `--fetch-*` CLI surface (pnpm parity for
+	# `--fetch-timeout=<ms>`, `--fetch-retries=<n>`, and the three
+	# retry-* knobs). A generous timeout against the local Verdaccio
+	# must still install cleanly — the failure-path counterpart lives
+	# in pnpm_install_misc.bats.
+	_setup_basic_fixture
+
+	run aube \
+		--fetch-timeout=60000 \
+		--fetch-retries=3 \
+		--fetch-retry-factor=2 \
+		--fetch-retry-mintimeout=100 \
+		--fetch-retry-maxtimeout=2000 \
+		install
+	assert_success
+	assert_dir_exists node_modules
+}

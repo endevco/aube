@@ -175,6 +175,43 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     fail_if_no_match: bool,
 
+    /// Number of retry attempts for failed registry fetches.
+    ///
+    /// Overrides `fetchRetries` / `fetch-retries` from `.npmrc` /
+    /// `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to
+    /// fail fast in scripted test runs.
+    #[arg(long, global = true, value_name = "N")]
+    fetch_retries: Option<u64>,
+
+    /// Exponential backoff factor between retry attempts.
+    ///
+    /// Overrides `fetchRetryFactor` / `fetch-retry-factor` from
+    /// `.npmrc` / `aube-workspace.yaml` when set.
+    #[arg(long, global = true, value_name = "N")]
+    fetch_retry_factor: Option<u64>,
+
+    /// Upper bound (ms) on the computed retry backoff.
+    ///
+    /// Overrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from
+    /// `.npmrc` / `aube-workspace.yaml` when set.
+    #[arg(long, global = true, value_name = "MS")]
+    fetch_retry_maxtimeout: Option<u64>,
+
+    /// Lower bound (ms) on the computed retry backoff.
+    ///
+    /// Overrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from
+    /// `.npmrc` / `aube-workspace.yaml` when set.
+    #[arg(long, global = true, value_name = "MS")]
+    fetch_retry_mintimeout: Option<u64>,
+
+    /// Per-request HTTP timeout in milliseconds.
+    ///
+    /// Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` /
+    /// `aube-workspace.yaml` when set. Applied via `reqwest`'s
+    /// `.timeout()` so it covers headers + body together.
+    #[arg(long, global = true, value_name = "MS")]
+    fetch_timeout: Option<u64>,
+
     /// Production-only variant of `--filter`.
     ///
     /// Same selector grammar as `--filter`, but graph walks (`pkg...`,
@@ -732,6 +769,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     commands::set_global_frozen_override(global_frozen);
     commands::set_global_virtual_store_flags(global_gvs);
     commands::set_registry_override(cli.registry.clone());
+    commands::set_fetch_cli_overrides(fetch_cli_overrides_from_cli(&cli));
     commands::set_global_output_flags(commands::GlobalOutputFlags {
         silent: matches!(effective_level, LogLevel::Silent),
     });
@@ -1563,6 +1601,29 @@ fn global_virtual_store_flags_from_cli(cli: &Cli) -> commands::install::GlobalVi
         enable: cli.enable_global_virtual_store,
         disable: cli.disable_global_virtual_store,
     }
+}
+
+/// Extract the `--fetch-*` CLI flags into the `(name, value)` shape
+/// expected by `ResolveCtx::cli`. Keys match the `sources.cli` aliases
+/// declared for each setting in `settings.toml` (kebab-case).
+fn fetch_cli_overrides_from_cli(cli: &Cli) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(v) = cli.fetch_timeout {
+        out.push(("fetch-timeout".to_string(), v.to_string()));
+    }
+    if let Some(v) = cli.fetch_retries {
+        out.push(("fetch-retries".to_string(), v.to_string()));
+    }
+    if let Some(v) = cli.fetch_retry_factor {
+        out.push(("fetch-retry-factor".to_string(), v.to_string()));
+    }
+    if let Some(v) = cli.fetch_retry_mintimeout {
+        out.push(("fetch-retry-mintimeout".to_string(), v.to_string()));
+    }
+    if let Some(v) = cli.fetch_retry_maxtimeout {
+        out.push(("fetch-retry-maxtimeout".to_string(), v.to_string()));
+    }
+    out
 }
 
 fn merge_nested_frozen_override(

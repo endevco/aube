@@ -477,3 +477,28 @@ JSON
 	assert_failure
 	assert_output --partial "Issues with peer dependencies found"
 }
+
+@test "aube add --fetch-timeout=1 --fetch-retries=0: fails with a timeout error" {
+	# Ported from pnpm/test/install/misc.ts:508 ('installation fails with
+	# a timeout error'). typescript@2.4.2 substituted with is-odd (in
+	# the local Verdaccio fixture) — package choice doesn't matter, the
+	# packument fetch is what trips the timeout.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-fetch-timeout",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube --fetch-timeout=1 --fetch-retries=0 add is-odd@3.0.1
+	assert_failure
+	# Pin the failure mode to "registry fetch aborted" so the test is
+	# falsifiable against regressions that fail for the wrong reason —
+	# e.g. a clap parse error on the new flags, a missing fixture, or
+	# `aube add` bailing out before it reaches the registry. The exact
+	# reqwest error text (`error sending request for url ...`) is
+	# transport-dependent and doesn't include the word "timeout"
+	# verbatim, so we assert on the wrapper miette context aube emits
+	# from `add.rs` instead.
+	assert_output --partial "failed to fetch is-odd"
+}
