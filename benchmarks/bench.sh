@@ -29,6 +29,8 @@ set -euo pipefail
 #                      integer bytes/s). Defaults to `500mbit` in mise
 #                      tasks; routes traffic through a tiny token-bucket
 #                      proxy in front of Verdaccio.
+#   BENCH_LATENCY    — optional fixed per-request latency for the proxy
+#                      (e.g. `50ms`). Defaults to `50ms` in mise tasks.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

@@ -23,6 +23,8 @@
 #                           `6250000` (bytes/s as a bare integer).
 #                           When set, traffic goes through
 #                           throttle-proxy.mjs instead of direct.
+#   BENCH_LATENCY         — optional fixed per-request latency for the
+#                           throttle proxy, e.g. `50ms` or `1s`.
 #   BENCH_PROXY_PORT      — localhost port for the throttle proxy
 #                           (default: 4875).
 #
@@ -216,12 +218,19 @@ _hermetic_warm() {
 # listening so we know when to return.
 _hermetic_start_proxy() {
 	local rate=$1
+	local latency=${2:-}
 	local upstream="http://127.0.0.1:$BENCH_VERDACCIO_PORT"
+	local args=(
+		"$HERMETIC_DIR/throttle-proxy.mjs"
+		--port "$BENCH_PROXY_PORT"
+		--upstream "$upstream"
+		--rate "$rate"
+	)
+	if [ -n "$latency" ]; then
+		args+=(--latency "$latency")
+	fi
 
-	node "$HERMETIC_DIR/throttle-proxy.mjs" \
-		--port "$BENCH_PROXY_PORT" \
-		--upstream "$upstream" \
-		--rate "$rate" \
+	node "${args[@]}" \
 		>"$BENCH_HERMETIC_CACHE/proxy.log" 2>&1 &
 	HERMETIC_PROXY_PID=$!
 	export HERMETIC_PROXY_PID
@@ -261,12 +270,16 @@ hermetic_start() {
 	fi
 
 	if [ -n "${BENCH_BANDWIDTH:-}" ]; then
-		if ! _hermetic_start_proxy "$BENCH_BANDWIDTH"; then
+		if ! _hermetic_start_proxy "$BENCH_BANDWIDTH" "${BENCH_LATENCY:-}"; then
 			_hermetic_stop_verdaccio
 			return 1
 		fi
 		export BENCH_REGISTRY_URL="http://127.0.0.1:$BENCH_PROXY_PORT"
-		echo "Hermetic registry: $BENCH_REGISTRY_URL (throttled to $BENCH_BANDWIDTH via proxy, upstream :$BENCH_VERDACCIO_PORT)" >&2
+		local latency_label=""
+		if [ -n "${BENCH_LATENCY:-}" ]; then
+			latency_label=", latency $BENCH_LATENCY"
+		fi
+		echo "Hermetic registry: $BENCH_REGISTRY_URL (throttled to $BENCH_BANDWIDTH${latency_label} via proxy, upstream :$BENCH_VERDACCIO_PORT)" >&2
 	else
 		export BENCH_REGISTRY_URL="http://127.0.0.1:$BENCH_VERDACCIO_PORT"
 		echo "Hermetic registry: $BENCH_REGISTRY_URL (unthrottled)" >&2

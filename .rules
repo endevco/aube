@@ -128,7 +128,7 @@ progress_ui:
 
 benchmarks:
   lock: flock /tmp/aube-bench.lock (shared across worktrees/terminals/agents)
-  canonical: mise run bench (BENCH_HERMETIC=1, BENCH_BANDWIDTH=500mbit wired into the mise task)
+  canonical: mise run bench (BENCH_HERMETIC=1, BENCH_BANDWIDTH=500mbit, BENCH_LATENCY=50ms wired into the mise task)
   hermetic:
     script: benchmarks/hermetic.bash
     registry: benchmarks/registry/ (Verdaccio port 4874, throttle-proxy port 4875)
