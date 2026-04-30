@@ -55,6 +55,8 @@ pub async fn run(args: CiArgs) -> miette::Result<()> {
         mode: install::FrozenMode::Frozen,
         dep_selection: install::DepSelection::from_flags(false, false, no_optional),
         ignore_pnpmfile: false,
+        pnpmfile: None,
+        global_pnpmfile: None,
         ignore_scripts,
         lockfile_only: false,
         merge_git_branch_lockfiles: false,

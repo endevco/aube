@@ -18,6 +18,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`supportedArchitectures`](#setting-supportedarchitectures) | `object` | Specify architectures for optional dependency installation. |
 | [`ignoredOptionalDependencies`](#setting-ignoredoptionaldependencies) | `list<string>` | Skip optional dependencies by name. |
 | [`pnpmfilePath`](#setting-pnpmfilepath) | `string` | Location of the pnpmfile hook file. |
+| [`globalPnpmfile`](#setting-globalpnpmfile) | `string` | Path to a second pnpmfile that runs before the project's pnpmfile. |
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
@@ -249,15 +250,42 @@ Location of the pnpmfile hook file.
 
 - Type: `string`
 - Default: `undefined`
+- CLI flags: `--pnpmfile`
 - Environment: `AUBE_PNPMFILE_PATH`
 - Workspace YAML keys: `pnpmfilePath`
 
-Workspace-scoped override for the pnpmfile discovery path. Defaults to
+Override for the pnpmfile discovery path. Defaults to
 `<project>/.pnpmfile.mjs` when present, otherwise `<project>/.pnpmfile.cjs`.
-Relative paths resolve against the workspace root; absolute paths are used
+Relative paths resolve against the project root; absolute paths are used
 as-is. A path that points at a missing file is a hard miss — aube emits a
 warning and runs with no pnpmfile rather than silently falling back to the
 default.
+
+`--pnpmfile <path>` mirrors pnpm's CLI flag and takes precedence over the
+workspace yaml entry.
+
+Examples:
+
+- `aube install --pnpmfile config/hooks.cjs`
+
+### `globalPnpmfile` {#setting-globalpnpmfile}
+
+Path to a second pnpmfile that runs before the project's pnpmfile.
+
+- Type: `string`
+- Default: `undefined`
+- CLI flags: `--global-pnpmfile`
+- Environment: `AUBE_GLOBAL_PNPMFILE`
+
+Mirrors pnpm's `--global-pnpmfile <path>`. The global hook runs first and
+the local pnpmfile (if any) runs second, so per-project hooks can override
+org-wide rules. Relative paths resolve against the project root; absolute
+paths are used as-is. A typo (target missing) is a hard miss with a warning
+rather than a silent skip.
+
+Examples:
+
+- `aube install --global-pnpmfile ~/.config/aube/hooks.cjs`
 
 ### `minimumReleaseAge` {#setting-minimumreleaseage}
 

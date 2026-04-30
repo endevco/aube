@@ -40,17 +40,36 @@ pub const PNPMFILE_CJS_NAME: &str = ".pnpmfile.cjs";
 
 /// Return the path to the project's pnpmfile if one exists.
 ///
-/// `workspace_pnpmfile_path` is the `pnpmfilePath` override from
-/// `pnpm-workspace.yaml` (pnpm v10 lets users keep the hook file
-/// outside the project root). When set, it wins over the default
-/// `cwd/.pnpmfile.mjs` (preferred) or `cwd/.pnpmfile.cjs`; relative paths
-/// resolve against `cwd`. An
-/// override that points at a missing file is a hard miss (returns
-/// `None`) rather than silently falling back, and emits a warning —
-/// without the log the user can't tell their typo from "no pnpmfile
-/// configured at all". The missing-default case stays silent because
-/// "no pnpmfile" is the common case, not a misconfiguration.
-pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathBuf> {
+/// Override precedence is `cli > workspace_yaml > default`:
+/// * `cli_pnpmfile` mirrors pnpm's `--pnpmfile <path>` flag — relative
+///   paths resolve against `cwd`. A typo here is a hard miss (returns
+///   `None`) with a warning so the user notices.
+/// * `workspace_pnpmfile_path` is the `pnpmfilePath` override from
+///   `pnpm-workspace.yaml` (pnpm v10 lets users keep the hook file
+///   outside the project root). Same hard-miss semantics on a typo.
+/// * Otherwise: `cwd/.pnpmfile.mjs` (preferred) or `cwd/.pnpmfile.cjs`.
+///   The missing-default case stays silent because "no pnpmfile" is
+///   the common case, not a misconfiguration.
+pub fn detect(
+    cwd: &Path,
+    cli_pnpmfile: Option<&Path>,
+    workspace_pnpmfile_path: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(rel) = cli_pnpmfile {
+        let p = if rel.is_absolute() {
+            rel.to_path_buf()
+        } else {
+            cwd.join(rel)
+        };
+        if !p.is_file() {
+            tracing::warn!(
+                "--pnpmfile override {:?} points at a missing file — hooks will not run",
+                p.display().to_string(),
+            );
+            return None;
+        }
+        return Some(p);
+    }
     if let Some(rel) = workspace_pnpmfile_path {
         let p = cwd.join(rel);
         if !p.is_file() {
@@ -69,6 +88,43 @@ pub fn detect(cwd: &Path, workspace_pnpmfile_path: Option<&str>) -> Option<PathB
         }
     }
     None
+}
+
+/// Resolve `--global-pnpmfile <path>`. Unlike [`detect`], there is no
+/// default location for the global pnpmfile — pnpm requires the path
+/// to be passed explicitly. Relative paths resolve against `cwd` (so
+/// `--global-pnpmfile=../hooks.cjs` works the same as in pnpm). A typo
+/// is a hard miss with a warning, matching the local-pnpmfile shape.
+pub fn detect_global(cwd: &Path, cli_global: Option<&Path>) -> Option<PathBuf> {
+    let rel = cli_global?;
+    let p = if rel.is_absolute() {
+        rel.to_path_buf()
+    } else {
+        cwd.join(rel)
+    };
+    if !p.is_file() {
+        tracing::warn!(
+            "--global-pnpmfile override {:?} points at a missing file — global hooks will not run",
+            p.display().to_string(),
+        );
+        return None;
+    }
+    Some(p)
+}
+
+/// Order pnpm runs hook files in: global first, then local. Local hook
+/// mutations land on top of global ones so a project can override its
+/// org-wide rules. Use this to flatten the (`global`, `local`) pair into
+/// a single iteration order at every call site.
+pub fn ordered_paths(global: Option<&Path>, local: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(2);
+    if let Some(p) = global {
+        paths.push(p.to_path_buf());
+    }
+    if let Some(p) = local {
+        paths.push(p.to_path_buf());
+    }
+    paths
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -307,6 +363,21 @@ pub async fn run_after_all_resolved(pnpmfile: &Path, graph: &mut LockfileGraph) 
     Ok(())
 }
 
+/// Run `afterAllResolved` for each pnpmfile in `paths` in order. pnpm
+/// runs the global hook first and the local hook second, so local
+/// mutations land on top. Empty list is a no-op.
+pub async fn run_after_all_resolved_chain(
+    paths: &[PathBuf],
+    graph: &mut LockfileGraph,
+) -> Result<()> {
+    for p in paths {
+        run_after_all_resolved(p, graph)
+            .await
+            .wrap_err_with(|| format!("pnpmfile afterAllResolved hook failed ({})", p.display()))?;
+    }
+    Ok(())
+}
+
 /// Snapshot passed to the `preResolution` hook before resolve starts.
 /// Mirrors pnpm's context shape (camelCase on the wire) so existing
 /// pnpmfiles can read the fields they expect.
@@ -364,6 +435,22 @@ pub async fn run_pre_resolution(pnpmfile: &Path, ctx: &PreResolutionContext<'_>)
         .into_diagnostic()
         .wrap_err("failed to serialize preResolution context")?;
     run_one_shot_hook(pnpmfile, "preResolution", &input_json).await?;
+    Ok(())
+}
+
+/// Run `preResolution` for each pnpmfile in `paths` (global first,
+/// then local). pnpm fires both hooks against the same context, so we
+/// don't thread state between them — each hook gets the original
+/// pre-resolve snapshot.
+pub async fn run_pre_resolution_chain(
+    paths: &[PathBuf],
+    ctx: &PreResolutionContext<'_>,
+) -> Result<()> {
+    for p in paths {
+        run_pre_resolution(p, ctx)
+            .await
+            .wrap_err_with(|| format!("pnpmfile preResolution hook failed ({})", p.display()))?;
+    }
     Ok(())
 }
 
@@ -494,7 +581,7 @@ impl ReadPackageHost {
         }))
     }
 
-    async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
+    pub(crate) async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
         self.next_id = self.next_id.wrapping_add(1);
         let id = self.next_id;
         let req = ReadPackageRequest { id, pkg: &pkg };
@@ -555,6 +642,55 @@ impl ReadPackageHook for ReadPackageHost {
     }
 }
 
+/// Chains multiple [`ReadPackageHost`]s so pnpm's `--global-pnpmfile`
+/// composes with the local `.pnpmfile.cjs`: the global hook runs first,
+/// the local hook receives the global's output, and the resolver sees
+/// the final result.
+///
+/// With a single host this is a thin wrapper over
+/// [`ReadPackageHost::call`]; the multi-host path is what makes the
+/// global-plus-local pnpm test cases (hooks.ts:135 and :176) pass.
+pub struct ReadPackageHostChain {
+    hosts: Vec<ReadPackageHost>,
+}
+
+impl ReadPackageHostChain {
+    /// Spawn one node child per pnpmfile in `paths` that declares a
+    /// `readPackage` hook. Returns `Ok(None)` when nothing in the chain
+    /// uses the hook (saves the resolver from per-call JSON
+    /// round-trips), otherwise the live chain.
+    pub async fn spawn(paths: &[PathBuf]) -> Result<Option<Self>> {
+        let mut hosts = Vec::new();
+        for p in paths {
+            if let Some(host) = ReadPackageHost::spawn(p).await? {
+                hosts.push(host);
+            }
+        }
+        if hosts.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self { hosts }))
+    }
+
+    async fn call(&mut self, pkg: VersionMetadata) -> Result<VersionMetadata, String> {
+        let mut current = pkg;
+        for host in &mut self.hosts {
+            current = host.call(current).await?;
+        }
+        Ok(current)
+    }
+}
+
+impl ReadPackageHook for ReadPackageHostChain {
+    fn read_package<'a>(
+        &'a mut self,
+        pkg: VersionMetadata,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<VersionMetadata, String>> + Send + 'a>>
+    {
+        Box::pin(self.call(pkg))
+    }
+}
+
 /// Quick scan of the pnpmfile source for a hook identifier. Avoids
 /// the cost of spawning a node child when the hook doesn't exist —
 /// the vast majority of pnpmfiles use only `afterAllResolved`. False
@@ -578,7 +714,7 @@ mod tests {
     fn detect_returns_default_when_present_and_no_override() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
-        let found = detect(dir.path(), None);
+        let found = detect(dir.path(), None, None);
         assert_eq!(
             found.as_deref(),
             Some(dir.path().join(PNPMFILE_CJS_NAME).as_path())
@@ -589,7 +725,7 @@ mod tests {
     fn detect_returns_mjs_when_only_mjs_present() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PNPMFILE_MJS_NAME), "").unwrap();
-        let found = detect(dir.path(), None);
+        let found = detect(dir.path(), None, None);
         assert_eq!(
             found.as_deref(),
             Some(dir.path().join(PNPMFILE_MJS_NAME).as_path())
@@ -601,7 +737,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PNPMFILE_MJS_NAME), "").unwrap();
         std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
-        let found = detect(dir.path(), None);
+        let found = detect(dir.path(), None, None);
         assert_eq!(
             found.as_deref(),
             Some(dir.path().join(PNPMFILE_MJS_NAME).as_path())
@@ -611,7 +747,7 @@ mod tests {
     #[test]
     fn detect_returns_none_when_default_missing_and_no_override() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(detect(dir.path(), None).is_none());
+        assert!(detect(dir.path(), None, None).is_none());
     }
 
     #[test]
@@ -624,7 +760,7 @@ mod tests {
         std::fs::write(&custom, "").unwrap();
         // Even though .pnpmfile.cjs doesn't exist at the default
         // location, the workspace override points at the real file.
-        let found = detect(dir.path(), Some("config/hooks.cjs"));
+        let found = detect(dir.path(), None, Some("config/hooks.cjs"));
         assert_eq!(found.as_deref(), Some(custom.as_path()));
     }
 
@@ -635,6 +771,80 @@ mod tests {
         // user thinks their hooks are running when they aren't.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
-        assert!(detect(dir.path(), Some("typo/missing.cjs")).is_none());
+        assert!(detect(dir.path(), None, Some("typo/missing.cjs")).is_none());
+    }
+
+    #[test]
+    fn detect_cli_override_beats_workspace_yaml() {
+        // pnpm's `--pnpmfile <path>` flag takes precedence over the
+        // workspace yaml `pnpmfilePath` entry.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("config")).unwrap();
+        std::fs::create_dir(dir.path().join("ws")).unwrap();
+        let cli_target = dir.path().join("config/cli.cjs");
+        let yaml_target = dir.path().join("ws/yaml.cjs");
+        std::fs::write(&cli_target, "").unwrap();
+        std::fs::write(&yaml_target, "").unwrap();
+        let found = detect(
+            dir.path(),
+            Some(Path::new("config/cli.cjs")),
+            Some("ws/yaml.cjs"),
+        );
+        assert_eq!(found.as_deref(), Some(cli_target.as_path()));
+    }
+
+    #[test]
+    fn detect_cli_override_returns_none_when_target_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(PNPMFILE_CJS_NAME), "").unwrap();
+        assert!(detect(dir.path(), Some(Path::new("typo/missing.cjs")), None).is_none());
+    }
+
+    #[test]
+    fn detect_cli_override_supports_absolute_path() {
+        // pnpm tests pass absolute paths via `path.resolve('..',
+        // '.pnpmfile.cjs')`. An absolute CLI path must NOT get joined
+        // onto cwd.
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("hooks.cjs");
+        std::fs::write(&custom, "").unwrap();
+        let found = detect(dir.path(), Some(custom.as_path()), None);
+        assert_eq!(found.as_deref(), Some(custom.as_path()));
+    }
+
+    #[test]
+    fn detect_global_returns_none_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_global(dir.path(), None).is_none());
+    }
+
+    #[test]
+    fn detect_global_resolves_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("global.cjs");
+        std::fs::write(&custom, "").unwrap();
+        let found = detect_global(dir.path(), Some(custom.as_path()));
+        assert_eq!(found.as_deref(), Some(custom.as_path()));
+    }
+
+    #[test]
+    fn detect_global_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_global(dir.path(), Some(Path::new("nope.cjs"))).is_none());
+    }
+
+    #[test]
+    fn ordered_paths_runs_global_before_local() {
+        let global = PathBuf::from("/g.cjs");
+        let local = PathBuf::from("/l.cjs");
+        let paths = ordered_paths(Some(&global), Some(&local));
+        assert_eq!(paths, vec![global.clone(), local.clone()]);
+    }
+
+    #[test]
+    fn ordered_paths_skips_absent_entries() {
+        let local = PathBuf::from("/l.cjs");
+        assert_eq!(ordered_paths(None, Some(&local)), vec![local.clone()]);
+        assert!(ordered_paths(None, None).is_empty());
     }
 }

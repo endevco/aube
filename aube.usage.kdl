@@ -451,6 +451,10 @@ cmd install help="Install all dependencies" {
     flag --force help="Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted" {
         long_help "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`."
     }
+    flag --global-pnpmfile help="Add a global pnpmfile that runs before the local one" {
+        long_help "Add a global pnpmfile that runs before the local one.\n\nMirrors pnpm's `--global-pnpmfile <path>`. Relative paths resolve against the project root. The global hook runs first and the local hook (if any) runs second, so local mutations win on conflicts — matching pnpm's composition order."
+        arg <PATH>
+    }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
     flag --lockfile-dir help="Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`" {
@@ -481,6 +485,10 @@ cmd install help="Install all dependencies" {
     flag --package-import-method help="How to import package files from the global store into the virtual store" {
         long_help "How to import package files from the global store into the virtual store.\n\nOne of `auto` (default: detect the fastest strategy), `hardlink`, `copy`, `clone` (reflink; falls back to copy pending strict enforcement), or `clone-or-copy` (reflink with a copy fallback). Overrides `package-import-method` / `packageImportMethod` from `.npmrc` / `aube-workspace.yaml` when set."
         arg <METHOD>
+    }
+    flag --pnpmfile help="Override the local pnpmfile location" {
+        long_help "Override the local pnpmfile location.\n\nMirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`. A typo (target missing) is a hard miss with a warning rather than a silent fallback to the default."
+        arg <PATH>
     }
     flag --prefer-offline help="Prefer cached metadata over revalidation; only hit the network on a miss"
     flag --public-hoist-pattern help="Selectively hoist matching transitive deps to the root node_modules" var=#true {
@@ -859,6 +867,10 @@ cmd update help="Update dependencies" {
         long_help "Dependency traversal depth.\n\nParsed for pnpm compatibility."
         arg <DEPTH>
     }
+    flag --global-pnpmfile help="Add a global pnpmfile that runs before the local one" {
+        long_help "Add a global pnpmfile that runs before the local one.\n\nMirrors pnpm's `--global-pnpmfile <path>`. The global hook runs first and the local hook (if any) runs second."
+        arg <PATH>
+    }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update"
     flag --ignore-scripts help="Skip lifecycle scripts" {
         long_help "Skip lifecycle scripts.\n\nAccepted for pnpm parity — dep scripts are already gated by `allowBuilds`, so the flag is currently a no-op, but scripts that wrap `pnpm update --ignore-scripts` keep working without complaint."
@@ -866,6 +878,10 @@ cmd update help="Update dependencies" {
     flag --no-optional help="Skip optionalDependencies"
     flag --no-save help="Refresh the lockfile without rewriting `package.json` ranges" {
         long_help "Refresh the lockfile without rewriting `package.json` ranges.\n\nPair with `--latest` to pull a newer resolved version into the lockfile while leaving the manifest's caret/tilde ranges untouched. Without `--latest` this flag is a no-op (plain `update` already doesn't touch the manifest). Mirrors `pnpm update --no-save`."
+    }
+    flag --pnpmfile help="Override the local pnpmfile location" {
+        long_help "Override the local pnpmfile location.\n\nMirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`."
+        arg <PATH>
     }
     arg "[PACKAGES]…" help="Package(s) to update (all if empty)" required=#false var=#true
 }

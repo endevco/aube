@@ -33,6 +33,12 @@ Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-re
 
 Mirrors pnpm's `install --force`.
 
+### `--global-pnpmfile <PATH>`
+
+Add a global pnpmfile that runs before the local one.
+
+Mirrors pnpm's `--global-pnpmfile <path>`. Relative paths resolve against the project root. The global hook runs first and the local hook (if any) runs second, so local mutations win on conflicts — matching pnpm's composition order.
+
 ### `--ignore-pnpmfile`
 
 Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install
@@ -94,6 +100,12 @@ Never hits the network.
 How to import package files from the global store into the virtual store.
 
 One of `auto` (default: detect the fastest strategy), `hardlink`, `copy`, `clone` (reflink; falls back to copy pending strict enforcement), or `clone-or-copy` (reflink with a copy fallback). Overrides `package-import-method` / `packageImportMethod` from `.npmrc` / `aube-workspace.yaml` when set.
+
+### `--pnpmfile <PATH>`
+
+Override the local pnpmfile location.
+
+Mirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`. A typo (target missing) is a hard miss with a warning rather than a silent fallback to the default.
 
 ### `--prefer-offline`
 

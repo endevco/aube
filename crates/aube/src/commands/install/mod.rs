@@ -71,6 +71,14 @@ pub struct InstallArgs {
     /// Mirrors pnpm's `install --force`.
     #[arg(long)]
     pub force: bool,
+    /// Add a global pnpmfile that runs before the local one.
+    ///
+    /// Mirrors pnpm's `--global-pnpmfile <path>`. Relative paths
+    /// resolve against the project root. The global hook runs first
+    /// and the local hook (if any) runs second, so local mutations
+    /// win on conflicts — matching pnpm's composition order.
+    #[arg(long, value_name = "PATH", conflicts_with = "ignore_pnpmfile")]
+    pub global_pnpmfile: Option<std::path::PathBuf>,
     /// Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install
     #[arg(long)]
     pub ignore_pnpmfile: bool,
@@ -141,6 +149,15 @@ pub struct InstallArgs {
     /// when set.
     #[arg(long, value_name = "METHOD")]
     pub package_import_method: Option<String>,
+    /// Override the local pnpmfile location.
+    ///
+    /// Mirrors pnpm's `--pnpmfile <path>`. Relative paths resolve
+    /// against the project root; absolute paths are used as-is. Wins
+    /// over `pnpmfilePath` from `pnpm-workspace.yaml`. A typo (target
+    /// missing) is a hard miss with a warning rather than a silent
+    /// fallback to the default.
+    #[arg(long, value_name = "PATH", conflicts_with = "ignore_pnpmfile")]
+    pub pnpmfile: Option<std::path::PathBuf>,
     /// Prefer cached metadata over revalidation; only hit the network on a miss.
     #[arg(long, conflicts_with = "offline")]
     pub prefer_offline: bool,
@@ -287,6 +304,8 @@ impl InstallArgs {
             mode,
             dep_selection: DepSelection::from_flags(self.prod, self.dev, self.no_optional),
             ignore_pnpmfile: self.ignore_pnpmfile,
+            pnpmfile: self.pnpmfile,
+            global_pnpmfile: self.global_pnpmfile,
             ignore_scripts: self.ignore_scripts,
             lockfile_only: self.lockfile_only,
             merge_git_branch_lockfiles: self.merge_git_branch_lockfiles,
@@ -321,6 +340,15 @@ pub struct InstallOptions {
     /// `--ignore-pnpmfile`: don't load or execute `.pnpmfile.mjs` / `.pnpmfile.cjs`
     /// hooks for this install, even if one exists in the project root.
     pub ignore_pnpmfile: bool,
+    /// `--pnpmfile <path>`: override the local pnpmfile location for
+    /// this run. Wins over `pnpmfilePath` in `pnpm-workspace.yaml` and
+    /// the `.pnpmfile.mjs` / `.pnpmfile.cjs` defaults. `None` falls
+    /// back to the workspace yaml + default search.
+    pub pnpmfile: Option<std::path::PathBuf>,
+    /// `--global-pnpmfile <path>`: add a second pnpmfile that runs
+    /// *before* the local one, so org-wide rules can be layered under
+    /// per-project hooks.
+    pub global_pnpmfile: Option<std::path::PathBuf>,
     /// `--ignore-scripts`: skip root lifecycle scripts (`preinstall`,
     /// `install`, `postinstall`, `prepare`) *and* every dependency's
     /// lifecycle scripts, regardless of `allowBuilds`.
@@ -469,6 +497,8 @@ impl InstallOptions {
             mode,
             dep_selection: DepSelection::All,
             ignore_pnpmfile: false,
+            pnpmfile: None,
+            global_pnpmfile: None,
             ignore_scripts: false,
             lockfile_only: false,
             merge_git_branch_lockfiles: false,
@@ -1976,18 +2006,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             p.set_phase("resolving");
         }
         let client = std::sync::Arc::new(make_client(&cwd).with_network_mode(opts.network_mode));
-        let pnpmfile_path = (!opts.ignore_pnpmfile)
-            .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
-            .flatten();
-        if let Some(p) = pnpmfile_path.as_deref() {
-            super::run_pnpmfile_pre_resolution(p, &cwd, existing_for_resolver).await?;
-        }
-        let read_package_host = match pnpmfile_path.as_deref() {
-            Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
-                .await
-                .wrap_err("failed to start pnpmfile readPackage host")?,
-            None => None,
+        let pnpmfile_paths = if opts.ignore_pnpmfile {
+            Vec::new()
+        } else {
+            crate::pnpmfile::ordered_paths(
+                crate::pnpmfile::detect_global(&cwd, opts.global_pnpmfile.as_deref()).as_deref(),
+                crate::pnpmfile::detect(
+                    &cwd,
+                    opts.pnpmfile.as_deref(),
+                    ws_config_shared.pnpmfile_path.as_deref(),
+                )
+                .as_deref(),
+            )
         };
+        super::run_pnpmfile_pre_resolution(&pnpmfile_paths, &cwd, existing_for_resolver).await?;
+        let read_package_host = crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths)
+            .await
+            .wrap_err("failed to start pnpmfile readPackage host")?;
         let read_package_hook: Option<Box<dyn aube_resolver::ReadPackageHook>> =
             read_package_host.map(|h| Box::new(h) as Box<dyn aube_resolver::ReadPackageHook>);
         let mut resolver = configure_resolver(
@@ -2020,11 +2055,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         .map_err(miette::Report::new)
         .wrap_err("failed to resolve dependencies")?;
         drop(resolver);
-        if let Some(pnpmfile_path) = pnpmfile_path.as_deref() {
-            crate::pnpmfile::run_after_all_resolved(pnpmfile_path, &mut graph)
-                .await
-                .wrap_err("pnpmfile afterAllResolved hook failed")?;
-        }
+        crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &mut graph).await?;
         // Same tarball-URL population pass as the main fetch branch —
         // keeps `--lockfile-only` and regular installs byte-identical.
         if lockfile_include_tarball_url {
@@ -2428,18 +2459,25 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 network_concurrency_setting.unwrap_or_else(default_streaming_network_concurrency);
             let (resolver, mut resolved_rx) =
                 aube_resolver::Resolver::with_stream_capacity(client, fetch_network_concurrency);
-            let pnpmfile_path = (!opts.ignore_pnpmfile)
-                .then(|| crate::pnpmfile::detect(&cwd, ws_config_shared.pnpmfile_path.as_deref()))
-                .flatten();
-            if let Some(p) = pnpmfile_path.as_deref() {
-                super::run_pnpmfile_pre_resolution(p, &cwd, existing_for_resolver).await?;
-            }
-            let read_package_host = match pnpmfile_path.as_deref() {
-                Some(p) => crate::pnpmfile::ReadPackageHost::spawn(p)
-                    .await
-                    .wrap_err("failed to start pnpmfile readPackage host")?,
-                None => None,
+            let pnpmfile_paths = if opts.ignore_pnpmfile {
+                Vec::new()
+            } else {
+                crate::pnpmfile::ordered_paths(
+                    crate::pnpmfile::detect_global(&cwd, opts.global_pnpmfile.as_deref())
+                        .as_deref(),
+                    crate::pnpmfile::detect(
+                        &cwd,
+                        opts.pnpmfile.as_deref(),
+                        ws_config_shared.pnpmfile_path.as_deref(),
+                    )
+                    .as_deref(),
+                )
             };
+            super::run_pnpmfile_pre_resolution(&pnpmfile_paths, &cwd, existing_for_resolver)
+                .await?;
+            let read_package_host = crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths)
+                .await
+                .wrap_err("failed to start pnpmfile readPackage host")?;
             let read_package_hook: Option<Box<dyn aube_resolver::ReadPackageHook>> =
                 read_package_host.map(|h| Box::new(h) as Box<dyn aube_resolver::ReadPackageHook>);
             let mut resolver = configure_resolver(
@@ -2740,11 +2778,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 return resolve_result.map(|_| unreachable!());
             }
             let mut graph = resolve_result.unwrap();
-            if let Some(pnpmfile_path) = pnpmfile_path.as_deref() {
-                crate::pnpmfile::run_after_all_resolved(pnpmfile_path, &mut graph)
-                    .await
-                    .wrap_err("pnpmfile afterAllResolved hook failed")?;
-            }
+            crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &mut graph).await?;
             // Overlay per-package metadata the resolver can't recover
             // from abbreviated (corgi) packuments — `license`,
             // `funding_url`, bun's `configVersion` — from the

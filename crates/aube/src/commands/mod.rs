@@ -458,12 +458,18 @@ pub(crate) fn make_client(cwd: &std::path::Path) -> aube_registry::client::Regis
 /// the graph. Builds a context snapshot (lockfile dir, store dir,
 /// existing lockfile, registry map) from the same sources the rest
 /// of the install pipeline consumes, so install and update see an
-/// identical hook contract.
+/// identical hook contract. `paths` is the (`global`, `local`) order
+/// produced by [`crate::pnpmfile::ordered_paths`]; passing the whole
+/// slice keeps the global-first-then-local contract in one place
+/// instead of duplicating it at every install/update call site.
 pub(crate) async fn run_pnpmfile_pre_resolution(
-    pnpmfile: &std::path::Path,
+    paths: &[std::path::PathBuf],
     cwd: &std::path::Path,
     existing: Option<&aube_lockfile::LockfileGraph>,
 ) -> miette::Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
     let config = load_npm_config(cwd);
     let mut registries = std::collections::BTreeMap::new();
     registries.insert("default".to_string(), config.registry);
@@ -487,7 +493,7 @@ pub(crate) async fn run_pnpmfile_pre_resolution(
         existing,
         registries,
     );
-    crate::pnpmfile::run_pre_resolution(pnpmfile, &ctx)
+    crate::pnpmfile::run_pre_resolution_chain(paths, &ctx)
         .await
         .wrap_err("pnpmfile preResolution hook failed")
 }

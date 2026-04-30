@@ -47,6 +47,12 @@ Dependency traversal depth.
 
 Parsed for pnpm compatibility.
 
+### `--global-pnpmfile <PATH>`
+
+Add a global pnpmfile that runs before the local one.
+
+Mirrors pnpm's `--global-pnpmfile <path>`. The global hook runs first and the local hook (if any) runs second.
+
 ### `--ignore-pnpmfile`
 
 Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update
@@ -66,3 +72,9 @@ Skip optionalDependencies
 Refresh the lockfile without rewriting `package.json` ranges.
 
 Pair with `--latest` to pull a newer resolved version into the lockfile while leaving the manifest's caret/tilde ranges untouched. Without `--latest` this flag is a no-op (plain `update` already doesn't touch the manifest). Mirrors `pnpm update --no-save`.
+
+### `--pnpmfile <PATH>`
+
+Override the local pnpmfile location.
+
+Mirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`.

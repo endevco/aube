@@ -2401,6 +2401,26 @@
             "global": false
           },
           {
+            "name": "global-pnpmfile",
+            "usage": "--global-pnpmfile <PATH>",
+            "help": "Add a global pnpmfile that runs before the local one",
+            "help_long": "Add a global pnpmfile that runs before the local one.\n\nMirrors pnpm's `--global-pnpmfile <path>`. Relative paths resolve against the project root. The global hook runs first and the local hook (if any) runs second, so local mutations win on conflicts — matching pnpm's composition order.",
+            "help_first_line": "Add a global pnpmfile that runs before the local one",
+            "short": [],
+            "long": [
+              "global-pnpmfile"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PATH",
+              "usage": "<PATH>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "ignore-pnpmfile",
             "usage": "--ignore-pnpmfile",
             "help": "Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install",
@@ -2574,6 +2594,26 @@
             "arg": {
               "name": "METHOD",
               "usage": "<METHOD>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
+            "name": "pnpmfile",
+            "usage": "--pnpmfile <PATH>",
+            "help": "Override the local pnpmfile location",
+            "help_long": "Override the local pnpmfile location.\n\nMirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`. A typo (target missing) is a hard miss with a warning rather than a silent fallback to the default.",
+            "help_first_line": "Override the local pnpmfile location",
+            "short": [],
+            "long": [
+              "pnpmfile"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PATH",
+              "usage": "<PATH>",
               "required": true,
               "double_dash": "Optional",
               "hide": false
@@ -5329,6 +5369,26 @@
             }
           },
           {
+            "name": "global-pnpmfile",
+            "usage": "--global-pnpmfile <PATH>",
+            "help": "Add a global pnpmfile that runs before the local one",
+            "help_long": "Add a global pnpmfile that runs before the local one.\n\nMirrors pnpm's `--global-pnpmfile <path>`. The global hook runs first and the local hook (if any) runs second.",
+            "help_first_line": "Add a global pnpmfile that runs before the local one",
+            "short": [],
+            "long": [
+              "global-pnpmfile"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PATH",
+              "usage": "<PATH>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "ignore-pnpmfile",
             "usage": "--ignore-pnpmfile",
             "help": "Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update",
@@ -5377,6 +5437,26 @@
             ],
             "hide": false,
             "global": false
+          },
+          {
+            "name": "pnpmfile",
+            "usage": "--pnpmfile <PATH>",
+            "help": "Override the local pnpmfile location",
+            "help_long": "Override the local pnpmfile location.\n\nMirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`.",
+            "help_first_line": "Override the local pnpmfile location",
+            "short": [],
+            "long": [
+              "pnpmfile"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PATH",
+              "usage": "<PATH>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
           }
         ],
         "mounts": [],

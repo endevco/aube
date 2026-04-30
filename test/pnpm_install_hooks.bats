@@ -4,11 +4,11 @@
 # See test/PNPM_TEST_IMPORT.md for translation conventions.
 #
 # Coverage focus: .pnpmfile.cjs hook behavior — readPackage (sync/async),
-# afterAllResolved (async), and pnpmfile load-time error paths.
-# @pnpm.e2e/* fixtures aren't mirrored yet, so tests that require them
-# (most of hooks.ts uses `@pnpm.e2e/pkg-with-1-dep` + addDistTag) are
-# substituted with packages already in test/registry/storage/ where the
-# behavior is package-agnostic, or deferred until Phase 0 fixtures land.
+# afterAllResolved (async), pnpmfile load-time error paths, and the
+# `--pnpmfile` / `--global-pnpmfile` CLI flags. The `@pnpm.e2e/*`
+# fixtures landed in #424; tests that don't strictly need the e2e shape
+# still substitute lighter in-tree packages (is-even / is-odd) where
+# the behavior is package-agnostic.
 
 setup() {
 	load 'test_helper/common_setup'
@@ -364,4 +364,207 @@ EOF
 	# mutates the in-memory manifest.
 	run cat package.json
 	refute_output --partial '"dependencies"'
+}
+
+# Helper: assert that a specific @pnpm.e2e/dep-of-pkg-with-1-dep version
+# was materialized in the project. The pnpm tests use `project.storeHas`
+# which checks pnpm's content-addressed store — aube's CAS layout is
+# different, but the public-facing equivalent is "the version landed in
+# node_modules", which we read out of `node_modules/<pkg>/package.json`.
+_assert_dep_version() {
+	local expected="$1"
+	local pkg_json="node_modules/.aube/@pnpm.e2e+pkg-with-1-dep@100.0.0/node_modules/@pnpm.e2e/dep-of-pkg-with-1-dep/package.json"
+	# `node_modules/.aube/<dep_path>/node_modules/<name>/package.json` is the
+	# canonical materialization site; isolated-mode symlinks point into it.
+	run jq -r .version "$pkg_json"
+	assert_success
+	assert_output "$expected"
+}
+
+@test "pnpmfile: --pnpmfile loads readPackage from a custom location" {
+	# Ported from pnpm/test/install/hooks.ts:85
+	# ('readPackage hook from custom location').
+	# Substitution: pnpm uses `pnpm install <pkg> --pnpmfile pnpm.js`.
+	# aube's `--pnpmfile` flag is parsed identically. Without the hook,
+	# `^100.0.0` would resolve to 100.1.0 (the registry's `latest` for
+	# @pnpm.e2e/dep-of-pkg-with-1-dep); the hook rewrites the dep spec
+	# to a hard-pin `100.0.0` so the resolver picks the older version.
+	cat >package.json <<'JSON'
+{
+  "name": "test-pnpmfile-flag",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.0.0" }
+}
+JSON
+
+	# Note the non-default filename (`pnpm.js`) — the whole point of
+	# `--pnpmfile` is to load a hook file that wouldn't be picked up by
+	# the default `.pnpmfile.mjs` / `.pnpmfile.cjs` discovery.
+	cat >pnpm.js <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install --pnpmfile pnpm.js
+	assert_success
+	_assert_dep_version 100.0.0
+}
+
+@test "pnpmfile: --global-pnpmfile loads readPackage from outside the project" {
+	# Ported from pnpm/test/install/hooks.ts:110
+	# ('readPackage hook from global pnpmfile').
+	# pnpm writes the global pnpmfile to `..` and passes its absolute
+	# path. We do the same here — a sibling directory under
+	# $TEST_TEMP_DIR holds the global pnpmfile, and the project itself
+	# lives in a subdirectory.
+	mkdir -p project
+	cd project
+	cat >package.json <<'JSON'
+{
+  "name": "test-global-pnpmfile",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.0.0" }
+}
+JSON
+
+	# Global pnpmfile lives in the parent dir — pnpm uses `path.resolve('..',
+	# '.pnpmfile.cjs')` for this exact pattern.
+	cat >../global-hooks.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install --global-pnpmfile "$(cd .. && pwd)/global-hooks.cjs"
+	assert_success
+	_assert_dep_version 100.0.0
+}
+
+@test "pnpmfile: global + local hooks compose, local overrides global" {
+	# Ported from pnpm/test/install/hooks.ts:135
+	# ('readPackage hook from global pnpmfile and local pnpmfile').
+	# Substitution: pnpm uses `is-positive@1.0.0`/`is-positive@3.0.0` —
+	# we don't mirror is-positive yet, so use is-number@3.0.0/7.0.0
+	# (already mirrored). Verifies pnpm's composition order: global runs
+	# first, local runs second, so a field both hooks touch ends up at
+	# the local value while a field only the global hook sets survives.
+	mkdir -p project
+	cd project
+	cat >package.json <<'JSON'
+{
+  "name": "test-pnpmfile-compose",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.0.0" }
+}
+JSON
+
+	# Global pins both `dep-of-pkg-with-1-dep` (100.0.0, no override
+	# from local) AND `is-number` (7.0.0, will be overridden).
+	cat >../global-hooks.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+        pkg.dependencies['is-number'] = '7.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	# Local only touches `is-number`, downgrading to 3.0.0.
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['is-number'] = '3.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install --global-pnpmfile "$(cd .. && pwd)/global-hooks.cjs"
+	assert_success
+	_assert_dep_version 100.0.0
+	# is-number 3.0.0 must win — proves local ran after global.
+	run jq -r .version "node_modules/.aube/@pnpm.e2e+pkg-with-1-dep@100.0.0/node_modules/is-number/package.json"
+	assert_success
+	assert_output 3.0.0
+}
+
+@test "pnpmfile: async global + async local readPackage compose" {
+	# Ported from pnpm/test/install/hooks.ts:176
+	# ('readPackage async hook from global pnpmfile and local pnpmfile').
+	# Same shape as the previous test, except both hooks are declared
+	# `async`. Confirms aube awaits each link in the composition chain
+	# rather than dropping the promise on the floor.
+	mkdir -p project
+	cd project
+	cat >package.json <<'JSON'
+{
+  "name": "test-pnpmfile-compose-async",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.0.0" }
+}
+JSON
+
+	cat >../global-hooks.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    async readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+        pkg.dependencies['is-number'] = '7.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    async readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['is-number'] = '3.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install --global-pnpmfile "$(cd .. && pwd)/global-hooks.cjs"
+	assert_success
+	_assert_dep_version 100.0.0
+	run jq -r .version "node_modules/.aube/@pnpm.e2e+pkg-with-1-dep@100.0.0/node_modules/is-number/package.json"
+	assert_success
+	assert_output 3.0.0
 }

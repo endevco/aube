@@ -234,6 +234,8 @@ pub async fn run(
             mode,
             dep_selection: install::DepSelection::from_flags(!args.dev, args.dev, args.no_optional),
             ignore_pnpmfile: false,
+            pnpmfile: None,
+            global_pnpmfile: None,
             ignore_scripts: false,
             lockfile_only: false,
             merge_git_branch_lockfiles: false,

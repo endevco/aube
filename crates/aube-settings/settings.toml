@@ -160,20 +160,49 @@ description = "Location of the pnpmfile hook file."
 type = "string"
 default = "undefined"
 docs = """
-Workspace-scoped override for the pnpmfile discovery path. Defaults to
+Override for the pnpmfile discovery path. Defaults to
 `<project>/.pnpmfile.mjs` when present, otherwise `<project>/.pnpmfile.cjs`.
-Relative paths resolve against the workspace root; absolute paths are used
+Relative paths resolve against the project root; absolute paths are used
 as-is. A path that points at a missing file is a hard miss — aube emits a
 warning and runs with no pnpmfile rather than silently falling back to the
 default.
+
+`--pnpmfile <path>` mirrors pnpm's CLI flag and takes precedence over the
+workspace yaml entry.
 """
-sources.cli = []
+sources.cli = ["--pnpmfile"]
 sources.env = ["AUBE_PNPMFILE_PATH"]
 sources.npmrc = []
 sources.workspaceYaml = ["pnpmfilePath"]
-examples = []
-# Read directly off `WorkspaceConfig.pnpmfile_path` in `pnpmfile::detect`.
-# Inherently workspace-scoped, so no other sources.
+examples = [
+    "aube install --pnpmfile config/hooks.cjs",
+]
+# CLI flag is read directly off `InstallOptions.pnpmfile` in
+# `pnpmfile::detect`; workspace yaml is read off
+# `WorkspaceConfig.pnpmfile_path` in the same call. Inherently
+# project-scoped, so no npmrc source.
+typedAccessorUnused = true
+
+[globalPnpmfile]
+description = "Path to a second pnpmfile that runs before the project's pnpmfile."
+type = "string"
+default = "undefined"
+docs = """
+Mirrors pnpm's `--global-pnpmfile <path>`. The global hook runs first and
+the local pnpmfile (if any) runs second, so per-project hooks can override
+org-wide rules. Relative paths resolve against the project root; absolute
+paths are used as-is. A typo (target missing) is a hard miss with a warning
+rather than a silent skip.
+"""
+sources.cli = ["--global-pnpmfile"]
+sources.env = ["AUBE_GLOBAL_PNPMFILE"]
+sources.npmrc = []
+sources.workspaceYaml = []
+examples = [
+    "aube install --global-pnpmfile ~/.config/aube/hooks.cjs",
+]
+# Read directly off `InstallOptions.global_pnpmfile` in
+# `pnpmfile::detect_global`.
 typedAccessorUnused = true
 
 [minimumReleaseAge]
