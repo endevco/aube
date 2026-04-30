@@ -29,6 +29,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   upload-assets:
@@ -44,19 +45,19 @@ jobs:
             build-tool: cargo
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64
+            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
             build-tool: cross
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64
+            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
             build-tool: cross
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64
+            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
             build-tool: cross
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64
+            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
             build-tool: cross
           - target: x86_64-pc-windows-msvc
             os: windows-latest

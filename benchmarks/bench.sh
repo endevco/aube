@@ -15,7 +15,13 @@ set -euo pipefail
 #
 # Environment variables:
 #   WARMUP       — warmup runs before timing (default: 1)
-#   RUNS         — timed runs per benchmark (default: 10)
+#   RUNS         — timed runs per benchmark (default: 10). Applies to
+#                  the fast tools (aube, bun). Slower tools default to
+#                  fewer runs so the matrix doesn't take forever:
+#                  pnpm = ceil(RUNS/2), npm = yarn = ceil(RUNS/3).
+#   RUNS_PNPM, RUNS_NPM, RUNS_YARN, RUNS_BUN, RUNS_AUBE — override the
+#                  per-tool run count individually. Falls back to the
+#                  defaults above when unset.
 #   RESULTS_JSON — override the structured JSON output path
 #   BENCH_TOOLS  — comma-separated tools to include
 #                  (default: aube,bun,pnpm,npm,yarn)
@@ -48,6 +54,13 @@ BUN_BIN="$(command -v bun || true)"
 BENCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aube-bench.XXXXXX")"
 WARMUP="${WARMUP:-1}"
 RUNS="${RUNS:-10}"
+# Slower tools take a real chunk of wall time per iteration; default
+# pnpm to half the run count and npm/yarn to a third. Each is overridable.
+RUNS_AUBE="${RUNS_AUBE:-$RUNS}"
+RUNS_BUN="${RUNS_BUN:-$RUNS}"
+RUNS_PNPM="${RUNS_PNPM:-$(((RUNS + 1) / 2))}"
+RUNS_NPM="${RUNS_NPM:-$(((RUNS + 2) / 3))}"
+RUNS_YARN="${RUNS_YARN:-$(((RUNS + 2) / 3))}"
 BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn}"
 BENCH_SCENARIOS="${BENCH_SCENARIOS:-gvs-warm,gvs-cold,ci-warm,ci-cold,install-test,add}"
 BENCH_PHASES="${BENCH_PHASES:-1}"
@@ -155,6 +168,17 @@ if [ -n "$node_version" ]; then
 fi
 export BENCH_VERSIONS_FILE="$versions_file"
 echo ""
+
+runs_for_tool() {
+	case "$1" in
+	aube) echo "$RUNS_AUBE" ;;
+	bun) echo "$RUNS_BUN" ;;
+	pnpm) echo "$RUNS_PNPM" ;;
+	npm) echo "$RUNS_NPM" ;;
+	yarn) echo "$RUNS_YARN" ;;
+	*) echo "$RUNS" ;;
+	esac
+}
 
 # Per-tool lockfile filename (the name the pm writes into the project
 # directory after `install`). Used to decide what to save after the
@@ -418,11 +442,13 @@ run_bench() {
 		local cmd
 		cmd=$(expand_template "$cmd_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
 
+		local tool_runs
+		tool_runs=$(runs_for_tool "$tool")
 		echo ""
 		echo "  $tool:"
 		hyperfine \
 			--warmup "$WARMUP" \
-			--runs "$RUNS" \
+			--runs "$tool_runs" \
 			--ignore-failure \
 			--prepare "$prepare" \
 			--command-name "$tool" \
@@ -475,11 +501,13 @@ run_bench_preinstall() {
 		# state — the developer-loop "run my tests again" case.
 		local prepare="$warm_prep && $cmd"
 
+		local tool_runs
+		tool_runs=$(runs_for_tool "$tool")
 		echo ""
 		echo "  $tool:"
 		hyperfine \
 			--warmup "$WARMUP" \
-			--runs "$RUNS" \
+			--runs "$tool_runs" \
 			--ignore-failure \
 			--prepare "$prepare" \
 			--command-name "$tool" \
