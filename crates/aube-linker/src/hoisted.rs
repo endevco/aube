@@ -403,15 +403,7 @@ pub(crate) fn link_hoisted_importer(
             let target = pkg_dir.join(rel_path);
             if let Err(e) = linker.link_file_fresh(stored, rel_path, &target) {
                 if let Error::MissingStoreFile { .. } = &e {
-                    // Cached index references a vanished CAS shard —
-                    // drop the index JSON so the next install re-imports
-                    // the tarball. See materialize_into for the same
-                    // recovery hatch on the isolated path.
-                    let _ = linker.store.invalidate_cached_index(
-                        pkg.registry_name(),
-                        &pkg.version,
-                        pkg.integrity.as_deref(),
-                    );
+                    crate::invalidate_stale_index_for_package(&linker.store, pkg);
                 }
                 return Err(e);
             }

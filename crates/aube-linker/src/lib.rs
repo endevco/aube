@@ -2376,17 +2376,7 @@ impl Linker {
 
             if let Err(e) = self.link_file_fresh(stored, rel_path, &target) {
                 if let Error::MissingStoreFile { .. } = &e {
-                    // The cached index for this package points at a
-                    // CAS shard that no longer exists. Drop the
-                    // index-cache JSON so the next install re-imports
-                    // the tarball cleanly. Best-effort: if the
-                    // invalidation itself fails, surface the original
-                    // (more useful) materialize error.
-                    let _ = self.store.invalidate_cached_index(
-                        pkg.registry_name(),
-                        &pkg.version,
-                        pkg.integrity.as_deref(),
-                    );
+                    invalidate_stale_index_for_package(&self.store, pkg);
                 }
                 return Err(e);
             }
@@ -2517,6 +2507,10 @@ impl Linker {
         #[cfg(target_os = "macos")]
         const SMALL_FILE_COPY_MAX: u64 = 16 * 1024;
         let map_io = |e: std::io::Error| classify_link_error(stored, rel_path, dst, e);
+        let missing_source = || Error::MissingStoreFile {
+            store_path: stored.store_path.clone(),
+            rel_path: rel_path.to_string(),
+        };
         match self.strategy {
             LinkStrategy::Reflink => {
                 #[cfg(target_os = "macos")]
@@ -2525,6 +2519,12 @@ impl Linker {
                     return Ok(());
                 }
                 if let Err(e) = reflink_copy::reflink(&stored.store_path, dst) {
+                    // Source-missing short-circuit avoids the misleading
+                    // "fell back to copy" trace and the redundant copy
+                    // attempt that would just ENOENT for the same reason.
+                    if !stored.store_path.exists() {
+                        return Err(missing_source());
+                    }
                     // Fall back to copy on cross-filesystem errors
                     trace!("reflink failed, falling back to copy: {e}");
                     std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
@@ -2532,6 +2532,9 @@ impl Linker {
             }
             LinkStrategy::Hardlink => {
                 if let Err(e) = std::fs::hard_link(&stored.store_path, dst) {
+                    if !stored.store_path.exists() {
+                        return Err(missing_source());
+                    }
                     // Fall back to copy on cross-filesystem errors (EXDEV)
                     trace!("hardlink failed, falling back to copy: {e}");
                     std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
@@ -2546,11 +2549,11 @@ impl Linker {
     }
 }
 
-/// Translate a copy/hardlink/reflink failure into the most informative
-/// linker error. ENOENT can mean either side of the link is missing —
-/// stat the source CAS shard to attribute it. A missing shard means the
-/// cached package index is out of sync with the on-disk store, which
-/// the caller can recover from by invalidating the cached index and
+/// Translate a copy failure into the most informative linker error.
+/// ENOENT can mean either side of the operation is missing — stat the
+/// source CAS shard to attribute it. A missing shard means the cached
+/// package index is out of sync with the on-disk store, which the
+/// caller can recover from by invalidating the cached index and
 /// re-importing the tarball.
 fn classify_link_error(
     stored: &StoredFile,
@@ -2565,6 +2568,25 @@ fn classify_link_error(
         };
     }
     Error::Io(dst.to_path_buf(), err)
+}
+
+/// Best-effort drop the cached package index when materialize discovers
+/// its referenced CAS shard is gone. Callers always surface the original
+/// `MissingStoreFile` error first; this side effect just makes sure the
+/// next install miss `load_index` instead of looping on the same dead
+/// reference. If the cache write fails (e.g. permission error), warn
+/// loudly so the user knows the auto-recovery didn't take and they need
+/// to wipe `~/.cache/aube/index/` by hand.
+pub(crate) fn invalidate_stale_index_for_package(store: &aube_store::Store, pkg: &LockedPackage) {
+    match store.invalidate_cached_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
+    {
+        Ok(true) => debug!("invalidated stale index for {}", pkg.spec_key()),
+        Ok(false) => {}
+        Err(e) => warn!(
+            "failed to invalidate stale index for {}: {e}; manual recovery: rm -rf ~/.cache/aube/index",
+            pkg.spec_key()
+        ),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2601,7 +2623,7 @@ pub enum Error {
     #[error("refusing to materialize unsafe index key: {0:?}")]
     UnsafeIndexKey(String),
     #[error(
-        "cached package index references a missing CAS shard at {store_path} (file: {rel_path:?}). The store and its index cache are out of sync — the cached index has been invalidated; rerun the install to re-fetch the tarball."
+        "cached package index references a missing CAS shard at {store_path} (file: {rel_path:?}). The store and its index cache are out of sync — rerun the install to re-fetch the tarball."
     )]
     MissingStoreFile {
         store_path: PathBuf,
@@ -3692,6 +3714,38 @@ mod tests {
         assert!(
             !cached_path.exists(),
             "stale index cache must be invalidated on MissingStoreFile"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_link_file_fresh_hardlink_short_circuits_when_source_missing() {
+        // Hardlink path used to silently fall through to `std::fs::copy`
+        // on ENOENT and emit a misleading "hardlink failed, falling back
+        // to copy" trace, even though the real cause was the source
+        // shard going missing. Short-circuit returns MissingStoreFile
+        // directly so traces stay accurate.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("store/files"));
+        let stored = store.import_bytes(b"hello", false).unwrap();
+        // Capture the path before we move `stored` into link_file_fresh.
+        let store_path = stored.store_path.clone();
+        std::fs::remove_file(&store_path).unwrap();
+
+        let dst_dir = dir.path().join("dst");
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        let dst = dst_dir.join("hello.txt");
+
+        let linker = Linker::new_with_gvs(&store, LinkStrategy::Hardlink, true);
+        let err = linker
+            .link_file_fresh(&stored, "hello.txt", &dst)
+            .expect_err("source missing must fail");
+        assert!(
+            matches!(
+                &err,
+                Error::MissingStoreFile { store_path: p, rel_path } if p == &store_path && rel_path == "hello.txt"
+            ),
+            "expected MissingStoreFile from Hardlink branch, got {err:?}"
         );
     }
 
