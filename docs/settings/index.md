@@ -1273,6 +1273,7 @@ Number of retry attempts for failed registry fetches.
 
 - Type: `int`
 - Default: `2`
+- CLI flags: `fetch-retries`
 - Environment: `npm_config_fetch_retries`, `NPM_CONFIG_FETCH_RETRIES`, `AUBE_FETCH_RETRIES`
 - .npmrc keys: `fetch-retries`, `fetchRetries`
 
@@ -1286,12 +1287,17 @@ a second attempt could double-apply or race.
 Backoff is governed by `fetchRetryFactor`, `fetchRetryMintimeout`,
 `fetchRetryMaxtimeout`.
 
+Examples:
+
+- `aube install --fetch-retries=5`
+
 ### `fetchRetryFactor` {#setting-fetchretryfactor}
 
 Exponential backoff factor for fetch retries.
 
 - Type: `int`
 - Default: `10`
+- CLI flags: `fetch-retry-factor`
 - Environment: `npm_config_fetch_retry_factor`, `NPM_CONFIG_FETCH_RETRY_FACTOR`, `AUBE_FETCH_RETRY_FACTOR`
 - .npmrc keys: `fetch-retry-factor`, `fetchRetryFactor`
 
@@ -1306,6 +1312,7 @@ Minimum retry timeout in milliseconds.
 
 - Type: `int`
 - Default: `10000`
+- CLI flags: `fetch-retry-mintimeout`
 - Environment: `npm_config_fetch_retry_mintimeout`, `NPM_CONFIG_FETCH_RETRY_MINTIMEOUT`, `AUBE_FETCH_RETRY_MINTIMEOUT`
 - .npmrc keys: `fetch-retry-mintimeout`, `fetchRetryMintimeout`
 
@@ -1317,6 +1324,7 @@ Maximum retry timeout in milliseconds.
 
 - Type: `int`
 - Default: `60000`
+- CLI flags: `fetch-retry-maxtimeout`
 - Environment: `npm_config_fetch_retry_maxtimeout`, `NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT`, `AUBE_FETCH_RETRY_MAXTIMEOUT`
 - .npmrc keys: `fetch-retry-maxtimeout`, `fetchRetryMaxtimeout`
 
@@ -1328,6 +1336,7 @@ Max time (ms) to wait for an HTTP request.
 
 - Type: `int`
 - Default: `300000`
+- CLI flags: `fetch-timeout`
 - Environment: `npm_config_fetch_timeout`, `NPM_CONFIG_FETCH_TIMEOUT`, `AUBE_FETCH_TIMEOUT`
 - .npmrc keys: `fetch-timeout`, `fetchTimeout`
 
@@ -1335,6 +1344,10 @@ Per-request HTTP timeout, applied via `reqwest`'s single-knob
 `.timeout()` so it covers headers + body together. A request that
 exceeds this limit fails with a transport error, which is then
 retriable (see `fetchRetries`). Default matches npm's 5 minutes.
+
+Examples:
+
+- `aube add lodash --fetch-timeout=60000`
 
 ### `fetchWarnTimeoutMs` {#setting-fetchwarntimeoutms}
 

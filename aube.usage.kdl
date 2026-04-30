@@ -32,6 +32,26 @@ flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global 
 flag --fail-if-no-match help="Error when a workspace selector matches no packages" global=#true {
     long_help "Error when a workspace selector matches no packages.\n\nAccepted globally; selected commands already fail on empty matches."
 }
+flag --fetch-retries help="Number of retry attempts for failed registry fetches" global=#true {
+    long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+    arg <N>
+}
+flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" global=#true {
+    long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set."
+    arg <N>
+}
+flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" global=#true {
+    long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+    arg <MS>
+}
+flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" global=#true {
+    long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+    arg <MS>
+}
+flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" global=#true {
+    long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+    arg <MS>
+}
 flag --filter-prod help="Production-only variant of `--filter`" var=#true global=#true {
     long_help "Production-only variant of `--filter`.\n\nSame selector grammar as `--filter`, but graph walks (`pkg...`, `...pkg`) only follow `dependencies` / `optionalDependencies` / `peerDependencies` edges — `devDependencies` (and packages reachable solely through them) are skipped. Non-graph forms (exact name, glob, path, `[git-ref]`) behave identically to `--filter`. Repeatable; can be combined with `--filter`."
     arg <PATTERN>

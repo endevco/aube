@@ -67,6 +67,36 @@ Error when a workspace selector matches no packages.
 
 Accepted globally; selected commands already fail on empty matches.
 
+### `--fetch-retries <N>`
+
+Number of retry attempts for failed registry fetches.
+
+Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs.
+
+### `--fetch-retry-factor <N>`
+
+Exponential backoff factor between retry attempts.
+
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set.
+
+### `--fetch-retry-maxtimeout <MS>`
+
+Upper bound (ms) on the computed retry backoff.
+
+Overrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set.
+
+### `--fetch-retry-mintimeout <MS>`
+
+Lower bound (ms) on the computed retry backoff.
+
+Overrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set.
+
+### `--fetch-timeout <MS>`
+
+Per-request HTTP timeout in milliseconds.
+
+Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together.
+
 ### `--filter-prod… <PATTERN>`
 
 Production-only variant of `--filter`.
