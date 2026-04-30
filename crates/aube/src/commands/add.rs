@@ -866,18 +866,16 @@ fn decide_save_catalog(
         return (manual_specifier.to_string(), resolved_version.to_string());
     }
     // Not in target catalog — queue the addition. The catalog entry
-    // mirrors what we'd otherwise write to `package.json`: explicit
-    // user range as-is, dist-tags / no-range fall back to the saved
-    // prefix on the resolved version.
-    let entry_range = if spec.has_explicit_range {
-        spec.range.clone()
-    } else {
-        manual_specifier.to_string()
-    };
+    // mirrors what we'd otherwise write to `package.json`: `manual_specifier`
+    // already encodes the right shape — explicit semver ranges pass through,
+    // dist-tags resolve to `<save-prefix><resolved-version>`, bare `aube
+    // add <pkg>` defaults to the same prefix+resolved form. The npm:/jsr:
+    // cases are unreachable here because they hit the `exclude_from_catalog`
+    // early return above.
     upserts.push(CatalogUpsert {
         catalog: target.to_string(),
         package: spec.name.clone(),
-        range: entry_range,
+        range: manual_specifier.to_string(),
     });
     (manifest_specifier, resolved_version.to_string())
 }
