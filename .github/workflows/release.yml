@@ -32,7 +32,7 @@ env:
 
 jobs:
   upload-assets:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -40,30 +40,41 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            runner: namespace-profile-endev-macos-arm64
             build-tool: cargo
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64
             build-tool: cross
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64
             build-tool: cross
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64
             build-tool: cross
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64
             build-tool: cross
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            runner: windows-latest
             build-tool: cargo
           - target: aarch64-pc-windows-msvc
             os: windows-latest
+            runner: windows-latest
             build-tool: cargo
     steps:
       - uses: actions/checkout@v4
         with:
           ref: refs/tags/${{ inputs.tag }}
           submodules: recursive
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
+        if: ${{ matrix.runner != 'windows-latest' }}
+        with:
+          cache: rust
       - name: Import codesign certs
         if: startsWith(matrix.os, 'macos')
         uses: apple-actions/import-codesign-certs@v3

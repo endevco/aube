@@ -30,18 +30,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64
+          - os: macos-latest
+            runner: namespace-profile-endev-macos-arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     env:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
         with:
-          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || format('build-{0}', matrix.os) }}
-          save-if: ${{ matrix.os != 'ubuntu-latest' }}
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+          cache: rust
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
       - run: mise run build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -55,16 +58,16 @@ jobs:
   # lint failures don't block the BATS jobs from starting against a
   # known-good binary.
   test-linux:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 30
     env:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
         with:
-          shared-key: test-linux
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+          cache: rust
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
       - run: node benchmarks/validate-results.mjs
       - run: mise run test
       - run: mise run lint
@@ -74,7 +77,9 @@ jobs:
       - run: mise run docs:build
 
   # BATS integration shards. Linux runs 4 shards (matches Buildkite),
-  # macOS runs 2 (GitHub-hosted macOS runners are slower + fewer cores).
+  # macOS runs 2. Keep these on GitHub-hosted runners: the jail-build
+  # tests assert native OS sandbox behavior that does not match the
+  # Namespace runner profiles.
   # Each shard downloads the OS-matched debug binary from `build` and
   # invokes mise-task ci:bats:nonserial with its shard index.
   #
@@ -86,13 +91,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, shard: 0, count: 4 }
-          - { os: ubuntu-latest, shard: 1, count: 4 }
-          - { os: ubuntu-latest, shard: 2, count: 4 }
-          - { os: ubuntu-latest, shard: 3, count: 4 }
-          - { os: macos-latest, shard: 0, count: 2 }
-          - { os: macos-latest, shard: 1, count: 2 }
-    runs-on: ${{ matrix.os }}
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+            shard: 0
+            count: 4
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+            shard: 1
+            count: 4
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+            shard: 2
+            count: 4
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+            shard: 3
+            count: 4
+          - os: macos-latest
+            runner: macos-latest
+            shard: 0
+            count: 2
+          - os: macos-latest
+            runner: macos-latest
+            shard: 1
+            count: 2
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
       AUBE_CI_OS: ${{ startsWith(matrix.os, 'ubuntu') && 'linux' || 'macos' }}
@@ -106,7 +129,7 @@ jobs:
       - name: Install GNU parallel (macos)
         if: startsWith(matrix.os, 'macos')
         run: brew install parallel
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: aube-${{ matrix.os }}
@@ -121,13 +144,19 @@ jobs:
 
   # Serial BATS jobs — tests tagged `serial` that can't run under
   # parallel (e.g. stateful store-lock tests, global env mutation).
+  # Keep these paired with the non-serial BATS jobs on GitHub-hosted
+  # runners for the same jail-build compatibility reasons.
   bats-serial:
     needs: build
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+          - os: macos-latest
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
       AUBE_CI_OS: ${{ startsWith(matrix.os, 'ubuntu') && 'linux' || 'macos' }}
@@ -139,7 +168,7 @@ jobs:
       - name: Install GNU parallel (macos)
         if: startsWith(matrix.os, 'macos')
         run: brew install parallel
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: aube-${{ matrix.os }}
@@ -178,7 +207,7 @@ jobs:
       - bats
       - bats-serial
       - windows
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 2
     if: always()
     steps:

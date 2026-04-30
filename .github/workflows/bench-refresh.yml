@@ -24,7 +24,7 @@ jobs:
   # bump has landed since the last refresh.
   check:
     name: Check version drift
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     outputs:
       drift: ${{ steps.drift.outputs.drift }}
       workspace: ${{ steps.drift.outputs.workspace }}
@@ -55,7 +55,7 @@ jobs:
     name: Refresh benchmarks
     needs: check
     if: needs.check.outputs.drift == 'true'
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: write
       pull-requests: write
@@ -65,12 +65,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
-      - uses: jdx/mise-action@v2
+      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
+        with:
+          cache: rust
+      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
         env:
           MISE_LOCKED: "1"
-      - uses: Swatinem/rust-cache@v2
       - name: Restore hermetic bench registry cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/aube-bench/registry
           key: aube-bench-registry-${{ runner.os }}-v1

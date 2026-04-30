@@ -30,7 +30,7 @@ concurrency:
 jobs:
   publish:
     name: Publish to npm
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: read
       # Required for npm Trusted Publishing (OIDC). GitHub mints a

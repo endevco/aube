@@ -30,7 +30,7 @@ env:
 
 jobs:
   publish-ppa:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-endev-linux-amd64
     environment: ppa-publishing
     timeout-minutes: 45
 
