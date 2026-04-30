@@ -230,6 +230,18 @@ impl Resolver {
                             .acquire_owned()
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+                        let cache_is_stale = if needs_time {
+                            match full_cache_dir.as_ref() {
+                                Some(dir) => {
+                                    client.has_stale_full_packument_cache(&name_owned, dir)
+                                }
+                                None => false,
+                            }
+                        } else if let Some(ref dir) = cache_dir {
+                            client.has_stale_packument_cache(&name_owned, dir)
+                        } else {
+                            false
+                        };
                         let cached = if needs_time {
                             match full_cache_dir.as_ref() {
                                 Some(dir) => client.cached_full_packument(&name_owned, dir),
@@ -243,7 +255,10 @@ impl Resolver {
                         if let Some(packument) = cached {
                             return Ok::<_, Error>((name_owned, packument));
                         }
-                        if use_metadata_primer && let Some(seed) = crate::primer::get(&name_owned) {
+                        if use_metadata_primer
+                            && !cache_is_stale
+                            && let Some(seed) = crate::primer::get(&name_owned)
+                        {
                             let mut packument = seed.packument();
                             if force_metadata_primer {
                                 for version in packument.versions.values_mut() {

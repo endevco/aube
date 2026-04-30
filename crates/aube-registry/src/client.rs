@@ -203,7 +203,7 @@ impl RegistryClient {
     }
 
     pub fn uses_default_npm_registry_for(&self, name: &str) -> bool {
-        self.registry_url_for(name) == "https://registry.npmjs.org/"
+        self.registry_url_for(name).trim_end_matches('/') == "https://registry.npmjs.org"
     }
 
     pub fn cached_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
@@ -216,10 +216,30 @@ impl RegistryClient {
         None
     }
 
+    pub fn has_stale_packument_cache(&self, name: &str, cache_dir: &Path) -> bool {
+        let registry_url = self.config.registry_for(name).to_string();
+        let Some(cache_path) = packument_cache_path(cache_dir, name, &registry_url) else {
+            return false;
+        };
+        read_cached_packument(&cache_path).is_some_and(|cached| {
+            !self.trust_cached_packument(cached.fetched_at, cached.max_age_secs)
+        })
+    }
+
     pub fn cached_full_packument(&self, name: &str, cache_dir: &Path) -> Option<Packument> {
         let registry_url = self.config.registry_for(name).to_string();
         let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)?;
         read_cached_full_packument_typed(&cache_path, self.force_cache())
+    }
+
+    pub fn has_stale_full_packument_cache(&self, name: &str, cache_dir: &Path) -> bool {
+        let registry_url = self.config.registry_for(name).to_string();
+        let Some(cache_path) = packument_full_cache_path(cache_dir, name, &registry_url) else {
+            return false;
+        };
+        read_cached_full_packument(&cache_path).is_some_and(|cached| {
+            !self.trust_cached_packument(cached.fetched_at, cached.max_age_secs)
+        })
     }
 
     pub fn seed_packument_cache(
@@ -1799,6 +1819,29 @@ mod seed_tests {
         assert!(cached.fetched_at > 0);
         assert_eq!(cached.max_age_secs, None);
         assert!(cached_is_fresh(cached.fetched_at, cached.max_age_secs));
+    }
+
+    #[test]
+    fn stale_seed_is_reported_for_revalidation() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = RegistryClient::new("https://registry.npmjs.org/");
+        let packument = packument();
+
+        client.seed_packument_cache("demo", dir.path(), &packument, None, None, false);
+
+        assert!(client.has_stale_packument_cache("demo", dir.path()));
+        assert!(client.cached_packument("demo", dir.path()).is_none());
+    }
+
+    #[test]
+    fn default_registry_detection_ignores_trailing_slash() {
+        assert!(
+            RegistryClient::new("https://registry.npmjs.org").uses_default_npm_registry_for("demo")
+        );
+        assert!(
+            RegistryClient::new("https://registry.npmjs.org/")
+                .uses_default_npm_registry_for("demo")
+        );
     }
 }
 
