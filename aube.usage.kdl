@@ -433,6 +433,9 @@ cmd install help="Install all dependencies" {
     }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
+    flag --lockfile-dir help="Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`" {
+        arg <PATH>
+    }
     flag --lockfile-only help="Resolve dependencies and write the lockfile, but don't link `node_modules`" {
         long_help "Resolve dependencies and write the lockfile, but don't link `node_modules`.\n\nUseful for CI workflows that only update the lockfile."
     }

@@ -56,6 +56,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`maxsockets`](#setting-maxsockets) | `int` | Maximum concurrent connections per origin. |
 | [`strictSsl`](#setting-strictssl) | `bool` | Validate SSL certificates for HTTPS requests. |
 | [`lockfile`](#setting-lockfile) | `bool` | Read and generate aube-lock.yaml. |
+| [`lockfileDir`](#setting-lockfiledir) | `path` | Directory the lockfile is written to and read from. |
 | [`preferFrozenLockfile`](#setting-preferfrozenlockfile) | `bool` | Perform a headless install if the lockfile already satisfies package.json. |
 | [`lockfileIncludeTarballUrl`](#setting-lockfileincludetarballurl) | `bool` | Add the full tarball URL to each lockfile entry. |
 | [`excludeLinksFromLockfile`](#setting-excludelinksfromlockfile) | `bool` | Skip local `link:` dependencies when writing the lockfile. |
@@ -1031,6 +1032,31 @@ combined with `lockfile=false` is rejected as a contradiction.
 Examples:
 
 - `echo 'lockfile=false' >> .npmrc && aube install`
+
+### `lockfileDir` {#setting-lockfiledir}
+
+Directory the lockfile is written to and read from.
+
+- Type: `path`
+- Default: `null`
+- CLI flags: `lockfile-dir`
+- Environment: `npm_config_lockfile_dir`, `NPM_CONFIG_LOCKFILE_DIR`, `AUBE_LOCKFILE_DIR`
+- .npmrc keys: `lockfile-dir`, `lockfileDir`
+- Workspace YAML keys: `lockfileDir`
+
+By default the lockfile lives at `<project_root>/aube-lock.yaml`. Set
+this to relocate it. When the resolved path differs from the project
+root, the project becomes an importer keyed by its relative path
+(e.g. `project` if the lockfile is one directory above), so several
+unrelated projects can share a single committed lockfile without
+declaring a `pnpm-workspace.yaml`.
+
+Mirrors pnpm's `--lockfile-dir` / `lockfile-dir`. A relative path is
+resolved against the project root, not the current working directory.
+
+Examples:
+
+- `aube install --lockfile-dir ..`
 
 ### `preferFrozenLockfile` {#setting-preferfrozenlockfile}
 

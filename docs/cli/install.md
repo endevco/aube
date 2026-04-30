@@ -41,6 +41,10 @@ Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install
 
 Skip lifecycle scripts (no-op; aube already skips by default)
 
+### `--lockfile-dir <PATH>`
+
+Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`
+
 ### `--lockfile-only`
 
 Resolve dependencies and write the lockfile, but don't link `node_modules`.
