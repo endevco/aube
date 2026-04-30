@@ -379,11 +379,17 @@ pub struct InstallOptions {
     pub workspace_filter: aube_workspace::selector::EffectiveFilter,
     /// Skip the root package's `preinstall` / `install` / `postinstall` /
     /// `prepare` lifecycle hooks. pnpm parity: those hooks fire only on
-    /// argumentless `pnpm install`, never on `pnpm install <pkg>` (≈
-    /// `aube add`), `pnpm update`, `pnpm remove`, etc. Set by chained
-    /// commands that pass package arguments so a fresh `aube add foo`
+    /// argumentless `pnpm install`. Every other entry point — `add`,
+    /// `remove`, `update`, `dedupe`, `dlx`, patch tooling, the
+    /// `ensure_installed` auto-install before `run`/`test`, nested git
+    /// prepare installs — must skip them so a chained `aube add foo`
     /// doesn't re-run an expensive root postinstall on every invocation.
     /// Independent of `ignore_scripts`, which also skips dep scripts.
+    /// `with_mode()` defaults to `true` (chained-call constructor); the
+    /// argumentless `aube install` path threaded through
+    /// `InstallArgs::into_options` is the only construction site that
+    /// flips this back to `false`. `aube ci` and `aube deploy` build
+    /// `InstallOptions` literally and explicitly opt back in.
     pub skip_root_lifecycle: bool,
 }
 
@@ -466,7 +472,12 @@ impl InstallOptions {
             env_snapshot: aube_settings::values::capture_env(),
             git_prepare_depth: 0,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
-            skip_root_lifecycle: false,
+            // pnpm parity: every chained-call site (add / remove / update
+            // / dedupe / dlx / patch / ensure_installed / git prepare)
+            // skips root lifecycle hooks. Argumentless `aube install` is
+            // the only construction path that runs them and it goes
+            // through `InstallArgs::into_options`, not here.
+            skip_root_lifecycle: true,
         }
     }
 }

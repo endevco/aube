@@ -432,3 +432,53 @@ JSON
 	assert_success
 	assert [ ! -e prepare.marker ]
 }
+
+@test "aube remove: root postinstall is NOT triggered" {
+	# Same pnpm contract as the `aube add` cases — root hooks fire only
+	# on argumentless `aube install`. `pnpm remove <pkg>` is a chained
+	# operation that must not re-run them.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-remove",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"fs\").writeFileSync(\"postinstall.marker\", \"ran\")'"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	# Seed node_modules with --ignore-scripts so the marker isn't written
+	# during setup, then exercise `aube remove` under regular settings.
+	run aube install --ignore-scripts
+	assert_success
+	rm -f postinstall.marker
+
+	run aube remove is-odd
+	assert_success
+	assert [ ! -e postinstall.marker ]
+}
+
+@test "aube update: root postinstall is NOT triggered" {
+	# Same pnpm contract — `aube update` is a chained operation.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-update",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"fs\").writeFileSync(\"postinstall.marker\", \"ran\")'"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	run aube install --ignore-scripts
+	assert_success
+	rm -f postinstall.marker
+
+	run aube update
+	assert_success
+	assert [ ! -e postinstall.marker ]
+}
