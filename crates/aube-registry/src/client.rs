@@ -909,16 +909,32 @@ impl RegistryClient {
 
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, self.fetch_policy.packument_max_bytes, &label)?;
-                    match parse_full_response::<Packument>(resp).await {
+                    let bytes = match resp.bytes().await {
+                        Ok(bytes) => bytes,
+                        Err(err) if !is_last => {
+                            let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_attempts,
+                                backoff_ms = wait.as_millis() as u64,
+                                error = %err,
+                                label,
+                                "retrying HTTP request after response body decode error",
+                            );
+                            tokio::time::sleep(wait).await;
+                            continue;
+                        }
+                        Err(err) => return Err(err.into()),
+                    };
+                    match parse_json_bytes::<Packument>(&bytes) {
                         Ok(packument) => {
-                            let to_cache = CachedPackument {
-                                etag,
-                                last_modified,
-                                fetched_at: now_secs(),
+                            if let Err(e) = write_cached_packument_raw(
+                                &cache_path,
+                                etag.as_deref(),
+                                last_modified.as_deref(),
                                 max_age_secs,
-                                packument: packument.clone(),
-                            };
-                            if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
+                                &bytes,
+                            ) {
                                 tracing::warn!(
                                     "failed to write packument cache {}: {e}",
                                     cache_path.display()
@@ -1527,11 +1543,18 @@ where
     T: serde::de::DeserializeOwned,
 {
     let bytes = resp.bytes().await?;
+    parse_json_bytes(&bytes)
+}
+
+fn parse_json_bytes<T>(bytes: &[u8]) -> Result<T, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
     let mut buf = bytes.to_vec();
     if let Ok(v) = simd_json::serde::from_slice::<T>(&mut buf) {
         return Ok(v);
     }
-    serde_json::from_slice::<T>(&bytes)
+    serde_json::from_slice::<T>(bytes)
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
 }
 
@@ -1544,6 +1567,30 @@ fn read_cached_packument(path: &Path) -> Option<CachedPackument> {
 
 fn write_cached_packument(path: &Path, cached: &CachedPackument) -> std::io::Result<()> {
     let json = serde_json::to_vec(cached).map_err(std::io::Error::other)?;
+    aube_util::fs_atomic::atomic_write(path, &json)
+}
+
+fn write_cached_packument_raw(
+    path: &Path,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    max_age_secs: Option<u64>,
+    packument: &[u8],
+) -> std::io::Result<()> {
+    let mut json = Vec::with_capacity(packument.len() + 192);
+    json.extend_from_slice(b"{\"etag\":");
+    serde_json::to_writer(&mut json, &etag).map_err(std::io::Error::other)?;
+    json.extend_from_slice(b",\"last_modified\":");
+    serde_json::to_writer(&mut json, &last_modified).map_err(std::io::Error::other)?;
+    json.extend_from_slice(b",\"fetched_at\":");
+    serde_json::to_writer(&mut json, &now_secs()).map_err(std::io::Error::other)?;
+    if let Some(max_age_secs) = max_age_secs {
+        json.extend_from_slice(b",\"max_age_secs\":");
+        serde_json::to_writer(&mut json, &max_age_secs).map_err(std::io::Error::other)?;
+    }
+    json.extend_from_slice(b",\"packument\":");
+    json.extend_from_slice(packument);
+    json.extend_from_slice(b"}");
     aube_util::fs_atomic::atomic_write(path, &json)
 }
 
@@ -2257,6 +2304,37 @@ mod retry_tests {
 
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2, "expected total attempts to stay capped");
+    }
+
+    #[tokio::test]
+    async fn packument_cache_raw_write_round_trips_to_fresh_cache() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/demo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"demo-v1\"")
+                    .set_body_json(make_packument_json()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let client = client_with(&server, FetchPolicy::default());
+        let first = client
+            .fetch_packument_cached("demo", temp.path())
+            .await
+            .expect("network fetch writes cache");
+        let second = client
+            .fetch_packument_cached("demo", temp.path())
+            .await
+            .expect("fresh cache read");
+
+        assert_eq!(first.name, "demo");
+        assert_eq!(second.name, "demo");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "second read should hit fresh cache");
     }
 
     #[tokio::test]
