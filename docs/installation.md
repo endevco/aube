@@ -122,6 +122,46 @@ cargo install --path crates/aube
 
 This installs the `aube` binary into `~/.cargo/bin`.
 
+## GitHub Actions
+
+For CI workflows, use the
+[`endevco/setup-aube`](https://github.com/endevco/setup-aube) Action.
+It downloads the prebuilt aube binary that matches the runner's OS and
+architecture, adds it to `PATH`, and (optionally) installs Node.js
+inline via [mise](https://mise.jdx.dev) so a single step covers both
+the package manager and the runtime:
+
+```yaml
+- uses: endevco/setup-aube@v1
+- run: aube install
+```
+
+Pin a specific aube version, install Node, and run `aube install` in
+one go:
+
+```yaml
+- uses: endevco/setup-aube@v1
+  with:
+    version: 1.5.1         # or "latest"
+    node-version: "22"     # or "auto" to read mise.toml / .tool-versions / .nvmrc
+    run-install: true
+```
+
+::: tip
+With `node-version: auto`, the action runs `mise ls --current node`
+against the workspace, so any of `mise.toml`, `.tool-versions`,
+`.nvmrc`, `.node-version`, or `package.json` `devEngines.runtime` is
+honored — no separate `actions/setup-node` step required.
+:::
+
+Supported runners: `ubuntu-latest`, `ubuntu-*-arm`, `macos-latest`,
+`windows-latest`. macOS x86_64 (`macos-13`) is not covered by the
+prebuilt binaries — fall back to `cargo install aube --locked` or use
+`macos-latest` (arm64).
+
+See the [`setup-aube` README](https://github.com/endevco/setup-aube#readme)
+for the full input/output reference.
+
 ## Verify
 
 ```sh
