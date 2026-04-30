@@ -1385,6 +1385,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 } else {
                     cwd.join(raw_path)
                 };
+                // pnpm creates the lockfile directory on demand; mirror that
+                // so users can point at a not-yet-materialized shared dir.
+                std::fs::create_dir_all(&resolved)
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("--lockfile-dir: {}", resolved.display()))?;
                 let canon = std::fs::canonicalize(&resolved)
                     .into_diagnostic()
                     .wrap_err_with(|| format!("--lockfile-dir: {}", resolved.display()))?;
@@ -1392,7 +1397,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     (cwd.clone(), ".".to_string())
                 } else {
                     let key = pathdiff::diff_paths(&cwd, &canon)
-                        .map(|p| p.to_string_lossy().into_owned())
+                        .map(|p| {
+                            // Lockfile importer keys use forward slashes on every
+                            // platform so committed lockfiles stay portable across
+                            // Windows ↔ Unix CI.
+                            let s = p.to_string_lossy().into_owned();
+                            if std::path::MAIN_SEPARATOR == '/' {
+                                s
+                            } else {
+                                s.replace(std::path::MAIN_SEPARATOR, "/")
+                            }
+                        })
                         .ok_or_else(|| {
                             miette!(
                                 "lockfile-dir {} cannot be related to project {}",
@@ -4009,9 +4024,15 @@ fn write_lockfile_dir_remapped(
         return aube_lockfile::write_lockfile_as(lockfile_dir, graph, manifest, kind);
     }
     let mut remapped = graph.clone();
-    if let Some(deps) = remapped.importers.remove(".") {
-        remapped.importers.insert(importer_key.to_string(), deps);
-    }
+    let deps = remapped.importers.remove(".").ok_or_else(|| {
+        aube_lockfile::Error::Parse(
+            lockfile_dir.to_path_buf(),
+            format!(
+                "in-memory lockfile graph missing `.` importer; cannot write under key `{importer_key}`"
+            ),
+        )
+    })?;
+    remapped.importers.insert(importer_key.to_string(), deps);
     aube_lockfile::write_lockfile_as(lockfile_dir, &remapped, manifest, kind)
 }
 

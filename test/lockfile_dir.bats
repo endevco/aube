@@ -62,6 +62,26 @@ JSON
 	assert_failure
 }
 
+@test "aube install --lockfile-dir: creates the target directory if missing" {
+	# pnpm parity: `--lockfile-dir <missing-path>` materializes the
+	# directory rather than aborting with a `canonicalize` ENOENT.
+	mkdir project
+	cat >project/package.json <<'JSON'
+{
+  "name": "lfd-mkdir",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+
+	cd project || return
+	run aube install --lockfile-dir ../shared-locks/nested --no-frozen-lockfile
+	assert_success
+
+	assert_file_exists ../shared-locks/nested/aube-lock.yaml
+	assert_file_not_exists aube-lock.yaml
+}
+
 @test "aube install --lockfile-dir: warm install reads the relocated lockfile" {
 	# Round-trip: write once, wipe node_modules, install again. The
 	# second install must read the relocated lockfile (not regenerate)
