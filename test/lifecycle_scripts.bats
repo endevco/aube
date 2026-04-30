@@ -316,9 +316,11 @@ JSON
 # Existing aube tests above cover most of pnpm's filesystem-marker assertions
 # (preinstall ran / postinstall ran / prepare ran / exit-non-zero fails install
 # / --ignore-scripts skips hooks / npm_package_* env vars). The block below
-# adds the orthogonal stdout-visibility assertions from pnpm's suite — proving
-# the script's stdout reaches the user — plus three known-divergence skip
-# tests that document parity gaps surfaced by porting the suite.
+# adds the orthogonal stdout-visibility assertions from pnpm's suite (the
+# script's echo reaches the user), plus three parity tests that previously
+# documented divergences and now ride the corresponding fixes:
+# `npm_config_user_agent` is exported, and root postinstall/prepare no longer
+# fire on `aube add <pkg>`.
 
 @test "aube install: preinstall script stdout reaches the user" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:43
@@ -373,17 +375,11 @@ JSON
 	assert_output --partial "HELLO_FROM_PREPARE"
 }
 
-@test "aube: lifecycle scripts receive npm_config_user_agent (PARITY GAP)" {
+@test "aube: lifecycle scripts receive npm_config_user_agent" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:29
 	# ('lifecycle script runs with the correct user agent').
-	# pnpm exports `npm_config_user_agent="pnpm/<version> ..."` to every
-	# lifecycle script so dep build scripts can detect the running PM.
-	# aube does not currently set this env var — see
-	# crates/aube-scripts/src/lib.rs (only npm_package_* + a small
-	# npm_config_* allowlist are exported). This is a documented
-	# divergence; remove the skip when aube adds the export.
-	skip "aube divergence: npm_config_user_agent not exported to lifecycle scripts"
-
+	# aube exports the same env var so dep build scripts (husky,
+	# unrs-resolver, node-pre-gyp, etc.) can detect the running PM.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-user-agent",
@@ -399,17 +395,12 @@ JSON
 	assert_output --regexp "UA=aube/[0-9]+\.[0-9]+\.[0-9]+"
 }
 
-@test "aube add: root postinstall is NOT triggered when adding a named dep (PARITY GAP)" {
+@test "aube add: root postinstall is NOT triggered when adding a named dep" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:69
 	# ('postinstall is not executed after named installation').
-	# pnpm's contract: lifecycle hooks (preinstall/install/postinstall/
-	# prepare) only run during a "full install" — `pnpm install` with no
-	# package args. `pnpm install <pkg>` (i.e. `aube add <pkg>`) skips
+	# pnpm's contract: lifecycle hooks only run during an argumentless
+	# `install` — `pnpm install <pkg>` (i.e. `aube add <pkg>`) skips
 	# them so adding a single dep doesn't re-run codegen / build steps.
-	# aube currently fires root postinstall on every `aube add`. Remove
-	# the skip when aube gates root hooks on argumentless install.
-	skip "aube divergence: root postinstall fires on aube add <pkg>"
-
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-named-postinstall",
@@ -424,13 +415,10 @@ JSON
 	assert [ ! -e postinstall.marker ]
 }
 
-@test "aube add: root prepare is NOT triggered when adding a named dep (PARITY GAP)" {
+@test "aube add: root prepare is NOT triggered when adding a named dep" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:82
 	# ('prepare is not executed after installation with arguments').
-	# Same divergence as the postinstall case above — see that skip for
-	# the underlying contract.
-	skip "aube divergence: root prepare fires on aube add <pkg>"
-
+	# Same contract as the postinstall case above.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-named-prepare",

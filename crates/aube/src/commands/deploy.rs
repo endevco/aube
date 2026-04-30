@@ -246,6 +246,7 @@ pub async fn run(
             env_snapshot: aube_settings::values::capture_env(),
             git_prepare_depth: 0,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
+            skip_root_lifecycle: false,
         };
         install::run(opts).await?;
 

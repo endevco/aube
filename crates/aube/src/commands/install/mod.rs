@@ -290,6 +290,10 @@ impl InstallArgs {
             env_snapshot,
             git_prepare_depth: 0,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
+            // Argumentless `aube install` runs root lifecycle hooks; the
+            // chained-call constructor (`with_mode`) is where commands
+            // with package args opt into skipping them.
+            skip_root_lifecycle: false,
         }
     }
 }
@@ -373,6 +377,14 @@ pub struct InstallOptions {
     /// selectors additionally skip `devDependencies` edges during
     /// graph traversal — see `aube_workspace::selector::EffectiveFilter`.
     pub workspace_filter: aube_workspace::selector::EffectiveFilter,
+    /// Skip the root package's `preinstall` / `install` / `postinstall` /
+    /// `prepare` lifecycle hooks. pnpm parity: those hooks fire only on
+    /// argumentless `pnpm install`, never on `pnpm install <pkg>` (≈
+    /// `aube add`), `pnpm update`, `pnpm remove`, etc. Set by chained
+    /// commands that pass package arguments so a fresh `aube add foo`
+    /// doesn't re-run an expensive root postinstall on every invocation.
+    /// Independent of `ignore_scripts`, which also skips dep scripts.
+    pub skip_root_lifecycle: bool,
 }
 
 #[derive(Default)]
@@ -454,6 +466,7 @@ impl InstallOptions {
             env_snapshot: aube_settings::values::capture_env(),
             git_prepare_depth: 0,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
+            skip_root_lifecycle: false,
         }
     }
 }
@@ -1557,7 +1570,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     (both imply "no node_modules touched, so lifecycle scripts
     //     have nothing to gate"). Dependency scripts are always
     //     skipped.
-    if !opts.ignore_scripts && !lockfile_only_effective {
+    if !opts.ignore_scripts && !lockfile_only_effective && !opts.skip_root_lifecycle {
         let phase_start = std::time::Instant::now();
         run_root_lifecycle(
             &cwd,
@@ -3531,7 +3544,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     that mode.
     //     A hook that's not defined in package.json is a silent no-op.
     //     A hook that exits non-zero fails the install (fail-fast, matching pnpm).
-    if !opts.ignore_scripts && !virtual_store_only {
+    if !opts.ignore_scripts && !virtual_store_only && !opts.skip_root_lifecycle {
         let phase_start = std::time::Instant::now();
         for hook in [
             aube_scripts::LifecycleHook::Install,

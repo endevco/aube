@@ -361,10 +361,13 @@ pub async fn run(
     // new dep. Wrapping in a `Result` so the restore step below runs
     // even on failure — a network error mid-resolve would otherwise
     // leave the mutated `package.json` on disk, breaking `--no-save`.
-    let pipeline_result: miette::Result<()> = install::run(install::InstallOptions::with_mode(
-        super::chained_frozen_mode(install::FrozenMode::Fix),
-    ))
-    .await;
+    // pnpm parity: `pnpm install <pkg>` (≈ `aube add`) does NOT run root
+    // lifecycle hooks. Skip them so adding a single dep doesn't re-run an
+    // expensive root postinstall / prepare on every `aube add`.
+    let mut install_opts =
+        install::InstallOptions::with_mode(super::chained_frozen_mode(install::FrozenMode::Fix));
+    install_opts.skip_root_lifecycle = true;
+    let pipeline_result: miette::Result<()> = install::run(install_opts).await;
 
     // 5. Under `--no-save`, restore the snapshotted `package.json` and
     // lockfile so neither shows up in `git status`. The user's
@@ -795,6 +798,9 @@ async fn run_filtered(
             install::FrozenMode::Fix,
         ));
         install_opts.workspace_filter = filter.clone();
+        // pnpm parity: skip root lifecycle hooks on `aube add` (see the
+        // single-project path above for the contract).
+        install_opts.skip_root_lifecycle = true;
         install::run(install_opts).await?;
         Ok(())
     }

@@ -409,6 +409,20 @@ pub fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     1
 }
 
+/// User agent string exported to lifecycle scripts as
+/// `npm_config_user_agent`. Mirrors pnpm's format
+/// (`<name>/<version> <os> <arch>`) so dep build scripts that sniff
+/// the env var to detect the running PM (e.g. `husky`,
+/// `unrs-resolver`) recognize aube without falling back to npm-mode.
+pub fn aube_user_agent() -> String {
+    format!(
+        "aube/{} {} {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
 fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &ScriptSettings) {
     // Strip credentials that aube itself owns before we spawn any
     // lifecycle script. AUBE_AUTH_TOKEN is aube's own registry login
@@ -417,6 +431,11 @@ fn apply_script_settings_env(cmd: &mut tokio::process::Command, settings: &Scrip
     // flows ("npm publish" in a postpublish script) genuinely need
     // them. Matches what pnpm does today.
     cmd.env_remove("AUBE_AUTH_TOKEN");
+    // pnpm parity: every lifecycle script gets `npm_config_user_agent`
+    // so dep postinstalls can detect the running PM. Set here (not at
+    // spawn time) so it flows through both the jailed and the
+    // non-jailed paths.
+    cmd.env("npm_config_user_agent", aube_user_agent());
     if let Some(node_options) = settings.node_options.as_deref() {
         cmd.env("NODE_OPTIONS", node_options);
     }
