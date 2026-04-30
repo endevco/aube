@@ -70,3 +70,22 @@ _setup_basic_fixture() {
 	cp "$PROJECT_ROOT/fixtures/basic/package.json" .
 	cp "$PROJECT_ROOT/fixtures/basic/aube-lock.yaml" .
 }
+
+# Set a dist-tag on a package in the committed Verdaccio storage.
+# Verdaccio re-reads package.json from disk per request, so the new
+# tag takes effect on the next resolve without a registry restart.
+#
+# Mutates test/registry/storage/<pkg>/package.json — callers MUST
+# restore the file via `git checkout` in teardown (see deprecate.bats
+# for the canonical pattern) so the fixture stays clean across runs.
+# Tests using this helper are not parallel-safe and should set
+# `# bats file_tags=serial` + `BATS_NO_PARALLELIZE_WITHIN_FILE=1`.
+#
+# Usage: add_dist_tag <pkg> <tag> <version>
+add_dist_tag() {
+	local pkg="$1" tag="$2" version="$3"
+	local file="$PROJECT_ROOT/test/registry/storage/${pkg}/package.json"
+	local tmp="${file}.tmp"
+	jq --arg t "$tag" --arg v "$version" '.["dist-tags"][$t] = $v' "$file" >"$tmp"
+	mv "$tmp" "$file"
+}
