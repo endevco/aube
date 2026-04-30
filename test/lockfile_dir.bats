@@ -114,6 +114,38 @@ JSON
 	assert_output --partial "alpha"
 }
 
+@test "aube install --lockfile-dir: refuses to clobber a parent dir that is itself a project" {
+	# `lockfile_dir` is itself someone's project root (importer `.`).
+	# Pointing a subdir there with `--lockfile-dir ..` would silently
+	# drop the parent's `.` entry on write — same data-loss class as
+	# two unrelated peers. The foreign-importer guard must reject `.`
+	# too, since by the time it runs the caller has already
+	# established that the current project's importer key is non-`.`.
+	cat >package.json <<'JSON'
+{
+  "name": "lfd-parent",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+	mkdir child
+	cat >child/package.json <<'JSON'
+{
+  "name": "lfd-child",
+  "version": "1.0.0",
+  "dependencies": { "is-even": "1.0.0" }
+}
+JSON
+
+	aube install --no-frozen-lockfile
+	assert_file_exists aube-lock.yaml
+
+	cd child || return
+	run aube install --lockfile-dir .. --no-frozen-lockfile
+	assert_failure
+	assert_output --partial "records importers from other projects"
+}
+
 @test "aube install --lockfile-dir: warm install reads the relocated lockfile" {
 	# Round-trip: write once, wipe node_modules, install again. The
 	# second install must read the relocated lockfile (not regenerate)
