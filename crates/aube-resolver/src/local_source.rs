@@ -367,17 +367,33 @@ pub(crate) async fn resolve_git_source(
                 .await
                 .map_err(|e| {
                     Error::Registry(name.to_string(), format!("codeload extract panicked: {e}"))
-                })??;
-                return Ok((
-                    LocalSource::Git(aube_lockfile::GitSource {
-                        url: original_url,
-                        committish,
-                        resolved: extracted.0,
-                        subpath,
-                    }),
-                    extracted.1,
-                    extracted.2,
-                ));
+                })?;
+                match extracted {
+                    Ok((resolved, version, deps)) => {
+                        return Ok((
+                            LocalSource::Git(aube_lockfile::GitSource {
+                                url: original_url,
+                                committish,
+                                resolved,
+                                subpath,
+                            }),
+                            version,
+                            deps,
+                        ));
+                    }
+                    Err(e) => {
+                        // Mirror the installer: a corrupt or
+                        // unexpectedly-shaped tarball (CDN hiccup,
+                        // unsafe-path rejection, Windows symlink) falls
+                        // through to `git clone`, which inherits the
+                        // user's git credential helper and can write
+                        // symlinks via git's admin-aware path.
+                        tracing::debug!(
+                            name,
+                            "codeload extract failed, falling back to git clone: {e}",
+                        );
+                    }
+                }
             }
             Err(e) => {
                 // Codeload 404s on private repos (it doesn't accept
