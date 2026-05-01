@@ -693,6 +693,10 @@ JSON
 	# silently flip the value — pnpm errors and aube matches the wording
 	# verbatim. miette wraps long error lines, so split the assertion
 	# into shorter substrings that survive the wrap.
+	#
+	# Also pins that the conflict check fires BEFORE `update_manifest_for_add`
+	# writes the new deps — failing late would leave the manifest with
+	# unresolved deps and no matching install (caught in PR review).
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allow-build-conflict",
@@ -711,4 +715,10 @@ YAML
 	assert_output --partial "ignored by the root project"
 	assert_output --partial "allowed to be built by the current command"
 	assert_output --partial "@pnpm.e2e/install-script-"
+	# Manifest is unchanged — neither dep was written, no `dependencies`
+	# block was created.
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example"' package.json
+	assert_failure
+	run grep -F '"dependencies"' package.json
+	assert_failure
 }

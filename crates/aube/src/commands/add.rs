@@ -406,6 +406,17 @@ pub async fn run(
     } else {
         None
     };
+    // `--allow-build=<pkg>` pre-approves dep lifecycle scripts as part
+    // of the add. The conflict check (refuses to flip a pre-existing
+    // `false` to `true`) runs BEFORE `update_manifest_for_add` so a
+    // failure can't leave the manifest with new deps written but no
+    // matching install. Approval bytes themselves are also written here
+    // — the order doesn't matter for the install pipeline (it re-reads
+    // both files from disk) but keeps the failure-mode reasoning local.
+    if !allow_build.is_empty() {
+        apply_allow_build_flags(&cwd, &allow_build)?;
+    }
+
     update_manifest_for_add(
         &cwd,
         packages,
@@ -419,14 +430,6 @@ pub async fn run(
         !no_save,
     )
     .await?;
-
-    // 3a. `--allow-build=<pkg>` pre-approves dep lifecycle scripts as
-    // part of the add. Refuse to silently flip a pre-existing explicit
-    // `false` (mirrors pnpm); otherwise force `true` so the build runs
-    // during step 4.
-    if !allow_build.is_empty() {
-        apply_allow_build_flags(&cwd, &allow_build)?;
-    }
 
     // 4. Run install. It re-reads the mutated package.json, runs the
     // resolver (reusing locked entries for unchanged specs), writes the
