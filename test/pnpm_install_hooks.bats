@@ -368,7 +368,6 @@ EOF
 	refute_output --partial '"dependencies"'
 }
 
-
 # Helper: assert that a specific @pnpm.e2e/dep-of-pkg-with-1-dep version
 # was materialized in the project. The pnpm tests use `project.storeHas`
 # which checks pnpm's content-addressed store — aube's CAS layout is
