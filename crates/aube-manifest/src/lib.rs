@@ -4,7 +4,7 @@ pub use workspace::{JailBuildPermission, WorkspaceConfig};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Deserialize `engines` tolerant to legacy non-map forms, e.g.
 /// `extsprintf@1.4.1` ships `"engines": ["node >=0.6.0"]` and some
@@ -264,11 +264,30 @@ impl Workspaces {
     }
 }
 
+/// Process-wide cache of parsed `package.json` files keyed by absolute
+/// path. Hit by `aube run` 2-3 times per invocation (prompt path, type
+/// parse, External catch-all). Miss falls through to a fresh read +
+/// parse and inserts into the cache.
+static PACKAGE_JSON_CACHE: aube_util::cache::ProcessCache<PathBuf, PackageJson> =
+    aube_util::cache::ProcessCache::new();
+
 impl PackageJson {
     pub fn from_path(path: &Path) -> Result<Self, Error> {
         let content =
             std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
         Self::parse(path, content)
+    }
+
+    /// Cached variant of [`Self::from_path`]. First caller per-path
+    /// pays the read + parse; later callers receive an `Arc` clone.
+    /// Errors are NOT cached (the next caller retries).
+    pub fn from_path_cached(path: &Path) -> Result<std::sync::Arc<Self>, Error> {
+        let key = path.to_path_buf();
+        if let Some(hit) = PACKAGE_JSON_CACHE.get(&key) {
+            return Ok(hit);
+        }
+        let parsed = Self::from_path(path)?;
+        Ok(PACKAGE_JSON_CACHE.get_or_compute(key, || parsed))
     }
 
     /// Parse an in-memory `package.json` string. On failure, produces a

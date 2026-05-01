@@ -492,7 +492,21 @@ impl WorkspaceConfig {
     /// `pnpm-workspace.yaml` (pnpm compatibility) in the given directory.
     /// Returns `Default` if neither file exists. If both exist, the aube
     /// file wins and the pnpm file is ignored.
+    ///
+    /// Memoized per-process. `find_workspace_packages`, lockfile-dir
+    /// resolution, catalog cleanup, jail-builds, and write-target
+    /// picking all hit this 4-8× per command with the same cwd.
+    /// Matches the existing `RAW_CACHE` pattern for the raw map.
     pub fn load(project_dir: &Path) -> Result<Self, crate::Error> {
+        if let Some(hit) = typed_cache_lookup(project_dir) {
+            return Ok(hit);
+        }
+        let value = Self::load_uncached(project_dir)?;
+        typed_cache_insert(project_dir, value.clone());
+        Ok(value)
+    }
+
+    fn load_uncached(project_dir: &Path) -> Result<Self, crate::Error> {
         let Some((path, content)) = find_and_read(project_dir)? else {
             return Ok(Self::default());
         };
@@ -500,6 +514,24 @@ impl WorkspaceConfig {
             return Ok(Self::default());
         }
         crate::parse_yaml(&path, content)
+    }
+}
+
+type TypedCacheMap = std::collections::HashMap<std::path::PathBuf, WorkspaceConfig>;
+static TYPED_CACHE: std::sync::OnceLock<std::sync::Mutex<TypedCacheMap>> =
+    std::sync::OnceLock::new();
+
+fn typed_cache_lookup(project_dir: &Path) -> Option<WorkspaceConfig> {
+    let cache =
+        TYPED_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    cache.lock().ok()?.get(project_dir).cloned()
+}
+
+fn typed_cache_insert(project_dir: &Path, value: WorkspaceConfig) {
+    let cache =
+        TYPED_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut map) = cache.lock() {
+        map.insert(project_dir.to_path_buf(), value);
     }
 }
 
