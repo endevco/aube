@@ -793,26 +793,38 @@ where
 /// [`config_write_target`]: workspace yaml when one exists, otherwise
 /// `package.json#pnpm.allowBuilds`. Returns the file that was written.
 ///
-/// `allowed=true` is used by `aube approve-builds`; `allowed=false` is
-/// used by install to seed unreviewed packages for later review. The
-/// install-time seed is idempotent — names already on the list are
-/// left at their existing value, and the underlying writers skip the
-/// rewrite when nothing structural changed.
+/// [`AllowBuildsWriteMode::Approve`] is used by `aube approve-builds`
+/// and the `--allow-build=<pkg>` CLI flag — entries are forcibly set to
+/// `true`, overwriting any prior value.
+/// [`AllowBuildsWriteMode::ReviewPlaceholder`] is used by install to
+/// seed unreviewed packages for later review — entries are inserted
+/// with the canonical placeholder string [`ALLOW_BUILDS_REVIEW_PLACEHOLDER`]
+/// only when no entry exists. The seed is idempotent: names already on
+/// the list keep their existing value, and the underlying writers skip
+/// the rewrite when nothing structural changed.
+///
+/// Mirrors pnpm's behavior: pnpm writes the placeholder string instead
+/// of a `false` boolean so a quick `grep` makes it obvious which
+/// entries are awaiting review vs deliberately denied.
 pub fn add_to_allow_builds(
     project_dir: &Path,
     names: &[String],
-    allowed: bool,
+    mode: AllowBuildsWriteMode,
 ) -> Result<PathBuf, crate::Error> {
     match config_write_target(project_dir) {
-        ConfigWriteTarget::WorkspaceYaml(path) => write_allow_builds_yaml(&path, names, allowed),
+        ConfigWriteTarget::WorkspaceYaml(path) => write_allow_builds_yaml(&path, names, mode),
         ConfigWriteTarget::PackageJson => {
             edit_setting_map(project_dir, "allowBuilds", |map| {
                 for name in names {
-                    if allowed {
-                        map.insert(name.clone(), serde_json::Value::Bool(true));
-                    } else {
-                        map.entry(name.clone())
-                            .or_insert(serde_json::Value::Bool(false));
+                    match mode {
+                        AllowBuildsWriteMode::Approve => {
+                            map.insert(name.clone(), serde_json::Value::Bool(true));
+                        }
+                        AllowBuildsWriteMode::ReviewPlaceholder => {
+                            map.entry(name.clone()).or_insert(serde_json::Value::String(
+                                ALLOW_BUILDS_REVIEW_PLACEHOLDER.to_string(),
+                            ));
+                        }
                     }
                 }
             })?;
@@ -820,6 +832,25 @@ pub fn add_to_allow_builds(
         }
     }
 }
+
+/// How `add_to_allow_builds` should write each entry.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AllowBuildsWriteMode {
+    /// User approved these builds (e.g. via `aube approve-builds` or
+    /// `--allow-build=<pkg>`). Force-overwrite to `true`.
+    Approve,
+    /// Install seeded these as awaiting review. Insert the canonical
+    /// placeholder string only when no prior entry exists.
+    ReviewPlaceholder,
+}
+
+/// Canonical placeholder string aube writes for unreviewed `allowBuilds`
+/// entries (matches pnpm's wording verbatim). The read-side in
+/// `aube-scripts::policy` recognizes this exact string and treats it as
+/// "skip without warning" — an unreviewed dep doesn't run lifecycle
+/// scripts and (under `strictDepBuilds=true`) is reported as
+/// review-required.
+pub const ALLOW_BUILDS_REVIEW_PLACEHOLDER: &str = "set this to true or false";
 
 /// Insert or replace a single `patchedDependencies` entry in the
 /// workspace yaml at `path`. Creates the file (and the
@@ -941,18 +972,21 @@ where
 fn write_allow_builds_yaml(
     path: &Path,
     names: &[String],
-    allowed: bool,
+    mode: AllowBuildsWriteMode,
 ) -> Result<PathBuf, crate::Error> {
     edit_workspace_yaml(path, |map| {
         let allow_builds = workspace_yaml_submap(map, "allowBuilds", path)?;
         for name in names {
             let key = yaml_serde::Value::String(name.clone());
-            if allowed {
-                allow_builds.insert(key, yaml_serde::Value::Bool(true));
-            } else {
-                allow_builds
-                    .entry(key)
-                    .or_insert(yaml_serde::Value::Bool(false));
+            match mode {
+                AllowBuildsWriteMode::Approve => {
+                    allow_builds.insert(key, yaml_serde::Value::Bool(true));
+                }
+                AllowBuildsWriteMode::ReviewPlaceholder => {
+                    allow_builds.entry(key).or_insert(yaml_serde::Value::String(
+                        ALLOW_BUILDS_REVIEW_PLACEHOLDER.to_string(),
+                    ));
+                }
             }
         }
         Ok(())
@@ -1167,7 +1201,7 @@ patchedDependencies:
         let path = add_to_allow_builds(
             dir.path(),
             &["esbuild".to_string(), "sharp".to_string()],
-            true,
+            AllowBuildsWriteMode::Approve,
         )
         .unwrap();
         assert_eq!(path, dir.path().join("package.json"));
@@ -1202,7 +1236,12 @@ patchedDependencies:
             "packages:\n  - 'pnpm/*'\n",
         )
         .unwrap();
-        let path = add_to_allow_builds(dir.path(), &["esbuild".to_string()], true).unwrap();
+        let path = add_to_allow_builds(
+            dir.path(),
+            &["esbuild".to_string()],
+            AllowBuildsWriteMode::Approve,
+        )
+        .unwrap();
         assert_eq!(path, dir.path().join("pnpm-workspace.yaml"));
         assert!(!dir.path().join("aube-workspace.yaml").exists());
     }
@@ -1218,7 +1257,7 @@ patchedDependencies:
         add_to_allow_builds(
             dir.path(),
             &["sharp".to_string(), "esbuild".to_string()],
-            true,
+            AllowBuildsWriteMode::Approve,
         )
         .unwrap();
         let config = WorkspaceConfig::load(dir.path()).unwrap();
@@ -1233,39 +1272,55 @@ patchedDependencies:
     }
 
     #[test]
-    fn add_to_allow_builds_writes_false_for_review() {
-        // Install-time auto-deny seed. Without a yaml on disk it lands
-        // in package.json under the `aube` namespace; the install
-        // codepath always operates on a project that has package.json.
+    fn add_to_allow_builds_writes_review_placeholder() {
+        // Install-time auto-seed. Without a yaml on disk it lands in
+        // package.json under the `aube` namespace; the install codepath
+        // always operates on a project that has package.json. The
+        // value is the canonical placeholder string (matches pnpm).
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
-        add_to_allow_builds(dir.path(), &["esbuild".to_string()], false).unwrap();
+        add_to_allow_builds(
+            dir.path(),
+            &["esbuild".to_string()],
+            AllowBuildsWriteMode::ReviewPlaceholder,
+        )
+        .unwrap();
         let raw = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed["aube"]["allowBuilds"]["esbuild"], false);
+        assert_eq!(
+            parsed["aube"]["allowBuilds"]["esbuild"],
+            ALLOW_BUILDS_REVIEW_PLACEHOLDER
+        );
     }
 
     #[test]
-    fn add_to_allow_builds_writes_false_for_review_yaml() {
-        // Same scenario as `add_to_allow_builds_writes_false_for_review`
-        // but with a yaml on disk — the seed lands in the yaml, and
-        // the typed view picks it up via WorkspaceConfig.
+    fn add_to_allow_builds_writes_review_placeholder_yaml() {
+        // Yaml-on-disk variant of the above — the seed lands in the
+        // yaml as the canonical placeholder string, and WorkspaceConfig
+        // surfaces it through the typed view.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("pnpm-workspace.yaml"),
             "packages:\n  - 'p/*'\n",
         )
         .unwrap();
-        add_to_allow_builds(dir.path(), &["esbuild".to_string()], false).unwrap();
+        add_to_allow_builds(
+            dir.path(),
+            &["esbuild".to_string()],
+            AllowBuildsWriteMode::ReviewPlaceholder,
+        )
+        .unwrap();
         let config = WorkspaceConfig::load(dir.path()).unwrap();
-        assert!(matches!(
+        assert_eq!(
             config.allow_builds.get("esbuild"),
-            Some(yaml_serde::Value::Bool(false))
-        ));
+            Some(&yaml_serde::Value::String(
+                ALLOW_BUILDS_REVIEW_PLACEHOLDER.to_string()
+            ))
+        );
     }
 
     #[test]
-    fn add_to_allow_builds_false_does_not_revoke_approved_entry() {
+    fn add_to_allow_builds_review_does_not_revoke_approved_entry() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("pnpm-workspace.yaml"),
@@ -1275,7 +1330,7 @@ patchedDependencies:
         add_to_allow_builds(
             dir.path(),
             &["sharp".to_string(), "esbuild".to_string()],
-            false,
+            AllowBuildsWriteMode::ReviewPlaceholder,
         )
         .unwrap();
         let config = WorkspaceConfig::load(dir.path()).unwrap();
@@ -1283,10 +1338,12 @@ patchedDependencies:
             config.allow_builds.get("esbuild"),
             Some(yaml_serde::Value::Bool(true))
         ));
-        assert!(matches!(
+        assert_eq!(
             config.allow_builds.get("sharp"),
-            Some(yaml_serde::Value::Bool(false))
-        ));
+            Some(&yaml_serde::Value::String(
+                ALLOW_BUILDS_REVIEW_PLACEHOLDER.to_string()
+            ))
+        );
     }
 
     #[test]
@@ -1300,7 +1357,7 @@ patchedDependencies:
         add_to_allow_builds(
             dir.path(),
             &["sharp".to_string(), "esbuild".to_string()],
-            true,
+            AllowBuildsWriteMode::Approve,
         )
         .unwrap();
         let config = WorkspaceConfig::load(dir.path()).unwrap();
@@ -1331,7 +1388,12 @@ patchedDependencies:
             "packages:\n  - 'p/*'\n",
         )
         .unwrap();
-        let path = add_to_allow_builds(dir.path(), &["esbuild".to_string()], true).unwrap();
+        let path = add_to_allow_builds(
+            dir.path(),
+            &["esbuild".to_string()],
+            AllowBuildsWriteMode::Approve,
+        )
+        .unwrap();
         assert_eq!(path, dir.path().join("aube-workspace.yaml"));
         let pnpm = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
         assert!(!pnpm.contains("allowBuilds"));
@@ -1474,21 +1536,31 @@ updateConfig:
         let path = dir.path().join("pnpm-workspace.yaml");
         let original = "# why we trust this build\nallowBuilds:\n  # esbuild ships native bindings\n  esbuild: true\n";
         std::fs::write(&path, original).unwrap();
-        let written = add_to_allow_builds(dir.path(), &["esbuild".to_string()], true).unwrap();
+        let written = add_to_allow_builds(
+            dir.path(),
+            &["esbuild".to_string()],
+            AllowBuildsWriteMode::Approve,
+        )
+        .unwrap();
         assert_eq!(written, path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
     fn add_to_allow_builds_does_not_rewrite_when_seeding_existing_review_entry() {
-        // The install-time review seed (`allowed=false`) should not
+        // The install-time review seed (`ReviewPlaceholder`) should not
         // overwrite a name that is already on the allow list — but
         // also must not rewrite the file just to confirm that.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pnpm-workspace.yaml");
         let original = "allowBuilds:\n  # already approved\n  esbuild: true\n";
         std::fs::write(&path, original).unwrap();
-        add_to_allow_builds(dir.path(), &["esbuild".to_string()], false).unwrap();
+        add_to_allow_builds(
+            dir.path(),
+            &["esbuild".to_string()],
+            AllowBuildsWriteMode::ReviewPlaceholder,
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 

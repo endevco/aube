@@ -108,7 +108,7 @@ JSON
 	assert_output --partial "No ignored builds"
 }
 
-@test "install writes unreviewed builds to allowBuilds as false" {
+@test "install writes unreviewed builds to allowBuilds as the review placeholder" {
 	cat >package.json <<'JSON'
 {
   "name": "approve-builds-all-test",
@@ -122,11 +122,12 @@ JSON
 	assert_success
 	assert_file_not_exists aube-builds-marker.txt
 	# No yaml on disk and no `pnpm` namespace in package.json, so the
-	# install-time auto-deny seed writes to package.json#aube.allowBuilds.
+	# install-time auto-seed writes to package.json#aube.allowBuilds with
+	# the canonical placeholder string (matches pnpm's wording).
 	assert_file_not_exists aube-workspace.yaml
 	run grep -q '"allowBuilds"' package.json
 	assert_success
-	run grep -q '"aube-test-builds-marker": false' package.json
+	run grep -q '"aube-test-builds-marker": "set this to true or false"' package.json
 	assert_success
 
 	run aube approve-builds --all

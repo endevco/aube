@@ -82,6 +82,27 @@
             "global": false
           },
           {
+            "name": "allow-build",
+            "usage": "--allow-build… <PKG>",
+            "help": "Pre-approve a dependency's lifecycle scripts as part of the add",
+            "help_long": "Pre-approve a dependency's lifecycle scripts as part of the add.\n\n`--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package.\n\nErrors when `<pkg>` is already on the allowlist with `false` — promoting an explicit deny should be a deliberate edit, not a silent flip. Mirrors `pnpm add --allow-build=<pkg>`.",
+            "help_first_line": "Pre-approve a dependency's lifecycle scripts as part of the add",
+            "short": [],
+            "long": [
+              "allow-build"
+            ],
+            "var": true,
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PKG",
+              "usage": "<PKG>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "ignore-scripts",
             "usage": "--ignore-scripts",
             "help": "Skip lifecycle scripts (no-op; aube already skips by default)",

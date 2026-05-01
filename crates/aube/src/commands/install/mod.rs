@@ -3512,9 +3512,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         )?;
         if !unreviewed.is_empty() {
             let review_names = allow_build_review_names(&unreviewed);
-            aube_manifest::workspace::add_to_allow_builds(&cwd, &review_names, false)
-                .into_diagnostic()
-                .wrap_err("failed to update allowBuilds review entries")?;
+            aube_manifest::workspace::add_to_allow_builds(
+                &cwd,
+                &review_names,
+                aube_manifest::workspace::AllowBuildsWriteMode::ReviewPlaceholder,
+            )
+            .into_diagnostic()
+            .wrap_err("failed to update allowBuilds review entries")?;
             return Err(miette!(
                 "dependencies with build scripts must be reviewed before install:\n{}\nhelp: set them to true or false in `allowBuilds`, or set `strictDepBuilds=false`",
                 unreviewed
@@ -3833,9 +3837,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         )?;
         if !unreviewed.is_empty() {
             let review_names = allow_build_review_names(&unreviewed);
-            aube_manifest::workspace::add_to_allow_builds(&cwd, &review_names, false)
-                .into_diagnostic()
-                .wrap_err("failed to update allowBuilds review entries")?;
+            aube_manifest::workspace::add_to_allow_builds(
+                &cwd,
+                &review_names,
+                aube_manifest::workspace::AllowBuildsWriteMode::ReviewPlaceholder,
+            )
+            .into_diagnostic()
+            .wrap_err("failed to update allowBuilds review entries")?;
             // Cap the inline list so a napi-rs / prebuilt-variants tree
             // (tens of per-platform binding packages) doesn't splat into
             // one hard-to-scan line. Users who want the full list run

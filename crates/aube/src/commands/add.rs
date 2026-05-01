@@ -24,6 +24,19 @@ pub struct AddArgs {
     /// Add as optional dependency
     #[arg(short = 'O', long)]
     pub save_optional: bool,
+    /// Pre-approve a dependency's lifecycle scripts as part of the add.
+    ///
+    /// `--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into
+    /// the workspace yaml (or `package.json#aube.allowBuilds`) before
+    /// the install runs, so the named package's `preinstall` /
+    /// `install` / `postinstall` scripts execute on this invocation.
+    /// Repeatable — pass the flag once per package.
+    ///
+    /// Errors when `<pkg>` is already on the allowlist with `false` —
+    /// promoting an explicit deny should be a deliberate edit, not a
+    /// silent flip. Mirrors `pnpm add --allow-build=<pkg>`.
+    #[arg(long = "allow-build", value_name = "PKG")]
+    pub allow_build: Vec<String>,
     /// Skip lifecycle scripts (no-op; aube already skips by default)
     #[arg(long)]
     pub ignore_scripts: bool,
@@ -261,6 +274,7 @@ pub async fn run(
         ignore_workspace_root_check,
         save_catalog,
         save_catalog_name,
+        allow_build,
     } = args;
     let save_catalog_target = save_catalog_name.or_else(|| {
         if save_catalog {
@@ -399,6 +413,14 @@ pub async fn run(
         !no_save,
     )
     .await?;
+
+    // 3a. `--allow-build=<pkg>` pre-approves dep lifecycle scripts as
+    // part of the add. Refuse to silently flip a pre-existing explicit
+    // `false` (mirrors pnpm); otherwise force `true` so the build runs
+    // during step 4.
+    if !allow_build.is_empty() {
+        apply_allow_build_flags(&cwd, &allow_build)?;
+    }
 
     // 4. Run install. It re-reads the mutated package.json, runs the
     // resolver (reusing locked entries for unchanged specs), writes the
@@ -1017,6 +1039,53 @@ fn decide_save_catalog(
 /// path under `--no-save` lines up byte-for-byte with whatever
 /// `write_lockfile_preserving_existing` produces, including non-aube
 /// lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,
+/// Apply `--allow-build=<pkg>` flags by writing each package as `true`
+/// to the project's `allowBuilds` map (workspace yaml or
+/// `package.json#aube.allowBuilds`). Errors when any name is already
+/// pinned to `false` — flipping an explicit deny should be a deliberate
+/// edit, not a side effect. Mirrors pnpm's `--allow-build=<pkg>` /
+/// `allowBuilds: false` conflict check.
+fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::Result<()> {
+    let manifest_path = cwd.join("package.json");
+    let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
+        .into_diagnostic()
+        .wrap_err("failed to read package.json for --allow-build")?;
+    let workspace = aube_manifest::WorkspaceConfig::load(cwd)
+        .into_diagnostic()
+        .wrap_err("failed to read workspace config for --allow-build")?;
+
+    let mut existing: std::collections::BTreeMap<String, aube_manifest::AllowBuildRaw> =
+        manifest.pnpm_allow_builds();
+    for (k, v) in workspace.allow_builds_raw() {
+        existing.entry(k).or_insert(v);
+    }
+
+    let mut conflicts = Vec::new();
+    for name in names {
+        if matches!(
+            existing.get(name),
+            Some(aube_manifest::AllowBuildRaw::Bool(false))
+        ) {
+            conflicts.push(name.clone());
+        }
+    }
+    if !conflicts.is_empty() {
+        return Err(miette!(
+            "The following dependencies are ignored by the root project, but are allowed to be built by the current command: {}",
+            conflicts.join(", ")
+        ));
+    }
+
+    aube_manifest::workspace::add_to_allow_builds(
+        cwd,
+        names,
+        aube_manifest::workspace::AllowBuildsWriteMode::Approve,
+    )
+    .into_diagnostic()
+    .wrap_err("failed to write --allow-build entries")?;
+    Ok(())
+}
+
 /// `bun.lock`, `npm-shrinkwrap.json`). When no lockfile exists yet the
 /// resolver falls back to aube's own format.
 fn lockfile_path_for_project(project_dir: &std::path::Path) -> std::path::PathBuf {
@@ -1300,6 +1369,7 @@ async fn run_global_inner(
         workspace: false,
         save_catalog: false,
         save_catalog_name: None,
+        allow_build: Vec::new(),
     };
     Box::pin(run(
         inner,

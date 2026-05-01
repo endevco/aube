@@ -32,6 +32,14 @@ Mirrors `pnpm add -g`.
 
 Add as optional dependency
 
+### `--allow-build… <PKG>`
+
+Pre-approve a dependency's lifecycle scripts as part of the add.
+
+`--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package.
+
+Errors when `<pkg>` is already on the allowlist with `false` — promoting an explicit deny should be a deliberate edit, not a silent flip. Mirrors `pnpm add --allow-build=<pkg>`.
+
 ### `--ignore-scripts`
 
 Skip lifecycle scripts (no-op; aube already skips by default)

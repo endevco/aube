@@ -91,6 +91,10 @@ cmd add help="Add a dependency" {
         long_help "Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory.\n\nMirrors `pnpm add -g`."
     }
     flag "-O --save-optional" help="Add as optional dependency"
+    flag --allow-build help="Pre-approve a dependency's lifecycle scripts as part of the add" var=#true {
+        long_help "Pre-approve a dependency's lifecycle scripts as part of the add.\n\n`--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package.\n\nErrors when `<pkg>` is already on the allowlist with `false` — promoting an explicit deny should be a deliberate edit, not a silent flip. Mirrors `pnpm add --allow-build=<pkg>`."
+        arg <PKG>
+    }
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
     flag --no-save help="Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched" {
         long_help "Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest."
