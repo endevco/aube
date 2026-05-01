@@ -2813,7 +2813,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // on every re-resolve even though the resolved versions
             // didn't change, which churns the lockfile diff against
             // formats (npm, bun) that preserve them.
-            if let Ok(prior) =
+            // Reuse the pre-parsed lockfile when the resolver already
+            // loaded it for seeding (Fix/Prefer modes). Skips a second
+            // YAML parse pass over the same 5-50 KB file.
+            if let Some((prior, _)) = lockfile_pre_parse.as_ref() {
+                graph.overlay_metadata_from(prior);
+            } else if let Ok(prior) =
                 parse_lockfile_dir_remapped(&lockfile_dir, &lockfile_importer_key, &manifest)
             {
                 graph.overlay_metadata_from(&prior);
@@ -3408,11 +3413,33 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         linker = linker.with_use_global_virtual_store(enabled);
     }
 
-    let current_subtree_hashes = (!virtual_store_only
+    // Load `pnpm.patchedDependencies` and pre-compute per-package
+    // patch hashes. Hoisted ahead of subtree-hash computation so the
+    // patch content gets folded into delta fingerprints — without
+    // this, a re-patched package would not land in the `changed`
+    // bucket and the side-effects skip path could wrongly trust a
+    // stale marker.
+    let resolved_patches = crate::patches::load_patches(&cwd)?;
+    let patch_hashes: std::collections::BTreeMap<String, String> = resolved_patches
+        .values()
+        .map(|p| (p.key.clone(), p.content_hash()))
+        .collect();
+
+    // Compute leaf + subtree hashes together when both are needed.
+    // Linker invalidation reads `current_subtree_hashes`; the late
+    // state writeback reads the leaf map. Sharing the BLAKE3 leaf
+    // pass cuts a duplicate `compute_package_hashes` traversal.
+    let (current_leaf_hashes, current_subtree_hashes) = if !virtual_store_only
         && matches!(node_linker, aube_linker::NodeLinker::Isolated)
         && !opts.dep_selection.is_filtered()
-        && opts.workspace_filter.is_empty())
-    .then(|| delta::compute_subtree_hashes(&graph_for_link));
+        && opts.workspace_filter.is_empty()
+    {
+        let (leaf, subtree) =
+            delta::compute_leaf_and_subtree_hashes(&graph_for_link, &patch_hashes);
+        (Some(leaf), Some(subtree))
+    } else {
+        (None, None)
+    };
     if !linker.uses_global_virtual_store()
         && let Some(current_subtree_hashes) = current_subtree_hashes.as_ref()
         && let Some(prior_subtrees) = state::read_state_subtree_hashes(&cwd)
@@ -3435,14 +3462,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     deps)` under different node / arch combos from stomping on
     //     each other; pure-JS packages with no build-allowed
     //     descendants get engine-agnostic hashes and stay shared.
-    // Load `pnpm.patchedDependencies` and pre-compute per-package
-    // patch hashes. We always load these, even when `use_global_virtual_store`
-    // is off, so the linker can apply patches at materialize time.
-    let resolved_patches = crate::patches::load_patches(&cwd)?;
-    let patch_hashes: std::collections::BTreeMap<String, String> = resolved_patches
-        .values()
-        .map(|p| (p.key.clone(), p.content_hash()))
-        .collect();
     let patches_for_linker: aube_linker::Patches = resolved_patches
         .values()
         .map(|p| (p.key.clone(), p.content.clone()))
@@ -3789,9 +3808,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // install can diff and skip unchanged entries. Missing or
         // stale fingerprints fall back to a full install on the
         // read side. Safe for older readers that ignore the field.
-        let package_content_hashes = delta::compute_package_hashes(&graph);
-        let package_subtree_hashes =
-            current_subtree_hashes.unwrap_or_else(|| delta::compute_subtree_hashes(&graph));
+        // When the early pass already produced the leaf map for
+        // `graph_for_link`, reuse it here as long as the writeback
+        // graph matches by node count (filtered installs short-
+        // circuit before this branch). Falling through to a fresh
+        // compute keeps the contract simple and is exact whenever
+        // the graphs diverge.
+        let package_content_hashes = current_leaf_hashes
+            .filter(|leaf| leaf.len() == graph.packages.len())
+            .unwrap_or_else(|| delta::compute_package_hashes(&graph, &patch_hashes));
+        let package_subtree_hashes = current_subtree_hashes.unwrap_or_else(|| {
+            delta::compute_subtree_hashes_from_leaf(&graph, &package_content_hashes)
+        });
         let graph_lthash = hex::encode(delta::lthash_of(&package_content_hashes).digest());
         let package_json_hashes =
             state::collect_package_json_hashes_from_manifests(&cwd, &manifests);
