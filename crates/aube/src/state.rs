@@ -50,6 +50,10 @@ pub struct InstallState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lockfile_snapshot_name: Option<String>,
     pub package_json_hashes: BTreeMap<String, String>,
+    /// Mirrors `FreshnessState::package_json_meta`. See R1 docstring
+    /// there for the freshness-check fast-path semantics.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package_json_meta: BTreeMap<String, FileMeta>,
     pub aube_version: String,
     #[serde(default, rename = "prod")]
     pub section_filtered: bool,
@@ -90,6 +94,16 @@ struct FreshnessState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lockfile_snapshot_name: Option<String>,
     package_json_hashes: BTreeMap<String, String>,
+    /// Mtime + size per `package.json` keyed identically to
+    /// `package_json_hashes`. Lets `package_jsons_stale` skip the
+    /// BLAKE3 hash on the fast path: stat once, compare both fields,
+    /// only re-hash when mtime or size changed. On a typical
+    /// monorepo with 30 direct deps that's 30 BLAKE3 hashes per
+    /// `aube run` startup collapsed to 30 stat calls.
+    /// Missing field defaults to empty → falls through to the
+    /// existing hash path, so older state files stay valid.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    package_json_meta: BTreeMap<String, FileMeta>,
     #[serde(default, rename = "prod")]
     section_filtered: bool,
     #[serde(default)]
@@ -100,12 +114,37 @@ struct FreshnessState {
     layout: Option<InstallLayoutState>,
 }
 
+/// `(size_bytes, mtime_unix_secs)` snapshot used by `R1` mtime fast
+/// path. Stored as a tuple-shaped struct so JSON keys stay short.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMeta {
+    pub size: u64,
+    pub mtime_secs: i64,
+}
+
+impl FileMeta {
+    pub fn capture(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Some(Self {
+            size: meta.len(),
+            mtime_secs: mtime,
+        })
+    }
+}
+
 impl From<&InstallState> for FreshnessState {
     fn from(state: &InstallState) -> Self {
         Self {
             lockfile_hash: state.lockfile_hash.clone(),
             lockfile_snapshot_name: state.lockfile_snapshot_name.clone(),
             package_json_hashes: state.package_json_hashes.clone(),
+            package_json_meta: state.package_json_meta.clone(),
             section_filtered: state.section_filtered,
             settings_hash: state.settings_hash.clone(),
             package_json_shape_digests: state.package_json_shape_digests.clone(),
@@ -265,6 +304,18 @@ fn package_jsons_stale(project_dir: &Path, state: &FreshnessState) -> Option<Str
         if !path.exists() {
             return Some(format!("{rel} is missing"));
         }
+        // Fast path: if a `(size, mtime)` snapshot was recorded last
+        // install AND it still matches, the file is byte-identical
+        // (mtime + size pair is sufficient evidence that nothing was
+        // overwritten in place). Skip the BLAKE3 hash entirely. Falls
+        // through on schema upgrades where `package_json_meta` is
+        // empty.
+        if let Some(stored_meta) = state.package_json_meta.get(rel)
+            && let Some(current_meta) = FileMeta::capture(&path)
+            && current_meta == *stored_meta
+        {
+            continue;
+        }
         if hash_file(&path) == *stored_hash {
             continue;
         }
@@ -361,10 +412,26 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         })
         .collect();
 
+    // Capture (size, mtime) per manifest so the next freshness check
+    // can skip the BLAKE3 hash on the warm path. See R1 docstring on
+    // FreshnessState.package_json_meta.
+    let package_json_meta: BTreeMap<String, FileMeta> = package_json_hashes
+        .keys()
+        .filter_map(|rel| {
+            let path = if rel == "." {
+                project_dir.join("package.json")
+            } else {
+                project_dir.join(rel)
+            };
+            FileMeta::capture(&path).map(|m| (rel.clone(), m))
+        })
+        .collect();
+
     let state = InstallState {
         lockfile_hash,
         lockfile_snapshot_name,
         package_json_hashes,
+        package_json_meta,
         aube_version: env!("CARGO_PKG_VERSION").to_string(),
         section_filtered,
         settings_hash,
@@ -992,6 +1059,7 @@ mod tests {
             lockfile_hash: String::new(),
             lockfile_snapshot_name: None,
             package_json_hashes: BTreeMap::new(),
+            package_json_meta: BTreeMap::new(),
             aube_version: String::new(),
             section_filtered: false,
             settings_hash: String::new(),
@@ -1061,6 +1129,7 @@ mod tests {
             lockfile_hash: "blake3:lock".to_string(),
             lockfile_snapshot_name: None,
             package_json_hashes: BTreeMap::from([(".".to_string(), "blake3:pkg".to_string())]),
+            package_json_meta: BTreeMap::new(),
             aube_version: env!("CARGO_PKG_VERSION").to_string(),
             section_filtered: false,
             settings_hash: "blake3:settings".to_string(),
@@ -1152,6 +1221,7 @@ mod tests {
             lockfile_hash: String::new(),
             lockfile_snapshot_name: None,
             package_json_hashes: pjh,
+            package_json_meta: BTreeMap::new(),
             aube_version: env!("CARGO_PKG_VERSION").to_string(),
             section_filtered: false,
             settings_hash: String::new(),
