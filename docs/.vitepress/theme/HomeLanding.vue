@@ -10,7 +10,14 @@ type BenchmarkRow = {
   values: Record<string, number>;
 };
 
-const chartTools = ["aube", "bun", "pnpm", "yarn", "npm"] as const;
+const chartTools = ["aube", "bun", "pnpm", "npm", "yarn"] as const;
+const chartLabels: Record<(typeof chartTools)[number], string> = {
+  aube: "aube",
+  bun: "bun",
+  pnpm: "pnpm",
+  npm: "npm",
+  yarn: "yarn v1",
+};
 const warmInstallBenchmark = (benchmarkResults.rows as BenchmarkRow[]).find(
   (row) => row.key === "gvs-warm",
 );
@@ -25,6 +32,7 @@ const chartRows = chartTools.map((tool) => {
 
   return {
     tool,
+    label: chartLabels[tool],
     style: { "--bar-width": `${width}%` },
   };
 });
@@ -321,7 +329,7 @@ watch(progressBarEl, (el, previousEl) => {
             :class="`aube-chart-row-${row.tool}`"
             :style="row.style"
           >
-            <span>{{ row.tool }}</span>
+            <span>{{ row.label }}</span>
             <span><i></i></span>
           </span>
         </span>
