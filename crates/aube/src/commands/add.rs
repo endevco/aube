@@ -698,21 +698,23 @@ async fn update_manifest_for_add(
         // range — the display version should match what will actually
         // get installed, not what the user's original range resolved
         // to, so we call this twice when the rewrite fires.
+        //
+        // Parse every candidate version once (skipping invalid ones
+        // entirely) and sort the parsed pairs. Comparator-only parsing
+        // burned ~2N parses per add; pre-parse turns it into N + log N
+        // and lets the satisfies-scan reuse the parsed `Version`.
+        let mut parsed_versions: Vec<(&String, node_semver::Version)> = packument
+            .versions
+            .keys()
+            .filter_map(|v| node_semver::Version::parse(v).ok().map(|p| (v, p)))
+            .collect();
+        parsed_versions.sort_by(|a, b| b.1.cmp(&a.1));
         let highest_satisfying = |range_str: &str| -> Option<String> {
             let range = node_semver::Range::parse(range_str).ok()?;
-            let mut versions: Vec<&String> = packument.versions.keys().collect();
-            versions.sort_by(|a, b| {
-                let va = node_semver::Version::parse(a);
-                let vb = node_semver::Version::parse(b);
-                match (va, vb) {
-                    (Ok(va), Ok(vb)) => vb.cmp(&va),
-                    _ => std::cmp::Ordering::Equal,
-                }
-            });
-            versions
-                .into_iter()
-                .find(|v| node_semver::Version::parse(v).is_ok_and(|p| p.satisfies(&range)))
-                .cloned()
+            parsed_versions
+                .iter()
+                .find(|(_, parsed)| parsed.satisfies(&range))
+                .map(|(raw, _)| (*raw).clone())
         };
         let resolved_version = highest_satisfying(&effective_range)
             .ok_or_else(|| miette!("no version of {} matches {effective_range}", spec.name))?;

@@ -18,17 +18,17 @@
 //!    that builds) has a hash of `engine=null` — stable across
 //!    architectures, so pure-JS trees are still shared globally.
 //!
-//! Unlike pnpm, we use SHA-256 over a canonical JSON serialization —
+//! Unlike pnpm, we use BLAKE3 over a canonical JSON serialization —
 //! aube's virtual store is internal to aube (the CAS under
 //! `$XDG_DATA_HOME/aube/store/v1/files` is ours alone), so we don't
 //! need bit-for-bit compatibility with pnpm's `object-hash`.
 //! Determinism is all that matters, and `serde_json` plus `BTreeMap`
-//! gives us alphabetized keys for free.
+//! gives us alphabetized keys for free. BLAKE3 is the project default
+//! for non-crypto-verifying hashes (3-5x faster than SHA-256).
 
 use crate::{LockedPackage, LockfileGraph};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// A callback the caller provides to tell the hasher which
@@ -301,14 +301,13 @@ fn full_pkg_id(pkg: &LockedPackage, patch_hash: PatchHashFn<'_>) -> String {
     }
 }
 
-/// SHA-256 over a canonical JSON serialization. `serde_json` plus
+/// BLAKE3 over a canonical JSON serialization. `serde_json` plus
 /// `BTreeMap` gives alphabetized keys; primitives serialize
 /// deterministically. Return the full hex digest so callers can pick
 /// whatever prefix length they want.
 fn hash_canonical<T: Serialize>(value: &T) -> String {
     let json = serde_json::to_vec(value).expect("graph hash input must serialize");
-    let digest = Sha256::digest(&json);
-    hex::encode(digest)
+    blake3::hash(&json).to_hex().to_string()
 }
 
 #[derive(Serialize)]

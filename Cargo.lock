@@ -296,6 +296,7 @@ dependencies = [
  "aube-manifest",
  "aube-settings",
  "aube-util",
+ "blake3",
  "glob",
  "hex",
  "miette",
