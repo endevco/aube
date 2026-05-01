@@ -146,27 +146,31 @@ pub async fn run(
         cwd.clone()
     };
 
-    // When a workspace filter is set, evaluate it first so a no-match
-    // case takes the warn-and-exit-0 path before we try to read the
-    // lockfile. pnpm prints "No projects matched the filters in <root>"
-    // on stdout and exits 0 by default; `--fail-if-no-match` promotes
-    // it to an error. In `--parseable` mode no message is printed —
-    // machine consumers expect empty stdout when nothing matches.
-    if !filter.is_empty() {
+    // When a workspace filter is set, resolve workspace + selectors
+    // first so a no-match case takes the warn-and-exit-0 path before
+    // we try to read the lockfile. pnpm prints "No projects matched
+    // the filters in <root>" on stdout and exits 0 by default;
+    // `--fail-if-no-match` promotes it to an error. In `--parseable`
+    // mode no message is printed — machine consumers expect empty
+    // stdout when nothing matches. The result is threaded into
+    // `run_filtered` so we don't re-walk the workspace on the match
+    // path.
+    let selected = if !filter.is_empty() {
         let workspace_pkgs = aube_workspace::find_workspace_packages(&read_from)
             .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
-        let no_match = if workspace_pkgs.is_empty() {
-            true
-        } else {
-            let selected = aube_workspace::selector::select_workspace_packages(
-                &read_from,
-                &workspace_pkgs,
-                &filter,
-            )
-            .map_err(|e| miette!("invalid --filter selector: {e}"))?;
-            selected.is_empty()
-        };
-        if no_match {
+        if workspace_pkgs.is_empty() {
+            return Err(miette!(
+                "aube list: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
+                read_from.display()
+            ));
+        }
+        let selected = aube_workspace::selector::select_workspace_packages(
+            &read_from,
+            &workspace_pkgs,
+            &filter,
+        )
+        .map_err(|e| miette!("invalid --filter selector: {e}"))?;
+        if selected.is_empty() {
             if filter.fail_if_no_match {
                 return Err(miette!(
                     "aube list: filter {:?} did not match any workspace package",
@@ -178,7 +182,10 @@ pub async fn run(
             }
             return Ok(());
         }
-    }
+        Some(selected)
+    } else {
+        None
+    };
 
     // Read manifest (needed even for `list` — we print the project name/version
     // at the top, and the lockfile parser needs it for non-pnpm formats).
@@ -226,14 +233,14 @@ pub async fn run(
         &read_from,
     );
 
-    if !filter.is_empty() {
+    if let Some(selected) = selected {
         return run_filtered(
             &read_from,
             &manifest,
             &graph,
             &args,
             dep_filter,
-            &filter,
+            &selected,
             vstore_max_len,
             &vstore_prefix,
         );
@@ -265,36 +272,10 @@ fn run_filtered(
     graph: &LockfileGraph,
     args: &ListArgs,
     dep_filter: DepFilter,
-    workspace_filter: &aube_workspace::selector::EffectiveFilter,
+    selected: &[aube_workspace::selector::SelectedPackage],
     vstore_max_len: usize,
     vstore_prefix: &str,
 ) -> miette::Result<()> {
-    let workspace_pkgs = aube_workspace::find_workspace_packages(root)
-        .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
-    if workspace_pkgs.is_empty() {
-        return Err(miette!(
-            "aube list: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
-            root.display()
-        ));
-    }
-    let selected = aube_workspace::selector::select_workspace_packages(
-        root,
-        &workspace_pkgs,
-        workspace_filter,
-    )
-    .map_err(|e| miette!("invalid --filter selector: {e}"))?;
-    if selected.is_empty() {
-        if workspace_filter.fail_if_no_match {
-            return Err(miette!(
-                "aube list: filter {workspace_filter:?} did not match any workspace package"
-            ));
-        }
-        if !args.parseable {
-            println!("No projects matched the filters in {}", root.display());
-        }
-        return Ok(());
-    }
-
     let format = if args.json {
         ListFormat::Json
     } else if args.parseable {
@@ -306,7 +287,7 @@ fn run_filtered(
     match format {
         ListFormat::Json => {
             let mut values = Vec::new();
-            for pkg in &selected {
+            for pkg in selected {
                 let importer = super::workspace_importer_path(root, &pkg.dir)?;
                 values.push(json_importer_value(
                     &pkg.dir,
@@ -343,7 +324,7 @@ fn run_filtered(
             }
         }
         ListFormat::Parseable => {
-            for pkg in &selected {
+            for pkg in selected {
                 // Lead with the package's directory so consumers can
                 // find each filtered project on its own line — this is
                 // the pnpm `list --filter … --parseable` shape, and
