@@ -527,7 +527,7 @@ cmd la hide=#true help="Alias for `list --long` (hidden; prefer `list --long`)" 
     flag "-g --global" help="List globally-installed packages instead of the project's dependency tree"
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
     flag --depth help="How deep to render the transitive tree" default="0" {
-        long_help "How deep to render the transitive tree.\n\n`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat."
+        long_help "How deep to render the transitive tree.\n\n`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat. `--depth=-1` (pnpm spelling) lists project headers only — no direct or transitive deps."
         arg <DEPTH>
     }
     flag --format help="Output format: one of `default`, `json`, or `parseable`" default=default {
@@ -568,7 +568,7 @@ cmd list help="Print the installed dependency tree" {
     flag "-g --global" help="List globally-installed packages instead of the project's dependency tree"
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
     flag --depth help="How deep to render the transitive tree" default="0" {
-        long_help "How deep to render the transitive tree.\n\n`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat."
+        long_help "How deep to render the transitive tree.\n\n`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat. `--depth=-1` (pnpm spelling) lists project headers only — no direct or transitive deps."
         arg <DEPTH>
     }
     flag --format help="Output format: one of `default`, `json`, or `parseable`" default=default {
@@ -590,7 +590,7 @@ cmd ll hide=#true help="Alias for `list --long` (hidden; prefer `list --long`)" 
     flag "-g --global" help="List globally-installed packages instead of the project's dependency tree"
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
     flag --depth help="How deep to render the transitive tree" default="0" {
-        long_help "How deep to render the transitive tree.\n\n`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat."
+        long_help "How deep to render the transitive tree.\n\n`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat. `--depth=-1` (pnpm spelling) lists project headers only — no direct or transitive deps."
         arg <DEPTH>
     }
     flag --format help="Output format: one of `default`, `json`, or `parseable`" default=default {

@@ -30,7 +30,7 @@ Show only production dependencies (skip devDependencies)
 
 How deep to render the transitive tree.
 
-`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat.
+`0` (default) shows only the top-level direct deps. Pass `9999` (or any large number) for the full graph; `--depth=Infinity` is accepted for pnpm/npm compat. `--depth=-1` (pnpm spelling) lists project headers only — no direct or transitive deps.
 
 **Default:** `0`
 
