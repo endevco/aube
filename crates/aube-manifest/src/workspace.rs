@@ -456,12 +456,19 @@ impl WorkspaceConfig {
             .map(|(k, v)| {
                 let raw = match v {
                     yaml_serde::Value::Bool(b) => crate::AllowBuildRaw::Bool(*b),
+                    // Strings are stored verbatim. `yaml_serde::to_string`
+                    // would re-encode the value as YAML — quoting strings
+                    // that need quoting, adding a trailing newline — and
+                    // that wrapped form would defeat the read-side
+                    // equality check against the canonical review
+                    // placeholder, plus surface extra quotes in any
+                    // warning the user sees.
+                    yaml_serde::Value::String(s) => crate::AllowBuildRaw::Other(s.clone()),
                     other => {
                         // Render via YAML serialization so the user sees
-                        // the same text they wrote (`maybe`, `[a, b]`)
-                        // rather than yaml_serde's Debug form
-                        // (`String("maybe")`). Matches the JSON side in
-                        // `AllowBuildRaw::from_json`.
+                        // the same text they wrote (`[a, b]`) rather than
+                        // yaml_serde's Debug form. Matches the JSON side
+                        // in `AllowBuildRaw::from_json`.
                         let rendered = yaml_serde::to_string(other)
                             .unwrap_or_default()
                             .trim()
@@ -1314,6 +1321,30 @@ patchedDependencies:
         assert_eq!(
             config.allow_builds.get("esbuild"),
             Some(&yaml_serde::Value::String(
+                ALLOW_BUILDS_REVIEW_PLACEHOLDER.to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn allow_builds_raw_round_trips_review_placeholder_from_yaml() {
+        // Regression: `yaml_serde::to_string(Value::String(...))` wraps
+        // the payload (quotes if needed, trailing newline, etc.). If
+        // `allow_builds_raw` re-rendered yaml strings, the round-trip
+        // would mutate the canonical placeholder string and the read
+        // side wouldn't recognize it — every install would emit a
+        // spurious `UnsupportedValue` warning.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            format!("allowBuilds:\n  esbuild: \"{ALLOW_BUILDS_REVIEW_PLACEHOLDER}\"\n"),
+        )
+        .unwrap();
+        let config = WorkspaceConfig::load(dir.path()).unwrap();
+        let raw = config.allow_builds_raw();
+        assert_eq!(
+            raw.get("esbuild"),
+            Some(&crate::AllowBuildRaw::Other(
                 ALLOW_BUILDS_REVIEW_PLACEHOLDER.to_string()
             ))
         );

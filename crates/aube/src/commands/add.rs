@@ -1033,18 +1033,17 @@ fn decide_save_catalog(
     (manifest_specifier, resolved_version.to_string())
 }
 
-/// Resolve the on-disk lockfile path that a normal `add` would write
-/// to in `project_dir`. Mirrors the `LockfileKind` -> filename mapping
-/// inside `aube_lockfile::write_lockfile_as` so the snapshot/restore
-/// path under `--no-save` lines up byte-for-byte with whatever
-/// `write_lockfile_preserving_existing` produces, including non-aube
-/// lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,
 /// Apply `--allow-build=<pkg>` flags by writing each package as `true`
 /// to the project's `allowBuilds` map (workspace yaml or
 /// `package.json#aube.allowBuilds`). Errors when any name is already
 /// pinned to `false` — flipping an explicit deny should be a deliberate
 /// edit, not a side effect. Mirrors pnpm's `--allow-build=<pkg>` /
 /// `allowBuilds: false` conflict check.
+///
+/// Merge precedence matches `build_policy_from_sources` in
+/// `install/lifecycle.rs`: workspace yaml wins over manifest. So a
+/// `false` in `pnpm-workspace.yaml` blocks a `--allow-build` even when
+/// the manifest's `pnpm.allowBuilds` flips it to `true`.
 fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::Result<()> {
     let manifest_path = cwd.join("package.json");
     let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
@@ -1056,8 +1055,11 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
 
     let mut existing: std::collections::BTreeMap<String, aube_manifest::AllowBuildRaw> =
         manifest.pnpm_allow_builds();
+    // Workspace yaml overrides manifest — overwriting (not
+    // `or_insert`-ing) keeps the precedence aligned with
+    // `build_policy_from_sources`.
     for (k, v) in workspace.allow_builds_raw() {
-        existing.entry(k).or_insert(v);
+        existing.insert(k, v);
     }
 
     let mut conflicts = Vec::new();
@@ -1086,6 +1088,12 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
     Ok(())
 }
 
+/// Resolve the on-disk lockfile path that a normal `add` would write
+/// to in `project_dir`. Mirrors the `LockfileKind` -> filename mapping
+/// inside `aube_lockfile::write_lockfile_as` so the snapshot/restore
+/// path under `--no-save` lines up byte-for-byte with whatever
+/// `write_lockfile_preserving_existing` produces, including non-aube
+/// lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,
 /// `bun.lock`, `npm-shrinkwrap.json`). When no lockfile exists yet the
 /// resolver falls back to aube's own format.
 fn lockfile_path_for_project(project_dir: &std::path::Path) -> std::path::PathBuf {

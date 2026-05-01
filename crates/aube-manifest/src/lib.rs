@@ -759,6 +759,13 @@ impl AllowBuildRaw {
     fn from_json(v: &serde_json::Value) -> Self {
         match v {
             serde_json::Value::Bool(b) => Self::Bool(*b),
+            // Strings are stored verbatim — without `as_str` we'd get
+            // `Value::to_string`'s JSON-encoded form (`"foo"` with the
+            // outer quotes baked into the payload), which would defeat
+            // a downstream equality check against a known placeholder
+            // and would also make any warning surface show extra
+            // quotes the user didn't write.
+            serde_json::Value::String(s) => Self::Other(s.clone()),
             other => Self::Other(other.to_string()),
         }
     }
@@ -1557,6 +1564,32 @@ mod tests {
             p.pnpm_allow_builds().get("esbuild"),
             Some(AllowBuildRaw::Bool(true)),
         ));
+    }
+
+    #[test]
+    fn pnpm_allow_builds_round_trips_string_values_unwrapped() {
+        // Regression: `serde_json::Value::to_string()` on a string value
+        // produces JSON-encoded output (`"\"foo\""` with the outer
+        // quotes baked in). `AllowBuildRaw::from_json` must store the
+        // inner string verbatim so a downstream equality check against
+        // a known placeholder works and any user-visible warning shows
+        // the value the user actually wrote — not a re-quoted form.
+        let p = parse(
+            r#"{
+                "pnpm": {
+                    "allowBuilds": {
+                        "esbuild": "set this to true or false"
+                    }
+                }
+            }"#,
+        );
+        let map = p.pnpm_allow_builds();
+        assert_eq!(
+            map.get("esbuild"),
+            Some(&AllowBuildRaw::Other(
+                "set this to true or false".to_string()
+            )),
+        );
     }
 
     #[test]
