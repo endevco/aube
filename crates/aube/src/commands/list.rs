@@ -172,9 +172,14 @@ pub async fn run(
         .map_err(|e| miette!("invalid --filter selector: {e}"))?;
         if selected.is_empty() {
             if filter.fail_if_no_match {
+                let shown: Vec<&str> = filter
+                    .filters
+                    .iter()
+                    .chain(filter.filter_prods.iter())
+                    .map(String::as_str)
+                    .collect();
                 return Err(miette!(
-                    "aube list: filter {:?} did not match any workspace package",
-                    filter.filters
+                    "aube list: filter {shown:?} did not match any workspace package"
                 ));
             }
             if !args.parseable {

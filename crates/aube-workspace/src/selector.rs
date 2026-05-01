@@ -132,17 +132,17 @@ impl Selector {
         let base = if raw.starts_with('[') && raw.ends_with(']') && raw.len() > 2 {
             BaseSelector::ChangedSince(raw[1..raw.len() - 1].to_string())
         }
-        // Path-style selectors: leading `./`, `../`, `/`, a trailing
-        // `/`, or a trailing `/**` (the pnpm-style "directory and all
-        // descendants" form). `./packages/**` is treated as a synonym
-        // for `./packages` because aube's path selector is already
-        // "at or under" — pnpm v9 introduced an exact-vs-recursive
-        // split via `legacyDirFiltering`, which aube does not implement.
+        // Path-style selectors: leading `./`, `../`, `/`, or a trailing `/`.
+        // The pnpm-style `./packages/**` "directory and all descendants"
+        // form already enters this branch via the `./` prefix; we then
+        // strip the `/**` suffix so it collapses to the same `./packages`
+        // path. We deliberately do NOT also accept a bare `/**` suffix
+        // here — `@scope/**` and `name/**` are name globs and must keep
+        // routing through the `NameGlob` branch below.
         else if raw.starts_with("./")
             || raw.starts_with("../")
             || raw.starts_with('/')
             || raw.ends_with('/')
-            || raw.ends_with("/**")
         {
             let trimmed = raw.strip_suffix("/**").unwrap_or(raw).trim_end_matches('/');
             // Strip a leading `./` so the stored PathBuf has no CurDir
@@ -574,6 +574,34 @@ mod tests {
             Selector::parse("./packages/a").unwrap(),
             Selector {
                 base: BaseSelector::Path(PathBuf::from("packages/a")),
+                include_dependencies: false,
+                include_dependents: false,
+                exclude_self: false,
+                exclude: false,
+                prod_only: false,
+            }
+        );
+        // `./packages/**` is the pnpm "directory and all descendants"
+        // form; aube collapses it to the same path because the matcher
+        // is already "at or under".
+        assert_eq!(
+            Selector::parse("./packages/**").unwrap(),
+            Selector {
+                base: BaseSelector::Path(PathBuf::from("packages")),
+                include_dependencies: false,
+                include_dependents: false,
+                exclude_self: false,
+                exclude: false,
+                prod_only: false,
+            }
+        );
+        // A bare `<name>/**` (no path-y prefix) must keep routing
+        // through `NameGlob` — `@scope/**` is a scoped name glob, not
+        // a path.
+        assert_eq!(
+            Selector::parse("@scope/**").unwrap(),
+            Selector {
+                base: BaseSelector::NameGlob("@scope/**".into()),
                 include_dependencies: false,
                 include_dependents: false,
                 exclude_self: false,
