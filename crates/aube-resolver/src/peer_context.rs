@@ -348,21 +348,28 @@ pub fn apply_peer_contexts(
         }
         aube_util::hash::ordered_seq_hash(tokens.iter().copied())
     };
+    // Carry the post-iteration hash forward as the next iteration's
+    // pre-hash. Saves one full graph walk per iteration (the loop runs
+    // up to 16 times; each `graph_hash` allocates a Vec<&str> sized
+    // to `pkgs * 3 + deps * 2` tokens — ~25k entries on a 1000-pkg
+    // graph). One hash per iter instead of two.
+    let mut before = graph_hash(&current);
     for i in 0..MAX_ITERATIONS {
-        let before = graph_hash(&current);
         let after_once = apply_peer_contexts_once(current, options);
         let next = if options.dedupe_peer_dependents {
             dedupe_peer_variants(after_once)
         } else {
             after_once
         };
-        if before == graph_hash(&next) {
+        let after = graph_hash(&next);
+        if before == after {
             tracing::debug!("peer-context pass converged after {i} iteration(s)");
             current = next;
             converged = true;
             break;
         }
         current = next;
+        before = after;
     }
     if !converged {
         // Hit iteration cap. Means mutually recursive peers or
