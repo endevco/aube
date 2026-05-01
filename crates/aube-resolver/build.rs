@@ -43,15 +43,19 @@ fn main() {
             .parent()
             .and_then(Path::parent)
             .map(|w| w.join("scripts/generate-primer.mjs"));
-        match script {
-            Some(s) if s.is_file() => generate(&manifest_dir, &source, primer_top()),
-            _ => {
-                // Published crate (or downstream consumer without the workspace
-                // generator script) and no primer data file: ship an empty
-                // primer. Runtime falls back to network packument fetches.
-                write_package_blob(&out_dir, &[]);
-                return;
-            }
+        let generated = matches!(&script, Some(s) if s.is_file())
+            && generate(&manifest_dir, &source, primer_top());
+        if !generated {
+            // No primer data file and no working generator. Three cases:
+            //   1. published crate / downstream consumer (no script),
+            //   2. cross-rs Docker container building Linux release
+            //      binaries (script visible via mount, but no `node`),
+            //   3. Fedora COPR mock chroot building the SRPM (script in
+            //      tarball, but no `node`).
+            // Ship an empty primer; runtime falls back to network packument
+            // fetches.
+            write_package_blob(&out_dir, &[]);
+            return;
         }
     }
 
@@ -85,7 +89,7 @@ fn primer_top() -> usize {
     }
 }
 
-fn generate(manifest_dir: &Path, source: &Path, top: usize) {
+fn generate(manifest_dir: &Path, source: &Path, top: usize) -> bool {
     let workspace = manifest_dir
         .parent()
         .and_then(Path::parent)
@@ -93,7 +97,7 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) {
     let json = source.with_extension("json");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
 
-    let status = Command::new("node")
+    let status = match Command::new("node")
         .arg(workspace.join("scripts/generate-primer.mjs"))
         .arg("--top")
         .arg(top.to_string())
@@ -102,7 +106,17 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) {
         .arg("--out")
         .arg(&json)
         .status()
-        .expect("failed to run scripts/generate-primer.mjs");
+    {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!(
+                "cargo:warning=node not found in PATH; shipping empty primer \
+                 (runtime falls back to network packument fetches)"
+            );
+            return false;
+        }
+        Err(e) => panic!("failed to run scripts/generate-primer.mjs: {e}"),
+    };
     assert!(status.success(), "scripts/generate-primer.mjs failed");
 
     let input = std::fs::read(&json).unwrap();
@@ -112,6 +126,7 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) {
         zstd::stream::encode_all(Cursor::new(archived), primer_compression_level()).unwrap();
     std::fs::write(source, compressed).unwrap();
     let _ = std::fs::remove_file(json);
+    true
 }
 
 fn write_package_blob(out_dir: &Path, compressed: &[u8]) {

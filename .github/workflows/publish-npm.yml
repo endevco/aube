@@ -30,7 +30,11 @@ concurrency:
 jobs:
   publish:
     name: Publish to npm
-    runs-on: namespace-profile-endev-linux-amd64
+    # github-hosted runner: npm Trusted Publishing (--provenance) rejects
+    # self-hosted runner identities ("Unsupported GitHub Actions runner
+    # environment: self-hosted"). The publish job is light enough that
+    # the namespace runner saves nothing.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       # Required for npm Trusted Publishing (OIDC). GitHub mints a

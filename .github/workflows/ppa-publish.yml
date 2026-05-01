@@ -30,7 +30,10 @@ env:
 
 jobs:
   publish-ppa:
-    runs-on: namespace-profile-endev-linux-amd64
+    # github-hosted runner: namespace runners block outbound FTP (port 21)
+    # to ppa.launchpad.net, which is what dput needs to upload the source
+    # package. Ubuntu-hosted runners allow it.
+    runs-on: ubuntu-latest
     environment: ppa-publishing
     timeout-minutes: 45
 
