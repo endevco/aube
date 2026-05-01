@@ -188,17 +188,42 @@ impl BuildPolicy {
     /// Decide whether `(name, version)` may run lifecycle scripts.
     /// Explicit denies always win over allows (mirrors pnpm).
     pub fn decide(&self, name: &str, version: &str) -> AllowDecision {
-        let with_version = format!("{name}@{version}");
-        if self.denied.contains(name) || self.denied.contains(&with_version) {
+        // Reusable thread-local buffer for the `name@version` probe key.
+        // Avoids a `format!` allocation on every call — ~2k throwaway
+        // Strings on a typical install otherwise.
+        thread_local! {
+            static KEY_BUF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+        }
+        if self.denied.contains(name) {
             return AllowDecision::Deny;
         }
         if matches_any_wildcard(name, &self.denied_wildcards) {
             return AllowDecision::Deny;
         }
+        let denied_versioned = KEY_BUF.with(|buf| {
+            let mut b = buf.borrow_mut();
+            b.clear();
+            use std::fmt::Write as _;
+            let _ = write!(b, "{name}@{version}");
+            self.denied.contains(b.as_str())
+        });
+        if denied_versioned {
+            return AllowDecision::Deny;
+        }
         if self.allow_all {
             return AllowDecision::Allow;
         }
-        if self.allowed.contains(name) || self.allowed.contains(&with_version) {
+        if self.allowed.contains(name) {
+            return AllowDecision::Allow;
+        }
+        let allowed_versioned = KEY_BUF.with(|buf| {
+            let mut b = buf.borrow_mut();
+            b.clear();
+            use std::fmt::Write as _;
+            let _ = write!(b, "{name}@{version}");
+            self.allowed.contains(b.as_str())
+        });
+        if allowed_versioned {
             return AllowDecision::Allow;
         }
         if matches_any_wildcard(name, &self.allowed_wildcards) {
