@@ -26,7 +26,8 @@ teardown() {
 			test/registry/storage/@pnpm.e2e/bar/package.json \
 			test/registry/storage/@pnpm.e2e/dep-of-pkg-with-1-dep/package.json \
 			test/registry/storage/@pnpm.e2e/has-prerelease/package.json \
-			test/registry/storage/@pnpm.e2e/pkg-with-1-dep/package.json 2>/dev/null || true
+			test/registry/storage/@pnpm.e2e/pkg-with-1-dep/package.json \
+			test/registry/storage/@pnpm.e2e/qar/package.json 2>/dev/null || true
 	fi
 	_common_teardown
 }
@@ -386,4 +387,271 @@ JSON
 	assert_success
 	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
 	assert_failure
+}
+
+@test "aube update --latest: bumps prod deps, npm: aliases, and ranges" {
+	# Ported from pnpm/test/update.ts:143 ('update --latest').
+	# Drops the `kevva/is-negative` GitHub-shorthand dep — aube has no
+	# resolver for `user/repo` shorthands. Without the GitHub dep, the
+	# remaining shape (range pin + npm: alias + caret range) is the
+	# regression guard for `update --latest` rewriting every direct dep.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-latest",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@^100.0.0' '@pnpm.e2e/bar@^100.0.0' 'alias@npm:@pnpm.e2e/qar@^100.0.0'
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update --latest
+	assert_success
+
+	# All three direct deps bumped past their original ranges in the lockfile.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/bar@100.1.0' aube-lock.yaml
+	assert_success
+	run grep 'alias@100.1.0' aube-lock.yaml
+	assert_success
+
+	# Manifest specifiers tracked the new versions, preserving caret +
+	# `npm:` alias prefix.
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "\^101.0.0"' package.json
+	assert_success
+	run grep '"@pnpm.e2e/bar": "\^100.1.0"' package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@\^100.1.0"' package.json
+	assert_success
+}
+
+@test "aube update --latest -E: rewrites manifest specs as exact pins" {
+	# Ported from pnpm/test/update.ts:170 ('update --latest --save-exact').
+	# pnpm's `--save-exact` (alias `-E`) drops the caret on the rewritten
+	# specifier. GitHub-shorthand dep dropped (see misc.ts:143 port).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-latest-exact",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' '@pnpm.e2e/bar@100.0.0' 'alias@npm:@pnpm.e2e/qar@100.0.0'
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update --latest -E
+	assert_success
+
+	# Lockfile carries the new versions.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/bar@100.1.0' aube-lock.yaml
+	assert_success
+	run grep 'alias@100.1.0' aube-lock.yaml
+	assert_success
+
+	# Manifest specs are exact pins (no caret), npm: alias preserved.
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "101.0.0"' package.json
+	assert_success
+	run grep '"@pnpm.e2e/bar": "100.1.0"' package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@100.1.0"' package.json
+	assert_success
+}
+
+@test "aube update --latest <name>: bumps named deps, leaves others pinned" {
+	# Ported from pnpm/test/update.ts:197 ('update --latest specific
+	# dependency'). pnpm uses `pnpm update -L @pnpm.e2e/bar alias
+	# is-negative`; the `is-negative` GitHub dep is dropped (see
+	# misc.ts:143 port). aube's `-L` is the same flag (--latest short).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-latest-specific",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' '@pnpm.e2e/bar@^100.0.0' '@pnpm.e2e/foo@100.0.0' 'alias@npm:@pnpm.e2e/qar@^100.0.0'
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update -L '@pnpm.e2e/bar' alias
+	assert_success
+
+	# Named deps bumped: bar (range, caret preserved) and alias (npm: alias).
+	run grep '@pnpm.e2e/bar@100.1.0' aube-lock.yaml
+	assert_success
+	run grep '"@pnpm.e2e/bar": "\^100.1.0"' package.json
+	assert_success
+	run grep 'alias@100.1.0' aube-lock.yaml
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@\^100.1.0"' package.json
+	assert_success
+
+	# Unnamed deps stay at their original pins — both lockfile and manifest.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0"' package.json
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+	run grep '"@pnpm.e2e/foo": "100.0.0"' package.json
+	assert_success
+}
+
+@test "aube update -r --latest <name>: bumps named deps across workspace" {
+	# Ported from pnpm/test/update.ts:369 ('recursive update --latest
+	# specific dependency on projects that do not share a lockfile').
+	# Verifies the workspace fanout honors named-dep filtering: only
+	# `@pnpm.e2e/foo` and `alias` (the npm: alias) are bumped; everything
+	# else stays at its original pin.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "alias": "npm:@pnpm.e2e/qar@100.0.0",
+    "@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0",
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/bar": "100.0.0",
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update -r --latest '@pnpm.e2e/foo' alias
+	assert_success
+
+	# project-1: foo + alias bumped; the rest left alone.
+	run grep '"@pnpm.e2e/foo": "\^100.1.0"' project-1/package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@100.1.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0"' project-1/package.json
+	assert_success
+
+	# project-2: foo bumped; bar untouched (not in the named-deps list).
+	run grep '"@pnpm.e2e/foo": "\^100.1.0"' project-2/package.json
+	assert_success
+	run grep '"@pnpm.e2e/bar": "100.0.0"' project-2/package.json
+	assert_success
+}
+
+@test "aube update -r --latest <name>: same shape as no-shared (per-project)" {
+	# Ported from pnpm/test/update.ts:543 ('recursive update --latest
+	# specific dependency on projects with a shared a lockfile'). pnpm
+	# differentiates this from misc.ts:369 by writing a single shared
+	# lockfile at the workspace root; aube's `update -r` always writes
+	# per-project lockfiles (divergence noted in PNPM_TEST_IMPORT.md), so
+	# the assertions are scoped to per-project manifests. The package
+	# layout here uses exact pins instead of caret ranges (matching the
+	# pnpm fixture at :551-571).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "alias": "npm:@pnpm.e2e/qar@100.0.0",
+    "@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0",
+    "@pnpm.e2e/foo": "100.0.0"
+  }
+}
+JSON
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/bar": "100.0.0",
+    "@pnpm.e2e/foo": "100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update -r --latest '@pnpm.e2e/foo' alias
+	assert_success
+
+	run grep '"@pnpm.e2e/foo": "100.1.0"' project-1/package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@100.1.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/foo": "100.1.0"' project-2/package.json
+	assert_success
+	run grep '"@pnpm.e2e/bar": "100.0.0"' project-2/package.json
+	assert_success
 }

@@ -5217,6 +5217,22 @@
             "global": false
           },
           {
+            "name": "exact",
+            "usage": "-E --exact",
+            "help": "Pin manifest specifiers to the resolved version with no range prefix",
+            "help_long": "Pin manifest specifiers to the resolved version with no range prefix.\n\nPair with `--latest`: when the rewritten specifier replaces the caret/tilde original, drop the prefix so the manifest carries an exact pin (`\"1.2.3\"`) instead of `\"^1.2.3\"`. Mirrors `pnpm update --save-exact`.",
+            "help_first_line": "Pin manifest specifiers to the resolved version with no range prefix",
+            "short": [
+              "E"
+            ],
+            "long": [
+              "exact",
+              "save-exact"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "global",
             "usage": "-g --global",
             "help": "Update globally installed packages",

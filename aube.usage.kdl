@@ -823,6 +823,9 @@ cmd unpublish help="Remove a package (or a single version) from the registry" {
 cmd update help="Update dependencies" {
     alias up upgrade hide=#true
     flag "-D --dev" help="Update only devDependencies"
+    flag "-E --exact --save-exact" help="Pin manifest specifiers to the resolved version with no range prefix" {
+        long_help "Pin manifest specifiers to the resolved version with no range prefix.\n\nPair with `--latest`: when the rewritten specifier replaces the caret/tilde original, drop the prefix so the manifest carries an exact pin (`\"1.2.3\"`) instead of `\"^1.2.3\"`. Mirrors `pnpm update --save-exact`."
+    }
     flag "-g --global" help="Update globally installed packages" {
         long_help "Update globally installed packages.\n\nParsed for pnpm compatibility."
     }

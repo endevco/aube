@@ -10,6 +10,15 @@ pub struct UpdateArgs {
     /// Update only devDependencies.
     #[arg(short = 'D', long, conflicts_with = "prod")]
     pub dev: bool,
+    /// Pin manifest specifiers to the resolved version with no range
+    /// prefix.
+    ///
+    /// Pair with `--latest`: when the rewritten specifier replaces the
+    /// caret/tilde original, drop the prefix so the manifest carries an
+    /// exact pin (`"1.2.3"`) instead of `"^1.2.3"`. Mirrors
+    /// `pnpm update --save-exact`.
+    #[arg(short = 'E', long, visible_alias = "save-exact")]
+    pub exact: bool,
     /// Update globally installed packages.
     ///
     /// Parsed for pnpm compatibility.
@@ -208,12 +217,18 @@ pub async fn run(
     };
 
     // Build a filtered lockfile that excludes packages being updated
-    // so the resolver picks the latest matching version instead of the locked one.
+    // so the resolver picks the latest matching version instead of the
+    // locked one. Aliased direct deps (`"alias": "npm:real@x"`) live in
+    // the lockfile graph with `pkg.name == "alias"` (the manifest key),
+    // not the real name — without the manifest_keys check below the
+    // resolver would keep the locked alias version under `--latest`.
     let filtered_existing = existing.as_ref().map(|graph| {
         let mut filtered = graph.clone();
-        filtered
-            .packages
-            .retain(|_, pkg| !real_names_to_update.contains(&pkg.name));
+        let manifest_keys: std::collections::HashSet<&str> =
+            manifest_keys_to_update.iter().map(String::as_str).collect();
+        filtered.packages.retain(|_, pkg| {
+            !real_names_to_update.contains(&pkg.name) && !manifest_keys.contains(pkg.name.as_str())
+        });
         filtered
     });
 
@@ -256,21 +271,28 @@ pub async fn run(
             .wrap_err("pnpmfile afterAllResolved hook failed")?;
     }
 
-    // Report what changed
+    // Report what changed. Aliased direct deps (`"alias": "npm:real@x"`)
+    // land in the lockfile graph with `pkg.name == "alias"` and
+    // `pkg.alias_of == Some("real")`, so the version-lookup match has to
+    // accept either the manifest key (the alias) or the real name —
+    // matching only on `real_name` would miss aliased entries.
+    fn lookup_pkg<'a>(
+        g: &'a aube_lockfile::LockfileGraph,
+        manifest_key: &str,
+        real_name: &str,
+    ) -> Option<&'a aube_lockfile::LockedPackage> {
+        g.packages
+            .values()
+            .find(|p| p.name == real_name || p.name == manifest_key)
+    }
     for manifest_key in &manifest_keys_to_update {
         let real_name = resolve_real_name(manifest_key);
 
-        let old_ver = existing.as_ref().and_then(|g| {
-            g.packages
-                .values()
-                .find(|p| p.name == real_name)
-                .map(|p| p.version.as_str())
-        });
-        let new_ver = graph
-            .packages
-            .values()
-            .find(|p| p.name == real_name)
+        let old_ver = existing
+            .as_ref()
+            .and_then(|g| lookup_pkg(g, manifest_key, &real_name))
             .map(|p| p.version.as_str());
+        let new_ver = lookup_pkg(&graph, manifest_key, &real_name).map(|p| p.version.as_str());
 
         match (old_ver, new_ver) {
             (Some(old), Some(new)) if old != new => {
@@ -312,15 +334,11 @@ pub async fn run(
                 if aube_util::pkg::is_workspace_spec(&original) {
                     continue;
                 }
-                let Some(resolved) = graph
-                    .packages
-                    .values()
-                    .find(|p| p.name == real_name)
-                    .map(|p| p.version.clone())
+                let Some(resolved) = lookup_pkg(&graph, key, &real_name).map(|p| p.version.clone())
                 else {
                     continue;
                 };
-                let new_spec = rewrite_specifier(&original, &real_name, &resolved);
+                let new_spec = rewrite_specifier(&original, &real_name, &resolved, args.exact);
                 if new_spec == original {
                     continue;
                 }
@@ -390,8 +408,38 @@ async fn run_filtered(
     let result = async {
         for pkg in matched {
             super::retarget_cwd(&pkg.dir)?;
+            // pnpm's recursive update silently skips packages that aren't
+            // declared in a given project's manifest — only updates the
+            // ones that match. Without this the fanout hard-errors on the
+            // first project that's missing one of the named deps. Compute
+            // the per-project arg list by filtering against the project's
+            // direct deps, then skip the project entirely if nothing
+            // matched (no work to do, no noise).
+            let mut per_pkg = args.clone();
+            if !args.packages.is_empty() {
+                let manifest_path = pkg.dir.join("package.json");
+                let project_manifest = aube_manifest::PackageJson::from_path(&manifest_path)
+                    .map_err(miette::Report::new)
+                    .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
+                let declared: BTreeSet<String> = project_manifest
+                    .dependencies
+                    .keys()
+                    .chain(project_manifest.dev_dependencies.keys())
+                    .chain(project_manifest.optional_dependencies.keys())
+                    .cloned()
+                    .collect();
+                per_pkg.packages = args
+                    .packages
+                    .iter()
+                    .filter(|name| declared.contains(name.as_str()))
+                    .cloned()
+                    .collect();
+                if per_pkg.packages.is_empty() {
+                    continue;
+                }
+            }
             Box::pin(run(
-                args.clone(),
+                per_pkg,
                 aube_workspace::selector::EffectiveFilter::default(),
             ))
             .await?;
@@ -406,12 +454,20 @@ async fn run_filtered(
 ///   - `npm:<alias>@…` aliases round-trip through the `npm:` prefix.
 ///   - The leading range operator (`^`, `~`, `>=`, `<`, `=`), or `^`
 ///     when the original was a bare version / dist-tag / missing.
-fn rewrite_specifier(original: &str, real_name: &str, resolved_version: &str) -> String {
+///
+/// `exact == true` forces an exact pin regardless of the original
+/// prefix (the `--save-exact` / `-E` knob).
+fn rewrite_specifier(
+    original: &str,
+    real_name: &str,
+    resolved_version: &str,
+    exact: bool,
+) -> String {
     let (prefix, is_alias) = if let Some(rest) = original.strip_prefix("npm:") {
         let range = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or("");
-        (range_prefix(range), true)
+        (if exact { "" } else { range_prefix(range) }, true)
     } else {
-        (range_prefix(original), false)
+        (if exact { "" } else { range_prefix(original) }, false)
     };
     let versioned = format!("{prefix}{resolved_version}");
     if is_alias {

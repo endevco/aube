@@ -17,6 +17,12 @@ Package(s) to update (all if empty)
 
 Update only devDependencies
 
+### `-E --exact`
+
+Pin manifest specifiers to the resolved version with no range prefix.
+
+Pair with `--latest`: when the rewritten specifier replaces the caret/tilde original, drop the prefix so the manifest carries an exact pin (`"1.2.3"`) instead of `"^1.2.3"`. Mirrors `pnpm update --save-exact`.
+
 ### `-g --global`
 
 Update globally installed packages.
