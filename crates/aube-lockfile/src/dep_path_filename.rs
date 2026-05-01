@@ -13,7 +13,6 @@
 //! (`max_length - 33` prefix + `_` + 32 hex chars) so the fingerprint
 //! matches what pnpm itself produces at the same `maxLength`.
 
-use sha2::{Digest, Sha256};
 
 /// Default `virtual-store-dir-max-length`, matching pnpm's Linux/macOS
 /// default. pnpm uses 60 on Windows — we don't run on Windows yet, so
@@ -97,9 +96,12 @@ fn escape_unescaped(dep_path: &str) -> String {
 }
 
 fn short_hash(input: &str) -> String {
-    // pnpm's `createShortHash` — first 32 hex chars of sha256(input).
-    let digest = Sha256::digest(input.as_bytes());
-    hex::encode(digest)[..32].to_string()
+    // First 32 hex chars of BLAKE3(input). pnpm uses sha256 here; aube
+    // doesn't share the `.aube/<encoded>/` layout with pnpm so no
+    // interop breaks. BLAKE3 is the project default for non-crypto
+    // hashes (3-5x faster than SHA-256 for short inputs).
+    let digest = blake3::hash(input.as_bytes());
+    digest.to_hex()[..32].to_string()
 }
 
 fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
