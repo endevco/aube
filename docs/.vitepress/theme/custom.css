@@ -929,7 +929,7 @@ body {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: 56px minmax(0, 1fr);
   line-height: 1;
 }
 
