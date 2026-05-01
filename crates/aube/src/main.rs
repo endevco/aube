@@ -26,6 +26,47 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use tracing_subscriber::prelude::*;
 
+/// Strip pnpm-style generic `--config.<key>[=<value>]` flags out of the
+/// argv before clap sees them. Returns the parsed `(key, value)` pairs
+/// in the order they appeared so the last one wins on duplicates. The
+/// supported forms are:
+///
+///   --config.<key>            → ("<key>", "true")
+///   --config.<key>=<value>    → ("<key>", "<value>")
+///
+/// `--config.<key> <value>` (space-separated) is NOT consumed: a stray
+/// positional after a bool-form switch could shadow a real argument
+/// (e.g. `aube add --config.foo lodash`), and the `=` form is what
+/// pnpm's docs use anyway. Anything after a bare `--` separator is
+/// left untouched so user-supplied positional args containing the
+/// literal `--config.` prefix still pass through.
+fn extract_config_overrides(args: &mut Vec<OsString>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        let Some(s) = args[i].to_str() else {
+            i += 1;
+            continue;
+        };
+        if s == "--" {
+            break;
+        }
+        if let Some(rest) = s.strip_prefix("--config.") {
+            let (key, value) = match rest.split_once('=') {
+                Some((k, v)) => (k.to_string(), v.to_string()),
+                None => (rest.to_string(), "true".to_string()),
+            };
+            if !key.is_empty() {
+                out.push((key, value));
+                args.remove(i);
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Inspect `argv[0]` and, when invoked as a multicall shim (`aubr`, `aubx`),
 /// rewrite the argv so clap sees the equivalent `aube run …` / `aube dlx …`.
 /// Shims are installed as hardlinks (or copies on Windows) that point at the
@@ -611,7 +652,14 @@ enum Commands {
 }
 
 fn main() -> miette::Result<()> {
-    let cli = Cli::parse_from(rewrite_multicall_argv(std::env::args_os().collect()));
+    let mut argv: Vec<OsString> = std::env::args_os().collect();
+    // pnpm-compat: pull `--config.<key>[=<value>]` out of argv before
+    // clap parses it. Stripping here means the rest of the binary sees
+    // a clean argv, and the parsed pairs feed every `ResolveCtx::cli`
+    // through the process-global slot in `aube_settings`.
+    let config_overrides = extract_config_overrides(&mut argv);
+    aube_settings::set_global_cli_overrides(config_overrides);
+    let cli = Cli::parse_from(rewrite_multicall_argv(argv));
 
     // `--color` / `--no-color` take effect before anything else touches
     // color state: we translate the flags into the env vars that miette,
@@ -1840,6 +1888,68 @@ mod multicall_tests {
             ]),
             os(&["aube", "run", "build"])
         );
+    }
+
+    #[test]
+    fn extract_config_overrides_strips_equals_form() {
+        let mut argv = os(&["aube", "install", "--config.strict-dep-builds=true"]);
+        let parsed = extract_config_overrides(&mut argv);
+        assert_eq!(argv, os(&["aube", "install"]));
+        assert_eq!(
+            parsed,
+            vec![("strict-dep-builds".to_string(), "true".to_string())]
+        );
+    }
+
+    #[test]
+    fn extract_config_overrides_strips_bool_form() {
+        let mut argv = os(&["aube", "--config.strictDepBuilds", "install"]);
+        let parsed = extract_config_overrides(&mut argv);
+        assert_eq!(argv, os(&["aube", "install"]));
+        assert_eq!(
+            parsed,
+            vec![("strictDepBuilds".to_string(), "true".to_string())]
+        );
+    }
+
+    #[test]
+    fn extract_config_overrides_handles_multiple_and_preserves_order() {
+        let mut argv = os(&[
+            "aube",
+            "--config.foo=1",
+            "install",
+            "--config.bar=two",
+            "--config.foo=3",
+        ]);
+        let parsed = extract_config_overrides(&mut argv);
+        assert_eq!(argv, os(&["aube", "install"]));
+        assert_eq!(
+            parsed,
+            vec![
+                ("foo".to_string(), "1".to_string()),
+                ("bar".to_string(), "two".to_string()),
+                ("foo".to_string(), "3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_config_overrides_stops_at_double_dash() {
+        let mut argv = os(&["aube", "exec", "--", "node", "--config.foo=should-stay"]);
+        let parsed = extract_config_overrides(&mut argv);
+        assert!(parsed.is_empty());
+        assert_eq!(
+            argv,
+            os(&["aube", "exec", "--", "node", "--config.foo=should-stay"])
+        );
+    }
+
+    #[test]
+    fn extract_config_overrides_preserves_argv_when_absent() {
+        let mut argv = os(&["aube", "install", "--frozen-lockfile"]);
+        let parsed = extract_config_overrides(&mut argv);
+        assert!(parsed.is_empty());
+        assert_eq!(argv, os(&["aube", "install", "--frozen-lockfile"]));
     }
 }
 

@@ -24,7 +24,27 @@
 //! Supported sources are `.npmrc` entries, a raw `pnpm-workspace.yaml`
 //! map, captured environment variables, and parsed CLI flags.
 
+use std::sync::OnceLock;
+
 use crate::meta;
+
+/// Process-wide CLI overrides registered from generic `--config.<key>`
+/// flags. Walked by every `*_from_cli` helper *after* the per-callsite
+/// `cli` slice, so command-specific flags keep first-match priority and
+/// the generic form acts as a fallback that still wins over env / file
+/// sources.
+static GLOBAL_CLI_OVERRIDES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+
+/// Register the parsed `--config.<key>[=<value>]` pairs once per
+/// process. Idempotent — second calls are silently ignored, matching
+/// the other `set_global_*` helpers in the binary crate.
+pub fn set_global_cli_overrides(overrides: Vec<(String, String)>) {
+    let _ = GLOBAL_CLI_OVERRIDES.set(overrides);
+}
+
+fn global_cli_overrides() -> &'static [(String, String)] {
+    GLOBAL_CLI_OVERRIDES.get().map(Vec::as_slice).unwrap_or(&[])
+}
 
 /// Bundle of source inputs consumed by the per-setting typed
 /// accessors in [`resolved`]. Each field is a borrowed view so
@@ -380,23 +400,90 @@ pub(crate) fn string_list_from_env(setting: &str, env: &[(String, String)]) -> O
     raw_from_env(meta, env).map(parse_string_list)
 }
 
+/// True if the user-supplied CLI key targets `meta`. Matches against
+/// the declared `sources.cli` aliases first (preserving exact behavior
+/// for command-specific flags) and then falls back to the canonical
+/// pnpm name in either kebab- or camelCase form so generic
+/// `--config.<key>` overrides resolve regardless of which spelling the
+/// user typed.
+fn cli_key_matches(key: &str, meta: &meta::SettingMeta) -> bool {
+    if meta.cli_flags.contains(&key) {
+        return true;
+    }
+    if key == meta.name {
+        return true;
+    }
+    let key_kebab = to_kebab_case(key);
+    if key_kebab == to_kebab_case(meta.name) {
+        return true;
+    }
+    false
+}
+
+/// Lower-case kebab form of a setting / flag identifier. Splits on
+/// `-`, `_`, camelCase boundaries, and dotted-path segments so callers
+/// can compare `strict-dep-builds`, `strictDepBuilds`, `STRICT_DEP_BUILDS`,
+/// and `strict_dep_builds` interchangeably. Dots are preserved so
+/// nested settings like `peerDependencyRules.ignoreMissing` keep their
+/// path structure.
+fn to_kebab_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c == '_' || c == '-' {
+            if !out.ends_with('-') && !out.is_empty() {
+                out.push('-');
+            }
+            prev_lower = false;
+        } else if c == '.' {
+            out.push('.');
+            prev_lower = false;
+        } else if c.is_ascii_uppercase() {
+            if prev_lower {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+            prev_lower = false;
+        } else {
+            out.push(c);
+            prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        }
+    }
+    out
+}
+
+/// Walk the per-callsite `cli` slice (newest entry first) and then the
+/// process-global `--config.<key>` overrides. First match wins, mirroring
+/// the existing reverse-scan semantics for `cli`. Returning the borrowed
+/// raw value lets each caller pick its own parsing path; the global
+/// overrides have `'static` storage so the merged lifetime is whichever
+/// `cli` borrow the caller passed in.
+fn cli_raw_for<'a>(meta: &meta::SettingMeta, cli: &'a [(String, String)]) -> Option<&'a str> {
+    for (key, raw) in cli.iter().rev() {
+        if cli_key_matches(key, meta) {
+            return Some(raw.as_str());
+        }
+    }
+    for (key, raw) in global_cli_overrides().iter().rev() {
+        if cli_key_matches(key, meta) {
+            return Some(raw.as_str());
+        }
+    }
+    None
+}
+
 /// Resolve a `bool` setting from a parsed CLI flag bag. The bag
 /// entries are whatever each command extracts from its clap struct
-/// before building the `ResolveCtx`. Keys must match the
-/// `sources.cli` aliases declared in `settings.toml`.
+/// before building the `ResolveCtx`. Keys may be either an alias
+/// declared in `sources.cli` or the canonical setting name (in any
+/// reasonable case form), so generic `--config.<key>` overrides reach
+/// every setting without per-flag wiring.
 pub(crate) fn bool_from_cli(setting: &str, cli: &[(String, String)]) -> Option<bool> {
     let meta = meta::find(setting)?;
     if meta.type_ != "bool" {
         return None;
     }
-    for (key, raw) in cli.iter().rev() {
-        if meta.cli_flags.contains(&key.as_str())
-            && let Some(v) = parse_bool(raw)
-        {
-            return Some(v);
-        }
-    }
-    None
+    cli_raw_for(meta, cli).and_then(parse_bool)
 }
 
 /// Resolve a `string` setting from a parsed CLI flag bag.
@@ -405,12 +492,7 @@ pub fn string_from_cli(setting: &str, cli: &[(String, String)]) -> Option<String
     if !is_stringish(meta.type_) {
         return None;
     }
-    for (key, raw) in cli.iter().rev() {
-        if meta.cli_flags.contains(&key.as_str()) {
-            return Some(raw.clone());
-        }
-    }
-    None
+    cli_raw_for(meta, cli).map(ToOwned::to_owned)
 }
 
 /// Resolve an `int` setting from a parsed CLI flag bag.
@@ -419,14 +501,7 @@ pub(crate) fn u64_from_cli(setting: &str, cli: &[(String, String)]) -> Option<u6
     if meta.type_ != "int" {
         return None;
     }
-    for (key, raw) in cli.iter().rev() {
-        if meta.cli_flags.contains(&key.as_str())
-            && let Ok(v) = raw.trim().parse::<u64>()
-        {
-            return Some(v);
-        }
-    }
-    None
+    cli_raw_for(meta, cli).and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
 /// Resolve a `list<string>` setting from a parsed CLI flag bag.
@@ -435,12 +510,7 @@ pub(crate) fn string_list_from_cli(setting: &str, cli: &[(String, String)]) -> O
     if meta.type_ != "list<string>" {
         return None;
     }
-    for (key, raw) in cli.iter().rev() {
-        if meta.cli_flags.contains(&key.as_str()) {
-            return Some(parse_string_list(raw));
-        }
-    }
-    None
+    cli_raw_for(meta, cli).map(parse_string_list)
 }
 
 /// Parse a pnpm/npm-style stringified list. Accepts a JSON-ish array
@@ -738,6 +808,29 @@ mod tests {
             string_from_cli("resolutionMode", &cli),
             Some("time-based".to_string())
         );
+    }
+
+    #[test]
+    fn cli_bag_matches_canonical_name_for_settings_without_declared_cli_alias() {
+        // `strictDepBuilds` declares `sources.cli = []`, but generic
+        // `--config.<key>` overrides should still reach it via the
+        // canonical name in any reasonable case form.
+        let kebab = vec![("strict-dep-builds".to_string(), "true".to_string())];
+        assert_eq!(bool_from_cli("strictDepBuilds", &kebab), Some(true));
+
+        let camel = vec![("strictDepBuilds".to_string(), "true".to_string())];
+        assert_eq!(bool_from_cli("strictDepBuilds", &camel), Some(true));
+
+        let screaming = vec![("STRICT_DEP_BUILDS".to_string(), "false".to_string())];
+        assert_eq!(bool_from_cli("strictDepBuilds", &screaming), Some(false));
+    }
+
+    #[test]
+    fn cli_bag_keeps_existing_alias_match_for_declared_settings() {
+        // `verifyStoreIntegrity` declares `sources.cli = ["verify-store-integrity"]`.
+        // The exact alias must keep working unchanged.
+        let cli = vec![("verify-store-integrity".to_string(), "true".to_string())];
+        assert_eq!(bool_from_cli("verifyStoreIntegrity", &cli), Some(true));
     }
 
     #[test]

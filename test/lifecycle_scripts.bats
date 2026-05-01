@@ -124,6 +124,35 @@ JSON
 	assert_success
 }
 
+@test "--config.strict-dep-builds=true forces strictDepBuilds for one invocation" {
+	# pnpm-style generic `--config.<key>=<value>` flag should set
+	# `strictDepBuilds` even though the setting declares no
+	# command-specific CLI alias.
+	mkdir -p dep-with-build
+	cat >dep-with-build/package.json <<'JSON'
+{
+  "name": "dep-with-build",
+  "version": "1.0.0",
+  "scripts": {
+    "install": "node -e 'require(\"fs\").writeFileSync(\"built.marker\", \"ran\")'"
+  }
+}
+JSON
+	cat >package.json <<'JSON'
+{
+  "name": "config-flag-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "dep-with-build": "file:./dep-with-build"
+  }
+}
+JSON
+	run aube install --config.strict-dep-builds=true
+	assert_failure
+	assert_output --partial "dependencies with build scripts must be reviewed"
+	assert_output --partial "dep-with-build@1.0.0"
+}
+
 @test "strictDepBuilds=false keeps unreviewed dependency build scripts skipped" {
 	cat >.npmrc <<'EOF'
 strictDepBuilds=false
