@@ -949,7 +949,27 @@ pub fn write(
         );
 
         let workspace_tree_roots = non_link_roots(graph, importer_roots);
-        for (segs, canonical_key) in build_hoist_tree(&canonical, &workspace_tree_roots) {
+        let workspace_tree = build_hoist_tree(&canonical, &workspace_tree_roots);
+        // Skip subtrees whose top-level segment is already hoisted to
+        // `node_modules/<name>` at the same canonical version: Node's
+        // upward `node_modules` walk from `<importer>/...` resolves to
+        // the root copy, so the workspace-nested entries are dead
+        // weight. npm's writer omits them, and emitting them produces
+        // round-trip diffs vs npm-generated lockfiles.
+        let redundant_tops: BTreeSet<String> = workspace_tree
+            .iter()
+            .filter(|(segs, key)| {
+                segs.len() == 1
+                    && placed
+                        .get(&format!("node_modules/{}", segs[0]))
+                        .is_some_and(|root_key| root_key == *key)
+            })
+            .map(|(segs, _)| segs[0].clone())
+            .collect();
+        for (segs, canonical_key) in workspace_tree {
+            if redundant_tops.contains(&segs[0]) {
+                continue;
+            }
             let install_path = format!("{importer_path}/{}", segments_to_install_path(&segs));
             placed.entry(install_path).or_insert(canonical_key);
         }
@@ -2839,6 +2859,84 @@ mod tests {
 
         let reparsed = parse(out.path()).unwrap();
         assert!(reparsed.importers.contains_key("web"));
+    }
+
+    /// When the root tree already hoists a package to
+    /// `node_modules/<name>`, the workspace tree must NOT emit a
+    /// redundant `<workspace>/node_modules/<name>` for the same
+    /// version — Node's upward `node_modules` walk resolves the root
+    /// copy. Real `npm install` omits the redundant entry, and
+    /// emitting it produces a diff on every round-trip.
+    #[test]
+    fn test_write_npm_workspace_skips_root_hoisted_dups() {
+        let mut graph = LockfileGraph::default();
+        let web_link = LocalSource::Link(PathBuf::from("web"));
+        let web_dep_path = web_link.dep_path("workspace-web");
+        graph.packages.insert(
+            web_dep_path.clone(),
+            LockedPackage {
+                name: "workspace-web".to_string(),
+                version: "0.0.1".to_string(),
+                dep_path: web_dep_path.clone(),
+                local_source: Some(web_link),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "astro@6.2.1".to_string(),
+            LockedPackage {
+                name: "astro".to_string(),
+                version: "6.2.1".to_string(),
+                integrity: Some("sha512-astro".to_string()),
+                dep_path: "astro@6.2.1".to_string(),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![
+                DirectDep {
+                    name: "astro".to_string(),
+                    dep_path: "astro@6.2.1".to_string(),
+                    dep_type: DepType::Production,
+                    specifier: Some("^6.0.0".to_string()),
+                },
+                DirectDep {
+                    name: "workspace-web".to_string(),
+                    dep_path: web_dep_path.clone(),
+                    dep_type: DepType::Production,
+                    specifier: None,
+                },
+            ],
+        );
+        graph.importers.insert(
+            "web".to_string(),
+            vec![DirectDep {
+                name: "astro".to_string(),
+                dep_path: "astro@6.2.1".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^6.0.0".to_string()),
+            }],
+        );
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("workspace-root".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [("astro".to_string(), "^6.0.0".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+        assert_eq!(json["packages"]["node_modules/astro"]["version"], "6.2.1");
+        assert!(
+            json["packages"].get("web/node_modules/astro").is_none(),
+            "redundant workspace-nested astro should not be emitted"
+        );
     }
 
     /// Byte-parity with a real `npm install`-generated lockfile. The
