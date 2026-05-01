@@ -1589,8 +1589,29 @@ fn build_http_client(
     // doesn't expose a hard cap, but `pool_max_idle_per_host` is the
     // closest knob and is what downstream users actually care about.
     let pool_max_idle = config.max_sockets.unwrap_or(64);
+    // CDN edge cache hit rate keys partly off the User-Agent header.
+    // Hardcoded `0.1.0` lands in cold buckets on Cloudflare/Fastly. Use
+    // the real workspace version + an OS/arch tail in the same shape
+    // pnpm and npm send so the registry recognises us.
+    static UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let user_agent = UA.get_or_init(|| {
+        format!(
+            "aube/{} ({} {})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    });
     let mut builder = reqwest::Client::builder()
-        .user_agent("aube/0.1.0")
+        .user_agent(user_agent)
+        // Wire-level decompression for packument JSON. Tarball
+        // requests explicitly send `Accept-Encoding: identity`
+        // (tarballs are already gzip on the payload), so this only
+        // affects metadata calls. Popular packuments (`react`,
+        // `webpack`, `next`) drop 3-5x on the wire when gzipped.
+        .gzip(true)
+        .brotli(true)
+        .zstd(true)
         // `fetchTimeout` — applied to the whole response (headers +
         // body) via reqwest's single-knob timeout. pnpm / npm expose
         // this as `fetch-timeout` in `.npmrc`; the default matches
@@ -1611,6 +1632,11 @@ fn build_http_client(
         .http2_max_frame_size(Some(16 * 1024 * 1024 - 1))
         .tcp_nodelay(true)
         .tcp_keepalive(std::time::Duration::from_secs(60))
+        // In-process DNS caching via hickory-dns. The system resolver
+        // does not cache and uses a thread pool for `getaddrinfo`,
+        // which serializes the first cold lookup per origin. hickory
+        // resolves async + caches for the process lifetime.
+        .hickory_dns(true)
         // `strict-ssl=false` disables cert validation entirely. This
         // is a security hole on purpose: corporate registries should
         // prefer per-registry `ca` / `cafile` so validation stays on.
