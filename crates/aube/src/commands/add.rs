@@ -1134,6 +1134,14 @@ async fn run_filtered(
     let (root, matched) = super::select_workspace_packages(&cwd, filter, "add")?;
     let _lock = super::take_project_lock(&root)?;
 
+    // `--allow-build=<pkg>` writes against the workspace root (where
+    // `allowBuilds` lives) — same as the non-filtered path. Run before
+    // any per-package manifest mutation so a conflict can't leave the
+    // child manifests half-mutated.
+    if !args.allow_build.is_empty() {
+        apply_allow_build_flags(&root, &args.allow_build)?;
+    }
+
     let mut snapshots = Vec::new();
     let lockfile_path = lockfile_path_for_project(&root);
     let root_lockfile_snapshot = if args.no_save {

@@ -666,6 +666,67 @@ JSON
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-postinstall.js ]
 }
 
+@test "aube add --allow-build=<pkg> writes to workspace root under --filter" {
+	# Regression: in the workspace-filter path (`aube add --filter=<sel>
+	# <pkg> --allow-build=<pkg>`), the `--allow-build` flag was silently
+	# dropped — the conflict check never ran and no approval was written.
+	# Pin that the filtered path now writes the approval to the
+	# workspace root and the conflict check fires too.
+	mkdir -p packages/app
+	cat >package.json <<'JSON'
+{
+  "name": "root",
+  "version": "1.0.0",
+  "private": true
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "packages/*"
+YAML
+	cat >packages/app/package.json <<'JSON'
+{
+  "name": "@scope/app",
+  "version": "1.0.0"
+}
+JSON
+
+	# Conflict path: pre-existing deny in workspace yaml — flag must error.
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "packages/*"
+allowBuilds:
+  "@pnpm.e2e/install-script-example": false
+YAML
+	run aube --filter '@scope/app' add \
+		--allow-build=@pnpm.e2e/install-script-example \
+		@pnpm.e2e/install-script-example
+	assert_failure
+	assert_output --partial "ignored by the root project"
+	# Child manifest unchanged — the conflict tripped before any write.
+	run grep -F '"@pnpm.e2e/install-script-example"' packages/app/package.json
+	assert_failure
+
+	# Happy path: drop the deny, retry — approval lands in the workspace
+	# yaml and the dep's install script runs.
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "packages/*"
+YAML
+	run aube --filter '@scope/app' add \
+		--allow-build=@pnpm.e2e/install-script-example \
+		@pnpm.e2e/install-script-example
+	assert_success
+	# Workspace yaml has the approval; child manifest has the dep.
+	run grep -E "@pnpm\.e2e/install-script-example['\"]?: true" pnpm-workspace.yaml
+	assert_success
+	run grep -F '"@pnpm.e2e/install-script-example"' packages/app/package.json
+	assert_success
+	# Build actually ran — `generated-by-install.js` only exists when
+	# the dep's lifecycle scripts were allowed.
+	assert_file_exists node_modules/.aube/@pnpm.e2e+install-script-example@1.0.0/node_modules/@pnpm.e2e/install-script-example/generated-by-install.js
+}
+
 @test "aube add --allow-build is rejected when combined with --no-save" {
 	# Same conflict pnpm enforces (and that --save-catalog already
 	# enforces in aube): --no-save's restore path snapshots only
