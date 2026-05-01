@@ -952,28 +952,49 @@ impl Linker {
     /// and tries to reflink/hardlink into dst, which catches EXDEV
     /// up front.
     pub fn detect_strategy_cross(src_dir: &Path, dst_dir: &Path) -> LinkStrategy {
+        // Memoize per (src_dir, dst_dir) for the process lifetime.
+        // The probe writes a real test file and tries reflink +
+        // hardlink, ~3 syscalls + 2 unlinks. Multiple Linker
+        // instances within one install (prewarm + final + per-
+        // workspace) all repeat the probe; cache the answer.
+        type ProbeKey = (std::path::PathBuf, std::path::PathBuf);
+        static CACHE: std::sync::OnceLock<
+            std::sync::RwLock<std::collections::HashMap<ProbeKey, LinkStrategy>>,
+        > = std::sync::OnceLock::new();
+        let key = (src_dir.to_path_buf(), dst_dir.to_path_buf());
+        let cache = CACHE.get_or_init(Default::default);
+        if let Some(hit) = cache.read().expect("probe cache poisoned").get(&key) {
+            return *hit;
+        }
+
         let test_src = src_dir.join(".aube-link-test-src");
         let test_dst = dst_dir.join(".aube-link-test-dst");
 
-        if std::fs::write(&test_src, b"test").is_ok() {
+        let strategy = if std::fs::write(&test_src, b"test").is_ok() {
             if reflink_copy::reflink(&test_src, &test_dst).is_ok() {
                 let _ = std::fs::remove_file(&test_src);
                 let _ = std::fs::remove_file(&test_dst);
-                return LinkStrategy::Reflink;
-            }
-
-            let _ = std::fs::remove_file(&test_dst);
-            if std::fs::hard_link(&test_src, &test_dst).is_ok() {
+                LinkStrategy::Reflink
+            } else {
+                let _ = std::fs::remove_file(&test_dst);
+                let result = if std::fs::hard_link(&test_src, &test_dst).is_ok() {
+                    LinkStrategy::Hardlink
+                } else {
+                    LinkStrategy::Copy
+                };
                 let _ = std::fs::remove_file(&test_src);
                 let _ = std::fs::remove_file(&test_dst);
-                return LinkStrategy::Hardlink;
+                result
             }
+        } else {
+            LinkStrategy::Copy
+        };
 
-            let _ = std::fs::remove_file(&test_src);
-            let _ = std::fs::remove_file(&test_dst);
-        }
-
-        LinkStrategy::Copy
+        cache
+            .write()
+            .expect("probe cache poisoned")
+            .insert(key, strategy);
+        strategy
     }
 
     /// Link all packages into node_modules for the given project.
@@ -2383,8 +2404,18 @@ impl Linker {
             stats.files_linked += 1;
 
             if stored.executable {
+                // Hardlink and reflink share the source's mode bits
+                // (the inode is the same / cloned). The CAS source
+                // already carries 0o644 from `create_cas_file`, plus
+                // 0o111 if the upstream package marked the file
+                // executable, so re-running `chmod` here is a wasted
+                // syscall per executable file. Only the Copy fallback
+                // produces a fresh inode whose mode must be set
+                // explicitly.
                 #[cfg(unix)]
-                xx::file::make_executable(&target).map_err(|e| Error::Xx(e.to_string()))?;
+                if matches!(self.strategy, LinkStrategy::Copy) {
+                    xx::file::make_executable(&target).map_err(|e| Error::Xx(e.to_string()))?;
+                }
             }
         }
 
@@ -2722,14 +2753,36 @@ fn reconcile_top_level_link(link_path: &Path, expected_target: &Path) -> Result<
         // `expected_target` points at, the link is fresh. Anything
         // else (dangling, wrong target, not a reparse point) falls
         // through to a best-effort reclaim.
+        //
+        // Canonicalize is ~5 syscalls on NTFS (open reparse, read
+        // reparse data, close, query attrs ×2). With ~1000 top-level
+        // links per warm install that's 5000 syscalls just for
+        // expected_abs. Cache canonical forms keyed by the absolute
+        // path so a second call to the same target returns
+        // immediately.
+        use std::sync::OnceLock;
+        static CANON_CACHE: OnceLock<
+            std::sync::RwLock<std::collections::HashMap<PathBuf, PathBuf>>,
+        > = OnceLock::new();
+        fn cached_canonicalize(p: &Path) -> std::io::Result<PathBuf> {
+            let map = CANON_CACHE.get_or_init(Default::default);
+            if let Some(hit) = map.read().expect("canon cache poisoned").get(p) {
+                return Ok(hit.clone());
+            }
+            let canon = p.canonicalize()?;
+            map.write()
+                .expect("canon cache poisoned")
+                .insert(p.to_path_buf(), canon.clone());
+            Ok(canon)
+        }
         let expected_abs = if expected_target.is_absolute() {
             expected_target.to_path_buf()
         } else {
             let parent = link_path.parent().unwrap_or_else(|| Path::new(""));
             parent.join(expected_target)
         };
-        if let Ok(link_canon) = link_path.canonicalize()
-            && let Ok(exp_canon) = expected_abs.canonicalize()
+        if let Ok(link_canon) = cached_canonicalize(link_path)
+            && let Ok(exp_canon) = cached_canonicalize(&expected_abs)
             && link_canon == exp_canon
         {
             return Ok(true);
