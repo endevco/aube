@@ -421,11 +421,18 @@ fn cli_key_matches(key: &str, meta: &meta::SettingMeta) -> bool {
 }
 
 /// Lower-case kebab form of a setting / flag identifier. Splits on
-/// `-`, `_`, camelCase boundaries, and dotted-path segments so callers
-/// can compare `strict-dep-builds`, `strictDepBuilds`, `STRICT_DEP_BUILDS`,
-/// and `strict_dep_builds` interchangeably. Dots are preserved so
-/// nested settings like `peerDependencyRules.ignoreMissing` keep their
-/// path structure.
+/// `-`, `_`, dotted-path segments, and lowercase→UPPER transitions so
+/// callers can compare `strict-dep-builds`, `strictDepBuilds`,
+/// `STRICT_DEP_BUILDS`, and `strict_dep_builds` interchangeably. Dots
+/// are preserved so nested settings like
+/// `peerDependencyRules.ignoreMissing` keep their path structure.
+///
+/// Consecutive uppercase runs (e.g. `XMLConfig`) are collapsed to a
+/// single lowercase token (`xmlconfig`), matching the auto-alias
+/// generator in `aube-settings/build.rs`. No pnpm setting today contains
+/// an internal acronym, so the imperfection is invisible in practice; if
+/// one is ever added, the synthesized npmrc alias and this matcher have
+/// to evolve together.
 fn to_kebab_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     let mut prev_lower = false;
@@ -452,20 +459,25 @@ fn to_kebab_case(s: &str) -> String {
     out
 }
 
-/// Walk the per-callsite `cli` slice (newest entry first) and then the
-/// process-global `--config.<key>` overrides. First match wins, mirroring
-/// the existing reverse-scan semantics for `cli`. Returning the borrowed
-/// raw value lets each caller pick its own parsing path; the global
-/// overrides have `'static` storage so the merged lifetime is whichever
-/// `cli` borrow the caller passed in.
-fn cli_raw_for<'a>(meta: &meta::SettingMeta, cli: &'a [(String, String)]) -> Option<&'a str> {
+/// Walk the per-callsite `cli` slice (newest entry first), then the
+/// process-global `--config.<key>` overrides. The `accept` predicate
+/// lets typed callers (`bool`, `int`) keep scanning past an unparseable
+/// value so a later valid duplicate still wins — matching the original
+/// per-source loops. String / string-list callers pass `|_| true`; the
+/// global overrides have `'static` storage so the merged lifetime is
+/// whichever `cli` borrow the caller passed in.
+fn cli_raw_for<'a>(
+    meta: &meta::SettingMeta,
+    cli: &'a [(String, String)],
+    accept: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
     for (key, raw) in cli.iter().rev() {
-        if cli_key_matches(key, meta) {
+        if cli_key_matches(key, meta) && accept(raw.as_str()) {
             return Some(raw.as_str());
         }
     }
     for (key, raw) in global_cli_overrides().iter().rev() {
-        if cli_key_matches(key, meta) {
+        if cli_key_matches(key, meta) && accept(raw.as_str()) {
             return Some(raw.as_str());
         }
     }
@@ -477,13 +489,16 @@ fn cli_raw_for<'a>(meta: &meta::SettingMeta, cli: &'a [(String, String)]) -> Opt
 /// before building the `ResolveCtx`. Keys may be either an alias
 /// declared in `sources.cli` or the canonical setting name (in any
 /// reasonable case form), so generic `--config.<key>` overrides reach
-/// every setting without per-flag wiring.
+/// every setting without per-flag wiring. An unparseable value (e.g.
+/// `--config.strictDepBuilds=notabool`) is skipped rather than masking
+/// an earlier valid entry — caller still gets `None` if every match is
+/// invalid, matching how `bool_from_npmrc` handles the same case.
 pub(crate) fn bool_from_cli(setting: &str, cli: &[(String, String)]) -> Option<bool> {
     let meta = meta::find(setting)?;
     if meta.type_ != "bool" {
         return None;
     }
-    cli_raw_for(meta, cli).and_then(parse_bool)
+    cli_raw_for(meta, cli, |raw| parse_bool(raw).is_some()).and_then(parse_bool)
 }
 
 /// Resolve a `string` setting from a parsed CLI flag bag.
@@ -492,7 +507,7 @@ pub fn string_from_cli(setting: &str, cli: &[(String, String)]) -> Option<String
     if !is_stringish(meta.type_) {
         return None;
     }
-    cli_raw_for(meta, cli).map(ToOwned::to_owned)
+    cli_raw_for(meta, cli, |_| true).map(ToOwned::to_owned)
 }
 
 /// Resolve an `int` setting from a parsed CLI flag bag.
@@ -501,7 +516,8 @@ pub(crate) fn u64_from_cli(setting: &str, cli: &[(String, String)]) -> Option<u6
     if meta.type_ != "int" {
         return None;
     }
-    cli_raw_for(meta, cli).and_then(|raw| raw.trim().parse::<u64>().ok())
+    cli_raw_for(meta, cli, |raw| raw.trim().parse::<u64>().is_ok())
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
 /// Resolve a `list<string>` setting from a parsed CLI flag bag.
@@ -510,7 +526,7 @@ pub(crate) fn string_list_from_cli(setting: &str, cli: &[(String, String)]) -> O
     if meta.type_ != "list<string>" {
         return None;
     }
-    cli_raw_for(meta, cli).map(parse_string_list)
+    cli_raw_for(meta, cli, |_| true).map(parse_string_list)
 }
 
 /// Parse a pnpm/npm-style stringified list. Accepts a JSON-ish array
@@ -831,6 +847,25 @@ mod tests {
         // The exact alias must keep working unchanged.
         let cli = vec![("verify-store-integrity".to_string(), "true".to_string())];
         assert_eq!(bool_from_cli("verifyStoreIntegrity", &cli), Some(true));
+    }
+
+    #[test]
+    fn cli_bag_falls_through_unparseable_values_to_earlier_valid_entry() {
+        // Regression: an unparseable `--config.<key>=garbage` must not
+        // mask an earlier valid entry for the same setting. Iteration
+        // is reverse, so the later (garbage) entry is visited first;
+        // the helper has to keep scanning rather than commit to it.
+        let cli = vec![
+            ("strictDepBuilds".to_string(), "true".to_string()),
+            ("strictDepBuilds".to_string(), "notabool".to_string()),
+        ];
+        assert_eq!(bool_from_cli("strictDepBuilds", &cli), Some(true));
+
+        let cli = vec![
+            ("network-concurrency".to_string(), "8".to_string()),
+            ("network-concurrency".to_string(), "garbage".to_string()),
+        ];
+        assert_eq!(u64_from_cli("networkConcurrency", &cli), Some(8));
     }
 
     #[test]
