@@ -836,3 +836,235 @@ YAML
 	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' project-2/package.json
 	assert_success
 }
+
+@test "aube update <pkg>@latest: parses arg syntax, rewrites manifest past range" {
+	# Ported from pnpm/test/update.ts:14 ('update <dep>'). pnpm uses
+	# `pnpm update <pkg>@latest`; aube now parses the same arg syntax,
+	# so this is a direct translation rather than the
+	# `aube update --latest <pkg>` rewrite the earlier test in this
+	# file uses.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-pkg-at-latest",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@^100.0.0'
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+
+	run aube update '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
+	assert_success
+
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '"\^101.0.0"' package.json
+	assert_success
+}
+
+@test "aube update <indirect-pkg>@latest: refreshes a transitive dep, leaves manifest alone" {
+	# Ported from pnpm/test/update.ts:690 ('update indirect dependency
+	# should not update package.json').
+	#
+	# Two-package fixture: `pkg-with-1-dep` is the only direct dep and it
+	# transitively pulls in `dep-of-pkg-with-1-dep`. After bumping both
+	# packages' dist-tags, `aube update <indirect>@latest` must:
+	#   - Refresh the indirect to the new latest in the lockfile.
+	#   - Leave the direct dep at its locked version (100.0.0) — even
+	#     though latest is now 100.1.0, the user only asked to bump the
+	#     indirect.
+	#   - Leave package.json untouched (the indirect has no manifest
+	#     entry to rewrite).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-indirect",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pkg-with-1-dep": "^100.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	# Both packages get a new latest published. Without the indirect-arg
+	# handling in update.rs, aube's `update -L` errored out at this point
+	# with "package 'X' is not a dependency".
+	add_dist_tag '@pnpm.e2e/pkg-with-1-dep' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.1.0
+
+	run aube update '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
+	assert_success
+
+	# Indirect bumped to the new latest.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_failure
+
+	# Direct dep stays at 100.0.0 — only the named arg should bump.
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.1.0' aube-lock.yaml
+	assert_failure
+
+	# Manifest range untouched — the indirect has no manifest entry, so
+	# the rewrite path skips it.
+	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' package.json
+	assert_success
+}
+
+@test "aube update --prod <devdep>: errors instead of silently bumping the dev dep" {
+	# Regression for the cursor-bugbot finding on PR #446. A devDep named
+	# under `--prod` (or a regular dep under `--dev`, an optional dep
+	# under `--no-optional`) doesn't appear in `all_specifiers` and
+	# previously slipped through the new indirect-dep path: the lockfile
+	# graph has the entry regardless of bucket, `in_graph` passes, and
+	# the dep silently re-resolves. The fix consults the unfiltered
+	# direct-deps set first and errors before the indirect branch.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-flag-excluded",
+  "version": "0.0.0",
+  "devDependencies": {
+    "@pnpm.e2e/foo": "100.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update --prod '@pnpm.e2e/foo'
+	assert_failure
+	assert_output --partial "is not a dependency"
+
+	# Lockfile pin survives — the failed update must not leave the dep
+	# silently re-resolved at the new latest.
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_failure
+}
+
+@test "aube update <pkg>@<spec>: rejects non-latest specs with a helpful error" {
+	# Regression for the silent-spec-drop greptile flagged on PR #446.
+	# `aube update foo@^2.0.0` used to be accepted at the arg-parse layer
+	# but the spec was silently swallowed — the user got an in-range
+	# refresh on `foo` instead of the range bump they typed. Now any
+	# `@<spec>` other than `@latest` errors with a message pointing at
+	# the supported syntax.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-spec-reject",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+
+	run aube update '@pnpm.e2e/foo@^200.0.0'
+	assert_failure
+	assert_output --partial "package spec '@pnpm.e2e/foo@^200.0.0' is not supported"
+	assert_output --partial '--latest'
+}
+
+@test "aube update -r <indirect-pkg>@latest: refreshes the indirect across all projects" {
+	# Regression for the silent-no-op greptile flagged on PR #446.
+	# `aube update -r <indirect>@latest` used to bail at the per-project
+	# filter because the indirect dep isn't in any project's `declared`
+	# (direct deps), so `per_pkg.packages` was always empty and every
+	# project was silently skipped. The fix consults each project's
+	# lockfile (or falls back to the workspace-root shared one) so
+	# transitive deps flow into the inner `run` call.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "0.0.0",
+  "private": true
+}
+JSON
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pkg-with-1-dep": "^100.0.0"
+  }
+}
+JSON
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pkg-with-1-dep": "^100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	# Seed via plain `install` so the shared workspace lockfile lands at
+	# the root (not per-project) — mimics the most common workspace
+	# starting point.
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.1.0
+
+	run aube update -r '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
+	assert_success
+
+	# Both projects' (newly-written) per-project lockfiles bumped the
+	# transitive dep; this would have stayed at 100.0.0 under the old
+	# silent-skip behavior.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' project-1/aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' project-2/aube-lock.yaml
+	assert_success
+
+	# Direct dep (the parent) stays at its locked version — only the
+	# named indirect arg should bump.
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.0.0' project-1/aube-lock.yaml
+	assert_success
+
+	# Manifests untouched — indirect deps have no manifest entry.
+	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' project-2/package.json
+	assert_success
+}

@@ -103,9 +103,33 @@ pub async fn run(
     if !filter.is_empty() {
         return run_filtered(args, &filter).await;
     }
-    let packages = &args.packages[..];
+    reject_unsupported_pkg_specs(&args.packages)?;
+    // Parse `<pkg>@<spec>` arg syntax. Today only `@latest` is honored —
+    // it's the syntactic equivalent of `--latest` scoped to that one
+    // entry, which is how pnpm phrases the manifest-rewrite-past-range
+    // case (`pnpm update foo@latest`). Non-`latest` specs are rejected
+    // by `reject_unsupported_pkg_specs` above so they don't silently
+    // get swallowed.
+    let mut explicit_latest_keys: BTreeSet<String> = BTreeSet::new();
+    let parsed_packages: Vec<String> = args
+        .packages
+        .iter()
+        .map(|raw| {
+            let (name, spec) = split_pkg_arg(raw);
+            if spec == Some("latest") {
+                explicit_latest_keys.insert(name.to_string());
+            }
+            name.to_string()
+        })
+        .collect();
+    let packages = &parsed_packages[..];
     let latest = args.latest;
     let no_save = args.no_save;
+    // `--latest` flag triggers manifest rewrites for every direct dep;
+    // `<pkg>@latest` triggers it only for that one entry. Combine them
+    // into a per-key predicate so the same code path serves both.
+    let effective_latest = latest || !explicit_latest_keys.is_empty();
+    let should_rewrite_key = |key: &str| -> bool { latest || explicit_latest_keys.contains(key) };
     let cwd = crate::dirs::project_root()?;
     let _lock = super::take_project_lock(&cwd)?;
     let manifest_path = cwd.join("package.json");
@@ -115,7 +139,21 @@ pub async fn run(
         .wrap_err("failed to read package.json")?;
     let ignored_updates = resolve_update_ignore_dependencies(&cwd, &manifest)?;
 
-    let existing = aube_lockfile::parse_lockfile(&cwd, &manifest).ok();
+    // Read the lockfile from the project, or fall back to the shared
+    // workspace-root one when the project doesn't have its own (the
+    // common shape after a fresh `aube install` from the workspace
+    // root). This is what unblocks `aube update -r <indirect>@latest`
+    // — the indirect's snapshot lives in the shared lockfile, not in
+    // each project's directory, and without the fallback the
+    // indirect-arg validation below would reject it.
+    let existing = aube_lockfile::parse_lockfile(&cwd, &manifest)
+        .ok()
+        .or_else(|| {
+            super::find_workspace_root(&cwd)
+                .ok()
+                .filter(|ws| ws.as_path() != cwd.as_path())
+                .and_then(|ws| aube_lockfile::parse_lockfile(&ws, &manifest).ok())
+        });
 
     // Snapshot of every direct dep as (manifest key, specifier). Owned
     // strings so we can hold this across mutations of `manifest`.
@@ -135,6 +173,19 @@ pub async fn run(
         )
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    // Set of every direct manifest key, ignoring `--prod`/`--dev`/
+    // `--no-optional` filters. Used below to distinguish "flag-excluded
+    // direct dep" from "truly indirect dep" — without this, a devDep
+    // named under `--prod` would miss `all_specifiers`, fall through to
+    // the indirect-dep branch, pass `in_graph` (the lockfile carries
+    // every dep regardless of bucket), and get silently re-resolved.
+    let all_direct_keys: BTreeSet<&str> = manifest
+        .dependencies
+        .keys()
+        .chain(manifest.dev_dependencies.keys())
+        .chain(manifest.optional_dependencies.keys())
+        .map(String::as_str)
+        .collect();
 
     let resolve_real_name = |manifest_key: &str| -> String {
         if let Some(specifier) = all_specifiers.get(manifest_key)
@@ -149,17 +200,41 @@ pub async fn run(
         manifest_key.to_string()
     };
 
-    // Determine which packages to update
+    // Determine which packages to update.
+    //
+    // Args split into direct (in package.json) vs indirect (only in the
+    // lockfile). pnpm allows `pnpm update <indirect-pkg>` to refresh a
+    // transitive dep without touching package.json — match that. Direct
+    // args land in `manifest_keys_to_update` and drive the rewrite path;
+    // indirect args go into `indirect_arg_names` and are filtered from
+    // the locked snapshot below so the resolver picks them fresh.
     let update_all = packages.is_empty();
-    let manifest_keys_to_update: Vec<String> = if update_all {
-        all_specifiers
-            .keys()
-            .filter(|name| !ignored_updates.contains(name.as_str()))
-            .cloned()
-            .collect()
-    } else {
+    let mut indirect_arg_names: BTreeSet<String> = BTreeSet::new();
+    if !update_all {
         for name in packages {
-            if !all_specifiers.contains_key(name.as_str()) {
+            if all_specifiers.contains_key(name.as_str()) {
+                if ignored_updates.contains(name.as_str()) {
+                    return Err(miette!(
+                        "package '{name}' is ignored by updateConfig.ignoreDependencies"
+                    ));
+                }
+                continue;
+            }
+            // Direct dep excluded by `--prod`/`--dev`/`--no-optional`.
+            // Match the pre-indirect-support behavior so the flag
+            // mismatch is visible — otherwise the dep would slip into
+            // the indirect path below and silently re-resolve.
+            if all_direct_keys.contains(name.as_str()) {
+                return Err(miette!("package '{name}' is not a dependency"));
+            }
+            // Indirect dep: must exist in the lockfile graph (either as
+            // its own name or as the real-name of an aliased entry).
+            let in_graph = existing.as_ref().is_some_and(|g| {
+                g.packages
+                    .values()
+                    .any(|p| p.name == *name || p.alias_of.as_deref() == Some(name.as_str()))
+            });
+            if !in_graph {
                 return Err(miette!("package '{name}' is not a dependency"));
             }
             if ignored_updates.contains(name.as_str()) {
@@ -167,9 +242,19 @@ pub async fn run(
                     "package '{name}' is ignored by updateConfig.ignoreDependencies"
                 ));
             }
+            indirect_arg_names.insert(name.clone());
         }
+    }
+    let manifest_keys_to_update: Vec<String> = if update_all {
+        all_specifiers
+            .keys()
+            .filter(|name| !ignored_updates.contains(name.as_str()))
+            .cloned()
+            .collect()
+    } else {
         packages
             .iter()
+            .filter(|p| all_specifiers.contains_key(p.as_str()))
             .filter(|p| {
                 if ignored_updates.contains(p.as_str()) {
                     tracing::info!("skipping {p} (updateConfig.ignoreDependencies)");
@@ -190,7 +275,7 @@ pub async fn run(
     if update_all {
         eprintln!("Updating all dependencies...");
     } else {
-        eprintln!("Updating: {}", packages.join(", "));
+        eprintln!("Updating: {}", parsed_packages.join(", "));
     }
 
     // `--latest`: pre-fetch packuments for every direct dep we're
@@ -203,10 +288,10 @@ pub async fn run(
     // nothing's stale is a cheap revalidation.
     //
     // Only applied to bulk updates (no positional args). When the user
-    // explicitly names a package — `aube update --latest <pkg>` —
-    // they're opting in to whatever the registry's `latest` says, even
-    // when that downgrades a prerelease (matching pnpm's behavior for
-    // `pnpm update <pkg>@latest`).
+    // explicitly names a package — `aube update --latest <pkg>` or
+    // `aube update <pkg>@latest` — they're opting in to whatever the
+    // registry's `latest` says, even when that downgrades a prerelease
+    // (matching pnpm's behavior for `pnpm update <pkg>@latest`).
     let preserve_pin: BTreeSet<String> = if latest && update_all {
         let client = std::sync::Arc::new(super::make_client(&cwd));
         let mut handles = Vec::new();
@@ -263,22 +348,24 @@ pub async fn run(
         BTreeSet::new()
     };
 
-    // `--latest`: rewrite each targeted direct-dep specifier to
-    // `latest` (preserving any `npm:` alias prefix) on a *clone* of
-    // the manifest that we hand to the resolver. Mutating the real
-    // in-memory manifest would corrupt `package.json` if we then
-    // bailed out — and if any package fails to resolve, the literal
-    // string `"latest"` would stick. `workspace:` specifiers are
-    // skipped: they refer to local workspace packages, not registry
-    // versions, so rewriting them to `latest` would send the
-    // resolver hunting on the registry for what is actually a
-    // sibling package. `preserve_pin` entries (a manifest pin newer
-    // than the dist-tag latest) are also left untouched so the
-    // resolver naturally re-resolves the original version into the
-    // graph and the manifest rewrite path leaves the pin alone.
-    let resolver_manifest = if latest {
+    // Rewrite each targeted direct-dep specifier on a *clone* of the
+    // manifest handed to the resolver. Mutating the real in-memory
+    // manifest would corrupt `package.json` if any package fails to
+    // resolve — the literal `"latest"` string would stick.
+    // `workspace:` specs are skipped: they refer to local workspace
+    // packages, not registry versions. `preserve_pin` entries (a
+    // manifest pin newer than the dist-tag latest) are also left
+    // untouched so the resolver naturally re-resolves the original
+    // version into the graph and the manifest rewrite path leaves the
+    // pin alone. Both `--latest` (every direct dep) and `<pkg>@latest`
+    // (only the named entries — see `should_rewrite_key`) flow
+    // through this loop.
+    let resolver_manifest = if effective_latest {
         let mut m = manifest.clone();
         for key in &manifest_keys_to_update {
+            if !should_rewrite_key(key) {
+                continue;
+            }
             let real_name = resolve_real_name(key);
             let original = all_specifiers.get(key).map(String::as_str).unwrap_or("");
             if aube_util::pkg::is_workspace_spec(original) || preserve_pin.contains(key) {
@@ -304,17 +391,60 @@ pub async fn run(
 
     // Build a filtered lockfile that excludes packages being updated
     // so the resolver picks the latest matching version instead of the
-    // locked one. Aliased direct deps (`"alias": "npm:real@x"`) live in
-    // the lockfile graph with `pkg.name == "alias"` (the manifest key),
-    // not the real name — without the manifest_keys check below the
-    // resolver would keep the locked alias version under `--latest`.
+    // locked one. Three sets need to come out:
+    //   - `real_names_to_update` — direct deps by their real name.
+    //   - `manifest_keys_to_update` — direct alias entries
+    //     (`"alias": "npm:real@x"`) live in the graph with
+    //     `pkg.name == "alias"`, not the real name; without this check
+    //     the resolver would keep the locked alias version under
+    //     `--latest`.
+    //   - `indirect_arg_names` — transitive deps the user named on the
+    //     command line. We filter both `pkg.name` matches AND
+    //     `pkg.alias_of` matches so an indirect aliased entry
+    //     (`other-alias: npm:dep-of-pkg-with-1-dep@x`) is also dropped.
     let filtered_existing = existing.as_ref().map(|graph| {
         let mut filtered = graph.clone();
         let manifest_keys: std::collections::HashSet<&str> =
             manifest_keys_to_update.iter().map(String::as_str).collect();
+        let indirect_set: std::collections::HashSet<&str> =
+            indirect_arg_names.iter().map(String::as_str).collect();
         filtered.packages.retain(|_, pkg| {
-            !real_names_to_update.contains(&pkg.name) && !manifest_keys.contains(pkg.name.as_str())
+            !real_names_to_update.contains(&pkg.name)
+                && !manifest_keys.contains(pkg.name.as_str())
+                && !indirect_set.contains(pkg.name.as_str())
+                && !pkg
+                    .alias_of
+                    .as_deref()
+                    .is_some_and(|a| indirect_set.contains(a))
         });
+        // Indirect-arg dist-tag forwarding. When the user passes
+        // `<indirect>@latest`, dropping the indirect's own snapshot
+        // entry isn't enough on its own — the resolver's lockfile-reuse
+        // path (aube_resolver::resolve.rs:1164) iterates each parent's
+        // locked `dependencies` map and enqueues transitive tasks using
+        // the *locked version* as the range. So a parent locked at
+        // `pkg-with-1-dep@100.0.0` with `dependencies: { dep-of: 100.0.0 }`
+        // still re-resolves dep-of at exactly 100.0.0, even after we
+        // dropped dep-of from `packages`. Rewriting the edge to `latest`
+        // rebroadcasts it as a dist-tag spec, so the transitive task
+        // resolves through the registry packument and picks the new
+        // latest. Only applied for entries the user named with
+        // `@latest`; bare `update <indirect>` keeps the locked edge so
+        // we don't silently bump something the user didn't ask to bump.
+        if !explicit_latest_keys.is_empty() {
+            for parent_pkg in filtered.packages.values_mut() {
+                for indirect_name in &indirect_arg_names {
+                    if !explicit_latest_keys.contains(indirect_name) {
+                        continue;
+                    }
+                    if parent_pkg.dependencies.contains_key(indirect_name.as_str()) {
+                        parent_pkg
+                            .dependencies
+                            .insert(indirect_name.clone(), "latest".to_string());
+                    }
+                }
+            }
+        }
         filtered
     });
 
@@ -402,22 +532,27 @@ pub async fn run(
 
     eprintln!("Resolved {} packages", graph.packages.len());
 
-    // `--latest`: rewrite each targeted direct dep in the real
-    // `package.json` to pin the resolved version, preserving the
-    // user's existing prefix (`^`/`~`/exact) and any `npm:` alias.
-    // Skip `workspace:` specifiers (sibling packages) and skip deps
-    // that resolved to the same spec they already had, so an idempotent
-    // `update --latest` doesn't rewrite the manifest for no reason.
+    // Rewrite each targeted direct dep in the real `package.json` to
+    // pin the resolved version, preserving the user's existing prefix
+    // (`^`/`~`/exact) and any `npm:` alias. `--latest` covers every
+    // direct dep; `<pkg>@latest` covers only the named entry — both
+    // flow through `should_rewrite_key`. Skip `workspace:` specs
+    // (sibling packages) and skip deps that resolved to the same spec
+    // they already had, so an idempotent rewrite doesn't churn the
+    // manifest for no reason.
     //
     // `--no-save` short-circuits the manifest rewrite: the resolver
     // already pulled in the new versions for the lockfile above, so we
     // just skip persisting any range bumps to `package.json`.
-    if latest {
+    if effective_latest {
         if no_save {
             eprintln!("Skipping package.json update (--no-save)");
         } else {
             let mut wrote_any = false;
             for key in &manifest_keys_to_update {
+                if !should_rewrite_key(key) {
+                    continue;
+                }
                 let real_name = resolve_real_name(key);
                 let original = all_specifiers.get(key).cloned().unwrap_or_default();
                 if aube_util::pkg::is_workspace_spec(&original) {
@@ -494,6 +629,7 @@ async fn run_filtered(
     args: UpdateArgs,
     filter: &aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    reject_unsupported_pkg_specs(&args.packages)?;
     let cwd = crate::dirs::cwd()?;
     let (_root, matched) = super::select_workspace_packages(&cwd, filter, "update")?;
     let result = async {
@@ -538,10 +674,61 @@ async fn run_filtered(
                     )
                     .cloned()
                     .collect();
+                // Same set ignoring flag filters. Used to distinguish
+                // "flag-excluded direct dep" from "truly indirect dep"
+                // before the lockfile fallback below — a devDep named
+                // under `--prod` is in the lockfile too, so without
+                // this guard it would get rescued by
+                // `project_lockfile_names` and pushed into the inner
+                // `run` as if it were transitive.
+                let all_declared: BTreeSet<String> = project_manifest
+                    .dependencies
+                    .keys()
+                    .chain(project_manifest.dev_dependencies.keys())
+                    .chain(project_manifest.optional_dependencies.keys())
+                    .cloned()
+                    .collect();
+                // Pull in indirect-dep names from the project's lockfile
+                // too — without this, `aube update -r <indirect>@latest`
+                // is silently dropped from every project (the indirect
+                // isn't in `declared`, the per-project filter empties
+                // `per_pkg.packages`, and the inner `run` is never
+                // invoked). Prefer the project's own per-project
+                // lockfile; fall back to the shared workspace-root
+                // lockfile (the one `aube install` writes) when there
+                // isn't one yet.
+                let project_lockfile_names: BTreeSet<String> =
+                    aube_lockfile::parse_lockfile(&pkg.dir, &project_manifest)
+                        .ok()
+                        .or_else(|| {
+                            super::find_workspace_root(&pkg.dir).ok().and_then(|ws| {
+                                aube_lockfile::parse_lockfile(&ws, &project_manifest).ok()
+                            })
+                        })
+                        .map(|g| g.packages.values().map(|p| p.name.clone()).collect())
+                        .unwrap_or_default();
+                // Compare each arg's bare name (stripping any
+                // `@<spec>` suffix) against the project's declared deps
+                // and lockfile names, but pass the original raw arg into
+                // the inner `run` call so it re-parses `<pkg>@latest`
+                // consistently.
                 per_pkg.packages = args
                     .packages
                     .iter()
-                    .filter(|name| declared.contains(name.as_str()))
+                    .filter(|raw| {
+                        let name = split_pkg_arg(raw).0;
+                        if declared.contains(name) {
+                            return true;
+                        }
+                        // Flag-excluded direct dep — drop instead of
+                        // letting `project_lockfile_names` rescue it as
+                        // a fake indirect. Mirrors pnpm's silent skip
+                        // for `-r --prod <devdep>`.
+                        if all_declared.contains(name) {
+                            return false;
+                        }
+                        project_lockfile_names.contains(name)
+                    })
                     .cloned()
                     .collect();
                 if per_pkg.packages.is_empty() {
@@ -558,6 +745,41 @@ async fn run_filtered(
     }
     .await;
     super::finish_filtered_workspace(&cwd, result)
+}
+
+/// Split a `<pkg>@<spec>` arg into a bare name and an optional spec.
+/// Scope-aware: `@scope/foo@latest` → (`@scope/foo`, `Some("latest")`).
+/// Bare names (`foo`, `@scope/foo`) yield `None`.
+fn split_pkg_arg(arg: &str) -> (&str, Option<&str>) {
+    let search_start = if arg.starts_with('@') { 1 } else { 0 };
+    match arg[search_start..].find('@') {
+        Some(rel) => {
+            let at = search_start + rel;
+            (&arg[..at], Some(&arg[at + 1..]))
+        }
+        None => (arg, None),
+    }
+}
+
+/// Reject any `<pkg>@<spec>` arg whose spec isn't `latest`. Other forms
+/// (`foo@^2.0.0`, `foo@1.2.3`) are *parsed* by `split_pkg_arg` but the
+/// rest of the update path only acts on `@latest` — silently swallowing
+/// them would leave the user wondering why their spec didn't take. Hard
+/// error early with the supported alternatives so it's discoverable;
+/// future work can lift the restriction by threading the spec into the
+/// resolver_manifest rewrite + manifest write paths.
+fn reject_unsupported_pkg_specs(packages: &[String]) -> miette::Result<()> {
+    for raw in packages {
+        let (name, spec) = split_pkg_arg(raw);
+        if let Some(s) = spec
+            && s != "latest"
+        {
+            return Err(miette!(
+                "package spec '{name}@{s}' is not supported by `update` — use `--latest` (or `<pkg>@latest`) to bump past the manifest range, or omit the spec to refresh in-range",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Rewrite a direct-dep specifier to pin `resolved_version`, preserving:
