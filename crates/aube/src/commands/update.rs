@@ -193,6 +193,76 @@ pub async fn run(
         eprintln!("Updating: {}", packages.join(", "));
     }
 
+    // `--latest`: pre-fetch packuments for every direct dep we're
+    // about to rewrite so we can detect manifest pins that are NEWER
+    // than the registry's `latest` dist-tag and skip them. Mirrors
+    // pnpm's regression guard from #7436 — a user-pinned prerelease
+    // (e.g. `"3.0.0-rc.0"` while latest=`2.0.0`) shouldn't be silently
+    // downgraded by `update --latest`. Packuments come from the same
+    // cache the resolver uses moments later, so the only cost when
+    // nothing's stale is a cheap revalidation.
+    //
+    // Only applied to bulk updates (no positional args). When the user
+    // explicitly names a package — `aube update --latest <pkg>` —
+    // they're opting in to whatever the registry's `latest` says, even
+    // when that downgrades a prerelease (matching pnpm's behavior for
+    // `pnpm update <pkg>@latest`).
+    let preserve_pin: BTreeSet<String> = if latest && update_all {
+        let client = std::sync::Arc::new(super::make_client(&cwd));
+        let mut handles = Vec::new();
+        for key in &manifest_keys_to_update {
+            let original = all_specifiers.get(key).map(String::as_str).unwrap_or("");
+            if aube_util::pkg::is_workspace_spec(original) {
+                continue;
+            }
+            let Some(pinned) = exact_pin_version(original) else {
+                continue;
+            };
+            let Ok(parsed_pin) = node_semver::Version::parse(pinned) else {
+                continue;
+            };
+            let real_name = resolve_real_name(key);
+            let key_owned = key.clone();
+            let client = client.clone();
+            handles.push(tokio::spawn(async move {
+                // A fetch failure here would silently fall through to the
+                // rewrite path and downgrade the prerelease pin — exactly
+                // what this guard is supposed to prevent. Surface the
+                // underlying error via tracing so the user can spot a
+                // transient registry failure that broke the guard, then
+                // continue with the resolver path (which has its own
+                // retry/cache semantics and may still succeed).
+                let packument = match client.fetch_packument(&real_name).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            "skipping prerelease-preservation check for {real_name}: {e}"
+                        );
+                        return None;
+                    }
+                };
+                let latest_v = packument.dist_tags.get("latest")?;
+                let Ok(parsed_latest) = node_semver::Version::parse(latest_v) else {
+                    tracing::warn!(
+                        "skipping prerelease-preservation check for {real_name}: \
+                         registry returned non-semver latest dist-tag {latest_v:?}"
+                    );
+                    return None;
+                };
+                (parsed_pin > parsed_latest).then_some(key_owned)
+            }));
+        }
+        let mut set = BTreeSet::new();
+        for h in handles {
+            if let Ok(Some(key)) = h.await {
+                set.insert(key);
+            }
+        }
+        set
+    } else {
+        BTreeSet::new()
+    };
+
     // `--latest`: rewrite each targeted direct-dep specifier to
     // `latest` (preserving any `npm:` alias prefix) on a *clone* of
     // the manifest that we hand to the resolver. Mutating the real
@@ -202,13 +272,16 @@ pub async fn run(
     // skipped: they refer to local workspace packages, not registry
     // versions, so rewriting them to `latest` would send the
     // resolver hunting on the registry for what is actually a
-    // sibling package.
+    // sibling package. `preserve_pin` entries (a manifest pin newer
+    // than the dist-tag latest) are also left untouched so the
+    // resolver naturally re-resolves the original version into the
+    // graph and the manifest rewrite path leaves the pin alone.
     let resolver_manifest = if latest {
         let mut m = manifest.clone();
         for key in &manifest_keys_to_update {
             let real_name = resolve_real_name(key);
             let original = all_specifiers.get(key).map(String::as_str).unwrap_or("");
-            if aube_util::pkg::is_workspace_spec(original) {
+            if aube_util::pkg::is_workspace_spec(original) || preserve_pin.contains(key) {
                 continue;
             }
             let new_spec = if original.starts_with("npm:") {
@@ -557,4 +630,25 @@ fn looks_like_exact_version(spec: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+}
+
+/// If `spec` is an exact-version pin (no caret, tilde, range
+/// operator, or non-semver tag), return the version substring.
+/// Handles bare `1.2.3` and `=1.2.3` plus the `npm:<real>@<version>`
+/// alias form. Returns `None` for ranges, tags, or anything else
+/// `looks_like_exact_version` rejects.
+///
+/// The returned slice is the bare version (already stripped of
+/// `npm:`, the `<name>@` alias prefix, the optional `=` operator, and
+/// any surrounding whitespace) — suitable for `Version::parse`. It is
+/// NOT a valid round-trip back to the original specifier.
+fn exact_pin_version(spec: &str) -> Option<&str> {
+    let stripped = spec.strip_prefix("npm:").unwrap_or(spec);
+    // Drop the optional `<name>@` prefix on alias forms.
+    let after_name = stripped
+        .rsplit_once('@')
+        .map(|(_, v)| v)
+        .unwrap_or(stripped);
+    let trimmed = after_name.trim_start_matches('=').trim();
+    looks_like_exact_version(trimmed).then_some(trimmed)
 }

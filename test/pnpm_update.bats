@@ -716,3 +716,123 @@ YAML
 	run grep '"@pnpm.e2e/foo": "100.0.0"' project-2/package.json
 	assert_success
 }
+
+@test "aube update --latest: keeps a higher-than-latest prerelease pin" {
+	# Ported from pnpm/test/update.ts:615 ('update to latest without
+	# downgrading already defined prerelease (#7436)'). With latest=2.0.0
+	# and the user pinned at 3.0.0-rc.0, `update --latest` (bulk, no
+	# package args) must NOT downgrade the manifest to 2.0.0 — the
+	# prerelease wins because it's numerically newer.
+	#
+	# pnpm also runs `update -r --latest` against the same single-project
+	# fixture. aube's `-r` requires a workspace root, so the recursive
+	# half is covered by the workspace ports below (728, 807) rather
+	# than re-running it here.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/has-prerelease' latest 2.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-prerelease-keep",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/has-prerelease@3.0.0-rc.0'
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@2.0.0' aube-lock.yaml
+	assert_failure
+
+	run aube update --latest
+	assert_success
+
+	# Manifest still pinned at the prerelease, lockfile too.
+	run grep '"@pnpm.e2e/has-prerelease": "3.0.0-rc.0"' package.json
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@2.0.0' aube-lock.yaml
+	assert_failure
+}
+
+@test "aube update -r --latest: prerelease workspace mix preserves higher pins" {
+	# Ported from pnpm/test/update.ts:728 ('update to latest recursive
+	# workspace (outdated, updated, prerelease, outdated)'). Four
+	# projects pinned at different versions; only the one already on
+	# 3.0.0-rc.0 stays put — the rest bump to the 2.0.0 latest dist-tag.
+	# Per-project lockfile assertions (see shared-lockfile divergence
+	# noted in PNPM_TEST_IMPORT.md).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/has-prerelease' latest 2.0.0
+
+	for i in 1 2 3 4; do
+		mkdir project-$i
+	done
+	cat >project-1/package.json <<'JSON'
+{ "name": "project-1", "version": "1.0.0", "dependencies": { "@pnpm.e2e/has-prerelease": "1.0.0" } }
+JSON
+	cat >project-2/package.json <<'JSON'
+{ "name": "project-2", "version": "1.0.0", "dependencies": { "@pnpm.e2e/has-prerelease": "2.0.0" } }
+JSON
+	cat >project-3/package.json <<'JSON'
+{ "name": "project-3", "version": "1.0.0", "dependencies": { "@pnpm.e2e/has-prerelease": "3.0.0-rc.0" } }
+JSON
+	cat >project-4/package.json <<'JSON'
+{ "name": "project-4", "version": "1.0.0", "dependencies": { "@pnpm.e2e/has-prerelease": "1.0.0" } }
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+  - project-3
+  - project-4
+YAML
+
+	run aube update -r --latest
+	assert_success
+
+	# Outdated pins bump to the new latest.
+	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' project-2/package.json
+	assert_success
+	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' project-4/package.json
+	assert_success
+
+	# Prerelease pin survives — 3.0.0-rc.0 > 2.0.0.
+	run grep '"@pnpm.e2e/has-prerelease": "3.0.0-rc.0"' project-3/package.json
+	assert_success
+}
+
+@test "aube update -r --latest: prerelease + outdated workspace mix" {
+	# Ported from pnpm/test/update.ts:807 ('update to latest recursive
+	# workspace (prerelease, outdated)'). Two-project variant: one on
+	# the prerelease (stays put), one on the older 1.0.0 (bumps).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/has-prerelease' latest 2.0.0
+
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{ "name": "project-1", "version": "1.0.0", "dependencies": { "@pnpm.e2e/has-prerelease": "3.0.0-rc.0" } }
+JSON
+	cat >project-2/package.json <<'JSON'
+{ "name": "project-2", "version": "1.0.0", "dependencies": { "@pnpm.e2e/has-prerelease": "1.0.0" } }
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	run aube update -r --latest
+	assert_success
+
+	run grep '"@pnpm.e2e/has-prerelease": "3.0.0-rc.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' project-2/package.json
+	assert_success
+}
