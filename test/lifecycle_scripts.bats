@@ -666,6 +666,26 @@ JSON
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-postinstall.js ]
 }
 
+@test "aube add --allow-build is rejected when combined with --no-save" {
+	# Same conflict pnpm enforces (and that --save-catalog already
+	# enforces in aube): --no-save's restore path snapshots only
+	# package.json + the lockfile, but --allow-build can land in the
+	# workspace yaml — combining them would leak an orphaned approval.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-allow-build-no-save",
+  "version": "1.0.0"
+}
+JSON
+	run aube add --no-save --allow-build=@pnpm.e2e/install-script-example @pnpm.e2e/install-script-example
+	assert_failure
+	assert_output --partial "--allow-build"
+	assert_output --partial "--no-save"
+	# Manifest untouched — clap rejected the combo before any write.
+	run grep -F '"@pnpm.e2e/install-script-example"' package.json
+	assert_failure
+}
+
 @test "aube add --allow-build=<pkg> errors when allowBuilds: <pkg>: false already exists" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:347
 	# ('--allow-build flag should error when conflicting with allowBuilds: false').

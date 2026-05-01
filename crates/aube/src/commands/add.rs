@@ -35,7 +35,13 @@ pub struct AddArgs {
     /// Errors when `<pkg>` is already on the allowlist with `false` —
     /// promoting an explicit deny should be a deliberate edit, not a
     /// silent flip. Mirrors `pnpm add --allow-build=<pkg>`.
-    #[arg(long = "allow-build", value_name = "PKG")]
+    ///
+    /// Conflicts with `--no-save`: when a workspace yaml exists, the
+    /// approval lands there, but `--no-save`'s restore path only
+    /// snapshots `package.json` + the lockfile — combining the two
+    /// would silently leave an orphaned approval behind. Same
+    /// reasoning as `--save-catalog`'s `--no-save` conflict.
+    #[arg(long = "allow-build", value_name = "PKG", conflicts_with = "no_save")]
     pub allow_build: Vec<String>,
     /// Skip lifecycle scripts (no-op; aube already skips by default)
     #[arg(long)]
