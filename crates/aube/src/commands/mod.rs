@@ -645,10 +645,15 @@ pub(crate) fn resolve_virtual_store_dir(
         .iter()
         .any(|(k, _)| k == "virtualStoreDir" || k == "virtual-store-dir");
     let has_explicit_yaml = ctx.workspace_yaml.contains_key("virtualStoreDir");
-    let has_explicit_env = ctx
-        .env
-        .iter()
-        .any(|(k, _)| k == "npm_config_virtual_store_dir" || k == "NPM_CONFIG_VIRTUAL_STORE_DIR");
+    // Mirrors the `sources.env` list in settings.toml (`virtualStoreDir`).
+    // Keep all three aliases here — dropping `AUBE_VIRTUAL_STORE_DIR`
+    // silently routes through the default branch even though
+    // `aube_settings::resolved::virtual_store_dir` honors the env value.
+    let has_explicit_env = ctx.env.iter().any(|(k, _)| {
+        k == "npm_config_virtual_store_dir"
+            || k == "NPM_CONFIG_VIRTUAL_STORE_DIR"
+            || k == "AUBE_VIRTUAL_STORE_DIR"
+    });
     if !(has_explicit_npmrc || has_explicit_yaml || has_explicit_env) {
         return default_from_modules_dir();
     }
@@ -662,6 +667,67 @@ pub(crate) fn resolve_virtual_store_dir(
 /// `unlink`) that don't build a `ResolveCtx` for any other reason.
 pub(crate) fn resolve_virtual_store_dir_for_cwd(cwd: &std::path::Path) -> std::path::PathBuf {
     with_settings_ctx(cwd, |ctx| resolve_virtual_store_dir(ctx, cwd))
+}
+
+#[cfg(test)]
+mod resolve_virtual_store_dir_tests {
+    use super::resolve_virtual_store_dir;
+    use aube_settings::ResolveCtx;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn ctx_with_env<'a>(
+        env: &'a [(String, String)],
+        ws: &'a BTreeMap<String, yaml_serde::Value>,
+    ) -> ResolveCtx<'a> {
+        ResolveCtx {
+            npmrc: &[],
+            workspace_yaml: ws,
+            env,
+            cli: &[],
+        }
+    }
+
+    #[test]
+    fn default_when_no_explicit_override() {
+        let env = vec![];
+        let ws = BTreeMap::new();
+        let ctx = ctx_with_env(&env, &ws);
+        let project = PathBuf::from("/proj");
+        assert_eq!(
+            resolve_virtual_store_dir(&ctx, &project),
+            PathBuf::from("/proj/node_modules/.aube"),
+        );
+    }
+
+    #[test]
+    fn aube_env_var_relocates_virtual_store() {
+        // Regression guard: AUBE_VIRTUAL_STORE_DIR is declared in
+        // settings.toml's `sources.env` for `virtualStoreDir`. Without
+        // it in the explicit-detection list, a user setting only
+        // AUBE_VIRTUAL_STORE_DIR (and not the npm_config_* aliases)
+        // would silently fall through to the default path.
+        let env = vec![("AUBE_VIRTUAL_STORE_DIR".into(), ".aube".into())];
+        let ws = BTreeMap::new();
+        let ctx = ctx_with_env(&env, &ws);
+        let project = PathBuf::from("/proj");
+        assert_eq!(
+            resolve_virtual_store_dir(&ctx, &project),
+            PathBuf::from("/proj/.aube"),
+        );
+    }
+
+    #[test]
+    fn npm_config_env_var_relocates_virtual_store() {
+        let env = vec![("npm_config_virtual_store_dir".into(), ".vstore".into())];
+        let ws = BTreeMap::new();
+        let ctx = ctx_with_env(&env, &ws);
+        let project = PathBuf::from("/proj");
+        assert_eq!(
+            resolve_virtual_store_dir(&ctx, &project),
+            PathBuf::from("/proj/.vstore"),
+        );
+    }
 }
 
 /// Format the resolved `virtualStoreDir` as a display-ready prefix for
