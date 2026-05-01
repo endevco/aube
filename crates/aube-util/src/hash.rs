@@ -135,7 +135,6 @@ impl<R: io::Read> io::Read for TeeReader<'_, R> {
     }
 }
 
-
 pub fn ordered_seq_hash<I, T>(iter: I) -> u64
 where
     I: IntoIterator<Item = T>,

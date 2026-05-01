@@ -13,7 +13,6 @@
 //! (`max_length - 33` prefix + `_` + 32 hex chars) so the fingerprint
 //! matches what pnpm itself produces at the same `maxLength`.
 
-
 /// Default `virtual-store-dir-max-length`, matching pnpm's Linux/macOS
 /// default. pnpm uses 60 on Windows — we don't run on Windows yet, so
 /// we only expose the POSIX default for now.

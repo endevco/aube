@@ -2313,9 +2313,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // BLAKE3 walk over `graph.packages`. Populated by the no-lockfile
     // branch when the prewarm task uses GVS; left `None` on the
     // frozen-lockfile path or when the prewarm short-circuits.
-    let mut prewarm_graph_hashes: Option<
-        std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>,
-    > = None;
+    let mut prewarm_graph_hashes: Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>> =
+        None;
     let (graph, package_indices, cached_count, fetch_count) = match lockfile_result {
         Ok((mut graph, kind)) => {
             // Drop optional deps that don't match the current platform

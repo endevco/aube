@@ -522,14 +522,12 @@ static TYPED_CACHE: std::sync::OnceLock<std::sync::Mutex<TypedCacheMap>> =
     std::sync::OnceLock::new();
 
 fn typed_cache_lookup(project_dir: &Path) -> Option<WorkspaceConfig> {
-    let cache =
-        TYPED_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cache = TYPED_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     cache.lock().ok()?.get(project_dir).cloned()
 }
 
 fn typed_cache_insert(project_dir: &Path, value: WorkspaceConfig) {
-    let cache =
-        TYPED_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cache = TYPED_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Ok(mut map) = cache.lock() {
         map.insert(project_dir.to_path_buf(), value);
     }
