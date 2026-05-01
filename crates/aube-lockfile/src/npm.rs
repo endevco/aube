@@ -573,6 +573,50 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     direct.extend(workspace_links);
 
     graph.importers.insert(".".to_string(), direct);
+
+    // Workspace importers: npm records each workspace package twice:
+    // `node_modules/<name>` is a link, while the target path (`web`,
+    // `packages/app`, ...) carries that package's own dependency sections.
+    // Preserve those target paths as graph importers so install/link and a
+    // later package-lock rewrite keep each workspace's node_modules tree.
+    for target in &link_targets {
+        if target.is_empty() {
+            continue;
+        }
+        let Some(package_entry) = raw.packages.get(target) else {
+            continue;
+        };
+        let mut direct = Vec::new();
+        for (dep_name, specifier, dep_type) in package_entry
+            .dependencies
+            .iter()
+            .map(|(name, spec)| (name, spec, DepType::Production))
+            .chain(
+                package_entry
+                    .dev_dependencies
+                    .iter()
+                    .map(|(name, spec)| (name, spec, DepType::Dev)),
+            )
+            .chain(
+                package_entry
+                    .optional_dependencies
+                    .iter()
+                    .map(|(name, spec)| (name, spec, DepType::Optional)),
+            )
+        {
+            if let Some(target_install_path) = resolve_nested(target, dep_name, &install_path_info)
+                && let Some(info) = install_path_info.get(&target_install_path)
+            {
+                direct.push(DirectDep {
+                    name: info.name.clone(),
+                    dep_path: info.dep_path.clone(),
+                    dep_type,
+                    specifier: Some(specifier.clone()),
+                });
+            }
+        }
+        graph.importers.insert(target.clone(), direct);
+    }
     Ok(graph)
 }
 
@@ -742,6 +786,8 @@ struct WriteNpmPackage<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     funding: Option<WriteNpmFunding<'a>>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
+    link: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     dev: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     optional: bool,
@@ -802,11 +848,10 @@ struct WriteNpmPeerDepMeta {
 ///    entries always emit `resolved:` because the install-path name is
 ///    the alias — without the URL the consumer can't recover the real
 ///    registry location.
-///  - Non-git local source entries (`file:`, `link:`, URL tarballs)
-///    aren't emitted yet. Git sources emit their pinned `resolved:` URL.
-///  - Multiple workspace importers aren't emitted — only the root
-///    importer's tree is walked. Workspace + npm-lockfile projects
-///    should stay on `pnpm-lock.yaml` until this lands.
+///  - Non-git local source entries (`file:`, URL tarballs) aren't
+///    emitted yet. Git sources emit their pinned `resolved:` URL.
+///    Workspace `link:` packages are emitted as importer entries plus
+///    a root `node_modules/<name>` link record.
 pub fn write(
     path: &Path,
     graph: &LockfileGraph,
@@ -832,17 +877,23 @@ pub fn write(
     // wins the tie: if a package is reachable from any prod root, it
     // gets neither flag.
     let roots = graph.importers.get(".").cloned().unwrap_or_default();
-    let prod_reach = reachable_from(&canonical, &roots, DepType::Production);
-    let dev_reach = reachable_from(&canonical, &roots, DepType::Dev);
-    let opt_reach = reachable_from(&canonical, &roots, DepType::Optional);
+    let all_roots: Vec<DirectDep> = graph
+        .importers
+        .values()
+        .flat_map(|deps| deps.iter().cloned())
+        .collect();
+    let prod_reach = reachable_from(&canonical, &all_roots, DepType::Production);
+    let dev_reach = reachable_from(&canonical, &all_roots, DepType::Dev);
+    let opt_reach = reachable_from(&canonical, &all_roots, DepType::Optional);
 
     // Build a hoist/nest tree keyed by a sequence of "node_modules"
     // path segments — e.g. `["foo"]` for `node_modules/foo`,
     // `["foo", "bar"]` for `node_modules/foo/node_modules/bar`. Shared
     // with bun (which renders the same segment list as `foo/bar`).
-    let tree = build_hoist_tree(&canonical, &roots);
+    let root_tree_roots = non_link_roots(graph, &roots);
+    let tree = build_hoist_tree(&canonical, &root_tree_roots);
     // For the npm writer, re-key the tree by install_path strings.
-    let placed: BTreeMap<String, String> = tree
+    let mut placed: BTreeMap<String, String> = tree
         .into_iter()
         .map(|(segs, key)| (segments_to_install_path(&segs), key))
         .collect();
@@ -865,6 +916,64 @@ pub fn write(
             ..Default::default()
         },
     );
+
+    for (importer_path, importer_roots) in graph.importers.iter().filter(|(path, _)| *path != ".") {
+        let Some(workspace_pkg) = workspace_package_for_importer(graph, importer_path) else {
+            continue;
+        };
+        let (dependencies, dev_dependencies, optional_dependencies) =
+            dep_sections_from_direct_deps(importer_roots);
+        packages.insert(
+            importer_path.clone(),
+            WriteNpmPackage {
+                name: Some(workspace_pkg.name.as_str()),
+                version: Some(workspace_pkg.version.as_str()),
+                dependencies,
+                dev_dependencies,
+                optional_dependencies,
+                peer_dependencies: workspace_pkg
+                    .peer_dependencies
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_str()))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        packages.insert(
+            format!("node_modules/{}", workspace_pkg.name),
+            WriteNpmPackage {
+                resolved: Some(importer_path.clone()),
+                link: true,
+                ..Default::default()
+            },
+        );
+
+        let workspace_tree_roots = non_link_roots(graph, importer_roots);
+        let workspace_tree = build_hoist_tree(&canonical, &workspace_tree_roots);
+        // Skip subtrees whose top-level segment is already hoisted to
+        // `node_modules/<name>` at the same canonical version: Node's
+        // upward `node_modules` walk from `<importer>/...` resolves to
+        // the root copy, so the workspace-nested entries are dead
+        // weight. npm's writer omits them, and emitting them produces
+        // round-trip diffs vs npm-generated lockfiles.
+        let redundant_tops: BTreeSet<String> = workspace_tree
+            .iter()
+            .filter(|(segs, key)| {
+                segs.len() == 1
+                    && placed
+                        .get(&format!("node_modules/{}", segs[0]))
+                        .is_some_and(|root_key| root_key == *key)
+            })
+            .map(|(segs, _)| segs[0].clone())
+            .collect();
+        for (segs, canonical_key) in workspace_tree {
+            if redundant_tops.contains(&segs[0]) {
+                continue;
+            }
+            let install_path = format!("{importer_path}/{}", segments_to_install_path(&segs));
+            placed.entry(install_path).or_insert(canonical_key);
+        }
+    }
 
     for (install_path, canonical_key) in &placed {
         let Some(pkg) = canonical.get(canonical_key).copied() else {
@@ -1030,6 +1139,62 @@ pub fn write(
     body.push('\n');
     crate::atomic_write_lockfile(path, body.as_bytes())?;
     Ok(())
+}
+
+fn workspace_package_for_importer<'a>(
+    graph: &'a LockfileGraph,
+    importer_path: &str,
+) -> Option<&'a LockedPackage> {
+    graph.packages.values().find(|pkg| {
+        matches!(
+            &pkg.local_source,
+            Some(LocalSource::Link(path)) if path == Path::new(importer_path)
+        )
+    })
+}
+
+fn non_link_roots(graph: &LockfileGraph, roots: &[DirectDep]) -> Vec<DirectDep> {
+    roots
+        .iter()
+        .filter(|dep| {
+            !graph
+                .packages
+                .get(&dep.dep_path)
+                .is_some_and(|pkg| matches!(pkg.local_source, Some(LocalSource::Link(_))))
+        })
+        .cloned()
+        .collect()
+}
+
+type DepSections<'a> = (
+    BTreeMap<&'a str, &'a str>,
+    BTreeMap<&'a str, &'a str>,
+    BTreeMap<&'a str, &'a str>,
+);
+
+fn dep_sections_from_direct_deps(deps: &[DirectDep]) -> DepSections<'_> {
+    let mut dependencies = BTreeMap::new();
+    let mut dev_dependencies = BTreeMap::new();
+    let mut optional_dependencies = BTreeMap::new();
+
+    for dep in deps {
+        let rendered = dep.specifier.as_deref().unwrap_or_else(|| {
+            dep_value_as_version(&dep.name, dep_path_tail(&dep.name, &dep.dep_path))
+        });
+        match dep.dep_type {
+            DepType::Production => {
+                dependencies.insert(dep.name.as_str(), rendered);
+            }
+            DepType::Dev => {
+                dev_dependencies.insert(dep.name.as_str(), rendered);
+            }
+            DepType::Optional => {
+                optional_dependencies.insert(dep.name.as_str(), rendered);
+            }
+        }
+    }
+
+    (dependencies, dev_dependencies, optional_dependencies)
 }
 
 /// Render a segment list `["foo", "bar"]` as an npm-style install
@@ -2540,6 +2705,237 @@ mod tests {
                 .map(|m| m.optional),
             Some(true),
             "peerDependenciesMeta.optional must survive write → parse round-trip"
+        );
+    }
+
+    #[test]
+    fn test_parse_npm_workspace_importers() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "workspace-root",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "workspace-root",
+                    "version": "1.0.0",
+                    "workspaces": ["web"]
+                },
+                "node_modules/mise-versions-web": {
+                    "resolved": "web",
+                    "link": true
+                },
+                "web": {
+                    "name": "mise-versions-web",
+                    "version": "0.0.1",
+                    "dependencies": { "astro": "^6.0.0" },
+                    "devDependencies": { "vite": "^7.3.2" }
+                },
+                "web/node_modules/astro": {
+                    "version": "6.2.1",
+                    "integrity": "sha512-astro"
+                },
+                "web/node_modules/vite": {
+                    "version": "7.3.2",
+                    "integrity": "sha512-vite"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        let root = graph.importers.get(".").expect("root importer");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name, "mise-versions-web");
+        assert!(matches!(
+            graph.packages[&root[0].dep_path].local_source,
+            Some(LocalSource::Link(_))
+        ));
+
+        let web = graph.importers.get("web").expect("web importer");
+        assert_eq!(web.len(), 2);
+        assert!(web.iter().any(|dep| {
+            dep.name == "astro"
+                && dep.dep_type == DepType::Production
+                && dep.specifier.as_deref() == Some("^6.0.0")
+        }));
+        assert!(web.iter().any(|dep| {
+            dep.name == "vite"
+                && dep.dep_type == DepType::Dev
+                && dep.specifier.as_deref() == Some("^7.3.2")
+        }));
+    }
+
+    #[test]
+    fn test_write_npm_workspace_importers() {
+        let mut graph = LockfileGraph::default();
+        let web_link = LocalSource::Link(PathBuf::from("web"));
+        let web_dep_path = web_link.dep_path("mise-versions-web");
+        graph.packages.insert(
+            web_dep_path.clone(),
+            LockedPackage {
+                name: "mise-versions-web".to_string(),
+                version: "0.0.1".to_string(),
+                dep_path: web_dep_path.clone(),
+                local_source: Some(web_link),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "astro@6.2.1".to_string(),
+            LockedPackage {
+                name: "astro".to_string(),
+                version: "6.2.1".to_string(),
+                integrity: Some("sha512-astro".to_string()),
+                dep_path: "astro@6.2.1".to_string(),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "vite@7.3.2".to_string(),
+            LockedPackage {
+                name: "vite".to_string(),
+                version: "7.3.2".to_string(),
+                integrity: Some("sha512-vite".to_string()),
+                dep_path: "vite@7.3.2".to_string(),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "mise-versions-web".to_string(),
+                dep_path: web_dep_path.clone(),
+                dep_type: DepType::Production,
+                specifier: None,
+            }],
+        );
+        graph.importers.insert(
+            "web".to_string(),
+            vec![
+                DirectDep {
+                    name: "astro".to_string(),
+                    dep_path: "astro@6.2.1".to_string(),
+                    dep_type: DepType::Production,
+                    specifier: Some("^6.0.0".to_string()),
+                },
+                DirectDep {
+                    name: "vite".to_string(),
+                    dep_path: "vite@7.3.2".to_string(),
+                    dep_type: DepType::Dev,
+                    specifier: Some("^7.3.2".to_string()),
+                },
+            ],
+        );
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("workspace-root".to_string()),
+            version: Some("1.0.0".to_string()),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+        assert_eq!(
+            json["packages"]["node_modules/mise-versions-web"]["link"],
+            true
+        );
+        assert_eq!(
+            json["packages"]["node_modules/mise-versions-web"]["resolved"],
+            "web"
+        );
+        assert_eq!(json["packages"]["web"]["dependencies"]["astro"], "^6.0.0");
+        assert_eq!(json["packages"]["web"]["devDependencies"]["vite"], "^7.3.2");
+        assert_eq!(
+            json["packages"]["web/node_modules/astro"]["version"],
+            "6.2.1"
+        );
+        assert_eq!(
+            json["packages"]["web/node_modules/vite"]["version"],
+            "7.3.2"
+        );
+
+        let reparsed = parse(out.path()).unwrap();
+        assert!(reparsed.importers.contains_key("web"));
+    }
+
+    /// When the root tree already hoists a package to
+    /// `node_modules/<name>`, the workspace tree must NOT emit a
+    /// redundant `<workspace>/node_modules/<name>` for the same
+    /// version — Node's upward `node_modules` walk resolves the root
+    /// copy. Real `npm install` omits the redundant entry, and
+    /// emitting it produces a diff on every round-trip.
+    #[test]
+    fn test_write_npm_workspace_skips_root_hoisted_dups() {
+        let mut graph = LockfileGraph::default();
+        let web_link = LocalSource::Link(PathBuf::from("web"));
+        let web_dep_path = web_link.dep_path("workspace-web");
+        graph.packages.insert(
+            web_dep_path.clone(),
+            LockedPackage {
+                name: "workspace-web".to_string(),
+                version: "0.0.1".to_string(),
+                dep_path: web_dep_path.clone(),
+                local_source: Some(web_link),
+                ..Default::default()
+            },
+        );
+        graph.packages.insert(
+            "astro@6.2.1".to_string(),
+            LockedPackage {
+                name: "astro".to_string(),
+                version: "6.2.1".to_string(),
+                integrity: Some("sha512-astro".to_string()),
+                dep_path: "astro@6.2.1".to_string(),
+                ..Default::default()
+            },
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![
+                DirectDep {
+                    name: "astro".to_string(),
+                    dep_path: "astro@6.2.1".to_string(),
+                    dep_type: DepType::Production,
+                    specifier: Some("^6.0.0".to_string()),
+                },
+                DirectDep {
+                    name: "workspace-web".to_string(),
+                    dep_path: web_dep_path.clone(),
+                    dep_type: DepType::Production,
+                    specifier: None,
+                },
+            ],
+        );
+        graph.importers.insert(
+            "web".to_string(),
+            vec![DirectDep {
+                name: "astro".to_string(),
+                dep_path: "astro@6.2.1".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^6.0.0".to_string()),
+            }],
+        );
+
+        let manifest = aube_manifest::PackageJson {
+            name: Some("workspace-root".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [("astro".to_string(), "^6.0.0".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let out = tempfile::NamedTempFile::new().unwrap();
+        write(out.path(), &graph, &manifest).unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path()).unwrap()).unwrap();
+        assert_eq!(json["packages"]["node_modules/astro"]["version"], "6.2.1");
+        assert!(
+            json["packages"].get("web/node_modules/astro").is_none(),
+            "redundant workspace-nested astro should not be emitted"
         );
     }
 
