@@ -132,6 +132,11 @@ pub struct DeltaPlan {
     pub added: Vec<String>,
     pub removed: Vec<String>,
     pub changed: Vec<String>,
+    /// Pre-built `added ∪ changed` lookup. Built once at construction
+    /// so `should_touch` stays O(log N) per probe. The linker walks
+    /// the graph 4-5 times; without this cache each probe was a
+    /// linear scan over both `Vec`s.
+    touched: BTreeSet<String>,
 }
 
 impl DeltaPlan {
@@ -148,29 +153,38 @@ impl DeltaPlan {
     /// Membership test for `added ∪ changed`. Only these need fetch
     /// or re-link. `removed` runs through a separate unlink pass.
     pub fn should_touch(&self, dep_path: &str) -> bool {
-        self.added.iter().any(|d| d == dep_path) || self.changed.iter().any(|d| d == dep_path)
+        self.touched.contains(dep_path)
     }
 
-    /// O(log N) lookup view for callers that probe many times per
-    /// install. The linker walks the graph 4-5 times. Scanning two
-    /// `Vec`s each time would be O(N) per probe.
-    pub fn touched_set(&self) -> BTreeSet<&str> {
-        let mut s = BTreeSet::new();
-        s.extend(self.added.iter().map(String::as_str));
-        s.extend(self.changed.iter().map(String::as_str));
-        s
+    /// Borrowed view of the cached `added ∪ changed` set. Stable for
+    /// the lifetime of the plan; cheaper than rebuilding per probe.
+    pub fn touched_set(&self) -> &BTreeSet<String> {
+        &self.touched
     }
 }
 
 /// blake3 fingerprint for every package in `graph`. Keys mirror
 /// `graph.packages` so callers can join directly.
-pub fn compute_package_hashes(graph: &LockfileGraph) -> BTreeMap<String, String> {
+///
+/// `patch_hashes` keys are `name@version`. Folding the patch content
+/// hash into the fingerprint makes a re-patched package land in the
+/// `changed` bucket on the next install. Without this, two installs
+/// whose lockfile is identical but whose `pnpm.patchedDependencies`
+/// changed would silently skip rebuild of the affected entries.
+pub fn compute_package_hashes(
+    graph: &LockfileGraph,
+    patch_hashes: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     // Pure, per-package, CPU-bound. Perfect rayon target. 500-pkg
     // graph drops from ~25 ms serial to ~6 ms on 4 cores.
     graph
         .packages
         .par_iter()
-        .map(|(dep_path, pkg)| (dep_path.clone(), fingerprint(pkg)))
+        .map(|(dep_path, pkg)| {
+            let patch_key = format!("{}@{}", pkg.name, pkg.version);
+            let patch = patch_hashes.get(&patch_key).map(String::as_str);
+            (dep_path.clone(), fingerprint(pkg, patch))
+        })
         .collect()
 }
 
@@ -185,8 +199,26 @@ pub fn compute_package_hashes(graph: &LockfileGraph) -> BTreeMap<String, String>
 /// an acyclic node. Peer-dep cycles happen in aube-resolver's
 /// peer_context. Rare but real, so SCC handling is correctness
 /// not just robustness.
-pub fn compute_subtree_hashes(graph: &LockfileGraph) -> BTreeMap<String, String> {
-    let leaf = compute_package_hashes(graph);
+/// Compute leaf and subtree hashes in one pass. Callers that need
+/// both should prefer this over calling each function separately so
+/// the BLAKE3 leaf pass runs once. Returns `(leaf, subtree)`.
+pub fn compute_leaf_and_subtree_hashes(
+    graph: &LockfileGraph,
+    patch_hashes: &BTreeMap<String, String>,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let leaf = compute_package_hashes(graph, patch_hashes);
+    let subtree = compute_subtree_hashes_from_leaf(graph, &leaf);
+    (leaf, subtree)
+}
+
+/// Variant of [`compute_subtree_hashes`] that reuses an already-built
+/// leaf-fingerprint map. The caller wires this when it has both
+/// fingerprints and subtree hashes to compute, so the BLAKE3 leaf
+/// pass runs once instead of twice.
+pub fn compute_subtree_hashes_from_leaf(
+    graph: &LockfileGraph,
+    leaf: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     let sccs = tarjan_scc(graph);
     // dep_path to scc index.
     let mut scc_index: BTreeMap<String, usize> = BTreeMap::new();
@@ -363,10 +395,17 @@ fn dfs_post(start: usize, edges: &[BTreeSet<usize>], seen: &mut [bool], order: &
 /// falls through to the regular full-install flow.
 pub fn diff(stored: &BTreeMap<String, String>, current: &BTreeMap<String, String>) -> DeltaPlan {
     let mut plan = DeltaPlan::default();
+    let mut touched = BTreeSet::new();
     for (dep_path, new_hash) in current {
         match stored.get(dep_path) {
-            None => plan.added.push(dep_path.clone()),
-            Some(old_hash) if old_hash != new_hash => plan.changed.push(dep_path.clone()),
+            None => {
+                touched.insert(dep_path.clone());
+                plan.added.push(dep_path.clone());
+            }
+            Some(old_hash) if old_hash != new_hash => {
+                touched.insert(dep_path.clone());
+                plan.changed.push(dep_path.clone());
+            }
             Some(_) => {}
         }
     }
@@ -375,6 +414,7 @@ pub fn diff(stored: &BTreeMap<String, String>, current: &BTreeMap<String, String
             plan.removed.push(dep_path.clone());
         }
     }
+    plan.touched = touched;
     plan
 }
 
@@ -382,7 +422,7 @@ pub fn diff(stored: &BTreeMap<String, String>, current: &BTreeMap<String, String
 /// Field order matters. Changing it invalidates every stored
 /// fingerprint on the next install. That still cascades to a full
 /// install, just costs one "already up to date" miss.
-fn fingerprint(pkg: &LockedPackage) -> String {
+fn fingerprint(pkg: &LockedPackage, patch_hash: Option<&str>) -> String {
     let mut h = Hasher::new();
     update_field(&mut h, b"name", pkg.name.as_bytes());
     update_field(&mut h, b"version", pkg.version.as_bytes());
@@ -390,6 +430,7 @@ fn fingerprint(pkg: &LockedPackage) -> String {
     update_optional(&mut h, b"integrity", pkg.integrity.as_deref());
     update_optional(&mut h, b"tarball_url", pkg.tarball_url.as_deref());
     update_optional(&mut h, b"alias_of", pkg.alias_of.as_deref());
+    update_optional(&mut h, b"patch", patch_hash);
     // BTreeMap iteration is canonical. Length-prefix every entry so
     // "a" -> "bc" cannot collide with "ab" -> "c".
     h.update(b"deps");
@@ -494,18 +535,27 @@ mod tests {
         graph
     }
 
+    fn fp(p: &LockedPackage) -> String {
+        fingerprint(p, None)
+    }
+
+    fn cph(g: &LockfileGraph) -> BTreeMap<String, String> {
+        compute_package_hashes(g, &BTreeMap::new())
+    }
+
+    fn csh(g: &LockfileGraph) -> BTreeMap<String, String> {
+        compute_leaf_and_subtree_hashes(g, &BTreeMap::new()).1
+    }
+
     #[test]
     fn fingerprint_is_deterministic() {
         let p = pkg("react", "18.2.0");
-        assert_eq!(fingerprint(&p), fingerprint(&p.clone()));
+        assert_eq!(fp(&p), fp(&p.clone()));
     }
 
     #[test]
     fn fingerprint_changes_on_version_bump() {
-        assert_ne!(
-            fingerprint(&pkg("react", "18.2.0")),
-            fingerprint(&pkg("react", "18.3.0"))
-        );
+        assert_ne!(fp(&pkg("react", "18.2.0")), fp(&pkg("react", "18.3.0")));
     }
 
     #[test]
@@ -514,7 +564,7 @@ mod tests {
         let mut b = a.clone();
         a.integrity = Some("sha512-AAAA".into());
         b.integrity = Some("sha512-BBBB".into());
-        assert_ne!(fingerprint(&a), fingerprint(&b));
+        assert_ne!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -525,7 +575,7 @@ mod tests {
             .insert("loose-envify".into(), "loose-envify@1.4.0".into());
         b.dependencies
             .insert("loose-envify".into(), "loose-envify@1.5.0".into());
-        assert_ne!(fingerprint(&a), fingerprint(&b));
+        assert_ne!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -536,7 +586,7 @@ mod tests {
         let mut b = pkg("react", "18.2.0");
         b.dependencies.insert("b".into(), "2".into());
         b.dependencies.insert("a".into(), "1".into());
-        assert_eq!(fingerprint(&a), fingerprint(&b));
+        assert_eq!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -546,7 +596,7 @@ mod tests {
         let mut a = pkg("react", "18.2.0");
         let b = a.clone();
         a.peer_dependencies.insert("something".into(), "*".into());
-        assert_eq!(fingerprint(&a), fingerprint(&b));
+        assert_eq!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -555,13 +605,13 @@ mod tests {
         let mut b = pkg("a", "b1");
         a.integrity = None;
         b.integrity = None;
-        assert_ne!(fingerprint(&a), fingerprint(&b));
+        assert_ne!(fp(&a), fp(&b));
     }
 
     #[test]
     fn diff_empty_stored_marks_everything_added() {
         let graph = graph_of(&[pkg("a", "1"), pkg("b", "2")]);
-        let current = compute_package_hashes(&graph);
+        let current = cph(&graph);
         let plan = diff(&BTreeMap::new(), &current);
         assert_eq!(plan.added.len(), 2);
         assert_eq!(plan.removed.len(), 0);
@@ -571,7 +621,7 @@ mod tests {
     #[test]
     fn diff_identical_maps_is_empty() {
         let graph = graph_of(&[pkg("a", "1"), pkg("b", "2")]);
-        let current = compute_package_hashes(&graph);
+        let current = cph(&graph);
         let plan = diff(&current, &current);
         assert!(plan.is_empty());
     }
@@ -584,13 +634,12 @@ mod tests {
         // update that rewrote the dependencies map.
         let mut republished = pkg("keep", "1");
         republished.integrity = Some("sha512-after-republish".into());
-        let before = compute_package_hashes(&graph_of(&[
+        let before = cph(&graph_of(&[
             pkg("keep", "1"),
             pkg("gone", "1"),
             pkg("bump", "1"),
         ]));
-        let after =
-            compute_package_hashes(&graph_of(&[republished, pkg("new", "1"), pkg("bump", "2")]));
+        let after = cph(&graph_of(&[republished, pkg("new", "1"), pkg("bump", "2")]));
         let plan = diff(&before, &after);
         // Version bumps show up as distinct dep_paths: bump@1 gone,
         // bump@2 added. Only the stable-path republish lands in
@@ -611,18 +660,18 @@ mod tests {
         let mut g2 = LockfileGraph::default();
         g2.packages.insert("b@1".into(), pkg("b", "1"));
         g2.packages.insert("a@1".into(), pkg("a", "1"));
-        let plan = diff(&compute_package_hashes(&g1), &compute_package_hashes(&g2));
+        let plan = diff(&cph(&g1), &cph(&g2));
         assert!(plan.is_empty());
     }
 
     #[test]
     fn changed_subtree_roots_includes_changed_ancestors() {
-        let before = compute_subtree_hashes(&graph_of(&[
+        let before = csh(&graph_of(&[
             pkg_with_deps("app", "1", &[("dep", "1")]),
             pkg("dep", "1"),
             pkg("peer", "1"),
         ]));
-        let after = compute_subtree_hashes(&graph_of(&[
+        let after = csh(&graph_of(&[
             pkg_with_deps("app", "1", &[("dep", "2")]),
             pkg("dep", "2"),
             pkg("peer", "1"),
@@ -634,12 +683,48 @@ mod tests {
     }
 
     #[test]
+    fn patch_hash_change_lands_in_changed_bucket() {
+        // Same lockfile, same integrity. Only `pnpm.patchedDependencies`
+        // moved. Without folding patch hash into the fingerprint this
+        // would silently match prior state and the side-effects cache
+        // would skip the rebuild.
+        let graph = graph_of(&[pkg("react", "18.2.0")]);
+        let mut before_patches = BTreeMap::new();
+        before_patches.insert("react@18.2.0".to_string(), "patch-old".to_string());
+        let mut after_patches = BTreeMap::new();
+        after_patches.insert("react@18.2.0".to_string(), "patch-new".to_string());
+        let before = compute_package_hashes(&graph, &before_patches);
+        let after = compute_package_hashes(&graph, &after_patches);
+        let plan = diff(&before, &after);
+        assert_eq!(plan.changed, vec!["react@18.2.0".to_string()]);
+        assert!(plan.added.is_empty());
+        assert!(plan.removed.is_empty());
+    }
+
+    #[test]
+    fn no_patch_matches_empty_patch_map() {
+        // Stable across the rollout: a package with no patch entry
+        // hashes the same regardless of whether the patch map exists
+        // at all.
+        let graph = graph_of(&[pkg("react", "18.2.0")]);
+        let empty = BTreeMap::new();
+        let unrelated_patch: BTreeMap<String, String> =
+            [("other@1".to_string(), "patch-x".to_string())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            compute_package_hashes(&graph, &empty),
+            compute_package_hashes(&graph, &unrelated_patch)
+        );
+    }
+
+    #[test]
     fn platform_list_edit_changes_fingerprint() {
         let mut a = pkg("native", "1");
         let mut b = a.clone();
         a.os.push("linux".into());
         b.os.push("darwin".into());
-        assert_ne!(fingerprint(&a), fingerprint(&b));
+        assert_ne!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -648,7 +733,7 @@ mod tests {
         let mut b = a.clone();
         a.tarball_url = Some("https://a.example/a-1.tgz".into());
         b.tarball_url = Some("https://b.example/a-1.tgz".into());
-        assert_ne!(fingerprint(&a), fingerprint(&b));
+        assert_ne!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -657,7 +742,7 @@ mod tests {
         let mut b = a.clone();
         a.alias_of = Some("h3".into());
         b.alias_of = Some("h3-beta".into());
-        assert_ne!(fingerprint(&a), fingerprint(&b));
+        assert_ne!(fp(&a), fp(&b));
     }
 
     #[test]
@@ -733,7 +818,7 @@ mod tests {
     fn subtree_hash_stable_for_identical_graph() {
         let g1 = graph_of(&[pkg("a", "1"), pkg("b", "1")]);
         let g2 = graph_of(&[pkg("b", "1"), pkg("a", "1")]);
-        assert_eq!(compute_subtree_hashes(&g1), compute_subtree_hashes(&g2));
+        assert_eq!(csh(&g1), csh(&g2));
     }
 
     #[test]
@@ -746,8 +831,8 @@ mod tests {
         let g_before = graph_of(&[parent.clone(), child.clone()]);
         child.integrity = Some("sha512-tampered".into());
         let g_after = graph_of(&[parent, child]);
-        let h_before = compute_subtree_hashes(&g_before);
-        let h_after = compute_subtree_hashes(&g_after);
+        let h_before = csh(&g_before);
+        let h_after = csh(&g_after);
         assert_ne!(h_before["root@1"], h_after["root@1"]);
         assert_ne!(h_before["leaf@1"], h_after["leaf@1"]);
     }
@@ -767,8 +852,8 @@ mod tests {
         let mut la2 = la.clone();
         la2.integrity = Some("sha512-changed".into());
         let g2 = graph_of(&[pa, pb, la2, lb]);
-        let h1 = compute_subtree_hashes(&g1);
-        let h2 = compute_subtree_hashes(&g2);
+        let h1 = csh(&g1);
+        let h2 = csh(&g2);
         assert_ne!(h1["pa@1"], h2["pa@1"]);
         assert_eq!(h1["pb@1"], h2["pb@1"]);
         assert_eq!(h1["leaf-b@1"], h2["leaf-b@1"]);
@@ -784,7 +869,7 @@ mod tests {
         a.dependencies.insert("b".into(), "b@1".into());
         b.dependencies.insert("a".into(), "a@1".into());
         let g = graph_of(&[a, b]);
-        let hashes = compute_subtree_hashes(&g);
+        let hashes = csh(&g);
         assert_eq!(hashes.len(), 2);
         assert_eq!(hashes["a@1"], hashes["b@1"]);
     }
