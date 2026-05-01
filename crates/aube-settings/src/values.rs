@@ -88,18 +88,33 @@ impl<'a> ResolveCtx<'a> {
     }
 }
 
+/// Process-wide env snapshot. Captured once on first read so every
+/// `ResolveCtx` walks the same list without repeating the
+/// `std::env::vars()` syscall storm. Subprocesses can't mutate the
+/// parent env, so a single capture is correct for the lifetime of the
+/// CLI process.
+static PROCESS_ENV: std::sync::LazyLock<Vec<(String, String)>> =
+    std::sync::LazyLock::new(|| std::env::vars().collect());
+
 /// Snapshot the process environment into a `(name, value)` list the
 /// resolver can walk. Filtering happens at lookup time against the
 /// setting's declared `env_vars` aliases, so this captures everything
 /// upfront and lets the metadata decide what's relevant.
 ///
-/// Call this once at program start and share the resulting `Vec` with
-/// every `ResolveCtx`. Cheaper than re-reading `std::env` for each
-/// setting, and makes behavior deterministic across a single command
-/// invocation even if subprocesses mutate the parent env (they can't,
-/// but the invariant is still easier to reason about).
+/// First caller in the process triggers the underlying `std::env::vars()`
+/// walk; subsequent callers get a cheap `Vec` clone of the cached
+/// snapshot. The clone keeps the existing `Vec<(String, String)>` API
+/// surface; callers that want zero-alloc access can read [`process_env`]
+/// directly.
 pub fn capture_env() -> Vec<(String, String)> {
-    std::env::vars().collect()
+    PROCESS_ENV.clone()
+}
+
+/// Borrowed view of the process-wide env snapshot. Callers that only
+/// need to read should prefer this over [`capture_env`] — no Vec
+/// clone, no per-entry String clone.
+pub fn process_env() -> &'static [(String, String)] {
+    PROCESS_ENV.as_slice()
 }
 
 /// Typed per-setting accessors generated at build time from
