@@ -667,3 +667,248 @@ EOF
 	[ -n "$(printf '%s' "$hook_log" | jq -r '.prefix')" ]
 	[ -n "$(printf '%s' "$hook_log" | jq -r '.from')" ]
 }
+
+@test "pnpmfile: sync readPackage hook pins a transitive dep" {
+	# Ported from pnpm/test/install/hooks.ts:18 ('readPackage hook').
+	# Sync sibling of the async port at the top of the file. Now that
+	# @pnpm.e2e/pkg-with-1-dep is mirrored under test/registry/storage/,
+	# the port matches pnpm verbatim — only the addDistTag call is
+	# dropped. With no hook, ^100.0.0 (declared by pkg-with-1-dep@100.0.0)
+	# resolves to dep-of-pkg-with-1-dep@100.1.0 — the highest in range
+	# regardless of the registry's `latest` dist-tag — so add_dist_tag
+	# would be redundant here. The hook downgrades the pin to 100.0.0.
+	# pkg-with-1-dep is pinned to 100.0.0 so the _assert_dep_version
+	# helper's hardcoded virtual-store path resolves.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-hooks-readpackage-sync",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.0.0" }
+}
+JSON
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install
+	assert_success
+	_assert_dep_version 100.0.0
+}
+
+@test "pnpmfile: workspace-root pnpmfile applies during install and sub-project add" {
+	# Ported from pnpm/test/install/hooks.ts:217 ('readPackage hook from
+	# pnpmfile at root of workspace'). The root .pnpmfile.cjs adds
+	# @pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0 to *every* resolved
+	# package's dependencies map. We exercise two paths:
+	#  (1) `aube install` from the workspace root — the resolver picks
+	#      the root pnpmfile up via the workspace-root cwd it walks to
+	#      from any subdirectory.
+	#  (2) `aube add is-negative@1.0.0` from project-1 — `aube add`
+	#      writes into project-1's package.json but transitions to
+	#      install::run, which also walks up to the workspace root, so
+	#      the same root pnpmfile fires on the new is-negative resolve.
+	# The shared workspace lockfile at the root must reflect the hook's
+	# additions on both is-positive (added in step 1) and is-negative
+	# (added in step 2).
+	mkdir -p project-1
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": { "is-positive": "1.0.0" }
+}
+JSON
+
+	# `aube install` walks up to a workspace root that has its own
+	# package.json — preparePackages writes one implicitly in pnpm.
+	cat >package.json <<'JSON'
+{ "name": "workspace-root", "version": "0.0.0" }
+JSON
+
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+YAML
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      pkg.dependencies = pkg.dependencies || {}
+      pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.1.0'
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install
+	assert_success
+
+	# Subshell `cd` keeps `run` semantics intact (status/output captured)
+	# while letting us return to the workspace root for the lockfile
+	# assertions without a `cd ..` shellcheck flags as fragile.
+	run bash -c 'cd project-1 && aube add is-negative@1.0.0'
+	assert_success
+
+	assert_link_exists project-1/node_modules/is-positive
+	assert_link_exists project-1/node_modules/is-negative
+
+	# Shared workspace lockfile at the root. Both is-positive@1.0.0 and
+	# is-negative@1.0.0 snapshots must include the hook-injected
+	# transitive — neither package declares any deps natively, so the
+	# only way these entries land is via the readPackage rewrite.
+	assert_file_exists aube-lock.yaml
+	# Use `awk` to scope the grep to the snapshots: section so we don't
+	# match the importer-side dep declarations above.
+	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep -A2 '^  is-positive@1.0.0:'"
+	assert_output --partial '@pnpm.e2e/dep-of-pkg-with-1-dep'
+	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep -A2 '^  is-negative@1.0.0:'"
+	assert_output --partial '@pnpm.e2e/dep-of-pkg-with-1-dep'
+}
+
+@test "pnpmfile: global + local readPackage ctx.log emits one pnpm:hook record per pnpmfile" {
+	# Ported from pnpm/test/install/hooks.ts:404 ('pnpmfile: pass log
+	# function to readPackage hook of global and local pnpmfile'). Same
+	# global-then-local composition shape as the existing compose tests
+	# (462, 523), but each hook invokes ctx.log so we can verify the
+	# ndjson reporter emits two pnpm:hook records — one tagged with the
+	# global pnpmfile's `from` path, one with the local's. Both share
+	# the same project `prefix`. is-positive 3.0.0 (global) is overridden
+	# to 1.0.0 by the local hook, mirroring pnpm's assertion that local
+	# wins on a field both touch.
+	mkdir -p project
+	cd project
+	cat >package.json <<'JSON'
+{
+  "name": "test-pnpmfile-compose-log",
+  "version": "0.0.0",
+  "dependencies": { "@pnpm.e2e/pkg-with-1-dep": "100.1.0" }
+}
+JSON
+
+	cat >../global-hooks.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg, context) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep'] = '100.0.0'
+        pkg.dependencies['is-positive'] = '3.0.0'
+        context.log('is-positive pinned to 3.0.0')
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg, context) {
+      if (pkg.name === '@pnpm.e2e/pkg-with-1-dep') {
+        pkg.dependencies['is-positive'] = '1.0.0'
+        context.log('is-positive pinned to 1.0.0')
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install --global-pnpmfile "$(cd .. && pwd)/global-hooks.cjs" --reporter=ndjson
+	assert_success
+	install_stdout="$output"
+
+	# Effects landed: dep at 100.0.0 (global pin), is-positive at 1.0.0
+	# (local override). pkg-with-1-dep@100.1.0 is the resolved version,
+	# and the readPackage-injected deps appear in its virtual store
+	# entry — neither was declared by the package itself.
+	run jq -r .version "node_modules/.aube/@pnpm.e2e+pkg-with-1-dep@100.1.0/node_modules/@pnpm.e2e/dep-of-pkg-with-1-dep/package.json"
+	assert_success
+	assert_output 100.0.0
+	run jq -r .version "node_modules/.aube/@pnpm.e2e+pkg-with-1-dep@100.1.0/node_modules/is-positive/package.json"
+	assert_success
+	assert_output 1.0.0
+
+	# Two pnpm:hook readPackage ndjson records, in global-then-local
+	# order. Same prefix (project root), distinct from (one per pnpmfile).
+	mapfile -t hook_logs < <(printf '%s\n' "$install_stdout" | jq -c 'select(.name == "pnpm:hook" and .hook == "readPackage")' 2>/dev/null)
+	[ "${#hook_logs[@]}" -ge 2 ] || {
+		echo "expected at least 2 pnpm:hook readPackage records, got ${#hook_logs[@]}"
+		echo "stdout was: $install_stdout"
+		false
+	}
+	[ "$(printf '%s' "${hook_logs[0]}" | jq -r '.message')" = 'is-positive pinned to 3.0.0' ]
+	[ "$(printf '%s' "${hook_logs[1]}" | jq -r '.message')" = 'is-positive pinned to 1.0.0' ]
+	prefix0=$(printf '%s' "${hook_logs[0]}" | jq -r '.prefix')
+	prefix1=$(printf '%s' "${hook_logs[1]}" | jq -r '.prefix')
+	from0=$(printf '%s' "${hook_logs[0]}" | jq -r '.from')
+	from1=$(printf '%s' "${hook_logs[1]}" | jq -r '.from')
+	[ -n "$prefix0" ]
+	[ -n "$from0" ]
+	[ -n "$from1" ]
+	[ "$prefix0" = "$prefix1" ]
+	[ "$from0" != "$from1" ]
+}
+
+@test "pnpmfile: readPackage with shared workspace lockfile rewrites importer deps" {
+	skip "aube divergence: aube does not run readPackage on importer (root or workspace project) manifests; pnpm does. Same root cause as the line 336 single-project skip — file a Discussion before un-skipping."
+	# Ported from pnpm/test/install/hooks.ts:661 ('pass readPackage with
+	# shared lockfile'). Two-project workspace, each declaring
+	# is-negative@1.0.0. The unconditional readPackage hook rewrites
+	# *every* package's dependencies to `{ is-positive: '1.0.0' }`. pnpm
+	# fires the hook on importer manifests too, so each project's direct
+	# dep map is rewritten — node_modules/is-negative drops out,
+	# node_modules/is-positive shows up. aube only fires readPackage on
+	# resolved (registry-fetched) packages, so the importers keep their
+	# is-negative direct dep and is-positive only enters as a transitive.
+	mkdir -p project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{ "name": "project-1", "version": "1.0.0", "dependencies": { "is-negative": "1.0.0" } }
+JSON
+	cat >project-2/package.json <<'JSON'
+{ "name": "project-2", "version": "1.0.0", "dependencies": { "is-negative": "1.0.0" } }
+JSON
+	cat >package.json <<'JSON'
+{ "name": "workspace-root", "version": "0.0.0" }
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "*"
+YAML
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage: (pkg) => ({
+      ...pkg,
+      dependencies: {
+        'is-positive': '1.0.0',
+      },
+    }),
+  },
+}
+EOF
+
+	run aube install
+	assert_success
+	assert_link_exists project-1/node_modules/is-positive
+	assert_link_exists project-2/node_modules/is-positive
+	assert_link_not_exists project-1/node_modules/is-negative
+	assert_link_not_exists project-2/node_modules/is-negative
+}
