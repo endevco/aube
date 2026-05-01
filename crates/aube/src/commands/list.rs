@@ -105,9 +105,14 @@ pub struct ListArgs {
 
 /// `--depth=Infinity` is what pnpm/npm accept for "all the way down".
 /// Map it to a very large number so we never actually stop walking.
+/// `-1` is pnpm's spelling for "no transitive deps" and collapses to
+/// the same `0` we already use for top-level only.
 fn parse_depth(s: &str) -> Result<usize, String> {
     if s.eq_ignore_ascii_case("infinity") || s == "inf" {
         return Ok(usize::MAX);
+    }
+    if s == "-1" {
+        return Ok(0);
     }
     s.parse::<usize>()
         .map_err(|e| format!("invalid depth {s:?}: {e}"))
@@ -140,6 +145,40 @@ pub async fn run(
     } else {
         cwd.clone()
     };
+
+    // When a workspace filter is set, evaluate it first so a no-match
+    // case takes the warn-and-exit-0 path before we try to read the
+    // lockfile. pnpm prints "No projects matched the filters in <root>"
+    // on stdout and exits 0 by default; `--fail-if-no-match` promotes
+    // it to an error. In `--parseable` mode no message is printed —
+    // machine consumers expect empty stdout when nothing matches.
+    if !filter.is_empty() {
+        let workspace_pkgs = aube_workspace::find_workspace_packages(&read_from)
+            .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
+        let no_match = if workspace_pkgs.is_empty() {
+            true
+        } else {
+            let selected = aube_workspace::selector::select_workspace_packages(
+                &read_from,
+                &workspace_pkgs,
+                &filter,
+            )
+            .map_err(|e| miette!("invalid --filter selector: {e}"))?;
+            selected.is_empty()
+        };
+        if no_match {
+            if filter.fail_if_no_match {
+                return Err(miette!(
+                    "aube list: filter {:?} did not match any workspace package",
+                    filter.filters
+                ));
+            }
+            if !args.parseable {
+                println!("No projects matched the filters in {}", read_from.display());
+            }
+            return Ok(());
+        }
+    }
 
     // Read manifest (needed even for `list` — we print the project name/version
     // at the top, and the lockfile parser needs it for non-pnpm formats).
@@ -245,9 +284,15 @@ fn run_filtered(
     )
     .map_err(|e| miette!("invalid --filter selector: {e}"))?;
     if selected.is_empty() {
-        return Err(miette!(
-            "aube list: filter {workspace_filter:?} did not match any workspace package"
-        ));
+        if workspace_filter.fail_if_no_match {
+            return Err(miette!(
+                "aube list: filter {workspace_filter:?} did not match any workspace package"
+            ));
+        }
+        if !args.parseable {
+            println!("No projects matched the filters in {}", root.display());
+        }
+        return Ok(());
     }
 
     let format = if args.json {
@@ -299,6 +344,15 @@ fn run_filtered(
         }
         ListFormat::Parseable => {
             for pkg in &selected {
+                // Lead with the package's directory so consumers can
+                // find each filtered project on its own line — this is
+                // the pnpm `list --filter … --parseable` shape, and
+                // works correctly with `--depth=-1` when no deps are
+                // listed. The unfiltered `render_parseable` path keeps
+                // the legacy deps-only format that other tools depend
+                // on (test/list.bats asserts 3-field tab-separated
+                // lines).
+                println!("{}", pkg.dir.display());
                 let importer = super::workspace_importer_path(root, &pkg.dir)?;
                 render_parseable_for_importer(graph, args, dep_filter, &importer)?;
             }

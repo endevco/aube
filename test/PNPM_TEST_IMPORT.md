@@ -42,8 +42,11 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
 
 ## Phase 3 — Tier 2 (workspace + extras, batched)
 
-- [ ] `pnpm/test/monorepo/index.ts` (41 tests, 2026 LOC) — workspace-wide install behavior. Bite off in batches of 10-15:
-  - [ ] batch 1: filter + `--filter` semantics
+- [ ] `pnpm/test/monorepo/index.ts` (41 tests, 2026 LOC) → [test/pnpm_monorepo_index.bats](pnpm_monorepo_index.bats) — workspace-wide install behavior. Bite off in batches of 10-15:
+  - [ ] batch 1: filter + `--filter` semantics (5/~7 ported)
+    - Done: no-projects-matched warn-and-exit-0 (31 — 3 sub-cases: default, `--fail-if-no-match`, `--parseable`-silent), `--filter=...<pkg>` topological run order with intervening unrelated workspace packages (512), `--filter=./packages/**` directory glob (1662 sub-case 2 only).
+    - Aube-side fixes that landed alongside the ports: (1) wired the parsed-but-unread `--fail-if-no-match` global into `EffectiveFilter` and softened `aube list`'s no-match path from hard-error to "No projects matched the filters in <root>" + exit 0 (suppressed under `--parseable`), (2) `--depth=-1` accepted as an alias for `--depth=0` to match pnpm's "no transitives" spelling, (3) `./packages/**` parses as a synonym for `./packages` since aube's path selector is already "at or under" (no separate `legacyDirFiltering` gate), (4) filtered `list --parseable` now leads each importer block with the package directory path so consumers can find each filtered project on its own line — non-filtered `--parseable` keeps the legacy 3-field tab-separated dep records.
+    - Documented divergences (don't port without aube-side fix): no-projects-found on empty workspace (56 — `prepareEmpty()` + `list -r` expects "No projects found in <dir>"; aube errors at `project_root()` because it requires a `package.json` walk-up. A workspace-yaml-only-root case is on the same fault line — touch list, run, install, query, why all together when this lands.), `--filter=./packages` exact-directory match (1662 sub-case 1 — pnpm v9 default treats `./packages` as exact-match-no-descendants gated on `legacyDirFiltering=false`. aube's path selector is "at or under" by design so `./packages` matches descendants. **Not implementing `legacyDirFiltering`** — aube's behavior is the more useful default.).
   - [ ] batch 2: workspace: protocol edge cases
   - [ ] batch 3: shared-workspace-lockfile behavior
   - [ ] batch 4: dedupePeers across workspace
@@ -67,6 +70,7 @@ These test pnpm-specific behavior aube doesn't replicate:
 - `pnpm/test/install/nodeRuntime.ts` — pnpm `node` runtime feature
 - `pnpm/test/install/runtimeOnFail.ts` — pnpm `node` runtime feature
 - `pnpm/test/syncInjectedDepsAfterScripts*.ts` — `injected: true` (aube doesn't ship this)
+- `pnpm/test/monorepo/index.ts:1633` ('legacy directory filtering') and the `legacyDirFiltering: true` workspace setting — aube's path selector is already "at or under" by design (`./packages` matches descendants), so the pnpm v9 split between exact-match (default) and recursive-match (`legacyDirFiltering=true`) doesn't apply. We are not implementing `legacyDirFiltering`.
 
 ## Conventions for translations
 

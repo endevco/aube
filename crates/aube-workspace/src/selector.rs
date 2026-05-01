@@ -33,6 +33,10 @@ pub struct EffectiveFilter {
     /// Raw `--filter-prod` values. These apply the same selector forms as
     /// `filters` but restrict graph walks to production edges.
     pub filter_prods: Vec<String>,
+    /// `--fail-if-no-match` — promote "no projects matched" from a warning
+    /// to a hard error. pnpm's default is to warn and exit 0; this flag
+    /// (mirrored) opts into the strict behavior for CI use.
+    pub fail_if_no_match: bool,
 }
 
 impl EffectiveFilter {
@@ -50,6 +54,7 @@ impl EffectiveFilter {
         Self {
             filters: filters.into_iter().map(Into::into).collect(),
             filter_prods: Vec::new(),
+            fail_if_no_match: false,
         }
     }
 }
@@ -127,13 +132,19 @@ impl Selector {
         let base = if raw.starts_with('[') && raw.ends_with(']') && raw.len() > 2 {
             BaseSelector::ChangedSince(raw[1..raw.len() - 1].to_string())
         }
-        // Path-style selectors: leading `./`, `../`, `/`, or a trailing `/`.
+        // Path-style selectors: leading `./`, `../`, `/`, a trailing
+        // `/`, or a trailing `/**` (the pnpm-style "directory and all
+        // descendants" form). `./packages/**` is treated as a synonym
+        // for `./packages` because aube's path selector is already
+        // "at or under" — pnpm v9 introduced an exact-vs-recursive
+        // split via `legacyDirFiltering`, which aube does not implement.
         else if raw.starts_with("./")
             || raw.starts_with("../")
             || raw.starts_with('/')
             || raw.ends_with('/')
+            || raw.ends_with("/**")
         {
-            let trimmed = raw.trim_end_matches('/');
+            let trimmed = raw.strip_suffix("/**").unwrap_or(raw).trim_end_matches('/');
             // Strip a leading `./` so the stored PathBuf has no CurDir
             // component. `Path::components` normalizes mid-path `CurDir`
             // already, but keeping the stored form canonical makes the
