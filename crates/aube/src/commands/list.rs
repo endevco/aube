@@ -155,6 +155,20 @@ pub async fn run(
     // stdout when nothing matches. The result is threaded into
     // `run_filtered` so we don't re-walk the workspace on the match
     // path.
+    // Resolve the effective output format up front so the no-match
+    // suppression below honors `--format parseable` / `--format json`
+    // as well as the `--parseable` / `--json` shortcut flags. Without
+    // this, `--format parseable --filter=nonexistent` would print the
+    // human "No projects matched…" message and corrupt machine-parseable
+    // stdout.
+    let format = if args.json {
+        ListFormat::Json
+    } else if args.parseable {
+        ListFormat::Parseable
+    } else {
+        args.format
+    };
+
     let selected = if !filter.is_empty() {
         let workspace_pkgs = aube_workspace::find_workspace_packages(&read_from)
             .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
@@ -182,7 +196,7 @@ pub async fn run(
                     "aube list: filter {shown:?} did not match any workspace package"
                 ));
             }
-            if !args.parseable {
+            if format == ListFormat::Default {
                 println!("No projects matched the filters in {}", read_from.display());
             }
             return Ok(());
@@ -207,15 +221,6 @@ pub async fn run(
         Err(e) => {
             return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile");
         }
-    };
-
-    // Resolve format from the flag combination.
-    let format = if args.json {
-        ListFormat::Json
-    } else if args.parseable {
-        ListFormat::Parseable
-    } else {
-        args.format
     };
 
     let dep_filter = DepFilter::from_flags(args.prod, args.dev);

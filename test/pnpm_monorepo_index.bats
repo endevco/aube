@@ -68,6 +68,27 @@ _setup_no_match_workspace() {
 	assert_output ""
 }
 
+@test "aube list --filter=<no-match>: --format parseable / --format json suppress the warning" {
+	# Regression: the no-match suppression must check the resolved
+	# output format, not just the `--parseable` / `--json` shortcuts.
+	# `--format parseable` and `--format json` carry the same
+	# machine-readable contract — printing the human "No projects
+	# matched..." message would corrupt downstream parsers.
+	_setup_no_match_workspace
+
+	run aube list --filter=not-exists --format parseable
+	assert_success
+	assert_output ""
+
+	run aube list --filter=not-exists --format json
+	assert_success
+	assert_output ""
+
+	run aube list --filter=not-exists --json
+	assert_success
+	assert_output ""
+}
+
 @test "aube --filter=...<pkg> run: dependents run after the seed (topological order)" {
 	# Ported from pnpm/test/monorepo/index.ts:512
 	# ('do not get confused by filtered dependencies when searching for
@@ -170,6 +191,10 @@ _setup_no_match_workspace() {
 
 	run aube list --filter='./packages/**' --parseable --depth=-1
 	assert_success
-	assert_output --partial "project-1"
-	assert_output --partial "project-2"
+	# Filtered `--parseable` leads each importer with its absolute
+	# directory path (matches the help-text contract in list.rs and
+	# pnpm's `list --filter=… --parseable` shape). Each project gets
+	# its own line ending with the package directory.
+	assert_line --regexp '/packages/project-1$'
+	assert_line --regexp '/packages/project-2$'
 }
