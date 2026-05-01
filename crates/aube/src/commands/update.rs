@@ -103,13 +103,13 @@ pub async fn run(
     if !filter.is_empty() {
         return run_filtered(args, &filter).await;
     }
-    // Parse `<pkg>@<spec>` arg syntax. Today the only meaningful spec
-    // is `@latest`, which is the syntactic equivalent of `--latest`
-    // scoped to that one entry — this is how pnpm phrases the
-    // manifest-rewrite-past-range case (`pnpm update foo@latest`). Other
-    // `@<spec>` forms are accepted but the spec is ignored; the
-    // `--latest` flag remains the supported way to override the spec
-    // for now.
+    reject_unsupported_pkg_specs(&args.packages)?;
+    // Parse `<pkg>@<spec>` arg syntax. Today only `@latest` is honored —
+    // it's the syntactic equivalent of `--latest` scoped to that one
+    // entry, which is how pnpm phrases the manifest-rewrite-past-range
+    // case (`pnpm update foo@latest`). Non-`latest` specs are rejected
+    // by `reject_unsupported_pkg_specs` above so they don't silently
+    // get swallowed.
     let mut explicit_latest_keys: BTreeSet<String> = BTreeSet::new();
     let parsed_packages: Vec<String> = args
         .packages
@@ -139,7 +139,21 @@ pub async fn run(
         .wrap_err("failed to read package.json")?;
     let ignored_updates = resolve_update_ignore_dependencies(&cwd, &manifest)?;
 
-    let existing = aube_lockfile::parse_lockfile(&cwd, &manifest).ok();
+    // Read the lockfile from the project, or fall back to the shared
+    // workspace-root one when the project doesn't have its own (the
+    // common shape after a fresh `aube install` from the workspace
+    // root). This is what unblocks `aube update -r <indirect>@latest`
+    // — the indirect's snapshot lives in the shared lockfile, not in
+    // each project's directory, and without the fallback the
+    // indirect-arg validation below would reject it.
+    let existing = aube_lockfile::parse_lockfile(&cwd, &manifest)
+        .ok()
+        .or_else(|| {
+            super::find_workspace_root(&cwd)
+                .ok()
+                .filter(|ws| ws.as_path() != cwd.as_path())
+                .and_then(|ws| aube_lockfile::parse_lockfile(&ws, &manifest).ok())
+        });
 
     // Snapshot of every direct dep as (manifest key, specifier). Owned
     // strings so we can hold this across mutations of `manifest`.
@@ -595,6 +609,7 @@ async fn run_filtered(
     args: UpdateArgs,
     filter: &aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    reject_unsupported_pkg_specs(&args.packages)?;
     let cwd = crate::dirs::cwd()?;
     let (_root, matched) = super::select_workspace_packages(&cwd, filter, "update")?;
     let result = async {
@@ -639,14 +654,37 @@ async fn run_filtered(
                     )
                     .cloned()
                     .collect();
+                // Pull in indirect-dep names from the project's lockfile
+                // too — without this, `aube update -r <indirect>@latest`
+                // is silently dropped from every project (the indirect
+                // isn't in `declared`, the per-project filter empties
+                // `per_pkg.packages`, and the inner `run` is never
+                // invoked). Prefer the project's own per-project
+                // lockfile; fall back to the shared workspace-root
+                // lockfile (the one `aube install` writes) when there
+                // isn't one yet.
+                let project_lockfile_names: BTreeSet<String> =
+                    aube_lockfile::parse_lockfile(&pkg.dir, &project_manifest)
+                        .ok()
+                        .or_else(|| {
+                            super::find_workspace_root(&pkg.dir).ok().and_then(|ws| {
+                                aube_lockfile::parse_lockfile(&ws, &project_manifest).ok()
+                            })
+                        })
+                        .map(|g| g.packages.values().map(|p| p.name.clone()).collect())
+                        .unwrap_or_default();
                 // Compare each arg's bare name (stripping any
-                // `@<spec>` suffix) against the project's declared deps,
-                // but pass the original raw arg into the inner `run`
-                // call so it re-parses `<pkg>@latest` consistently.
+                // `@<spec>` suffix) against the project's declared deps
+                // and lockfile names, but pass the original raw arg into
+                // the inner `run` call so it re-parses `<pkg>@latest`
+                // consistently.
                 per_pkg.packages = args
                     .packages
                     .iter()
-                    .filter(|raw| declared.contains(split_pkg_arg(raw).0))
+                    .filter(|raw| {
+                        let name = split_pkg_arg(raw).0;
+                        declared.contains(name) || project_lockfile_names.contains(name)
+                    })
                     .cloned()
                     .collect();
                 if per_pkg.packages.is_empty() {
@@ -677,6 +715,27 @@ fn split_pkg_arg(arg: &str) -> (&str, Option<&str>) {
         }
         None => (arg, None),
     }
+}
+
+/// Reject any `<pkg>@<spec>` arg whose spec isn't `latest`. Other forms
+/// (`foo@^2.0.0`, `foo@1.2.3`) are *parsed* by `split_pkg_arg` but the
+/// rest of the update path only acts on `@latest` — silently swallowing
+/// them would leave the user wondering why their spec didn't take. Hard
+/// error early with the supported alternatives so it's discoverable;
+/// future work can lift the restriction by threading the spec into the
+/// resolver_manifest rewrite + manifest write paths.
+fn reject_unsupported_pkg_specs(packages: &[String]) -> miette::Result<()> {
+    for raw in packages {
+        let (name, spec) = split_pkg_arg(raw);
+        if let Some(s) = spec
+            && s != "latest"
+        {
+            return Err(miette!(
+                "package spec '{name}@{s}' is not supported by `update` — use `--latest` (or `<pkg>@latest`) to bump past the manifest range, or omit the spec to refresh in-range",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Rewrite a direct-dep specifier to pin `resolved_version`, preserving:

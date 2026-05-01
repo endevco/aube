@@ -927,3 +927,104 @@ JSON
 	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' package.json
 	assert_success
 }
+
+@test "aube update <pkg>@<spec>: rejects non-latest specs with a helpful error" {
+	# Regression for the silent-spec-drop greptile flagged on PR #446.
+	# `aube update foo@^2.0.0` used to be accepted at the arg-parse layer
+	# but the spec was silently swallowed — the user got an in-range
+	# refresh on `foo` instead of the range bump they typed. Now any
+	# `@<spec>` other than `@latest` errors with a message pointing at
+	# the supported syntax.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-spec-reject",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+
+	run aube update '@pnpm.e2e/foo@^200.0.0'
+	assert_failure
+	assert_output --partial "package spec '@pnpm.e2e/foo@^200.0.0' is not supported"
+	assert_output --partial '--latest'
+}
+
+@test "aube update -r <indirect-pkg>@latest: refreshes the indirect across all projects" {
+	# Regression for the silent-no-op greptile flagged on PR #446.
+	# `aube update -r <indirect>@latest` used to bail at the per-project
+	# filter because the indirect dep isn't in any project's `declared`
+	# (direct deps), so `per_pkg.packages` was always empty and every
+	# project was silently skipped. The fix consults each project's
+	# lockfile (or falls back to the workspace-root shared one) so
+	# transitive deps flow into the inner `run` call.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "0.0.0",
+  "private": true
+}
+JSON
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pkg-with-1-dep": "^100.0.0"
+  }
+}
+JSON
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pkg-with-1-dep": "^100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	# Seed via plain `install` so the shared workspace lockfile lands at
+	# the root (not per-project) — mimics the most common workspace
+	# starting point.
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.1.0
+
+	run aube update -r '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
+	assert_success
+
+	# Both projects' (newly-written) per-project lockfiles bumped the
+	# transitive dep; this would have stayed at 100.0.0 under the old
+	# silent-skip behavior.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' project-1/aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' project-2/aube-lock.yaml
+	assert_success
+
+	# Direct dep (the parent) stays at its locked version — only the
+	# named indirect arg should bump.
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.0.0' project-1/aube-lock.yaml
+	assert_success
+
+	# Manifests untouched — indirect deps have no manifest entry.
+	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' project-2/package.json
+	assert_success
+}
