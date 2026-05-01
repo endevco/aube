@@ -890,7 +890,7 @@ pub fn write(
     // path segments — e.g. `["foo"]` for `node_modules/foo`,
     // `["foo", "bar"]` for `node_modules/foo/node_modules/bar`. Shared
     // with bun (which renders the same segment list as `foo/bar`).
-    let root_tree_roots = non_link_roots(&roots);
+    let root_tree_roots = non_link_roots(graph, &roots);
     let tree = build_hoist_tree(&canonical, &root_tree_roots);
     // For the npm writer, re-key the tree by install_path strings.
     let mut placed: BTreeMap<String, String> = tree
@@ -948,7 +948,7 @@ pub fn write(
             },
         );
 
-        let workspace_tree_roots = non_link_roots(importer_roots);
+        let workspace_tree_roots = non_link_roots(graph, importer_roots);
         for (segs, canonical_key) in build_hoist_tree(&canonical, &workspace_tree_roots) {
             let install_path = format!("{importer_path}/{}", segments_to_install_path(&segs));
             placed.entry(install_path).or_insert(canonical_key);
@@ -1133,10 +1133,15 @@ fn workspace_package_for_importer<'a>(
     })
 }
 
-fn non_link_roots(roots: &[DirectDep]) -> Vec<DirectDep> {
+fn non_link_roots(graph: &LockfileGraph, roots: &[DirectDep]) -> Vec<DirectDep> {
     roots
         .iter()
-        .filter(|dep| !dep_path_tail(&dep.name, &dep.dep_path).starts_with("link:"))
+        .filter(|dep| {
+            !graph
+                .packages
+                .get(&dep.dep_path)
+                .is_some_and(|pkg| matches!(pkg.local_source, Some(LocalSource::Link(_))))
+        })
         .cloned()
         .collect()
 }
@@ -2744,13 +2749,15 @@ mod tests {
     #[test]
     fn test_write_npm_workspace_importers() {
         let mut graph = LockfileGraph::default();
+        let web_link = LocalSource::Link(PathBuf::from("web"));
+        let web_dep_path = web_link.dep_path("mise-versions-web");
         graph.packages.insert(
-            "mise-versions-web@link:web".to_string(),
+            web_dep_path.clone(),
             LockedPackage {
                 name: "mise-versions-web".to_string(),
                 version: "0.0.1".to_string(),
-                dep_path: "mise-versions-web@link:web".to_string(),
-                local_source: Some(LocalSource::Link(PathBuf::from("web"))),
+                dep_path: web_dep_path.clone(),
+                local_source: Some(web_link),
                 ..Default::default()
             },
         );
@@ -2778,7 +2785,7 @@ mod tests {
             ".".to_string(),
             vec![DirectDep {
                 name: "mise-versions-web".to_string(),
-                dep_path: "mise-versions-web@link:web".to_string(),
+                dep_path: web_dep_path.clone(),
                 dep_type: DepType::Production,
                 specifier: None,
             }],
