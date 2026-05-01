@@ -136,7 +136,11 @@ pub struct DeltaPlan {
     /// so `should_touch` stays O(log N) per probe. The linker walks
     /// the graph 4-5 times; without this cache each probe was a
     /// linear scan over both `Vec`s.
-    touched: BTreeSet<String>,
+    ///
+    /// Named `touch_set` (not `touched`) because `touched()` is the
+    /// counter method on the same type and the field/method collision
+    /// trips up future readers reaching for `plan.touched`.
+    touch_set: BTreeSet<String>,
 }
 
 impl DeltaPlan {
@@ -153,13 +157,13 @@ impl DeltaPlan {
     /// Membership test for `added ∪ changed`. Only these need fetch
     /// or re-link. `removed` runs through a separate unlink pass.
     pub fn should_touch(&self, dep_path: &str) -> bool {
-        self.touched.contains(dep_path)
+        self.touch_set.contains(dep_path)
     }
 
     /// Borrowed view of the cached `added ∪ changed` set. Stable for
     /// the lifetime of the plan; cheaper than rebuilding per probe.
     pub fn touched_set(&self) -> &BTreeSet<String> {
-        &self.touched
+        &self.touch_set
     }
 }
 
@@ -414,7 +418,7 @@ pub fn diff(stored: &BTreeMap<String, String>, current: &BTreeMap<String, String
             plan.removed.push(dep_path.clone());
         }
     }
-    plan.touched = touched;
+    plan.touch_set = touched;
     plan
 }
 

@@ -200,12 +200,15 @@ impl BuildPolicy {
         if matches_any_wildcard(name, &self.denied_wildcards) {
             return AllowDecision::Deny;
         }
-        let denied_versioned = KEY_BUF.with(|buf| {
+        // Build the `name@version` probe key once and answer both the
+        // deny and the allow lookups from a single buffer borrow.
+        let (denied_versioned, allowed_versioned) = KEY_BUF.with(|buf| {
             let mut b = buf.borrow_mut();
             b.clear();
             use std::fmt::Write as _;
             let _ = write!(b, "{name}@{version}");
-            self.denied.contains(b.as_str())
+            let key = b.as_str();
+            (self.denied.contains(key), self.allowed.contains(key))
         });
         if denied_versioned {
             return AllowDecision::Deny;
@@ -213,17 +216,7 @@ impl BuildPolicy {
         if self.allow_all {
             return AllowDecision::Allow;
         }
-        if self.allowed.contains(name) {
-            return AllowDecision::Allow;
-        }
-        let allowed_versioned = KEY_BUF.with(|buf| {
-            let mut b = buf.borrow_mut();
-            b.clear();
-            use std::fmt::Write as _;
-            let _ = write!(b, "{name}@{version}");
-            self.allowed.contains(b.as_str())
-        });
-        if allowed_versioned {
+        if self.allowed.contains(name) || allowed_versioned {
             return AllowDecision::Allow;
         }
         if matches_any_wildcard(name, &self.allowed_wildcards) {

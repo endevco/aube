@@ -3809,13 +3809,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // stale fingerprints fall back to a full install on the
         // read side. Safe for older readers that ignore the field.
         // When the early pass already produced the leaf map for
-        // `graph_for_link`, reuse it here as long as the writeback
-        // graph matches by node count (filtered installs short-
-        // circuit before this branch). Falling through to a fresh
-        // compute keeps the contract simple and is exact whenever
-        // the graphs diverge.
+        // `graph_for_link`, reuse it here as long as it covers every
+        // dep_path in the writeback `graph`. Filtered installs short-
+        // circuit before this branch so the two graphs are normally
+        // identical, but verifying every key keeps the reuse safe
+        // against any future code path that diverges them. Any miss
+        // falls back to a fresh compute over `graph`.
         let package_content_hashes = current_leaf_hashes
-            .filter(|leaf| leaf.len() == graph.packages.len())
+            .filter(|leaf| {
+                leaf.len() == graph.packages.len()
+                    && graph.packages.keys().all(|k| leaf.contains_key(k))
+            })
             .unwrap_or_else(|| delta::compute_package_hashes(&graph, &patch_hashes));
         let package_subtree_hashes = current_subtree_hashes.unwrap_or_else(|| {
             delta::compute_subtree_hashes_from_leaf(&graph, &package_content_hashes)
