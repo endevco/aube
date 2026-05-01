@@ -393,18 +393,38 @@ impl Store {
             content: Option<&[u8]>,
         ) -> Result<CasWriteOutcome, Error> {
             if let Some(bytes) = content {
-                // Direct `O_CREAT|O_EXCL|O_WRONLY` write at the
-                // BLAKE3-addressed final path. Skips the tempfile +
-                // rename dance because content-addressed writes are
-                // bit-identical: an `EEXIST` race produces `AlreadyExisted`,
-                // not a torn file. ~3 syscalls per file collapsed to
-                // 1, ~30k files per cold install on a 1000-pkg graph.
-                return match aube_util::fs_atomic::write_excl(path, bytes, Some(0o644)) {
-                    Ok(aube_util::fs_atomic::WriteOutcome::Created) => Ok(CasWriteOutcome::Created),
-                    Ok(aube_util::fs_atomic::WriteOutcome::AlreadyExists) => {
+                // Tempfile + persist_noclobber gives atomic crash
+                // semantics: a partial write on `tmp` is dropped by
+                // tempfile's Drop impl, so the final path either
+                // contains the complete bytes or doesn't exist. A
+                // direct O_CREAT|O_EXCL write to the final path was
+                // tried (faster path, ~3 syscalls per file) but
+                // raced with concurrent installs in CI where two
+                // processes saw the same partial file in different
+                // orders and clobbered each other's recovery.
+                let parent = path.parent().ok_or_else(|| {
+                    Error::Io(path.to_path_buf(), std::io::ErrorKind::NotFound.into())
+                })?;
+                let mut tmp = tempfile::Builder::new()
+                    .prefix(".aube-cas-")
+                    .tempfile_in(parent)
+                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                use std::io::Write;
+                tmp.write_all(bytes)
+                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    tmp.as_file()
+                        .set_permissions(std::fs::Permissions::from_mode(0o644))
+                        .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                }
+                return match tmp.persist_noclobber(path) {
+                    Ok(_) => Ok(CasWriteOutcome::Created),
+                    Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                         Ok(CasWriteOutcome::AlreadyExisted)
                     }
-                    Err(e) => Err(Error::Io(path.to_path_buf(), e)),
+                    Err(e) => Err(Error::Io(path.to_path_buf(), e.error)),
                 };
             }
 

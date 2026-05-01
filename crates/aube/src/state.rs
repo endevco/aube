@@ -114,26 +114,44 @@ struct FreshnessState {
     layout: Option<InstallLayoutState>,
 }
 
-/// `(size_bytes, mtime_unix_secs)` snapshot used by `R1` mtime fast
-/// path. Stored as a tuple-shaped struct so JSON keys stay short.
+/// `(size, mtime)` snapshot used by `R1` mtime fast path. mtime is
+/// stored as (secs, nanos) since UNIX epoch so the comparison
+/// preserves the resolution the underlying filesystem reports.
+///
+/// Linux ext4/btrfs/XFS and macOS APFS report nanosecond mtimes;
+/// Windows NTFS reports 100-nanosecond ticks. Truncating to whole
+/// seconds would let an in-place edit within the same second as the
+/// previous install slip past the freshness check (very plausible in
+/// CI where edits + installs happen within milliseconds). FAT32 and
+/// other coarse-resolution filesystems still get correct behavior:
+/// a same-second overwrite there has nanos == 0 on both samples, so
+/// the fast path matches and we skip — but FAT32 does not promise
+/// mtime granularity below 2 seconds anyway, so callers running on
+/// it should not rely on the fast path. The size comparison still
+/// catches any change that grows or shrinks the file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileMeta {
     pub size: u64,
     pub mtime_secs: i64,
+    #[serde(default)]
+    pub mtime_nanos: u32,
 }
 
 impl FileMeta {
     pub fn capture(path: &Path) -> Option<Self> {
         let meta = std::fs::metadata(path).ok()?;
-        let mtime = meta
+        let dur = meta
             .modified()
             .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+        let (secs, nanos) = match dur {
+            Some(d) => (d.as_secs() as i64, d.subsec_nanos()),
+            None => (0, 0),
+        };
         Some(Self {
             size: meta.len(),
-            mtime_secs: mtime,
+            mtime_secs: secs,
+            mtime_nanos: nanos,
         })
     }
 }

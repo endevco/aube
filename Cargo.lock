@@ -298,7 +298,6 @@ dependencies = [
  "aube-util",
  "blake3",
  "glob",
- "hex",
  "miette",
  "node-semver",
  "proptest",

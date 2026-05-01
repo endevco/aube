@@ -104,23 +104,36 @@ pub fn write_excl(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<Wr
     }
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
-    let file = match opts.open(path) {
+    let mut file = match opts.open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
             return Ok(WriteOutcome::AlreadyExists);
         }
         Err(e) => return Err(e),
     };
-    let mut file = file;
+    // On any failure after the file exists, best-effort unlink so we
+    // don't leave a partial / mode-incorrect entry at the final
+    // path. The previous `tempfile + persist_noclobber` shape got
+    // this for free (drop unlinks the temp); the direct-write shape
+    // has to do it explicitly. Unlink errors are ignored — the
+    // primary error wins.
+    let cleanup_on_err = |path: &Path, e: io::Error| -> io::Error {
+        let _ = std::fs::remove_file(path);
+        e
+    };
     {
         use std::io::Write as _;
-        file.write_all(bytes)?;
+        if let Err(e) = file.write_all(bytes) {
+            return Err(cleanup_on_err(path, e));
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        if let Some(m) = mode {
-            file.set_permissions(std::fs::Permissions::from_mode(m))?;
+        if let Some(m) = mode
+            && let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(m))
+        {
+            return Err(cleanup_on_err(path, e));
         }
     }
     #[cfg(not(unix))]

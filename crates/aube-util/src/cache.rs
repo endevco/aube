@@ -64,15 +64,16 @@ where
         {
             return Arc::clone(v);
         }
-        // Compute outside the lock. Racing computes are tolerated:
-        // the second writer overwrites the first, but `Arc<V>`
-        // semantics keep the first reader's clone alive.
+        // Compute outside the lock so a slow `f` doesn't block sibling
+        // lookups. First-write-wins on the rare two-writer race: the
+        // second writer's value is dropped, the first writer's value
+        // is what every later caller sees. Both writers' callers see
+        // a consistent `Arc` (one of the two), and downstream
+        // `Arc::ptr_eq` / pointer-identity checks stay sound.
         let value = Arc::new(f());
         let mut w = self.map().write().expect("ProcessCache lock poisoned");
-        w.entry(key)
-            .and_modify(|existing| *existing = Arc::clone(&value))
-            .or_insert_with(|| Arc::clone(&value));
-        value
+        let stored = w.entry(key).or_insert_with(|| Arc::clone(&value));
+        Arc::clone(stored)
     }
 
     pub fn get(&self, key: &K) -> Option<Arc<V>> {
@@ -172,10 +173,14 @@ impl FreshnessSnapshot {
         Ok(Self { mtime, size, hash })
     }
 
-    /// Returns `Ok(true)` when the file's mtime + size + hash all
-    /// match the snapshot. Mtime/size mismatch is a fast no-rehash
-    /// "stale" signal. Identical mtime+size + matching hash means the
-    /// content is bit-identical.
+    /// Returns `Ok(true)` when the snapshot's `(mtime, size)` pair
+    /// still matches OR, on mismatch, the BLAKE3 hash of the file
+    /// equals the recorded hash. Trusts the cheap mtime+size pair as
+    /// "fresh, no hash needed" — on filesystems with coarse mtime
+    /// resolution (FAT32) a same-second in-place overwrite to the
+    /// same byte length could slip past, but every other file
+    /// system reports nanosecond mtime so the trust is sound. Hash
+    /// fallback runs only when mtime or size differs.
     pub fn is_fresh(&self, path: &Path) -> io::Result<bool> {
         let meta = std::fs::metadata(path)?;
         if meta.len() != self.size {

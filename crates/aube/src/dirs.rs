@@ -38,12 +38,21 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     // Memoized per-process. Run-class commands (`aube run`, `aube
     // exec`, `aube dlx`) hit this 4-8 times per invocation from
     // different call sites; without the cache each call repeats the
-    // ancestor stat walk. The cwd doesn't move under us mid-process,
-    // so once-per-start is correct.
-    static CACHE: aube_util::cache::ProcessCache<PathBuf, Option<PathBuf>> =
+    // ancestor stat walk.
+    //
+    // ONLY caches positive results. `aube add` and `aube create` run
+    // before any package.json exists; caching the initial `None`
+    // would shadow the file these commands then create. A miss
+    // re-runs the walk on the next call, which is the same cost as
+    // pre-cache behavior.
+    static CACHE: aube_util::cache::ProcessCache<PathBuf, PathBuf> =
         aube_util::cache::ProcessCache::new();
     let key = start.to_path_buf();
-    (*CACHE.get_or_compute(key, || find_project_root_uncached(start))).clone()
+    if let Some(hit) = CACHE.get(&key) {
+        return Some((*hit).clone());
+    }
+    let result = find_project_root_uncached(start)?;
+    Some((*CACHE.get_or_compute(key, || result)).clone())
 }
 
 fn find_project_root_uncached(start: &Path) -> Option<PathBuf> {
@@ -104,10 +113,17 @@ fn package_json_has_workspaces(path: &Path) -> bool {
 /// The aube-owned yaml name wins at read time elsewhere, but discovery
 /// only needs to know whether any of those markers fixes the root.
 pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
-    static CACHE: aube_util::cache::ProcessCache<PathBuf, Option<PathBuf>> =
+    // Same positive-only caching as `find_project_root`: bootstrap
+    // commands like `aube add` may create the workspace boundary
+    // mid-execution, so a cached `None` would shadow it.
+    static CACHE: aube_util::cache::ProcessCache<PathBuf, PathBuf> =
         aube_util::cache::ProcessCache::new();
     let key = start.to_path_buf();
-    (*CACHE.get_or_compute(key, || find_workspace_root_uncached(start))).clone()
+    if let Some(hit) = CACHE.get(&key) {
+        return Some((*hit).clone());
+    }
+    let result = find_workspace_root_uncached(start)?;
+    Some((*CACHE.get_or_compute(key, || result)).clone())
 }
 
 fn find_workspace_root_uncached(start: &Path) -> Option<PathBuf> {
