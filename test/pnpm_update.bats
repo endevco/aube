@@ -836,3 +836,94 @@ YAML
 	run grep '"@pnpm.e2e/has-prerelease": "2.0.0"' project-2/package.json
 	assert_success
 }
+
+@test "aube update <pkg>@latest: parses arg syntax, rewrites manifest past range" {
+	# Ported from pnpm/test/update.ts:14 ('update <dep>'). pnpm uses
+	# `pnpm update <pkg>@latest`; aube now parses the same arg syntax,
+	# so this is a direct translation rather than the
+	# `aube update --latest <pkg>` rewrite the earlier test in this
+	# file uses.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-pkg-at-latest",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@^100.0.0'
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+
+	run aube update '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
+	assert_success
+
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '"\^101.0.0"' package.json
+	assert_success
+}
+
+@test "aube update <indirect-pkg>@latest: refreshes a transitive dep, leaves manifest alone" {
+	# Ported from pnpm/test/update.ts:690 ('update indirect dependency
+	# should not update package.json').
+	#
+	# Two-package fixture: `pkg-with-1-dep` is the only direct dep and it
+	# transitively pulls in `dep-of-pkg-with-1-dep`. After bumping both
+	# packages' dist-tags, `aube update <indirect>@latest` must:
+	#   - Refresh the indirect to the new latest in the lockfile.
+	#   - Leave the direct dep at its locked version (100.0.0) — even
+	#     though latest is now 100.1.0, the user only asked to bump the
+	#     indirect.
+	#   - Leave package.json untouched (the indirect has no manifest
+	#     entry to rewrite).
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-indirect",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pkg-with-1-dep": "^100.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	# Both packages get a new latest published. Without the indirect-arg
+	# handling in update.rs, aube's `update -L` errored out at this point
+	# with "package 'X' is not a dependency".
+	add_dist_tag '@pnpm.e2e/pkg-with-1-dep' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.1.0
+
+	run aube update '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
+	assert_success
+
+	# Indirect bumped to the new latest.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_failure
+
+	# Direct dep stays at 100.0.0 — only the named arg should bump.
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.1.0' aube-lock.yaml
+	assert_failure
+
+	# Manifest range untouched — the indirect has no manifest entry, so
+	# the rewrite path skips it.
+	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' package.json
+	assert_success
+}
