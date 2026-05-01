@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2](https://github.com/endevco/aube/compare/v1.6.1...v1.6.2) - 2026-05-01
+
+### Added
+
+- *(cli)* check engines.{aube,pnpm} and workspace per-project engines ([#458](https://github.com/endevco/aube/pull/458))
+
 ## [1.6.1](https://github.com/endevco/aube/compare/v1.6.0...v1.6.1) - 2026-05-01
 
 ### Other
