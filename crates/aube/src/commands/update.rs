@@ -173,6 +173,19 @@ pub async fn run(
         )
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    // Set of every direct manifest key, ignoring `--prod`/`--dev`/
+    // `--no-optional` filters. Used below to distinguish "flag-excluded
+    // direct dep" from "truly indirect dep" — without this, a devDep
+    // named under `--prod` would miss `all_specifiers`, fall through to
+    // the indirect-dep branch, pass `in_graph` (the lockfile carries
+    // every dep regardless of bucket), and get silently re-resolved.
+    let all_direct_keys: BTreeSet<&str> = manifest
+        .dependencies
+        .keys()
+        .chain(manifest.dev_dependencies.keys())
+        .chain(manifest.optional_dependencies.keys())
+        .map(String::as_str)
+        .collect();
 
     let resolve_real_name = |manifest_key: &str| -> String {
         if let Some(specifier) = all_specifiers.get(manifest_key)
@@ -206,6 +219,13 @@ pub async fn run(
                     ));
                 }
                 continue;
+            }
+            // Direct dep excluded by `--prod`/`--dev`/`--no-optional`.
+            // Match the pre-indirect-support behavior so the flag
+            // mismatch is visible — otherwise the dep would slip into
+            // the indirect path below and silently re-resolve.
+            if all_direct_keys.contains(name.as_str()) {
+                return Err(miette!("package '{name}' is not a dependency"));
             }
             // Indirect dep: must exist in the lockfile graph (either as
             // its own name or as the real-name of an aliased entry).
@@ -654,6 +674,20 @@ async fn run_filtered(
                     )
                     .cloned()
                     .collect();
+                // Same set ignoring flag filters. Used to distinguish
+                // "flag-excluded direct dep" from "truly indirect dep"
+                // before the lockfile fallback below — a devDep named
+                // under `--prod` is in the lockfile too, so without
+                // this guard it would get rescued by
+                // `project_lockfile_names` and pushed into the inner
+                // `run` as if it were transitive.
+                let all_declared: BTreeSet<String> = project_manifest
+                    .dependencies
+                    .keys()
+                    .chain(project_manifest.dev_dependencies.keys())
+                    .chain(project_manifest.optional_dependencies.keys())
+                    .cloned()
+                    .collect();
                 // Pull in indirect-dep names from the project's lockfile
                 // too — without this, `aube update -r <indirect>@latest`
                 // is silently dropped from every project (the indirect
@@ -683,7 +717,17 @@ async fn run_filtered(
                     .iter()
                     .filter(|raw| {
                         let name = split_pkg_arg(raw).0;
-                        declared.contains(name) || project_lockfile_names.contains(name)
+                        if declared.contains(name) {
+                            return true;
+                        }
+                        // Flag-excluded direct dep — drop instead of
+                        // letting `project_lockfile_names` rescue it as
+                        // a fake indirect. Mirrors pnpm's silent skip
+                        // for `-r --prod <devdep>`.
+                        if all_declared.contains(name) {
+                            return false;
+                        }
+                        project_lockfile_names.contains(name)
                     })
                     .cloned()
                     .collect();

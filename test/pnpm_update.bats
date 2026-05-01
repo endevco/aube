@@ -928,6 +928,46 @@ JSON
 	assert_success
 }
 
+@test "aube update --prod <devdep>: errors instead of silently bumping the dev dep" {
+	# Regression for the cursor-bugbot finding on PR #446. A devDep named
+	# under `--prod` (or a regular dep under `--dev`, an optional dep
+	# under `--no-optional`) doesn't appear in `all_specifiers` and
+	# previously slipped through the new indirect-dep path: the lockfile
+	# graph has the entry regardless of bucket, `in_graph` passes, and
+	# the dep silently re-resolves. The fix consults the unfiltered
+	# direct-deps set first and errors before the indirect branch.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-flag-excluded",
+  "version": "0.0.0",
+  "devDependencies": {
+    "@pnpm.e2e/foo": "100.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update --prod '@pnpm.e2e/foo'
+	assert_failure
+	assert_output --partial "is not a dependency"
+
+	# Lockfile pin survives — the failed update must not leave the dep
+	# silently re-resolved at the new latest.
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_failure
+}
+
 @test "aube update <pkg>@<spec>: rejects non-latest specs with a helpful error" {
 	# Regression for the silent-spec-drop greptile flagged on PR #446.
 	# `aube update foo@^2.0.0` used to be accepted at the arg-parse layer
