@@ -122,14 +122,20 @@ jobs:
       tag: ${{ needs.release-plz-release.outputs.tag }}
     secrets: inherit
 
-  # Flip the draft release to non-draft once assets are uploaded.
-  # `always()` means we still publish the release even if one target
-  # in the upload matrix failed — a partial-asset release is better
-  # than a permanent draft once crates.io has already been updated.
+  # Flip the draft release to non-draft once *every* asset uploaded
+  # cleanly. With immutable GitHub releases enabled, a published
+  # release can't have its assets replaced — so if any matrix target
+  # failed, we leave the draft in place rather than ship a release
+  # with missing platform binaries (downstream npm / COPR / PPA jobs
+  # would also fail trying to fetch the holes). To recover: manually
+  # re-run `release.yml` via workflow_dispatch with the tag input,
+  # which fills in the missing assets, then either flip the draft by
+  # hand (`gh release edit $TAG --draft=false`) or workflow_dispatch
+  # the whole release-plz workflow again so this job runs.
   publish-release:
     name: Publish release
     needs: [release-plz-release, upload-assets]
-    if: ${{ always() && needs.release-plz-release.outputs.tag != '' && needs.release-plz-release.result == 'success' }}
+    if: ${{ needs.release-plz-release.outputs.tag != '' }}
     runs-on: namespace-profile-endev-linux-amd64
     permissions:
       contents: write
