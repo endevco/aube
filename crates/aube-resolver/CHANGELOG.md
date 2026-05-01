@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1](https://github.com/endevco/aube/compare/aube-resolver-v1.6.0...aube-resolver-v1.6.1) - 2026-05-01
+
+### Fixed
+
+- *(ci)* unblock v1.6.0 release publishing path ([#460](https://github.com/endevco/aube/pull/460))
+
+### Other
+
+- refresh benchmarks for v1.5.2 ([#459](https://github.com/endevco/aube/pull/459))
+
 ## [1.6.0](https://github.com/endevco/aube/compare/aube-resolver-v1.5.2...aube-resolver-v1.6.0) - 2026-05-01
 
 ### Other
