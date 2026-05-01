@@ -688,6 +688,31 @@ JSON
 	assert_failure
 }
 
+@test "aube add --allow-build (space form) does not silently swallow the next positional" {
+	# Regression: with `num_args = 0..=1` and no `require_equals`, clap
+	# would greedily consume the next non-flag token as the
+	# allow-build value — `aube add --allow-build esbuild some-pkg`
+	# would silently parse `esbuild` as the value and leave the
+	# positional packages list short. `require_equals = true` forces
+	# the `=` syntax and routes the bare-flag case through
+	# `default_missing_value`, so the diagnostic is pnpm's verbatim
+	# missing-package-name error instead of a silent no-op.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-allow-build-no-swallow",
+  "version": "1.0.0"
+}
+JSON
+	run aube add --allow-build @pnpm.e2e/install-script-example @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
+	assert_failure
+	assert_output --partial "The --allow-build flag is missing a package name."
+	# Neither package was installed.
+	run grep -F '"@pnpm.e2e/install-script-example"' package.json
+	assert_failure
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example"' package.json
+	assert_failure
+}
+
 @test "aube add --allow-build=<pkg> writes to workspace root under --filter" {
 	# Regression: in the workspace-filter path (`aube add --filter=<sel>
 	# <pkg> --allow-build=<pkg>`), the `--allow-build` flag was silently

@@ -42,7 +42,9 @@ Errors when `<pkg>` is already on the allowlist with `false` — promoting an ex
 
 Conflicts with `--no-save`: when a workspace yaml exists, the approval lands there, but `--no-save`'s restore path only snapshots `package.json` + the lockfile — combining the two would silently leave an orphaned approval behind. Same reasoning as `--save-catalog`'s `--no-save` conflict.
 
-Both bare `--allow-build` and the explicit empty form `--allow-build=` are rejected with pnpm's verbatim error so users porting pnpm scripts see the same diagnostic. `num_args` + `default_missing_value` route the bare form through the same `value_parser` validator that catches `--allow-build=`.
+Both bare `--allow-build` and the explicit empty form `--allow-build=` are rejected with pnpm's verbatim error so users porting pnpm scripts see the same diagnostic. The `num_args` plus `default_missing_value` pair routes the bare form through the same `value_parser` validator that catches the explicit empty form.
+
+`require_equals = true` is load-bearing: without it, `aube add --allow-build esbuild some-pkg` would let clap silently swallow `esbuild` as the flag's value (since `num_args` allows 1 value) and leave the positional packages list empty. Forcing `=` syntax — `--allow-build=esbuild` — makes the boundary unambiguous and routes every bare-flag occurrence through `default_missing_value`.
 
 ### `--ignore-scripts`
 

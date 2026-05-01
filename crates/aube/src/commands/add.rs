@@ -48,12 +48,21 @@ pub struct AddArgs {
     /// `num_args` plus `default_missing_value` pair routes the bare
     /// form through the same `value_parser` validator that catches
     /// the explicit empty form.
+    ///
+    /// `require_equals = true` is load-bearing: without it,
+    /// `aube add --allow-build esbuild some-pkg` would let clap
+    /// silently swallow `esbuild` as the flag's value (since
+    /// `num_args` allows 1 value) and leave the positional packages
+    /// list empty. Forcing `=` syntax — `--allow-build=esbuild` —
+    /// makes the boundary unambiguous and routes every bare-flag
+    /// occurrence through `default_missing_value`.
     #[arg(
         long = "allow-build",
         value_name = "PKG",
         conflicts_with = "no_save",
         num_args = 0..=1,
         default_missing_value = "",
+        require_equals = true,
         value_parser = parse_allow_build_value,
     )]
     pub allow_build: Vec<String>,
