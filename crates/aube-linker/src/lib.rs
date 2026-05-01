@@ -2404,18 +2404,17 @@ impl Linker {
             stats.files_linked += 1;
 
             if stored.executable {
-                // Hardlink and reflink share the source's mode bits
-                // (the inode is the same / cloned). The CAS source
-                // already carries 0o644 from `create_cas_file`, plus
-                // 0o111 if the upstream package marked the file
-                // executable, so re-running `chmod` here is a wasted
-                // syscall per executable file. Only the Copy fallback
-                // produces a fresh inode whose mode must be set
-                // explicitly.
+                // `create_cas_file` writes every CAS entry as 0o644
+                // unconditionally; the only place a CAS entry's
+                // shared inode gets the +x bit is the very first
+                // `make_executable` call against a hardlinked or
+                // reflinked target — that `chmod` upgrades the
+                // shared inode for every later linker that points
+                // at it. Skipping the call (an earlier optimization)
+                // produced 0o644 binaries on cold installs and
+                // broke every CLI shipped via npm.
                 #[cfg(unix)]
-                if matches!(self.strategy, LinkStrategy::Copy) {
-                    xx::file::make_executable(&target).map_err(|e| Error::Xx(e.to_string()))?;
-                }
+                xx::file::make_executable(&target).map_err(|e| Error::Xx(e.to_string()))?;
             }
         }
 
