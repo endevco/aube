@@ -59,9 +59,16 @@ pub fn all() -> &'static [SettingMeta] {
     SETTINGS
 }
 
-/// Look up a setting by its canonical pnpm name.
+/// Look up a setting by its canonical pnpm name. `SETTINGS` is
+/// generated sorted by name (build.rs guarantees this), so a binary
+/// search drops the lookup from O(N) to O(log N). With ~120 entries
+/// and dozens of lookups per command, the saving compounds across
+/// every `aube run` startup.
 pub fn find(name: &str) -> Option<&'static SettingMeta> {
-    SETTINGS.iter().find(|s| s.name == name)
+    SETTINGS
+        .binary_search_by(|s| s.name.cmp(name))
+        .ok()
+        .map(|i| &SETTINGS[i])
 }
 
 #[cfg(test)]
