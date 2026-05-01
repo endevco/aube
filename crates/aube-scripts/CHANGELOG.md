@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/endevco/aube/compare/aube-scripts-v1.5.2...aube-scripts-v1.6.0) - 2026-05-01
+
+### Other
+
+- refresh benchmarks for v1.5.2 ([#452](https://github.com/endevco/aube/pull/452))
+- dedupe and cache hot-path work in install and resolver ([#449](https://github.com/endevco/aube/pull/449))
+- refresh benchmarks for v1.5.2 ([#448](https://github.com/endevco/aube/pull/448))
+- *(install)* port four allowBuilds review tests from pnpm lifecycleScripts.ts ([#441](https://github.com/endevco/aube/pull/441))
+
 ## [1.5.2](https://github.com/endevco/aube/compare/aube-scripts-v1.5.1...aube-scripts-v1.5.2) - 2026-04-30
 
 ### Other

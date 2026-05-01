@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/endevco/aube/compare/v1.5.1...v1.6.0) - 2026-05-01
+
+### Added
+
+- *(cli)* aube update parses <pkg>@<spec> args + accepts indirect deps ([#446](https://github.com/endevco/aube/pull/446))
+- *(cli)* add generic --config.<key>=<value> flags ([#447](https://github.com/endevco/aube/pull/447))
+- *(cli)* emit pnpm's verbatim error for empty --allow-build values ([#444](https://github.com/endevco/aube/pull/444))
+- *(pnpmfile)* emit ctx.log records as pnpm:hook ndjson on stdout ([#440](https://github.com/endevco/aube/pull/440))
+- *(cli)* add --pnpmfile and --global-pnpmfile flags ([#439](https://github.com/endevco/aube/pull/439))
+- *(cli)* add --lockfile-dir / lockfileDir setting ([#431](https://github.com/endevco/aube/pull/431))
+- *(cli)* add --fetch-timeout / --fetch-retries / retry backoff flags ([#436](https://github.com/endevco/aube/pull/436))
+- *(pnpmfile)* wire hooks into update; add preResolution hook ([#423](https://github.com/endevco/aube/pull/423))
+- --save-catalog, workspace:* parsing, and sharedWorkspaceLockfile=false ([#418](https://github.com/endevco/aube/pull/418))
+- *(cli)* aube add bootstraps package.json + 10 misc.ts ports ([#417](https://github.com/endevco/aube/pull/417))
+
+### Fixed
+
+- *(cli)* honor AUBE_VIRTUAL_STORE_DIR env var + port 5 more pnpm/misc tests ([#456](https://github.com/endevco/aube/pull/456))
+- *(cli)* aube update --latest preserves higher-than-latest prerelease pins ([#445](https://github.com/endevco/aube/pull/445))
+- *(cli)* reject `.` as a foreign --lockfile-dir importer; correct docs ([#442](https://github.com/endevco/aube/pull/442))
+- *(scripts)* close 3 lifecycle parity gaps with pnpm ([#421](https://github.com/endevco/aube/pull/421))
+- *(cli)* honor full gitignore semantics in pack/publish ([#411](https://github.com/endevco/aube/pull/411))
+- *(dlx)* pick .cmd shim on Windows so bin runs without --shell-mode ([#401](https://github.com/endevco/aube/pull/401))
+- *(install)* fetch hosted git deps over https, not ssh ([#394](https://github.com/endevco/aube/pull/394))
+
+### Other
+
+- *(cli)* port pnpm monorepo filter tests + wire --fail-if-no-match ([#457](https://github.com/endevco/aube/pull/457))
+- cache hot-path work across install, resolver, and registry ([#453](https://github.com/endevco/aube/pull/453))
+- refresh benchmarks for v1.5.2 ([#452](https://github.com/endevco/aube/pull/452))
+- dedupe and cache hot-path work in install and resolver ([#449](https://github.com/endevco/aube/pull/449))
+- refresh benchmarks for v1.5.2 ([#448](https://github.com/endevco/aube/pull/448))
+- *(install)* port four allowBuilds review tests from pnpm lifecycleScripts.ts ([#441](https://github.com/endevco/aube/pull/441))
+- *(install)* port pnpm/test/update.ts (13/22) ([#438](https://github.com/endevco/aube/pull/438))
+- refresh benchmarks for v1.5.1 ([#426](https://github.com/endevco/aube/pull/426))
+- release v1.5.2 ([#389](https://github.com/endevco/aube/pull/389))
+- *(resolver)* add bundled metadata primer ([#397](https://github.com/endevco/aube/pull/397))
+- thank Namespace for GitHub Actions runner support ([#412](https://github.com/endevco/aube/pull/412))
+- refresh benchmarks for v1.5.1 ([#392](https://github.com/endevco/aube/pull/392))
+
 ## [1.5.2](https://github.com/endevco/aube/compare/v1.5.1...v1.5.2) - 2026-04-30
 
 ### Fixed

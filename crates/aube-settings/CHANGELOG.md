@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/endevco/aube/compare/aube-settings-v1.5.2...aube-settings-v1.6.0) - 2026-05-01
+
+### Added
+
+- *(cli)* add generic --config.<key>=<value> flags ([#447](https://github.com/endevco/aube/pull/447))
+- *(cli)* add --pnpmfile and --global-pnpmfile flags ([#439](https://github.com/endevco/aube/pull/439))
+- *(cli)* add --lockfile-dir / lockfileDir setting ([#431](https://github.com/endevco/aube/pull/431))
+- *(cli)* add --fetch-timeout / --fetch-retries / retry backoff flags ([#436](https://github.com/endevco/aube/pull/436))
+- --save-catalog, workspace:* parsing, and sharedWorkspaceLockfile=false ([#418](https://github.com/endevco/aube/pull/418))
+
+### Fixed
+
+- *(cli)* reject `.` as a foreign --lockfile-dir importer; correct docs ([#442](https://github.com/endevco/aube/pull/442))
+
+### Other
+
+- cache hot-path work across install, resolver, and registry ([#453](https://github.com/endevco/aube/pull/453))
+- refresh benchmarks for v1.5.2 ([#452](https://github.com/endevco/aube/pull/452))
+- dedupe and cache hot-path work in install and resolver ([#449](https://github.com/endevco/aube/pull/449))
+- refresh benchmarks for v1.5.2 ([#448](https://github.com/endevco/aube/pull/448))
+- refresh benchmarks for v1.5.1 ([#426](https://github.com/endevco/aube/pull/426))
+
 ## [1.5.2](https://github.com/endevco/aube/compare/aube-settings-v1.5.1...aube-settings-v1.5.2) - 2026-04-30
 
 ### Other

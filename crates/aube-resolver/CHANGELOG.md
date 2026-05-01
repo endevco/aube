@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/endevco/aube/compare/aube-resolver-v1.5.2...aube-resolver-v1.6.0) - 2026-05-01
+
+### Other
+
+- cache hot-path work across install, resolver, and registry ([#453](https://github.com/endevco/aube/pull/453))
+- refresh benchmarks for v1.5.2 ([#452](https://github.com/endevco/aube/pull/452))
+- refresh benchmarks for v1.5.2 ([#448](https://github.com/endevco/aube/pull/448))
+
 ## [1.5.2](https://github.com/endevco/aube/compare/aube-resolver-v1.5.1...aube-resolver-v1.5.2) - 2026-04-30
 
 ### Fixed

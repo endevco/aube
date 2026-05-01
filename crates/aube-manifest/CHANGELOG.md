@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/endevco/aube/compare/aube-manifest-v1.5.2...aube-manifest-v1.6.0) - 2026-05-01
+
+### Added
+
+- *(cli)* add --lockfile-dir / lockfileDir setting ([#431](https://github.com/endevco/aube/pull/431))
+- --save-catalog, workspace:* parsing, and sharedWorkspaceLockfile=false ([#418](https://github.com/endevco/aube/pull/418))
+
+### Other
+
+- cache hot-path work across install, resolver, and registry ([#453](https://github.com/endevco/aube/pull/453))
+- refresh benchmarks for v1.5.2 ([#452](https://github.com/endevco/aube/pull/452))
+- refresh benchmarks for v1.5.2 ([#448](https://github.com/endevco/aube/pull/448))
+- *(install)* port four allowBuilds review tests from pnpm lifecycleScripts.ts ([#441](https://github.com/endevco/aube/pull/441))
+- refresh benchmarks for v1.5.1 ([#426](https://github.com/endevco/aube/pull/426))
+
 ## [1.5.2](https://github.com/endevco/aube/compare/aube-manifest-v1.5.1...aube-manifest-v1.5.2) - 2026-04-30
 
 ### Other
