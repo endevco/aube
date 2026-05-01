@@ -41,7 +41,21 @@ pub struct AddArgs {
     /// snapshots `package.json` + the lockfile — combining the two
     /// would silently leave an orphaned approval behind. Same
     /// reasoning as `--save-catalog`'s `--no-save` conflict.
-    #[arg(long = "allow-build", value_name = "PKG", conflicts_with = "no_save")]
+    ///
+    /// Both bare `--allow-build` and the explicit empty form
+    /// `--allow-build=` are rejected with pnpm's verbatim error so
+    /// users porting pnpm scripts see the same diagnostic. The
+    /// `num_args` plus `default_missing_value` pair routes the bare
+    /// form through the same `value_parser` validator that catches
+    /// the explicit empty form.
+    #[arg(
+        long = "allow-build",
+        value_name = "PKG",
+        conflicts_with = "no_save",
+        num_args = 0..=1,
+        default_missing_value = "",
+        value_parser = parse_allow_build_value,
+    )]
     pub allow_build: Vec<String>,
     /// Skip lifecycle scripts (no-op; aube already skips by default)
     #[arg(long)]
@@ -1040,6 +1054,26 @@ fn decide_save_catalog(
         range: manual_specifier.to_string(),
     });
     (manifest_specifier, resolved_version.to_string())
+}
+
+/// Reject empty values for the allow-build flag with pnpm's
+/// verbatim error message.
+///
+/// Catches the explicit empty form (`--allow-build=`) and the bare
+/// form (`--allow-build`), which clap routes through this validator
+/// via the `default_missing_value = ""` arg attribute.
+///
+/// Wording must stay byte-identical to pnpm's: scripts that grep
+/// pnpm's stderr for this exact line continue to work after a swap
+/// to aube.
+fn parse_allow_build_value(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        Err("The --allow-build flag is missing a package name. \
+             Please specify the package name(s) that are allowed to run installation scripts."
+            .to_string())
+    } else {
+        Ok(s.to_string())
+    }
 }
 
 /// Apply `--allow-build=<pkg>` flags by writing each package as `true`

@@ -42,6 +42,8 @@ Errors when `<pkg>` is already on the allowlist with `false` — promoting an ex
 
 Conflicts with `--no-save`: when a workspace yaml exists, the approval lands there, but `--no-save`'s restore path only snapshots `package.json` + the lockfile — combining the two would silently leave an orphaned approval behind. Same reasoning as `--save-catalog`'s `--no-save` conflict.
 
+Both bare `--allow-build` and the explicit empty form `--allow-build=` are rejected with pnpm's verbatim error so users porting pnpm scripts see the same diagnostic. `num_args` + `default_missing_value` route the bare form through the same `value_parser` validator that catches `--allow-build=`.
+
 ### `--ignore-scripts`
 
 Skip lifecycle scripts (no-op; aube already skips by default)

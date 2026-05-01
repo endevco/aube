@@ -644,14 +644,14 @@ JSON
 	assert_success
 }
 
-@test "aube add --allow-build with no value is rejected by clap" {
+@test "aube add --allow-build with no value errors with pnpm's verbatim wording" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:164
-	# ('--allow-build flag should specify the package'). pnpm's error
-	# reads "The --allow-build flag is missing a package name. ..."; aube
-	# delegates to clap, which surfaces "a value is required for
-	# '--allow-build <PKG>'". Common contract: bare `--allow-build`
-	# exits non-zero and does not run the build for any dep. Place the
-	# flag last so clap sees it has no value to consume.
+	# ('--allow-build flag should specify the package'). aube routes
+	# bare `--allow-build` through `parse_allow_build_value` via
+	# clap's `default_missing_value = ""`, so the diagnostic matches
+	# pnpm's exact line — scripts that grep pnpm's stderr keep working
+	# after a swap to aube. Place the flag last so clap sees no value
+	# to consume.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allow-build-bare",
@@ -660,10 +660,32 @@ JSON
 JSON
 	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0 --allow-build
 	assert_failure
-	assert_output --partial "--allow-build"
+	assert_output --partial "The --allow-build flag is missing a package name."
+	assert_output --partial "Please specify the package name(s) that are allowed to run installation scripts."
 	# Build did not run.
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-preinstall.js ]
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-postinstall.js ]
+}
+
+@test "aube add --allow-build= (explicit empty equals) errors with pnpm's verbatim wording" {
+	# Companion to the bare-flag test above. `--allow-build=` parses to
+	# the empty string, which `parse_allow_build_value` rejects with
+	# the same pnpm wording — covers the form a user might type when
+	# pasting from a shell variable that came back empty.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-allow-build-empty-equals",
+  "version": "1.0.0"
+}
+JSON
+	run aube add --allow-build= @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
+	assert_failure
+	assert_output --partial "The --allow-build flag is missing a package name."
+	assert_output --partial "Please specify the package name(s) that are allowed to run installation scripts."
+	# Build did not run, manifest untouched.
+	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-preinstall.js ]
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example"' package.json
+	assert_failure
 }
 
 @test "aube add --allow-build=<pkg> writes to workspace root under --filter" {
