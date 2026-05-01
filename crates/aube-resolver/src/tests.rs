@@ -607,9 +607,49 @@ fn make_packument(name: &str, versions: &[&str], latest: &str) -> Packument {
 
 #[test]
 fn test_pick_version_highest_match() {
+    // `latest=2.0.0` does NOT satisfy `^1.0.0` (`<2.0.0`), so the
+    // dist-tag preference doesn't apply and we fall through to the
+    // strictly-highest version inside the range — 1.2.0.
     let packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0", "2.0.0"], "2.0.0");
     let result = pick_version(&packument, "^1.0.0", None, false, None, false).unwrap();
     assert_eq!(result.version, "1.2.0");
+}
+
+#[test]
+fn test_pick_version_prefers_dist_tag_latest_when_in_range() {
+    // npm/pnpm parity: when `dist-tags.latest` falls inside the
+    // user's range, return the publisher's tagged build instead of
+    // the highest version — the publisher used `latest` to anchor
+    // the canonical install; a stray higher version inside the
+    // range (hotfix on an old line, withdrawn experimental publish,
+    // mid-rollback intermediary) shouldn't silently win.
+    //
+    // Regression for the pnpm_update.bats `add_dist_tag latest 100.0.0
+    // -> aube add foo@^100.0.0` flow, which expects the lockfile to
+    // pin 100.0.0 even though 100.1.0 is available.
+    let packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0"], "1.0.0");
+    let result = pick_version(&packument, "^1.0.0", None, false, None, false).unwrap();
+    assert_eq!(result.version, "1.0.0");
+}
+
+#[test]
+fn test_pick_version_falls_through_when_latest_outside_range() {
+    // `latest=2.0.0` is outside the user's `^1.0.0`, so the dist-tag
+    // preference is a no-op; the strictly-highest matching version
+    // (1.1.0) wins.
+    let packument = make_packument("foo", &["1.0.0", "1.1.0", "2.0.0"], "2.0.0");
+    let result = pick_version(&packument, "^1.0.0", None, false, None, false).unwrap();
+    assert_eq!(result.version, "1.1.0");
+}
+
+#[test]
+fn test_pick_version_lowest_ignores_dist_tag_preference() {
+    // TimeBased mode (`pick_lowest=true`) wants the floor of the
+    // range, not whatever the publisher tagged latest. Confirm the
+    // dist-tag preference is suppressed when pick_lowest is set.
+    let packument = make_packument("foo", &["1.0.0", "1.1.0", "1.2.0"], "1.2.0");
+    let result = pick_version(&packument, "^1.0.0", None, true, None, false).unwrap();
+    assert_eq!(result.version, "1.0.0");
 }
 
 #[test]

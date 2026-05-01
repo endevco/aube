@@ -112,6 +112,24 @@ pub(crate) fn pick_version<'a>(
         return PickResult::Found(meta);
     }
 
+    // If `dist-tags.latest` satisfies the range, prefer it over the
+    // strictly-highest matching version. Matches npm and pnpm: a fresh
+    // `npm install foo@^1.0.0` returns the version the publisher last
+    // tagged `latest`, not whatever happens to be the highest in the
+    // version list (which can be a stray prerelease, hotfix on an old
+    // line, or unwithdrawn experimental publish). Skipped when
+    // `pick_lowest` is on (TimeBased mode wants the floor of the range,
+    // not the publisher's preferred build).
+    if !pick_lowest
+        && let Some(latest_ver) = packument.dist_tags.get("latest")
+        && let Ok(v) = node_semver::Version::parse(latest_ver)
+        && v.satisfies(&range)
+        && passes_cutoff(latest_ver)
+        && let Some(meta) = packument.versions.get(latest_ver)
+    {
+        return PickResult::Found(meta);
+    }
+
     // Track whether *any* version satisfied the range — if so but
     // every one was rejected by the cutoff, the failure is age-gate
     // related, not a real "no match in range".

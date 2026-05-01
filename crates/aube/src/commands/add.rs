@@ -711,6 +711,19 @@ async fn update_manifest_for_add(
         parsed_versions.sort_by(|a, b| b.1.cmp(&a.1));
         let highest_satisfying = |range_str: &str| -> Option<String> {
             let range = node_semver::Range::parse(range_str).ok()?;
+            // Mirror `aube_resolver::pick_version`: prefer the
+            // `dist-tags.latest` version when it satisfies the range.
+            // npm and pnpm both pin toward the publisher's tagged
+            // build over the strictly-highest matching version, and
+            // the display line here must agree with what the
+            // resolver actually installs.
+            if let Some(latest) = packument.dist_tags.get("latest")
+                && let Ok(parsed_latest) = node_semver::Version::parse(latest)
+                && parsed_latest.satisfies(&range)
+                && packument.versions.contains_key(latest)
+            {
+                return Some(latest.clone());
+            }
             parsed_versions
                 .iter()
                 .find(|(_, parsed)| parsed.satisfies(&range))
