@@ -848,11 +848,10 @@ struct WriteNpmPeerDepMeta {
 ///    entries always emit `resolved:` because the install-path name is
 ///    the alias — without the URL the consumer can't recover the real
 ///    registry location.
-///  - Non-git local source entries (`file:`, `link:`, URL tarballs)
-///    aren't emitted yet. Git sources emit their pinned `resolved:` URL.
-///  - Multiple workspace importers aren't emitted — only the root
-///    importer's tree is walked. Workspace + npm-lockfile projects
-///    should stay on `pnpm-lock.yaml` until this lands.
+///  - Non-git local source entries (`file:`, URL tarballs) aren't
+///    emitted yet. Git sources emit their pinned `resolved:` URL.
+///    Workspace `link:` packages are emitted as importer entries plus
+///    a root `node_modules/<name>` link record.
 pub fn write(
     path: &Path,
     graph: &LockfileGraph,
@@ -891,7 +890,7 @@ pub fn write(
     // path segments — e.g. `["foo"]` for `node_modules/foo`,
     // `["foo", "bar"]` for `node_modules/foo/node_modules/bar`. Shared
     // with bun (which renders the same segment list as `foo/bar`).
-    let root_tree_roots = non_link_roots(&canonical, &roots);
+    let root_tree_roots = non_link_roots(&roots);
     let tree = build_hoist_tree(&canonical, &root_tree_roots);
     // For the npm writer, re-key the tree by install_path strings.
     let mut placed: BTreeMap<String, String> = tree
@@ -949,7 +948,7 @@ pub fn write(
             },
         );
 
-        let workspace_tree_roots = non_link_roots(&canonical, importer_roots);
+        let workspace_tree_roots = non_link_roots(importer_roots);
         for (segs, canonical_key) in build_hoist_tree(&canonical, &workspace_tree_roots) {
             let install_path = format!("{importer_path}/{}", segments_to_install_path(&segs));
             placed.entry(install_path).or_insert(canonical_key);
@@ -1134,18 +1133,10 @@ fn workspace_package_for_importer<'a>(
     })
 }
 
-fn non_link_roots(
-    canonical: &BTreeMap<String, &LockedPackage>,
-    roots: &[DirectDep],
-) -> Vec<DirectDep> {
+fn non_link_roots(roots: &[DirectDep]) -> Vec<DirectDep> {
     roots
         .iter()
-        .filter(|dep| {
-            let key = canonical_key_from_dep_path(&dep.dep_path);
-            canonical
-                .get(&key)
-                .is_none_or(|pkg| !matches!(pkg.local_source, Some(LocalSource::Link(_))))
-        })
+        .filter(|dep| !dep_path_tail(&dep.name, &dep.dep_path).starts_with("link:"))
         .cloned()
         .collect()
 }
