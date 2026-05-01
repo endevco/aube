@@ -655,3 +655,64 @@ YAML
 	run grep '"@pnpm.e2e/bar": "100.0.0"' project-2/package.json
 	assert_success
 }
+
+@test "aube update -r --prod <name>: skips projects where the dep is only a devDep" {
+	# Regression guard for the per-project arg filter: when `--prod` is
+	# active, a named arg that exists only as a devDep in some project
+	# must NOT count as "declared" in that project — otherwise the
+	# fanout passes the arg into `run` and `run` hard-errors with
+	# 'package X is not a dependency' (its inner all_specifiers
+	# excludes devDeps under --prod). The bucket filter in
+	# `run_filtered` mirrors `run`'s include_prod/include_dev/
+	# include_optional logic so each project's "declared" set matches
+	# the one `run` will look up.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+
+	mkdir project-1 project-2
+	# project-1: foo as a prod dep — should be bumped.
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "100.0.0"
+  }
+}
+JSON
+	# project-2: foo as a devDep only — should be SKIPPED (not errored)
+	# under --prod.
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/bar": "100.0.0"
+  },
+  "devDependencies": {
+    "@pnpm.e2e/foo": "100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	# Without the bucket filter this hard-errors on project-2.
+	run aube update -r --latest --prod '@pnpm.e2e/foo'
+	assert_success
+
+	# project-1's prod foo got bumped.
+	run grep '"@pnpm.e2e/foo": "100.1.0"' project-1/package.json
+	assert_success
+
+	# project-2's devDep foo left at 100.0.0 — --prod skipped the project.
+	run grep '"@pnpm.e2e/foo": "100.0.0"' project-2/package.json
+	assert_success
+}

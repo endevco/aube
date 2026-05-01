@@ -421,11 +421,30 @@ async fn run_filtered(
                 let project_manifest = aube_manifest::PackageJson::from_path(&manifest_path)
                     .map_err(miette::Report::new)
                     .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
+                // Mirror the bucket filter from `run` so the declared set
+                // ignores entries the inner update would skip — without
+                // this an arg that's only a devDep under `--prod` survives
+                // the filter here and then hard-errors inside `run` with
+                // 'package X is not a dependency'.
+                let include_prod = !args.dev;
+                let include_dev = !args.prod;
+                let include_optional = !args.no_optional && !args.dev;
                 let declared: BTreeSet<String> = project_manifest
                     .dependencies
                     .keys()
-                    .chain(project_manifest.dev_dependencies.keys())
-                    .chain(project_manifest.optional_dependencies.keys())
+                    .filter(|_| include_prod)
+                    .chain(
+                        project_manifest
+                            .dev_dependencies
+                            .keys()
+                            .filter(|_| include_dev),
+                    )
+                    .chain(
+                        project_manifest
+                            .optional_dependencies
+                            .keys()
+                            .filter(|_| include_optional),
+                    )
                     .cloned()
                     .collect();
                 per_pkg.packages = args
