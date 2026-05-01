@@ -58,9 +58,13 @@ fn run_project(cwd: &Path, all: bool, packages: Vec<String>) -> miette::Result<(
         return Ok(());
     }
 
-    let written = aube_manifest::workspace::add_to_allow_builds(cwd, &selected, true)
-        .into_diagnostic()
-        .wrap_err("failed to update workspace yaml")?;
+    let written = aube_manifest::workspace::add_to_allow_builds(
+        cwd,
+        &selected,
+        aube_manifest::workspace::AllowBuildsWriteMode::Approve,
+    )
+    .into_diagnostic()
+    .wrap_err("failed to update workspace yaml")?;
 
     let rel = written
         .strip_prefix(cwd)
@@ -115,9 +119,13 @@ fn run_global(args: ApproveBuildsArgs) -> miette::Result<()> {
     let mut approved = 0usize;
     let mut written_dirs = 0usize;
     for (install_dir, names) in selected {
-        let written = aube_manifest::workspace::add_to_allow_builds(&install_dir, &names, true)
-            .into_diagnostic()
-            .wrap_err("failed to update global install workspace yaml")?;
+        let written = aube_manifest::workspace::add_to_allow_builds(
+            &install_dir,
+            &names,
+            aube_manifest::workspace::AllowBuildsWriteMode::Approve,
+        )
+        .into_diagnostic()
+        .wrap_err("failed to update global install workspace yaml")?;
         written_dirs += 1;
         approved += names.len();
         println!(

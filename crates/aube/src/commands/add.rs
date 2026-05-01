@@ -24,6 +24,25 @@ pub struct AddArgs {
     /// Add as optional dependency
     #[arg(short = 'O', long)]
     pub save_optional: bool,
+    /// Pre-approve a dependency's lifecycle scripts as part of the add.
+    ///
+    /// `--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into
+    /// the workspace yaml (or `package.json#aube.allowBuilds`) before
+    /// the install runs, so the named package's `preinstall` /
+    /// `install` / `postinstall` scripts execute on this invocation.
+    /// Repeatable — pass the flag once per package.
+    ///
+    /// Errors when `<pkg>` is already on the allowlist with `false` —
+    /// promoting an explicit deny should be a deliberate edit, not a
+    /// silent flip. Mirrors `pnpm add --allow-build=<pkg>`.
+    ///
+    /// Conflicts with `--no-save`: when a workspace yaml exists, the
+    /// approval lands there, but `--no-save`'s restore path only
+    /// snapshots `package.json` + the lockfile — combining the two
+    /// would silently leave an orphaned approval behind. Same
+    /// reasoning as `--save-catalog`'s `--no-save` conflict.
+    #[arg(long = "allow-build", value_name = "PKG", conflicts_with = "no_save")]
+    pub allow_build: Vec<String>,
     /// Skip lifecycle scripts (no-op; aube already skips by default)
     #[arg(long)]
     pub ignore_scripts: bool,
@@ -261,6 +280,7 @@ pub async fn run(
         ignore_workspace_root_check,
         save_catalog,
         save_catalog_name,
+        allow_build,
     } = args;
     let save_catalog_target = save_catalog_name.or_else(|| {
         if save_catalog {
@@ -386,6 +406,17 @@ pub async fn run(
     } else {
         None
     };
+    // `--allow-build=<pkg>` pre-approves dep lifecycle scripts as part
+    // of the add. The conflict check (refuses to flip a pre-existing
+    // `false` to `true`) runs BEFORE `update_manifest_for_add` so a
+    // failure can't leave the manifest with new deps written but no
+    // matching install. Approval bytes themselves are also written here
+    // — the order doesn't matter for the install pipeline (it re-reads
+    // both files from disk) but keeps the failure-mode reasoning local.
+    if !allow_build.is_empty() {
+        apply_allow_build_flags(&cwd, &allow_build)?;
+    }
+
     update_manifest_for_add(
         &cwd,
         packages,
@@ -1011,6 +1042,61 @@ fn decide_save_catalog(
     (manifest_specifier, resolved_version.to_string())
 }
 
+/// Apply `--allow-build=<pkg>` flags by writing each package as `true`
+/// to the project's `allowBuilds` map (workspace yaml or
+/// `package.json#aube.allowBuilds`). Errors when any name is already
+/// pinned to `false` — flipping an explicit deny should be a deliberate
+/// edit, not a side effect. Mirrors pnpm's `--allow-build=<pkg>` /
+/// `allowBuilds: false` conflict check.
+///
+/// Merge precedence matches `build_policy_from_sources` in
+/// `install/lifecycle.rs`: workspace yaml wins over manifest. So a
+/// `false` in `pnpm-workspace.yaml` blocks a `--allow-build` even when
+/// the manifest's `pnpm.allowBuilds` flips it to `true`.
+fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::Result<()> {
+    let manifest_path = cwd.join("package.json");
+    let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
+        .into_diagnostic()
+        .wrap_err("failed to read package.json for --allow-build")?;
+    let workspace = aube_manifest::WorkspaceConfig::load(cwd)
+        .into_diagnostic()
+        .wrap_err("failed to read workspace config for --allow-build")?;
+
+    let mut existing: std::collections::BTreeMap<String, aube_manifest::AllowBuildRaw> =
+        manifest.pnpm_allow_builds();
+    // Workspace yaml overrides manifest — overwriting (not
+    // `or_insert`-ing) keeps the precedence aligned with
+    // `build_policy_from_sources`.
+    for (k, v) in workspace.allow_builds_raw() {
+        existing.insert(k, v);
+    }
+
+    let mut conflicts = Vec::new();
+    for name in names {
+        if matches!(
+            existing.get(name),
+            Some(aube_manifest::AllowBuildRaw::Bool(false))
+        ) {
+            conflicts.push(name.clone());
+        }
+    }
+    if !conflicts.is_empty() {
+        return Err(miette!(
+            "The following dependencies are ignored by the root project, but are allowed to be built by the current command: {}",
+            conflicts.join(", ")
+        ));
+    }
+
+    aube_manifest::workspace::add_to_allow_builds(
+        cwd,
+        names,
+        aube_manifest::workspace::AllowBuildsWriteMode::Approve,
+    )
+    .into_diagnostic()
+    .wrap_err("failed to write --allow-build entries")?;
+    Ok(())
+}
+
 /// Resolve the on-disk lockfile path that a normal `add` would write
 /// to in `project_dir`. Mirrors the `LockfileKind` -> filename mapping
 /// inside `aube_lockfile::write_lockfile_as` so the snapshot/restore
@@ -1047,6 +1133,14 @@ async fn run_filtered(
     // the restore under `--no-save`.
     let (root, matched) = super::select_workspace_packages(&cwd, filter, "add")?;
     let _lock = super::take_project_lock(&root)?;
+
+    // `--allow-build=<pkg>` writes against the workspace root (where
+    // `allowBuilds` lives) — same as the non-filtered path. Run before
+    // any per-package manifest mutation so a conflict can't leave the
+    // child manifests half-mutated.
+    if !args.allow_build.is_empty() {
+        apply_allow_build_flags(&root, &args.allow_build)?;
+    }
 
     let mut snapshots = Vec::new();
     let lockfile_path = lockfile_path_for_project(&root);
@@ -1300,6 +1394,7 @@ async fn run_global_inner(
         workspace: false,
         save_catalog: false,
         save_catalog_name: None,
+        allow_build: Vec::new(),
     };
     Box::pin(run(
         inner,

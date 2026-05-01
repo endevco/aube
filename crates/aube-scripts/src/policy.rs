@@ -102,6 +102,16 @@ impl BuildPolicy {
             let bool_value = match value {
                 AllowBuildRaw::Bool(b) => *b,
                 AllowBuildRaw::Other(raw) => {
+                    // The canonical "set this to true or false" placeholder
+                    // is what aube itself writes when it auto-seeds an
+                    // unreviewed build into the user's allowBuilds. Treat
+                    // it as Unspecified (skip silently) — strict-dep-builds
+                    // will surface it via `unreviewed_dep_builds` instead.
+                    // Any other string is a user-authored value we don't
+                    // understand; warn so it isn't silently misread.
+                    if raw == aube_manifest::workspace::ALLOW_BUILDS_REVIEW_PLACEHOLDER {
+                        continue;
+                    }
                     warnings.push(BuildPolicyError::UnsupportedValue {
                         pattern: pattern.clone(),
                         raw: raw.clone(),
