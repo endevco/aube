@@ -23,4 +23,6 @@ pub mod meta;
 pub mod values;
 
 pub use meta::{SettingMeta, all, find};
-pub use values::{ResolveCtx, parse_bool, resolved, workspace_yaml_value};
+pub use values::{
+    ResolveCtx, parse_bool, resolved, set_global_cli_overrides, workspace_yaml_value,
+};
