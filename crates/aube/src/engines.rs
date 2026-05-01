@@ -1,12 +1,24 @@
 //! `engines` field validation.
 //!
-//! Checks each package's declared `engines.node` constraint against the
-//! Node version the current install is running under. Mismatches are
-//! surfaced as warnings by default; when `engine-strict` is set in
-//! `.npmrc` (or on the root package.json), they hard-fail the install.
+//! Checks each package's declared `engines.{node,aube,pnpm}` constraints:
 //!
-//! Non-node engines (`npm`, `pnpm`, `yarn`, `vscode`, etc.) are ignored —
-//! only the `node` key is checked, matching the field most users set.
+//! - `engines.node` runs against the host's Node version (or the
+//!   `node-version` `.npmrc` override). Checked on the root manifest,
+//!   every workspace-project manifest, and every resolved transitive
+//!   dependency.
+//! - `engines.aube` and `engines.pnpm` both run against aube's own
+//!   version. aube positions itself as a pnpm-compatible drop-in, so a
+//!   package gating on `engines.pnpm` is honored as if aube were that
+//!   pnpm. These two are checked on the root manifest and
+//!   workspace-project manifests only — wild transitive deps frequently
+//!   pin `engines.pnpm` for their authors' own toolchain and we don't
+//!   want every install to drown in unrelated warnings.
+//!
+//! Mismatches are surfaced as warnings by default; when `engine-strict`
+//! is set in `.npmrc` (or on the root package.json), they hard-fail the
+//! install.
+//!
+//! Other engine fields (`npm`, `yarn`, `vscode`, etc.) are ignored.
 
 use aube_lockfile::LockfileGraph;
 use aube_lockfile::dep_path_filename::dep_path_to_filename;
@@ -15,10 +27,38 @@ use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Outcome of checking a single package's `engines.node` against the
-/// current Node version.
+/// The aube version reported for `engines.aube` / `engines.pnpm` checks.
+/// Compiled in via `env!` so it always matches the running binary.
+pub fn aube_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Which `engines.<key>` field a mismatch was found on. Carried on
+/// `Mismatch` so the warning printer can label the failure correctly
+/// without reparsing the manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Engine {
+    Node,
+    Aube,
+    Pnpm,
+}
+
+impl Engine {
+    /// The literal key as it appears under `engines.<key>` in package.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Aube => "aube",
+            Self::Pnpm => "pnpm",
+        }
+    }
+}
+
+/// Outcome of checking a single package's `engines.<key>` field against
+/// the active version for that engine.
 #[derive(Debug)]
 pub struct Mismatch {
+    pub engine: Engine,
     pub package: String,
     pub declared: String,
     pub current: String,
@@ -57,10 +97,10 @@ fn probe_node_version() -> Option<String> {
 
 /// Test whether `version` satisfies `range`. A version or range we can't
 /// parse is treated as "no opinion" (returns `true`) — matches pnpm's
-/// leniency and avoids failing installs over malformed `engines.node`
-/// fields or unusual Node builds that report non-standard version strings
+/// leniency and avoids failing installs over malformed `engines.<key>`
+/// fields or unusual binaries that report non-standard version strings
 /// (e.g. nightly builds, custom forks).
-fn node_range_satisfied(version: &str, range: &str) -> bool {
+fn version_satisfies(version: &str, range: &str) -> bool {
     let Ok(v) = node_semver::Version::parse(version) else {
         return true;
     };
@@ -70,15 +110,58 @@ fn node_range_satisfied(version: &str, range: &str) -> bool {
     v.satisfies(&r)
 }
 
-/// Check a single `engines` map. Returns `Some(declared_range)` on
-/// mismatch, `None` otherwise.
-fn check_engines_node(engines: &BTreeMap<String, String>, node_version: &str) -> Option<String> {
-    let node_range = engines.get("node")?;
-    if node_range_satisfied(node_version, node_range) {
+/// Check a single field in an `engines` map. Returns the declared range
+/// on mismatch, `None` when the field is absent or satisfied.
+fn check_engine_field(
+    engines: &BTreeMap<String, String>,
+    field: &str,
+    current_version: &str,
+) -> Option<String> {
+    let range = engines.get(field)?;
+    if version_satisfies(current_version, range) {
         None
     } else {
-        Some(node_range.clone())
+        Some(range.clone())
     }
+}
+
+/// Check all three engine fields (`node`, `aube`, `pnpm`) on a single
+/// manifest, labeling each mismatch with the originating engine and the
+/// `package` label (project name or "(root)" for an unnamed root). This
+/// runs against root + workspace-project manifests; transitive deps go
+/// through `collect_dep_mismatches` (node-only).
+fn check_manifest_engines(
+    manifest: &aube_manifest::PackageJson,
+    label: &str,
+    node_version: &str,
+) -> Vec<Mismatch> {
+    let aube_v = aube_version();
+    let mut out = Vec::new();
+    if let Some(declared) = check_engine_field(&manifest.engines, "node", node_version) {
+        out.push(Mismatch {
+            engine: Engine::Node,
+            package: label.to_string(),
+            declared,
+            current: node_version.to_string(),
+        });
+    }
+    if let Some(declared) = check_engine_field(&manifest.engines, "aube", aube_v) {
+        out.push(Mismatch {
+            engine: Engine::Aube,
+            package: label.to_string(),
+            declared,
+            current: aube_v.to_string(),
+        });
+    }
+    if let Some(declared) = check_engine_field(&manifest.engines, "pnpm", aube_v) {
+        out.push(Mismatch {
+            engine: Engine::Pnpm,
+            package: label.to_string(),
+            declared,
+            current: aube_v.to_string(),
+        });
+    }
+    out
 }
 
 /// Read each locked package's `package.json` and collect any
@@ -114,6 +197,13 @@ fn check_engines_node(engines: &BTreeMap<String, String>, node_version: &str) ->
 /// exactly the trap `run_dep_lifecycle_scripts` and
 /// `read_materialized_pkg_json` already closed elsewhere in the
 /// PR.
+///
+/// Only `engines.node` is read here. `engines.aube` and `engines.pnpm`
+/// are not checked on transitive deps — wild packages routinely declare
+/// `engines.pnpm` for their authors' own toolchain and we don't want
+/// every install to surface unrelated warnings. Workspace-project
+/// authors who care about `engines.aube` / `engines.pnpm` get them
+/// via `check_manifest_engines` on their own importer manifests.
 pub fn collect_dep_mismatches(
     aube_dir: &Path,
     graph: &LockfileGraph,
@@ -203,10 +293,11 @@ pub fn collect_dep_mismatches(
             let Some(node_range) = engines.get("node").and_then(|v| v.as_str()) else {
                 return Ok(None);
             };
-            if node_range_satisfied(node_version, node_range) {
+            if version_satisfies(node_version, node_range) {
                 Ok(None)
             } else {
                 Ok(Some(Mismatch {
+                    engine: Engine::Node,
                     package: pkg.spec_key(),
                     declared: node_range.to_string(),
                     current: node_version.to_string(),
@@ -218,48 +309,83 @@ pub fn collect_dep_mismatches(
     Ok(per_pkg?.into_iter().flatten().collect())
 }
 
-/// Check the root manifest's `engines.node` constraint. Returns a
-/// mismatch labeled with the project name (or "(root)" when unnamed).
-pub fn check_root(manifest: &aube_manifest::PackageJson, node_version: &str) -> Option<Mismatch> {
-    let declared = check_engines_node(&manifest.engines, node_version)?;
-    Some(Mismatch {
-        package: manifest
-            .name
-            .clone()
-            .unwrap_or_else(|| "(root)".to_string()),
-        declared,
-        current: node_version.to_string(),
-    })
+/// Check the root manifest's `engines.{node,aube,pnpm}` constraints.
+/// The package label is the manifest's `name`, falling back to
+/// `(root)` for unnamed manifests.
+pub fn check_root(manifest: &aube_manifest::PackageJson, node_version: &str) -> Vec<Mismatch> {
+    let label = manifest.name.as_deref().unwrap_or("(root)");
+    check_manifest_engines(manifest, label, node_version)
+}
+
+/// Check every workspace-project manifest the resolver loaded. Each
+/// importer is keyed by its workspace-relative path (e.g. `packages/a`),
+/// which is what the user already sees in lockfile importer keys and
+/// `aube install --filter` output, so the same string makes the most
+/// natural mismatch label.
+///
+/// `manifests` is the same `Vec<(rel_path, PackageJson)>` `install::run`
+/// builds during workspace expansion. The root entry (`"."`) is
+/// already covered by `check_root` and is skipped here so it doesn't
+/// get reported twice.
+pub fn check_workspace_importers(
+    manifests: &[(String, aube_manifest::PackageJson)],
+    node_version: &str,
+) -> Vec<Mismatch> {
+    let mut out = Vec::new();
+    for (rel_path, manifest) in manifests {
+        if rel_path == "." || rel_path.is_empty() {
+            continue;
+        }
+        let label = manifest.name.as_deref().unwrap_or(rel_path.as_str());
+        out.extend(check_manifest_engines(manifest, label, node_version));
+    }
+    out
 }
 
 /// Run the full engines check and either emit warnings or hard-fail the
 /// install, depending on `strict`. A `None` `node_version` (e.g. no node
-/// binary on PATH) short-circuits — nothing to check against.
+/// binary on PATH) skips `engines.node` checks but still validates
+/// `engines.aube` and `engines.pnpm` — those don't depend on Node.
 #[allow(clippy::too_many_arguments)]
 pub fn run_checks(
     aube_dir: &Path,
     manifest: &aube_manifest::PackageJson,
+    workspace_manifests: &[(String, aube_manifest::PackageJson)],
     graph: &LockfileGraph,
     indices: &BTreeMap<String, PackageIndex>,
     node_version: Option<&str>,
     strict: bool,
     virtual_store_dir_max_length: usize,
 ) -> miette::Result<()> {
-    let Some(node_version) = node_version else {
-        return Ok(());
-    };
-
     let mut mismatches = Vec::new();
-    if let Some(m) = check_root(manifest, node_version) {
-        mismatches.push(m);
+
+    // Use a sentinel string for the node version when we couldn't
+    // probe one; `check_engine_field` skips fields the manifest
+    // doesn't declare, so passing the sentinel only matters when
+    // someone explicitly set `engines.node` — in which case the
+    // version-parse fallback in `version_satisfies` returns true
+    // (no opinion) and the check is a no-op. Cleaner than threading
+    // an Option through every helper.
+    let node_for_manifest = node_version.unwrap_or("0.0.0-no-node");
+
+    mismatches.extend(check_root(manifest, node_for_manifest));
+    mismatches.extend(check_workspace_importers(
+        workspace_manifests,
+        node_for_manifest,
+    ));
+
+    // Transitive deps only get checked when we have a real Node
+    // version — that scan is `engines.node`-only and there's nothing
+    // to compare against without it.
+    if let Some(node_v) = node_version {
+        mismatches.extend(collect_dep_mismatches(
+            aube_dir,
+            graph,
+            indices,
+            node_v,
+            virtual_store_dir_max_length,
+        )?);
     }
-    mismatches.extend(collect_dep_mismatches(
-        aube_dir,
-        graph,
-        indices,
-        node_version,
-        virtual_store_dir_max_length,
-    )?);
 
     if mismatches.is_empty() {
         return Ok(());
@@ -273,17 +399,18 @@ pub fn run_checks(
     eprintln!("warn: {header}");
     for m in &mismatches {
         eprintln!(
-            "warn:   {}: wanted node {}, got {}",
-            m.package, m.declared, m.current,
+            "warn:   {}: wanted {} {}, got {}",
+            m.package,
+            m.engine.key(),
+            m.declared,
+            m.current,
         );
     }
 
     if strict {
         return Err(miette::miette!(
-            "engine-strict: {} package(s) require a Node version \
-             incompatible with {}",
+            "engine-strict: {} package(s) declare incompatible engine constraints",
             mismatches.len(),
-            node_version,
         ));
     }
     Ok(())
@@ -293,21 +420,8 @@ pub fn run_checks(
 mod tests {
     use super::*;
 
-    #[test]
-    fn range_satisfied_basic() {
-        assert!(node_range_satisfied("18.0.0", ">=16"));
-        assert!(!node_range_satisfied("14.0.0", ">=16"));
-    }
-
-    #[test]
-    fn unparseable_range_is_permissive() {
-        // Some real packages ship nonsense here; we don't want to block on it.
-        assert!(node_range_satisfied("18.0.0", "this-is-not-a-range"));
-    }
-
-    #[test]
-    fn check_root_skips_when_no_engines() {
-        let m = aube_manifest::PackageJson {
+    fn empty_manifest() -> aube_manifest::PackageJson {
+        aube_manifest::PackageJson {
             name: Some("x".into()),
             version: None,
             dependencies: Default::default(),
@@ -320,29 +434,133 @@ mod tests {
             workspaces: None,
             bundled_dependencies: None,
             extra: Default::default(),
-        };
-        assert!(check_root(&m, "18.0.0").is_none());
+        }
     }
 
     #[test]
-    fn check_root_flags_mismatch() {
-        let mut engines = BTreeMap::new();
-        engines.insert("node".into(), ">=20".into());
-        let m = aube_manifest::PackageJson {
-            name: Some("x".into()),
-            version: None,
-            dependencies: Default::default(),
-            dev_dependencies: Default::default(),
-            peer_dependencies: Default::default(),
-            optional_dependencies: Default::default(),
-            update_config: None,
-            scripts: Default::default(),
-            engines,
-            workspaces: None,
-            bundled_dependencies: None,
-            extra: Default::default(),
-        };
-        assert!(check_root(&m, "18.0.0").is_some());
+    fn range_satisfied_basic() {
+        assert!(version_satisfies("18.0.0", ">=16"));
+        assert!(!version_satisfies("14.0.0", ">=16"));
+    }
+
+    #[test]
+    fn unparseable_range_is_permissive() {
+        // Some real packages ship nonsense here; we don't want to block on it.
+        assert!(version_satisfies("18.0.0", "this-is-not-a-range"));
+    }
+
+    #[test]
+    fn check_root_skips_when_no_engines() {
+        let m = empty_manifest();
+        assert!(check_root(&m, "18.0.0").is_empty());
+    }
+
+    #[test]
+    fn check_root_flags_node_mismatch() {
+        let mut m = empty_manifest();
+        m.engines.insert("node".into(), ">=20".into());
+        let v = check_root(&m, "18.0.0");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].engine, Engine::Node);
+        assert_eq!(v[0].declared, ">=20");
+    }
+
+    #[test]
+    fn check_root_flags_aube_mismatch() {
+        // engines.aube checks against aube's own version. Pin to
+        // something no real aube release will satisfy so the test
+        // doesn't churn at every version bump.
+        let mut m = empty_manifest();
+        m.engines.insert("aube".into(), ">=99999".into());
+        let v = check_root(&m, "18.0.0");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].engine, Engine::Aube);
+        assert_eq!(v[0].declared, ">=99999");
+        assert_eq!(v[0].current, aube_version());
+    }
+
+    #[test]
+    fn check_root_flags_pnpm_mismatch() {
+        let mut m = empty_manifest();
+        m.engines.insert("pnpm".into(), ">=99999".into());
+        let v = check_root(&m, "18.0.0");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].engine, Engine::Pnpm);
+        assert_eq!(v[0].current, aube_version());
+    }
+
+    #[test]
+    fn check_root_aube_satisfied_when_range_matches() {
+        // Pin to a range any aube release will satisfy. Regression
+        // guard: a refactor that swaps current vs declared in
+        // `version_satisfies` would flip this assertion.
+        let mut m = empty_manifest();
+        m.engines.insert("aube".into(), ">=0.0.1".into());
+        assert!(check_root(&m, "18.0.0").is_empty());
+    }
+
+    #[test]
+    fn check_root_flags_all_three_engines_independently() {
+        // Three fields, three mismatches in one manifest — confirms
+        // we don't short-circuit on the first hit.
+        let mut m = empty_manifest();
+        m.engines.insert("node".into(), ">=99999".into());
+        m.engines.insert("aube".into(), ">=99999".into());
+        m.engines.insert("pnpm".into(), ">=99999".into());
+        let v = check_root(&m, "18.0.0");
+        assert_eq!(v.len(), 3);
+        let engines: std::collections::HashSet<_> = v.iter().map(|m| m.engine).collect();
+        assert!(engines.contains(&Engine::Node));
+        assert!(engines.contains(&Engine::Aube));
+        assert!(engines.contains(&Engine::Pnpm));
+    }
+
+    #[test]
+    fn check_workspace_importers_skips_root() {
+        // The "." entry is the root manifest, already covered by
+        // `check_root`. Re-checking it would duplicate every warning.
+        let mut root = empty_manifest();
+        root.engines.insert("node".into(), ">=99999".into());
+        let manifests = vec![(".".to_string(), root)];
+        assert!(check_workspace_importers(&manifests, "18.0.0").is_empty());
+    }
+
+    #[test]
+    fn check_workspace_importers_flags_per_project() {
+        let mut a = empty_manifest();
+        a.name = Some("project-a".into());
+        a.engines.insert("node".into(), ">=99999".into());
+        let mut b = empty_manifest();
+        b.name = Some("project-b".into());
+        b.engines.insert("pnpm".into(), ">=99999".into());
+        let manifests = vec![
+            (".".to_string(), empty_manifest()),
+            ("packages/a".to_string(), a),
+            ("packages/b".to_string(), b),
+        ];
+        let v = check_workspace_importers(&manifests, "18.0.0");
+        assert_eq!(v.len(), 2);
+        assert!(
+            v.iter()
+                .any(|m| m.package == "project-a" && m.engine == Engine::Node)
+        );
+        assert!(
+            v.iter()
+                .any(|m| m.package == "project-b" && m.engine == Engine::Pnpm)
+        );
+    }
+
+    #[test]
+    fn check_workspace_importers_falls_back_to_rel_path_label() {
+        // Unnamed workspace member — label by the rel_path so the
+        // mismatch is still locatable.
+        let mut unnamed = empty_manifest();
+        unnamed.name = None;
+        unnamed.engines.insert("node".into(), ">=99999".into());
+        let manifests = vec![("packages/unnamed".to_string(), unnamed)];
+        let v = check_workspace_importers(&manifests, "18.0.0");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].package, "packages/unnamed");
     }
 
     #[test]
@@ -418,6 +636,7 @@ mod tests {
         assert_eq!(mismatches.len(), 1, "engine mismatch should be surfaced");
         assert_eq!(mismatches[0].package, "pkg@1.0.0");
         assert_eq!(mismatches[0].declared, ">=99");
+        assert_eq!(mismatches[0].engine, Engine::Node);
     }
 
     // Guard against regressing the error-propagation fix. Unix-only
@@ -494,32 +713,10 @@ mod tests {
         // Restore perms so the tempdir can clean up cleanly.
         let mut perms = std::fs::metadata(&pkg_json).unwrap().permissions();
         perms.set_mode(0o644);
-        let _ = std::fs::set_permissions(&pkg_json, perms);
-
-        // Skip under root: mode bits don't constrain reads for uid
-        // 0, so the test can't observe the permission-denied path.
-        // SAFETY: libc::geteuid is a simple syscall with no
-        // preconditions or thread-safety concerns.
-        let is_root = unsafe { libc::geteuid() } == 0;
-        if is_root {
-            eprintln!("skipping permission-error test under root");
-            return;
-        }
+        std::fs::set_permissions(&pkg_json, perms).unwrap();
         assert!(
             result.is_err(),
-            "non-NotFound I/O error must propagate, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn resolve_node_version_strips_v_prefix() {
-        assert_eq!(
-            resolve_node_version(Some("v18.17.1")).as_deref(),
-            Some("18.17.1")
-        );
-        assert_eq!(
-            resolve_node_version(Some("20.0.0")).as_deref(),
-            Some("20.0.0")
+            "permission-denied read must propagate, got {result:?}"
         );
     }
 }

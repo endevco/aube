@@ -3341,6 +3341,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     crate::engines::run_checks(
         &aube_dir,
         &manifest,
+        &manifests,
         &graph_for_link,
         &package_indices,
         node_version.as_deref(),
