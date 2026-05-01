@@ -532,3 +532,155 @@ JSON
 	# from `add.rs` instead.
 	assert_output --partial "failed to fetch is-odd"
 }
+
+@test "AUBE_LOCKFILE=false aube add: installs the dep without writing a lockfile" {
+	# Ported from pnpm/test/install/misc.ts:63 ('install --no-lockfile').
+	# pnpm's `--no-lockfile` CLI flag has no aube counterpart — aube reads
+	# `lockfile` from .npmrc / workspace yaml / env (AUBE_LOCKFILE) only.
+	# The behavioral parity is the same: no aube-lock.yaml after the
+	# install. is-positive substituted with is-odd. The pnpm-workspace.yaml
+	# variant of this test is already covered above (misc.ts:83).
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-no-lockfile-env",
+  "version": "0.0.0"
+}
+JSON
+
+	AUBE_LOCKFILE=false run aube add is-odd
+	assert_success
+	assert_file_exists node_modules/is-odd/index.js
+	assert_file_not_exists aube-lock.yaml
+}
+
+@test "aube -r add: fails when no package name is provided in a workspace" {
+	# Ported from pnpm/test/install/misc.ts:254 ('pnpm -r add should fail
+	# if no package name was provided'). aube reuses the same `aube add`
+	# validator under the recursive (-r) entry so the error wording is
+	# identical to the single-project case at misc.ts:245 — generic
+	# 'no packages specified'.
+	mkdir -p project
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project
+YAML
+	cat >project/package.json <<'JSON'
+{
+  "name": "project",
+  "version": "1.0.0"
+}
+JSON
+
+	run aube -r add
+	assert_failure
+	assert_output --partial "no packages specified"
+}
+
+@test "AUBE_VIRTUAL_STORE_DIR: relocates the per-project virtual store outside node_modules" {
+	# Ported from pnpm/test/install/misc.ts:405 ('using a custom
+	# virtual-store-dir location'). pnpm's `--virtual-store-dir=.pnpm`
+	# CLI flag has no aube counterpart — virtualStoreDir is npmrc/env-only
+	# (sources.cli = [] in settings.toml). The behavioral parity is that
+	# the relocated dir houses the dep_path entries and the top-level
+	# symlink in node_modules/ still resolves to a real package.
+	#
+	# rimraf substituted with is-odd. We don't assert on the dep_path
+	# subdir naming inside .aube/ — pnpm's test asserts on its specific
+	# `<name>@<version>/node_modules/<name>/` shape, and aube's encoded
+	# dep_path is BLAKE3-suffixed in the general case (the regression
+	# guard is "the relocated dir has content", not the layout details
+	# already covered in graph_hash.rs unit tests).
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-virtual-store-relocated",
+  "version": "0.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+
+	AUBE_VIRTUAL_STORE_DIR=.aube run aube install --no-frozen-lockfile
+	assert_success
+	# The virtual store is now at <project>/.aube/, not the default
+	# node_modules/.aube/. Must exist and contain at least one entry.
+	assert_dir_exists .aube
+	run sh -c 'ls -A .aube | head -1 | grep -q .'
+	assert_success
+	# Default location must NOT have been written to.
+	assert_dir_not_exists node_modules/.aube
+	# Top-level entry still resolves to a real package, regardless of
+	# where the virtual store lives.
+	assert_file_exists node_modules/is-odd/package.json
+}
+
+@test "CI=1: install fails when the lockfile drifts from package.json" {
+	# Ported from pnpm/test/install/misc.ts:427 ('installing in a CI
+	# environment'). rimraf substituted with is-odd (3.0.1 -> 0.1.2 to
+	# force a real version drift the lockfile can't satisfy). Covers
+	# steps 1-3 of pnpm's test: initial install seeds a lockfile,
+	# drifted package.json under CI=1 fails (Frozen mode auto-on), and
+	# `--no-frozen-lockfile` bypasses. Pnpm's step 4
+	# (`--no-prefer-frozen-lockfile`) has no aube counterpart —
+	# `--no-frozen-lockfile` is the canonical bypass.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-ci-frozen",
+  "version": "0.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+
+	# Step 1: seed the lockfile (CI=1 still resolves when no lockfile
+	# is present — see install.bats "aube install in CI generates a
+	# lockfile when none is present").
+	CI=1 run aube install
+	assert_success
+	assert_file_exists aube-lock.yaml
+
+	# Step 2: drift the manifest. CI=1 makes the default Frozen, so
+	# the install must hard-fail rather than silently re-resolve.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-ci-frozen",
+  "version": "0.0.0",
+  "dependencies": { "is-odd": "0.1.2" }
+}
+JSON
+	CI=1 run aube install
+	assert_failure
+
+	# Step 3: explicit --no-frozen-lockfile bypasses the CI default.
+	CI=1 run aube install --no-frozen-lockfile
+	assert_success
+	assert_file_exists node_modules/is-odd/package.json
+}
+
+@test "CI=1 + AUBE_PREFER_FROZEN_LOCKFILE=false: env-var override bypasses CI's frozen default" {
+	# Ported from pnpm/test/install/misc.ts:457 ('CI mode: frozen-lockfile
+	# can be overridden via environment variable'). pnpm uses
+	# `pnpm_config_frozen_lockfile=false`; aube has no `frozen-lockfile`
+	# setting — the env-equivalent override is `AUBE_PREFER_FROZEN_LOCKFILE=false`,
+	# which maps to FrozenMode::No (skip drift checks entirely). Same
+	# observable outcome: install succeeds despite drift under CI=1.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-ci-frozen-env-override",
+  "version": "0.0.0",
+  "dependencies": { "is-odd": "3.0.1" }
+}
+JSON
+
+	CI=1 run aube install
+	assert_success
+
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-misc-ci-frozen-env-override",
+  "version": "0.0.0",
+  "dependencies": { "is-odd": "0.1.2" }
+}
+JSON
+
+	CI=1 AUBE_PREFER_FROZEN_LOCKFILE=false run aube install
+	assert_success
+	assert_file_exists node_modules/is-odd/package.json
+}
