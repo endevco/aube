@@ -47,7 +47,7 @@ console.error(`wrote ${Object.keys(primer).length} packages to ${out}`)
 
 async function packumentSeed(name, keepVersions) {
   const url = `https://registry.npmjs.org/${encodePackageName(name)}`
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*' },
   })
   if (!res.ok) {
@@ -183,9 +183,31 @@ function hasProvenance(attestations) {
 }
 
 async function fetchPopularNames(url) {
-  const res = await fetch(url)
+  const res = await fetchWithRetry(url)
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   return parseNames(await res.text(), url)
+}
+
+// Wrap fetch to retry transient failures: socket resets / TLS hangups
+// from npmjs.com hit a single uncached fetch hard during long primer
+// runs (786 of 2000 packages got us a SocketError once already). Also
+// retry 5xx and 429. 4xx other than 429 are permanent — propagate.
+async function fetchWithRetry(url, init, attempts = 5) {
+  let delay = 1000
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await fetch(url, init)
+      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) return res
+      if (i === attempts) return res
+      console.error(`  retry ${i}/${attempts - 1}: HTTP ${res.status}`)
+    } catch (err) {
+      if (i === attempts) throw err
+      console.error(`  retry ${i}/${attempts - 1}: ${err.cause?.code ?? err.code ?? err.message}`)
+    }
+    await new Promise((r) => setTimeout(r, delay))
+    delay *= 2
+  }
+  throw new Error('unreachable')
 }
 
 function parseNames(text, source) {
