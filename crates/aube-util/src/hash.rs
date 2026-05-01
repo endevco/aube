@@ -1,4 +1,140 @@
 use std::hash::{Hash, Hasher};
+use std::io;
+
+/// Length-prefixed, tagged BLAKE3 builder. Every field carries a
+/// short ASCII tag plus a `u64` length so concatenation collisions
+/// are impossible: `("a", "bc")` and `("ab", "c")` produce different
+/// digests.
+///
+/// All hashers in aube that mix multiple typed fields (per-package
+/// fingerprints, graph node hashes, dep_path short names) should use
+/// this so the encoding stays uniform across crates.
+#[derive(Debug, Default, Clone)]
+pub struct Blake3Builder(blake3::Hasher);
+
+impl Blake3Builder {
+    pub fn new() -> Self {
+        Self(blake3::Hasher::new())
+    }
+
+    /// Mix raw bytes without any tag or length prefix. Use only for
+    /// fixed-shape payloads where the position carries the meaning.
+    pub fn raw(&mut self, bytes: &[u8]) -> &mut Self {
+        self.0.update(bytes);
+        self
+    }
+
+    /// Mix a tagged, length-prefixed field.
+    pub fn field(&mut self, tag: &[u8], bytes: &[u8]) -> &mut Self {
+        self.0.update(tag);
+        self.0.update(&(bytes.len() as u64).to_le_bytes());
+        self.0.update(bytes);
+        self
+    }
+
+    /// Mix an `Option<&[u8]>`. `None` is encoded as a length of
+    /// `u64::MAX` so it cannot collide with any real-length payload.
+    pub fn optional(&mut self, tag: &[u8], value: Option<&[u8]>) -> &mut Self {
+        match value {
+            Some(b) => self.field(tag, b),
+            None => {
+                self.0.update(tag);
+                self.0.update(&u64::MAX.to_le_bytes());
+                self
+            }
+        }
+    }
+
+    /// Mix an iterable list of byte items. The list count is
+    /// length-prefixed first, then each item is tagged with `i`.
+    pub fn list<'a, I>(&mut self, tag: &[u8], items: I) -> &mut Self
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let collected: Vec<&[u8]> = items.into_iter().collect();
+        self.0.update(tag);
+        self.0.update(&(collected.len() as u64).to_le_bytes());
+        for item in collected {
+            self.field(b"i", item);
+        }
+        self
+    }
+
+    /// Finalize as a 64-char hex string.
+    pub fn finalize_hex(&self) -> String {
+        self.0.finalize().to_hex().to_string()
+    }
+
+    /// Finalize as raw 32 bytes.
+    pub fn finalize_bytes(&self) -> [u8; 32] {
+        *self.0.finalize().as_bytes()
+    }
+
+    /// Finalize as a short hex prefix written into a stack buffer.
+    /// Returns the borrowed `&str` view. The buffer must be large
+    /// enough for the requested prefix length.
+    pub fn finalize_short_hex<'a, const N: usize>(&self, buf: &'a mut [u8; N]) -> &'a str {
+        let full = self.0.finalize();
+        let hex = full.to_hex();
+        let bytes = hex.as_bytes();
+        let take = N.min(bytes.len());
+        buf[..take].copy_from_slice(&bytes[..take]);
+        std::str::from_utf8(&buf[..take]).expect("hex is ASCII")
+    }
+}
+
+/// Trait-object wrapper for any byte-eating hasher. The caller adapts
+/// their concrete hasher (e.g. `sha2::Sha512`) into a `&mut dyn
+/// ByteHasher` so this crate stays free of the `sha2` dep.
+pub trait ByteHasher {
+    fn update(&mut self, bytes: &[u8]);
+}
+
+impl ByteHasher for blake3::Hasher {
+    fn update(&mut self, bytes: &[u8]) {
+        blake3::Hasher::update(self, bytes);
+    }
+}
+
+/// `Read` adapter that updates one or more hashers as bytes flow
+/// through. Used by streaming tarball verification (BLAKE3 per CAS
+/// entry, SHA-512 for tarball integrity, both updated incrementally
+/// while the body downloads).
+pub struct TeeReader<'h, R> {
+    inner: R,
+    hashers: Vec<&'h mut dyn ByteHasher>,
+}
+
+impl<'h, R> TeeReader<'h, R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hashers: Vec::new(),
+        }
+    }
+
+    pub fn with_hasher(mut self, h: &'h mut dyn ByteHasher) -> Self {
+        self.hashers.push(h);
+        self
+    }
+
+    pub fn into_inner(self) -> R {
+        self.inner
+    }
+}
+
+impl<R: io::Read> io::Read for TeeReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            for h in self.hashers.iter_mut() {
+                h.update(&buf[..n]);
+            }
+        }
+        Ok(n)
+    }
+}
+
 
 pub fn ordered_seq_hash<I, T>(iter: I) -> u64
 where

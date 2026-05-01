@@ -76,6 +76,60 @@ pub fn atomic_write(final_path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
+/// Outcome of a `write_excl` attempt. `Created` means our bytes
+/// committed at the final path. `AlreadyExists` means another writer
+/// (or a prior process) committed first; for content-addressed
+/// stores this is a success path because the existing bytes are
+/// bit-identical by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Created,
+    AlreadyExists,
+}
+
+/// Direct `O_CREAT|O_EXCL|O_WRONLY` write to a final path. Skips the
+/// tempfile + rename dance for content-addressed paths where racing
+/// writers produce bit-identical content.
+///
+/// Creates parent directories on demand. On `EEXIST`, returns
+/// `AlreadyExists` rather than erroring — the caller decides whether
+/// that's a success (CAS) or a real error (other layouts).
+///
+/// Sets POSIX mode via `set_permissions` while the file is still
+/// open. Windows inherits ACLs; the `mode` argument is ignored
+/// there.
+pub fn write_excl(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<WriteOutcome> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    let file = match opts.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            return Ok(WriteOutcome::AlreadyExists);
+        }
+        Err(e) => return Err(e),
+    };
+    let mut file = file;
+    {
+        use std::io::Write as _;
+        file.write_all(bytes)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Some(m) = mode {
+            file.set_permissions(std::fs::Permissions::from_mode(m))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
+    Ok(WriteOutcome::Created)
+}
+
 pub mod sentinel {
     use super::*;
 
