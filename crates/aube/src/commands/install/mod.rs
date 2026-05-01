@@ -830,11 +830,11 @@ pub(super) async fn fetch_packages(
     let raw_workspace = aube_manifest::workspace::load_both(&cwd)
         .map(|(_, raw)| raw)
         .unwrap_or_default();
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
         workspace_yaml: &raw_workspace,
-        env: &env,
+        env,
         cli: &[],
     };
     let network_concurrency = resolve_network_concurrency(&ctx);
@@ -2031,7 +2031,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         let read_package_hook: Option<Box<dyn aube_resolver::ReadPackageHook>> =
             read_package_host.map(|h| Box::new(h) as Box<dyn aube_resolver::ReadPackageHook>);
         let mut resolver = configure_resolver(
-            aube_resolver::Resolver::new(client),
+            aube_resolver::Resolver::new(client.clone()),
             &cwd,
             &manifest,
             ResolverConfigInputs {
@@ -2069,8 +2069,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         crate::pnpmfile::run_after_all_resolved_chain(&pnpmfile_paths, &cwd, &mut graph).await?;
         // Same tarball-URL population pass as the main fetch branch —
         // keeps `--lockfile-only` and regular installs byte-identical.
+        // Reuses the resolver's `client` (already built above) to avoid
+        // re-walking `.npmrc` and rebuilding the rustls client just to
+        // construct registry URLs.
         if lockfile_include_tarball_url {
-            let lo_client = make_client(&cwd);
+            let lo_client = client.as_ref();
             graph.settings.lockfile_include_tarball_url = true;
             for pkg in graph.packages.values_mut() {
                 if pkg.local_source.is_some() {
@@ -2305,6 +2308,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         std::sync::Mutex<Vec<crate::deprecations::DeprecationRecord>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
+    // Captures the prewarm task's `compute_graph_hashes` output so the
+    // link phase can reuse it instead of recomputing the same 4-pass
+    // BLAKE3 walk over `graph.packages`. Populated by the no-lockfile
+    // branch when the prewarm task uses GVS; left `None` on the
+    // frozen-lockfile path or when the prewarm short-circuits.
+    let mut prewarm_graph_hashes: Option<
+        std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>,
+    > = None;
     let (graph, package_indices, cached_count, fetch_count) = match lockfile_result {
         Ok((mut graph, kind)) => {
             // Drop optional deps that don't match the current platform
@@ -2879,7 +2890,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 }
             };
             let materialize_handle: tokio::task::JoinHandle<
-                miette::Result<aube_linker::LinkStats>,
+                miette::Result<(
+                    aube_linker::LinkStats,
+                    Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
+                )>,
             > = tokio::spawn(async move {
                 // Build the prewarm linker once the channel starts
                 // delivering — same graph hashes + patch hashes that the
@@ -2892,15 +2906,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     let key = format!("{name}@{version}");
                     materialize_patch_hashes.get(&key).cloned()
                 };
-                let graph_hashes = aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
-                    &materialize_graph,
-                    &materialize_allow,
-                    engine.as_ref(),
-                    &patch_hash_fn,
+                let graph_hashes_arc = std::sync::Arc::new(
+                    aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
+                        &materialize_graph,
+                        &materialize_allow,
+                        engine.as_ref(),
+                        &patch_hash_fn,
+                    ),
                 );
                 let mut linker =
                     aube_linker::Linker::new(materialize_store.as_ref(), materialize_strategy)
-                        .with_graph_hashes(graph_hashes)
+                        .with_graph_hashes((*graph_hashes_arc).clone())
                         .with_virtual_store_dir_max_length(
                             materialize_virtual_store_dir_max_length,
                         );
@@ -2925,7 +2941,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // channel to unblock the sender and return empty stats.
                     let mut rx = materialize_rx;
                     while rx.recv().await.is_some() {}
-                    return Ok(aube_linker::LinkStats::default());
+                    return Ok((
+                        aube_linker::LinkStats::default(),
+                        Some(graph_hashes_arc.clone()),
+                    ));
                 }
                 let linker = std::sync::Arc::new(linker);
                 let graph = materialize_graph;
@@ -3021,7 +3040,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     total.packages_cached += s.packages_cached;
                     total.files_linked += s.files_linked;
                 }
-                Ok(total)
+                Ok((total, Some(graph_hashes_arc.clone())))
             });
 
             // Wait for all fetches to complete. If fetch fails we have
@@ -3046,7 +3065,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // Drain the materializer; its stats get rolled into the
             // final link stats below. Errors abort the install just like
             // a failing link phase would.
-            let prewarm_stats = materialize_handle.await.into_diagnostic()??;
+            let (prewarm_stats, prewarm_hashes_from_task) =
+                materialize_handle.await.into_diagnostic()??;
+            prewarm_graph_hashes = prewarm_hashes_from_task;
             tracing::debug!(
                 "phase:prewarm-gvs {:.1?} ({} packages, {} files)",
                 materialize_phase_start.elapsed(),
@@ -3472,21 +3493,40 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     };
 
     if linker.uses_global_virtual_store() {
-        let engine = node_version
-            .as_deref()
-            .map(aube_lockfile::graph_hash::engine_name_default);
-        let allow = |name: &str, version: &str| {
-            matches!(
-                build_policy.decide(name, version),
-                aube_scripts::AllowDecision::Allow
+        // Reuse the prewarm task's `compute_graph_hashes` output when
+        // the link-phase graph matches what the prewarm hashed. The
+        // prewarm hashed the unfiltered post-resolve graph; if no
+        // dep-selection or workspace filter applied, `graph_for_link`
+        // == that graph by node count + key set, so the cached
+        // hashes are byte-identical to a fresh compute. Falling
+        // through to a fresh compute keeps the contract simple
+        // whenever the graphs diverge.
+        let cached_hashes = prewarm_graph_hashes.as_ref().filter(|arc| {
+            arc.node_hash.len() == graph_for_link.packages.len()
+                && graph_for_link
+                    .packages
+                    .keys()
+                    .all(|k| arc.node_hash.contains_key(k))
+        });
+        let graph_hashes = if let Some(arc) = cached_hashes {
+            (**arc).clone()
+        } else {
+            let engine = node_version
+                .as_deref()
+                .map(aube_lockfile::graph_hash::engine_name_default);
+            let allow = |name: &str, version: &str| {
+                matches!(
+                    build_policy.decide(name, version),
+                    aube_scripts::AllowDecision::Allow
+                )
+            };
+            aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
+                &graph_for_link,
+                &allow,
+                engine.as_ref(),
+                &patch_hash_fn,
             )
         };
-        let graph_hashes = aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
-            &graph_for_link,
-            &allow,
-            engine.as_ref(),
-            &patch_hash_fn,
-        );
         linker = linker.with_graph_hashes(graph_hashes);
     }
     if !patches_for_linker.is_empty() {
