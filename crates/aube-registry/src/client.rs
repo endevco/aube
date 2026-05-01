@@ -150,6 +150,13 @@ pub struct RegistryClient {
     http: reqwest::Client,
     http_by_uri: BTreeMap<String, reqwest::Client>,
     token_helper_cache: Mutex<BTreeMap<String, Option<String>>>,
+    /// Memoized result of `registry_auth_token_for(url)`. Without this,
+    /// every authed request walks `auth_by_uri` for a longest-prefix
+    /// match against `registry_url`. On a 2000-package install that's
+    /// 2000 × O(N_uris × strcmp) wasted lookups. The token is fixed
+    /// for the lifetime of the process (helpers are already memoized
+    /// in `token_helper_cache`), so per-URL caching is safe.
+    auth_token_by_url: Mutex<BTreeMap<String, Option<String>>>,
     config: NpmConfig,
     network_mode: NetworkMode,
     fetch_policy: FetchPolicy,
@@ -206,6 +213,7 @@ impl RegistryClient {
             http,
             http_by_uri,
             token_helper_cache: Mutex::new(BTreeMap::new()),
+            auth_token_by_url: Mutex::new(BTreeMap::new()),
             config,
             network_mode: NetworkMode::Online,
             fetch_policy,
@@ -407,15 +415,28 @@ impl RegistryClient {
     }
 
     fn registry_auth_token_for(&self, registry_url: &str) -> Option<String> {
-        if let Some(auth) = self.config.registry_config_for(registry_url) {
-            if let Some(token) = auth.auth_token.as_ref() {
-                return Some(token.to_string());
-            }
-            if let Some(helper) = auth.token_helper.as_deref() {
-                return self.cached_token_helper_result(helper);
-            }
+        // Fast path: memoized result. Hit on the second-and-later
+        // request to the same registry URL within one process.
+        if let Ok(cache) = self.auth_token_by_url.lock()
+            && let Some(cached) = cache.get(registry_url)
+        {
+            return cached.clone();
         }
-        None
+        let resolved = if let Some(auth) = self.config.registry_config_for(registry_url) {
+            if let Some(token) = auth.auth_token.as_ref() {
+                Some(token.to_string())
+            } else if let Some(helper) = auth.token_helper.as_deref() {
+                self.cached_token_helper_result(helper)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Ok(mut cache) = self.auth_token_by_url.lock() {
+            cache.insert(registry_url.to_string(), resolved.clone());
+        }
+        resolved
     }
 
     /// Cache key is the helper command itself, not the registry URL:
