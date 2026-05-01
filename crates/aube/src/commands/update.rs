@@ -225,9 +225,30 @@ pub async fn run(
             let key_owned = key.clone();
             let client = client.clone();
             handles.push(tokio::spawn(async move {
-                let packument = client.fetch_packument(&real_name).await.ok()?;
+                // A fetch failure here would silently fall through to the
+                // rewrite path and downgrade the prerelease pin — exactly
+                // what this guard is supposed to prevent. Surface the
+                // underlying error via tracing so the user can spot a
+                // transient registry failure that broke the guard, then
+                // continue with the resolver path (which has its own
+                // retry/cache semantics and may still succeed).
+                let packument = match client.fetch_packument(&real_name).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            "skipping prerelease-preservation check for {real_name}: {e}"
+                        );
+                        return None;
+                    }
+                };
                 let latest_v = packument.dist_tags.get("latest")?;
-                let parsed_latest = node_semver::Version::parse(latest_v).ok()?;
+                let Ok(parsed_latest) = node_semver::Version::parse(latest_v) else {
+                    tracing::warn!(
+                        "skipping prerelease-preservation check for {real_name}: \
+                         registry returned non-semver latest dist-tag {latest_v:?}"
+                    );
+                    return None;
+                };
                 (parsed_pin > parsed_latest).then_some(key_owned)
             }));
         }
@@ -616,6 +637,11 @@ fn looks_like_exact_version(spec: &str) -> bool {
 /// Handles bare `1.2.3` and `=1.2.3` plus the `npm:<real>@<version>`
 /// alias form. Returns `None` for ranges, tags, or anything else
 /// `looks_like_exact_version` rejects.
+///
+/// The returned slice is the bare version (already stripped of
+/// `npm:`, the `<name>@` alias prefix, the optional `=` operator, and
+/// any surrounding whitespace) — suitable for `Version::parse`. It is
+/// NOT a valid round-trip back to the original specifier.
 fn exact_pin_version(spec: &str) -> Option<&str> {
     let stripped = spec.strip_prefix("npm:").unwrap_or(spec);
     // Drop the optional `<name>@` prefix on alias forms.
