@@ -67,8 +67,12 @@ jobs:
       - name: Summarize change
         run: node benchmarks/summarize-results-change.mjs /tmp/aube-bench-base.json /tmp/aube-bench-head.json > /tmp/aube-bench-summary.md
 
-      - name: Comment on PR
+      - name: Write benchmark summary
         if: github.event_name == 'pull_request'
+        run: cat /tmp/aube-bench-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
