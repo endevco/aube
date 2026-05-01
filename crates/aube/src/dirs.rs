@@ -35,6 +35,18 @@ pub fn cwd() -> miette::Result<PathBuf> {
 /// matching pnpm's behavior of walking up when run outside a project
 /// directory.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
+    // Memoized per-process. Run-class commands (`aube run`, `aube
+    // exec`, `aube dlx`) hit this 4-8 times per invocation from
+    // different call sites; without the cache each call repeats the
+    // ancestor stat walk. The cwd doesn't move under us mid-process,
+    // so once-per-start is correct.
+    static CACHE: aube_util::cache::ProcessCache<PathBuf, Option<PathBuf>> =
+        aube_util::cache::ProcessCache::new();
+    let key = start.to_path_buf();
+    (*CACHE.get_or_compute(key, || find_project_root_uncached(start))).clone()
+}
+
+fn find_project_root_uncached(start: &Path) -> Option<PathBuf> {
     // Walk up looking for package.json. Stops at $HOME so a stray
     // `aube install` in an empty /tmp dir cannot climb out into the
     // user's home dir and attach itself to a parent project. Real
@@ -92,6 +104,13 @@ fn package_json_has_workspaces(path: &Path) -> bool {
 /// The aube-owned yaml name wins at read time elsewhere, but discovery
 /// only needs to know whether any of those markers fixes the root.
 pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    static CACHE: aube_util::cache::ProcessCache<PathBuf, Option<PathBuf>> =
+        aube_util::cache::ProcessCache::new();
+    let key = start.to_path_buf();
+    (*CACHE.get_or_compute(key, || find_workspace_root_uncached(start))).clone()
+}
+
+fn find_workspace_root_uncached(start: &Path) -> Option<PathBuf> {
     // Same home-boundary story as find_project_root. Without it, an
     // `aube install` from an empty scratch dir could climb into the
     // user's home, find a parent workspace yaml or package.json with

@@ -87,11 +87,11 @@ pub async fn run(
     // silently drop `deployAllFiles: true`.
     let npmrc_entries = aube_registry::config::load_npmrc_entries(&source_root);
     let raw_workspace = aube_manifest::workspace::load_raw(&source_root).unwrap_or_default();
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let settings_ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
         workspace_yaml: &raw_workspace,
-        env: &env,
+        env,
         cli: &[],
     };
     let deploy_all_files = aube_settings::resolved::deploy_all_files(&settings_ctx);

@@ -610,11 +610,11 @@ fn resolve_update_ignore_dependencies(
     let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(cwd)
         .into_diagnostic()
         .wrap_err("failed to read workspace config")?;
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
         workspace_yaml: &raw_workspace,
-        env: &env,
+        env,
         cli: &[],
     };
 

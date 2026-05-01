@@ -425,11 +425,15 @@ pub(crate) fn with_settings_ctx<T>(
 ) -> T {
     let npmrc = aube_registry::config::load_npmrc_entries(cwd);
     let raw_workspace = aube_manifest::workspace::load_raw(cwd).unwrap_or_default();
-    let env = aube_settings::values::capture_env();
+    // `process_env()` returns a `&'static` borrow of the once-captured
+    // env. Avoids cloning ~200-500 String pairs every time a command
+    // builds a ResolveCtx (the typical path hits this 5+ times per
+    // `aube run`).
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
         workspace_yaml: &raw_workspace,
-        env: &env,
+        env,
         cli: &[],
     };
     f(&ctx)
@@ -534,11 +538,11 @@ pub(crate) fn resolve_fetch_policy(cwd: &std::path::Path) -> aube_registry::conf
     let workspace_yaml = aube_manifest::workspace::load_both(cwd)
         .map(|(_, raw)| raw)
         .unwrap_or_default();
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
         workspace_yaml: &workspace_yaml,
-        env: &env,
+        env,
         cli: fetch_cli_overrides(),
     };
     aube_registry::config::FetchPolicy::from_ctx(&ctx)
@@ -1255,11 +1259,11 @@ enum VerifyDepsBeforeRun {
 fn resolve_verify_deps_before_run(cwd: &std::path::Path) -> miette::Result<VerifyDepsBeforeRun> {
     let npmrc = aube_registry::config::load_npmrc_entries(cwd);
     let empty_ws = std::collections::BTreeMap::new();
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
         workspace_yaml: &empty_ws,
-        env: &env,
+        env,
         cli: &[],
     };
     let raw = aube_settings::resolved::verify_deps_before_run(&ctx);

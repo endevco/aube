@@ -22,11 +22,11 @@ pub fn run(name: &str, args: &[String], registry: Option<&str>) -> miette::Resul
     let cwd = crate::dirs::cwd()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
     let empty_ws = std::collections::BTreeMap::new();
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
         workspace_yaml: &empty_ws,
-        env: &env,
+        env,
         cli: &[],
     };
 

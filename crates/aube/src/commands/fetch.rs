@@ -121,11 +121,11 @@ pub async fn run(args: FetchArgs) -> miette::Result<()> {
     let raw_workspace = aube_manifest::workspace::load_both(&cwd)
         .map(|(_, raw)| raw)
         .unwrap_or_default();
-    let env = aube_settings::values::capture_env();
+    let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
         workspace_yaml: &raw_workspace,
-        env: &env,
+        env,
         cli: &[],
     };
     let git_shallow_hosts = aube_settings::resolved::git_shallow_hosts(&ctx);
