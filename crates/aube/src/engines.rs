@@ -130,19 +130,26 @@ fn check_engine_field(
 /// `package` label (project name or "(root)" for an unnamed root). This
 /// runs against root + workspace-project manifests; transitive deps go
 /// through `collect_dep_mismatches` (node-only).
+///
+/// `node_version` is `None` when no Node binary was probed and no
+/// `node-version` override is set — in that case the `engines.node`
+/// field is skipped (we have nothing to compare against), but
+/// `engines.aube` / `engines.pnpm` still run.
 fn check_manifest_engines(
     manifest: &aube_manifest::PackageJson,
     label: &str,
-    node_version: &str,
+    node_version: Option<&str>,
 ) -> Vec<Mismatch> {
     let aube_v = aube_version();
     let mut out = Vec::new();
-    if let Some(declared) = check_engine_field(&manifest.engines, "node", node_version) {
+    if let Some(node_v) = node_version
+        && let Some(declared) = check_engine_field(&manifest.engines, "node", node_v)
+    {
         out.push(Mismatch {
             engine: Engine::Node,
             package: label.to_string(),
             declared,
-            current: node_version.to_string(),
+            current: node_v.to_string(),
         });
     }
     if let Some(declared) = check_engine_field(&manifest.engines, "aube", aube_v) {
@@ -312,7 +319,10 @@ pub fn collect_dep_mismatches(
 /// Check the root manifest's `engines.{node,aube,pnpm}` constraints.
 /// The package label is the manifest's `name`, falling back to
 /// `(root)` for unnamed manifests.
-pub fn check_root(manifest: &aube_manifest::PackageJson, node_version: &str) -> Vec<Mismatch> {
+pub fn check_root(
+    manifest: &aube_manifest::PackageJson,
+    node_version: Option<&str>,
+) -> Vec<Mismatch> {
     let label = manifest.name.as_deref().unwrap_or("(root)");
     check_manifest_engines(manifest, label, node_version)
 }
@@ -329,7 +339,7 @@ pub fn check_root(manifest: &aube_manifest::PackageJson, node_version: &str) -> 
 /// get reported twice.
 pub fn check_workspace_importers(
     manifests: &[(String, aube_manifest::PackageJson)],
-    node_version: &str,
+    node_version: Option<&str>,
 ) -> Vec<Mismatch> {
     let mut out = Vec::new();
     for (rel_path, manifest) in manifests {
@@ -359,20 +369,13 @@ pub fn run_checks(
 ) -> miette::Result<()> {
     let mut mismatches = Vec::new();
 
-    // Use a sentinel string for the node version when we couldn't
-    // probe one; `check_engine_field` skips fields the manifest
-    // doesn't declare, so passing the sentinel only matters when
-    // someone explicitly set `engines.node` — in which case the
-    // version-parse fallback in `version_satisfies` returns true
-    // (no opinion) and the check is a no-op. Cleaner than threading
-    // an Option through every helper.
-    let node_for_manifest = node_version.unwrap_or("0.0.0-no-node");
-
-    mismatches.extend(check_root(manifest, node_for_manifest));
-    mismatches.extend(check_workspace_importers(
-        workspace_manifests,
-        node_for_manifest,
-    ));
+    // `node_version` is `None` when no Node binary was probed and no
+    // `node-version` override is set. The manifest-engine helpers skip
+    // the `engines.node` field in that case (`check_engine_field` has
+    // nothing to compare against), but still validate `engines.aube` /
+    // `engines.pnpm` against aube's own version.
+    mismatches.extend(check_root(manifest, node_version));
+    mismatches.extend(check_workspace_importers(workspace_manifests, node_version));
 
     // Transitive deps only get checked when we have a real Node
     // version — that scan is `engines.node`-only and there's nothing
@@ -452,14 +455,14 @@ mod tests {
     #[test]
     fn check_root_skips_when_no_engines() {
         let m = empty_manifest();
-        assert!(check_root(&m, "18.0.0").is_empty());
+        assert!(check_root(&m, Some("18.0.0")).is_empty());
     }
 
     #[test]
     fn check_root_flags_node_mismatch() {
         let mut m = empty_manifest();
         m.engines.insert("node".into(), ">=20".into());
-        let v = check_root(&m, "18.0.0");
+        let v = check_root(&m, Some("18.0.0"));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].engine, Engine::Node);
         assert_eq!(v[0].declared, ">=20");
@@ -472,7 +475,7 @@ mod tests {
         // doesn't churn at every version bump.
         let mut m = empty_manifest();
         m.engines.insert("aube".into(), ">=99999".into());
-        let v = check_root(&m, "18.0.0");
+        let v = check_root(&m, Some("18.0.0"));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].engine, Engine::Aube);
         assert_eq!(v[0].declared, ">=99999");
@@ -483,7 +486,7 @@ mod tests {
     fn check_root_flags_pnpm_mismatch() {
         let mut m = empty_manifest();
         m.engines.insert("pnpm".into(), ">=99999".into());
-        let v = check_root(&m, "18.0.0");
+        let v = check_root(&m, Some("18.0.0"));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].engine, Engine::Pnpm);
         assert_eq!(v[0].current, aube_version());
@@ -496,7 +499,7 @@ mod tests {
         // `version_satisfies` would flip this assertion.
         let mut m = empty_manifest();
         m.engines.insert("aube".into(), ">=0.0.1".into());
-        assert!(check_root(&m, "18.0.0").is_empty());
+        assert!(check_root(&m, Some("18.0.0")).is_empty());
     }
 
     #[test]
@@ -507,12 +510,31 @@ mod tests {
         m.engines.insert("node".into(), ">=99999".into());
         m.engines.insert("aube".into(), ">=99999".into());
         m.engines.insert("pnpm".into(), ">=99999".into());
-        let v = check_root(&m, "18.0.0");
+        let v = check_root(&m, Some("18.0.0"));
         assert_eq!(v.len(), 3);
         let engines: std::collections::HashSet<_> = v.iter().map(|m| m.engine).collect();
         assert!(engines.contains(&Engine::Node));
         assert!(engines.contains(&Engine::Aube));
         assert!(engines.contains(&Engine::Pnpm));
+    }
+
+    #[test]
+    fn check_root_skips_engines_node_when_no_node() {
+        // Regression: `run_checks` previously passed a sentinel string
+        // ("0.0.0-no-node") when no Node was probed. That sentinel is
+        // legal SemVer (prerelease tag `no-node`) and parses cleanly,
+        // so `>=N` ranges did NOT trigger the "no opinion" fallback —
+        // they ran for real and reported a spurious mismatch on every
+        // manifest declaring `engines.node`. Under engine-strict that
+        // hard-failed installs on machines without Node. The fix
+        // threads `Option<&str>` and skips the field entirely when
+        // None; engines.aube / engines.pnpm still run.
+        let mut m = empty_manifest();
+        m.engines.insert("node".into(), ">=20".into());
+        m.engines.insert("aube".into(), ">=99999".into());
+        let v = check_root(&m, None);
+        assert_eq!(v.len(), 1, "engines.node must be skipped, got {v:?}");
+        assert_eq!(v[0].engine, Engine::Aube);
     }
 
     #[test]
@@ -522,7 +544,7 @@ mod tests {
         let mut root = empty_manifest();
         root.engines.insert("node".into(), ">=99999".into());
         let manifests = vec![(".".to_string(), root)];
-        assert!(check_workspace_importers(&manifests, "18.0.0").is_empty());
+        assert!(check_workspace_importers(&manifests, Some("18.0.0")).is_empty());
     }
 
     #[test]
@@ -538,7 +560,7 @@ mod tests {
             ("packages/a".to_string(), a),
             ("packages/b".to_string(), b),
         ];
-        let v = check_workspace_importers(&manifests, "18.0.0");
+        let v = check_workspace_importers(&manifests, Some("18.0.0"));
         assert_eq!(v.len(), 2);
         assert!(
             v.iter()
@@ -558,7 +580,7 @@ mod tests {
         unnamed.name = None;
         unnamed.engines.insert("node".into(), ">=99999".into());
         let manifests = vec![("packages/unnamed".to_string(), unnamed)];
-        let v = check_workspace_importers(&manifests, "18.0.0");
+        let v = check_workspace_importers(&manifests, Some("18.0.0"));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].package, "packages/unnamed");
     }
@@ -714,9 +736,34 @@ mod tests {
         let mut perms = std::fs::metadata(&pkg_json).unwrap().permissions();
         perms.set_mode(0o644);
         std::fs::set_permissions(&pkg_json, perms).unwrap();
+        // Docker CI defaults to uid 0, and `chmod 000` is a no-op for
+        // root: `read_to_string` succeeds, the function returns Ok,
+        // and the assertion below would panic. Skip the regression
+        // check in that environment — the non-root path still runs
+        // on every developer laptop and on every non-root CI runner.
+        // SAFETY: libc::geteuid is a leaf syscall with no preconditions.
+        let is_root = unsafe { libc::geteuid() } == 0;
+        if is_root {
+            eprintln!("skipping permission-error test under root");
+            return;
+        }
         assert!(
             result.is_err(),
             "permission-denied read must propagate, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_node_version_strips_v_prefix() {
+        // `node --version` always prints `v<semver>`; the override
+        // path accepts both forms. Guard the strip.
+        assert_eq!(
+            resolve_node_version(Some("v18.17.1")).as_deref(),
+            Some("18.17.1")
+        );
+        assert_eq!(
+            resolve_node_version(Some("20.0.0")).as_deref(),
+            Some("20.0.0")
         );
     }
 }
