@@ -63,6 +63,26 @@ fn home_stop_boundary() -> Option<PathBuf> {
     aube_util::env::home_dir()
 }
 
+/// Shape-only check for a `package.json`'s `workspaces` field. Parses
+/// just enough JSON to know if the field is present and non-null,
+/// skipping the full `PackageJson` parse (which allocates IndexMaps,
+/// deps maps, scripts, the whole thing) for every ancestor in the
+/// walk. Callers up the chain run this 5-20 times per `aube run` /
+/// `aube exec` / `aube dlx`.
+fn package_json_has_workspaces(path: &Path) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ShapeOnly {
+        #[serde(default)]
+        workspaces: Option<serde::de::IgnoredAny>,
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    serde_json::from_slice::<ShapeOnly>(&bytes)
+        .map(|s| s.workspaces.is_some())
+        .unwrap_or(false)
+}
+
 /// Walk upward from `start` looking for the nearest workspace root.
 ///
 /// A workspace root is any ancestor that either:
@@ -83,10 +103,7 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
             return Some(dir.to_path_buf());
         }
         let pkg = dir.join("package.json");
-        if pkg.is_file()
-            && let Ok(manifest) = aube_manifest::PackageJson::from_path(&pkg)
-            && manifest.workspaces.is_some()
-        {
+        if pkg.is_file() && package_json_has_workspaces(&pkg) {
             return Some(dir.to_path_buf());
         }
         if stop.as_deref() == Some(dir) {
