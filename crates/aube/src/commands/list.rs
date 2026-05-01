@@ -78,8 +78,10 @@ pub struct ListArgs {
     /// `0` (default) shows only the top-level direct deps. Pass
     /// `9999` (or any large number) for the full graph;
     /// `--depth=Infinity` is accepted for pnpm/npm compat.
+    /// `--depth=-1` (pnpm spelling) lists project headers only —
+    /// no direct or transitive deps.
     #[arg(long, default_value = "0", value_parser = parse_depth)]
-    pub depth: usize,
+    pub depth: Depth,
 
     /// Output format: one of `default`, `json`, or `parseable`
     #[arg(long, value_enum, default_value_t = ListFormat::Default)]
@@ -103,19 +105,48 @@ pub struct ListArgs {
     pub parseable: bool,
 }
 
+/// Parsed `--depth` value. `include_direct=false` is the pnpm
+/// `--depth=-1` shape: list project headers only, no deps. The `max`
+/// field caps transitive expansion (0 = direct only, `usize::MAX` for
+/// `--depth=Infinity`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Depth {
+    pub include_direct: bool,
+    pub max: usize,
+}
+
+impl Depth {
+    /// Whether to recurse past the direct-deps layer.
+    fn includes_transitive(self) -> bool {
+        self.include_direct && self.max >= 1
+    }
+}
+
 /// `--depth=Infinity` is what pnpm/npm accept for "all the way down".
 /// Map it to a very large number so we never actually stop walking.
-/// `-1` is pnpm's spelling for "no transitive deps" and collapses to
-/// the same `0` we already use for top-level only.
-fn parse_depth(s: &str) -> Result<usize, String> {
+/// `-1` is pnpm's spelling for "no deps at all" and disables even the
+/// direct-deps layer (project header only) — distinct from `0`, which
+/// shows direct deps and stops there.
+fn parse_depth(s: &str) -> Result<Depth, String> {
     if s.eq_ignore_ascii_case("infinity") || s == "inf" {
-        return Ok(usize::MAX);
+        return Ok(Depth {
+            include_direct: true,
+            max: usize::MAX,
+        });
     }
     if s == "-1" {
-        return Ok(0);
+        return Ok(Depth {
+            include_direct: false,
+            max: 0,
+        });
     }
-    s.parse::<usize>()
-        .map_err(|e| format!("invalid depth {s:?}: {e}"))
+    let max = s
+        .parse::<usize>()
+        .map_err(|e| format!("invalid depth {s:?}: {e}"))?;
+    Ok(Depth {
+        include_direct: true,
+        max,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -503,6 +534,13 @@ fn render_default_for_importer(
     println!("{project_name}@{project_version} {project_path}");
     println!();
 
+    // `--depth=-1` lists project headers only — skip dep enumeration
+    // entirely. Pnpm's spelling for this case is to suppress everything
+    // beyond the project line.
+    if !args.depth.include_direct {
+        return Ok(());
+    }
+
     let grouped = group_roots(graph, importer, filter, args.pattern.as_deref());
     if grouped.prod.is_empty() && grouped.dev.is_empty() && grouped.optional.is_empty() {
         println!("(no dependencies)");
@@ -608,7 +646,7 @@ fn render_section(
         };
         println!("{connector}{} {version}{extra}", dep.name);
 
-        if args.depth >= 1
+        if args.depth.includes_transitive()
             && let Some(pkg) = pkg
         {
             let child_prefix = if is_last { "    " } else { "│   " };
@@ -642,7 +680,7 @@ fn render_subtree(
     vstore_max_len: usize,
     vstore_prefix: &str,
 ) {
-    if current_depth > args.depth {
+    if current_depth > args.depth.max {
         return;
     }
     let children: Vec<(&String, &String)> = pkg.dependencies.iter().collect();
@@ -739,6 +777,12 @@ fn json_importer_value(
         serde_json::Value::String(cwd.display().to_string()),
     );
 
+    // `--depth=-1` lists project headers only — emit just name/version/path
+    // and skip the dep maps. Pnpm's JSON output mirrors this shape.
+    if !args.depth.include_direct {
+        return serde_json::Value::Object(importer);
+    }
+
     if !grouped.prod.is_empty() {
         importer.insert(
             "dependencies".to_string(),
@@ -776,7 +820,7 @@ fn build_json_deps(
                 serde_json::Value::String(pkg.version.clone()),
             );
         }
-        if args.depth >= 1
+        if args.depth.includes_transitive()
             && let Some(pkg) = pkg
         {
             let mut visited: BTreeSet<String> = BTreeSet::new();
@@ -802,7 +846,7 @@ fn build_json_subtree(
     visited: &mut BTreeSet<String>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut out = serde_json::Map::new();
-    if current_depth > args.depth {
+    if current_depth > args.depth.max {
         return out;
     }
     for (name, version) in &pkg.dependencies {
@@ -851,6 +895,14 @@ fn render_parseable_for_importer(
     filter: DepFilter,
     importer: &str,
 ) -> miette::Result<()> {
+    // `--depth=-1` lists project headers only — skip dep enumeration
+    // entirely so the only thing on stdout is the importer dir line
+    // emitted by the caller. Without this guard, projects with deps
+    // would still print dep records that pnpm suppresses.
+    if !args.depth.include_direct {
+        return Ok(());
+    }
+
     let grouped = group_roots(graph, importer, filter, args.pattern.as_deref());
 
     // Collect roots + transitives (respecting --depth) into a BTreeMap so
@@ -867,8 +919,8 @@ fn render_parseable_for_importer(
                 dep.dep_path.clone(),
                 (pkg.name.clone(), pkg.version.clone()),
             );
-            if args.depth >= 1 {
-                collect_transitive(graph, pkg, args.depth, 1, &mut out);
+            if args.depth.includes_transitive() {
+                collect_transitive(graph, pkg, args.depth.max, 1, &mut out);
             }
         }
     }
@@ -946,7 +998,10 @@ mod tests {
             dev: false,
             prod: false,
             global: false,
-            depth: usize::MAX,
+            depth: Depth {
+                include_direct: true,
+                max: usize::MAX,
+            },
             format: ListFormat::Json,
             json: true,
             long: false,

@@ -167,8 +167,11 @@ _setup_no_match_workspace() {
 # `./packages/**` sub-case ports cleanly.
 @test "aube list --filter=./packages/**: matches every package under the directory" {
 	# Ported from pnpm/test/monorepo/index.ts:1662 (sub-case 2).
-	# `--depth=-1` is pnpm's spelling for "no transitive deps"; aube
-	# accepts it as an alias for `--depth=0`.
+	# `--depth=-1` is pnpm's spelling for "list project headers only,
+	# no deps". project-1 has a real dep (is-odd) so this also locks
+	# the contract that `--depth=-1` skips dep enumeration even when
+	# the importer has deps to enumerate — the no-deps semantics is
+	# distinct from `--depth=0` (which prints direct deps).
 	cat >package.json <<-'EOF'
 		{"name": "root", "version": "0.0.0", "private": true}
 	EOF
@@ -179,7 +182,11 @@ _setup_no_match_workspace() {
 	EOF
 	mkdir -p packages/project-1 packages/project-2
 	cat >packages/project-1/package.json <<-'EOF'
-		{"name": "project-1", "version": "1.0.0"}
+		{
+		  "name": "project-1",
+		  "version": "1.0.0",
+		  "dependencies": {"is-odd": "^3.0.1"}
+		}
 	EOF
 	cat >packages/project-2/package.json <<-'EOF'
 		{"name": "project-2", "version": "1.0.0"}
@@ -197,4 +204,14 @@ _setup_no_match_workspace() {
 	# its own line ending with the package directory.
 	assert_line --regexp '/packages/project-1$'
 	assert_line --regexp '/packages/project-2$'
+	# `--depth=-1` must NOT emit any dep records (project-1 owns
+	# is-odd as a direct dep — make sure it doesn't leak).
+	refute_output --partial "is-odd"
+
+	# Sanity: with `--depth=0` (direct deps only) the same fixture
+	# does emit project-1's direct dep, so the suppression above is
+	# specific to `-1`, not a side effect of the filter.
+	run aube list --filter='./packages/**' --parseable --depth=0
+	assert_success
+	assert_output --partial "is-odd"
 }
