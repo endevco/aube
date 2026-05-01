@@ -771,11 +771,14 @@ EOF
 	# transitive — neither package declares any deps natively, so the
 	# only way these entries land is via the readPackage rewrite.
 	assert_file_exists aube-lock.yaml
-	# Use `awk` to scope the grep to the snapshots: section so we don't
-	# match the importer-side dep declarations above.
-	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep -A2 '^  is-positive@1.0.0:'"
+	# Outer awk scopes to the snapshots: section (so we don't match the
+	# importer-side dep declarations above); inner awk extracts the
+	# specific snapshot block, walking forward until the next sibling key
+	# at 2-space indent — resilient to future fields (`resolution:`, etc.)
+	# being inserted before `dependencies:` inside the block.
+	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | awk '/^  is-positive@1.0.0:\$/{flag=1; next} /^  [^ ]/{flag=0} flag'"
 	assert_output --partial '@pnpm.e2e/dep-of-pkg-with-1-dep'
-	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | grep -A2 '^  is-negative@1.0.0:'"
+	run bash -c "awk '/^snapshots:/,0' aube-lock.yaml | awk '/^  is-negative@1.0.0:\$/{flag=1; next} /^  [^ ]/{flag=0} flag'"
 	assert_output --partial '@pnpm.e2e/dep-of-pkg-with-1-dep'
 }
 
@@ -847,18 +850,24 @@ EOF
 
 	# Two pnpm:hook readPackage ndjson records, in global-then-local
 	# order. Same prefix (project root), distinct from (one per pnpmfile).
-	mapfile -t hook_logs < <(printf '%s\n' "$install_stdout" | jq -c 'select(.name == "pnpm:hook" and .hook == "readPackage")' 2>/dev/null)
-	[ "${#hook_logs[@]}" -ge 2 ] || {
-		echo "expected at least 2 pnpm:hook readPackage records, got ${#hook_logs[@]}"
+	# Avoid `mapfile` here — macOS still ships bash 3.2 in CI, so the
+	# bash-4 builtin is unavailable. Pull individual records with sed
+	# instead, which is portable across both runners.
+	hook_logs=$(printf '%s\n' "$install_stdout" | jq -c 'select(.name == "pnpm:hook" and .hook == "readPackage")' 2>/dev/null)
+	hook_count=$(printf '%s\n' "$hook_logs" | grep -c .)
+	[ "$hook_count" -ge 2 ] || {
+		echo "expected at least 2 pnpm:hook readPackage records, got $hook_count"
 		echo "stdout was: $install_stdout"
 		false
 	}
-	[ "$(printf '%s' "${hook_logs[0]}" | jq -r '.message')" = 'is-positive pinned to 3.0.0' ]
-	[ "$(printf '%s' "${hook_logs[1]}" | jq -r '.message')" = 'is-positive pinned to 1.0.0' ]
-	prefix0=$(printf '%s' "${hook_logs[0]}" | jq -r '.prefix')
-	prefix1=$(printf '%s' "${hook_logs[1]}" | jq -r '.prefix')
-	from0=$(printf '%s' "${hook_logs[0]}" | jq -r '.from')
-	from1=$(printf '%s' "${hook_logs[1]}" | jq -r '.from')
+	hook_log_0=$(printf '%s\n' "$hook_logs" | sed -n '1p')
+	hook_log_1=$(printf '%s\n' "$hook_logs" | sed -n '2p')
+	[ "$(printf '%s' "$hook_log_0" | jq -r '.message')" = 'is-positive pinned to 3.0.0' ]
+	[ "$(printf '%s' "$hook_log_1" | jq -r '.message')" = 'is-positive pinned to 1.0.0' ]
+	prefix0=$(printf '%s' "$hook_log_0" | jq -r '.prefix')
+	prefix1=$(printf '%s' "$hook_log_1" | jq -r '.prefix')
+	from0=$(printf '%s' "$hook_log_0" | jq -r '.from')
+	from1=$(printf '%s' "$hook_log_1" | jq -r '.from')
 	[ -n "$prefix0" ]
 	[ -n "$from0" ]
 	[ -n "$from1" ]
