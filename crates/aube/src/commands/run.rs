@@ -230,7 +230,14 @@ pub(crate) async fn run_script_with(
     let cwd = match crate::dirs::find_project_root(&initial_cwd) {
         Some(p) => p,
         None if !filter.is_empty() => {
-            crate::dirs::find_workspace_root(&initial_cwd).unwrap_or_else(|| initial_cwd.clone())
+            crate::dirs::find_workspace_root(&initial_cwd).ok_or_else(|| {
+                miette!(
+                    "no project (package.json) or workspace root \
+                     (aube-workspace.yaml / pnpm-workspace.yaml) found in {} \
+                     or any parent directory",
+                    initial_cwd.display()
+                )
+            })?
         }
         None => {
             return Err(miette!(
