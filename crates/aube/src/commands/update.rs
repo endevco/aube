@@ -669,6 +669,10 @@ async fn run_filtered(
             // direct deps, then skip the project entirely if nothing
             // matched (no work to do, no noise).
             let mut per_pkg = args.clone();
+            // The top-level `run` already emitted any `--depth` warning;
+            // clear it on the per-pkg clone so the recursive call doesn't
+            // re-warn once per matched workspace package.
+            per_pkg.depth = None;
             if !args.packages.is_empty() {
                 let manifest_path = pkg.dir.join("package.json");
                 let project_manifest = aube_manifest::PackageJson::from_path(&manifest_path)

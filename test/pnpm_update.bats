@@ -137,6 +137,41 @@ JSON
 	refute_output --partial '--depth'
 }
 
+@test "aube update -r --depth: warns once across workspace fanout" {
+	# Regression for the recursion footgun: `run_filtered` clones the
+	# args for each matched workspace package and re-invokes `run`, so
+	# without clearing `args.depth` on the per-pkg clone the warning
+	# fires 1 + N times instead of once.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+
+	mkdir -p p1 p2 p3
+	cat >p1/package.json <<'JSON'
+{ "name": "p1", "version": "0.0.0", "dependencies": { "@pnpm.e2e/foo": "^100.0.0" } }
+JSON
+	cat >p2/package.json <<'JSON'
+{ "name": "p2", "version": "0.0.0", "dependencies": { "@pnpm.e2e/bar": "^100.0.0" } }
+JSON
+	cat >p3/package.json <<'JSON'
+{ "name": "p3", "version": "0.0.0", "dependencies": { "@pnpm.e2e/foo": "^100.0.0" } }
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - p1
+  - p2
+  - p3
+YAML
+
+	run aube update -r --depth Infinity
+	assert_success
+
+	# Exactly one occurrence of the warning across the three projects.
+	count=$(printf '%s\n' "$output" | grep -c '\-\-depth Infinity is ignored' || true)
+	[ "$count" = "1" ]
+}
+
 @test "aube update --latest --prod: bumps prod deps, leaves devDeps pinned" {
 	# Ported from pnpm/test/update.ts:225 ('update --latest --prod').
 	# aube's `add` defaults to prod (no `-P` flag — pnpm requires it for
