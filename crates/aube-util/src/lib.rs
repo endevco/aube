@@ -1,10 +1,12 @@
 pub mod buf;
 pub mod cache;
+pub mod concurrency;
 pub mod env;
 pub mod fs_atomic;
 pub mod hash;
 pub mod path;
 pub mod pkg;
+pub mod snapshot;
 pub mod url;
 
 use serde::{Deserialize, Deserializer};

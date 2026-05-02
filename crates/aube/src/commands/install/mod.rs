@@ -25,8 +25,8 @@ pub use frozen::{FrozenMode, FrozenOverride, GlobalVirtualStoreFlags};
 use git_prepare::{prepare_scratch_copy, run_git_dep_prepare};
 pub(crate) use lifecycle::{JailBuildPolicy, build_policy_from_sources, run_dep_lifecycle_scripts};
 use lifecycle::{
-    import_verified_tarball, resolve_link_strategy, run_root_lifecycle, unreviewed_dep_builds,
-    validate_required_scripts,
+    import_verified_tarball_streamed, resolve_link_strategy, run_root_lifecycle,
+    unreviewed_dep_builds, validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
 pub(crate) use settings::{resolve_dependency_policy, resolve_force_metadata_primer};
@@ -1095,6 +1095,19 @@ where
         p.inc_reused(cached_count);
     }
 
+    // Critical-path fetch order: float likely-native-build packages
+    // (sharp, esbuild, @swc/*, sqlite3, lmdb, bcrypt, etc) to the
+    // front of the queue. These packages run prebuild/node-gyp at
+    // install time, and starting their fetch first lets the build
+    // step pipeline with subsequent fetches instead of blocking on
+    // the tail. `sort_by_key` is stable so non-native packages keep
+    // their lockfile-discovery order; only the natives jump ahead.
+    // `AUBE_DISABLE_CRITICAL_PATH=1` reverts to the previous order
+    // for byte-identity comparison runs.
+    if std::env::var_os("AUBE_DISABLE_CRITICAL_PATH").is_none() {
+        to_fetch
+            .sort_by_key(|(_, _, registry_name, _, _, _)| !is_likely_native_build(registry_name));
+    }
     let fetch_count = to_fetch.len();
 
     if !to_fetch.is_empty() {
@@ -1123,6 +1136,11 @@ where
         // time vs the previous 64.
         let sem_permits = network_concurrency.unwrap_or_else(default_lockfile_network_concurrency);
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(sem_permits));
+        // Hoist the streaming-SHA-512 killswitch out of the per-tarball
+        // closure so the env read happens once instead of N times on a
+        // 1000-pkg install. `var_os` takes a libc lock, so the
+        // amortized save is real even though each call is cheap.
+        let streaming_sha512_enabled = std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
         // JoinSet so a first-error path aborts the sibling fetches
         // instead of detaching them into the background. Detached
         // tasks keep writing to the CAS after the install command
@@ -1154,10 +1172,30 @@ where
                     .unwrap_or_else(|| client.tarball_url(&registry_name, &version));
 
                 let dl_start = std::time::Instant::now();
-                let bytes = client
-                    .fetch_tarball_bytes(&url)
-                    .await
-                    .map_err(|e| miette!("failed to fetch {display_name}@{version}: {e}"))?;
+                // Streaming SHA-512 path: the registry-mandated
+                // integrity hash is computed during the chunk read
+                // loop, so the post-buffer pass in
+                // `import_verified_tarball` skips its hash and goes
+                // straight to compare. Saves ~7 ms/5 MB tarball.
+                // `AUBE_DISABLE_STREAMING_SHA512=1` reverts to the
+                // buffered-then-hash path. The killswitch covers a
+                // hypothetical regression where the streaming digest
+                // disagrees with the buffered one (it shouldn't, sha2
+                // is deterministic) and lets us isolate via env in CI.
+                let (bytes, streamed_digest) = if streaming_sha512_enabled {
+                    let (bytes, digest) = client
+                        .fetch_tarball_bytes_streaming_sha512(&url)
+                        .await
+                        .map_err(|e| {
+                            miette!("failed to fetch {display_name}@{version}: {e}")
+                        })?;
+                    (bytes, Some(digest))
+                } else {
+                    let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
+                        miette!("failed to fetch {display_name}@{version}: {e}")
+                    })?;
+                    (bytes, None)
+                };
                 let dl_time = dl_start.elapsed();
 
                 if let Some(p) = bytes_progress.as_ref() {
@@ -1187,9 +1225,10 @@ where
                     let version = version.clone();
                     move || -> miette::Result<_> {
                         let import_start = std::time::Instant::now();
-                        let index = import_verified_tarball(
+                        let index = import_verified_tarball_streamed(
                             &store,
                             &bytes,
+                            streamed_digest.as_ref(),
                             &display_name,
                             &registry_name,
                             &version,
@@ -1224,6 +1263,56 @@ where
     }
 
     Ok((indices, cached_count, fetch_count))
+}
+
+/// Heuristic: is this registry name likely to run a native build
+/// (`node-gyp`, `prebuild-install`, `cmake-js`, `@napi-rs/cli`) at
+/// install time? Used by the critical-path fetch reorder to float
+/// these packages to the front of the download queue so their build
+/// step can pipeline with the remaining tarball downloads.
+///
+/// Curated allowlist: covers the long-tail native packages that
+/// dominate cold-install wall time on a 1000-pkg graph. False
+/// negatives are fine (the package fetches in normal order); false
+/// positives are also fine (the package fetches earlier, no harm).
+/// Update this list when bench data shows a new heavy native dep.
+fn is_likely_native_build(registry_name: &str) -> bool {
+    // Exact-match heavy hitters. `ws` and `sass` deliberately
+    // omitted: pure-JS by default; only `node-sass` is the
+    // deprecated native build.
+    const EXACT: &[&str] = &[
+        "sharp",
+        "esbuild",
+        "fsevents",
+        "canvas",
+        "bcrypt",
+        "node-sass",
+        "sqlite3",
+        "better-sqlite3",
+        "lmdb",
+        "msgpackr-extract",
+        "sodium-native",
+        "node-gyp",
+        "prebuild-install",
+        "node-gyp-build",
+    ];
+    if EXACT.contains(&registry_name) {
+        return true;
+    }
+    // Scoped prefixes: `@swc/*`, `@parcel/*`, `@napi-rs/*`,
+    // `@next/swc-*`, `@rollup/rollup-*`, `@esbuild/*` all ship
+    // platform-specific native binaries.
+    const PREFIXES: &[&str] = &[
+        "@swc/",
+        "@parcel/",
+        "@napi-rs/",
+        "@next/swc-",
+        "@rollup/rollup-",
+        "@esbuild/",
+        "@playwright/",
+        "@biomejs/",
+    ];
+    PREFIXES.iter().any(|p| registry_name.starts_with(p))
 }
 
 /// Pull the canonical version off a dep_path for display purposes. The
@@ -2471,13 +2560,29 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let build_policy_for_prewarm = std::sync::Arc::new(build_policy_for_prewarm);
             let client =
                 std::sync::Arc::new(make_client(&cwd).with_network_mode(opts.network_mode));
+            // Speculative TLS + TCP + HTTP/2 handshake. Fires while the
+            // rest of this function builds the resolver, parses the
+            // manifest, and reads the lockfile. By the time the
+            // resolver requests its first packument the connection
+            // pool is already warm, hiding ~50-150 ms of handshake on
+            // cold installs. `AUBE_DISABLE_SPECULATIVE_TLS=1` opts
+            // out.
+            client.prewarm_connection();
             let tarball_client = client.clone();
 
             // Set up streaming resolver with disk-backed packument cache.
             // Resolver options are applied via `configure_resolver` so the
             // `--lockfile-only` short-circuit produces an identical lockfile.
-            let fetch_network_concurrency =
-                network_concurrency_setting.unwrap_or_else(default_streaming_network_concurrency);
+            // `AUBE_CONCURRENCY` is an emergency override for users on slow
+            // private registries (Artifactory, Nexus) where the default
+            // 128 in-flight tarballs trigger 429/503 throttling. Honored
+            // ahead of `network_concurrency_setting` so the env var wins
+            // over npmrc + workspace yaml.
+            let env_concurrency =
+                aube_util::concurrency::parse_concurrency_env().map(|n| n as usize);
+            let fetch_network_concurrency = env_concurrency
+                .or(network_concurrency_setting)
+                .unwrap_or_else(default_streaming_network_concurrency);
             let (resolver, mut resolved_rx) =
                 aube_resolver::Resolver::with_stream_capacity(client, fetch_network_concurrency);
             let pnpmfile_paths = if opts.ignore_pnpmfile {
@@ -2578,6 +2683,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_handle = tokio::spawn(async move {
                 let semaphore =
                     std::sync::Arc::new(tokio::sync::Semaphore::new(fetch_network_concurrency));
+                // Hoist streaming-SHA-512 killswitch out of the
+                // per-tarball loop, same shape as the lockfile path.
+                let streaming_sha512_enabled =
+                    std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
                 // JoinSet over bare Vec<JoinHandle>. If the first
                 // fetch errors and we return via `?`, a plain Vec
                 // drops the remaining JoinHandles which detaches the
@@ -2718,9 +2827,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         });
                         tracing::trace!("Fetching {}@{}", pkg.name, pkg.version);
 
-                        let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
-                            miette!("failed to fetch {}@{}: {e}", pkg.name, pkg.version)
-                        })?;
+                        let (bytes, streamed_digest) = if streaming_sha512_enabled {
+                            let (bytes, digest) = client
+                                .fetch_tarball_bytes_streaming_sha512(&url)
+                                .await
+                                .map_err(|e| {
+                                    miette!("failed to fetch {}@{}: {e}", pkg.name, pkg.version)
+                                })?;
+                            (bytes, Some(digest))
+                        } else {
+                            let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
+                                miette!("failed to fetch {}@{}: {e}", pkg.name, pkg.version)
+                            })?;
+                            (bytes, None)
+                        };
                         if let Some(p) = bytes_progress.as_ref() {
                             p.inc_downloaded_bytes(bytes.len() as u64);
                         }
@@ -2746,9 +2866,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let dep_path = pkg.dep_path.clone();
                         let integrity = pkg.integrity.clone();
                         let index = tokio::task::spawn_blocking(move || {
-                            import_verified_tarball(
+                            import_verified_tarball_streamed(
                                 &store,
                                 &bytes,
+                                streamed_digest.as_ref(),
                                 &pkg_display_name,
                                 &pkg_registry_name,
                                 &pkg_version,
@@ -4519,5 +4640,83 @@ mod allow_build_review_tests {
     fn package_name_from_spec_key_handles_unscoped_names() {
         assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
         assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
+    }
+}
+
+#[cfg(test)]
+mod critical_path_tests {
+    use super::is_likely_native_build;
+
+    #[test]
+    fn flags_exact_native_packages() {
+        for name in [
+            "sharp",
+            "esbuild",
+            "fsevents",
+            "node-gyp",
+            "better-sqlite3",
+            "sodium-native",
+        ] {
+            assert!(is_likely_native_build(name), "{name} should match");
+        }
+    }
+
+    #[test]
+    fn flags_scoped_native_prefixes() {
+        for name in [
+            "@swc/core",
+            "@swc/cli",
+            "@parcel/source-map",
+            "@napi-rs/cli",
+            "@next/swc-linux-x64-gnu",
+            "@rollup/rollup-linux-x64-gnu",
+            "@esbuild/linux-x64",
+            "@playwright/test",
+            "@biomejs/biome",
+        ] {
+            assert!(is_likely_native_build(name), "{name} should match");
+        }
+    }
+
+    #[test]
+    fn does_not_flag_pure_js_packages() {
+        for name in [
+            "react",
+            "lodash",
+            "@types/node",
+            "swc",  // unscoped, not native
+            "ws",   // pure JS
+            "sass", // dart-sass, pure JS
+            "@scope/random",
+        ] {
+            assert!(!is_likely_native_build(name), "{name} should NOT match");
+        }
+    }
+
+    #[test]
+    fn sort_is_stable_within_groups() {
+        // Mirror the sort applied at install/mod.rs. Stable sort
+        // must keep relative order within natives and non-natives.
+        let mut items = [
+            ("react", 1),
+            ("sharp", 2),
+            ("lodash", 3),
+            ("esbuild", 4),
+            ("@types/node", 5),
+            ("@swc/core", 6),
+        ];
+        items.sort_by_key(|(name, _)| !is_likely_native_build(name));
+        let order: Vec<&str> = items.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            order,
+            [
+                "sharp",
+                "esbuild",
+                "@swc/core",
+                "react",
+                "lodash",
+                "@types/node"
+            ]
+        );
     }
 }

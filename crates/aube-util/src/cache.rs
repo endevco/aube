@@ -49,9 +49,19 @@ impl<K, V> ProcessCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    /// Return the cached value for `key`, or compute it once and
-    /// memoize. The compute closure runs OUTSIDE the lock so a slow
-    /// computation doesn't block sibling lookups.
+    /// Return the cached value for `key`, or compute it and memoize.
+    /// The compute closure runs OUTSIDE the lock so a slow computation
+    /// doesn't block sibling lookups.
+    ///
+    /// Concurrency contract: `f` is called **at most once per racing
+    /// thread**, NOT exactly once across the cache. Two threads that
+    /// both miss the read-side check will each invoke `f` separately;
+    /// first-write-wins on the post-compute insert decides which
+    /// `Arc` every later caller sees, and the loser's `V` is dropped.
+    /// Callers needing exact-once side effects (network fetch, file
+    /// write) must guard with a dedicated `OnceLock` or `Mutex`
+    /// outside this cache. The `FnOnce` bound preserves the
+    /// per-invocation move semantics.
     pub fn get_or_compute<F>(&self, key: K, f: F) -> Arc<V>
     where
         F: FnOnce() -> V,
@@ -138,8 +148,13 @@ impl DiskCache {
     }
 
     /// Write raw bytes for `key`, atomically. Re-writes overwrite.
+    /// Creates the 2-char shard directory on first write so cold
+    /// starts don't fail with `NotFound` from `atomic_write`.
     pub fn write_bytes(&self, key: &[u8], bytes: &[u8]) -> io::Result<()> {
         let path = self.path_for(key);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         crate::fs_atomic::atomic_write(&path, bytes)
     }
 

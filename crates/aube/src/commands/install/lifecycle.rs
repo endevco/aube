@@ -597,6 +597,45 @@ pub(super) fn import_verified_tarball(
     Ok(index)
 }
 
+/// Streaming-aware variant of [`import_verified_tarball`]. When
+/// `streamed_sha512` is `Some`, the SRI is verified against the
+/// precomputed digest and the buffered hash pass is skipped. When
+/// the SRI uses a non-SHA-512 algo (legacy), the buffered fallback
+/// re-hashes with the right algo. `None` is identical to calling
+/// `import_verified_tarball` directly.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn import_verified_tarball_streamed(
+    store: &aube_store::Store,
+    bytes: &[u8],
+    streamed_sha512: Option<&[u8; 64]>,
+    display_name: &str,
+    registry_name: &str,
+    version: &str,
+    integrity: Option<&str>,
+    verify_integrity: bool,
+    strict_integrity: bool,
+    strict_pkg_content_check: bool,
+) -> miette::Result<aube_store::PackageIndex> {
+    let already_verified = match (verify_integrity, streamed_sha512, integrity) {
+        (true, Some(digest), Some(expected)) => {
+            aube_store::verify_precomputed_sha512(digest, expected)
+                .map_err(|e| miette!("{display_name}@{version}: {e}"))?
+        }
+        _ => false,
+    };
+    import_verified_tarball(
+        store,
+        bytes,
+        display_name,
+        registry_name,
+        version,
+        integrity,
+        verify_integrity && !already_verified,
+        strict_integrity,
+        strict_pkg_content_check,
+    )
+}
+
 pub(super) fn validate_required_scripts(
     project_dir: &std::path::Path,
     manifest: &aube_manifest::PackageJson,

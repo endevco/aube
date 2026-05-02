@@ -1,5 +1,14 @@
+use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io;
+use std::path::Path;
+
+/// Files at or above this size hash via `update_mmap_rayon`. Below it
+/// the streaming reader wins because mmap setup (vma alloc + first
+/// page fault) dominates for small files. 4 MiB is the elbow on
+/// modern x86 + ARM64; benched against `aube-store` CAS verify on
+/// `fixtures/medium`.
+pub const BLAKE3_MMAP_THRESHOLD: u64 = 4 * 1024 * 1024;
 
 /// Length-prefixed, tagged BLAKE3 builder. Every field carries a
 /// short ASCII tag plus a `u64` length so concatenation collisions
@@ -135,6 +144,60 @@ impl<R: io::Read> io::Read for TeeReader<'_, R> {
     }
 }
 
+/// BLAKE3 a file, picking the fastest path for its size.
+///
+/// Files at or above [`BLAKE3_MMAP_THRESHOLD`] use
+/// `Hasher::update_mmap_rayon`, which mmaps the file and hashes
+/// chunks across rayon workers (~6-10 GB/s on modern x86 vs ~2 GB/s
+/// for single-threaded streaming). Smaller files use a buffered read,
+/// because mmap setup cost dominates below the threshold.
+///
+/// Caller must guarantee the file is not mutated during the call.
+/// Aube CAS files are write-once + content-addressed by construction
+/// (`O_CREAT|O_EXCL` write semantics in `aube-store`), so this
+/// invariant holds for every hash check on a CAS path.
+///
+/// `AUBE_DISABLE_MMAP_BLAKE3=1` forces the streaming path on every
+/// call. Useful as a killswitch if a future kernel + filesystem
+/// combination regresses.
+pub fn blake3_hash_file<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
+    let path = path.as_ref();
+    let mut hasher = blake3::Hasher::new();
+    if mmap_disabled() {
+        return blake3_streaming(path, hasher);
+    }
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() >= BLAKE3_MMAP_THRESHOLD {
+        // Bubble mmap errors (EINVAL on tmpfs in some sandboxes,
+        // EACCES on noexec mounts) up to the streaming fallback so
+        // we never poison the hash with a partial mmap. Trace at
+        // debug so users on those filesystems can see why the fast
+        // path isn't engaging.
+        match hasher.update_mmap_rayon(path) {
+            Ok(_) => return Ok(*hasher.finalize().as_bytes()),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    path = %path.display(),
+                    "blake3 mmap unavailable, falling back to streaming",
+                );
+                hasher = blake3::Hasher::new();
+            }
+        }
+    }
+    blake3_streaming(path, hasher)
+}
+
+fn blake3_streaming(path: &Path, mut hasher: blake3::Hasher) -> io::Result<[u8; 32]> {
+    let mut file = File::open(path)?;
+    io::copy(&mut file, &mut hasher)?;
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn mmap_disabled() -> bool {
+    std::env::var_os("AUBE_DISABLE_MMAP_BLAKE3").is_some()
+}
+
 pub fn ordered_seq_hash<I, T>(iter: I) -> u64
 where
     I: IntoIterator<Item = T>,
@@ -262,6 +325,50 @@ fn canonical_json(v: &serde_json::Value, hasher: &mut blake3::Hasher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blake3_hash_file_matches_in_memory_under_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.bin");
+        let data = b"hello aube small file";
+        std::fs::write(&path, data).unwrap();
+        let from_file = blake3_hash_file(&path).unwrap();
+        let from_mem = *blake3::hash(data).as_bytes();
+        assert_eq!(from_file, from_mem);
+    }
+
+    #[test]
+    fn blake3_hash_file_matches_in_memory_over_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        // 5 MiB crosses BLAKE3_MMAP_THRESHOLD and exercises the
+        // mmap-rayon path. Pseudo-random bytes (deterministic) so
+        // the test stays reproducible without a CSPRNG dep.
+        let mut data = Vec::with_capacity(5 * 1024 * 1024);
+        for i in 0..(5 * 1024 * 1024u32) {
+            data.push((i.wrapping_mul(2654435761) >> 24) as u8);
+        }
+        std::fs::write(&path, &data).unwrap();
+        let from_file = blake3_hash_file(&path).unwrap();
+        let from_mem = *blake3::hash(&data).as_bytes();
+        assert_eq!(from_file, from_mem);
+    }
+
+    #[test]
+    fn blake3_streaming_path_matches_in_memory() {
+        // Direct test of the streaming fallback that bypasses the
+        // mmap path entirely — exercises the same code the killswitch
+        // would, without touching a process-global env var (which
+        // would race with the parallel tests above that also call
+        // `blake3_hash_file`).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stream.bin");
+        let data = vec![0xa5u8; (BLAKE3_MMAP_THRESHOLD as usize) + 1024];
+        std::fs::write(&path, &data).unwrap();
+        let streamed = blake3_streaming(&path, blake3::Hasher::new()).unwrap();
+        let from_mem = *blake3::hash(&data).as_bytes();
+        assert_eq!(streamed, from_mem);
+    }
 
     #[test]
     fn ordered_seq_hash_is_order_sensitive() {

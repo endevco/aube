@@ -186,7 +186,7 @@ fn spawn_shell_with_settings(
             // so cmd.exe sees the original script bytes.
             cmd.raw_arg("/d /s /c \"").raw_arg(script_cmd).raw_arg("\"");
         }
-        apply_script_settings_env(&mut cmd, &settings);
+        apply_script_settings_env(&mut cmd, settings);
         cmd
     }
 }
