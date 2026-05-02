@@ -117,6 +117,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`cacheDir`](#setting-cachedir) | `path` | Directory for package metadata and dlx cache. |
 | [`useStderr`](#setting-usestderr) | `bool` | Write all output to stderr instead of stdout. |
 | [`updateNotifier`](#setting-updatenotifier) | `bool` | Show an update notification when a newer aube is available. |
+| [`updateRewritesSpecifier`](#setting-updaterewritesspecifier) | `bool` | Rewrite caret/tilde manifest specifiers on `aube update` without `--latest`. |
 | [`preferSymlinkedExecutables`](#setting-prefersymlinkedexecutables) | `bool` | Create symlinks instead of shims for `.bin` entries. |
 | [`ignoreCompatibilityDb`](#setting-ignorecompatibilitydb) | `bool` | Disable pnpm's automatic dependency patching database. |
 | [`resolutionMode`](#setting-resolutionmode) | `"highest" \| "time-based" \| "lowest-direct"` | Dependency version resolution strategy. |
@@ -2133,6 +2134,22 @@ never disturbs the install summary. The check is also skipped when
 `CI` or `AUBE_NO_UPDATE_CHECK` is set, or when `--offline` /
 `--prefer-offline` was requested for the install itself. Set to
 `false` to opt out permanently.
+
+### `updateRewritesSpecifier` {#setting-updaterewritesspecifier}
+
+Rewrite caret/tilde manifest specifiers on `aube update` without `--latest`.
+
+- Type: `bool`
+- Default: `true`
+- Environment: `npm_config_update_rewrites_specifier`, `NPM_CONFIG_UPDATE_REWRITES_SPECIFIER`, `AUBE_UPDATE_REWRITES_SPECIFIER`
+- .npmrc keys: `updateRewritesSpecifier`, `update-rewrites-specifier`
+
+When `aube update <pkg>` (no `--latest`) bumps the lockfile to a newer
+in-range version, the matching `^X.Y.Z` / `~X.Y.Z` entry in
+`package.json` is rewritten to track the new version. Set to `false`
+to keep the manifest specifier frozen and only update the lockfile.
+Other range shapes (`>=`, `1.x`, exact pins, dist-tags, git, workspace)
+are never rewritten by the no-`--latest` path regardless of this setting.
 
 ### `preferSymlinkedExecutables` {#setting-prefersymlinkedexecutables}
 
