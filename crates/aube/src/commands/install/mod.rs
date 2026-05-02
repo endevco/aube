@@ -1355,29 +1355,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let cwd = if let Some(project_dir) = &opts.project_dir {
         project_dir.clone()
     } else {
-        let initial_cwd = crate::dirs::cwd()?;
-        // Prefer the workspace root so `aube install` from inside a
-        // workspace member installs against the workspace, not the
-        // member as a standalone project — otherwise the member gets
-        // its own `aube-lock.yaml`, its own `.aube/` virtual store,
-        // and re-downloads anything not already in the global cache.
-        // Yaml-only workspace roots install with a synthesized empty
-        // manifest at the read site below. Fall back to the nearest
-        // `package.json` for non-workspace subdirectory installs
-        // (`repo/docs`).
-        match crate::dirs::find_workspace_root(&initial_cwd)
-            .or_else(|| crate::dirs::find_project_root(&initial_cwd))
-        {
-            Some(root) => root,
-            None => {
-                return Err(miette!(
-                    "no package.json or workspace yaml \
-                     (pnpm-workspace.yaml / aube-workspace.yaml) found in {} \
-                     or any parent directory",
-                    initial_cwd.display()
-                ));
-            }
-        }
+        // `workspace_or_project_root` gives us workspace-first
+        // precedence: `aube install` from inside a workspace member
+        // installs against the workspace root (not the member as a
+        // standalone project), so members don't get their own
+        // `aube-lock.yaml` / `.aube/` virtual store. Yaml-only roots
+        // install with a synthesized empty manifest at the read site
+        // below.
+        crate::dirs::workspace_or_project_root()?
     };
     let _lock = super::take_project_lock(&cwd)?;
     let start = std::time::Instant::now();

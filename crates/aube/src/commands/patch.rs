@@ -40,22 +40,11 @@ pub struct PatchArgs {
 }
 
 pub async fn run(args: PatchArgs) -> Result<()> {
-    // Walk up to the workspace root (when present) so `aube patch`
-    // from a workspace member finds the shared `.aube/` store.
-    // Mirrors install's resolution: workspace-first so the store
-    // lookup matches where install actually wrote it; project-only
-    // fallback for non-workspace trees.
-    let initial = crate::dirs::cwd()?;
-    let cwd = crate::dirs::find_workspace_root(&initial)
-        .or_else(|| crate::dirs::find_project_root(&initial))
-        .ok_or_else(|| {
-            miette::miette!(
-                "no package.json or workspace yaml \
-                 (pnpm-workspace.yaml / aube-workspace.yaml) found in {} \
-                 or any parent directory",
-                initial.display()
-            )
-        })?;
+    // Mirror install's resolution: workspace-first so `aube patch`
+    // from a workspace member finds the shared `.aube/` store at the
+    // workspace root (where install actually wrote it). Falls back to
+    // the project root for non-workspace trees.
+    let cwd = crate::dirs::workspace_or_project_root()?;
     let (name, version) = parse_spec(&args.package)?;
 
     // Locate the source files. The package must be installed —
