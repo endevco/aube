@@ -214,6 +214,55 @@ JSON
 	[ ! -e node_modules/side-effects-v1 ]
 }
 
+@test "aube install: failed dep build retries on next install (rollback contract)" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:108
+	# ('dependency should not be added to package.json and lockfile if
+	# it was not built successfully'). Reframed per the triage doc:
+	# aube's CAS architecture means the literal pnpm assertion (dep dir
+	# is removed after failure) doesn't translate, but the underlying
+	# contract — "after a failed install, the next `aube install`
+	# retries and still fails until the user fixes the manifest" — is
+	# enforced by the state-not-written-on-failure model at
+	# install/mod.rs:1342-1364. The fixture
+	# `@pnpm.e2e/aube-test-failing-install` is a minimal package whose
+	# `install` script is `exit 1` — guaranteed to fail every time.
+	# `--dangerously-allow-all-builds` is the CLI form (no .npmrc setting
+	# exists for this); precedent: test/allow_builds.bats:87.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-rollback",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/aube-test-failing-install": "1.0.0"
+  }
+}
+JSON
+	# First install: build script exits 1, install fails.
+	run aube install --dangerously-allow-all-builds
+	assert_failure
+	# State must not have been written — that's what makes the next
+	# install try again instead of treating the prior failure as success.
+	assert [ ! -e node_modules/.aube-state ]
+
+	# Second install: regression guard. Without the
+	# state-not-written-on-failure invariant, aube would silently mark
+	# the prior failed run as fresh and skip the build script, making
+	# the broken dep look installed.
+	run aube install --dangerously-allow-all-builds
+	assert_failure
+
+	# Drop the broken dep — aube install must succeed cleanly. Confirms
+	# the failure didn't leave the project in an unrecoverable state.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-rollback",
+  "version": "1.0.0"
+}
+JSON
+	run aube install
+	assert_success
+}
+
 @test "aube install fails fast if a root lifecycle script exits non-zero" {
 	cat >package.json <<'JSON'
 {
