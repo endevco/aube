@@ -714,6 +714,7 @@ cmd query help="Query packages in the resolved dependency graph" {
 }
 cmd rebuild help="Re-run root lifecycle scripts and allowlisted dependency builds" {
     alias rb
+    arg "[PACKAGE]…" help="Optional package names. When supplied, only matching deps' scripts run; the root lifecycle hooks (preinstall, install, postinstall, prepare) are skipped. Match is by graph `name`, not by `dep_path`. The active `allowBuilds` / `onlyBuiltDependencies` policy is bypassed for the named deps — naming the package is the explicit opt-in" required=#false var=#true
 }
 cmd recursive help="Run a supported command across workspace packages" {
     alias multi m

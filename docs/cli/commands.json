@@ -4219,9 +4219,20 @@
         "full_cmd": [
           "rebuild"
         ],
-        "usage": "rebuild",
+        "usage": "rebuild [PACKAGE]…",
         "subcommands": {},
-        "args": [],
+        "args": [
+          {
+            "name": "PACKAGE",
+            "usage": "[PACKAGE]…",
+            "help": "Optional package names. When supplied, only matching deps' scripts run; the root lifecycle hooks (preinstall, install, postinstall, prepare) are skipped. Match is by graph `name`, not by `dep_path`. The active `allowBuilds` / `onlyBuiltDependencies` policy is bypassed for the named deps — naming the package is the explicit opt-in",
+            "help_first_line": "Optional package names. When supplied, only matching deps' scripts run; the root lifecycle hooks (preinstall, install, postinstall, prepare) are skipped. Match is by graph `name`, not by `dep_path`. The active `allowBuilds` / `onlyBuiltDependencies` policy is bypassed for the named deps — naming the package is the explicit opt-in",
+            "required": false,
+            "double_dash": "Optional",
+            "var": true,
+            "hide": false
+          }
+        ],
         "flags": [],
         "mounts": [],
         "hide": false,

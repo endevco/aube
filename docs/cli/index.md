@@ -263,7 +263,7 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube publish [FLAGS]`](/cli/publish.md)
 - [`aube purge [-l --lockfile]`](/cli/purge.md)
 - [`aube query [FLAGS] <SELECTOR>`](/cli/query.md)
-- [`aube rebuild`](/cli/rebuild.md)
+- [`aube rebuild [PACKAGE]…`](/cli/rebuild.md)
 - [`aube recursive [ARGS]…`](/cli/recursive.md)
 - [`aube remove [FLAGS] [PACKAGES]…`](/cli/remove.md)
 - [`aube restart [--no-install] [ARGS]…`](/cli/restart.md)
