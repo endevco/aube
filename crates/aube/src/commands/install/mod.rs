@@ -1361,15 +1361,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // member as a standalone project — otherwise the member gets
         // its own `aube-lock.yaml`, its own `.aube/` virtual store,
         // and re-downloads anything not already in the global cache.
-        // The workspace root must have its own `package.json` —
-        // `find_workspace_root` returns yaml-only roots too, but
-        // `install::run` reads the root manifest unconditionally and
-        // would error on a yaml-only workspace. Fall through to the
-        // nearest `package.json` (the member itself, or the cwd for
-        // non-workspace subdirectory installs like `repo/docs`).
-        // Mirrors the anchor logic in `ensure_installed`.
+        // Yaml-only workspace roots (pnpm-workspace.yaml at the root,
+        // no root `package.json`) install as a synthesized empty
+        // manifest — see the manifest read site below. Fall back to
+        // the nearest `package.json` for non-workspace subdirectory
+        // installs (`repo/docs`). Mirrors `ensure_installed`.
         match crate::dirs::find_workspace_root(&initial_cwd)
-            .filter(|root| root.join("package.json").is_file())
             .or_else(|| crate::dirs::find_project_root(&initial_cwd))
         {
             Some(root) => root,
@@ -1458,9 +1455,25 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     }
 
     // 1. Read package.json
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    //
+    // Yaml-only workspace roots (`pnpm-workspace.yaml` only, no root
+    // `package.json`) install with a synthesized empty manifest so
+    // every workspace member is installed without the root carrying
+    // any deps or scripts itself. The synthesized manifest naturally
+    // skips root lifecycle hooks, has no required-scripts to validate,
+    // and threads through the rest of the pipeline as a manifest with
+    // no direct deps would. Skipping the read isn't enough — the
+    // `cwd` may also be a coordinator-only root that legitimately has
+    // no manifest to read, so the `is_file()` probe drives the
+    // branch.
+    let manifest_path = cwd.join("package.json");
+    let manifest = if manifest_path.is_file() {
+        aube_manifest::PackageJson::from_path(&manifest_path)
+            .map_err(miette::Report::new)
+            .wrap_err("failed to read package.json")?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
 
     // Load the workspace yaml *once* — both as the typed

@@ -72,13 +72,20 @@ pub async fn run(
     args: WhyArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
 
     if !filter.is_empty() {
         return run_filtered(&cwd, &args, &filter);
     }
 
-    let manifest = super::load_manifest(&cwd.join("package.json"))?;
+    // Yaml-only workspace roots have no `package.json`; fall back to
+    // a default manifest so the lockfile parser sees the same shape.
+    let manifest_path = cwd.join("package.json");
+    let manifest = if manifest_path.is_file() {
+        super::load_manifest(&manifest_path)?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
         Ok(g) => g,
@@ -123,7 +130,12 @@ fn run_filtered(
         )
     })?;
 
-    let manifest = super::load_manifest(&workspace_root.join("package.json"))?;
+    let manifest_path = workspace_root.join("package.json");
+    let manifest = if manifest_path.is_file() {
+        super::load_manifest(&manifest_path)?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
 
     let graph = match aube_lockfile::parse_lockfile(&workspace_root, &manifest) {
         Ok(g) => g,

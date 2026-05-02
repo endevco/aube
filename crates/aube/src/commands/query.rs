@@ -71,13 +71,21 @@ pub async fn run(
     args: QueryArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
     let read_from = if !filter.is_empty() {
         crate::dirs::find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone())
     } else {
         cwd.clone()
     };
-    let manifest = super::load_manifest(&read_from.join("package.json"))?;
+    // Yaml-only workspace roots have no root `package.json`; the
+    // lockfile parser only uses the manifest to classify yarn.lock
+    // direct deps, so a default manifest is fine for the read path.
+    let manifest_path = read_from.join("package.json");
+    let manifest = if manifest_path.is_file() {
+        super::load_manifest(&manifest_path)?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
     let graph = match aube_lockfile::parse_lockfile(&read_from, &manifest) {
         Ok(graph) => graph,
         Err(aube_lockfile::Error::NotFound(_)) => {
