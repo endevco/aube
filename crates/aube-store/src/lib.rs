@@ -1203,11 +1203,20 @@ pub fn verify_precomputed_sha512(actual: &[u8; 64], expected: &str) -> Result<bo
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
     let mut expected_digest = [0u8; 64];
-    let matched = engine
-        .decode_slice(expected_b64, &mut expected_digest)
-        .map(|n| n == 64 && expected_digest[..n] == actual[..])
-        .unwrap_or(false);
-    if matched {
+    let decoded_len = match engine.decode_slice(expected_b64, &mut expected_digest) {
+        Ok(n) => n,
+        Err(e) => {
+            return Err(Error::Integrity(format!(
+                "integrity field has malformed base64: {expected} ({e})"
+            )));
+        }
+    };
+    if decoded_len != 64 {
+        return Err(Error::Integrity(format!(
+            "integrity field decoded to {decoded_len} bytes, expected 64 for sha512: {expected}"
+        )));
+    }
+    if expected_digest[..decoded_len] == actual[..] {
         Ok(true)
     } else {
         let actual_b64 = engine.encode(actual);
@@ -2268,10 +2277,37 @@ mod tests {
 
     #[test]
     fn verify_precomputed_sha512_mismatch_errors() {
+        // Build a properly-shaped sha512 SRI for all-FF bytes, then
+        // verify against an all-zero digest — same length, different
+        // content, lands on the byte-compare mismatch arm.
+        use base64::Engine;
+        let other = [0xFFu8; 64];
+        let other_b64 = base64::engine::general_purpose::STANDARD.encode(other);
+        let wrong = format!("sha512-{other_b64}");
         let digest = [0u8; 64];
-        let wrong = "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB==";
-        let err = verify_precomputed_sha512(&digest, wrong).unwrap_err();
+        let err = verify_precomputed_sha512(&digest, &wrong).unwrap_err();
         assert!(err.to_string().contains("integrity mismatch"));
+    }
+
+    #[test]
+    fn verify_precomputed_sha512_corrupt_b64_errors_distinctly() {
+        // Non-base64 characters: decode fails, user gets "malformed
+        // base64" instead of the misleading "integrity mismatch" they
+        // would see if every failure collapsed into one bucket.
+        let digest = [0u8; 64];
+        let corrupt = "sha512-not_valid_base64_!!!!!";
+        let err = verify_precomputed_sha512(&digest, corrupt).unwrap_err();
+        assert!(err.to_string().contains("malformed base64"));
+    }
+
+    #[test]
+    fn verify_precomputed_sha512_short_b64_errors_distinctly() {
+        // Valid base64 but decodes to too few bytes for sha512.
+        // Reports actual decoded length rather than mismatch.
+        let digest = [0u8; 64];
+        let short = "sha512-AAAA";
+        let err = verify_precomputed_sha512(&digest, short).unwrap_err();
+        assert!(err.to_string().contains("expected 64 for sha512"));
     }
 
     #[test]
