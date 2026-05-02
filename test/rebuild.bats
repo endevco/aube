@@ -213,3 +213,65 @@ YAML
 	run cat aube-builds-marker.txt
 	assert_output "ran:aube-test-builds-marker@1.0.0"
 }
+
+@test "aube rebuild <pkg> only runs the named dep's scripts" {
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-selective-test",
+  "version": "1.0.0",
+  "scripts": {
+    "preinstall": "echo root-pre >> rebuild-order.log",
+    "install": "echo root-install >> rebuild-order.log",
+    "postinstall": "echo root-post >> rebuild-order.log",
+    "prepare": "echo root-prepare >> rebuild-order.log"
+  },
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0",
+    "aube-test-builds-marker-2": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-builds-marker": true,
+      "aube-test-builds-marker-2": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+	assert_file_exists aube-builds-marker-2.txt
+
+	rm aube-builds-marker.txt
+	rm aube-builds-marker-2.txt
+	rm -f rebuild-order.log
+	run aube rebuild aube-test-builds-marker
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+	assert_not_exists aube-builds-marker-2.txt
+	assert_not_exists rebuild-order.log
+}
+
+@test "aube rebuild <unknown-pkg> errors with a clear message" {
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-unknown-pkg-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-builds-marker": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+
+	run aube rebuild not-a-real-dep
+	assert_failure
+	assert_output --partial "not-a-real-dep"
+	assert_output --partial "is not a dependency"
+}

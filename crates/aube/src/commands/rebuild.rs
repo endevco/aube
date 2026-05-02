@@ -2,27 +2,39 @@ use super::run::load_manifest;
 use aube_scripts::LifecycleHook;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
+use std::collections::BTreeSet;
 
 /// `aube rebuild` — re-run the root package's preinstall hook, then
 /// install / postinstall work for dependency packages allowed by the active
 /// `allowBuilds` / `onlyBuiltDependencies` policy, then the root package's
 /// install / postinstall / prepare lifecycle hooks.
 ///
+/// When one or more `<package>` positional args are given, only those
+/// dependencies' lifecycle scripts run — root hooks are skipped, matching
+/// `pnpm rebuild <pkg>`.
+///
 /// Unlike the other lifecycle shortcuts, `rebuild` intentionally does not
 /// auto-install: `aube install` already runs these same four hooks after
 /// linking, so triggering an install here would double-run every script
 /// on a stale tree. Users who actually want a fresh install should run
 /// `aube install`.
-#[derive(Debug, Args)]
-pub struct RebuildArgs {}
+#[derive(Debug, Clone, Args)]
+pub struct RebuildArgs {
+    /// Package(s) to rebuild (all allowlisted deps + root hooks if empty)
+    pub packages: Vec<String>,
+}
 
 pub async fn run(
-    _args: RebuildArgs,
+    args: RebuildArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     if !filter.is_empty() {
-        return run_filtered(&filter).await;
+        return run_filtered(args, &filter).await;
     }
+
+    let selective = !args.packages.is_empty();
+    let name_filter: Option<BTreeSet<String>> =
+        selective.then(|| args.packages.iter().cloned().collect());
 
     let cwd = crate::dirs::project_root()?;
     let manifest = load_manifest(&cwd)?;
@@ -45,16 +57,40 @@ pub async fn run(
         Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
+    if let (Some(names), Some(graph)) = (name_filter.as_ref(), graph.as_ref()) {
+        let known: BTreeSet<&str> = graph
+            .packages
+            .values()
+            .flat_map(|p| [p.name.as_str(), p.registry_name()])
+            .collect();
+        for name in names {
+            if !known.contains(name.as_str()) {
+                return Err(miette!(
+                    "package '{}' is not a dependency in the current install",
+                    name
+                ));
+            }
+        }
+    } else if selective && graph.is_none() {
+        return Err(miette!(
+            "package '{}' is not a dependency in the current install",
+            args.packages[0]
+        ));
+    }
+
     let modules_dir_name = aube_settings::resolved::modules_dir(&settings_ctx);
     let aube_dir = super::resolve_virtual_store_dir(&settings_ctx, &cwd);
-    aube_scripts::run_root_hook(
-        &cwd,
-        &modules_dir_name,
-        &manifest,
-        LifecycleHook::PreInstall,
-    )
-    .await
-    .map_err(|e| miette!("{}", e))?;
+
+    if !selective {
+        aube_scripts::run_root_hook(
+            &cwd,
+            &modules_dir_name,
+            &manifest,
+            LifecycleHook::PreInstall,
+        )
+        .await
+        .map_err(|e| miette!("{}", e))?;
+    }
 
     if let Some(graph) = graph {
         let (policy, warnings) =
@@ -137,32 +173,38 @@ pub async fn run(
                     })
                     .unwrap_or(super::install::SideEffectsCacheConfig::Disabled),
                 &jail_policy,
+                name_filter.as_ref(),
             )
             .await?;
         }
     }
 
-    for hook in [
-        LifecycleHook::Install,
-        LifecycleHook::PostInstall,
-        LifecycleHook::Prepare,
-    ] {
-        aube_scripts::run_root_hook(&cwd, &modules_dir_name, &manifest, hook)
-            .await
-            .map_err(|e| miette!("{}", e))?;
+    if !selective {
+        for hook in [
+            LifecycleHook::Install,
+            LifecycleHook::PostInstall,
+            LifecycleHook::Prepare,
+        ] {
+            aube_scripts::run_root_hook(&cwd, &modules_dir_name, &manifest, hook)
+                .await
+                .map_err(|e| miette!("{}", e))?;
+        }
     }
 
     Ok(())
 }
 
-async fn run_filtered(filter: &aube_workspace::selector::EffectiveFilter) -> miette::Result<()> {
+async fn run_filtered(
+    args: RebuildArgs,
+    filter: &aube_workspace::selector::EffectiveFilter,
+) -> miette::Result<()> {
     let cwd = crate::dirs::cwd()?;
     let (_root, matched) = super::select_workspace_packages(&cwd, filter, "rebuild")?;
     let result = async {
         for pkg in matched {
             super::retarget_cwd(&pkg.dir)?;
             Box::pin(run(
-                RebuildArgs {},
+                args.clone(),
                 aube_workspace::selector::EffectiveFilter::default(),
             ))
             .await?;

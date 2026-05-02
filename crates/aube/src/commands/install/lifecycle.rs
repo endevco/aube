@@ -276,6 +276,7 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     placements: Option<&aube_linker::HoistedPlacements>,
     side_effects_cache: SideEffectsCacheConfig<'_>,
     jail_policy: &JailBuildPolicy,
+    name_filter: Option<&std::collections::BTreeSet<String>>,
 ) -> miette::Result<usize> {
     // Pass 1 (serial, cheap): walk the graph, keep only the packages
     // the policy allows AND that actually define at least one dep
@@ -300,6 +301,15 @@ pub(crate) async fn run_dep_lifecycle_scripts(
 
     let mut jobs: Vec<BuildJob> = Vec::new();
     for (dep_path, pkg) in &graph.packages {
+        // `name_filter` is `Some` for `aube rebuild <pkg>...` — only
+        // rebuild the named deps. Match against both the in-tree name
+        // and the registry name so callers can target either form.
+        if let Some(names) = name_filter
+            && !names.contains(&pkg.name)
+            && !names.contains(pkg.registry_name())
+        {
+            continue;
+        }
         // Use registry_name(), not pkg.name. pkg.name is the in-tree
         // alias (`h3-safe`). Real package is `h3`. Allowlist entry for
         // `h3` would miss if we checked against the alias. Attacker
