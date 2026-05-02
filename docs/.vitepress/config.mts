@@ -73,15 +73,6 @@ export default defineConfig({
     ],
     ["link", { rel: "manifest", href: "/site.webmanifest" }],
     ["meta", { name: "theme-color", content: "#FFB13B" }],
-    [
-      "script",
-      {
-        defer: "",
-        "data-domain": "aube.en.dev",
-        "data-api": "https://shrill.en.dev/f5f1/event",
-        src: "https://shrill.en.dev/shrill/script.js",
-      },
-    ],
   ],
   themeConfig: {
     logo: "/logo.svg",
