@@ -542,6 +542,17 @@ impl Resolver {
                                 task.range,
                                 effective_spec
                             );
+                            // Overrides are declared at the project root,
+                            // so a substituted `link:./libs/x` /
+                            // `file:./vendor/y` path is project-root-
+                            // relative — never importer- or parent-
+                            // relative. Mark the task so the local-source
+                            // branch anchors the path correctly even when
+                            // the consumer is a workspace pkg or a nested
+                            // local parent.
+                            if is_non_registry_specifier(&effective_spec) {
+                                task.range_from_override = true;
+                            }
                             task.range = effective_spec;
                             // If the override replaced the spec with a
                             // bare range (not itself an `npm:` / `jsr:`
@@ -657,10 +668,14 @@ impl Resolver {
 
                 // Handle file: / link: / git: protocols — the dep points
                 // at a path on disk or a remote git repo rather than a
-                // registry package. Only valid on root deps; a nested
-                // package.json that declares its own `file:` dep silently
-                // falls through to the normal resolver path and fails
-                // loudly there.
+                // registry package. Root deps anchor on the importer's
+                // directory; transitive `link:`/`file:` deps anchor on
+                // the parent package's source root, but only when the
+                // parent itself was a `file:`/`link:` source (a workspace
+                // sibling or a directly-linked local dir). Registry-
+                // hosted parents have no on-disk source to resolve a
+                // relative path against, so transitive `link:`/`file:`
+                // from them stays an error.
                 if is_non_registry_specifier(&task.range) {
                     if should_block_exotic_subdep(
                         &task,
@@ -678,10 +693,39 @@ impl Resolver {
                             importer: task.importer.clone(),
                         })));
                     }
-                    let importer_root = if task.importer == "." {
+                    // Pull the parent's on-disk source root, when the
+                    // parent is a Directory/Link source. The BFS always
+                    // inserts a parent into `resolved` before enqueuing
+                    // its children, so for transitive tasks the parent
+                    // record is reliably present here.
+                    let parent_source_root: Option<std::path::PathBuf> = (!task.is_root)
+                        .then(|| {
+                            task.parent
+                                .as_ref()
+                                .and_then(|dp| resolved.get(dp))
+                                .and_then(|pkg| pkg.local_source.as_ref())
+                                .and_then(|src| match src {
+                                    LocalSource::Directory(p) | LocalSource::Link(p) => {
+                                        Some(self.project_root.join(p))
+                                    }
+                                    _ => None,
+                                })
+                        })
+                        .flatten();
+                    // Override-substituted link:/file: paths are
+                    // project-root-relative regardless of where the
+                    // consumer lives — pin them at the root before any
+                    // importer/parent fallback wins.
+                    let importer_root = if task.range_from_override {
                         self.project_root.clone()
                     } else {
-                        self.project_root.join(&task.importer)
+                        parent_source_root.clone().unwrap_or_else(|| {
+                            if task.importer == "." {
+                                self.project_root.clone()
+                            } else {
+                                self.project_root.join(&task.importer)
+                            }
+                        })
                     };
                     let Some(raw_local) = LocalSource::parse(&task.range, &importer_root) else {
                         return Err(Error::Registry(
@@ -689,19 +733,20 @@ impl Resolver {
                             format!("unparseable local specifier: {}", task.range),
                         ));
                     };
-                    // For git sources we have to talk to the remote
-                    // right now so the resolver can (a) pin the
-                    // committish to a full SHA for the lockfile and
-                    // (b) read the cloned repo's `package.json` for
-                    // transitive deps. `resolve_git_source` does the
-                    // `ls-remote` + shallow clone dance and returns a
-                    // `LocalSource::Git` with `resolved` populated,
-                    // plus the manifest tuple the rest of the branch
-                    // already expects.
+                    // Git and remote-tarball specifiers don't reference
+                    // a path, so they pass through regardless of parent
+                    // shape. `link:`/`file:` transitives only resolve
+                    // when we either (a) located a parent source root
+                    // or (b) inherited the path from a project-root-
+                    // anchored override.
                     if !task.is_root
-                        && !matches!(
+                        && parent_source_root.is_none()
+                        && !task.range_from_override
+                        && matches!(
                             raw_local,
-                            LocalSource::Git(_) | LocalSource::RemoteTarball(_)
+                            LocalSource::Directory(_)
+                                | LocalSource::Tarball(_)
+                                | LocalSource::Link(_)
                         )
                     {
                         return Err(Error::Registry(

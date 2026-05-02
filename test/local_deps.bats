@@ -182,3 +182,79 @@ EOF
 	run cat packages/app/node_modules/vendor-link/package.json
 	assert_output --partial '"version":"9.9.9"'
 }
+
+@test "aube install honors link: paths in pnpm.overrides as project-root-relative" {
+	# Workspace consumer pinned `@company/bar@1.2.3` (registry version),
+	# but root `pnpm.overrides` rewrites that to `link:./libs/bar`.
+	# Without project-root anchoring the resolver would parse `./libs/bar`
+	# against the consumer (`libs/foo`) and walk to a phantom `libs/foo/libs/bar`.
+	mkdir -p libs/foo libs/bar
+	cat >package.json <<'EOF'
+{"name":"root","version":"0.0.0","private":true,"pnpm":{"overrides":{"@company/bar":"link:./libs/bar"}}}
+EOF
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - libs/*
+EOF
+	cat >libs/foo/package.json <<'EOF'
+{"name":"@company/foo","version":"0.0.0","dependencies":{"@company/bar":"1.2.3"}}
+EOF
+	cat >libs/bar/package.json <<'EOF'
+{"name":"@company/bar","version":"9.9.9","main":"index.js"}
+EOF
+
+	run aube install
+	assert_success
+
+	# Symlink lands at the actual on-disk target.
+	[ -L libs/foo/node_modules/@company/bar ]
+	assert_file_exists libs/foo/node_modules/@company/bar/package.json
+	run cat libs/foo/node_modules/@company/bar/package.json
+	assert_output --partial '"version":"9.9.9"'
+
+	# Lockfile records the canonical project-root-relative form, not
+	# the importer-rebased form.
+	run cat aube-lock.yaml
+	assert_output --partial 'version: link:./libs/bar'
+	refute_output --partial 'libs/foo/libs/bar'
+}
+
+@test "aube install resolves transitive link: against the parent's source root" {
+	# A `file:`-linked parent with its own `link:./libs/...` transitive
+	# dep. The resolver must anchor `./libs/...` on the parent's source
+	# directory, not the importer's, otherwise it bails with "transitive
+	# local specifier ... cannot be resolved without the parent package
+	# source root".
+	mkdir -p parent-pkg/libs/child-link
+	cat >parent-pkg/package.json <<'EOF'
+{"name":"parent-pkg","version":"1.0.0","dependencies":{"child-link":"link:./libs/child-link"}}
+EOF
+	cat >parent-pkg/libs/child-link/package.json <<'EOF'
+{"name":"child-link","version":"4.5.6","main":"index.js"}
+EOF
+	cat >parent-pkg/libs/child-link/index.js <<'EOF'
+module.exports = "from child-link";
+EOF
+
+	mkdir -p app
+	cd app
+	cat >package.json <<'EOF'
+{"name":"app","version":"0.0.0","dependencies":{"parent-pkg":"file:../parent-pkg"}}
+EOF
+
+	run aube install
+	assert_success
+
+	# parent-pkg is materialized through the virtual store under
+	# `.aube/parent-pkg@file+<hash>/node_modules/`. The transitive
+	# `child-link` lives as a sibling there — symlinked straight at the
+	# parent's on-disk libs/ subdir, bypassing any `.aube/` entry of its
+	# own (mirrors how root-level `link:` deps work).
+	assert_file_exists node_modules/parent-pkg/package.json
+	local nested
+	nested=$(echo node_modules/.aube/parent-pkg@file+*/node_modules/child-link)
+	[ -L "$nested" ]
+	assert_file_exists "$nested/package.json"
+	run cat "$nested/package.json"
+	assert_output --partial '"version":"4.5.6"'
+}
