@@ -25,6 +25,7 @@ teardown() {
 		git -C "$PROJECT_ROOT" checkout -- \
 			test/registry/storage/@pnpm.e2e/bar/package.json \
 			test/registry/storage/@pnpm.e2e/dep-of-pkg-with-1-dep/package.json \
+			test/registry/storage/@pnpm.e2e/foo/package.json \
 			test/registry/storage/@pnpm.e2e/qar/package.json 2>/dev/null || true
 	fi
 	_common_teardown
