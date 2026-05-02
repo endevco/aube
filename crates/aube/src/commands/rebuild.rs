@@ -51,31 +51,84 @@ pub async fn run(
     };
     super::configure_script_settings(&settings_ctx);
 
+    // Read the lockfile from the project, or fall back to the shared
+    // workspace-root one when the project doesn't have its own (the
+    // common shape inside a workspace fanout — `run_filtered` retargets
+    // CWD to each sub-project, but the lockfile lives at the root).
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
         Ok(graph) => Some(graph),
-        Err(aube_lockfile::Error::NotFound(_)) => None,
+        Err(aube_lockfile::Error::NotFound(_)) => super::find_workspace_root(&cwd)
+            .ok()
+            .filter(|ws| ws.as_path() != cwd.as_path())
+            .and_then(|ws| aube_lockfile::parse_lockfile(&ws, &manifest).ok()),
         Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
-    if let (Some(names), Some(graph)) = (name_filter.as_ref(), graph.as_ref()) {
+    let (policy, policy_warnings) =
+        super::install::build_policy_from_sources(&manifest, &workspace, false);
+    if let Some(names) = name_filter.as_ref() {
+        let Some(graph) = graph.as_ref() else {
+            return Err(miette!(
+                "no lockfile found for package(s) {}; run `aube install` first",
+                names
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        };
         let known: BTreeSet<&str> = graph
             .packages
             .values()
             .flat_map(|p| [p.name.as_str(), p.registry_name()])
             .collect();
-        for name in names {
-            if !known.contains(name.as_str()) {
-                return Err(miette!(
-                    "package '{}' is not a dependency in the current install",
-                    name
-                ));
-            }
+        let unknown: Vec<&str> = names
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !known.contains(n))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(miette!(
+                "package(s) {} not a dependency in the current install",
+                unknown
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
-    } else if selective && graph.is_none() {
-        return Err(miette!(
-            "package '{}' is not a dependency in the current install",
-            args.packages[0]
-        ));
+        // The named package is in the graph; check it's also allowlisted
+        // by the active `allowBuilds` / `onlyBuiltDependencies` policy.
+        // Without this check, `aube rebuild blocked-pkg` silently
+        // succeeds because `run_dep_lifecycle_scripts` filters by both
+        // `name_filter` and `policy.decide()`.
+        let blocked: Vec<String> = names
+            .iter()
+            .filter(|n| {
+                graph
+                    .packages
+                    .values()
+                    .filter(|p| p.name == **n || p.registry_name() == n.as_str())
+                    .all(|p| {
+                        !matches!(
+                            policy.decide(&p.name, &p.version),
+                            aube_scripts::AllowDecision::Allow
+                        )
+                    })
+            })
+            .map(String::clone)
+            .collect();
+        if !blocked.is_empty() {
+            return Err(miette!(
+                "package(s) {} are not allowlisted to run build scripts; \
+                 run `aube approve-builds` to add them",
+                blocked
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
     }
 
     let modules_dir_name = aube_settings::resolved::modules_dir(&settings_ctx);
@@ -93,9 +146,7 @@ pub async fn run(
     }
 
     if let Some(graph) = graph {
-        let (policy, warnings) =
-            super::install::build_policy_from_sources(&manifest, &workspace, false);
-        for warning in warnings {
+        for warning in policy_warnings {
             eprintln!("warn: {warning}");
         }
 

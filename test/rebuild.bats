@@ -273,5 +273,51 @@ JSON
 	run aube rebuild not-a-real-dep
 	assert_failure
 	assert_output --partial "not-a-real-dep"
-	assert_output --partial "is not a dependency"
+	assert_output --partial "not a dependency"
+}
+
+@test "aube rebuild: lists every unknown name in the error" {
+	# Error must enumerate all unknown args so users don't have to
+	# re-run after each one. Regression guard for the previous
+	# `args.packages[0]` shape.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-rebuild-error-multi",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-positive": "1.0.0"
+  }
+}
+JSON
+	run aube install
+	assert_success
+
+	run aube rebuild does-not-exist also-missing
+	assert_failure
+	assert_output --partial "does-not-exist"
+	assert_output --partial "also-missing"
+}
+
+@test "aube rebuild <pkg>: errors when package exists but isn't allowlisted" {
+	# Regression guard: previously, `aube rebuild blocked-pkg` for a
+	# pkg in the graph but not in `allowBuilds` silently succeeded
+	# because `run_dep_lifecycle_scripts` filters by both name and
+	# policy. Now the pre-flight policy check fails fast with a clear
+	# pointer at `aube approve-builds`.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-rebuild-not-allowlisted",
+  "version": "0.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "1.0.0"
+  }
+}
+JSON
+	run aube install
+	assert_success
+
+	run aube rebuild aube-test-builds-marker
+	assert_failure
+	assert_output --partial "aube-test-builds-marker"
+	assert_output --partial "approve-builds"
 }
