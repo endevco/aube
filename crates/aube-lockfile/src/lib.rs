@@ -406,6 +406,8 @@ impl LocalSource {
 /// - `github:user/repo[#ref]` → `https://github.com/user/repo.git`
 /// - `gitlab:user/repo[#ref]` → `https://gitlab.com/user/repo.git`
 /// - `bitbucket:user/repo[#ref]` → `https://bitbucket.org/user/repo.git`
+/// - `user/repo[#ref]` (bare GitHub shorthand, npm/pnpm compat)
+///   → `https://github.com/user/repo.git`
 ///
 /// Returns `None` for any specifier that doesn't look like a git URL,
 /// so the caller can fall through to other protocol parsers.
@@ -447,10 +449,36 @@ pub fn parse_git_spec(spec: &str) -> Option<(String, Option<String>, Option<Stri
         // prefix (and happen to lack `.git`) are disambiguated from
         // plain tarball URLs by the 40-hex committish suffix.
         body.to_string()
+    } else if is_bare_github_shorthand(body) {
+        // npm/pnpm bare GitHub shorthand: `user/repo` expands to
+        // `github:user/repo`. Placed last so all explicit URL/scheme
+        // forms above shadow it.
+        format!("https://github.com/{body}.git")
     } else {
         return None;
     };
     Some((url, committish, subpath))
+}
+
+/// `user/repo` — a single `/`, both segments non-empty, ASCII
+/// alphanumeric + `_.-` only, owner doesn't start with `.` so
+/// single-component relative paths (`./repo`, `../repo`) are rejected.
+/// Excludes scoped npm names (`@scope/pkg`) and file paths. Other
+/// URL/SCP forms are ruled out by placement order in `parse_git_spec`.
+fn is_bare_github_shorthand(body: &str) -> bool {
+    let Some((owner, repo)) = body.split_once('/') else {
+        return false;
+    };
+    !owner.is_empty()
+        && !owner.starts_with('.')
+        && !repo.is_empty()
+        && !repo.contains('/')
+        && owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+        && repo
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 /// A git URL that maps to one of the three "hosted" providers npm /
@@ -2256,6 +2284,53 @@ mod git_spec_tests {
     fn github_shorthand_expands_and_roundtrips() {
         let (url, _, _) = parse_git_spec("github:user/repo").unwrap();
         assert_eq!(url, "https://github.com/user/repo.git");
+    }
+
+    #[test]
+    fn bare_user_repo_expands_to_github() {
+        let (url, committish, subpath) = parse_git_spec("kevva/is-negative").unwrap();
+        assert_eq!(url, "https://github.com/kevva/is-negative.git");
+        assert!(committish.is_none());
+        assert!(subpath.is_none());
+    }
+
+    #[test]
+    fn bare_user_repo_with_committish_preserved() {
+        let (url, committish, _) = parse_git_spec("kevva/is-negative#v1.0.0").unwrap();
+        assert_eq!(url, "https://github.com/kevva/is-negative.git");
+        assert_eq!(committish.as_deref(), Some("v1.0.0"));
+    }
+
+    #[test]
+    fn bare_scope_pkg_is_not_git_shorthand() {
+        // npm-style `@scope/pkg` is a registry name, not a GitHub shorthand.
+        assert!(parse_git_spec("@types/node").is_none());
+    }
+
+    #[test]
+    fn bare_relative_path_is_not_git_shorthand() {
+        // Single-component relative paths split as owner=".", owner="..",
+        // so owner-starts-with-`.` is the load-bearing guard here.
+        assert!(parse_git_spec("./repo").is_none());
+        assert!(parse_git_spec("../repo").is_none());
+        // Multi-component relative paths additionally fail the
+        // single-`/`-only guard.
+        assert!(parse_git_spec("./local/path").is_none());
+        assert!(parse_git_spec("../local/path").is_none());
+    }
+
+    #[test]
+    fn bare_path_with_extra_slashes_is_not_git_shorthand() {
+        // Real GitHub shorthand is exactly `user/repo` — anything with a
+        // second `/` is a path, not a shorthand.
+        assert!(parse_git_spec("path/with/slashes/extra").is_none());
+    }
+
+    #[test]
+    fn bare_scp_form_unknown_host_is_not_github_shorthand() {
+        // `user@host:repo.git` is scp form (handled or rejected above);
+        // the bare-shorthand branch must not pick it up.
+        assert!(parse_git_spec("user@host:repo.git").is_none());
     }
 
     #[test]
