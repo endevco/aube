@@ -107,6 +107,36 @@ JSON
 	assert_success
 }
 
+@test "aube update --depth: parsed-but-warn (pnpm parity, no-op)" {
+	# Triaged won't-support in test/PNPM_TEST_IMPORT.md (update.ts:599):
+	# pnpm's `--depth N` controls how deep the update walks. aube only
+	# refreshes direct deps, so the flag is a no-op — warn once with
+	# the `rm aube-lock.yaml && aube install` workaround for the real
+	# `--depth Infinity` use case.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-depth-warn",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+
+	run aube update --depth Infinity
+	assert_success
+	assert_output --partial '--depth Infinity is ignored'
+	assert_output --partial 'rm aube-lock.yaml && aube install'
+
+	# Bare update (no --depth) does not emit the warning.
+	run aube update
+	assert_success
+	refute_output --partial '--depth'
+}
+
 @test "aube update --latest --prod: bumps prod deps, leaves devDeps pinned" {
 	# Ported from pnpm/test/update.ts:225 ('update --latest --prod').
 	# aube's `add` defaults to prod (no `-P` flag — pnpm requires it for

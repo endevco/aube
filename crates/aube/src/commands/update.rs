@@ -48,7 +48,11 @@ pub struct UpdateArgs {
     pub workspace: bool,
     /// Dependency traversal depth.
     ///
-    /// Parsed for pnpm compatibility.
+    /// Parsed for pnpm compatibility but ignored: aube only ever
+    /// refreshes direct deps (pnpm's `--depth 0` default). Setting
+    /// the flag emits a one-line warning pointing at
+    /// `rm aube-lock.yaml && aube install` for the
+    /// `--depth Infinity` case.
     #[arg(long)]
     pub depth: Option<String>,
     /// Add a global pnpmfile that runs before the local one.
@@ -94,12 +98,18 @@ pub async fn run(
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     let _ = args.ignore_scripts; // parity no-op: dep scripts already gated by allowBuilds
-    let _ = (
-        args.global,
-        args.workspace,
-        args.interactive,
-        args.depth.as_ref(),
-    );
+    let _ = (args.global, args.workspace, args.interactive);
+    if let Some(depth) = args.depth.as_deref() {
+        // pnpm's `--depth Infinity` is the only useful value; the
+        // intermediate ones (`--depth 1`, `--depth 2`) have semantics
+        // that even pnpm users get tripped up on. aube only refreshes
+        // direct deps, so the flag is a no-op — warn once with the
+        // workaround for the genuine refresh-transitives case.
+        eprintln!(
+            "warn: --depth {depth} is ignored; aube only refreshes direct deps. \
+             For a full refresh, run `rm aube-lock.yaml && aube install`."
+        );
+    }
     if !filter.is_empty() {
         return run_filtered(args, &filter).await;
     }
