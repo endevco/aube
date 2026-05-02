@@ -148,7 +148,16 @@ pub async fn run(
     let mut manifest = aube_manifest::PackageJson::from_path(&manifest_path)
         .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
-    let ignored_updates = resolve_update_ignore_dependencies(&cwd, &manifest)?;
+    let UpdateSettings {
+        ignored: ignored_updates,
+        rewrites_specifier: rewrites_specifier_setting,
+    } = resolve_update_settings(&cwd, &manifest)?;
+    // Cosmetic floor-bump: outside `--latest` and `--no-save`, with
+    // `updateRewritesSpecifier=true` (default), `aube update <pkg>` also
+    // tracks the resolved in-range version in `package.json`. Limited to
+    // `^X.Y.Z` / `~X.Y.Z` specs at the rewrite site below; other shapes
+    // (`>=`, `1.x`, exact, dist-tags, git, workspace:) are preserved.
+    let cosmetic_rewrite_eligible = !effective_latest && rewrites_specifier_setting && !no_save;
 
     // Read the lockfile from the project, or fall back to the shared
     // workspace-root one when the project doesn't have its own (the
@@ -562,51 +571,64 @@ pub async fn run(
     // `--no-save` short-circuits the manifest rewrite: the resolver
     // already pulled in the new versions for the lockfile above, so we
     // just skip persisting any range bumps to `package.json`.
-    if effective_latest {
-        if no_save {
-            eprintln!("Skipping package.json update (--no-save)");
-        } else {
-            let mut wrote_any = false;
-            for key in &manifest_keys_to_update {
-                if !should_rewrite_key(key) {
-                    continue;
-                }
-                let real_name = resolve_real_name(key);
-                let original = all_specifiers.get(key).cloned().unwrap_or_default();
-                if aube_util::pkg::is_workspace_spec(&original) {
-                    continue;
-                }
-                if aube_lockfile::parse_git_spec(&original).is_some() {
-                    // Git specs (`github:user/repo`, `git+https://…`, bare
-                    // `user/repo` shorthand, …) carry their own committish
-                    // and have no semver range to bump. Rewriting one to
-                    // `^<resolved>` would silently swap the dep for a
-                    // registry pin and break install.
-                    continue;
-                }
-                let Some(resolved) = lookup_pkg(&graph, key, &real_name).map(|p| p.version.clone())
-                else {
-                    continue;
-                };
-                let new_spec = rewrite_specifier(&original, &real_name, &resolved, args.exact);
-                if new_spec == original {
-                    continue;
-                }
-                if manifest.dependencies.contains_key(key) {
-                    manifest.dependencies.insert(key.clone(), new_spec);
-                } else if manifest.dev_dependencies.contains_key(key) {
-                    manifest.dev_dependencies.insert(key.clone(), new_spec);
-                } else if manifest.optional_dependencies.contains_key(key) {
-                    manifest.optional_dependencies.insert(key.clone(), new_spec);
-                } else {
-                    continue;
-                }
-                wrote_any = true;
+    if effective_latest && no_save {
+        eprintln!("Skipping package.json update (--no-save)");
+    } else if effective_latest || cosmetic_rewrite_eligible {
+        let mut wrote_any = false;
+        for key in &manifest_keys_to_update {
+            if effective_latest && !should_rewrite_key(key) {
+                continue;
             }
-            if wrote_any {
-                super::write_manifest_dep_sections(&manifest_path, &manifest)?;
-                eprintln!("Updated package.json");
+            let real_name = resolve_real_name(key);
+            let original = all_specifiers.get(key).cloned().unwrap_or_default();
+            if aube_util::pkg::is_workspace_spec(&original) {
+                continue;
             }
+            if aube_lockfile::parse_git_spec(&original).is_some() {
+                // Git specs (`github:user/repo`, `git+https://…`, bare
+                // `user/repo` shorthand, …) carry their own committish
+                // and have no semver range to bump. Rewriting one to
+                // `^<resolved>` would silently swap the dep for a
+                // registry pin and break install.
+                continue;
+            }
+            // Cosmetic floor-bump (no `--latest`) only rewrites
+            // caret/tilde specs. Caret/tilde under an `npm:` alias is
+            // detected on the post-`@` portion (`^Y.Z` after
+            // `npm:real@`) — `range_prefix` runs against the same slice
+            // `rewrite_specifier` uses, so the two stay in sync.
+            if !effective_latest {
+                let range_slice = original
+                    .strip_prefix("npm:")
+                    .and_then(|rest| rest.rsplit_once('@').map(|(_, r)| r))
+                    .unwrap_or(original.as_str());
+                let prefix = range_prefix(range_slice);
+                if prefix != "^" && prefix != "~" {
+                    continue;
+                }
+            }
+            let Some(resolved) = lookup_pkg(&graph, key, &real_name).map(|p| p.version.clone())
+            else {
+                continue;
+            };
+            let new_spec = rewrite_specifier(&original, &real_name, &resolved, args.exact);
+            if new_spec == original {
+                continue;
+            }
+            if manifest.dependencies.contains_key(key) {
+                manifest.dependencies.insert(key.clone(), new_spec);
+            } else if manifest.dev_dependencies.contains_key(key) {
+                manifest.dev_dependencies.insert(key.clone(), new_spec);
+            } else if manifest.optional_dependencies.contains_key(key) {
+                manifest.optional_dependencies.insert(key.clone(), new_spec);
+            } else {
+                continue;
+            }
+            wrote_any = true;
+        }
+        if wrote_any {
+            super::write_manifest_dep_sections(&manifest_path, &manifest)?;
+            eprintln!("Updated package.json");
         }
     }
 
@@ -628,10 +650,15 @@ pub async fn run(
     Ok(())
 }
 
-fn resolve_update_ignore_dependencies(
+struct UpdateSettings {
+    ignored: BTreeSet<String>,
+    rewrites_specifier: bool,
+}
+
+fn resolve_update_settings(
     cwd: &std::path::Path,
     manifest: &aube_manifest::PackageJson,
-) -> miette::Result<BTreeSet<String>> {
+) -> miette::Result<UpdateSettings> {
     let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
     let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(cwd)
         .into_diagnostic()
@@ -648,7 +675,11 @@ fn resolve_update_ignore_dependencies(
     if let Some(from_settings) = aube_settings::resolved::update_config_ignore_dependencies(&ctx) {
         ignored.extend(from_settings);
     }
-    Ok(ignored)
+    let rewrites_specifier = aube_settings::resolved::update_rewrites_specifier(&ctx);
+    Ok(UpdateSettings {
+        ignored,
+        rewrites_specifier,
+    })
 }
 
 async fn run_filtered(
