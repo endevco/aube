@@ -814,7 +814,10 @@ fn normalize_tar_entry_path(raw: &Path) -> Result<Option<String>, Error> {
     // name or another identifier. Whatever it is, drop it.
     components.next();
 
-    let mut out = String::new();
+    // Pre-size to the raw path length so growing the output never
+    // reallocates: the normalized form drops the wrapper segment and
+    // converts `\` to `/` but never grows beyond the input size.
+    let mut out = String::with_capacity(raw.as_os_str().len());
     for comp in components {
         match comp {
             Component::Normal(os) => {

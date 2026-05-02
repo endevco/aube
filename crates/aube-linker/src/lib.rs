@@ -1134,6 +1134,28 @@ impl Linker {
 
         if self.use_global_virtual_store {
             use rayon::prelude::*;
+            use rustc_hash::FxHashSet;
+
+            // Pre-create every parent directory (`aube_dir` itself plus
+            // one entry per unique `@scope/`) once so the per-package
+            // par_iter below does not pay 1.4k `create_dir_all` stat
+            // syscalls. The set is tiny (1-5 entries on a typical
+            // graph) so the serial pre-pass is dwarfed by the wins
+            // inside the par_iter that no longer needs the inner
+            // `mkdirp(parent)` call.
+            let mut step1_parents: FxHashSet<PathBuf> = FxHashSet::default();
+            for (dep_path, pkg) in &graph.packages {
+                if pkg.local_source.is_some() {
+                    continue;
+                }
+                let entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
+                if let Some(parent) = entry.parent() {
+                    step1_parents.insert(parent.to_path_buf());
+                }
+            }
+            for parent in &step1_parents {
+                mkdirp(parent)?;
+            }
 
             let link_parallelism = self.link_parallelism();
             let step1_timer = std::time::Instant::now();
@@ -1209,9 +1231,8 @@ impl Linker {
                                 let _ = std::fs::remove_dir(&local_aube_entry)
                                     .or_else(|_| std::fs::remove_file(&local_aube_entry));
                             }
-                            if let Some(parent) = local_aube_entry.parent() {
-                                mkdirp(parent)?;
-                            }
+                            // Parent dirs were pre-created above the
+                            // par_iter; no per-package `mkdirp` here.
                             sys::create_dir_link(&global_entry, &local_aube_entry)
                                 .map_err(|e| Error::Io(local_aube_entry.clone(), e))?;
                             Ok(local_stats)
@@ -1587,6 +1608,28 @@ impl Linker {
         // `readlink` per package instead of a recreate per package.
         if self.use_global_virtual_store {
             use rayon::prelude::*;
+            use rustc_hash::FxHashSet;
+
+            // Pre-create every parent directory (`aube_dir` itself plus
+            // one entry per unique `@scope/`) once so the per-package
+            // par_iter below does not pay 1.4k `create_dir_all` stat
+            // syscalls. The set is tiny (1-5 entries on a typical
+            // graph) so the serial pre-pass is dwarfed by the wins
+            // inside the par_iter that no longer needs the inner
+            // `mkdirp(parent)` call.
+            let mut step1_parents: FxHashSet<PathBuf> = FxHashSet::default();
+            for (dep_path, pkg) in &graph.packages {
+                if pkg.local_source.is_some() {
+                    continue;
+                }
+                let entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
+                if let Some(parent) = entry.parent() {
+                    step1_parents.insert(parent.to_path_buf());
+                }
+            }
+            for parent in &step1_parents {
+                mkdirp(parent)?;
+            }
 
             let link_parallelism = self.link_parallelism();
             let step1_timer = std::time::Instant::now();
@@ -1638,9 +1681,8 @@ impl Linker {
                                 let _ = std::fs::remove_dir(&local_aube_entry)
                                     .or_else(|_| std::fs::remove_file(&local_aube_entry));
                             }
-                            if let Some(parent) = local_aube_entry.parent() {
-                                mkdirp(parent)?;
-                            }
+                            // Parent dirs were pre-created above the
+                            // par_iter; no per-package `mkdirp` here.
                             sys::create_dir_link(&global_entry, &local_aube_entry)
                                 .map_err(|e| Error::Io(local_aube_entry.clone(), e))?;
                             Ok(local_stats)
@@ -2039,7 +2081,10 @@ impl Linker {
         sweep_stale_entries: bool,
     ) -> Result<(), Error> {
         let hidden = hidden_root.join("node_modules");
-        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // FxHashSet over the borrowed name (lives for the lockfile graph
+        // lifetime) drops the SipHash overhead and the per-insert
+        // `String` clone the `HashSet<String>` version forced.
+        let mut claimed: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
         let packages: Vec<_> = if self.hoist {
             graph
                 .packages
@@ -2051,7 +2096,7 @@ impl Linker {
                     // First-writer-wins on name clashes across versions.
                     // BTree iteration over `graph.packages` gives a
                     // deterministic tiebreaker across runs.
-                    claimed.insert(pkg.name.clone()).then_some((dep_path, pkg))
+                    claimed.insert(pkg.name.as_str()).then_some((dep_path, pkg))
                 })
                 .collect()
         } else {
@@ -2166,7 +2211,10 @@ impl Linker {
         let direct_dep_names: std::collections::HashSet<&str> =
             graph.root_deps().iter().map(|d| d.name.as_str()).collect();
 
-        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // FxHashSet over the borrowed name (lives for the lockfile graph
+        // lifetime) drops the SipHash overhead and the per-insert
+        // `String` clone the `HashSet<String>` version forced.
+        let mut claimed: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
 
         for (dep_path, pkg) in &graph.packages {
             if pkg.local_source.is_some() {
@@ -2182,7 +2230,7 @@ impl Linker {
             // First-writer-wins within the hoist pass: if an earlier
             // iteration already hoisted this name, later iterations
             // with the same name don't overwrite it.
-            if !claimed.insert(pkg.name.clone()) {
+            if !claimed.insert(pkg.name.as_str()) {
                 continue;
             }
             let source_dir = aube_dir
@@ -2365,8 +2413,14 @@ impl Linker {
         // lexicographically, which is good enough because every
         // ancestor of a directory is a prefix of it.
         let pkg_nm_parent = base_dir.join(&subdir).join("node_modules");
-        let mut parents: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-        parents.insert(pkg_nm_dir.clone());
+        // Collect into Vec + sort + dedup instead of BTreeSet. For a
+        // package with thousands of files (typescript, next), the
+        // BTreeSet's per-insert log-N PathBuf comparison (~50-byte
+        // memcmps) was a measurable cost on top of the redundant
+        // create_dir_all that the set was deduplicating in the first
+        // place.
+        let mut parents: Vec<PathBuf> = Vec::with_capacity(index.len() / 4 + 4);
+        parents.push(pkg_nm_dir.clone());
         // Validate every key once here. The file-linking loop below
         // walks the same immutable index, so skipping the check
         // there is safe.
@@ -2374,7 +2428,7 @@ impl Linker {
             validate_index_key(rel_path)?;
             let target = pkg_nm_dir.join(rel_path);
             if let Some(parent) = target.parent() {
-                parents.insert(parent.to_path_buf());
+                parents.push(parent.to_path_buf());
             }
         }
         // Scoped transitive deps need `pkg_nm_parent/@scope/` to exist
@@ -2383,9 +2437,11 @@ impl Linker {
             if let Some(slash) = dep_name.find('/')
                 && dep_name.starts_with('@')
             {
-                parents.insert(pkg_nm_parent.join(&dep_name[..slash]));
+                parents.push(pkg_nm_parent.join(&dep_name[..slash]));
             }
         }
+        parents.sort_unstable();
+        parents.dedup();
         for parent in &parents {
             std::fs::create_dir_all(parent).map_err(|e| Error::Io(parent.clone(), e))?;
         }

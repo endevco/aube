@@ -280,6 +280,7 @@ dependencies = [
  "pathdiff",
  "rayon",
  "reflink-copy",
+ "rustc-hash",
  "serde_json",
  "sha2 0.10.9",
  "strum 0.28.0",
