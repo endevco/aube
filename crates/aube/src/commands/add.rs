@@ -270,13 +270,19 @@ fn split_git_alias(spec: &str) -> Option<(&str, &str)> {
 fn parse_git_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<ParsedPkgSpec> {
     let (clone_url, _committish, _subpath) = aube_lockfile::parse_git_spec(verbatim)
         .ok_or_else(|| miette!("expected git spec, got `{verbatim}`"))?;
-    let derived_name = repo_name_from_clone_url(&clone_url).ok_or_else(|| {
-        miette!(
-            "could not derive a package name from git URL `{clone_url}`; \
-             pass an alias (e.g. `my-name@{verbatim}`)"
-        )
-    })?;
-    let name = alias.clone().unwrap_or(derived_name);
+    // Only derive a name from the URL when the user didn't supply an
+    // alias — a trailing-slash or otherwise pathless URL would
+    // otherwise hard-fail even though the alias makes the derivation
+    // unnecessary.
+    let name = match &alias {
+        Some(a) => a.clone(),
+        None => repo_name_from_clone_url(&clone_url).ok_or_else(|| {
+            miette!(
+                "could not derive a package name from git URL `{clone_url}`; \
+                 pass an alias (e.g. `my-name@{verbatim}`)"
+            )
+        })?,
+    };
     Ok(ParsedPkgSpec {
         alias,
         name,
@@ -1904,5 +1910,17 @@ mod tests {
         assert!(s.git_spec.is_none());
         assert_eq!(s.name, "@scope/pkg");
         assert_eq!(s.range, "latest");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_alias_skips_url_derivation() {
+        // When an alias is given, the manifest key comes from the alias
+        // — `repo_name_from_clone_url` should not be consulted, so a
+        // pathless URL like `git+https://example.com/` doesn't error
+        // out the way it does without an alias.
+        let s = parse_pkg_spec("my-alias@git+https://example.com/").unwrap();
+        assert_eq!(s.git_spec.as_deref(), Some("git+https://example.com/"));
+        assert_eq!(s.alias.as_deref(), Some("my-alias"));
+        assert_eq!(s.name, "my-alias");
     }
 }
