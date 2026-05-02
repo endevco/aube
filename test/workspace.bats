@@ -184,6 +184,44 @@ _setup_workspace_fixture() {
 	assert_dir_exists packages/standalone/node_modules/is-odd
 }
 
+@test "aube install: sibling \`workspace:*\` links to unversioned member" {
+	# Locks the "0.0.0" fallback path: when an unversioned member is
+	# pinned via workspace:*, the resolver's wildcard branch matches
+	# unconditionally and the linker creates the cross-package symlink.
+	# Regression guard for the version-required check that errored
+	# before any resolver work could happen.
+	mkdir -p packages/lib packages/app
+	cat >package.json <<-'EOF'
+		{ "name": "root-ws", "version": "0.0.0", "private": true }
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - packages/lib
+		  - packages/app
+	EOF
+	cat >packages/lib/package.json <<-'EOF'
+		{ "name": "@test/lib", "private": true, "main": "index.js" }
+	EOF
+	echo "module.exports = 42;" >packages/lib/index.js
+	cat >packages/app/package.json <<-'EOF'
+		{
+		  "name": "@test/app",
+		  "version": "1.0.0",
+		  "private": true,
+		  "dependencies": { "@test/lib": "workspace:*" }
+		}
+	EOF
+
+	run aube install
+	assert_success
+
+	assert_link_exists packages/app/node_modules/@test/lib
+	cd packages/app
+	run node -e 'console.log(require("@test/lib"))'
+	assert_success
+	assert_output "42"
+}
+
 @test "aube install: detects workspace from pnpm-workspace.yaml" {
 	_setup_workspace_fixture
 
