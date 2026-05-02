@@ -164,6 +164,12 @@ struct ParsedPkgSpec {
     /// skip the packument fetch, write the verbatim string into
     /// `package.json`, and let the resolver dispatch the git path.
     git_spec: Option<String>,
+    /// Original verbatim spec when the user typed a `file:` / `link:`
+    /// path form (`file:./pkg`, `link:../sibling`, `file:./bundle.tgz`).
+    /// `Some(_)` flags the spec for the non-registry local branch:
+    /// skip the packument fetch, write the verbatim string into
+    /// `package.json`, and let the resolver dispatch the local path.
+    local_spec: Option<String>,
 }
 
 /// Parse a package spec into its components.
@@ -184,6 +190,10 @@ struct ParsedPkgSpec {
 ///   form `aube_lockfile::parse_git_spec` recognizes
 /// - `my-alias@kevva/is-negative` → git with alias: manifest key is
 ///   `my-alias`, spec written verbatim
+/// - `file:./pkg`, `link:../sibling`, `file:./bundle.tgz` → local:
+///   manifest key derived from the path basename (alias overrides)
+/// - `my-alias@file:./pkg`, `my-alias@link:../sibling` → local with
+///   alias: manifest key is `my-alias`, spec written verbatim
 fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
     // Git specs route through their own branch — packument fetch is
     // skipped and the verbatim spec is written to `package.json`.
@@ -196,6 +206,27 @@ fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
         && aube_lockfile::parse_git_spec(rest).is_some()
     {
         return parse_git_pkg_spec(rest, Some(alias.to_string()));
+    }
+    // Scoped alias form `@scope/alias@<git-or-local-spec>` — pnpm
+    // supports this for both git and local specs. Routed before the
+    // jsr/npm/scoped-name branches below so a scoped name with a
+    // git/local tail isn't misclassified as a registry fetch.
+    if let Some((alias, rest)) = split_scoped_alias(spec) {
+        if aube_lockfile::parse_git_spec(rest).is_some() {
+            return parse_git_pkg_spec(rest, Some(alias.to_string()));
+        }
+        if is_local_path_spec(rest) {
+            return parse_local_pkg_spec(rest, Some(alias.to_string()));
+        }
+    }
+    // Local path specs use the same skip-packument routing.
+    if is_local_path_spec(spec) {
+        return parse_local_pkg_spec(spec, None);
+    }
+    if let Some((alias, rest)) = split_local_alias(spec)
+        && is_local_path_spec(rest)
+    {
+        return parse_local_pkg_spec(rest, Some(alias.to_string()));
     }
 
     // Handle full alias form: alias@jsr:@scope/name[@range]
@@ -247,9 +278,36 @@ fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
 /// handled by their own branches in `parse_pkg_spec` and must not
 /// be reinterpreted as a git alias.
 fn split_git_alias(spec: &str) -> Option<(&str, &str)> {
-    if spec.starts_with('@') {
-        return None;
+    split_protocol_alias(spec)
+}
+
+/// `true` when `spec` is a `file:` / `link:` local-path form. Any
+/// `file:` URL form that `parse_git_spec` recognizes (e.g.
+/// `file:///host/repo.git`) is treated as a git spec instead — same
+/// precedence the resolver's `is_non_registry_specifier` uses.
+fn is_local_path_spec(spec: &str) -> bool {
+    if spec.starts_with("link:") {
+        return true;
     }
+    if !spec.starts_with("file:") {
+        return false;
+    }
+    aube_lockfile::parse_git_spec(spec).is_none()
+}
+
+/// Split `alias@<rest>` for the local-spec alias form. Mirrors
+/// `split_git_alias` — same shape, different caller intent.
+fn split_local_alias(spec: &str) -> Option<(&str, &str)> {
+    split_protocol_alias(spec)
+}
+
+/// Shared helper for `split_git_alias` and `split_local_alias`. The
+/// alias-form rules are identical for both: peel a leading `name@`
+/// where `name` is a plain (non-scoped, non-protocol) npm-style id.
+/// Scoped aliases (`@scope/alias@<spec>`) are caught by
+/// [`split_scoped_alias`] one branch up; the leading `@` is rejected
+/// here via the `at == 0` guard.
+fn split_protocol_alias(spec: &str) -> Option<(&str, &str)> {
     let at = spec.find('@')?;
     if at == 0 {
         return None;
@@ -259,6 +317,25 @@ fn split_git_alias(spec: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((alias, &spec[at + 1..]))
+}
+
+/// Split `@scope/alias@<rest>` so scoped names can serve as the
+/// manifest key for git/local specs. Returns `Some((alias, rest))`
+/// when the input looks like a scoped npm name followed by `@<spec>`.
+/// Mirrors pnpm's behavior: `@my-scope/alias@file:./pkg` writes the
+/// manifest entry under `@my-scope/alias`.
+fn split_scoped_alias(spec: &str) -> Option<(&str, &str)> {
+    if !spec.starts_with('@') {
+        return None;
+    }
+    let slash = spec.find('/')?;
+    let after_slash = &spec[slash + 1..];
+    let at_in_after = after_slash.find('@')?;
+    let alias_end = slash + 1 + at_in_after;
+    if alias_end == 0 {
+        return None;
+    }
+    Some((&spec[..alias_end], &spec[alias_end + 1..]))
 }
 
 /// Build a `ParsedPkgSpec` for a git-form spec. The manifest key is
@@ -290,6 +367,41 @@ fn parse_git_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<P
         range: verbatim.to_string(),
         has_explicit_range: true,
         git_spec: Some(verbatim.to_string()),
+        local_spec: None,
+    })
+}
+
+/// Build a `ParsedPkgSpec` for a local-path spec. The manifest key is
+/// the user-supplied alias when given, otherwise the basename of the
+/// path (e.g. `file:./packages/foo` → `foo`). The `range` field
+/// carries the verbatim spec so `local_spec` and `range` agree, and
+/// the install pipeline's lockfile reader sees the same string the
+/// user typed.
+fn parse_local_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<ParsedPkgSpec> {
+    let path = verbatim
+        .strip_prefix("file:")
+        .or_else(|| verbatim.strip_prefix("link:"))
+        .ok_or_else(|| miette!("expected file:/link: spec, got `{verbatim}`"))?;
+    // Only derive a name from the path when the user didn't supply an
+    // alias — a bare `file:` (empty path) would otherwise hard-fail
+    // even though the alias makes the derivation unnecessary.
+    let name = match &alias {
+        Some(a) => a.clone(),
+        None => basename_from_local_path(path).ok_or_else(|| {
+            miette!(
+                "could not derive a package name from local spec `{verbatim}`; \
+                 pass an alias (e.g. `my-name@{verbatim}`)"
+            )
+        })?,
+    };
+    Ok(ParsedPkgSpec {
+        alias,
+        name,
+        jsr_name: None,
+        range: verbatim.to_string(),
+        has_explicit_range: true,
+        git_spec: None,
+        local_spec: Some(verbatim.to_string()),
     })
 }
 
@@ -309,6 +421,29 @@ fn repo_name_from_clone_url(url: &str) -> Option<String> {
     Some(stripped.to_string())
 }
 
+/// Derive the manifest key from the path portion of a `file:` /
+/// `link:` spec. Strips a trailing `.tgz` / `.tar.gz` so a tarball
+/// like `file:./bundle.tgz` lands as `"bundle"` in the manifest.
+/// Returns `None` for empty / pathless inputs.
+fn basename_from_local_path(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let last = trimmed.rsplit('/').next()?;
+    // `.tar.gz` checked before `.tgz` / `.tar` so a doubly-suffixed
+    // name strips both compression and archive in one pass.
+    let stripped = last
+        .strip_suffix(".tar.gz")
+        .or_else(|| last.strip_suffix(".tgz"))
+        .or_else(|| last.strip_suffix(".tar"))
+        .unwrap_or(last);
+    if stripped.is_empty() || stripped == "." || stripped == ".." {
+        return None;
+    }
+    Some(stripped.to_string())
+}
+
 fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
     // Handle scoped packages: @scope/name@range
     if s.starts_with('@') {
@@ -322,6 +457,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
                     range: after_slash[at_idx + 1..].to_string(),
                     has_explicit_range: true,
                     git_spec: None,
+                    local_spec: None,
                 };
             }
         }
@@ -332,6 +468,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             range: "latest".to_string(),
             has_explicit_range: false,
             git_spec: None,
+            local_spec: None,
         };
     }
 
@@ -344,6 +481,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             range: s[at_idx + 1..].to_string(),
             has_explicit_range: true,
             git_spec: None,
+            local_spec: None,
         }
     } else {
         ParsedPkgSpec {
@@ -353,6 +491,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             range: "latest".to_string(),
             has_explicit_range: false,
             git_spec: None,
+            local_spec: None,
         }
     }
 }
@@ -384,6 +523,7 @@ fn parse_jsr_name_range(s: &str, alias: Option<String>) -> miette::Result<Parsed
         range: inner.range,
         has_explicit_range: inner.has_explicit_range,
         git_spec: None,
+        local_spec: None,
     })
 }
 
@@ -743,12 +883,16 @@ async fn update_manifest_for_add(
     // Skip packument fetches for `workspace:*` / `workspace:^` /
     // `workspace:<range>` specs — they resolve against the local
     // workspace, not the registry. Same skip applies to git specs
-    // (`kevva/is-negative`, `github:user/repo`, …) which the resolver
-    // dispatches via the git path. Without these guards the parallel
-    // fetch below would 404 on the local/git name.
+    // (`kevva/is-negative`, `github:user/repo`, …) and `file:` /
+    // `link:` local-path specs which the resolver dispatches via the
+    // git or local branch respectively. Without these guards the
+    // parallel fetch below would 404 on the non-registry name.
     let mut handles = Vec::new();
     for spec in &parsed {
-        if aube_util::pkg::is_workspace_spec(&spec.range) || spec.git_spec.is_some() {
+        if aube_util::pkg::is_workspace_spec(&spec.range)
+            || spec.git_spec.is_some()
+            || spec.local_spec.is_some()
+        {
             continue;
         }
         let client = client.clone();
@@ -796,6 +940,14 @@ async fn update_manifest_for_add(
         // is skipped (catalogs are for registry deps).
         if let Some(verbatim) = spec.git_spec.as_deref() {
             apply_git_spec_to_manifest(&mut manifest, pkg_name_for_manifest, verbatim, &opts);
+            continue;
+        }
+
+        // `file:` / `link:` local-path specs are handled the same way
+        // as git: skip the registry, write the verbatim spec, let the
+        // resolver dispatch the local branch on next install.
+        if let Some(verbatim) = spec.local_spec.as_deref() {
+            apply_local_spec_to_manifest(&mut manifest, pkg_name_for_manifest, verbatim, &opts);
             continue;
         }
 
@@ -1171,6 +1323,30 @@ fn apply_git_spec_to_manifest(
     } else {
         manifest.dependencies.insert(dep_name, specifier);
     }
+}
+
+/// Write a `file:` / `link:` spec verbatim into the manifest. Same
+/// section-scrub semantics as [`apply_git_spec_to_manifest`] — the
+/// only difference is the manifest-key derivation (URL repo segment
+/// vs path basename) which lives in the parser.
+///
+/// The manifest carries the literal user-typed string
+/// (`file:./pkg`, `link:../sibling`, …) — preserving the verbatim
+/// form keeps the manifest readable, and aube's resolver handles
+/// every form `LocalSource::parse` recognizes equivalently.
+///
+/// Limitation: when the user didn't supply an alias, the manifest
+/// key is the basename of the path (e.g. `foo` for
+/// `file:./packages/foo`, `bundle` for `file:./bundle.tgz`). Pass an
+/// alias when the upstream `package.json` `name` differs from the
+/// basename: `aube add my-pkg@file:./packages/foo`.
+fn apply_local_spec_to_manifest(
+    manifest: &mut aube_manifest::PackageJson,
+    pkg_name_for_manifest: &str,
+    verbatim_spec: &str,
+    opts: &AddManifestOptions,
+) {
+    apply_git_spec_to_manifest(manifest, pkg_name_for_manifest, verbatim_spec, opts);
 }
 
 /// Decide what `aube add --save-catalog[=<name>]` should write to the
@@ -1904,15 +2080,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_pkg_spec_scoped_not_git() {
-        // Scoped npm names must not be misclassified as git specs.
-        let s = parse_pkg_spec("@scope/pkg").unwrap();
-        assert!(s.git_spec.is_none());
-        assert_eq!(s.name, "@scope/pkg");
-        assert_eq!(s.range, "latest");
-    }
-
-    #[test]
     fn test_parse_pkg_spec_git_alias_skips_url_derivation() {
         // When an alias is given, the manifest key comes from the alias
         // — `repo_name_from_clone_url` should not be consulted, so a
@@ -1922,5 +2089,118 @@ mod tests {
         assert_eq!(s.git_spec.as_deref(), Some("git+https://example.com/"));
         assert_eq!(s.alias.as_deref(), Some("my-alias"));
         assert_eq!(s.name, "my-alias");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_file_relative() {
+        let s = parse_pkg_spec("file:./local/pkg").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:./local/pkg"));
+        assert_eq!(s.name, "pkg");
+        assert_eq!(s.range, "file:./local/pkg");
+        assert!(s.alias.is_none());
+        assert!(s.has_explicit_range);
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_link_relative() {
+        let s = parse_pkg_spec("link:./local/pkg").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("link:./local/pkg"));
+        assert_eq!(s.name, "pkg");
+        assert_eq!(s.range, "link:./local/pkg");
+        assert!(s.alias.is_none());
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_file_absolute() {
+        let s = parse_pkg_spec("file:/abs/pkg").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:/abs/pkg"));
+        assert_eq!(s.name, "pkg");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_file_tarball_strips_extension() {
+        // Basename of `bundle.tgz` lands as `"bundle"` — the manifest
+        // key shouldn't carry the archive suffix.
+        let s = parse_pkg_spec("file:./bundle.tgz").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:./bundle.tgz"));
+        assert_eq!(s.name, "bundle");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_file_alias() {
+        let s = parse_pkg_spec("my-alias@file:./pkg").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:./pkg"));
+        assert_eq!(s.alias.as_deref(), Some("my-alias"));
+        assert_eq!(s.name, "my-alias");
+        assert_eq!(s.range, "file:./pkg");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_link_alias() {
+        let s = parse_pkg_spec("my-alias@link:./pkg").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("link:./pkg"));
+        assert_eq!(s.alias.as_deref(), Some("my-alias"));
+        assert_eq!(s.name, "my-alias");
+        assert_eq!(s.range, "link:./pkg");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_local_alias_skips_basename_derivation() {
+        // When an alias is given, the manifest key comes from the
+        // alias — `basename_from_local_path` should not be consulted,
+        // so a pathless spec like `file:` doesn't error out the way
+        // it does without an alias.
+        let s = parse_pkg_spec("my-alias@file:").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:"));
+        assert_eq!(s.alias.as_deref(), Some("my-alias"));
+        assert_eq!(s.name, "my-alias");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_scoped_not_git_or_local() {
+        // Scoped npm names must not be misclassified as git or local specs.
+        let s = parse_pkg_spec("@scope/pkg").unwrap();
+        assert!(s.git_spec.is_none());
+        assert!(s.local_spec.is_none());
+        assert_eq!(s.name, "@scope/pkg");
+        assert_eq!(s.range, "latest");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_bare_user_repo_not_local() {
+        // `user/repo` is a git shorthand (handled by the git-spec
+        // branch) and must not collide with the file/link path here.
+        let s = parse_pkg_spec("kevva/is-negative").unwrap();
+        assert!(s.local_spec.is_none());
+        assert!(s.git_spec.is_some());
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_scoped_alias_for_local() {
+        // `@scope/alias@file:./pkg` — the scoped name is the manifest
+        // key, the local spec is preserved verbatim.
+        let s = parse_pkg_spec("@my-scope/alias@file:./pkg").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:./pkg"));
+        assert_eq!(s.alias.as_deref(), Some("@my-scope/alias"));
+        assert_eq!(s.name, "@my-scope/alias");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_scoped_alias_for_git() {
+        // Same shape with a git spec on the right-hand side.
+        let s = parse_pkg_spec("@my-scope/alias@kevva/is-negative").unwrap();
+        assert_eq!(s.git_spec.as_deref(), Some("kevva/is-negative"));
+        assert_eq!(s.alias.as_deref(), Some("@my-scope/alias"));
+        assert_eq!(s.name, "@my-scope/alias");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_file_uncompressed_tarball_strips_extension() {
+        // `.tar` (uncompressed) should strip alongside `.tgz` /
+        // `.tar.gz` so the manifest key isn't littered with archive
+        // suffixes.
+        let s = parse_pkg_spec("file:./bundle.tar").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("file:./bundle.tar"));
+        assert_eq!(s.name, "bundle");
     }
 }
