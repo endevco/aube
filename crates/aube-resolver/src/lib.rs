@@ -236,6 +236,13 @@ pub(crate) struct ResolveTask {
     /// site is responsible for extending its parent's chain with the
     /// parent's own `(name, version)` frame.
     pub(crate) ancestors: Vec<(String, String)>,
+    /// `true` when an override rewrote `range` to a `link:`/`file:`
+    /// path. Override paths are anchored at the project root (where the
+    /// override is declared), not at the consuming workspace package or
+    /// transitive parent — same convention pnpm follows. Without this
+    /// signal the local-source resolver would re-anchor `link:./libs/x`
+    /// against the importer or parent dir and walk to a phantom path.
+    pub(crate) range_from_override: bool,
 }
 
 impl ResolveTask {
@@ -264,6 +271,7 @@ impl ResolveTask {
             original_specifier: Some(original),
             real_name: None,
             ancestors: Vec::new(),
+            range_from_override: false,
         }
     }
 
@@ -288,6 +296,7 @@ impl ResolveTask {
             original_specifier: None,
             real_name: None,
             ancestors,
+            range_from_override: false,
         }
     }
 }

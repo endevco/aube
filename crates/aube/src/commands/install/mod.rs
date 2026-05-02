@@ -3009,6 +3009,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     )
                 }
             };
+            let materialize_cwd = cwd.clone();
             let materialize_handle: tokio::task::JoinHandle<
                 miette::Result<(
                     aube_linker::LinkStats,
@@ -3068,6 +3069,17 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 }
                 let linker = std::sync::Arc::new(linker);
                 let graph = materialize_graph;
+
+                // Pre-compute the `link:` target map once, so each
+                // sibling-symlink pass inside `materialize_into` can
+                // route override-rewritten transitives at the on-disk
+                // path instead of dangling into a phantom
+                // `.aube/<name>@link+...`. `None` when the graph has
+                // no `link:` entries at all (the common case), keeping
+                // the materialize hot path one Option check per dep.
+                let nested_link_targets =
+                    aube_linker::build_nested_link_targets(&materialize_cwd, &graph)
+                        .map(std::sync::Arc::new);
 
                 // Build a reverse-index from canonical `name@version`
                 // to the set of contextualized dep_paths that share it.
@@ -3130,6 +3142,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let linker = linker.clone();
                         let sem = sem.clone();
                         let index = index.clone();
+                        let nested_link_targets = nested_link_targets.clone();
                         // spawn_blocking dispatches straight to the tokio
                         // blocking pool; the outer `tokio::spawn`
                         // wrapper that earlier versions used added a
@@ -3142,7 +3155,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             tokio::task::spawn_blocking(move || -> miette::Result<_> {
                                 let mut stats = aube_linker::LinkStats::default();
                                 linker
-                                    .ensure_in_virtual_store(&dep_path, &pkg, &index, &mut stats)
+                                    .ensure_in_virtual_store(
+                                        &dep_path,
+                                        &pkg,
+                                        &index,
+                                        &mut stats,
+                                        nested_link_targets.as_deref(),
+                                    )
                                     .map_err(|e| {
                                         miette!("prewarm GVS for {dep_path_for_err}: {e}")
                                     })?;

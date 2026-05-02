@@ -1107,6 +1107,8 @@ impl Linker {
             );
         }
 
+        let nested_link_targets = build_nested_link_targets(project_dir, graph);
+
         // Step 1: Populate .aube virtual store
         //
         // Local packages (file:/link:) never go into the shared global
@@ -1126,7 +1128,15 @@ impl Linker {
             };
             let aube_entry = aube_dir.join(dep_path);
             if !aube_entry.exists() {
-                self.materialize_into(&aube_dir, dep_path, pkg, index, &mut stats, false)?;
+                self.materialize_into(
+                    &aube_dir,
+                    dep_path,
+                    pkg,
+                    index,
+                    &mut stats,
+                    false,
+                    nested_link_targets.as_ref(),
+                )?;
             } else {
                 stats.packages_cached += 1;
             }
@@ -1217,7 +1227,13 @@ impl Linker {
                                     &owned_index
                                 }
                             };
-                            self.ensure_in_virtual_store(dep_path, pkg, index, &mut local_stats)?;
+                            self.ensure_in_virtual_store(
+                                dep_path,
+                                pkg,
+                                index,
+                                &mut local_stats,
+                                nested_link_targets.as_ref(),
+                            )?;
 
                             // Only pay the `remove_dir`/`remove_file` syscalls
                             // when we actually have something to remove.
@@ -1311,6 +1327,7 @@ impl Linker {
                                 index,
                                 &mut local_stats,
                                 false,
+                                nested_link_targets.as_ref(),
                             )?;
                             Ok(local_stats)
                         })
@@ -1579,6 +1596,8 @@ impl Linker {
             );
         }
 
+        let nested_link_targets = build_nested_link_targets(root_dir, graph);
+
         // Step 1a: Materialize local (`file:` dir/tarball) packages
         // straight into the shared per-project `.aube/`. They never
         // participate in the global virtual store since their source
@@ -1599,7 +1618,15 @@ impl Linker {
                 stats.packages_cached += 1;
                 continue;
             }
-            self.materialize_into(&aube_dir, dep_path, pkg, index, &mut stats, false)?;
+            self.materialize_into(
+                &aube_dir,
+                dep_path,
+                pkg,
+                index,
+                &mut stats,
+                false,
+                nested_link_targets.as_ref(),
+            )?;
         }
 
         // Step 1b: Populate shared .aube virtual store at root for
@@ -1675,7 +1702,13 @@ impl Linker {
                                     &owned_index
                                 }
                             };
-                            self.ensure_in_virtual_store(dep_path, pkg, index, &mut local_stats)?;
+                            self.ensure_in_virtual_store(
+                                dep_path,
+                                pkg,
+                                index,
+                                &mut local_stats,
+                                nested_link_targets.as_ref(),
+                            )?;
 
                             if matches!(state, EntryState::Stale) {
                                 let _ = std::fs::remove_dir(&local_aube_entry)
@@ -1746,6 +1779,7 @@ impl Linker {
                                 index,
                                 &mut local_stats,
                                 false,
+                                nested_link_targets.as_ref(),
                             )?;
                             Ok(local_stats)
                         })
@@ -2286,6 +2320,12 @@ impl Linker {
         pkg: &LockedPackage,
         index: &PackageIndex,
         stats: &mut LinkStats,
+        // `link:` transitives the resolver pinned (e.g. via root
+        // `pnpm.overrides`) need their on-disk target so the parent's
+        // sibling symlink doesn't dangle into a non-existent
+        // `.aube/<name>@link+...`. `None` means "no nested links in
+        // this graph" and the materialize hot path stays unchanged.
+        nested_link_targets: Option<&BTreeMap<String, PathBuf>>,
     ) -> Result<(), Error> {
         // Global-store paths always run through the vstore_key map —
         // when hashes are installed this folds dep-graph + engine
@@ -2312,7 +2352,15 @@ impl Linker {
         let tmp_name = format!(".tmp-{}-{subdir}", std::process::id());
         let tmp_base = self.virtual_store.join(&tmp_name);
 
-        let result = self.materialize_into(&tmp_base, dep_path, pkg, index, stats, true);
+        let result = self.materialize_into(
+            &tmp_base,
+            dep_path,
+            pkg,
+            index,
+            stats,
+            true,
+            nested_link_targets,
+        );
 
         if result.is_err() {
             let _ = std::fs::remove_dir_all(&tmp_base);
@@ -2383,6 +2431,7 @@ impl Linker {
     /// copies for each `(deps_hash, engine)` combination;
     /// per-project `.aube/` callers pass `false` because node's
     /// runtime module walk resolves by dep_path only.
+    #[allow(clippy::too_many_arguments)]
     fn materialize_into(
         &self,
         base_dir: &Path,
@@ -2391,6 +2440,16 @@ impl Linker {
         index: &PackageIndex,
         stats: &mut LinkStats,
         apply_hashes: bool,
+        // dep_path → absolute on-disk target for any `link:` packages
+        // referenced as transitive deps. When the parent itself is a
+        // `file:` Directory or `link:` Link (workspace-style locals),
+        // its `package.json` may declare `link:./libs/foo` deps that
+        // point inside the parent's source tree. We sidestep the
+        // virtual store for those — there is no `.aube/<dep>@link+...`
+        // entry — and symlink straight to the on-disk path the
+        // resolver pinned. `None` means "no nested link transitives in
+        // this graph", which is the common case.
+        nested_link_targets: Option<&BTreeMap<String, PathBuf>>,
     ) -> Result<(), Error> {
         let subdir = if apply_hashes {
             self.virtual_store_subdir(dep_path)
@@ -2519,6 +2578,33 @@ impl Linker {
             if dep_name == &pkg.name {
                 continue;
             }
+            let symlink_path = pkg_nm_parent.join(dep_name);
+            // `link:` transitive: the resolver pinned an absolute
+            // on-disk target. Skip the virtual-store sibling lookup
+            // (there is no `.aube/<dep>@link+...` entry for these) and
+            // symlink straight at the source directory.
+            //
+            // Store the absolute target verbatim. A relative path
+            // would have to thread two pitfalls at once: the GVS
+            // tmp→final rename (link's own depth changes by one) AND
+            // macOS `/tmp`→`/private/tmp` symlink expansion (the dir
+            // the OS resolves the link from is one level deeper than
+            // `self.virtual_store` lexically suggests). Either alone
+            // is fixable; together every `pathdiff` variant lands one
+            // component off and the link dangles. Sibling symlinks
+            // get away with relative paths because both endpoints
+            // live inside `base_dir` and move together; nested-link
+            // targets are *external* (under `project_dir`) so the
+            // tricks that work for siblings don't apply. Windows
+            // already uses absolute targets for the same reason (see
+            // the `#[cfg(windows)]` block below).
+            if let Some(map) = nested_link_targets
+                && let Some(abs_target) = map.get(&dep_dep_path)
+            {
+                sys::create_dir_link(abs_target, &symlink_path)
+                    .map_err(|e| Error::Io(symlink_path.clone(), e))?;
+                continue;
+            }
             // Match the parent's convention: global-store materialization
             // walks sibling subdirs under their hashed names, while the
             // per-project `.aube/` layout uses raw dep_paths.
@@ -2527,7 +2613,6 @@ impl Linker {
             } else {
                 self.aube_dir_entry_name(&dep_dep_path)
             };
-            let symlink_path = pkg_nm_parent.join(dep_name);
             // Compute the relative path from the symlink's parent to
             // the sibling dep directory. The symlink's parent is
             // `pkg_nm_parent/` for a bare name but
@@ -2896,6 +2981,25 @@ fn current_patch_hashes(patches: &Patches) -> std::collections::BTreeMap<String,
             (k.clone(), hex::encode(h.finalize()))
         })
         .collect()
+}
+
+/// Build a `dep_path → absolute on-disk target` map for every
+/// `LocalSource::Link` in the graph. Returned `None` when the graph
+/// has no link entries (vast majority of installs), so the materialize
+/// hot path can short-circuit without a per-dep lookup.
+pub fn build_nested_link_targets(
+    project_dir: &Path,
+    graph: &LockfileGraph,
+) -> Option<BTreeMap<String, PathBuf>> {
+    let map: BTreeMap<String, PathBuf> = graph
+        .packages
+        .iter()
+        .filter_map(|(dp, pkg)| match pkg.local_source.as_ref() {
+            Some(LocalSource::Link(rel)) => Some((dp.clone(), project_dir.join(rel))),
+            _ => None,
+        })
+        .collect();
+    if map.is_empty() { None } else { Some(map) }
 }
 
 /// Read the previously-applied patch sidecar at

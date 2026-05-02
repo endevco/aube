@@ -70,6 +70,7 @@ fn build_age_gate_resolves_dist_tag_range() {
         original_specifier: None,
         real_name: None,
         ancestors: Vec::new(),
+        range_from_override: false,
     };
     let d = build_age_gate(&task, &packument, 60);
     // `latest` → 3.0.0; the exact-version range only matches 3.0.0.
@@ -93,6 +94,7 @@ fn build_no_match_falls_back_to_prereleases() {
         original_specifier: None,
         real_name: None,
         ancestors: Vec::new(),
+        range_from_override: false,
     };
     let d = build_no_match(&task, &packument);
     assert!(d.only_prereleases);
@@ -338,6 +340,7 @@ fn exotic_subdeps_from_local_parents_are_allowed() {
         original_specifier: None,
         real_name: None,
         ancestors: Vec::new(),
+        range_from_override: false,
     };
     let mut resolved = BTreeMap::new();
     resolved.insert(
@@ -366,6 +369,7 @@ fn exotic_subdeps_from_unknown_parents_stay_blocked() {
         original_specifier: None,
         real_name: None,
         ancestors: Vec::new(),
+        range_from_override: false,
     };
 
     assert!(should_block_exotic_subdep(&task, &BTreeMap::new(), true));
@@ -383,6 +387,7 @@ fn exotic_subdeps_from_registry_parents_stay_blocked() {
         original_specifier: None,
         real_name: None,
         ancestors: Vec::new(),
+        range_from_override: false,
     };
     let mut resolved = BTreeMap::new();
     resolved.insert(
