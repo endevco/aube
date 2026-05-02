@@ -106,3 +106,159 @@ JSON
 	run grep '"is-negative": "kevva/is-negative"' package.json
 	assert_success
 }
+
+@test "aube add kevva/is-negative + aube update --latest preserves the github shorthand" {
+	# Ported from pnpm/test/update.ts:143 ('update --latest') — full
+	# end-to-end including `aube add <bare-shorthand>`. pnpm overloads
+	# `pnpm install <pkg>` for both add-and-install; aube splits it
+	# into `aube add <pkg>`. parse_pkg_spec routes bare `user/repo`
+	# through the git-spec branch and writes it verbatim into
+	# package.json; the chained install then resolves through the git
+	# path.
+	_require_registry
+	_require_network
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-latest-add-github",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add kevva/is-negative
+	assert_success
+	run grep '"is-negative": "kevva/is-negative"' package.json
+	assert_success
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@^100.0.0' '@pnpm.e2e/bar@^100.0.0' 'alias@npm:@pnpm.e2e/qar@^100.0.0'
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update --latest
+	assert_success
+
+	# Registry deps bumped past their original ranges.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/bar@100.1.0' aube-lock.yaml
+	assert_success
+	run grep 'alias@100.1.0' aube-lock.yaml
+	assert_success
+
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "\^101.0.0"' package.json
+	assert_success
+	run grep '"@pnpm.e2e/bar": "\^100.1.0"' package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@\^100.1.0"' package.json
+	assert_success
+
+	# The github shorthand `aube add` wrote survives `update --latest`.
+	run grep '"is-negative": "kevva/is-negative"' package.json
+	assert_success
+}
+
+@test "aube add kevva/is-negative + aube update --latest -E preserves the github shorthand" {
+	# Ported from pnpm/test/update.ts:170 ('update --latest --save-exact')
+	# with `kevva/is-negative` restored end-to-end via `aube add`.
+	# `--save-exact` (`-E`) drops the caret on registry rewrites; the
+	# github shorthand is non-registry and never touched by
+	# `update --latest` (rewrite branch skips git specs).
+	_require_registry
+	_require_network
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-latest-exact-add-github",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add kevva/is-negative
+	assert_success
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' '@pnpm.e2e/bar@100.0.0' 'alias@npm:@pnpm.e2e/qar@100.0.0'
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update --latest -E
+	assert_success
+
+	# Registry deps rewritten as exact pins.
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "101.0.0"' package.json
+	assert_success
+	run grep '"@pnpm.e2e/bar": "100.1.0"' package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@100.1.0"' package.json
+	assert_success
+
+	# Github shorthand untouched.
+	run grep '"is-negative": "kevva/is-negative"' package.json
+	assert_success
+}
+
+@test "aube add kevva/is-negative + aube update -L <name> leaves the github shorthand pinned" {
+	# Ported from pnpm/test/update.ts:197 ('update --latest specific
+	# dependency'). pnpm uses `pnpm update -L @pnpm.e2e/bar alias
+	# is-negative`; aube doesn't update git deps via name lookup (the
+	# git-spec branch in the rewrite loop skips them regardless of
+	# whether they're named), so we drop `is-negative` from the
+	# `update -L` arg list and assert the manifest entry survives
+	# unchanged.
+	_require_registry
+	_require_network
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-latest-specific-add-github",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add kevva/is-negative
+	assert_success
+
+	run aube add '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' '@pnpm.e2e/bar@^100.0.0' '@pnpm.e2e/foo@100.0.0' 'alias@npm:@pnpm.e2e/qar@^100.0.0'
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+	add_dist_tag '@pnpm.e2e/qar' latest 100.1.0
+
+	run aube update -L '@pnpm.e2e/bar' alias
+	assert_success
+
+	# Named registry deps bumped, caret + alias prefix preserved.
+	run grep '"@pnpm.e2e/bar": "\^100.1.0"' package.json
+	assert_success
+	run grep '"alias": "npm:@pnpm.e2e/qar@\^100.1.0"' package.json
+	assert_success
+
+	# Unnamed registry deps stay at their pins.
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "100.0.0"' package.json
+	assert_success
+	run grep '"@pnpm.e2e/foo": "100.0.0"' package.json
+	assert_success
+
+	# Github shorthand survives even though the user's `update -L`
+	# arg list elsewhere targets registry deps — git specs skip the
+	# rewrite loop unconditionally.
+	run grep '"is-negative": "kevva/is-negative"' package.json
+	assert_success
+}
