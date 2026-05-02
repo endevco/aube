@@ -2098,6 +2098,23 @@ sources.env = ["npm_config_update_notifier", "NPM_CONFIG_UPDATE_NOTIFIER", "AUBE
 sources.npmrc = ["updateNotifier"]
 examples = []
 
+[updateRewritesSpecifier]
+description = "Rewrite caret/tilde manifest specifiers on `aube update` without `--latest`."
+type = "bool"
+default = "true"
+docs = """
+When `aube update <pkg>` (no `--latest`) bumps the lockfile to a newer
+in-range version, the matching `^X.Y.Z` / `~X.Y.Z` entry in
+`package.json` is rewritten to track the new version. Set to `false`
+to keep the manifest specifier frozen and only update the lockfile.
+Other range shapes (`>=`, `1.x`, exact pins, dist-tags, git, workspace)
+are never rewritten by the no-`--latest` path regardless of this setting.
+"""
+sources.cli = []
+sources.env = ["npm_config_update_rewrites_specifier", "NPM_CONFIG_UPDATE_REWRITES_SPECIFIER", "AUBE_UPDATE_REWRITES_SPECIFIER"]
+sources.npmrc = ["updateRewritesSpecifier"]
+examples = []
+
 [preferSymlinkedExecutables]
 description = "Create symlinks instead of shims for `.bin` entries."
 type = "bool"

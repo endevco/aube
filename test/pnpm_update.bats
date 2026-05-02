@@ -1133,3 +1133,172 @@ YAML
 	run grep '"@pnpm.e2e/pkg-with-1-dep": "\^100.0.0"' project-2/package.json
 	assert_success
 }
+
+@test "aube update <pkg>: rewrites caret manifest specifier to track in-range bump" {
+	# Ported from pnpm/test/update.ts:51 ('update without --latest').
+	# Default `updateRewritesSpecifier=true` makes the no-`--latest`
+	# `aube update <pkg>` rewrite the caret manifest range to track the
+	# new in-range max. Bumping `latest` to `100.1.0` keeps the new
+	# version inside the existing `^100.0.0` range — this is the
+	# cosmetic floor-bump case, not a `--latest` cross-major.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-rewrites-caret",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/foo@^100.0.0'
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update '@pnpm.e2e/foo'
+	assert_success
+
+	# Lockfile bumps to the new in-range max.
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_success
+
+	# package.json caret tracks the new resolved version.
+	run grep '"@pnpm.e2e/foo": "\^100.1.0"' package.json
+	assert_success
+}
+
+@test "aube update <pkg>: opt-out via update-rewrites-specifier=false keeps manifest frozen" {
+	# Companion to the rewrite test above. Setting
+	# `update-rewrites-specifier=false` in `.npmrc` restores aube's
+	# pre-parity frozen-manifest behavior: lockfile bumps in-range,
+	# package.json caret stays at the user's original spec.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-rewrites-optout",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add '@pnpm.e2e/foo@^100.0.0'
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	cat >>.npmrc <<'EOF'
+update-rewrites-specifier=false
+EOF
+
+	run aube update '@pnpm.e2e/foo'
+	assert_success
+
+	# Lockfile still bumps to the new in-range max.
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_success
+
+	# package.json range stays at the user's original spec.
+	run grep '"@pnpm.e2e/foo": "\^100.0.0"' package.json
+	assert_success
+}
+
+@test "aube update <pkg>: preserves dist-tag manifest specs (latest, next, beta)" {
+	# Regression guard for the cosmetic-rewrite filter: dist-tags
+	# ("latest", "next", "beta") must not be mistaken for caret specs.
+	# `range_prefix` defaults to "^" for unknown shapes so the filter
+	# checks the literal leading char (`^` or `~`) instead.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-dist-tag-preserved",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "latest"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update '@pnpm.e2e/foo'
+	assert_success
+
+	# Lockfile re-resolves to the new latest.
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_success
+
+	# Manifest spec stays as the dist-tag string verbatim.
+	run grep '"@pnpm.e2e/foo": "latest"' package.json
+	assert_success
+}
+
+@test "aube update -r <pkg>: rewrites caret manifest in every workspace project" {
+	# Ported from pnpm/test/update.ts:95 ('recursive update without
+	# --latest'). Same cosmetic floor-bump as the single-project case,
+	# fanned out across two workspace projects.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "0.0.0",
+  "private": true
+}
+JSON
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	# Seed the workspace lockfile at 100.0.0 before the dist-tag bump
+	# so the cosmetic floor-bump has a prior pin to advance from.
+	run aube install
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update -r '@pnpm.e2e/foo'
+	assert_success
+
+	# Both per-project manifests rewritten to track the new resolved
+	# version while staying inside the original caret range.
+	run grep '"@pnpm.e2e/foo": "\^100.1.0"' project-1/package.json
+	assert_success
+	run grep '"@pnpm.e2e/foo": "\^100.1.0"' project-2/package.json
+	assert_success
+}
