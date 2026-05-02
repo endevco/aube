@@ -921,3 +921,75 @@ EOF
 	assert_link_not_exists project-1/node_modules/is-negative
 	assert_link_not_exists project-2/node_modules/is-negative
 }
+
+@test "pnpmfile: readPackage hook fires during aube remove in a workspace" {
+	# Ported from pnpm/test/install/hooks.ts:580
+	# ('readPackage hook in workspace during remove'). pnpm asserts the
+	# hook-injected peerDep stays in the workspace lockfile after a
+	# `pnpm remove <pkg>` from a sub-project, because remove triggers
+	# a chained install that must wire the readPackage host the same
+	# way `aube install` does. Substitution: pnpm's @pnpm.e2e/* fixtures
+	# are mirrored, but for the regression guard we use the in-tree
+	# is-odd / is-even / is-number leaves — pnpm's specific fixture
+	# choice doesn't matter, only that a non-removed dep keeps the
+	# hook-injected peerDep through the chained install.
+	mkdir -p project-1
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "is-odd": "3.0.1",
+    "is-even": "1.0.0"
+  }
+}
+JSON
+	cat >package.json <<'JSON'
+{ "name": "ws-root", "version": "0.0.0", "private": true }
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+YAML
+	# Hook injects a peerDep into is-odd. is-odd@3.0.1 is project-1's
+	# direct dep; the injected peer survives whether or not is-even
+	# is in the manifest, so we can scope the assertion to is-odd's
+	# snapshot block.
+	cat >.pnpmfile.cjs <<'EOF'
+'use strict'
+module.exports = {
+  hooks: {
+    readPackage (pkg) {
+      if (pkg.name === 'is-odd') {
+        pkg.peerDependencies = pkg.peerDependencies || {}
+        pkg.peerDependencies['is-number'] = '*'
+      }
+      return pkg
+    }
+  }
+}
+EOF
+
+	run aube install
+	assert_success
+	# Sanity: the hook fired during install — is-odd@3.0.1's snapshot
+	# carries the injected `peerDependencies: is-number: '*'`. Scope
+	# to the @3.0.1 snapshot block so the older transitive entry pulled
+	# in by is-even@1.0.0 (is-odd@0.1.2) doesn't false-pass for us.
+	run bash -c "awk '/^  is-odd@3.0.1:\$/{flag=1; next} /^  [^ ]/{flag=0} flag' aube-lock.yaml"
+	assert_output --partial "peerDependencies"
+	assert_output --partial "is-number"
+
+	# Run remove from project-1 — this triggers a chained install. The
+	# hook must fire on the new resolve, otherwise the rewritten
+	# lockfile would drop the injected peerDep on the survivor.
+	run bash -c 'cd project-1 && aube remove is-even'
+	assert_success
+
+	# The injected peerDep on the surviving is-odd@3.0.1 must still
+	# be in the lockfile. Without the readPackage host wired into the
+	# remove path's chained install, the rewrite would lose it.
+	run bash -c "awk '/^  is-odd@3.0.1:\$/{flag=1; next} /^  [^ ]/{flag=0} flag' aube-lock.yaml"
+	assert_output --partial "peerDependencies"
+	assert_output --partial "is-number"
+}
