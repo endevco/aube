@@ -1726,11 +1726,12 @@ async fn run_install_command(
         }
         crate::dirs::set_cwd(&root)?;
     }
-    // Workspace-yaml-only roots have no root `package.json`; routing
-    // through `project_or_workspace_root` lets `aube install` from a
-    // pure-coordinator monorepo discover the yaml root before
-    // `install::run` synthesizes an empty manifest for it.
-    let cwd = crate::dirs::project_or_workspace_root()?;
+    // Match `install::run`'s precedence so settings here resolve from
+    // the same root the install will operate against. Workspace-first
+    // means `aube install` from inside a member loads `.npmrc` /
+    // workspace yaml from the workspace root, not the member; without
+    // this the two diverged when both roots existed.
+    let cwd = crate::dirs::workspace_or_project_root()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
     let raw_ws = aube_manifest::workspace::load_raw(&cwd)
         .into_diagnostic()
