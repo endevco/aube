@@ -71,13 +71,20 @@ pub async fn run(
     args: QueryArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
     let read_from = if !filter.is_empty() {
         crate::dirs::find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone())
     } else {
         cwd.clone()
     };
-    let manifest = super::load_manifest(&read_from.join("package.json"))?;
+    // Workspace-yaml-only roots (Turborepo-style) have no root manifest;
+    // synthesize an empty one so `parse_lockfile` still gets a typed
+    // PackageJson handle.
+    let manifest = if read_from.join("package.json").is_file() {
+        super::load_manifest(&read_from.join("package.json"))?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
     let graph = match aube_lockfile::parse_lockfile(&read_from, &manifest) {
         Ok(graph) => graph,
         Err(aube_lockfile::Error::NotFound(_)) => {

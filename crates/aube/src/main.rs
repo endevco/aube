@@ -1726,7 +1726,7 @@ async fn run_install_command(
         }
         crate::dirs::set_cwd(&root)?;
     }
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
     let raw_ws = aube_manifest::workspace::load_raw(&cwd)
         .into_diagnostic()

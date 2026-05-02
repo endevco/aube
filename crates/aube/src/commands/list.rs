@@ -166,7 +166,7 @@ pub async fn run(
         return run_global(&args);
     }
 
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
     // In yarn / npm / bun monorepos the lockfile lives only at the
     // workspace root, not in the subpackage. When the caller asks for
     // `--filter` we read manifest + lockfile from the root so
@@ -205,7 +205,25 @@ pub async fn run(
     let selected = if !filter.is_empty() {
         let workspace_pkgs = aube_workspace::find_workspace_packages(&read_from)
             .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
+        // pnpm parity: a workspace yaml that lists zero on-disk projects
+        // exits 0 with a friendly "No projects found" line. Only error
+        // when there's no workspace yaml at all (no workspace declaration
+        // means `--filter`/`-r` is meaningless).
         if workspace_pkgs.is_empty() {
+            if aube_manifest::workspace::workspace_yaml_existing(&read_from).is_some()
+                || read_from.join("package.json").is_file()
+            {
+                if format == ListFormat::Default && !filter.fail_if_no_match {
+                    println!("No projects found in {}", read_from.display());
+                }
+                if filter.fail_if_no_match {
+                    return Err(miette!(
+                        "aube list: no projects found in {}",
+                        read_from.display()
+                    ));
+                }
+                return Ok(());
+            }
             return Err(miette!(
                 "aube list: --filter requires a workspace root (aube-workspace.yaml, pnpm-workspace.yaml, or package.json with a `workspaces` field) at or above {}",
                 read_from.display()
@@ -241,7 +259,13 @@ pub async fn run(
 
     // Read manifest (needed even for `list` — we print the project name/version
     // at the top, and the lockfile parser needs it for non-pnpm formats).
-    let manifest = super::load_manifest(&read_from.join("package.json"))?;
+    // Workspace-yaml-only roots (Turborepo-style) have no root manifest;
+    // synthesize an empty one so the renderer still gets a typed handle.
+    let manifest = if read_from.join("package.json").is_file() {
+        super::load_manifest(&read_from.join("package.json"))?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
 
     // Lockfile may be absent in a brand-new project — treat that as "nothing
     // installed yet" rather than a hard error, and print an empty tree.

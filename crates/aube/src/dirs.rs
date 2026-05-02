@@ -193,6 +193,27 @@ pub fn project_root_or_cwd() -> miette::Result<PathBuf> {
     Ok(find_project_root(&initial_cwd).unwrap_or(initial_cwd))
 }
 
+/// Resolve cwd for workspace-scoped commands (`aube list -r`, `aube run -r`,
+/// `aube install`, `aube query`, `aube why`).
+///
+/// Prefers a project-rooted cwd when an ancestor `package.json` exists;
+/// otherwise falls back to a workspace yaml-only root (Turborepo-style
+/// monorepos where the root has only `aube-workspace.yaml` /
+/// `pnpm-workspace.yaml`). Errors only when neither exists.
+pub fn project_or_workspace_root() -> miette::Result<PathBuf> {
+    let initial_cwd = cwd()?;
+    if let Some(p) = find_project_root(&initial_cwd) {
+        return Ok(p);
+    }
+    if let Some(w) = find_workspace_yaml_root(&initial_cwd) {
+        return Ok(w);
+    }
+    Err(miette!(
+        "no project (`package.json`) or workspace (`aube-workspace.yaml` / `pnpm-workspace.yaml`) found in {} or any parent directory",
+        initial_cwd.display()
+    ))
+}
+
 /// Retarget the logical cwd to an explicit path.
 pub fn set_cwd(path: &Path) -> miette::Result<()> {
     let path = if path.is_absolute() {

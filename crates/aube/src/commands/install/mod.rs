@@ -1361,21 +1361,27 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // member as a standalone project — otherwise the member gets
         // its own `aube-lock.yaml`, its own `.aube/` virtual store,
         // and re-downloads anything not already in the global cache.
-        // The workspace root must have its own `package.json` —
-        // `find_workspace_root` returns yaml-only roots too, but
-        // `install::run` reads the root manifest unconditionally and
-        // would error on a yaml-only workspace. Fall through to the
-        // nearest `package.json` (the member itself, or the cwd for
-        // non-workspace subdirectory installs like `repo/docs`).
         // Mirrors the anchor logic in `ensure_installed`.
+        //
+        // Three-tier resolution:
+        // 1. Workspace root with a `package.json` — normal pnpm-style
+        //    monorepo, install reads the root manifest.
+        // 2. Nearest `package.json` (member itself, or `repo/docs`-style
+        //    non-workspace subdirectory).
+        // 3. Workspace yaml-only root (Turborepo-style monorepo with no
+        //    root manifest) — install treats the missing root manifest
+        //    as empty deps, no scripts. Reached only when no closer
+        //    `package.json` exists, so members install themselves and
+        //    yaml-only-root installs install the whole workspace.
         match crate::dirs::find_workspace_root(&initial_cwd)
             .filter(|root| root.join("package.json").is_file())
             .or_else(|| crate::dirs::find_project_root(&initial_cwd))
+            .or_else(|| crate::dirs::find_workspace_yaml_root(&initial_cwd))
         {
             Some(root) => root,
             None => {
                 return Err(miette!(
-                    "no package.json found in {} or any parent directory",
+                    "no package.json or workspace yaml found in {} or any parent directory",
                     initial_cwd.display()
                 ));
             }
@@ -1458,9 +1464,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     }
 
     // 1. Read package.json
-    let manifest = aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
-        .map_err(miette::Report::new)
-        .wrap_err("failed to read package.json")?;
+    //
+    // Workspace-yaml-only roots (Turborepo-style: `pnpm-workspace.yaml`
+    // / `aube-workspace.yaml` with no sibling `package.json`) install
+    // workspace projects only. Synthesize an empty manifest so the
+    // pipeline has no root deps and no root scripts to run.
+    let manifest = if cwd.join("package.json").is_file() {
+        aube_manifest::PackageJson::from_path(&cwd.join("package.json"))
+            .map_err(miette::Report::new)
+            .wrap_err("failed to read package.json")?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
 
     // Load the workspace yaml *once* — both as the typed
