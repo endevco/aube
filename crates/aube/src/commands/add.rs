@@ -158,6 +158,13 @@ struct ParsedPkgSpec {
     /// defaulted to `"latest"` by the parser. Used to decide whether the
     /// configured `tag` setting should override the range.
     has_explicit_range: bool,
+    /// For git specs (`kevva/is-negative`, `github:user/repo`,
+    /// `git+https://…`, scp form, `gitlab:`, `bitbucket:`), the raw spec
+    /// the user typed. The manifest-write path writes this verbatim into
+    /// `package.json` dependencies; the install pipeline then resolves
+    /// it through the resolver's git path. `None` for registry / npm: /
+    /// jsr: / workspace: specs.
+    git_spec_verbatim: Option<String>,
 }
 
 /// Parse a package spec into its components.
@@ -209,8 +216,72 @@ fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
         return Ok(parse_name_range(rest, None));
     }
 
+    // Git specs: bare `user/repo`, `github:user/repo`, `gitlab:`,
+    // `bitbucket:`, `git+https://…`, `git+ssh://…`, scp form
+    // (`git@github.com:owner/repo.git`), or a bare `https://…/repo.git`
+    // ending in `.git`. Try the whole string first; if that doesn't
+    // match, look for an alias prefix (`myname@<git-spec>`) and try the
+    // tail. Aliases can't start with `@` — that prefix is reserved for
+    // scoped npm names — so we only consult the alias branch when the
+    // spec has no leading `@` and the `before` half is non-empty.
+    if let Some(name) = git_spec_manifest_key(spec) {
+        return Ok(ParsedPkgSpec {
+            alias: None,
+            name,
+            jsr_name: None,
+            range: spec.to_string(),
+            has_explicit_range: true,
+            git_spec_verbatim: Some(spec.to_string()),
+        });
+    }
+    if !spec.starts_with('@')
+        && let Some(at_idx) = spec.find('@')
+        && at_idx > 0
+    {
+        let after = &spec[at_idx + 1..];
+        if let Some(_name) = git_spec_manifest_key(after) {
+            // The alias is the explicit manifest key — don't derive one
+            // from the URL.
+            return Ok(ParsedPkgSpec {
+                alias: Some(spec[..at_idx].to_string()),
+                name: spec[..at_idx].to_string(),
+                jsr_name: None,
+                range: after.to_string(),
+                has_explicit_range: true,
+                git_spec_verbatim: Some(after.to_string()),
+            });
+        }
+    }
+
     // Normal spec: name[@range]
     Ok(parse_name_range(spec, None))
+}
+
+/// Derive a manifest key from a git spec by extracting the repo segment
+/// of the parsed clone URL. `kevva/is-negative` →
+/// `https://github.com/kevva/is-negative.git` → `is-negative`. Returns
+/// `None` when `spec` is not a recognized git form (caller falls
+/// through to the registry path) or when the URL has no usable last
+/// segment (defense, shouldn't fire on shapes `parse_git_spec` accepts).
+///
+/// Limitation: when the package's `package.json#name` differs from the
+/// repo name (e.g. `microsoft/vscode-typescript` publishes as
+/// `typescript`), the user must spell the alias explicitly via
+/// `aube add typescript@microsoft/vscode-typescript`. Resolving the
+/// real name would require cloning the repo at add-time, which we
+/// defer to the install pipeline.
+fn git_spec_manifest_key(spec: &str) -> Option<String> {
+    let (url, _, _) = aube_lockfile::parse_git_spec(spec)?;
+    // strip query / fragment defensively — `parse_git_spec` already
+    // splits the fragment off at `#`, but leave the cut in place so a
+    // future `?ref=…` URL form doesn't poison the manifest key.
+    let trimmed = url.split(['?', '#']).next().unwrap_or(&url);
+    let last = trimmed.rsplit('/').next()?.trim_end_matches('/');
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
@@ -225,6 +296,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
                     jsr_name: None,
                     range: after_slash[at_idx + 1..].to_string(),
                     has_explicit_range: true,
+                    git_spec_verbatim: None,
                 };
             }
         }
@@ -234,6 +306,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             jsr_name: None,
             range: "latest".to_string(),
             has_explicit_range: false,
+            git_spec_verbatim: None,
         };
     }
 
@@ -245,6 +318,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             jsr_name: None,
             range: s[at_idx + 1..].to_string(),
             has_explicit_range: true,
+            git_spec_verbatim: None,
         }
     } else {
         ParsedPkgSpec {
@@ -253,6 +327,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             jsr_name: None,
             range: "latest".to_string(),
             has_explicit_range: false,
+            git_spec_verbatim: None,
         }
     }
 }
@@ -283,6 +358,7 @@ fn parse_jsr_name_range(s: &str, alias: Option<String>) -> miette::Result<Parsed
         jsr_name: Some(jsr_name),
         range: inner.range,
         has_explicit_range: inner.has_explicit_range,
+        git_spec_verbatim: None,
     })
 }
 
@@ -642,10 +718,13 @@ async fn update_manifest_for_add(
     // Skip packument fetches for `workspace:*` / `workspace:^` /
     // `workspace:<range>` specs — they resolve against the local
     // workspace, not the registry. Without this guard the parallel
-    // fetch below would 404 on the workspace package name.
+    // fetch below would 404 on the workspace package name. Same for
+    // git specs: the resolver clones the URL during install, so
+    // there's no registry packument to fetch (and the manifest key is
+    // a repo-segment heuristic that may not exist on the registry).
     let mut handles = Vec::new();
     for spec in &parsed {
-        if aube_util::pkg::is_workspace_spec(&spec.range) {
+        if aube_util::pkg::is_workspace_spec(&spec.range) || spec.git_spec_verbatim.is_some() {
             continue;
         }
         let client = client.clone();
@@ -683,6 +762,17 @@ async fn update_manifest_for_add(
                 pkg_name_for_manifest,
                 &opts,
             )?;
+            continue;
+        }
+
+        // Git specs (`kevva/is-negative`, `github:owner/repo`,
+        // `git+https://…`, scp form, `gitlab:`/`bitbucket:`) skip the
+        // registry path: write the user's verbatim spec into the
+        // manifest and let the chained `aube install` clone + resolve
+        // it through the resolver's git path. Catalogs are bypassed —
+        // git deps are never catalogized.
+        if let Some(verbatim) = spec.git_spec_verbatim.as_deref() {
+            apply_git_spec_to_manifest(&mut manifest, pkg_name_for_manifest, verbatim, &opts);
             continue;
         }
 
@@ -1007,6 +1097,47 @@ fn apply_workspace_spec_to_manifest(
         manifest.dependencies.insert(dep_name, specifier);
     }
     Ok(())
+}
+
+/// Write a git-spec dep into the manifest verbatim. Mirrors the
+/// dependency-section scrub the registry path does so a re-add doesn't
+/// leave duplicate entries across `dependencies` /
+/// `devDependencies` / `optionalDependencies`. The chained
+/// `aube install` resolves the git URL and writes the lockfile entry —
+/// nothing here touches the registry or aube-lock.yaml.
+fn apply_git_spec_to_manifest(
+    manifest: &mut aube_manifest::PackageJson,
+    pkg_name_for_manifest: &str,
+    verbatim_spec: &str,
+    opts: &AddManifestOptions,
+) {
+    eprintln!("  + {pkg_name_for_manifest} (specifier: {verbatim_spec})");
+
+    manifest.dependencies.remove(pkg_name_for_manifest);
+    manifest.optional_dependencies.remove(pkg_name_for_manifest);
+    if !opts.save_peer {
+        manifest.peer_dependencies.remove(pkg_name_for_manifest);
+    }
+    if !(opts.save_peer && opts.save_dev) {
+        manifest.dev_dependencies.remove(pkg_name_for_manifest);
+    }
+
+    let dep_name = pkg_name_for_manifest.to_string();
+    let specifier = verbatim_spec.to_string();
+    if opts.save_peer {
+        manifest
+            .peer_dependencies
+            .insert(dep_name.clone(), specifier.clone());
+        if opts.save_dev {
+            manifest.dev_dependencies.insert(dep_name, specifier);
+        }
+    } else if opts.save_dev {
+        manifest.dev_dependencies.insert(dep_name, specifier);
+    } else if opts.save_optional {
+        manifest.optional_dependencies.insert(dep_name, specifier);
+    } else {
+        manifest.dependencies.insert(dep_name, specifier);
+    }
 }
 
 /// Decide what `aube add --save-catalog[=<name>]` should write to the
@@ -1698,6 +1829,117 @@ mod tests {
         assert!(
             err.to_string().contains("JSR packages must be scoped"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_bare_user_repo() {
+        // `kevva/is-negative` is the npm/pnpm GitHub shorthand —
+        // manifest key is the repo segment, verbatim spec round-trips
+        // back into package.json.
+        let s = parse_pkg_spec("kevva/is-negative").unwrap();
+        assert_eq!(s.name, "is-negative");
+        assert!(s.alias.is_none());
+        assert_eq!(s.git_spec_verbatim.as_deref(), Some("kevva/is-negative"));
+        assert!(s.has_explicit_range);
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_github_protocol() {
+        let s = parse_pkg_spec("github:foo/bar-baz").unwrap();
+        assert_eq!(s.name, "bar-baz");
+        assert_eq!(s.git_spec_verbatim.as_deref(), Some("github:foo/bar-baz"));
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_https_url_with_dot_git() {
+        let s = parse_pkg_spec("git+https://github.com/owner/some-pkg.git").unwrap();
+        assert_eq!(s.name, "some-pkg");
+        assert_eq!(
+            s.git_spec_verbatim.as_deref(),
+            Some("git+https://github.com/owner/some-pkg.git")
+        );
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_https_url_no_dot_git() {
+        // `git+` prefix tags it as git so the `.git` suffix is optional.
+        let s = parse_pkg_spec("git+https://github.com/owner/some-pkg").unwrap();
+        assert_eq!(s.name, "some-pkg");
+        assert_eq!(
+            s.git_spec_verbatim.as_deref(),
+            Some("git+https://github.com/owner/some-pkg")
+        );
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_committish_preserved() {
+        // `#<ref>` survives in the verbatim spec so the resolver can
+        // pin to the user-specified tag/branch/sha.
+        let s = parse_pkg_spec("git+https://github.com/owner/some-pkg.git#v1.0.0").unwrap();
+        assert_eq!(s.name, "some-pkg");
+        assert_eq!(
+            s.git_spec_verbatim.as_deref(),
+            Some("git+https://github.com/owner/some-pkg.git#v1.0.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_aliased_bare() {
+        // `myname@kevva/is-negative` — alias overrides the
+        // repo-segment heuristic so the manifest key is `myname`.
+        let s = parse_pkg_spec("myname@kevva/is-negative").unwrap();
+        assert_eq!(s.alias.as_deref(), Some("myname"));
+        assert_eq!(s.name, "myname");
+        assert_eq!(s.git_spec_verbatim.as_deref(), Some("kevva/is-negative"));
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_aliased_protocol() {
+        let s = parse_pkg_spec("myname@github:owner/repo").unwrap();
+        assert_eq!(s.alias.as_deref(), Some("myname"));
+        assert_eq!(s.git_spec_verbatim.as_deref(), Some("github:owner/repo"));
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_scoped_pkg_is_not_git() {
+        // `@types/node` — npm scoped name. The git branch must NOT
+        // claim it; falls through to the registry path.
+        let s = parse_pkg_spec("@types/node").unwrap();
+        assert_eq!(s.name, "@types/node");
+        assert_eq!(s.range, "latest");
+        assert!(s.git_spec_verbatim.is_none());
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_relative_path_is_not_git() {
+        // `parse_git_spec` already rejects single- and multi-component
+        // relative paths; mirror that here so a user typing `./local`
+        // gets the registry's 404 (not a github-shorthand attempt).
+        let s = parse_pkg_spec("./local/path").unwrap();
+        assert_eq!(s.name, "./local/path");
+        assert!(s.git_spec_verbatim.is_none());
+        let s = parse_pkg_spec("../local/path").unwrap();
+        assert_eq!(s.name, "../local/path");
+        assert!(s.git_spec_verbatim.is_none());
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_bare_lodash_is_not_git() {
+        // Single-segment names with no `/` don't match git shorthand —
+        // the existing registry path handles them.
+        let s = parse_pkg_spec("lodash").unwrap();
+        assert!(s.git_spec_verbatim.is_none());
+        assert_eq!(s.name, "lodash");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_scp_form() {
+        let s = parse_pkg_spec("git@github.com:owner/repo.git").unwrap();
+        assert_eq!(s.name, "repo");
+        assert_eq!(
+            s.git_spec_verbatim.as_deref(),
+            Some("git@github.com:owner/repo.git")
         );
     }
 }
