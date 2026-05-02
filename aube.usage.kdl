@@ -867,7 +867,9 @@ cmd update help="Update dependencies" {
     flag "-i --interactive" help="Interactive update picker" {
         long_help "Interactive update picker.\n\nParsed for pnpm compatibility."
     }
-    flag "-L --latest" help="Update past the manifest range: rewrite `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual)"
+    flag "-L --latest" help="Update past the manifest range" {
+        long_help "Update past the manifest range.\n\nRewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual)."
+    }
     flag "-P --prod --production" help="Update only production dependencies"
     flag "-w --workspace" help="Update dependencies in the current workspace package"
     flag --depth help="Dependency traversal depth" {
