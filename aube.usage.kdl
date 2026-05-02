@@ -871,7 +871,7 @@ cmd update help="Update dependencies" {
     flag "-P --prod --production" help="Update only production dependencies"
     flag "-w --workspace" help="Update dependencies in the current workspace package"
     flag --depth help="Dependency traversal depth" {
-        long_help "Dependency traversal depth.\n\nParsed for pnpm compatibility."
+        long_help "Dependency traversal depth.\n\nParsed for pnpm compatibility but ignored: aube only ever refreshes direct deps (pnpm's `--depth 0` default). Setting the flag emits a one-line warning pointing at `rm aube-lock.yaml && aube install` for the `--depth Infinity` case."
         arg <DEPTH>
     }
     flag --global-pnpmfile help="Add a global pnpmfile that runs before the local one" {

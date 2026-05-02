@@ -51,7 +51,7 @@ Update dependencies in the current workspace package
 
 Dependency traversal depth.
 
-Parsed for pnpm compatibility.
+Parsed for pnpm compatibility but ignored: aube only ever refreshes direct deps (pnpm's `--depth 0` default). Setting the flag emits a one-line warning pointing at `rm aube-lock.yaml && aube install` for the `--depth Infinity` case.
 
 ### `--global-pnpmfile <PATH>`
 

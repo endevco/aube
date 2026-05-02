@@ -5389,7 +5389,7 @@
             "name": "depth",
             "usage": "--depth <DEPTH>",
             "help": "Dependency traversal depth",
-            "help_long": "Dependency traversal depth.\n\nParsed for pnpm compatibility.",
+            "help_long": "Dependency traversal depth.\n\nParsed for pnpm compatibility but ignored: aube only ever refreshes direct deps (pnpm's `--depth 0` default). Setting the flag emits a one-line warning pointing at `rm aube-lock.yaml && aube install` for the `--depth Infinity` case.",
             "help_first_line": "Dependency traversal depth",
             "short": [],
             "long": [
