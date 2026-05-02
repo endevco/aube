@@ -294,6 +294,25 @@ JSON
 	assert_output --partial "not-a-real-dep"
 }
 
+@test "aube rebuild <pkg> errors when no lockfile is present" {
+	# Selective rebuild without a lockfile would otherwise skip the
+	# unmatched-name check and the root hooks both, exiting Ok silently.
+	# Guard fires before the would-be no-op.
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-no-lockfile-test",
+  "version": "1.0.0"
+}
+JSON
+	run aube rebuild some-package
+	assert_failure
+	assert_output --partial "no lockfile found"
+	# Miette word-wraps the diagnostic at column boundaries that depend
+	# on the temp dir path length, so split substrings that always live
+	# on the same line as the surrounding text.
+	assert_output --partial "before targeting"
+}
+
 @test "aube rebuild re-runs allowlisted dependency lifecycle scripts in hoisted mode" {
 	cat >package.json <<'JSON'
 {

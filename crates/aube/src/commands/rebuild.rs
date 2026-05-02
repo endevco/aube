@@ -67,6 +67,17 @@ pub async fn run(
         Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
 
+    // Selective rebuild needs a graph to match names against. Without
+    // the lockfile the unmatched-name check below never runs, root
+    // hooks are skipped (selected.is_some()), and the command would
+    // exit Ok with no scripts run and no diagnostic — invisible in CI.
+    if selected.is_some() && graph.is_none() {
+        return Err(miette!(
+            "no lockfile found at {} — run `aube install` before targeting specific packages",
+            cwd.display()
+        ));
+    }
+
     let modules_dir_name = aube_settings::resolved::modules_dir(&settings_ctx);
     let aube_dir = super::resolve_virtual_store_dir(&settings_ctx, &cwd);
     if selected.is_none() {
