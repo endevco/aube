@@ -158,6 +158,12 @@ struct ParsedPkgSpec {
     /// defaulted to `"latest"` by the parser. Used to decide whether the
     /// configured `tag` setting should override the range.
     has_explicit_range: bool,
+    /// Original verbatim spec when the user typed a git URL form
+    /// (`kevva/is-negative`, `github:user/repo`, `git+https://…`, …).
+    /// `Some(_)` flags the spec for the non-registry git branch:
+    /// skip the packument fetch, write the verbatim string into
+    /// `package.json`, and let the resolver dispatch the git path.
+    git_spec: Option<String>,
 }
 
 /// Parse a package spec into its components.
@@ -172,7 +178,26 @@ struct ParsedPkgSpec {
 ///   name=@jsr/std__collections, range=^1 (jsr translation)
 /// - `my-alias@jsr:@std/collections@^1` → alias=my-alias,
 ///   name=@jsr/std__collections, range=^1
+/// - `kevva/is-negative` → git: bare GitHub shorthand, name derived
+///   from the repo segment of the clone URL
+/// - `github:user/repo`, `git+https://host/u/r.git#tag` → git: any
+///   form `aube_lockfile::parse_git_spec` recognizes
+/// - `my-alias@kevva/is-negative` → git with alias: manifest key is
+///   `my-alias`, spec written verbatim
 fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
+    // Git specs route through their own branch — packument fetch is
+    // skipped and the verbatim spec is written to `package.json`.
+    // Try the full string first so explicit URL forms shadow the
+    // alias check below; then peel a leading `alias@` and re-test.
+    if aube_lockfile::parse_git_spec(spec).is_some() {
+        return parse_git_pkg_spec(spec, None);
+    }
+    if let Some((alias, rest)) = split_git_alias(spec)
+        && aube_lockfile::parse_git_spec(rest).is_some()
+    {
+        return parse_git_pkg_spec(rest, Some(alias.to_string()));
+    }
+
     // Handle full alias form: alias@jsr:@scope/name[@range]
     if let Some(jsr_idx) = spec.find("@jsr:") {
         let before = &spec[..jsr_idx];
@@ -213,6 +238,71 @@ fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
     Ok(parse_name_range(spec, None))
 }
 
+/// Split `alias@<rest>` for the git-spec alias form. Returns
+/// `Some((alias, rest))` when the input has a non-empty alias that
+/// looks like a plain npm name. Scoped npm names (`@scope/pkg`)
+/// start with `@` and never aliased a git spec in any package
+/// manager. A `:` in the alias would mean we caught a protocol
+/// prefix (`jsr:`, `npm:`, `github:`, `git+…`) — those cases are
+/// handled by their own branches in `parse_pkg_spec` and must not
+/// be reinterpreted as a git alias.
+fn split_git_alias(spec: &str) -> Option<(&str, &str)> {
+    if spec.starts_with('@') {
+        return None;
+    }
+    let at = spec.find('@')?;
+    if at == 0 {
+        return None;
+    }
+    let alias = &spec[..at];
+    if alias.contains(':') {
+        return None;
+    }
+    Some((alias, &spec[at + 1..]))
+}
+
+/// Build a `ParsedPkgSpec` for a git-form spec. The manifest key is
+/// the user-supplied alias when given, otherwise the repo segment of
+/// the clone URL (e.g. `kevva/is-negative` → `is-negative`). The
+/// `range` field carries the verbatim spec so `git_spec` and `range`
+/// agree, and the install pipeline's lockfile reader sees the same
+/// string the user typed.
+fn parse_git_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<ParsedPkgSpec> {
+    let (clone_url, _committish, _subpath) = aube_lockfile::parse_git_spec(verbatim)
+        .ok_or_else(|| miette!("expected git spec, got `{verbatim}`"))?;
+    let derived_name = repo_name_from_clone_url(&clone_url).ok_or_else(|| {
+        miette!(
+            "could not derive a package name from git URL `{clone_url}`; \
+             pass an alias (e.g. `my-name@{verbatim}`)"
+        )
+    })?;
+    let name = alias.clone().unwrap_or(derived_name);
+    Ok(ParsedPkgSpec {
+        alias,
+        name,
+        jsr_name: None,
+        range: verbatim.to_string(),
+        has_explicit_range: true,
+        git_spec: Some(verbatim.to_string()),
+    })
+}
+
+/// Pull the repo segment out of a git clone URL, stripping a trailing
+/// `.git`. Used as the manifest key when the user didn't supply an
+/// alias. `None` when the URL has no path segment to slice (which
+/// shouldn't happen for `parse_git_spec` outputs but the caller guards
+/// against the edge case anyway).
+fn repo_name_from_clone_url(url: &str) -> Option<String> {
+    let body = url.split_once('?').map(|(b, _)| b).unwrap_or(url);
+    let body = body.split_once('#').map(|(b, _)| b).unwrap_or(body);
+    let last = body.rsplit('/').next()?;
+    let stripped = last.strip_suffix(".git").unwrap_or(last);
+    if stripped.is_empty() {
+        return None;
+    }
+    Some(stripped.to_string())
+}
+
 fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
     // Handle scoped packages: @scope/name@range
     if s.starts_with('@') {
@@ -225,6 +315,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
                     jsr_name: None,
                     range: after_slash[at_idx + 1..].to_string(),
                     has_explicit_range: true,
+                    git_spec: None,
                 };
             }
         }
@@ -234,6 +325,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             jsr_name: None,
             range: "latest".to_string(),
             has_explicit_range: false,
+            git_spec: None,
         };
     }
 
@@ -245,6 +337,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             jsr_name: None,
             range: s[at_idx + 1..].to_string(),
             has_explicit_range: true,
+            git_spec: None,
         }
     } else {
         ParsedPkgSpec {
@@ -253,6 +346,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             jsr_name: None,
             range: "latest".to_string(),
             has_explicit_range: false,
+            git_spec: None,
         }
     }
 }
@@ -283,6 +377,7 @@ fn parse_jsr_name_range(s: &str, alias: Option<String>) -> miette::Result<Parsed
         jsr_name: Some(jsr_name),
         range: inner.range,
         has_explicit_range: inner.has_explicit_range,
+        git_spec: None,
     })
 }
 
@@ -641,11 +736,13 @@ async fn update_manifest_for_add(
 
     // Skip packument fetches for `workspace:*` / `workspace:^` /
     // `workspace:<range>` specs — they resolve against the local
-    // workspace, not the registry. Without this guard the parallel
-    // fetch below would 404 on the workspace package name.
+    // workspace, not the registry. Same skip applies to git specs
+    // (`kevva/is-negative`, `github:user/repo`, …) which the resolver
+    // dispatches via the git path. Without these guards the parallel
+    // fetch below would 404 on the local/git name.
     let mut handles = Vec::new();
     for spec in &parsed {
-        if aube_util::pkg::is_workspace_spec(&spec.range) {
+        if aube_util::pkg::is_workspace_spec(&spec.range) || spec.git_spec.is_some() {
             continue;
         }
         let client = client.clone();
@@ -683,6 +780,16 @@ async fn update_manifest_for_add(
                 pkg_name_for_manifest,
                 &opts,
             )?;
+            continue;
+        }
+
+        // Git specs (`kevva/is-negative`, `github:user/repo`,
+        // `git+https://…#tag`) bypass the registry path: write the
+        // user's verbatim spec into the manifest and let the resolver
+        // dispatch the git branch on the next install. Catalog logic
+        // is skipped (catalogs are for registry deps).
+        if let Some(verbatim) = spec.git_spec.as_deref() {
+            apply_git_spec_to_manifest(&mut manifest, pkg_name_for_manifest, verbatim, &opts);
             continue;
         }
 
@@ -1007,6 +1114,57 @@ fn apply_workspace_spec_to_manifest(
         manifest.dependencies.insert(dep_name, specifier);
     }
     Ok(())
+}
+
+/// Write a git-form spec verbatim into the manifest. Mirrors the
+/// duplicate-section scrub of the registry path so re-running
+/// `aube add <git-spec>` after a previous registry add overwrites the
+/// old entry instead of duplicating it across `dependencies` and
+/// `devDependencies`.
+///
+/// The manifest carries the literal user-typed string
+/// (`kevva/is-negative`, `github:user/repo`, …) — preserving the
+/// verbatim form keeps the manifest readable, and aube's resolver
+/// handles every form `parse_git_spec` recognizes equivalently.
+///
+/// Limitation: when the user didn't supply an alias, the manifest key
+/// is the repo segment of the clone URL (e.g. `is-negative` for
+/// `kevva/is-negative`). If the upstream package's `package.json`
+/// `name` differs from the repo segment, pass an alias:
+/// `aube add my-pkg@kevva/is-negative`.
+fn apply_git_spec_to_manifest(
+    manifest: &mut aube_manifest::PackageJson,
+    pkg_name_for_manifest: &str,
+    verbatim_spec: &str,
+    opts: &AddManifestOptions,
+) {
+    eprintln!("  + {pkg_name_for_manifest} (specifier: {verbatim_spec})");
+
+    manifest.dependencies.remove(pkg_name_for_manifest);
+    manifest.optional_dependencies.remove(pkg_name_for_manifest);
+    if !opts.save_peer {
+        manifest.peer_dependencies.remove(pkg_name_for_manifest);
+    }
+    if !(opts.save_peer && opts.save_dev) {
+        manifest.dev_dependencies.remove(pkg_name_for_manifest);
+    }
+
+    let dep_name = pkg_name_for_manifest.to_string();
+    let specifier = verbatim_spec.to_string();
+    if opts.save_peer {
+        manifest
+            .peer_dependencies
+            .insert(dep_name.clone(), specifier.clone());
+        if opts.save_dev {
+            manifest.dev_dependencies.insert(dep_name, specifier);
+        }
+    } else if opts.save_dev {
+        manifest.dev_dependencies.insert(dep_name, specifier);
+    } else if opts.save_optional {
+        manifest.optional_dependencies.insert(dep_name, specifier);
+    } else {
+        manifest.dependencies.insert(dep_name, specifier);
+    }
 }
 
 /// Decide what `aube add --save-catalog[=<name>]` should write to the
@@ -1699,5 +1857,52 @@ mod tests {
             err.to_string().contains("JSR packages must be scoped"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_bare_github_shorthand() {
+        let s = parse_pkg_spec("kevva/is-negative").unwrap();
+        assert_eq!(s.git_spec.as_deref(), Some("kevva/is-negative"));
+        assert_eq!(s.name, "is-negative");
+        assert_eq!(s.range, "kevva/is-negative");
+        assert!(s.alias.is_none());
+        assert!(s.has_explicit_range);
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_github_protocol() {
+        let s = parse_pkg_spec("github:user/repo").unwrap();
+        assert_eq!(s.git_spec.as_deref(), Some("github:user/repo"));
+        assert_eq!(s.name, "repo");
+        assert_eq!(s.range, "github:user/repo");
+        assert!(s.alias.is_none());
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_url_with_committish() {
+        let spec = "git+https://github.com/owner/repo.git#tag/with/slash";
+        let s = parse_pkg_spec(spec).unwrap();
+        assert_eq!(s.git_spec.as_deref(), Some(spec));
+        // Repo segment derived before the `#`/`?` slice, then `.git` stripped.
+        assert_eq!(s.name, "repo");
+        assert_eq!(s.range, spec);
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_git_alias() {
+        let s = parse_pkg_spec("my-alias@kevva/is-negative").unwrap();
+        assert_eq!(s.git_spec.as_deref(), Some("kevva/is-negative"));
+        assert_eq!(s.alias.as_deref(), Some("my-alias"));
+        assert_eq!(s.name, "my-alias");
+        assert_eq!(s.range, "kevva/is-negative");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_scoped_not_git() {
+        // Scoped npm names must not be misclassified as git specs.
+        let s = parse_pkg_spec("@scope/pkg").unwrap();
+        assert!(s.git_spec.is_none());
+        assert_eq!(s.name, "@scope/pkg");
+        assert_eq!(s.range, "latest");
     }
 }
