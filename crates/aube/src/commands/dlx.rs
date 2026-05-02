@@ -23,12 +23,11 @@ pub struct DlxArgs {
     /// looked up in `node_modules/.bin`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub params: Vec<String>,
-    /// Run the assembled command line through `sh -c` with
-    /// `<scratch>/node_modules/.bin` prepended to `PATH`.
+    /// Run the assembled command line through `sh -c`.
     ///
-    /// Use this for pipelines, redirects, or env expansion (`aube dlx
-    /// -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx
-    /// --shell-mode`.
+    /// `<scratch>/node_modules/.bin` is prepended to `PATH`. Use this
+    /// for pipelines, redirects, or env expansion (`aube dlx -p cowsay
+    /// -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`.
     #[arg(short = 'c', long)]
     pub shell_mode: bool,
     /// Install a specific package (repeatable).

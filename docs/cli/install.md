@@ -23,15 +23,15 @@ Bypasses the `allowBuilds` allowlist. Do not use in CI.
 
 ### `--fix-lockfile`
 
-Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version.
+Re-resolve lockfile entries whose spec drifted from package.json.
 
-Unchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved.
+Leaves everything else pinned at its locked version. Unchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved.
 
 ### `--force`
 
-Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.
+Force reinstall, ignoring lockfile/state freshness.
 
-Mirrors pnpm's `install --force`.
+Bypasses the `node_modules/.aube-state` freshness check and re-resolves the lockfile even when nothing has drifted. Mirrors pnpm's `install --force`.
 
 ### `--global-pnpmfile <PATH>`
 
@@ -49,7 +49,9 @@ Skip lifecycle scripts (no-op; aube already skips by default)
 
 ### `--lockfile-dir <PATH>`
 
-Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`
+Read and write the lockfile in the given directory.
+
+Instead of placing the lockfile alongside `package.json`, the project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`.
 
 ### `--lockfile-only`
 
@@ -59,9 +61,9 @@ Useful for CI workflows that only update the lockfile.
 
 ### `--merge-git-branch-lockfiles`
 
-Merge every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and delete the branch files.
+Merge per-branch lockfiles into the main `aube-lock.yaml`.
 
-Companion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is set in `pnpm-workspace.yaml`, this happens automatically on matching branches; the flag forces it regardless.
+Combines every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and deletes the branch files. Companion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is set in `pnpm-workspace.yaml`, this happens automatically on matching branches; the flag forces it regardless.
 
 ### `--network-concurrency <N>`
 
@@ -119,9 +121,9 @@ Repeatable; comma-separated values are also accepted.
 
 ### `--resolution-mode <MODE>`
 
-How to resolve version ranges: `highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff).
+How to resolve version ranges.
 
-Accepts pnpm's aliases `time` and `lowest-direct`. When omitted, falls back to the `resolution-mode` key in `.npmrc` / `aube-workspace.yaml`.
+`highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff). Accepts pnpm's aliases `time` and `lowest-direct`. When omitted, falls back to the `resolution-mode` key in `.npmrc` / `aube-workspace.yaml`.
 
 ### `--shamefully-hoist`
 
@@ -137,6 +139,6 @@ Defaults to on and only applies to packages allowed by `allowBuilds` / `onlyBuil
 
 ### `--verify-store-integrity`
 
-Verify tarball SHA-512 against the lockfile integrity before importing into the store.
+Verify tarball SHA-512 before importing into the store.
 
-Defaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip.
+Checks each tarball against the lockfile integrity. Defaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip.

@@ -36,11 +36,13 @@ Examples:
 
 #[derive(Debug, Args)]
 pub struct QueryArgs {
-    /// Selector expression. Supports `*`, bare package names,
-    /// `[name=value]`, `[version=value]`, `[license=value]`,
-    /// `[depPath=value]`, `[source=value]`, `:prod`, `:dev`,
-    /// `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`,
-    /// `:deprecated`, `:license(value)`, and `:type(value)`.
+    /// Selector expression.
+    ///
+    /// Supports `*`, bare package names, `[name=value]`,
+    /// `[version=value]`, `[license=value]`, `[depPath=value]`,
+    /// `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`,
+    /// `:transitive`, `:scripts`, `:bin`, `:deprecated`,
+    /// `:license(value)`, and `:type(value)`.
     pub selector: String,
 
     /// Only match devDependency roots and their transitive deps.

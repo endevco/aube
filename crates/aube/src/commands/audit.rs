@@ -74,11 +74,12 @@ pub struct AuditArgs {
     #[arg(long)]
     pub ignore_registry_errors: bool,
 
-    /// Drop advisories for which no non-vulnerable version is available
-    /// in the package's packument.
+    /// Drop advisories that have no non-vulnerable upgrade.
     ///
-    /// Same "best non-vulnerable" logic as `--fix`: an advisory is kept
-    /// only when an upgrade path exists.
+    /// Filters out advisories for which no non-vulnerable version is
+    /// available in the package's packument. Same "best non-vulnerable"
+    /// logic as `--fix`: an advisory is kept only when an upgrade path
+    /// exists.
     #[arg(long)]
     pub ignore_unfixable: bool,
 

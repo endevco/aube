@@ -29,10 +29,11 @@ pub struct UpdateArgs {
     /// Parsed for pnpm compatibility.
     #[arg(short = 'i', long)]
     pub interactive: bool,
-    /// Update past the manifest range: rewrite `package.json`
-    /// specifiers to match the newly resolved versions (the registry's
-    /// `latest` dist-tag, clamped by `minimumReleaseAge` /
-    /// `resolution-mode` as usual).
+    /// Update past the manifest range.
+    ///
+    /// Rewrites `package.json` specifiers to match the newly resolved
+    /// versions (the registry's `latest` dist-tag, clamped by
+    /// `minimumReleaseAge` / `resolution-mode` as usual).
     #[arg(short = 'L', long)]
     pub latest: bool,
     /// Update only production dependencies.

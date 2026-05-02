@@ -3,13 +3,17 @@
 
 - **Usage**: `aube approve-builds [--all] [-g --global] [PKG]…`
 
-Approve ignored dependency build scripts in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present) under `allowBuilds`
+Approve ignored dependency build scripts.
+
+Writes entries under `allowBuilds` in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present).
 
 ## Arguments
 
 ### `[PKG]…`
 
-Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op
+Packages to approve directly, skipping the picker.
+
+Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op.
 
 ## Flags
 

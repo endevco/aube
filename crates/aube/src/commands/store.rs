@@ -50,9 +50,10 @@ pub enum StoreCommand {
     Path,
     /// Remove unreferenced packages from the global store.
     Prune,
-    /// Verify that every file referenced by a cached package index is
-    /// still present in the store and its BLAKE3 hash matches.
+    /// Verify the store against cached package indexes.
     ///
+    /// Confirms every file referenced by a cached package index is
+    /// still present in the store and that its BLAKE3 hash matches.
     /// Exits non-zero when any corruption is detected.
     Status,
 }

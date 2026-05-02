@@ -23,6 +23,6 @@ When omitted, `aube` picks a fresh temp dir under the system tmpdir.
 
 ### `--ignore-existing`
 
-Ignore any existing patch entry for this package — extract a pristine copy from `node_modules` rather than re-applying the existing patch first.
+Ignore any existing patch entry for this package.
 
-Accepted for pnpm parity; aube already extracts from the *linked* (post-patch) tree, so this flag is effectively informational here.
+Extracts a pristine copy from `node_modules` rather than re-applying the existing patch first. Accepted for pnpm parity; aube already extracts from the *linked* (post-patch) tree, so this flag is effectively informational here.

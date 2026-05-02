@@ -47,14 +47,15 @@ Examples:
 
 #[derive(Debug, Args)]
 pub struct ViewArgs {
-    /// Package to view, optionally with a version or dist-tag
-    /// (`lodash`, `lodash@4.17.21`, `react@next`, `express@^4`).
+    /// Package to view, optionally with a version or dist-tag.
+    ///
+    /// Examples: `lodash`, `lodash@4.17.21`, `react@next`, `express@^4`.
     pub package: String,
 
-    /// Dotted path into the version metadata to print
-    /// (`version`, `dependencies`, `dist.tarball`, `maintainers.0.name`).
+    /// Dotted path into the version metadata to print.
     ///
-    /// When omitted, prints a formatted summary.
+    /// Examples: `version`, `dependencies`, `dist.tarball`,
+    /// `maintainers.0.name`. When omitted, prints a formatted summary.
     pub field: Option<String>,
 
     /// Print the full JSON of the selected version instead of the summary.

@@ -19,17 +19,21 @@ Don't upload; print what would be published
 
 ### `--force`
 
-Republish `name@version` even when that version is already on the target registry.
+Republish even when the version is already on the registry.
 
 By default `aube publish` issues a GET before the PUT and refuses to proceed when the version exists, surfacing a clear error instead of relying on the registry to return 409. In `--recursive` / `--filter` mode, `--force` overrides the silent "already-published" skip so every selected workspace package is re-PUT. The registry must still accept the republish — npm's public registry rejects re-publishes outright; Verdaccio and most private mirrors allow them.
 
 ### `--ignore-scripts`
 
-Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish
+Skip publish lifecycle scripts.
+
+Suppresses `prepublishOnly`, `prepublish`, `prepack`, `prepare`, `postpack`, `publish`, and `postpublish` scripts for this publish.
 
 ### `--json`
 
-Emit the publish result as JSON: an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`
+Emit the publish result as JSON.
+
+Output is an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`.
 
 ### `--no-git-checks`
 

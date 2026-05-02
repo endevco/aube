@@ -15,14 +15,13 @@ pub struct RemoveArgs {
     /// Skip root lifecycle scripts during the chained reinstall
     #[arg(long)]
     pub ignore_scripts: bool,
-    /// Remove the dependency from the workspace root's `package.json`,
-    /// regardless of the current working directory.
+    /// Remove the dependency from the workspace root's `package.json`.
     ///
-    /// Walks up from cwd looking for `aube-workspace.yaml`,
-    /// `pnpm-workspace.yaml`, or a `package.json` with a `workspaces`
-    /// field and runs the remove against that directory. Takes
-    /// precedence over `--filter` when both are supplied (same as
-    /// `add --workspace`).
+    /// Applies regardless of the current working directory: walks up
+    /// from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`,
+    /// or a `package.json` with a `workspaces` field and runs the
+    /// remove against that directory. Takes precedence over `--filter`
+    /// when both are supplied (same as `add --workspace`).
     #[arg(short = 'w', long, conflicts_with = "global")]
     pub workspace: bool,
 }

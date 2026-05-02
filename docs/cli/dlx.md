@@ -17,9 +17,9 @@ The first positional is the command; the rest are forwarded verbatim to the inst
 
 ### `-c --shell-mode`
 
-Run the assembled command line through `sh -c` with `<scratch>/node_modules/.bin` prepended to `PATH`.
+Run the assembled command line through `sh -c`.
 
-Use this for pipelines, redirects, or env expansion (`aube dlx -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`.
+`<scratch>/node_modules/.bin` is prepended to `PATH`. Use this for pipelines, redirects, or env expansion (`aube dlx -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`.
 
 ### `-p --package… <PACKAGE>`
 

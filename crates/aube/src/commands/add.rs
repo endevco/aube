@@ -15,10 +15,10 @@ pub struct AddArgs {
     /// Pin the exact resolved version (no `^` prefix)
     #[arg(short = 'E', long)]
     pub save_exact: bool,
-    /// Install the package globally (into the aube/pnpm global directory)
-    /// and link its binaries into the global bin directory.
+    /// Install the package globally.
     ///
-    /// Mirrors `pnpm add -g`.
+    /// Installs into the aube/pnpm global directory and links its
+    /// binaries into the global bin directory. Mirrors `pnpm add -g`.
     #[arg(short = 'g', long)]
     pub global: bool,
     /// Add as optional dependency
@@ -69,8 +69,10 @@ pub struct AddArgs {
     /// Skip lifecycle scripts (no-op; aube already skips by default)
     #[arg(long)]
     pub ignore_scripts: bool,
-    /// Snapshot `package.json` and the lockfile, link the named
-    /// packages into `node_modules`, and then restore both files —
+    /// Install without persisting the dependency to `package.json`.
+    ///
+    /// Snapshots `package.json` and the lockfile, links the named
+    /// packages into `node_modules`, and then restores both files —
     /// so the dependency is usable for the current process but the
     /// project's committed state is untouched.
     ///
@@ -80,10 +82,11 @@ pub struct AddArgs {
     /// manifest.
     #[arg(long, conflicts_with = "global")]
     pub no_save: bool,
-    /// Save the new dependency into the workspace's default catalog,
-    /// writing `catalog:` into `package.json` and seeding/upserting
-    /// the resolved range under `catalog:` in the workspace yaml.
-    /// Mirrors `pnpm add --save-catalog`.
+    /// Save the new dependency into the workspace's default catalog.
+    ///
+    /// Writes `catalog:` into `package.json` and seeds/upserts the
+    /// resolved range under `catalog:` in the workspace yaml. Mirrors
+    /// `pnpm add --save-catalog`.
     ///
     /// Workspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are
     /// never catalogized — the manifest gets the original spec and
@@ -98,11 +101,12 @@ pub struct AddArgs {
     /// catalog entry behind.
     #[arg(long, conflicts_with_all = ["save_catalog_name", "no_save"])]
     pub save_catalog: bool,
-    /// Save the new dependency into a *named* catalog (`catalogs.<name>`
-    /// in the workspace yaml), writing `catalog:<name>` into
-    /// `package.json`. Same workspace/alias exclusions and `--no-save`
-    /// conflict as `--save-catalog`. Mirrors `pnpm add
-    /// --save-catalog-name=<name>`.
+    /// Save the new dependency into a *named* catalog.
+    ///
+    /// Writes the entry to `catalogs.<name>` in the workspace yaml and
+    /// `catalog:<name>` into `package.json`. Same workspace/alias
+    /// exclusions and `--no-save` conflict as `--save-catalog`. Mirrors
+    /// `pnpm add --save-catalog-name=<name>`.
     #[arg(long, value_name = "NAME", conflicts_with = "no_save")]
     pub save_catalog_name: Option<String>,
     /// Add as a peer dependency (written to `peerDependencies` in
@@ -113,12 +117,12 @@ pub struct AddArgs {
     /// does.
     #[arg(long, conflicts_with = "save_optional")]
     pub save_peer: bool,
-    /// Add the dependency to the workspace root's `package.json`,
-    /// regardless of the current working directory.
+    /// Add the dependency to the workspace root's `package.json`.
     ///
-    /// Walks up from cwd looking for `aube-workspace.yaml`,
-    /// `pnpm-workspace.yaml`, or a `package.json` with a `workspaces`
-    /// field and runs the add against that directory.
+    /// Applies regardless of the current working directory: walks up
+    /// from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`,
+    /// or a `package.json` with a `workspaces` field and runs the add
+    /// against that directory.
     #[arg(short = 'w', long, conflicts_with = "global")]
     pub workspace: bool,
     /// Allow `add` to run in a workspace root.

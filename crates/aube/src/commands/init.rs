@@ -14,8 +14,9 @@ pub struct InitArgs {
     #[arg(long)]
     pub bare: bool,
 
-    /// Pin the project to the current aube version by adding a `packageManager`
-    /// field to `package.json`
+    /// Pin the project to the current aube version.
+    ///
+    /// Adds a `packageManager` field to `package.json`.
     #[arg(long)]
     pub init_package_manager: bool,
 

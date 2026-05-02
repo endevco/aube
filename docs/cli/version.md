@@ -9,9 +9,9 @@ Bump the version in package.json (and optionally create a git commit + tag)
 
 ### `[NEW_VERSION]`
 
-Bump keyword (`major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`) or an explicit version string.
+Bump keyword or an explicit version string.
 
-When omitted, prints the current version.
+Accepts `major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`, or an explicit version. When omitted, prints the current version.
 
 ## Flags
 

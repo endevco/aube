@@ -17,7 +17,9 @@ Accepts `sha512-<base64>` (pnpm integrity format) or a raw hex CAS digest.
 
 ### `--json`
 
-Emit a machine-readable JSON array of `{ "name", "version", "path" }` objects instead of a plain text listing
+Emit machine-readable JSON instead of a plain text listing.
+
+Output is an array of `{ "name", "version", "path" }` objects.
 
 Examples:
 

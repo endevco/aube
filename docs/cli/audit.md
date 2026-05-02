@@ -51,9 +51,9 @@ Useful when audit checks run in CI and the registry has a hiccup.
 
 ### `--ignore-unfixable`
 
-Drop advisories for which no non-vulnerable version is available in the package's packument.
+Drop advisories that have no non-vulnerable upgrade.
 
-Same "best non-vulnerable" logic as `--fix`: an advisory is kept only when an upgrade path exists.
+Filters out advisories for which no non-vulnerable version is available in the package's packument. Same "best non-vulnerable" logic as `--fix`: an advisory is kept only when an upgrade path exists.
 
 ### `-i --interactive`
 

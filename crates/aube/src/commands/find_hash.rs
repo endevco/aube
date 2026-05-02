@@ -42,9 +42,9 @@ pub struct FindHashArgs {
     /// CAS digest.
     pub hash: String,
 
-    /// Emit a machine-readable JSON array of
-    /// `{ "name", "version", "path" }` objects instead of a plain text
-    /// listing.
+    /// Emit machine-readable JSON instead of a plain text listing.
+    ///
+    /// Output is an array of `{ "name", "version", "path" }` objects.
     #[arg(long)]
     pub json: bool,
 }

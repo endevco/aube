@@ -24,9 +24,9 @@ Pin the exact resolved version (no `^` prefix)
 
 ### `-g --global`
 
-Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory.
+Install the package globally.
 
-Mirrors `pnpm add -g`.
+Installs into the aube/pnpm global directory and links its binaries into the global bin directory. Mirrors `pnpm add -g`.
 
 ### `-O --save-optional`
 
@@ -52,13 +52,17 @@ Skip lifecycle scripts (no-op; aube already skips by default)
 
 ### `--no-save`
 
-Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched.
+Install without persisting the dependency to `package.json`.
+
+Snapshots `package.json` and the lockfile, links the named packages into `node_modules`, and then restores both files — so the dependency is usable for the current process but the project's committed state is untouched.
 
 Handy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest.
 
 ### `--save-catalog`
 
-Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.
+Save the new dependency into the workspace's default catalog.
+
+Writes `catalog:` into `package.json` and seeds/upserts the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.
 
 Workspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.
 
@@ -66,7 +70,9 @@ Conflicts with `--no-save`: catalog mutations write to the workspace yaml, which
 
 ### `--save-catalog-name <NAME>`
 
-Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`
+Save the new dependency into a *named* catalog.
+
+Writes the entry to `catalogs.<name>` in the workspace yaml and `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`.
 
 ### `--save-peer`
 
@@ -76,9 +82,9 @@ By convention you usually pair this with `--save-dev` so the peer is also instal
 
 ### `-w --workspace`
 
-Add the dependency to the workspace root's `package.json`, regardless of the current working directory.
+Add the dependency to the workspace root's `package.json`.
 
-Walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory.
+Applies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory.
 
 ### `-W --ignore-workspace-root-check`
 

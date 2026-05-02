@@ -32,12 +32,12 @@ pub struct RunArgs {
     /// Parsed for pnpm compatibility.
     #[arg(long, overrides_with = "sort")]
     pub no_sort: bool,
-    /// Run the script in every matched workspace package
-    /// concurrently, with unbounded parallelism.
+    /// Run the script in every matched workspace package concurrently.
     ///
-    /// Pair with a filter (`-r` / `-F`) — single-package runs ignore
-    /// it. First non-zero exit fails the whole run, but siblings are
-    /// allowed to finish so their output isn't truncated.
+    /// Unbounded parallelism. Pair with a filter (`-r` / `-F`) —
+    /// single-package runs ignore it. First non-zero exit fails the
+    /// whole run, but siblings are allowed to finish so their output
+    /// isn't truncated.
     #[arg(long)]
     pub parallel: bool,
     /// Write a recursive run summary file.

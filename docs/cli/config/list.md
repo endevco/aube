@@ -10,15 +10,17 @@ Print every key/value from the selected `.npmrc` file(s)
 
 ### `--all`
 
-Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.
+Also list settings that have no value set.
+
+Renders one row per setting in `settings.toml`, with the default and description shown for unset entries.
 
 Only valid with `--location merged` (the default), since a per-file view can't distinguish "not set anywhere" from "set in the other file" and would render misleading defaults.
 
 ### `--json`
 
-Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.
+Emit all entries as a JSON object keyed by setting name.
 
-Honors `--all` and `--location` the same way the default text output does.
+Matches `pnpm config list --json`. Honors `--all` and `--location` the same way the default text output does.
 
 ### `--local`
 

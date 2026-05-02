@@ -456,7 +456,10 @@ enum Commands {
     /// Add a dependency
     #[command(visible_alias = "a")]
     Add(commands::add::AddArgs),
-    /// Approve ignored dependency build scripts in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present) under `allowBuilds`
+    /// Approve ignored dependency build scripts.
+    ///
+    /// Writes entries under `allowBuilds` in `aube-workspace.yaml` (or
+    /// `pnpm-workspace.yaml` if present).
     ApproveBuilds(commands::approve_builds::ApproveBuildsArgs),
     /// Check installed packages against the registry advisory DB
     #[command(after_long_help = commands::audit::AFTER_LONG_HELP)]
@@ -470,7 +473,10 @@ enum Commands {
     CatFile(commands::cat_file::CatFileArgs),
     /// Print the cached package index JSON for `<name>@<version>`
     CatIndex(commands::cat_index::CatIndexArgs),
-    /// Verify that every installed package can resolve its declared deps through the `node_modules/` symlink tree
+    /// Verify installed packages can resolve their declared deps.
+    ///
+    /// Walks the `node_modules/` symlink tree and confirms every
+    /// dependency in each `package.json` resolves to a real entry.
     #[command(after_long_help = commands::check::AFTER_LONG_HELP)]
     Check(commands::check::CheckArgs),
     /// Clean install: delete node_modules, then install with frozen lockfile.

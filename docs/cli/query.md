@@ -9,7 +9,9 @@ Query packages in the resolved dependency graph
 
 ### `<SELECTOR>`
 
-Selector expression. Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`
+Selector expression.
+
+Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`.
 
 ## Flags
 

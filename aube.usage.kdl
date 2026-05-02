@@ -107,8 +107,8 @@ cmd add help="Add a dependency" {
     alias a
     flag "-D --save-dev" help="Add as dev dependency"
     flag "-E --save-exact" help="Pin the exact resolved version (no `^` prefix)"
-    flag "-g --global" help="Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory" {
-        long_help "Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory.\n\nMirrors `pnpm add -g`."
+    flag "-g --global" help="Install the package globally" {
+        long_help "Install the package globally.\n\nInstalls into the aube/pnpm global directory and links its binaries into the global bin directory. Mirrors `pnpm add -g`."
     }
     flag "-O --save-optional" help="Add as optional dependency"
     flag --allow-build help="Pre-approve a dependency's lifecycle scripts as part of the add" var=#true {
@@ -116,30 +116,32 @@ cmd add help="Add a dependency" {
         arg <PKG>
     }
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
-    flag --no-save help="Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched" {
-        long_help "Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest."
+    flag --no-save help="Install without persisting the dependency to `package.json`" {
+        long_help "Install without persisting the dependency to `package.json`.\n\nSnapshots `package.json` and the lockfile, links the named packages into `node_modules`, and then restores both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest."
     }
-    flag --save-catalog help="Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`" {
-        long_help "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.\n\nWorkspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.\n\nConflicts with `--no-save`: catalog mutations write to the workspace yaml, which the `--no-save` restore path doesn't snapshot — combining the two would silently leave an orphaned catalog entry behind."
+    flag --save-catalog help="Save the new dependency into the workspace's default catalog" {
+        long_help "Save the new dependency into the workspace's default catalog.\n\nWrites `catalog:` into `package.json` and seeds/upserts the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.\n\nWorkspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.\n\nConflicts with `--no-save`: catalog mutations write to the workspace yaml, which the `--no-save` restore path doesn't snapshot — combining the two would silently leave an orphaned catalog entry behind."
     }
-    flag --save-catalog-name help="Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`" {
+    flag --save-catalog-name help="Save the new dependency into a *named* catalog" {
+        long_help "Save the new dependency into a *named* catalog.\n\nWrites the entry to `catalogs.<name>` in the workspace yaml and `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`."
         arg <NAME>
     }
     flag --save-peer help="Add as a peer dependency (written to `peerDependencies` in package.json)" {
         long_help "Add as a peer dependency (written to `peerDependencies` in package.json).\n\nBy convention you usually pair this with `--save-dev` so the peer is also installed for local development; that's what pnpm does."
     }
-    flag "-w --workspace" help="Add the dependency to the workspace root's `package.json`, regardless of the current working directory" {
-        long_help "Add the dependency to the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory."
+    flag "-w --workspace" help="Add the dependency to the workspace root's `package.json`" {
+        long_help "Add the dependency to the workspace root's `package.json`.\n\nApplies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory."
     }
     flag "-W --ignore-workspace-root-check" help="Allow `add` to run in a workspace root" {
         long_help "Allow `add` to run in a workspace root.\n\nBy default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`."
     }
     arg "[PACKAGES]…" help="Package(s) to add" required=#false var=#true
 }
-cmd approve-builds help="Approve ignored dependency build scripts in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present) under `allowBuilds`" {
+cmd approve-builds help="Approve ignored dependency build scripts" {
+    long_help "Approve ignored dependency build scripts.\n\nWrites entries under `allowBuilds` in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present)."
     flag --all help="Approve every pending ignored build without prompting"
     flag "-g --global" help="Operate on globally-installed packages instead of the current project"
-    arg "[PKG]…" help="Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op" required=#false var=#true
+    arg "[PKG]…" help="Packages to approve directly, skipping the picker" help_long="Packages to approve directly, skipping the picker.\n\nEach name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op." required=#false var=#true
 }
 cmd audit help="Check installed packages against the registry advisory DB" {
     after_long_help "Examples:\n\n  $ aube audit\n  Severity  Package    Vulnerable  Title\n  moderate  minimatch  <3.0.5      Regular Expression Denial of Service\n                                   https://github.com/advisories/GHSA-f8q6-p94x\n\n  1 vulnerability found\n\n  # Only fail on high and above\n  $ aube audit --audit-level high\n\n  # Skip optional deps and dev deps\n  $ aube audit --prod --no-optional\n\n  # Pipe into jq\n  $ aube audit --json | jq '.advisories | length'\n\n  # Clean\n  $ aube audit\n  No known vulnerabilities found\n"
@@ -163,8 +165,8 @@ cmd audit help="Check installed packages against the registry advisory DB" {
     flag --ignore-registry-errors help="Use exit code 0 if the registry responds with an error" {
         long_help "Use exit code 0 if the registry responds with an error.\n\nUseful when audit checks run in CI and the registry has a hiccup."
     }
-    flag --ignore-unfixable help="Drop advisories for which no non-vulnerable version is available in the package's packument" {
-        long_help "Drop advisories for which no non-vulnerable version is available in the package's packument.\n\nSame \"best non-vulnerable\" logic as `--fix`: an advisory is kept only when an upgrade path exists."
+    flag --ignore-unfixable help="Drop advisories that have no non-vulnerable upgrade" {
+        long_help "Drop advisories that have no non-vulnerable upgrade.\n\nFilters out advisories for which no non-vulnerable version is available in the package's packument. Same \"best non-vulnerable\" logic as `--fix`: an advisory is kept only when an upgrade path exists."
     }
     flag "-i --interactive" help="Pick which advisories to fix interactively"
     flag --json help="Emit the report as JSON (pnpm-compatible shape) instead of a table"
@@ -205,7 +207,8 @@ cmd cat-file help="Print a file from the global store by integrity or hex hash" 
 cmd cat-index help="Print the cached package index JSON for `<name>@<version>`" {
     arg <PACKAGE> help="Package to inspect, in `name@version` form (e.g. `lodash@4.17.21`, `@babel/core@7.26.0`)" help_long="Package to inspect, in `name@version` form (e.g. `lodash@4.17.21`, `@babel/core@7.26.0`).\n\nAn exact version is required — ranges and dist-tags aren't resolved here."
 }
-cmd check help="Verify that every installed package can resolve its declared deps through the `node_modules/` symlink tree" {
+cmd check help="Verify installed packages can resolve their declared deps" {
+    long_help "Verify installed packages can resolve their declared deps.\n\nWalks the `node_modules/` symlink tree and confirms every dependency in each `package.json` resolves to a real entry."
     after_long_help "Examples:\n\n  $ aube check\n  node_modules symlink tree is consistent (checked 248 packages).\n\n  # With issues\n  $ aube check\n  2 broken dependency links found:\n\n    vscode-languageserver@9.0.1\n      ✕ cannot resolve: vscode-languageserver-protocol@3.17.5\n\n    vscode-languageserver-protocol@3.17.5\n      ✕ cannot resolve: vscode-languageserver-types@3.17.5\n      ✕ cannot resolve: vscode-jsonrpc@8.2.1\n\n  # Machine-readable\n  $ aube check --json\n"
     flag --json help="Emit a JSON report instead of the human-readable list"
 }
@@ -218,18 +221,20 @@ cmd ci help="Clean install: delete node_modules, then install with frozen lockfi
 }
 cmd clean help="Remove `node_modules` across every workspace project" {
     long_help "Remove `node_modules` across every workspace project.\n\n`--lockfile` / `-l` also deletes lockfiles. A `clean` script in the root `package.json` overrides the built-in."
-    flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)"
+    flag "-l --lockfile" help="Also remove lockfiles at the workspace root" {
+        long_help "Also remove lockfiles at the workspace root.\n\nTargets `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`."
+    }
 }
 cmd completion help="Generate shell completions (bash, zsh, fish)" {
     arg <SHELL> help="The shell to generate completions for (bash, zsh, fish)"
 }
 cmd config help="Read and write settings in `.npmrc`" {
     alias c hide=#true
-    flag --all help="Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered" {
-        long_help "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults."
+    flag --all help="Also list settings that have no value set" {
+        long_help "Also list settings that have no value set.\n\nRenders one row per setting in `settings.toml`, with the default and description shown for unset entries.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults."
     }
-    flag --json help="Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`" {
-        long_help "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does."
+    flag --json help="Emit all entries as a JSON object keyed by setting name" {
+        long_help "Emit all entries as a JSON object keyed by setting name.\n\nMatches `pnpm config list --json`. Honors `--all` and `--location` the same way the default text output does."
     }
     flag --local help="Shortcut for `--location project`" {
         long_help "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why."
@@ -273,11 +278,11 @@ cmd config help="Read and write settings in `.npmrc`" {
     }
     cmd list help="Print every key/value from the selected `.npmrc` file(s)" {
         alias ls
-        flag --all help="Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered" {
-            long_help "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults."
+        flag --all help="Also list settings that have no value set" {
+            long_help "Also list settings that have no value set.\n\nRenders one row per setting in `settings.toml`, with the default and description shown for unset entries.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults."
         }
-        flag --json help="Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`" {
-            long_help "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does."
+        flag --json help="Emit all entries as a JSON object keyed by setting name" {
+            long_help "Emit all entries as a JSON object keyed by setting name.\n\nMatches `pnpm config list --json`. Honors `--all` and `--location` the same way the default text output does."
         }
         flag --local help="Shortcut for `--location project`" {
             long_help "Shortcut for `--location project`.\n\nConflicts with `--all` since `--all` only makes sense against the merged view — see the `--all` docs for why."
@@ -351,8 +356,8 @@ cmd dist-tag subcommand_required=#true help="Manage package distribution tags on
     }
 }
 cmd dlx help="Fetch a package into a throwaway environment and run its binary" {
-    flag "-c --shell-mode" help="Run the assembled command line through `sh -c` with `<scratch>/node_modules/.bin` prepended to `PATH`" {
-        long_help "Run the assembled command line through `sh -c` with `<scratch>/node_modules/.bin` prepended to `PATH`.\n\nUse this for pipelines, redirects, or env expansion (`aube dlx -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`."
+    flag "-c --shell-mode" help="Run the assembled command line through `sh -c`" {
+        long_help "Run the assembled command line through `sh -c`.\n\n`<scratch>/node_modules/.bin` is prepended to `PATH`. Use this for pipelines, redirects, or env expansion (`aube dlx -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`."
     }
     flag "-p --package" help="Install a specific package (repeatable)" var=#true {
         long_help "Install a specific package (repeatable).\n\nOverrides inferring from the command."
@@ -404,7 +409,9 @@ cmd fetch help="Download lockfile dependencies into the store without linking no
 }
 cmd find-hash help="List packages whose cached index references a given file hash" {
     after_long_help "Examples:\n\n  # Accepts integrity strings\n  $ aube find-hash sha512-abc123...\n  lodash@4.17.21\tpackage/lodash.js\n  express@4.19.2\tnode_modules/lodash/lodash.js\n\n  # ...or raw hex digests\n  $ aube find-hash 5d41402abc4b2a76b9719d911017c592...\n\n  # Machine-readable\n  $ aube find-hash --json sha512-abc123...\n"
-    flag --json help="Emit a machine-readable JSON array of `{ \"name\", \"version\", \"path\" }` objects instead of a plain text listing"
+    flag --json help="Emit machine-readable JSON instead of a plain text listing" {
+        long_help "Emit machine-readable JSON instead of a plain text listing.\n\nOutput is an array of `{ \"name\", \"version\", \"path\" }` objects."
+    }
     arg <HASH> help="Hash to look up" help_long="Hash to look up.\n\nAccepts `sha512-<base64>` (pnpm integrity format) or a raw hex CAS digest."
 }
 cmd get hide=#true help="Alias for `config get` (hidden; prefer `config get`)" {
@@ -435,7 +442,9 @@ cmd import help="Convert a supported lockfile into aube-lock.yaml" {
 }
 cmd init help="Create a `package.json` in the current directory" {
     flag --bare help="Create a `package.json` with only the bare minimum of required fields"
-    flag --init-package-manager help="Pin the project to the current aube version by adding a `packageManager` field to `package.json`"
+    flag --init-package-manager help="Pin the project to the current aube version" {
+        long_help "Pin the project to the current aube version.\n\nAdds a `packageManager` field to `package.json`."
+    }
     flag --init-type help="Set the module system for the package. Defaults to `commonjs`" {
         arg <commonjs|module> {
             choices commonjs module
@@ -449,11 +458,11 @@ cmd install help="Install all dependencies" {
     flag --dangerously-allow-all-builds help="Allow every dependency's lifecycle scripts to run" {
         long_help "Allow every dependency's lifecycle scripts to run.\n\nBypasses the `allowBuilds` allowlist. Do not use in CI."
     }
-    flag --fix-lockfile help="Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version" {
-        long_help "Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version.\n\nUnchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved."
+    flag --fix-lockfile help="Re-resolve lockfile entries whose spec drifted from package.json" {
+        long_help "Re-resolve lockfile entries whose spec drifted from package.json.\n\nLeaves everything else pinned at its locked version. Unchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved."
     }
-    flag --force help="Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted" {
-        long_help "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`."
+    flag --force help="Force reinstall, ignoring lockfile/state freshness" {
+        long_help "Force reinstall, ignoring lockfile/state freshness.\n\nBypasses the `node_modules/.aube-state` freshness check and re-resolves the lockfile even when nothing has drifted. Mirrors pnpm's `install --force`."
     }
     flag --global-pnpmfile help="Add a global pnpmfile that runs before the local one" {
         long_help "Add a global pnpmfile that runs before the local one.\n\nMirrors pnpm's `--global-pnpmfile <path>`. Relative paths resolve against the project root. The global hook runs first and the local hook (if any) runs second, so local mutations win on conflicts — matching pnpm's composition order."
@@ -461,14 +470,15 @@ cmd install help="Install all dependencies" {
     }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install"
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
-    flag --lockfile-dir help="Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`" {
+    flag --lockfile-dir help="Read and write the lockfile in the given directory" {
+        long_help "Read and write the lockfile in the given directory.\n\nInstead of placing the lockfile alongside `package.json`, the project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`."
         arg <PATH>
     }
     flag --lockfile-only help="Resolve dependencies and write the lockfile, but don't link `node_modules`" {
         long_help "Resolve dependencies and write the lockfile, but don't link `node_modules`.\n\nUseful for CI workflows that only update the lockfile."
     }
-    flag --merge-git-branch-lockfiles help="Merge every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and delete the branch files" {
-        long_help "Merge every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and delete the branch files.\n\nCompanion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is set in `pnpm-workspace.yaml`, this happens automatically on matching branches; the flag forces it regardless."
+    flag --merge-git-branch-lockfiles help="Merge per-branch lockfiles into the main `aube-lock.yaml`" {
+        long_help "Merge per-branch lockfiles into the main `aube-lock.yaml`.\n\nCombines every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and deletes the branch files. Companion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is set in `pnpm-workspace.yaml`, this happens automatically on matching branches; the flag forces it regardless."
     }
     flag --network-concurrency help="Cap concurrent tarball downloads" {
         long_help "Cap concurrent tarball downloads.\n\nOverrides `network-concurrency` from `.npmrc` / `aube-workspace.yaml` when set. Falls back to an auto-scaled default of worker count x3, clamped to 16-64."
@@ -499,8 +509,8 @@ cmd install help="Install all dependencies" {
         long_help "Selectively hoist matching transitive deps to the root node_modules.\n\nRepeatable; comma-separated values are also accepted."
         arg <GLOB>
     }
-    flag --resolution-mode help="How to resolve version ranges: `highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff)" {
-        long_help "How to resolve version ranges: `highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff).\n\nAccepts pnpm's aliases `time` and `lowest-direct`. When omitted, falls back to the `resolution-mode` key in `.npmrc` / `aube-workspace.yaml`."
+    flag --resolution-mode help="How to resolve version ranges" {
+        long_help "How to resolve version ranges.\n\n`highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff). Accepts pnpm's aliases `time` and `lowest-direct`. When omitted, falls back to the `resolution-mode` key in `.npmrc` / `aube-workspace.yaml`."
         arg <MODE>
     }
     flag --shamefully-hoist help="Hoist every non-local transitive dep to the top-level `node_modules/`" {
@@ -509,8 +519,8 @@ cmd install help="Install all dependencies" {
     flag --side-effects-cache help="Cache post-build side effects for dependency packages" {
         long_help "Cache post-build side effects for dependency packages.\n\nDefaults to on and only applies to packages allowed by `allowBuilds` / `onlyBuiltDependencies`. Pair with `--no-side-effects-cache` to opt out."
     }
-    flag --verify-store-integrity help="Verify tarball SHA-512 against the lockfile integrity before importing into the store" {
-        long_help "Verify tarball SHA-512 against the lockfile integrity before importing into the store.\n\nDefaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip."
+    flag --verify-store-integrity help="Verify tarball SHA-512 before importing into the store" {
+        long_help "Verify tarball SHA-512 before importing into the store.\n\nChecks each tarball against the lockfile integrity. Defaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip."
     }
     flag -w help="Short alias for the global `--workspace-root` flag" hide=#true {
         long_help "Short alias for the global `--workspace-root` flag.\n\nRuns install from the workspace root regardless of cwd (`pnpm install -w`)."
@@ -538,7 +548,9 @@ cmd la hide=#true help="Alias for `list --long` (hidden; prefer `list --long`)" 
     flag --json help="Shortcut for `--format json`" {
         long_help "Shortcut for `--format json`.\n\nEmit a JSON array of package entries."
     }
-    flag --long help="Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)"
+    flag --long help="Show version and path for each entry" {
+        long_help "Show version and path for each entry.\n\nDefault output is already name + version; `--long` adds the store path for debugging."
+    }
     flag --parseable help="Shortcut for `--format parseable`" {
         long_help "Shortcut for `--format parseable`.\n\nEmit one tab-separated line per package."
     }
@@ -556,8 +568,8 @@ cmd licenses help="Report the licenses of installed dependencies" {
 }
 cmd link help="Link a local package globally, or into the current project" {
     alias ln
-    flag "-g --global" help="Register into (or resolve from) the global link registry under `$AUBE_HOME/global-links`" {
-        long_help "Register into (or resolve from) the global link registry under `$AUBE_HOME/global-links`.\n\nDefault behavior for bare `aube link` / `aube link <name>` — the flag exists for pnpm parity and makes the intent explicit."
+    flag "-g --global" help="Register into (or resolve from) the global link registry" {
+        long_help "Register into (or resolve from) the global link registry.\n\nThe registry lives at `$AUBE_HOME/global-links`. Default behavior for bare `aube link` / `aube link <name>` — the flag exists for pnpm parity and makes the intent explicit."
     }
     arg "[PACKAGE]" help="Package name, or path to a local directory" required=#false
 }
@@ -579,7 +591,9 @@ cmd list help="Print the installed dependency tree" {
     flag --json help="Shortcut for `--format json`" {
         long_help "Shortcut for `--format json`.\n\nEmit a JSON array of package entries."
     }
-    flag --long help="Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)"
+    flag --long help="Show version and path for each entry" {
+        long_help "Show version and path for each entry.\n\nDefault output is already name + version; `--long` adds the store path for debugging."
+    }
     flag --parseable help="Shortcut for `--format parseable`" {
         long_help "Shortcut for `--format parseable`.\n\nEmit one tab-separated line per package."
     }
@@ -601,7 +615,9 @@ cmd ll hide=#true help="Alias for `list --long` (hidden; prefer `list --long`)" 
     flag --json help="Shortcut for `--format json`" {
         long_help "Shortcut for `--format json`.\n\nEmit a JSON array of package entries."
     }
-    flag --long help="Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)"
+    flag --long help="Show version and path for each entry" {
+        long_help "Show version and path for each entry.\n\nDefault output is already name + version; `--long` adds the store path for debugging."
+    }
     flag --parseable help="Shortcut for `--format parseable`" {
         long_help "Shortcut for `--format parseable`.\n\nEmit one tab-separated line per package."
     }
@@ -646,8 +662,8 @@ cmd patch help="Extract a package into an edit directory so it can be patched" {
         long_help "Directory to extract the writable copy into.\n\nWhen omitted, `aube` picks a fresh temp dir under the system tmpdir."
         arg <DIR>
     }
-    flag --ignore-existing help="Ignore any existing patch entry for this package — extract a pristine copy from `node_modules` rather than re-applying the existing patch first" {
-        long_help "Ignore any existing patch entry for this package — extract a pristine copy from `node_modules` rather than re-applying the existing patch first.\n\nAccepted for pnpm parity; aube already extracts from the *linked* (post-patch) tree, so this flag is effectively informational here."
+    flag --ignore-existing help="Ignore any existing patch entry for this package" {
+        long_help "Ignore any existing patch entry for this package.\n\nExtracts a pristine copy from `node_modules` rather than re-applying the existing patch first. Accepted for pnpm parity; aube already extracts from the *linked* (post-patch) tree, so this flag is effectively informational here."
     }
     arg <PACKAGE> help="Package spec, `<name>@<version>`" help_long="Package spec, `<name>@<version>`.\n\nThe package must already be installed in `node_modules` (we copy from the linked virtual store, not from the registry, so the layout matches what install would later patch)."
 }
@@ -659,7 +675,7 @@ cmd patch-commit help="Generate a `.patch` file from a `aube patch` edit directo
     arg <DIR> help="The edit directory printed by `aube patch`" help_long="The edit directory printed by `aube patch`.\n\nThe matching source snapshot is read from a sibling `source/` dir, located via the `.aube_patch_state.json` sidecar."
 }
 cmd patch-remove help="Remove patch entries from `pnpm.patchedDependencies`" {
-    arg "[PACKAGES]…" help="Patch keys to remove, formatted as `<name>@<version>` (the same shape used as the `pnpm.patchedDependencies` map key)" help_long="Patch keys to remove, formatted as `<name>@<version>` (the same shape used as the `pnpm.patchedDependencies` map key).\n\nWith no arguments, every declared patch is removed." required=#false var=#true
+    arg "[PACKAGES]…" help="Patch keys to remove, formatted as `<name>@<version>`" help_long="Patch keys to remove, formatted as `<name>@<version>`.\n\nSame shape used as the `pnpm.patchedDependencies` map key. With no arguments, every declared patch is removed." required=#false var=#true
 }
 cmd peers subcommand_required=#true help="Inspect peer-dependency resolution from the lockfile" {
     cmd check help="Check for unmet and missing peer-dependency issues by reading the lockfile" {
@@ -681,11 +697,15 @@ cmd publish help="Publish the current package to the registry" {
         arg <LEVEL>
     }
     flag --dry-run help="Don't upload; print what would be published"
-    flag --force help="Republish `name@version` even when that version is already on the target registry" {
-        long_help "Republish `name@version` even when that version is already on the target registry.\n\nBy default `aube publish` issues a GET before the PUT and refuses to proceed when the version exists, surfacing a clear error instead of relying on the registry to return 409. In `--recursive` / `--filter` mode, `--force` overrides the silent \"already-published\" skip so every selected workspace package is re-PUT. The registry must still accept the republish — npm's public registry rejects re-publishes outright; Verdaccio and most private mirrors allow them."
+    flag --force help="Republish even when the version is already on the registry" {
+        long_help "Republish even when the version is already on the registry.\n\nBy default `aube publish` issues a GET before the PUT and refuses to proceed when the version exists, surfacing a clear error instead of relying on the registry to return 409. In `--recursive` / `--filter` mode, `--force` overrides the silent \"already-published\" skip so every selected workspace package is re-PUT. The registry must still accept the republish — npm's public registry rejects re-publishes outright; Verdaccio and most private mirrors allow them."
     }
-    flag --ignore-scripts help="Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish"
-    flag --json help="Emit the publish result as JSON: an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`"
+    flag --ignore-scripts help="Skip publish lifecycle scripts" {
+        long_help "Skip publish lifecycle scripts.\n\nSuppresses `prepublishOnly`, `prepublish`, `prepack`, `prepare`, `postpack`, `publish`, and `postpublish` scripts for this publish."
+    }
+    flag --json help="Emit the publish result as JSON" {
+        long_help "Emit the publish result as JSON.\n\nOutput is an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`."
+    }
     flag --no-git-checks help="Skip the \"working tree must be clean\" check" {
         long_help "Skip the \"working tree must be clean\" check.\n\nWhen unset, aube refuses to publish from a dirty git checkout (uncommitted tracked changes) or from a detached / non-release branch."
     }
@@ -702,7 +722,9 @@ cmd publish help="Publish the current package to the registry" {
 }
 cmd purge help="Alias for `clean` — remove `node_modules` across every workspace project" {
     long_help "Alias for `clean` — remove `node_modules` across every workspace project.\n\nA `purge` script in the root `package.json` overrides the built-in."
-    flag "-l --lockfile" help="Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)"
+    flag "-l --lockfile" help="Also remove lockfiles at the workspace root" {
+        long_help "Also remove lockfiles at the workspace root.\n\nTargets `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`."
+    }
 }
 cmd query help="Query packages in the resolved dependency graph" {
     after_long_help "Inspired by vlt's dependency selector model, but currently local-only:\nselectors read aube's lockfile graph without registry or security-service calls.\n\nExamples:\n\n  # Every reachable package\n  $ aube query '*'\n\n  # Exact package name\n  $ aube query '[name=react]'\n\n  # Direct prod dependencies with install scripts\n  $ aube query ':prod:scripts'\n\n  # Local file/link/git/tarball dependencies\n  $ aube query ':type(file), :type(link), :type(git), :type(remote)'\n\n  # Machine-readable\n  $ aube query ':bin' --json\n"
@@ -710,7 +732,7 @@ cmd query help="Query packages in the resolved dependency graph" {
     flag "-P --prod --production" help="Only match production/optional roots and their transitive deps"
     flag --json help="Emit a JSON array instead of the default text layout"
     flag --parseable help="Emit tab-separated rows: dep_path, name, version, source, flags"
-    arg <SELECTOR> help="Selector expression. Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`"
+    arg <SELECTOR> help="Selector expression" help_long="Selector expression.\n\nSupports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`."
 }
 cmd rebuild help="Re-run root lifecycle scripts and allowlisted dependency builds" {
     alias rb
@@ -725,8 +747,8 @@ cmd remove help="Remove a dependency" {
     flag "-D --save-dev" help="Remove only from devDependencies"
     flag "-g --global" help="Remove from the global install directory instead of the project"
     flag --ignore-scripts help="Skip root lifecycle scripts during the chained reinstall"
-    flag "-w --workspace" help="Remove the dependency from the workspace root's `package.json`, regardless of the current working directory" {
-        long_help "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`)."
+    flag "-w --workspace" help="Remove the dependency from the workspace root's `package.json`" {
+        long_help "Remove the dependency from the workspace root's `package.json`.\n\nApplies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`)."
     }
     arg "[PACKAGES]…" help="Package(s) to remove" required=#false var=#true
 }
@@ -748,8 +770,8 @@ cmd run help="Run a script defined in package.json" {
     flag --no-sort help="Disable topological sorting" {
         long_help "Disable topological sorting.\n\nParsed for pnpm compatibility."
     }
-    flag --parallel help="Run the script in every matched workspace package concurrently, with unbounded parallelism" {
-        long_help "Run the script in every matched workspace package concurrently, with unbounded parallelism.\n\nPair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated."
+    flag --parallel help="Run the script in every matched workspace package concurrently" {
+        long_help "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated."
     }
     flag --report-summary help="Write a recursive run summary file" {
         long_help "Write a recursive run summary file.\n\nParsed for pnpm compatibility."
@@ -818,8 +840,8 @@ cmd store subcommand_required=#true help="Manage the global store" {
     }
     cmd path help="Show the store path"
     cmd prune help="Remove unreferenced packages from the global store"
-    cmd status help="Verify that every file referenced by a cached package index is still present in the store and its BLAKE3 hash matches" {
-        long_help "Verify that every file referenced by a cached package index is still present in the store and its BLAKE3 hash matches.\n\nExits non-zero when any corruption is detected."
+    cmd status help="Verify the store against cached package indexes" {
+        long_help "Verify the store against cached package indexes.\n\nConfirms every file referenced by a cached package index is still present in the store and that its BLAKE3 hash matches. Exits non-zero when any corruption is detected."
     }
 }
 cmd test help="Run the `test` script (shortcut for `run test`)" {
@@ -867,7 +889,9 @@ cmd update help="Update dependencies" {
     flag "-i --interactive" help="Interactive update picker" {
         long_help "Interactive update picker.\n\nParsed for pnpm compatibility."
     }
-    flag "-L --latest" help="Update past the manifest range: rewrite `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual)"
+    flag "-L --latest" help="Update past the manifest range" {
+        long_help "Update past the manifest range.\n\nRewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual)."
+    }
     flag "-P --prod --production" help="Update only production dependencies"
     flag "-w --workspace" help="Update dependencies in the current workspace package"
     flag --depth help="Dependency traversal depth" {
@@ -909,7 +933,7 @@ cmd version help="Bump the version in package.json (and optionally create a git 
         arg <ID>
     }
     flag --sign-git-tag help="GPG-sign the created tag (`git tag -s`)"
-    arg "[NEW_VERSION]" help="Bump keyword (`major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`) or an explicit version string" help_long="Bump keyword (`major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`) or an explicit version string.\n\nWhen omitted, prints the current version." required=#false
+    arg "[NEW_VERSION]" help="Bump keyword or an explicit version string" help_long="Bump keyword or an explicit version string.\n\nAccepts `major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`, or an explicit version. When omitted, prints the current version." required=#false
 }
 cmd view help="Print package metadata from the registry" {
     alias info show
@@ -918,8 +942,8 @@ cmd view help="Print package metadata from the registry" {
     flag --json help="Print the full JSON of the selected version instead of the summary" {
         long_help "Print the full JSON of the selected version instead of the summary.\n\nMutually exclusive with `field`."
     }
-    arg <PACKAGE> help="Package to view, optionally with a version or dist-tag (`lodash`, `lodash@4.17.21`, `react@next`, `express@^4`)"
-    arg "[FIELD]" help="Dotted path into the version metadata to print (`version`, `dependencies`, `dist.tarball`, `maintainers.0.name`)" help_long="Dotted path into the version metadata to print (`version`, `dependencies`, `dist.tarball`, `maintainers.0.name`).\n\nWhen omitted, prints a formatted summary." required=#false
+    arg <PACKAGE> help="Package to view, optionally with a version or dist-tag" help_long="Package to view, optionally with a version or dist-tag.\n\nExamples: `lodash`, `lodash@4.17.21`, `react@next`, `express@^4`."
+    arg "[FIELD]" help="Dotted path into the version metadata to print" help_long="Dotted path into the version metadata to print.\n\nExamples: `version`, `dependencies`, `dist.tarball`, `maintainers.0.name`. When omitted, prints a formatted summary." required=#false
 }
 cmd whoami hide=#true help="Report the current registry user (not implemented — use `npm whoami`)" {
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true

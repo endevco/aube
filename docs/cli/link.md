@@ -16,6 +16,6 @@ Package name, or path to a local directory
 
 ### `-g --global`
 
-Register into (or resolve from) the global link registry under `$AUBE_HOME/global-links`.
+Register into (or resolve from) the global link registry.
 
-Default behavior for bare `aube link` / `aube link <name>` — the flag exists for pnpm parity and makes the intent explicit.
+The registry lives at `$AUBE_HOME/global-links`. Default behavior for bare `aube link` / `aube link <name>` — the flag exists for pnpm parity and makes the intent explicit.

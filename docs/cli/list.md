@@ -54,7 +54,9 @@ Emit a JSON array of package entries.
 
 ### `--long`
 
-Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)
+Show version and path for each entry.
+
+Default output is already name + version; `--long` adds the store path for debugging.
 
 ### `--parseable`
 

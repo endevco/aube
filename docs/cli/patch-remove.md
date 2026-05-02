@@ -9,6 +9,6 @@ Remove patch entries from `pnpm.patchedDependencies`
 
 ### `[PACKAGES]…`
 
-Patch keys to remove, formatted as `<name>@<version>` (the same shape used as the `pnpm.patchedDependencies` map key).
+Patch keys to remove, formatted as `<name>@<version>`.
 
-With no arguments, every declared patch is removed.
+Same shape used as the `pnpm.patchedDependencies` map key. With no arguments, every declared patch is removed.

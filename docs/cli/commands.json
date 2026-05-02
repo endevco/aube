@@ -55,9 +55,9 @@
           {
             "name": "global",
             "usage": "-g --global",
-            "help": "Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory",
-            "help_long": "Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory.\n\nMirrors `pnpm add -g`.",
-            "help_first_line": "Install the package globally (into the aube/pnpm global directory) and link its binaries into the global bin directory",
+            "help": "Install the package globally",
+            "help_long": "Install the package globally.\n\nInstalls into the aube/pnpm global directory and links its binaries into the global bin directory. Mirrors `pnpm add -g`.",
+            "help_first_line": "Install the package globally",
             "short": [
               "g"
             ],
@@ -117,9 +117,9 @@
           {
             "name": "no-save",
             "usage": "--no-save",
-            "help": "Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched",
-            "help_long": "Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest.",
-            "help_first_line": "Snapshot `package.json` and the lockfile, link the named packages into `node_modules`, and then restore both files — so the dependency is usable for the current process but the project's committed state is untouched",
+            "help": "Install without persisting the dependency to `package.json`",
+            "help_long": "Install without persisting the dependency to `package.json`.\n\nSnapshots `package.json` and the lockfile, links the named packages into `node_modules`, and then restores both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest.",
+            "help_first_line": "Install without persisting the dependency to `package.json`",
             "short": [],
             "long": [
               "no-save"
@@ -130,9 +130,9 @@
           {
             "name": "save-catalog",
             "usage": "--save-catalog",
-            "help": "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`",
-            "help_long": "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.\n\nWorkspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.\n\nConflicts with `--no-save`: catalog mutations write to the workspace yaml, which the `--no-save` restore path doesn't snapshot — combining the two would silently leave an orphaned catalog entry behind.",
-            "help_first_line": "Save the new dependency into the workspace's default catalog, writing `catalog:` into `package.json` and seeding/upserting the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`",
+            "help": "Save the new dependency into the workspace's default catalog",
+            "help_long": "Save the new dependency into the workspace's default catalog.\n\nWrites `catalog:` into `package.json` and seeds/upserts the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.\n\nWorkspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.\n\nConflicts with `--no-save`: catalog mutations write to the workspace yaml, which the `--no-save` restore path doesn't snapshot — combining the two would silently leave an orphaned catalog entry behind.",
+            "help_first_line": "Save the new dependency into the workspace's default catalog",
             "short": [],
             "long": [
               "save-catalog"
@@ -143,8 +143,9 @@
           {
             "name": "save-catalog-name",
             "usage": "--save-catalog-name <NAME>",
-            "help": "Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`",
-            "help_first_line": "Save the new dependency into a *named* catalog (`catalogs.<name>` in the workspace yaml), writing `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`",
+            "help": "Save the new dependency into a *named* catalog",
+            "help_long": "Save the new dependency into a *named* catalog.\n\nWrites the entry to `catalogs.<name>` in the workspace yaml and `catalog:<name>` into `package.json`. Same workspace/alias exclusions and `--no-save` conflict as `--save-catalog`. Mirrors `pnpm add --save-catalog-name=<name>`.",
+            "help_first_line": "Save the new dependency into a *named* catalog",
             "short": [],
             "long": [
               "save-catalog-name"
@@ -175,9 +176,9 @@
           {
             "name": "workspace",
             "usage": "-w --workspace",
-            "help": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory",
-            "help_long": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory.",
-            "help_first_line": "Add the dependency to the workspace root's `package.json`, regardless of the current working directory",
+            "help": "Add the dependency to the workspace root's `package.json`",
+            "help_long": "Add the dependency to the workspace root's `package.json`.\n\nApplies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory.",
+            "help_first_line": "Add the dependency to the workspace root's `package.json`",
             "short": [
               "w"
             ],
@@ -223,8 +224,9 @@
           {
             "name": "PKG",
             "usage": "[PKG]…",
-            "help": "Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op",
-            "help_first_line": "Packages to approve directly, skipping the picker. Each name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op",
+            "help": "Packages to approve directly, skipping the picker",
+            "help_long": "Packages to approve directly, skipping the picker.\n\nEach name must match a currently-ignored build. Unknown names are rejected so a typo cannot silently no-op.",
+            "help_first_line": "Packages to approve directly, skipping the picker",
             "required": false,
             "double_dash": "Optional",
             "var": true,
@@ -261,7 +263,8 @@
         ],
         "mounts": [],
         "hide": false,
-        "help": "Approve ignored dependency build scripts in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present) under `allowBuilds`",
+        "help": "Approve ignored dependency build scripts",
+        "help_long": "Approve ignored dependency build scripts.\n\nWrites entries under `allowBuilds` in `aube-workspace.yaml` (or `pnpm-workspace.yaml` if present).",
         "name": "approve-builds",
         "aliases": [],
         "hidden_aliases": [],
@@ -383,9 +386,9 @@
           {
             "name": "ignore-unfixable",
             "usage": "--ignore-unfixable",
-            "help": "Drop advisories for which no non-vulnerable version is available in the package's packument",
-            "help_long": "Drop advisories for which no non-vulnerable version is available in the package's packument.\n\nSame \"best non-vulnerable\" logic as `--fix`: an advisory is kept only when an upgrade path exists.",
-            "help_first_line": "Drop advisories for which no non-vulnerable version is available in the package's packument",
+            "help": "Drop advisories that have no non-vulnerable upgrade",
+            "help_long": "Drop advisories that have no non-vulnerable upgrade.\n\nFilters out advisories for which no non-vulnerable version is available in the package's packument. Same \"best non-vulnerable\" logic as `--fix`: an advisory is kept only when an upgrade path exists.",
+            "help_first_line": "Drop advisories that have no non-vulnerable upgrade",
             "short": [],
             "long": [
               "ignore-unfixable"
@@ -754,7 +757,8 @@
         ],
         "mounts": [],
         "hide": false,
-        "help": "Verify that every installed package can resolve its declared deps through the `node_modules/` symlink tree",
+        "help": "Verify installed packages can resolve their declared deps",
+        "help_long": "Verify installed packages can resolve their declared deps.\n\nWalks the `node_modules/` symlink tree and confirms every dependency in each `package.json` resolves to a real entry.",
         "name": "check",
         "aliases": [],
         "hidden_aliases": [],
@@ -819,8 +823,9 @@
           {
             "name": "lockfile",
             "usage": "-l --lockfile",
-            "help": "Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)",
-            "help_first_line": "Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)",
+            "help": "Also remove lockfiles at the workspace root",
+            "help_long": "Also remove lockfiles at the workspace root.\n\nTargets `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`.",
+            "help_first_line": "Also remove lockfiles at the workspace root",
             "short": [
               "l"
             ],
@@ -1101,9 +1106,9 @@
               {
                 "name": "all",
                 "usage": "--all",
-                "help": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered",
-                "help_long": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults.",
-                "help_first_line": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered",
+                "help": "Also list settings that have no value set",
+                "help_long": "Also list settings that have no value set.\n\nRenders one row per setting in `settings.toml`, with the default and description shown for unset entries.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults.",
+                "help_first_line": "Also list settings that have no value set",
                 "short": [],
                 "long": [
                   "all"
@@ -1114,9 +1119,9 @@
               {
                 "name": "json",
                 "usage": "--json",
-                "help": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`",
-                "help_long": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does.",
-                "help_first_line": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`",
+                "help": "Emit all entries as a JSON object keyed by setting name",
+                "help_long": "Emit all entries as a JSON object keyed by setting name.\n\nMatches `pnpm config list --json`. Honors `--all` and `--location` the same way the default text output does.",
+                "help_first_line": "Emit all entries as a JSON object keyed by setting name",
                 "short": [],
                 "long": [
                   "json"
@@ -1278,9 +1283,9 @@
           {
             "name": "all",
             "usage": "--all",
-            "help": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered",
-            "help_long": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults.",
-            "help_first_line": "Also list settings that have no value set — one row per setting in `settings.toml`, with the default and description rendered",
+            "help": "Also list settings that have no value set",
+            "help_long": "Also list settings that have no value set.\n\nRenders one row per setting in `settings.toml`, with the default and description shown for unset entries.\n\nOnly valid with `--location merged` (the default), since a per-file view can't distinguish \"not set anywhere\" from \"set in the other file\" and would render misleading defaults.",
+            "help_first_line": "Also list settings that have no value set",
             "short": [],
             "long": [
               "all"
@@ -1291,9 +1296,9 @@
           {
             "name": "json",
             "usage": "--json",
-            "help": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`",
-            "help_long": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`.\n\nHonors `--all` and `--location` the same way the default text output does.",
-            "help_first_line": "Emit all entries as a JSON object keyed by setting name, matching `pnpm config list --json`",
+            "help": "Emit all entries as a JSON object keyed by setting name",
+            "help_long": "Emit all entries as a JSON object keyed by setting name.\n\nMatches `pnpm config list --json`. Honors `--all` and `--location` the same way the default text output does.",
+            "help_first_line": "Emit all entries as a JSON object keyed by setting name",
             "short": [],
             "long": [
               "json"
@@ -1751,9 +1756,9 @@
           {
             "name": "shell-mode",
             "usage": "-c --shell-mode",
-            "help": "Run the assembled command line through `sh -c` with `<scratch>/node_modules/.bin` prepended to `PATH`",
-            "help_long": "Run the assembled command line through `sh -c` with `<scratch>/node_modules/.bin` prepended to `PATH`.\n\nUse this for pipelines, redirects, or env expansion (`aube dlx -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`.",
-            "help_first_line": "Run the assembled command line through `sh -c` with `<scratch>/node_modules/.bin` prepended to `PATH`",
+            "help": "Run the assembled command line through `sh -c`",
+            "help_long": "Run the assembled command line through `sh -c`.\n\n`<scratch>/node_modules/.bin` is prepended to `PATH`. Use this for pipelines, redirects, or env expansion (`aube dlx -p cowsay -c 'cowsay hello | tr a-z A-Z'`). Mirrors `pnpm dlx --shell-mode`.",
+            "help_first_line": "Run the assembled command line through `sh -c`",
             "short": [
               "c"
             ],
@@ -2089,8 +2094,9 @@
           {
             "name": "json",
             "usage": "--json",
-            "help": "Emit a machine-readable JSON array of `{ \"name\", \"version\", \"path\" }` objects instead of a plain text listing",
-            "help_first_line": "Emit a machine-readable JSON array of `{ \"name\", \"version\", \"path\" }` objects instead of a plain text listing",
+            "help": "Emit machine-readable JSON instead of a plain text listing",
+            "help_long": "Emit machine-readable JSON instead of a plain text listing.\n\nOutput is an array of `{ \"name\", \"version\", \"path\" }` objects.",
+            "help_first_line": "Emit machine-readable JSON instead of a plain text listing",
             "short": [],
             "long": [
               "json"
@@ -2302,8 +2308,9 @@
           {
             "name": "init-package-manager",
             "usage": "--init-package-manager",
-            "help": "Pin the project to the current aube version by adding a `packageManager` field to `package.json`",
-            "help_first_line": "Pin the project to the current aube version by adding a `packageManager` field to `package.json`",
+            "help": "Pin the project to the current aube version",
+            "help_long": "Pin the project to the current aube version.\n\nAdds a `packageManager` field to `package.json`.",
+            "help_first_line": "Pin the project to the current aube version",
             "short": [],
             "long": [
               "init-package-manager"
@@ -2398,9 +2405,9 @@
           {
             "name": "fix-lockfile",
             "usage": "--fix-lockfile",
-            "help": "Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version",
-            "help_long": "Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version.\n\nUnchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved.",
-            "help_first_line": "Re-resolve lockfile entries whose spec drifted from package.json, leaving everything else pinned at its locked version",
+            "help": "Re-resolve lockfile entries whose spec drifted from package.json",
+            "help_long": "Re-resolve lockfile entries whose spec drifted from package.json.\n\nLeaves everything else pinned at its locked version. Unchanged specs keep their existing version and integrity hash; only drifted entries (and any new transitives they pull in) get re-resolved.",
+            "help_first_line": "Re-resolve lockfile entries whose spec drifted from package.json",
             "short": [],
             "long": [
               "fix-lockfile"
@@ -2411,9 +2418,9 @@
           {
             "name": "force",
             "usage": "--force",
-            "help": "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted",
-            "help_long": "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted.\n\nMirrors pnpm's `install --force`.",
-            "help_first_line": "Force reinstall: bypass the `node_modules/.aube-state` freshness check and re-resolve the lockfile even when nothing has drifted",
+            "help": "Force reinstall, ignoring lockfile/state freshness",
+            "help_long": "Force reinstall, ignoring lockfile/state freshness.\n\nBypasses the `node_modules/.aube-state` freshness check and re-resolves the lockfile even when nothing has drifted. Mirrors pnpm's `install --force`.",
+            "help_first_line": "Force reinstall, ignoring lockfile/state freshness",
             "short": [],
             "long": [
               "force"
@@ -2468,8 +2475,9 @@
           {
             "name": "lockfile-dir",
             "usage": "--lockfile-dir <PATH>",
-            "help": "Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`",
-            "help_first_line": "Read and write the lockfile in the given directory instead of alongside `package.json`. The project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`",
+            "help": "Read and write the lockfile in the given directory",
+            "help_long": "Read and write the lockfile in the given directory.\n\nInstead of placing the lockfile alongside `package.json`, the project becomes an importer keyed by its relative path from the lockfile directory. Mirrors pnpm's `--lockfile-dir`.",
+            "help_first_line": "Read and write the lockfile in the given directory",
             "short": [],
             "long": [
               "lockfile-dir"
@@ -2500,9 +2508,9 @@
           {
             "name": "merge-git-branch-lockfiles",
             "usage": "--merge-git-branch-lockfiles",
-            "help": "Merge every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and delete the branch files",
-            "help_long": "Merge every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and delete the branch files.\n\nCompanion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is set in `pnpm-workspace.yaml`, this happens automatically on matching branches; the flag forces it regardless.",
-            "help_first_line": "Merge every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and delete the branch files",
+            "help": "Merge per-branch lockfiles into the main `aube-lock.yaml`",
+            "help_long": "Merge per-branch lockfiles into the main `aube-lock.yaml`.\n\nCombines every `aube-lock.<branch>.yaml` file in the project into `aube-lock.yaml` and deletes the branch files. Companion to `gitBranchLockfile`. When `mergeGitBranchLockfilesBranchPattern` is set in `pnpm-workspace.yaml`, this happens automatically on matching branches; the flag forces it regardless.",
+            "help_first_line": "Merge per-branch lockfiles into the main `aube-lock.yaml`",
             "short": [],
             "long": [
               "merge-git-branch-lockfiles"
@@ -2676,9 +2684,9 @@
           {
             "name": "resolution-mode",
             "usage": "--resolution-mode <MODE>",
-            "help": "How to resolve version ranges: `highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff)",
-            "help_long": "How to resolve version ranges: `highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff).\n\nAccepts pnpm's aliases `time` and `lowest-direct`. When omitted, falls back to the `resolution-mode` key in `.npmrc` / `aube-workspace.yaml`.",
-            "help_first_line": "How to resolve version ranges: `highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff)",
+            "help": "How to resolve version ranges",
+            "help_long": "How to resolve version ranges.\n\n`highest` (pnpm's classic behavior) or `time-based` (pick the lowest satisfying direct dep and constrain transitives by a publish-date cutoff). Accepts pnpm's aliases `time` and `lowest-direct`. When omitted, falls back to the `resolution-mode` key in `.npmrc` / `aube-workspace.yaml`.",
+            "help_first_line": "How to resolve version ranges",
             "short": [],
             "long": [
               "resolution-mode"
@@ -2722,9 +2730,9 @@
           {
             "name": "verify-store-integrity",
             "usage": "--verify-store-integrity",
-            "help": "Verify tarball SHA-512 against the lockfile integrity before importing into the store",
-            "help_long": "Verify tarball SHA-512 against the lockfile integrity before importing into the store.\n\nDefaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip.",
-            "help_first_line": "Verify tarball SHA-512 against the lockfile integrity before importing into the store",
+            "help": "Verify tarball SHA-512 before importing into the store",
+            "help_long": "Verify tarball SHA-512 before importing into the store.\n\nChecks each tarball against the lockfile integrity. Defaults to `true` (pnpm parity); pair with `--no-verify-store-integrity` to skip.",
+            "help_first_line": "Verify tarball SHA-512 before importing into the store",
             "short": [],
             "long": [
               "verify-store-integrity"
@@ -2928,8 +2936,9 @@
           {
             "name": "long",
             "usage": "--long",
-            "help": "Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)",
-            "help_first_line": "Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)",
+            "help": "Show version and path for each entry",
+            "help_long": "Show version and path for each entry.\n\nDefault output is already name + version; `--long` adds the store path for debugging.",
+            "help_first_line": "Show version and path for each entry",
             "short": [],
             "long": [
               "long"
@@ -3067,9 +3076,9 @@
           {
             "name": "global",
             "usage": "-g --global",
-            "help": "Register into (or resolve from) the global link registry under `$AUBE_HOME/global-links`",
-            "help_long": "Register into (or resolve from) the global link registry under `$AUBE_HOME/global-links`.\n\nDefault behavior for bare `aube link` / `aube link <name>` — the flag exists for pnpm parity and makes the intent explicit.",
-            "help_first_line": "Register into (or resolve from) the global link registry under `$AUBE_HOME/global-links`",
+            "help": "Register into (or resolve from) the global link registry",
+            "help_long": "Register into (or resolve from) the global link registry.\n\nThe registry lives at `$AUBE_HOME/global-links`. Default behavior for bare `aube link` / `aube link <name>` — the flag exists for pnpm parity and makes the intent explicit.",
+            "help_first_line": "Register into (or resolve from) the global link registry",
             "short": [
               "g"
             ],
@@ -3219,8 +3228,9 @@
           {
             "name": "long",
             "usage": "--long",
-            "help": "Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)",
-            "help_first_line": "Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)",
+            "help": "Show version and path for each entry",
+            "help_long": "Show version and path for each entry.\n\nDefault output is already name + version; `--long` adds the store path for debugging.",
+            "help_first_line": "Show version and path for each entry",
             "short": [],
             "long": [
               "long"
@@ -3382,8 +3392,9 @@
           {
             "name": "long",
             "usage": "--long",
-            "help": "Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)",
-            "help_first_line": "Show version and path for each entry (default output is already name + version; `--long` adds the store path for debugging)",
+            "help": "Show version and path for each entry",
+            "help_long": "Show version and path for each entry.\n\nDefault output is already name + version; `--long` adds the store path for debugging.",
+            "help_first_line": "Show version and path for each entry",
             "short": [],
             "long": [
               "long"
@@ -3732,9 +3743,9 @@
           {
             "name": "ignore-existing",
             "usage": "--ignore-existing",
-            "help": "Ignore any existing patch entry for this package — extract a pristine copy from `node_modules` rather than re-applying the existing patch first",
-            "help_long": "Ignore any existing patch entry for this package — extract a pristine copy from `node_modules` rather than re-applying the existing patch first.\n\nAccepted for pnpm parity; aube already extracts from the *linked* (post-patch) tree, so this flag is effectively informational here.",
-            "help_first_line": "Ignore any existing patch entry for this package — extract a pristine copy from `node_modules` rather than re-applying the existing patch first",
+            "help": "Ignore any existing patch entry for this package",
+            "help_long": "Ignore any existing patch entry for this package.\n\nExtracts a pristine copy from `node_modules` rather than re-applying the existing patch first. Accepted for pnpm parity; aube already extracts from the *linked* (post-patch) tree, so this flag is effectively informational here.",
+            "help_first_line": "Ignore any existing patch entry for this package",
             "short": [],
             "long": [
               "ignore-existing"
@@ -3812,9 +3823,9 @@
           {
             "name": "PACKAGES",
             "usage": "[PACKAGES]…",
-            "help": "Patch keys to remove, formatted as `<name>@<version>` (the same shape used as the `pnpm.patchedDependencies` map key)",
-            "help_long": "Patch keys to remove, formatted as `<name>@<version>` (the same shape used as the `pnpm.patchedDependencies` map key).\n\nWith no arguments, every declared patch is removed.",
-            "help_first_line": "Patch keys to remove, formatted as `<name>@<version>` (the same shape used as the `pnpm.patchedDependencies` map key)",
+            "help": "Patch keys to remove, formatted as `<name>@<version>`",
+            "help_long": "Patch keys to remove, formatted as `<name>@<version>`.\n\nSame shape used as the `pnpm.patchedDependencies` map key. With no arguments, every declared patch is removed.",
+            "help_first_line": "Patch keys to remove, formatted as `<name>@<version>`",
             "required": false,
             "double_dash": "Optional",
             "var": true,
@@ -3994,9 +4005,9 @@
           {
             "name": "force",
             "usage": "--force",
-            "help": "Republish `name@version` even when that version is already on the target registry",
-            "help_long": "Republish `name@version` even when that version is already on the target registry.\n\nBy default `aube publish` issues a GET before the PUT and refuses to proceed when the version exists, surfacing a clear error instead of relying on the registry to return 409. In `--recursive` / `--filter` mode, `--force` overrides the silent \"already-published\" skip so every selected workspace package is re-PUT. The registry must still accept the republish — npm's public registry rejects re-publishes outright; Verdaccio and most private mirrors allow them.",
-            "help_first_line": "Republish `name@version` even when that version is already on the target registry",
+            "help": "Republish even when the version is already on the registry",
+            "help_long": "Republish even when the version is already on the registry.\n\nBy default `aube publish` issues a GET before the PUT and refuses to proceed when the version exists, surfacing a clear error instead of relying on the registry to return 409. In `--recursive` / `--filter` mode, `--force` overrides the silent \"already-published\" skip so every selected workspace package is re-PUT. The registry must still accept the republish — npm's public registry rejects re-publishes outright; Verdaccio and most private mirrors allow them.",
+            "help_first_line": "Republish even when the version is already on the registry",
             "short": [],
             "long": [
               "force"
@@ -4007,8 +4018,9 @@
           {
             "name": "ignore-scripts",
             "usage": "--ignore-scripts",
-            "help": "Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish",
-            "help_first_line": "Skip `prepublishOnly` / `prepublish` / `prepack` / `prepare` / `postpack` / `publish` / `postpublish` lifecycle scripts for this publish",
+            "help": "Skip publish lifecycle scripts",
+            "help_long": "Skip publish lifecycle scripts.\n\nSuppresses `prepublishOnly`, `prepublish`, `prepack`, `prepare`, `postpack`, `publish`, and `postpublish` scripts for this publish.",
+            "help_first_line": "Skip publish lifecycle scripts",
             "short": [],
             "long": [
               "ignore-scripts"
@@ -4019,8 +4031,9 @@
           {
             "name": "json",
             "usage": "--json",
-            "help": "Emit the publish result as JSON: an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`",
-            "help_first_line": "Emit the publish result as JSON: an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`",
+            "help": "Emit the publish result as JSON",
+            "help_long": "Emit the publish result as JSON.\n\nOutput is an array with one `{name, version, filename, files: [{path}]}` entry, matching `pnpm publish --json` / `aube pack --json`.",
+            "help_first_line": "Emit the publish result as JSON",
             "short": [],
             "long": [
               "json"
@@ -4113,8 +4126,9 @@
           {
             "name": "lockfile",
             "usage": "-l --lockfile",
-            "help": "Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)",
-            "help_first_line": "Also remove lockfiles at the workspace root (`aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`)",
+            "help": "Also remove lockfiles at the workspace root",
+            "help_long": "Also remove lockfiles at the workspace root.\n\nTargets `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock`.",
+            "help_first_line": "Also remove lockfiles at the workspace root",
             "short": [
               "l"
             ],
@@ -4144,8 +4158,9 @@
           {
             "name": "SELECTOR",
             "usage": "<SELECTOR>",
-            "help": "Selector expression. Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`",
-            "help_first_line": "Selector expression. Supports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`",
+            "help": "Selector expression",
+            "help_long": "Selector expression.\n\nSupports `*`, bare package names, `[name=value]`, `[version=value]`, `[license=value]`, `[depPath=value]`, `[source=value]`, `:prod`, `:dev`, `:optional`, `:peer`, `:transitive`, `:scripts`, `:bin`, `:deprecated`, `:license(value)`, and `:type(value)`.",
+            "help_first_line": "Selector expression",
             "required": true,
             "double_dash": "Optional",
             "hide": false
@@ -4325,9 +4340,9 @@
           {
             "name": "workspace",
             "usage": "-w --workspace",
-            "help": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory",
-            "help_long": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory.\n\nWalks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`).",
-            "help_first_line": "Remove the dependency from the workspace root's `package.json`, regardless of the current working directory",
+            "help": "Remove the dependency from the workspace root's `package.json`",
+            "help_long": "Remove the dependency from the workspace root's `package.json`.\n\nApplies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`).",
+            "help_first_line": "Remove the dependency from the workspace root's `package.json`",
             "short": [
               "w"
             ],
@@ -4506,9 +4521,9 @@
           {
             "name": "parallel",
             "usage": "--parallel",
-            "help": "Run the script in every matched workspace package concurrently, with unbounded parallelism",
-            "help_long": "Run the script in every matched workspace package concurrently, with unbounded parallelism.\n\nPair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated.",
-            "help_first_line": "Run the script in every matched workspace package concurrently, with unbounded parallelism",
+            "help": "Run the script in every matched workspace package concurrently",
+            "help_long": "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated.",
+            "help_first_line": "Run the script in every matched workspace package concurrently",
             "short": [],
             "long": [
               "parallel"
@@ -4998,8 +5013,8 @@
             "flags": [],
             "mounts": [],
             "hide": false,
-            "help": "Verify that every file referenced by a cached package index is still present in the store and its BLAKE3 hash matches",
-            "help_long": "Verify that every file referenced by a cached package index is still present in the store and its BLAKE3 hash matches.\n\nExits non-zero when any corruption is detected.",
+            "help": "Verify the store against cached package indexes",
+            "help_long": "Verify the store against cached package indexes.\n\nConfirms every file referenced by a cached package index is still present in the store and that its BLAKE3 hash matches. Exits non-zero when any corruption is detected.",
             "name": "status",
             "aliases": [],
             "hidden_aliases": [],
@@ -5345,8 +5360,9 @@
           {
             "name": "latest",
             "usage": "-L --latest",
-            "help": "Update past the manifest range: rewrite `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual)",
-            "help_first_line": "Update past the manifest range: rewrite `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual)",
+            "help": "Update past the manifest range",
+            "help_long": "Update past the manifest range.\n\nRewrites `package.json` specifiers to match the newly resolved versions (the registry's `latest` dist-tag, clamped by `minimumReleaseAge` / `resolution-mode` as usual).",
+            "help_first_line": "Update past the manifest range",
             "short": [
               "L"
             ],
@@ -5533,9 +5549,9 @@
           {
             "name": "NEW_VERSION",
             "usage": "[NEW_VERSION]",
-            "help": "Bump keyword (`major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`) or an explicit version string",
-            "help_long": "Bump keyword (`major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`) or an explicit version string.\n\nWhen omitted, prints the current version.",
-            "help_first_line": "Bump keyword (`major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`) or an explicit version string",
+            "help": "Bump keyword or an explicit version string",
+            "help_long": "Bump keyword or an explicit version string.\n\nAccepts `major`, `minor`, `patch`, `premajor`, `preminor`, `prepatch`, `prerelease`, or an explicit version. When omitted, prints the current version.",
+            "help_first_line": "Bump keyword or an explicit version string",
             "required": false,
             "double_dash": "Optional",
             "hide": false
@@ -5675,8 +5691,9 @@
           {
             "name": "PACKAGE",
             "usage": "<PACKAGE>",
-            "help": "Package to view, optionally with a version or dist-tag (`lodash`, `lodash@4.17.21`, `react@next`, `express@^4`)",
-            "help_first_line": "Package to view, optionally with a version or dist-tag (`lodash`, `lodash@4.17.21`, `react@next`, `express@^4`)",
+            "help": "Package to view, optionally with a version or dist-tag",
+            "help_long": "Package to view, optionally with a version or dist-tag.\n\nExamples: `lodash`, `lodash@4.17.21`, `react@next`, `express@^4`.",
+            "help_first_line": "Package to view, optionally with a version or dist-tag",
             "required": true,
             "double_dash": "Optional",
             "hide": false
@@ -5684,9 +5701,9 @@
           {
             "name": "FIELD",
             "usage": "[FIELD]",
-            "help": "Dotted path into the version metadata to print (`version`, `dependencies`, `dist.tarball`, `maintainers.0.name`)",
-            "help_long": "Dotted path into the version metadata to print (`version`, `dependencies`, `dist.tarball`, `maintainers.0.name`).\n\nWhen omitted, prints a formatted summary.",
-            "help_first_line": "Dotted path into the version metadata to print (`version`, `dependencies`, `dist.tarball`, `maintainers.0.name`)",
+            "help": "Dotted path into the version metadata to print",
+            "help_long": "Dotted path into the version metadata to print.\n\nExamples: `version`, `dependencies`, `dist.tarball`, `maintainers.0.name`. When omitted, prints a formatted summary.",
+            "help_first_line": "Dotted path into the version metadata to print",
             "required": false,
             "double_dash": "Optional",
             "hide": false

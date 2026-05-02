@@ -27,9 +27,10 @@ pub struct ApproveBuildsArgs {
     #[arg(short = 'g', long)]
     pub global: bool,
 
-    /// Packages to approve directly, skipping the picker. Each name
-    /// must match a currently-ignored build. Unknown names are rejected
-    /// so a typo cannot silently no-op.
+    /// Packages to approve directly, skipping the picker.
+    ///
+    /// Each name must match a currently-ignored build. Unknown names
+    /// are rejected so a typo cannot silently no-op.
     #[arg(value_name = "PKG")]
     pub packages: Vec<String>,
 }

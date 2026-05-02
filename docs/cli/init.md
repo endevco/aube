@@ -13,7 +13,9 @@ Create a `package.json` with only the bare minimum of required fields
 
 ### `--init-package-manager`
 
-Pin the project to the current aube version by adding a `packageManager` field to `package.json`
+Pin the project to the current aube version.
+
+Adds a `packageManager` field to `package.json`.
 
 ### `--init-type <commonjs|module>`
 
