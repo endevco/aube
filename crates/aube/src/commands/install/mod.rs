@@ -1356,23 +1356,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         project_dir.clone()
     } else {
         let initial_cwd = crate::dirs::cwd()?;
-        // Prefer the workspace root so `aube install` from inside a
-        // workspace member installs against the workspace, not the
-        // member as a standalone project — otherwise the member gets
-        // its own `aube-lock.yaml`, its own `.aube/` virtual store,
-        // and re-downloads anything not already in the global cache.
-        // Yaml-only workspace roots (pnpm-workspace.yaml at the root,
-        // no root `package.json`) install as a synthesized empty
-        // manifest — see the manifest read site below. Fall back to
-        // the nearest `package.json` for non-workspace subdirectory
-        // installs (`repo/docs`). Mirrors `ensure_installed`.
-        match crate::dirs::find_workspace_root(&initial_cwd)
-            .or_else(|| crate::dirs::find_project_root(&initial_cwd))
+        // Project root first (matches legacy aube: `cd packages/app &&
+        // aube install` installs into `packages/app/`). Fall back to
+        // the workspace root for yaml-only coordinator roots
+        // (`pnpm-workspace.yaml` at the root, no sibling
+        // `package.json`) — without the fallback `aube install` from
+        // the bare workspace root would error on the missing
+        // manifest. The manifest read site below synthesizes an empty
+        // `PackageJson` when the root has none.
+        match crate::dirs::find_project_root(&initial_cwd)
+            .or_else(|| crate::dirs::find_workspace_root(&initial_cwd))
         {
             Some(root) => root,
             None => {
                 return Err(miette!(
-                    "no package.json found in {} or any parent directory",
+                    "no package.json or workspace yaml \
+                     (pnpm-workspace.yaml / aube-workspace.yaml) found in {} \
+                     or any parent directory",
                     initial_cwd.display()
                 ));
             }

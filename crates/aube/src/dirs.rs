@@ -213,7 +213,9 @@ pub fn project_or_workspace_root() -> miette::Result<PathBuf> {
         return Ok(root);
     }
     Err(miette!(
-        "no package.json found in {} or any parent directory",
+        "no package.json or workspace yaml \
+         (pnpm-workspace.yaml / aube-workspace.yaml) found in {} \
+         or any parent directory",
         initial_cwd.display()
     ))
 }
