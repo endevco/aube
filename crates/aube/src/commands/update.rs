@@ -371,6 +371,13 @@ pub async fn run(
             if aube_util::pkg::is_workspace_spec(original) || preserve_pin.contains(key) {
                 continue;
             }
+            if aube_lockfile::parse_git_spec(original).is_some() {
+                // Git specs carry their own committish; rewriting to
+                // `latest` would route the resolver at the registry
+                // instead of the git source. Symmetric with the guard in
+                // the package.json rewrite loop below.
+                continue;
+            }
             let new_spec = if original.starts_with("npm:") {
                 format!("npm:{real_name}@latest")
             } else {
@@ -556,6 +563,14 @@ pub async fn run(
                 let real_name = resolve_real_name(key);
                 let original = all_specifiers.get(key).cloned().unwrap_or_default();
                 if aube_util::pkg::is_workspace_spec(&original) {
+                    continue;
+                }
+                if aube_lockfile::parse_git_spec(&original).is_some() {
+                    // Git specs (`github:user/repo`, `git+https://…`, bare
+                    // `user/repo` shorthand, …) carry their own committish
+                    // and have no semver range to bump. Rewriting one to
+                    // `^<resolved>` would silently swap the dep for a
+                    // registry pin and break install.
                     continue;
                 }
                 let Some(resolved) = lookup_pkg(&graph, key, &real_name).map(|p| p.version.clone())
