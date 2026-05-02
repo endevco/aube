@@ -239,9 +239,10 @@ fn parse_pkg_spec(spec: &str) -> miette::Result<ParsedPkgSpec> {
         && at_idx > 0
     {
         let after = &spec[at_idx + 1..];
-        if let Some(_name) = git_spec_manifest_key(after) {
-            // The alias is the explicit manifest key — don't derive one
-            // from the URL.
+        // `git_spec_manifest_key` only matters as a tail-recognizer here;
+        // the alias is the explicit manifest key, so the derived name is
+        // discarded.
+        if git_spec_manifest_key(after).is_some() {
             return Ok(ParsedPkgSpec {
                 alias: Some(spec[..at_idx].to_string()),
                 name: spec[..at_idx].to_string(),
@@ -953,40 +954,7 @@ async fn update_manifest_for_add(
         };
 
         eprintln!("  + {pkg_name_for_manifest}@{display_version} (specifier: {specifier})");
-
-        // Remove from all dep sections first to avoid duplicates across
-        // sections. `--save-peer` intentionally does NOT clear the peer
-        // section (see below) — we may end up writing to both peer and
-        // dev simultaneously, which is pnpm's `--save-peer` behavior.
-        manifest.dependencies.remove(pkg_name_for_manifest);
-        manifest.optional_dependencies.remove(pkg_name_for_manifest);
-        if !opts.save_peer {
-            manifest.peer_dependencies.remove(pkg_name_for_manifest);
-        }
-        if !(opts.save_peer && opts.save_dev) {
-            manifest.dev_dependencies.remove(pkg_name_for_manifest);
-        }
-
-        // Add to the appropriate section. When `--save-peer` is paired
-        // with `--save-dev`, pnpm writes to BOTH peerDependencies and
-        // devDependencies — the peer entry declares what downstream
-        // consumers need, and the dev entry makes the local project
-        // actually install it for tests and tooling.
-        let dep_name = pkg_name_for_manifest.to_string();
-        if opts.save_peer {
-            manifest
-                .peer_dependencies
-                .insert(dep_name.clone(), specifier.clone());
-            if opts.save_dev {
-                manifest.dev_dependencies.insert(dep_name, specifier);
-            }
-        } else if opts.save_dev {
-            manifest.dev_dependencies.insert(dep_name, specifier);
-        } else if opts.save_optional {
-            manifest.optional_dependencies.insert(dep_name, specifier);
-        } else {
-            manifest.dependencies.insert(dep_name, specifier);
-        }
+        apply_dep_to_section(&mut manifest, pkg_name_for_manifest, &specifier, &opts);
     }
 
     // Write the updated package.json. Under `--no-save` callers still
@@ -1069,61 +1037,60 @@ fn apply_workspace_spec_to_manifest(
         "  + {pkg_name_for_manifest}@{workspace_version} (specifier: {})",
         spec.range
     );
-
-    // Mirror the duplicate-section scrub the registry path does.
-    manifest.dependencies.remove(pkg_name_for_manifest);
-    manifest.optional_dependencies.remove(pkg_name_for_manifest);
-    if !opts.save_peer {
-        manifest.peer_dependencies.remove(pkg_name_for_manifest);
-    }
-    if !(opts.save_peer && opts.save_dev) {
-        manifest.dev_dependencies.remove(pkg_name_for_manifest);
-    }
-
-    let dep_name = pkg_name_for_manifest.to_string();
-    let specifier = spec.range.clone();
-    if opts.save_peer {
-        manifest
-            .peer_dependencies
-            .insert(dep_name.clone(), specifier.clone());
-        if opts.save_dev {
-            manifest.dev_dependencies.insert(dep_name, specifier);
-        }
-    } else if opts.save_dev {
-        manifest.dev_dependencies.insert(dep_name, specifier);
-    } else if opts.save_optional {
-        manifest.optional_dependencies.insert(dep_name, specifier);
-    } else {
-        manifest.dependencies.insert(dep_name, specifier);
-    }
+    apply_dep_to_section(manifest, pkg_name_for_manifest, &spec.range, opts);
     Ok(())
 }
 
-/// Write a git-spec dep into the manifest verbatim. Mirrors the
-/// dependency-section scrub the registry path does so a re-add doesn't
-/// leave duplicate entries across `dependencies` /
-/// `devDependencies` / `optionalDependencies`. The chained
+/// Write a git-spec dep into the manifest verbatim. The chained
 /// `aube install` resolves the git URL and writes the lockfile entry —
 /// nothing here touches the registry or aube-lock.yaml.
+///
+/// `--save-catalog` is a no-op for git specs (catalogs key on package
+/// name + version range, neither of which is meaningful for a
+/// committish-pinned git source). Warn so users don't think the flag
+/// silently took effect.
 fn apply_git_spec_to_manifest(
     manifest: &mut aube_manifest::PackageJson,
     pkg_name_for_manifest: &str,
     verbatim_spec: &str,
     opts: &AddManifestOptions,
 ) {
+    if opts.save_catalog.is_some() {
+        tracing::warn!(
+            "--save-catalog ignored for git-spec dep {pkg_name_for_manifest} \
+             (catalogs only apply to versioned registry deps)"
+        );
+    }
     eprintln!("  + {pkg_name_for_manifest} (specifier: {verbatim_spec})");
+    apply_dep_to_section(manifest, pkg_name_for_manifest, verbatim_spec, opts);
+}
 
-    manifest.dependencies.remove(pkg_name_for_manifest);
-    manifest.optional_dependencies.remove(pkg_name_for_manifest);
+/// Scrub the four dep sections of any prior entry under `name`, then
+/// insert `(name, spec)` into the section selected by `opts`. Shared
+/// by the registry, `workspace:`, and git-spec add paths so the rules
+/// for which sections get cleared and which combination of
+/// `--save-peer` / `--save-dev` ends up where lives in one place.
+///
+/// `--save-peer` does NOT clear the peer section (we may end up
+/// writing both peer and dev entries simultaneously, which is pnpm's
+/// `--save-peer` + `--save-dev` semantics).
+fn apply_dep_to_section(
+    manifest: &mut aube_manifest::PackageJson,
+    name: &str,
+    spec: &str,
+    opts: &AddManifestOptions,
+) {
+    manifest.dependencies.remove(name);
+    manifest.optional_dependencies.remove(name);
     if !opts.save_peer {
-        manifest.peer_dependencies.remove(pkg_name_for_manifest);
+        manifest.peer_dependencies.remove(name);
     }
     if !(opts.save_peer && opts.save_dev) {
-        manifest.dev_dependencies.remove(pkg_name_for_manifest);
+        manifest.dev_dependencies.remove(name);
     }
 
-    let dep_name = pkg_name_for_manifest.to_string();
-    let specifier = verbatim_spec.to_string();
+    let dep_name = name.to_string();
+    let specifier = spec.to_string();
     if opts.save_peer {
         manifest
             .peer_dependencies
