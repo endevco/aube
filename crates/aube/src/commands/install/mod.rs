@@ -1856,23 +1856,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 .replace('\\', "/");
 
             if let Some(ref name) = pkg_manifest.name {
-                // Workspace members MUST carry a version. Old code
-                // silently defaulted to "0.0.0", which collided any
-                // two unversioned members under one dep_path and made
-                // `workspace:^2.0.0` match nothing. pnpm refuses to
-                // install here, aube should too. Private packages
-                // without a version are fine in package.json but not
-                // once they enter a workspace graph where siblings
-                // pin them. User fix: add a version field. Skip
-                // silently only when name is also missing (pure-root
-                // scratch manifest case).
-                let version = pkg_manifest.version.as_deref().ok_or_else(|| {
-                    miette!(
-                        "workspace package {name} at {rel_path} has no `version` field. \
-                         add one to its package.json. workspace members must be versioned \
-                         so siblings can pin them via workspace: protocol"
-                    )
-                })?;
+                // `version` is optional. pnpm accepts workspace
+                // members without one (real-world: build-only design
+                // systems consumed by an external toolchain, like
+                // tuist's `noora`). When absent, fall back to "0.0.0":
+                // siblings pinning via `workspace:*` / `workspace:^` /
+                // `workspace:~` or bare `*` still link locally
+                // (those branches in resolve_workspace accept any
+                // ws version), and a specific range like
+                // `workspace:^2.0.0` correctly fails to satisfy.
+                let version = pkg_manifest.version.as_deref().unwrap_or("0.0.0");
                 ws_package_versions.insert(name.clone(), version.to_string());
                 ws_dirs.insert(name.clone(), pkg_dir.clone());
                 tracing::debug!("  {name}@{version} ({rel_path})");

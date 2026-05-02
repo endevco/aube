@@ -154,6 +154,36 @@ _setup_workspace_fixture() {
 	assert_output --partial "isOdd(3): true"
 }
 
+@test "aube install: workspace member without \`version\` field installs cleanly" {
+	# Regression: aube errored with `workspace package <name> at <path>
+	# has no \`version\` field` whenever any pnpm-workspace.yaml member
+	# omitted version, even when no sibling depended on it. pnpm
+	# permits unversioned members in this case (real-world: tuist's
+	# `noora` design system, consumed by an external Mix toolchain).
+	mkdir -p packages/standalone
+	cat >package.json <<-'EOF'
+		{ "name": "root-ws", "version": "0.0.0", "private": true }
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - packages/standalone
+	EOF
+	cat >packages/standalone/package.json <<-'EOF'
+		{
+		  "name": "standalone",
+		  "private": true,
+		  "dependencies": {
+		    "is-odd": "^3.0.1"
+		  }
+		}
+	EOF
+
+	run aube install
+	assert_success
+
+	assert_dir_exists packages/standalone/node_modules/is-odd
+}
+
 @test "aube install: detects workspace from pnpm-workspace.yaml" {
 	_setup_workspace_fixture
 
