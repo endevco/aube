@@ -97,7 +97,7 @@ teardown() {
 	cd empty/sub
 	run aube install
 	assert_failure
-	assert_output --partial "no package.json found"
+	assert_output --partial "no package.json or workspace yaml"
 }
 
 @test "aube install generates aube-lock.yaml when no lockfile exists" {
