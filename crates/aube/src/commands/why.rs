@@ -72,13 +72,20 @@ pub async fn run(
     args: WhyArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
 
     if !filter.is_empty() {
         return run_filtered(&cwd, &args, &filter);
     }
 
-    let manifest = super::load_manifest(&cwd.join("package.json"))?;
+    // Workspace-yaml-only roots (Turborepo-style) have no root manifest;
+    // synthesize an empty one so `parse_lockfile` and the renderer get a
+    // sensible header. Real package.json projects load from disk.
+    let manifest = if cwd.join("package.json").is_file() {
+        super::load_manifest(&cwd.join("package.json"))?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
         Ok(g) => g,
@@ -123,7 +130,11 @@ fn run_filtered(
         )
     })?;
 
-    let manifest = super::load_manifest(&workspace_root.join("package.json"))?;
+    let manifest = if workspace_root.join("package.json").is_file() {
+        super::load_manifest(&workspace_root.join("package.json"))?
+    } else {
+        aube_manifest::PackageJson::default()
+    };
 
     let graph = match aube_lockfile::parse_lockfile(&workspace_root, &manifest) {
         Ok(g) => g,
