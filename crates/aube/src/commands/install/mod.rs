@@ -1417,6 +1417,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         && state::restore_missing_lockfile_if_fresh(&cwd, &opts.cli_flags);
 
     if missing_lockfile_restore_eligible {
+        emit_unreviewed_builds_warning(&state::read_state_unreviewed_builds(&cwd));
         print_already_up_to_date();
         return Ok(());
     }
@@ -1447,6 +1448,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // `print_install_summary` is never called. `--silent` additionally
         // has its `SilentStderrGuard` redirect fd 2 to /dev/null, so this
         // check is belt-and-suspenders for `-v` and the JSON reporters.
+        emit_unreviewed_builds_warning(&state::read_state_unreviewed_builds(&cwd));
         print_already_up_to_date();
         let _ = start;
         return Ok(());
@@ -3982,6 +3984,25 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //    Observed via `aube add <pkg> --filter <ws>` leaving the new
     //    dep unmaterialized.
     let filtered_install = !opts.workspace_filter.is_empty() || opts.dep_selection.is_filtered();
+
+    // Walk the linked graph once for the unreviewed-builds set; reused
+    // by both the state writer (so warm-path repeats keep nudging) and
+    // the post-install warning emission below. The walk does a stat per
+    // package, so collapsing two callers into one cuts the linker-tail
+    // cost on large graphs roughly in half.
+    let unreviewed_builds =
+        if !opts.ignore_scripts && !strict_dep_builds_setting && !virtual_store_only {
+            unreviewed_dep_builds(
+                &aube_dir,
+                &graph_for_link,
+                &build_policy,
+                virtual_store_dir_max_length,
+                placements_ref,
+            )?
+        } else {
+            Vec::new()
+        };
+
     if !virtual_store_only && !filtered_install {
         let phase_start = std::time::Instant::now();
         // Fingerprint every package in the final graph so the next
@@ -4097,6 +4118,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 );
             }
         }
+        // Persist the unreviewed-builds set so the warm-path
+        // short-circuit can re-emit the warning on repeat installs.
+        // Computed once above and reused here.
+        let unreviewed_builds_for_state = unreviewed_builds.clone();
         state::write_state(
             &cwd,
             state::WriteStateInput {
@@ -4114,6 +4139,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     virtual_store_dir_max_length,
                     placements: placements_ref,
                 },
+                unreviewed_builds: unreviewed_builds_for_state,
             },
         )
         .into_diagnostic()
@@ -4212,46 +4238,48 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // surfaces later when something tries to `require` the binding.
     // Skipped under `--ignore-scripts`, `virtualStoreOnly`, and
     // `strictDepBuilds=true` (the strict path already errored above).
-    if !opts.ignore_scripts && !strict_dep_builds_setting && !virtual_store_only {
-        let unreviewed = unreviewed_dep_builds(
-            &aube_dir,
-            &graph_for_link,
-            &build_policy,
-            virtual_store_dir_max_length,
-            placements_ref,
-        )?;
-        if !unreviewed.is_empty() {
-            let review_names = allow_build_review_names(&unreviewed);
-            aube_manifest::workspace::add_to_allow_builds(
-                &cwd,
-                &review_names,
-                aube_manifest::workspace::AllowBuildsWriteMode::ReviewPlaceholder,
-            )
-            .into_diagnostic()
-            .wrap_err("failed to update allowBuilds review entries")?;
-            // Cap the inline list so a napi-rs / prebuilt-variants tree
-            // (tens of per-platform binding packages) doesn't splat into
-            // one hard-to-scan line. Users who want the full list run
-            // `aube ignored-builds`.
-            const MAX_INLINE: usize = 5;
-            let list = if unreviewed.len() <= MAX_INLINE {
-                unreviewed.join(", ")
-            } else {
-                format!(
-                    "{}, and {} more",
-                    unreviewed[..MAX_INLINE].join(", "),
-                    unreviewed.len() - MAX_INLINE
-                )
-            };
-            tracing::warn!(
-                "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
-                unreviewed.len(),
-                list
-            );
-        }
+    if !unreviewed_builds.is_empty() {
+        let review_names = allow_build_review_names(&unreviewed_builds);
+        aube_manifest::workspace::add_to_allow_builds(
+            &cwd,
+            &review_names,
+            aube_manifest::workspace::AllowBuildsWriteMode::ReviewPlaceholder,
+        )
+        .into_diagnostic()
+        .wrap_err("failed to update allowBuilds review entries")?;
+        emit_unreviewed_builds_warning(&unreviewed_builds);
     }
 
     Ok(())
+}
+
+/// Emit the `ignored build scripts for ...` warning. Same wording
+/// fires from the full install path and the warm-path short-circuit
+/// so users see the nudge on every repeat install while
+/// `allowBuilds` placeholders are still pending review.
+fn emit_unreviewed_builds_warning(unreviewed: &[String]) {
+    if unreviewed.is_empty() {
+        return;
+    }
+    // Cap the inline list so a napi-rs / prebuilt-variants tree
+    // (tens of per-platform binding packages) doesn't splat into
+    // one hard-to-scan line. Users who want the full list run
+    // `aube ignored-builds`.
+    const MAX_INLINE: usize = 5;
+    let list = if unreviewed.len() <= MAX_INLINE {
+        unreviewed.join(", ")
+    } else {
+        format!(
+            "{}, and {} more",
+            unreviewed[..MAX_INLINE].join(", "),
+            unreviewed.len() - MAX_INLINE
+        )
+    };
+    tracing::warn!(
+        "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
+        unreviewed.len(),
+        list
+    );
 }
 
 fn allow_build_review_names(specs: &[String]) -> Vec<String> {
