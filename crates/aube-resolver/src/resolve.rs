@@ -677,11 +677,19 @@ impl Resolver {
                 // relative path against, so transitive `link:`/`file:`
                 // from them stays an error.
                 if is_non_registry_specifier(&task.range) {
-                    if should_block_exotic_subdep(
-                        &task,
-                        &resolved,
-                        self.dependency_policy.block_exotic_subdeps,
-                    ) {
+                    // Root-declared `pnpm.overrides` opts the user into
+                    // the rewritten `link:`/`file:` target by name, so
+                    // they bypass the exotic-subdep block — otherwise
+                    // an override aimed at a transitive of a registry
+                    // package would always lose to the default-on
+                    // guard.
+                    if !task.range_from_override
+                        && should_block_exotic_subdep(
+                            &task,
+                            &resolved,
+                            self.dependency_policy.block_exotic_subdeps,
+                        )
+                    {
                         return Err(Error::BlockedExoticSubdep(Box::new(ExoticSubdepDetails {
                             name: task.name.clone(),
                             spec: task.range.clone(),

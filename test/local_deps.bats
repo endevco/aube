@@ -219,6 +219,43 @@ EOF
 	refute_output --partial 'libs/foo/libs/bar'
 }
 
+@test "aube install lets pnpm.overrides redirect transitive registry deps to link:" {
+	# Registry parent → `link:` override. The exotic-subdep guard is on
+	# by default, but a root-declared override is an opt-in — without a
+	# `range_from_override` short-circuit the guard would block the
+	# override before the resolver ever read it.
+	mkdir -p libs/bar
+	cat >libs/bar/package.json <<'EOF'
+{"name":"@company/bar","version":"9.9.9","main":"index.js"}
+EOF
+	# Vendored registry parent: a tarball whose package.json declares
+	# `@company/bar@1.2.3` as a registry dep, which the override redirects
+	# to libs/bar. file:./parent.tgz keeps the test offline.
+	mkdir -p staging/package
+	cat >staging/package/package.json <<'EOF'
+{"name":"parent-reg","version":"2.0.0","dependencies":{"@company/bar":"1.2.3"}}
+EOF
+	(cd staging && tar -czf ../parent-reg.tgz package)
+	rm -rf staging
+
+	cat >package.json <<'EOF'
+{"name":"root","version":"0.0.0","dependencies":{"parent-reg":"file:./parent-reg.tgz"},"pnpm":{"overrides":{"@company/bar":"link:./libs/bar"}}}
+EOF
+
+	run aube install
+	assert_success
+
+	# The override fires for the transitive — no `BlockedExoticSubdep`.
+	# Sibling symlink in the parent's virtual-store node_modules points
+	# straight at libs/bar.
+	local nested
+	nested=$(echo node_modules/.aube/parent-reg@file+*/node_modules/@company/bar)
+	[ -L "$nested" ]
+	assert_file_exists "$nested/package.json"
+	run cat "$nested/package.json"
+	assert_output --partial '"version":"9.9.9"'
+}
+
 @test "aube install resolves transitive link: against the parent's source root" {
 	# A `file:`-linked parent with its own `link:./libs/...` transitive
 	# dep. The resolver must anchor `./libs/...` on the parent's source
