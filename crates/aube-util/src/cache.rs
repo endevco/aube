@@ -138,8 +138,13 @@ impl DiskCache {
     }
 
     /// Write raw bytes for `key`, atomically. Re-writes overwrite.
+    /// Creates the 2-char shard directory on first write so cold
+    /// starts don't fail with `NotFound` from `atomic_write`.
     pub fn write_bytes(&self, key: &[u8], bytes: &[u8]) -> io::Result<()> {
         let path = self.path_for(key);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         crate::fs_atomic::atomic_write(&path, bytes)
     }
 

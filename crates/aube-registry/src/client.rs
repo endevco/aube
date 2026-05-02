@@ -705,12 +705,6 @@ impl RegistryClient {
         unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
     }
 
-    /// Buffered-bytes retry helper. Thin wrapper around
-    /// [`Self::retry_bytes_body_read_streaming_sha512`] that drops
-    /// the digest. The SHA-512 cost on packument and JSON reads is
-    /// microseconds — negligible vs network — and folding both
-    /// callers through one chunk-loop kills 70 lines of duplicate
-    /// retry/backoff bookkeeping.
     async fn retry_bytes_body_read<F>(
         &self,
         label: &str,
@@ -720,9 +714,74 @@ impl RegistryClient {
     where
         F: Fn() -> reqwest::RequestBuilder,
     {
-        self.retry_bytes_body_read_streaming_sha512(label, cap, build)
-            .await
-            .map(|(bytes, _digest, elapsed)| (bytes, elapsed))
+        let max_attempts = self.fetch_policy.retries.saturating_add(1);
+        let mut timeout_retries: u32 = 0;
+        for attempt in 0..max_attempts {
+            let is_last = attempt + 1 >= max_attempts;
+            match build().send().await {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
+                    let wait = retry_after_from(&resp)
+                        .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        status = resp.status().as_u16(),
+                        label,
+                        "retrying HTTP request after transient failure",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(resp) => {
+                    let resp = resp.error_for_status()?;
+                    check_body_cap(&resp, cap, label)?;
+                    let started = std::time::Instant::now();
+                    match read_body_capped(resp, cap, label).await {
+                        Ok(bytes) => return Ok((bytes, started.elapsed())),
+                        Err(err) if !is_last => {
+                            let is_timeout = matches!(&err, Error::Http(e) if e.is_timeout());
+                            if is_timeout && timeout_retries >= TIMEOUT_RETRY_CAP {
+                                return Err(err);
+                            }
+                            if is_timeout {
+                                timeout_retries += 1;
+                            }
+                            let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_attempts,
+                                backoff_ms = wait.as_millis() as u64,
+                                error = %err,
+                                label,
+                                "retrying HTTP request after response body read error",
+                            );
+                            tokio::time::sleep(wait).await;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                Err(err) if !is_last => {
+                    if err.is_timeout() {
+                        if timeout_retries >= TIMEOUT_RETRY_CAP {
+                            return Err(Error::Http(err));
+                        }
+                        timeout_retries += 1;
+                    }
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label,
+                        "retrying HTTP request after transport error",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(err) => return Err(Error::Http(err)),
+            }
+        }
+        unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
     }
 
     /// Fetch the *full* (non-corgi) packument for a package as raw JSON
@@ -1883,19 +1942,45 @@ fn force_full_packument() -> bool {
 /// users who need to pull packuments that exceed the default (e.g.
 /// packages with very long release histories) and accept the DoS
 /// exposure on the trusted-registry side.
-/// Stream-and-count read of a response body. Enforces `cap` even
-/// when the server omits `Content-Length` (chunked transfer encoding)
-/// and streams a SHA-512 of every byte the registry sent. Used by
-/// the tarball fetch path to skip the post-buffer integrity hash
-/// (~7 ms / 5 MB tarball, ~50-120 ms / 1000-pkg cold install);
-/// non-tarball callers discard the digest at near-zero cost.
-///
-/// The hash covers exactly the bytes the registry delivered
-/// (`Accept-Encoding: identity` is set on the tarball request so
-/// reqwest cannot transparently decompress underneath us). That
-/// matches what `aube_store::verify_integrity` checks against the
-/// lockfile `integrity` field, so the streaming digest is a
-/// drop-in replacement for the buffered hash.
+/// Stream-and-count read of a response body that enforces `cap` even
+/// when the server omits `Content-Length` (chunked transfer encoding).
+/// `check_body_cap` only inspects the precheck header; this function
+/// is the runtime gate that closes the chunked-bypass primitive.
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    cap: u64,
+    label: &str,
+) -> Result<bytes::Bytes, Error> {
+    if cap == 0 {
+        return Ok(resp.bytes().await?);
+    }
+    const STREAM_INITIAL: usize = 64 * 1024;
+    let initial = resp
+        .content_length()
+        .map(|len| len.min(cap) as usize)
+        .unwrap_or(STREAM_INITIAL);
+    let mut buf = bytes::BytesMut::with_capacity(initial);
+    while let Some(chunk) = resp.chunk().await? {
+        if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{label}: response body exceeds cap {cap}"),
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf.freeze())
+}
+
+/// `read_body_capped` plus a streaming SHA-512 of every byte the
+/// registry delivered. Used by the tarball fetch path to skip the
+/// post-buffer integrity hash (~7 ms / 5 MB tarball, ~50-120 ms /
+/// 1000-pkg cold install). `Accept-Encoding: identity` is set on
+/// the tarball request so reqwest cannot transparently decompress
+/// underneath us, which means the streamed digest covers the same
+/// bytes `aube_store::verify_integrity` checks against the lockfile
+/// `integrity` field. Non-tarball callers go through the buffered
+/// `read_body_capped` and skip the per-chunk hash work.
 async fn read_body_capped_streaming_sha512(
     mut resp: reqwest::Response,
     cap: u64,

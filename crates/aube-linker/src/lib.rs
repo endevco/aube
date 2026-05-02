@@ -990,11 +990,18 @@ impl Linker {
             LinkStrategy::Copy
         };
 
-        cache
+        // First-write-wins via `entry().or_insert_with`. Two
+        // concurrent linker probes (prewarm + final) sharing the same
+        // (src_dir, dst_dir) can race on the test files: one observes
+        // reflink-ok, the other sees the first writer's leftover and
+        // falls back to Copy. `.insert()` would let the wrong Copy
+        // result clobber the correct Reflink for the rest of the
+        // process; `or_insert_with` keeps whichever value landed first.
+        *cache
             .write()
             .expect("probe cache poisoned")
-            .insert(key, strategy);
-        strategy
+            .entry(key)
+            .or_insert(strategy)
     }
 
     /// Link all packages into node_modules for the given project.
