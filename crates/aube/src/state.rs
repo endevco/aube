@@ -86,6 +86,16 @@ pub struct InstallState {
     pub package_json_shape_digests: BTreeMap<String, String>,
     #[serde(default)]
     pub layout: Option<InstallLayoutState>,
+    /// Spec keys (`name@version`) of registry deps whose build
+    /// scripts were skipped on the last install because they are not
+    /// on the `allowBuilds` allowlist. Persisted so the warm-path
+    /// short-circuit can re-emit the same warning the full pipeline
+    /// emits — without it, repeat installs go silent and users
+    /// forget pending approvals. Empty on installs where the warning
+    /// did not fire (no registry deps with lifecycle scripts, or
+    /// `--ignore-scripts` / `strictDepBuilds=true` / `virtualStoreOnly`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreviewed_builds: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -112,6 +122,8 @@ struct FreshnessState {
     package_json_shape_digests: BTreeMap<String, String>,
     #[serde(default)]
     layout: Option<InstallLayoutState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unreviewed_builds: Vec<String>,
 }
 
 /// `(size, mtime)` snapshot used by `R1` mtime fast path. mtime is
@@ -167,6 +179,7 @@ impl From<&InstallState> for FreshnessState {
             settings_hash: state.settings_hash.clone(),
             package_json_shape_digests: state.package_json_shape_digests.clone(),
             layout: state.layout.clone(),
+            unreviewed_builds: state.unreviewed_builds.clone(),
         }
     }
 }
@@ -385,6 +398,7 @@ pub struct WriteStateInput<'a> {
     pub graph_lthash: String,
     pub package_subtree_hashes: BTreeMap<String, String>,
     pub layout: WriteStateLayout<'a>,
+    pub unreviewed_builds: Vec<String>,
 }
 
 pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(), std::io::Error> {
@@ -396,6 +410,7 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         graph_lthash,
         package_subtree_hashes,
         layout,
+        unreviewed_builds,
     } = input;
 
     let state_path = state_dir(project_dir);
@@ -458,6 +473,7 @@ pub fn write_state(project_dir: &Path, input: WriteStateInput<'_>) -> Result<(),
         package_subtree_hashes,
         package_json_shape_digests,
         layout: Some(install_layout),
+        unreviewed_builds,
     };
 
     let fresh_state = FreshnessState::from(&state);
@@ -517,6 +533,16 @@ pub fn read_state_subtree_hashes(project_dir: &Path) -> Option<BTreeMap<String, 
         return None;
     }
     Some(state.package_subtree_hashes)
+}
+
+/// Read the unreviewed-builds spec keys recorded by the last
+/// install. Powers warm-path warning re-emission so repeat
+/// installs keep nudging users about pending build approvals.
+/// Returns an empty vec when state is missing or pre-feature.
+pub fn read_state_unreviewed_builds(project_dir: &Path) -> Vec<String> {
+    read_or_migrate_fresh_state(&state_dir(project_dir))
+        .map(|s| s.unreviewed_builds)
+        .unwrap_or_default()
 }
 
 /// Remove the install state directory. Missing state is not an error.
@@ -1100,6 +1126,7 @@ mod tests {
                     },
                 )]),
             }),
+            unreviewed_builds: Vec::new(),
         };
 
         assert_eq!(
@@ -1166,6 +1193,7 @@ mod tests {
                 direct_entries: BTreeMap::new(),
                 packages: BTreeMap::new(),
             }),
+            unreviewed_builds: Vec::new(),
         };
         let json = serde_json::to_string(&state).expect("state should serialize");
         std::fs::write(install_state_file(&state_path), json).expect("state should write");
@@ -1187,6 +1215,63 @@ mod tests {
 
         assert!(read_or_migrate_fresh_state(&state_path).is_none());
         assert!(!state_path.exists());
+    }
+
+    #[test]
+    fn unreviewed_builds_roundtrip_persists_into_fresh_state() {
+        use super::read_state_unreviewed_builds;
+        let project_dir = temp_project_dir("unreviewed-builds-rt");
+        let state_path = project_dir.join("node_modules/.aube-state");
+        std::fs::create_dir_all(&state_path).expect("state dir should write");
+        let state = InstallState {
+            lockfile_hash: "blake3:lock".to_string(),
+            lockfile_snapshot_name: None,
+            package_json_hashes: BTreeMap::new(),
+            package_json_meta: BTreeMap::new(),
+            aube_version: env!("CARGO_PKG_VERSION").to_string(),
+            section_filtered: false,
+            settings_hash: String::new(),
+            package_content_hashes: BTreeMap::new(),
+            graph_lthash: String::new(),
+            package_subtree_hashes: BTreeMap::new(),
+            package_json_shape_digests: BTreeMap::new(),
+            layout: None,
+            unreviewed_builds: vec![
+                "esbuild@0.21.5".to_string(),
+                "better-sqlite3@11.5.0".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&state).expect("state should serialize");
+        std::fs::write(install_state_file(&state_path), json).expect("state should write");
+        // First read migrates the fresh sidecar.
+        let _ = read_state_unreviewed_builds(&project_dir);
+        let unreviewed = read_state_unreviewed_builds(&project_dir);
+        assert_eq!(
+            unreviewed,
+            vec![
+                "esbuild@0.21.5".to_string(),
+                "better-sqlite3@11.5.0".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn unreviewed_builds_default_when_field_missing_in_state() {
+        use super::read_state_unreviewed_builds;
+        let project_dir = temp_project_dir("unreviewed-builds-default");
+        let state_path = project_dir.join("node_modules/.aube-state");
+        std::fs::create_dir_all(&state_path).expect("state dir should write");
+        // Pre-feature state file with no unreviewed_builds key — the
+        // serde default keeps the read path working.
+        let legacy_json = r#"{
+            "lockfile_hash": "blake3:lock",
+            "package_json_hashes": {},
+            "aube_version": "0.0.0"
+        }"#;
+        std::fs::write(install_state_file(&state_path), legacy_json)
+            .expect("legacy state should write");
+        let unreviewed = read_state_unreviewed_builds(&project_dir);
+        assert!(unreviewed.is_empty());
     }
 
     #[test]
@@ -1248,6 +1333,7 @@ mod tests {
             package_subtree_hashes: BTreeMap::new(),
             package_json_shape_digests: shapes,
             layout: None,
+            unreviewed_builds: Vec::new(),
         };
         let reformatted = r#"{
   "name": "x",

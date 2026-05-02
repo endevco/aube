@@ -823,6 +823,39 @@ JSON
 	assert_failure
 }
 
+@test "aube install re-emits ignored-build-scripts warning on repeat install" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:245
+	# ('warning is shown when an install with --no-frozen-lockfile reuses
+	# an existing node_modules with ignored build scripts').
+	# pnpm's assertion text reads "Ignored build scripts:"; aube's reads
+	# "ignored build scripts for N package(s):" — the contract being
+	# tested is identical (the warning still fires on a repeat install
+	# that hits the warm-path short-circuit), wording substituted to
+	# match aube's canonical phrasing per CLAUDE.md.
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-lifecycle-repeat-install-warn",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pre-and-postinstall-scripts-example": "1.0.0"
+  }
+}
+JSON
+	# First install: warning fires from the full pipeline.
+	run aube install
+	assert_success
+	assert_output --partial "ignored build scripts"
+	assert_output --partial "@pnpm.e2e/pre-and-postinstall-scripts-example"
+	# Second install: state matches, warm-path short-circuit fires. The
+	# unreviewed-builds set persisted in `.aube-state` lets the warning
+	# re-emit so the user keeps seeing the nudge until they review.
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+	assert_output --partial "ignored build scripts"
+	assert_output --partial "@pnpm.e2e/pre-and-postinstall-scripts-example"
+}
+
 @test "aube add --allow-build=<pkg> errors when allowBuilds: <pkg>: false already exists" {
 	# Ported from pnpm/test/install/lifecycleScripts.ts:347
 	# ('--allow-build flag should error when conflicting with allowBuilds: false').
