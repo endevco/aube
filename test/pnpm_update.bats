@@ -1208,6 +1208,43 @@ EOF
 	assert_success
 }
 
+@test "aube update <pkg>: preserves dist-tag manifest specs (latest, next, beta)" {
+	# Regression guard for the cosmetic-rewrite filter: dist-tags
+	# ("latest", "next", "beta") must not be mistaken for caret specs.
+	# `range_prefix` defaults to "^" for unknown shapes so the filter
+	# checks the literal leading char (`^` or `~`) instead.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	cat >package.json <<'JSON'
+{
+  "name": "pnpm-update-dist-tag-preserved",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "latest"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/foo@100.0.0' aube-lock.yaml
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update '@pnpm.e2e/foo'
+	assert_success
+
+	# Lockfile re-resolves to the new latest.
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_success
+
+	# Manifest spec stays as the dist-tag string verbatim.
+	run grep '"@pnpm.e2e/foo": "latest"' package.json
+	assert_success
+}
+
 @test "aube update -r <pkg>: rewrites caret manifest in every workspace project" {
 	# Ported from pnpm/test/update.ts:95 ('recursive update without
 	# --latest'). Same cosmetic floor-bump as the single-project case,

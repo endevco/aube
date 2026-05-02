@@ -571,7 +571,7 @@ pub async fn run(
     // `--no-save` short-circuits the manifest rewrite: the resolver
     // already pulled in the new versions for the lockfile above, so we
     // just skip persisting any range bumps to `package.json`.
-    if effective_latest && no_save {
+    if no_save && (effective_latest || rewrites_specifier_setting) {
         eprintln!("Skipping package.json update (--no-save)");
     } else if effective_latest || cosmetic_rewrite_eligible {
         let mut wrote_any = false;
@@ -592,18 +592,19 @@ pub async fn run(
                 // registry pin and break install.
                 continue;
             }
-            // Cosmetic floor-bump (no `--latest`) only rewrites
-            // caret/tilde specs. Caret/tilde under an `npm:` alias is
-            // detected on the post-`@` portion (`^Y.Z` after
-            // `npm:real@`) — `range_prefix` runs against the same slice
-            // `rewrite_specifier` uses, so the two stay in sync.
+            // Cosmetic floor-bump (no `--latest`) only rewrites specs
+            // that literally begin with `^` or `~` — dist-tags
+            // (`"latest"`, `"next"`, …), exact pins, raw ranges
+            // (`>=1.0`), and anything else are preserved as-is.
+            // `range_prefix` defaults to `"^"` for unknown shapes so it
+            // can't be the discriminator here. Caret/tilde under an
+            // `npm:` alias lives on the post-`@` portion.
             if !effective_latest {
                 let range_slice = original
                     .strip_prefix("npm:")
                     .and_then(|rest| rest.rsplit_once('@').map(|(_, r)| r))
                     .unwrap_or(original.as_str());
-                let prefix = range_prefix(range_slice);
-                if prefix != "^" && prefix != "~" {
+                if !range_slice.starts_with('^') && !range_slice.starts_with('~') {
                     continue;
                 }
             }
