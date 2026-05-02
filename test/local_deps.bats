@@ -219,6 +219,40 @@ EOF
 	refute_output --partial 'libs/foo/libs/bar'
 }
 
+@test "aube install: pnpm.overrides redirects a registry parent's transitive to link: (GVS)" {
+	# True registry parent + override-rewritten transitive `link:`. The
+	# parent goes through the global virtual store, and without the
+	# nested-link map threading through `ensure_in_virtual_store` the
+	# sibling symlink at `<gvs>/is-odd@.../node_modules/is-number` would
+	# dangle into a non-existent `.aube/is-number@link+...` entry. GVS
+	# is on by default outside CI (and `_common_setup` clears `CI`), so
+	# this exercises the default install path.
+	if [ -z "${AUBE_TEST_REGISTRY:-}" ]; then
+		skip "AUBE_TEST_REGISTRY not set (Verdaccio not running)"
+	fi
+
+	mkdir -p libs/is-number
+	cat >libs/is-number/package.json <<'EOF'
+{"name":"is-number","version":"9.9.9","main":"index.js"}
+EOF
+	cat >.npmrc <<EOF
+registry=${AUBE_TEST_REGISTRY}
+EOF
+	cat >package.json <<'EOF'
+{"name":"root","version":"0.0.0","dependencies":{"is-odd":"^3.0.0"},"pnpm":{"overrides":{"is-number":"link:./libs/is-number"}}}
+EOF
+
+	run aube install
+	assert_success
+
+	local nested
+	nested=$(echo node_modules/.aube/is-odd@*/node_modules/is-number)
+	[ -L "$nested" ]
+	assert_file_exists "$nested/package.json"
+	run cat "$nested/package.json"
+	assert_output --partial '"version":"9.9.9"'
+}
+
 @test "aube install lets pnpm.overrides redirect transitive registry deps to link:" {
 	# Registry parent → `link:` override. The exotic-subdep guard is on
 	# by default, but a root-declared override is an opt-in — without a

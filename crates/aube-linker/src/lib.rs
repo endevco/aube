@@ -1198,7 +1198,13 @@ impl Linker {
                                     &owned_index
                                 }
                             };
-                            self.ensure_in_virtual_store(dep_path, pkg, index, &mut local_stats)?;
+                            self.ensure_in_virtual_store(
+                                dep_path,
+                                pkg,
+                                index,
+                                &mut local_stats,
+                                nested_link_targets.as_ref(),
+                            )?;
 
                             // Only pay the `remove_dir`/`remove_file` syscalls
                             // when we actually have something to remove.
@@ -1646,7 +1652,13 @@ impl Linker {
                                     &owned_index
                                 }
                             };
-                            self.ensure_in_virtual_store(dep_path, pkg, index, &mut local_stats)?;
+                            self.ensure_in_virtual_store(
+                                dep_path,
+                                pkg,
+                                index,
+                                &mut local_stats,
+                                nested_link_targets.as_ref(),
+                            )?;
 
                             if matches!(state, EntryState::Stale) {
                                 let _ = std::fs::remove_dir(&local_aube_entry)
@@ -2253,6 +2265,12 @@ impl Linker {
         pkg: &LockedPackage,
         index: &PackageIndex,
         stats: &mut LinkStats,
+        // `link:` transitives the resolver pinned (e.g. via root
+        // `pnpm.overrides`) need their on-disk target so the parent's
+        // sibling symlink doesn't dangle into a non-existent
+        // `.aube/<name>@link+...`. `None` means "no nested links in
+        // this graph" and the materialize hot path stays unchanged.
+        nested_link_targets: Option<&BTreeMap<String, PathBuf>>,
     ) -> Result<(), Error> {
         // Global-store paths always run through the vstore_key map —
         // when hashes are installed this folds dep-graph + engine
@@ -2279,11 +2297,15 @@ impl Linker {
         let tmp_name = format!(".tmp-{}-{subdir}", std::process::id());
         let tmp_base = self.virtual_store.join(&tmp_name);
 
-        // Global virtual store is registry-only. Transitive `link:`
-        // deps only live under per-project `.aube/` (their parent must
-        // be a `Directory`/`Link` source), so the nested-link map is
-        // never relevant here.
-        let result = self.materialize_into(&tmp_base, dep_path, pkg, index, stats, true, None);
+        let result = self.materialize_into(
+            &tmp_base,
+            dep_path,
+            pkg,
+            index,
+            stats,
+            true,
+            nested_link_targets,
+        );
 
         if result.is_err() {
             let _ = std::fs::remove_dir_all(&tmp_base);
@@ -2890,7 +2912,7 @@ fn current_patch_hashes(patches: &Patches) -> std::collections::BTreeMap<String,
 /// `LocalSource::Link` in the graph. Returned `None` when the graph
 /// has no link entries (vast majority of installs), so the materialize
 /// hot path can short-circuit without a per-dep lookup.
-fn build_nested_link_targets(
+pub fn build_nested_link_targets(
     project_dir: &Path,
     graph: &LockfileGraph,
 ) -> Option<BTreeMap<String, PathBuf>> {
