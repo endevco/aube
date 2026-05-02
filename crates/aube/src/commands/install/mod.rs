@@ -1462,18 +1462,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // any deps or scripts itself. The synthesized manifest naturally
     // skips root lifecycle hooks, has no required-scripts to validate,
     // and threads through the rest of the pipeline as a manifest with
-    // no direct deps would. Skipping the read isn't enough — the
-    // `cwd` may also be a coordinator-only root that legitimately has
-    // no manifest to read, so the `is_file()` probe drives the
-    // branch.
-    let manifest_path = cwd.join("package.json");
-    let manifest = if manifest_path.is_file() {
-        aube_manifest::PackageJson::from_path(&manifest_path)
-            .map_err(miette::Report::new)
-            .wrap_err("failed to read package.json")?
-    } else {
-        aube_manifest::PackageJson::default()
-    };
+    // no direct deps would.
+    let manifest = super::load_manifest_or_default(&cwd)?;
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
 
     // Load the workspace yaml *once* — both as the typed

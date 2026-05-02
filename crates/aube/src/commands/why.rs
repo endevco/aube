@@ -80,12 +80,7 @@ pub async fn run(
 
     // Yaml-only workspace roots have no `package.json`; fall back to
     // a default manifest so the lockfile parser sees the same shape.
-    let manifest_path = cwd.join("package.json");
-    let manifest = if manifest_path.is_file() {
-        super::load_manifest(&manifest_path)?
-    } else {
-        aube_manifest::PackageJson::default()
-    };
+    let manifest = super::load_manifest_or_default(&cwd)?;
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {
         Ok(g) => g,
@@ -130,12 +125,7 @@ fn run_filtered(
         )
     })?;
 
-    let manifest_path = workspace_root.join("package.json");
-    let manifest = if manifest_path.is_file() {
-        super::load_manifest(&manifest_path)?
-    } else {
-        aube_manifest::PackageJson::default()
-    };
+    let manifest = super::load_manifest_or_default(&workspace_root)?;
 
     let graph = match aube_lockfile::parse_lockfile(&workspace_root, &manifest) {
         Ok(g) => g,

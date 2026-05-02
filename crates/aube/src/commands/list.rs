@@ -244,12 +244,7 @@ pub async fn run(
     // Pure-coordinator workspaces (pnpm-workspace.yaml at the root, no root
     // package.json) read as a default manifest so the lockfile parser still
     // gets the same shape it expects.
-    let manifest_path = read_from.join("package.json");
-    let manifest = if manifest_path.is_file() {
-        super::load_manifest(&manifest_path)?
-    } else {
-        aube_manifest::PackageJson::default()
-    };
+    let manifest = super::load_manifest_or_default(&read_from)?;
 
     // Lockfile may be absent in a brand-new project — treat that as "nothing
     // installed yet" rather than a hard error, and print an empty tree.

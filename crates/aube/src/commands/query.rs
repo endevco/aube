@@ -80,12 +80,7 @@ pub async fn run(
     // Yaml-only workspace roots have no root `package.json`; the
     // lockfile parser only uses the manifest to classify yarn.lock
     // direct deps, so a default manifest is fine for the read path.
-    let manifest_path = read_from.join("package.json");
-    let manifest = if manifest_path.is_file() {
-        super::load_manifest(&manifest_path)?
-    } else {
-        aube_manifest::PackageJson::default()
-    };
+    let manifest = super::load_manifest_or_default(&read_from)?;
     let graph = match aube_lockfile::parse_lockfile(&read_from, &manifest) {
         Ok(graph) => graph,
         Err(aube_lockfile::Error::NotFound(_)) => {
