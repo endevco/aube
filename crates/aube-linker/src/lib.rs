@@ -2520,13 +2520,25 @@ impl Linker {
             // on-disk target. Skip the virtual-store sibling lookup
             // (there is no `.aube/<dep>@link+...` entry for these) and
             // symlink straight at the source directory.
+            //
+            // Store the absolute target verbatim. A relative path
+            // would have to thread two pitfalls at once: the GVS
+            // tmp→final rename (link's own depth changes by one) AND
+            // macOS `/tmp`→`/private/tmp` symlink expansion (the dir
+            // the OS resolves the link from is one level deeper than
+            // `self.virtual_store` lexically suggests). Either alone
+            // is fixable; together every `pathdiff` variant lands one
+            // component off and the link dangles. Sibling symlinks
+            // get away with relative paths because both endpoints
+            // live inside `base_dir` and move together; nested-link
+            // targets are *external* (under `project_dir`) so the
+            // tricks that work for siblings don't apply. Windows
+            // already uses absolute targets for the same reason (see
+            // the `#[cfg(windows)]` block below).
             if let Some(map) = nested_link_targets
                 && let Some(abs_target) = map.get(&dep_dep_path)
             {
-                let link_parent = symlink_path.parent().unwrap_or(&pkg_nm_parent);
-                let target = pathdiff::diff_paths(abs_target, link_parent)
-                    .unwrap_or_else(|| abs_target.clone());
-                sys::create_dir_link(&target, &symlink_path)
+                sys::create_dir_link(abs_target, &symlink_path)
                     .map_err(|e| Error::Io(symlink_path.clone(), e))?;
                 continue;
             }

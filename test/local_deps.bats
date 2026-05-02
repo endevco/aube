@@ -249,17 +249,23 @@ EOF
 	# either a real dir (per-project mode) or the GVS subdir; either
 	# way the sibling `is-number` must point at the on-disk override
 	# target (libs/is-number), NOT a phantom `.aube/is-number@link+...`
-	# that would dangle. Asserting against the symlink target string
-	# avoids cross-platform pathdiff quirks with absolute traversal.
+	# that would dangle.
 	local nested
 	nested=$(echo node_modules/.aube/is-odd@*/node_modules/is-number)
 	[ -L "$nested" ]
 	local target
 	target=$(readlink "$nested")
-	echo "symlink target: $target" >&3
+	# Stored target must end at libs/is-number (the override target),
+	# not at a phantom `.aube/is-number@link+...` entry.
 	[[ "$target" == *libs/is-number ]]
-	# The dangling form looks like `../../is-number@link+<hash>/node_modules/is-number`.
 	[[ "$target" != *@link+* ]]
+	# And must actually resolve through the symlink chain. A
+	# tmp→final off-by-one in the GVS materialize would land one dir
+	# short on Windows / strict-`..` resolvers and clamp at `/` on
+	# POSIX, so chase to the real file.
+	assert_file_exists "$nested/package.json"
+	run cat "$nested/package.json"
+	assert_output --partial '"version":"9.9.9"'
 }
 
 @test "aube install lets pnpm.overrides redirect transitive registry deps to link:" {
