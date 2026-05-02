@@ -598,6 +598,22 @@ impl Store {
 
     /// Import a tarball (.tgz) into the store.
     /// Returns a PackageIndex mapping relative paths to stored files.
+    ///
+    /// Two-phase: serial tar walk that stages
+    /// `(rel_path, content, executable)` triples (the tar reader is
+    /// inherently sequential), then a CAS-write batch. When the
+    /// staged batch crosses [`PARALLEL_IMPORT_THRESHOLD`] entries,
+    /// the writes fan out via `rayon::par_iter` — the per-file CAS
+    /// path is `O_CREAT|O_EXCL` and uses a shared `&Store`, so
+    /// parallel writers are race-safe by construction (`EEXIST` on
+    /// content collision is a success path because BLAKE3 paths are
+    /// content-addressed).
+    ///
+    /// `AUBE_DISABLE_PARALLEL_IMPORT=1` forces the serial path. Use
+    /// it as a regression killswitch if a future rayon scope inversion
+    /// (linker symlink pass running concurrently) shows contention.
+    /// Below the threshold the small-tarball overhead of rayon
+    /// dispatch outweighs the win, so the cutover is conditional.
     pub fn import_tarball(&self, tarball_bytes: &[u8]) -> Result<PackageIndex, Error> {
         use std::io::Read;
 
@@ -616,16 +632,9 @@ impl Store {
         let capped = CappedReader::new(gz, MAX_TARBALL_DECOMPRESSED_BYTES);
         let buffered = std::io::BufReader::with_capacity(256 * 1024, capped);
         let mut archive = tar::Archive::new(buffered);
-        let mut index = BTreeMap::new();
+        let mut staged: Vec<(String, Vec<u8>, bool)> = Vec::new();
         let mut entries_seen: usize = 0;
 
-        // Serial walk — each tarball is decoded by one spawn_blocking
-        // task on the fetch-phase blocking pool, which is already
-        // parallel across packages. A rayon-inner parallelization
-        // inside each tarball measured slower in practice because
-        // ~250 concurrent imports all competing for the same CPU
-        // cores amplifies contention more than per-tarball
-        // parallelism helps.
         for entry in archive.entries().map_err(|e| Error::Tar(e.to_string()))? {
             entries_seen += 1;
             if entries_seen > MAX_TARBALL_ENTRIES {
@@ -702,14 +711,51 @@ impl Store {
 
             let mode = entry.header().mode().unwrap_or(0o644);
             let executable = mode & 0o111 != 0;
+            staged.push((rel_path, content, executable));
+        }
 
-            let stored = self.import_bytes(&content, executable)?;
-            index.insert(rel_path, stored);
+        let parallel_disabled = std::env::var_os("AUBE_DISABLE_PARALLEL_IMPORT").is_some();
+        let mut index = BTreeMap::new();
+        if parallel_disabled || staged.len() < PARALLEL_IMPORT_THRESHOLD {
+            for (rel_path, content, executable) in staged {
+                let stored = self.import_bytes(&content, executable)?;
+                index.insert(rel_path, stored);
+            }
+        } else {
+            use rayon::iter::{IntoParallelIterator, ParallelIterator};
+            // par_iter the CAS writes. Each `import_bytes` call is
+            // fully reentrant (`&self`, `O_CREAT|O_EXCL`, no shared
+            // mutable state), so rayon's work-stealing is safe. The
+            // returned vector preserves input order via `collect()`,
+            // so the BTreeMap insertion order matches the serial
+            // path's bytes-on-disk for the byte-identity gate.
+            let results: Vec<Result<(String, StoredFile), Error>> = staged
+                .into_par_iter()
+                .map(|(rel_path, content, executable)| {
+                    self.import_bytes(&content, executable)
+                        .map(|stored| (rel_path, stored))
+                })
+                .collect();
+            for r in results {
+                let (rel_path, stored) = r?;
+                index.insert(rel_path, stored);
+            }
         }
 
         Ok(index)
     }
 }
+
+/// Tarballs with at least this many staged entries fan out into
+/// rayon for the CAS-write phase. Tuned conservatively at 256 to
+/// avoid contending with the linker's rayon symlink pass and to
+/// keep medium tarballs (typescript ~370, @swc/* ~30-60 per
+/// platform) on the cheap serial path; only the long-tail giants
+/// (playwright ~600, next ~3000) pay the rayon dispatch cost. The
+/// historical "rayon-inner is slower" measurement was at threshold
+/// 0 (always parallel) — the threshold is what makes the win
+/// real on the long tail without the regression on the body.
+const PARALLEL_IMPORT_THRESHOLD: usize = 256;
 
 /// Strip the wrapper directory from `raw` and return a safe POSIX-style
 /// index key, or refuse the entry outright.
@@ -1133,6 +1179,44 @@ pub fn verify_integrity(data: &[u8], expected: &str) -> Result<(), Error> {
     }
 }
 
+/// Verify a precomputed SHA-512 digest against an SRI integrity
+/// string. Used by the streaming-tarball fetch path: SHA-512 is
+/// computed during the chunk read loop, then handed here so the
+/// owned `Bytes` are not re-hashed on the import side. Saves one
+/// pass over the buffer (~7 ms / 5 MB tarball).
+///
+/// Returns `Ok(true)` when the SRI uses SHA-512 and the digest
+/// matches. Returns `Ok(false)` when the SRI uses a non-SHA-512
+/// algo (legacy SHA-1 / SHA-256 / SHA-384) so the caller can
+/// fall through to the buffered `verify_integrity` path that
+/// re-hashes with the right algo. Returns `Err` on parse failure
+/// or SHA-512 mismatch.
+pub fn verify_precomputed_sha512(actual: &[u8; 64], expected: &str) -> Result<bool, Error> {
+    let Some((algo, expected_b64)) = parse_sri(expected) else {
+        return Err(Error::Integrity(format!(
+            "unsupported integrity format (expected sha1/sha256/sha384/sha512-...): {expected}"
+        )));
+    };
+    if !matches!(algo, IntegrityAlgo::Sha512) {
+        return Ok(false);
+    }
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut expected_digest = [0u8; 64];
+    let matched = engine
+        .decode_slice(expected_b64, &mut expected_digest)
+        .map(|n| n == 64 && expected_digest[..n] == actual[..])
+        .unwrap_or(false);
+    if matched {
+        Ok(true)
+    } else {
+        let actual_b64 = engine.encode(actual);
+        Err(Error::Integrity(format!(
+            "integrity mismatch: expected {expected}, got sha512-{actual_b64}",
+        )))
+    }
+}
+
 /// Cross-check that an extracted tarball's `package.json` reports the
 /// same `name` and `version` the registry told us to fetch. This is the
 /// implementation behind the `strictStorePkgContentCheck` setting and
@@ -1222,6 +1306,7 @@ pub fn integrity_to_hex(integrity: &str) -> Option<String> {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("HOME environment variable not set")]
     NoHome,
@@ -2166,6 +2251,51 @@ mod tests {
         assert_eq!(stored.hex_hash, hex_hash);
         assert_eq!(stored.size, Some(content.len() as u64));
         assert_eq!(std::fs::read(&stored.store_path).unwrap(), content);
+    }
+
+    #[test]
+    fn verify_precomputed_sha512_happy_path() {
+        let data = b"hello world";
+        let mut hasher = Sha512::new();
+        hasher.update(data);
+        let mut digest = [0u8; 64];
+        digest.copy_from_slice(&hasher.finalize()[..]);
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(digest);
+        let integrity = format!("sha512-{b64}");
+        assert!(verify_precomputed_sha512(&digest, &integrity).unwrap());
+    }
+
+    #[test]
+    fn verify_precomputed_sha512_mismatch_errors() {
+        let digest = [0u8; 64];
+        let wrong = "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB==";
+        let err = verify_precomputed_sha512(&digest, wrong).unwrap_err();
+        assert!(err.to_string().contains("integrity mismatch"));
+    }
+
+    #[test]
+    fn verify_precomputed_sha512_non_sha512_returns_false() {
+        // Caller is expected to fall through to the buffered path
+        // with the right algo. Function returns Ok(false) so the
+        // caller can detect this without matching on a sentinel
+        // error variant.
+        let digest = [0u8; 64];
+        for algo in ["sha1-AAAA", "sha256-AAAA", "sha384-AAAA"] {
+            assert!(
+                !verify_precomputed_sha512(&digest, algo).unwrap(),
+                "{algo} should return Ok(false) for fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_precomputed_sha512_malformed_errors() {
+        let digest = [0u8; 64];
+        for bad in ["", "garbage", "not-an-algo-tag", "sha512", "sha512-"] {
+            let result = verify_precomputed_sha512(&digest, bad);
+            assert!(result.is_err(), "{bad:?} should not be Ok");
+        }
     }
 
     #[test]

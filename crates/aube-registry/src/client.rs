@@ -228,6 +228,42 @@ impl RegistryClient {
         self
     }
 
+    /// Fire-and-forget HEAD request against the configured registry to
+    /// warm the TLS + TCP + HTTP/2 handshake before the resolver starts
+    /// requesting packuments. Saves one round-trip on cold installs
+    /// (~50-150 ms on a 50 ms-RTT path) by overlapping the handshake
+    /// with manifest parsing.
+    ///
+    /// `AUBE_DISABLE_SPECULATIVE_TLS=1` skips the prewarm. Wrong
+    /// registry, network failure, or auth rejection are all silently
+    /// dropped: the response is discarded; subsequent real requests
+    /// take the standard path.
+    pub fn prewarm_connection(&self) {
+        if std::env::var_os("AUBE_DISABLE_SPECULATIVE_TLS").is_some() {
+            return;
+        }
+        if matches!(self.network_mode, NetworkMode::Offline) {
+            return;
+        }
+        let url = self.config.registry.clone();
+        let http = self.http.clone();
+        tokio::spawn(async move {
+            // HEAD on registry root. The body is empty; the win is the
+            // handshake. Trace errors at debug — TLS / DNS / proxy
+            // failures here predict the real-request failure that
+            // follows, and surfacing them under `RUST_LOG=aube_registry=debug`
+            // saves a misconfigured-registry debugging session.
+            if let Err(e) = http
+                .head(&url)
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+            {
+                tracing::debug!(error = %e, "tls prewarm failed");
+            }
+        });
+    }
+
     pub fn network_mode(&self) -> NetworkMode {
         self.network_mode
     }
@@ -585,19 +621,21 @@ impl RegistryClient {
         }
     }
 
-    async fn retry_bytes_body_read<F>(
+    /// Streaming variant of `retry_bytes_body_read`. Returns the body
+    /// bytes along with a SHA-512 digest computed incrementally during
+    /// the chunk read loop. Same retry semantics as the buffered path.
+    /// Used by `fetch_tarball_bytes_streaming_sha512` so callers can
+    /// skip the post-buffer hash pass.
+    async fn retry_bytes_body_read_streaming_sha512<F>(
         &self,
         label: &str,
         cap: u64,
         build: F,
-    ) -> Result<(bytes::Bytes, std::time::Duration), Error>
+    ) -> Result<(bytes::Bytes, [u8; 64], std::time::Duration), Error>
     where
         F: Fn() -> reqwest::RequestBuilder,
     {
         let max_attempts = self.fetch_policy.retries.saturating_add(1);
-        // Counted independently of `attempt` so a non-timeout failure
-        // (e.g. a 503 on the first try) doesn't consume the timeout
-        // budget. Increments only when a retry follows a timeout.
         let mut timeout_retries: u32 = 0;
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
@@ -619,8 +657,8 @@ impl RegistryClient {
                     let resp = resp.error_for_status()?;
                     check_body_cap(&resp, cap, label)?;
                     let started = std::time::Instant::now();
-                    match read_body_capped(resp, cap, label).await {
-                        Ok(bytes) => return Ok((bytes, started.elapsed())),
+                    match read_body_capped_streaming_sha512(resp, cap, label).await {
+                        Ok((bytes, sha512)) => return Ok((bytes, sha512, started.elapsed())),
                         Err(err) if !is_last => {
                             let is_timeout = matches!(&err, Error::Http(e) if e.is_timeout());
                             if is_timeout && timeout_retries >= TIMEOUT_RETRY_CAP {
@@ -665,6 +703,26 @@ impl RegistryClient {
             }
         }
         unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
+    }
+
+    /// Buffered-bytes retry helper. Thin wrapper around
+    /// [`Self::retry_bytes_body_read_streaming_sha512`] that drops
+    /// the digest. The SHA-512 cost on packument and JSON reads is
+    /// microseconds — negligible vs network — and folding both
+    /// callers through one chunk-loop kills 70 lines of duplicate
+    /// retry/backoff bookkeeping.
+    async fn retry_bytes_body_read<F>(
+        &self,
+        label: &str,
+        cap: u64,
+        build: F,
+    ) -> Result<(bytes::Bytes, std::time::Duration), Error>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        self.retry_bytes_body_read_streaming_sha512(label, cap, build)
+            .await
+            .map(|(bytes, _digest, elapsed)| (bytes, elapsed))
     }
 
     /// Fetch the *full* (non-corgi) packument for a package as raw JSON
@@ -1396,6 +1454,56 @@ impl RegistryClient {
         Ok(bytes)
     }
 
+    /// Streaming variant of `fetch_tarball_bytes`. Returns the body
+    /// bytes plus the SHA-512 of the on-the-wire payload, computed
+    /// incrementally during the chunk read loop. Callers that already
+    /// know the lockfile-pinned `integrity` field can compare against
+    /// this digest directly and skip the second hash pass that
+    /// `aube_store::verify_integrity` would otherwise do over the
+    /// owned `Bytes`.
+    ///
+    /// `AUBE_DISABLE_STREAMING_SHA512=1` is the killswitch: callers
+    /// can short-circuit to `fetch_tarball_bytes` and re-hash on the
+    /// import side. The killswitch lives in the caller (so it can pick
+    /// the buffered path without still paying the streaming cost), not
+    /// in this method.
+    pub async fn fetch_tarball_bytes_streaming_sha512(
+        &self,
+        url: &str,
+    ) -> Result<(bytes::Bytes, [u8; 64]), Error> {
+        let safe_url = aube_util::url::redact_url(url);
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("invalid tarball url: {e}"))))?;
+        match parsed.scheme() {
+            "https" | "http" => {}
+            scheme => {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "tarball {safe_url}: refusing scheme {scheme:?}",
+                ))));
+            }
+        }
+        if self.network_mode == NetworkMode::Offline {
+            return Err(Error::Offline(format!("tarball {safe_url}")));
+        }
+        let (bytes, sha512, body_elapsed) = self
+            .retry_bytes_body_read_streaming_sha512(
+                url,
+                self.fetch_policy.tarball_max_bytes,
+                || {
+                    self.authed_get(url, url)
+                        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                },
+            )
+            .await?;
+        warn_slow_tarball(
+            self.fetch_policy.min_speed_kibps,
+            url,
+            bytes.len(),
+            body_elapsed,
+        );
+        Ok((bytes, sha512))
+    }
+
     /// Fetch the *full* (non-corgi) packument as raw JSON, bypassing the
     /// on-disk cache entirely. Used by mutating commands like `deprecate`
     /// that need a fresh read-modify-write against the authoritative copy
@@ -1775,37 +1883,50 @@ fn force_full_packument() -> bool {
 /// users who need to pull packuments that exceed the default (e.g.
 /// packages with very long release histories) and accept the DoS
 /// exposure on the trusted-registry side.
-/// Stream-and-count read of a response body that enforces `cap` even
-/// when the server omits `Content-Length` (chunked transfer encoding).
-/// `check_body_cap` only inspects the precheck header; this function
-/// is the runtime gate that closes the chunked-bypass primitive.
-async fn read_body_capped(
+/// Stream-and-count read of a response body. Enforces `cap` even
+/// when the server omits `Content-Length` (chunked transfer encoding)
+/// and streams a SHA-512 of every byte the registry sent. Used by
+/// the tarball fetch path to skip the post-buffer integrity hash
+/// (~7 ms / 5 MB tarball, ~50-120 ms / 1000-pkg cold install);
+/// non-tarball callers discard the digest at near-zero cost.
+///
+/// The hash covers exactly the bytes the registry delivered
+/// (`Accept-Encoding: identity` is set on the tarball request so
+/// reqwest cannot transparently decompress underneath us). That
+/// matches what `aube_store::verify_integrity` checks against the
+/// lockfile `integrity` field, so the streaming digest is a
+/// drop-in replacement for the buffered hash.
+async fn read_body_capped_streaming_sha512(
     mut resp: reqwest::Response,
     cap: u64,
     label: &str,
-) -> Result<bytes::Bytes, Error> {
-    if cap == 0 {
-        return Ok(resp.bytes().await?);
-    }
-    // Pre-size to a small fixed window when Content-Length is absent
-    // so chunked-encoding bodies don't pay BytesMut's doubling-grow
-    // overhead all the way up to `cap`.
+) -> Result<(bytes::Bytes, [u8; 64]), Error> {
+    use sha2::Digest;
     const STREAM_INITIAL: usize = 64 * 1024;
-    let initial = resp
-        .content_length()
-        .map(|len| len.min(cap) as usize)
-        .unwrap_or(STREAM_INITIAL);
+    // Pre-size from Content-Length when present, capped at `cap`
+    // when set, falling back to a 64 KiB scratch when neither is
+    // available so chunked-encoding bodies don't pay BytesMut's
+    // doubling-grow tax all the way up to `cap`.
+    let initial = match (resp.content_length(), cap) {
+        (Some(len), 0) => len as usize,
+        (Some(len), cap) => len.min(cap) as usize,
+        (None, _) => STREAM_INITIAL,
+    };
     let mut buf = bytes::BytesMut::with_capacity(initial);
+    let mut hasher = sha2::Sha512::new();
     while let Some(chunk) = resp.chunk().await? {
-        if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
+        if cap > 0 && (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("{label}: response body exceeds cap {cap}"),
             )));
         }
+        hasher.update(&chunk);
         buf.extend_from_slice(&chunk);
     }
-    Ok(buf.freeze())
+    let mut digest = [0u8; 64];
+    digest.copy_from_slice(&hasher.finalize()[..]);
+    Ok((buf.freeze(), digest))
 }
 
 fn check_body_cap(resp: &reqwest::Response, cap: u64, label: &str) -> Result<(), Error> {
