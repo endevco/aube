@@ -3940,6 +3940,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             placements_ref,
             side_effects_cache,
             &jail_policy,
+            None,
         )
         .await?;
         if ran > 0 {

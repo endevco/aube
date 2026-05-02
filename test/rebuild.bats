@@ -182,6 +182,118 @@ EOF
 	assert_output "ran:aube-test-builds-marker@1.0.0"
 }
 
+@test "aube rebuild <pkg> runs only the named dep's scripts and skips root hooks" {
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-selective-test",
+  "version": "1.0.0",
+  "scripts": {
+    "preinstall": "echo root-pre >> rebuild-order.log",
+    "install": "echo root-install >> rebuild-order.log",
+    "postinstall": "echo root-post >> rebuild-order.log",
+    "prepare": "echo root-prepare >> rebuild-order.log"
+  },
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0",
+    "aube-test-builds-marker-2": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-builds-marker": true,
+      "aube-test-builds-marker-2": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+	assert_file_exists aube-builds-marker-2.txt
+
+	rm aube-builds-marker.txt aube-builds-marker-2.txt rebuild-order.log
+	run aube rebuild aube-test-builds-marker
+	assert_success
+	# Only the named dep's marker is recreated.
+	assert_file_exists aube-builds-marker.txt
+	assert_not_exists aube-builds-marker-2.txt
+	# Root hooks are skipped in selective mode.
+	assert_not_exists rebuild-order.log
+}
+
+@test "aube rebuild <pkg-1> <pkg-2> runs both named deps and skips others" {
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-multiple-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0",
+    "aube-test-builds-marker-2": "^1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-builds-marker": true,
+      "aube-test-builds-marker-2": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+	assert_file_exists aube-builds-marker-2.txt
+
+	rm aube-builds-marker.txt aube-builds-marker-2.txt
+	run aube rebuild aube-test-builds-marker aube-test-builds-marker-2
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+	assert_file_exists aube-builds-marker-2.txt
+}
+
+@test "aube rebuild <pkg> bypasses the build policy for the named dep" {
+	# No `allowBuilds` entry, so the policy would skip the dep on a
+	# default `aube rebuild` (no-args). Naming the dep is the explicit
+	# opt-in.
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-bypass-policy-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  }
+}
+JSON
+	# Pre-approve once for install so the dep is on disk; the rebuild
+	# itself then runs without any allowlist on the manifest.
+	run aube install --dangerously-allow-all-builds
+	assert_success
+
+	rm aube-builds-marker.txt
+	run aube rebuild aube-test-builds-marker
+	assert_success
+	assert_file_exists aube-builds-marker.txt
+}
+
+@test "aube rebuild <unknown-pkg> errors with an unmatched-name message" {
+	# Need a lockfile present so the unmatched-name check fires;
+	# install pulls in a single dep we don't reference by name.
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-unmatched-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  }
+}
+JSON
+	run aube install
+	assert_success
+
+	run aube rebuild not-a-real-dep
+	assert_failure
+	assert_output --partial "no installed dependency matches"
+	assert_output --partial "not-a-real-dep"
+}
+
 @test "aube rebuild re-runs allowlisted dependency lifecycle scripts in hoisted mode" {
 	cat >package.json <<'JSON'
 {

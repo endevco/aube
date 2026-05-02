@@ -276,6 +276,13 @@ pub(crate) async fn run_dep_lifecycle_scripts(
     placements: Option<&aube_linker::HoistedPlacements>,
     side_effects_cache: SideEffectsCacheConfig<'_>,
     jail_policy: &JailBuildPolicy,
+    // `Some` enables selective mode: only deps whose in-tree `name`
+    // (the alias when one is configured) is in the set are eligible,
+    // and the policy is bypassed for those deps. `None` is the
+    // default install path: every dep is eligible and the policy
+    // gates which ones actually run. Match is by `pkg.name`, matching
+    // pnpm's `pnpm rebuild <name>`.
+    selected_names: Option<&std::collections::HashSet<String>>,
 ) -> miette::Result<usize> {
     // Pass 1 (serial, cheap): walk the graph, keep only the packages
     // the policy allows AND that actually define at least one dep
@@ -300,16 +307,26 @@ pub(crate) async fn run_dep_lifecycle_scripts(
 
     let mut jobs: Vec<BuildJob> = Vec::new();
     for (dep_path, pkg) in &graph.packages {
-        // Use registry_name(), not pkg.name. pkg.name is the in-tree
-        // alias (`h3-safe`). Real package is `h3`. Allowlist entry for
-        // `h3` would miss if we checked against the alias. Attacker
-        // writes `"h3-safe": "npm:h3@0.19.0"` to sneak a denied pkg
-        // through the allowlist. registry_name() strips alias back to
-        // real name.
-        match policy.decide(pkg.registry_name(), &pkg.version) {
-            aube_scripts::AllowDecision::Allow => {}
-            aube_scripts::AllowDecision::Deny | aube_scripts::AllowDecision::Unspecified => {
+        if let Some(selected) = selected_names {
+            // Selective mode: user named this dep explicitly, so
+            // bypass the policy. Match by `pkg.name` (the in-tree
+            // alias when one is configured), matching pnpm's
+            // `pnpm rebuild <name>`.
+            if !selected.contains(&pkg.name) {
                 continue;
+            }
+        } else {
+            // Use registry_name(), not pkg.name. pkg.name is the in-tree
+            // alias (`h3-safe`). Real package is `h3`. Allowlist entry for
+            // `h3` would miss if we checked against the alias. Attacker
+            // writes `"h3-safe": "npm:h3@0.19.0"` to sneak a denied pkg
+            // through the allowlist. registry_name() strips alias back to
+            // real name.
+            match policy.decide(pkg.registry_name(), &pkg.version) {
+                aube_scripts::AllowDecision::Allow => {}
+                aube_scripts::AllowDecision::Deny | aube_scripts::AllowDecision::Unspecified => {
+                    continue;
+                }
             }
         }
         let package_dir = materialized_pkg_dir(
