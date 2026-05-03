@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0](https://github.com/endevco/aube/compare/v1.6.2...v1.7.0) - 2026-05-03
+
+### Added
+
+- *(cli)* support link: and file: specs in aube add ([#487](https://github.com/endevco/aube/pull/487))
+- *(cli)* support yaml-only workspace roots in list/run/install/query/why ([#486](https://github.com/endevco/aube/pull/486))
+- *(cli)* support git specs in aube add ([#483](https://github.com/endevco/aube/pull/483))
+- *(cli)* rewrite manifest specifier on update without --latest ([#479](https://github.com/endevco/aube/pull/479))
+- *(cli)* aube rebuild <pkg> targets a specific package ([#477](https://github.com/endevco/aube/pull/477))
+- *(install)* persist unreviewed-builds warning across repeat installs ([#476](https://github.com/endevco/aube/pull/476))
+- *(cli)* warn when aube update --depth is set ([#473](https://github.com/endevco/aube/pull/473))
+
+### Fixed
+
+- *(cli)* wrap doc comments so -h help stays one line per flag ([#478](https://github.com/endevco/aube/pull/478))
+- *(install)* allow workspace members without `version` field ([#480](https://github.com/endevco/aube/pull/480))
+- *(resolver)* resolve nested link:/file: deps from local parents and overrides ([#470](https://github.com/endevco/aube/pull/470))
+- *(lockfile)* parse bare user/repo as github shorthand ([#472](https://github.com/endevco/aube/pull/472))
+
+### Other
+
+- refresh benchmarks for v1.6.2 ([#474](https://github.com/endevco/aube/pull/474))
+- streaming sha512, parallel cas, tls prewarm, fetch reorder ([#469](https://github.com/endevco/aube/pull/469))
+- refresh benchmarks for v1.6.2 ([#467](https://github.com/endevco/aube/pull/467))
+
 ## [1.6.2](https://github.com/endevco/aube/compare/v1.6.1...v1.6.2) - 2026-05-01
 
 ### Added

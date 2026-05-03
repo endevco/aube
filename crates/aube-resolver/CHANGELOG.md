@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0](https://github.com/endevco/aube/compare/aube-resolver-v1.6.2...aube-resolver-v1.7.0) - 2026-05-03
+
+### Fixed
+
+- *(resolver)* resolve nested link:/file: deps from local parents and overrides ([#470](https://github.com/endevco/aube/pull/470))
+
+### Other
+
+- refresh benchmarks for v1.6.2 ([#474](https://github.com/endevco/aube/pull/474))
+- refresh benchmarks for v1.6.2 ([#467](https://github.com/endevco/aube/pull/467))
+
 ## [1.6.2](https://github.com/endevco/aube/compare/aube-resolver-v1.6.1...aube-resolver-v1.6.2) - 2026-05-01
 
 ### Added

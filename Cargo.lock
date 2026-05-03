@@ -209,7 +209,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aube"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "ambient-id",
  "assert_cmd",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "aube-linker"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-lockfile",
  "aube-store",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "aube-lockfile"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-manifest",
  "aube-settings",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "aube-manifest"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-util",
  "miette",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "aube-registry"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-manifest",
  "aube-settings",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "aube-resolver"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-lockfile",
  "aube-manifest",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "aube-scripts"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-manifest",
  "landlock",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "aube-settings"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-manifest",
  "serde",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "aube-store"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-util",
  "base64",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "aube-util"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "blake3",
  "reflink-copy",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "aube-workspace"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "aube-manifest",
  "glob",

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0](https://github.com/endevco/aube/compare/aube-workspace-v1.6.2...aube-workspace-v1.7.0) - 2026-05-03
+
+### Other
+
+- refresh benchmarks for v1.6.2 ([#474](https://github.com/endevco/aube/pull/474))
+- refresh benchmarks for v1.6.2 ([#467](https://github.com/endevco/aube/pull/467))
+
 ## [1.6.1](https://github.com/endevco/aube/compare/aube-workspace-v1.6.0...aube-workspace-v1.6.1) - 2026-05-01
 
 ### Other
