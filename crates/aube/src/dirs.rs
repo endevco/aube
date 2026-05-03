@@ -203,7 +203,7 @@ pub fn project_root_or_cwd() -> miette::Result<PathBuf> {
 /// `why`) so they read the workspace lockfile when invoked from inside
 /// a subpackage instead of failing with a "no lockfile" error against
 /// the subpackage's own directory. Falls back to the project root for
-/// non-workspace trees, including yaml-only coordinator monorepos.
+/// non-workspace trees (no workspace yaml and no `package.json#workspaces`).
 pub fn workspace_or_project_root() -> miette::Result<PathBuf> {
     let initial_cwd = cwd()?;
     if let Some(root) = find_workspace_root(&initial_cwd) {
