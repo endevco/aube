@@ -78,4 +78,5 @@ run = [
   "usage g markdown -mf aube.usage.kdl --out-dir docs/cli --url-prefix /cli",
   "usage g json -f aube.usage.kdl > docs/cli/commands.json",
   "cargo run -p aube-settings --bin generate-settings-docs",
+  "cargo run -p aube-codes --bin generate-error-codes-docs",
 ]

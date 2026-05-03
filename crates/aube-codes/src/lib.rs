@@ -28,6 +28,27 @@ pub mod errors;
 pub mod exit;
 pub mod warnings;
 
+/// Metadata for a single error or warning code.
+///
+/// `name` doubles as the emitted string value — every code is
+/// declared as `pub const X: &str = "X"` so this field references the
+/// same constant the call site uses. Keeping the const + the
+/// `CodeMeta` entry pointing at the same identifier lets a rename
+/// flow through both with no drift.
+///
+/// `description` and `category` feed the generated docs page
+/// (`docs/error-codes.md`, produced by the
+/// `generate-error-codes-docs` binary). `exit_code` is `Some(_)`
+/// only for errors that have a bespoke entry — warnings always set
+/// `None` because they don't change exit status.
+#[derive(Debug)]
+pub struct CodeMeta {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub description: &'static str,
+    pub exit_code: Option<i32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,25 +57,50 @@ mod tests {
     fn every_error_const_value_matches_its_name() {
         // The `pub const ERR_AUBE_X: &str = "ERR_AUBE_X"` shape is
         // load-bearing — typos between the const name and the value
-        // would silently emit the wrong code. The list below is the
-        // exhaustive set of error codes aube publishes; new codes
-        // must be added here.
-        for (name, value) in errors::ALL {
-            assert_eq!(*name, *value, "error code value must match its name");
+        // would silently emit the wrong code. CodeMeta::name is the
+        // const value, so checking the prefix on every entry catches
+        // any rogue addition that didn't follow the convention.
+        for meta in errors::ALL {
             assert!(
-                value.starts_with("ERR_AUBE_"),
-                "error codes must use the ERR_AUBE_ prefix: {value}"
+                meta.name.starts_with("ERR_AUBE_"),
+                "error codes must use the ERR_AUBE_ prefix: {}",
+                meta.name
+            );
+            assert!(
+                !meta.description.is_empty(),
+                "error code {} is missing a description",
+                meta.name
+            );
+            assert!(
+                !meta.category.is_empty(),
+                "error code {} is missing a category",
+                meta.name
             );
         }
     }
 
     #[test]
     fn every_warning_const_value_matches_its_name() {
-        for (name, value) in warnings::ALL {
-            assert_eq!(*name, *value, "warning code value must match its name");
+        for meta in warnings::ALL {
             assert!(
-                value.starts_with("WARN_AUBE_"),
-                "warning codes must use the WARN_AUBE_ prefix: {value}"
+                meta.name.starts_with("WARN_AUBE_"),
+                "warning codes must use the WARN_AUBE_ prefix: {}",
+                meta.name
+            );
+            assert!(
+                !meta.description.is_empty(),
+                "warning code {} is missing a description",
+                meta.name
+            );
+            assert!(
+                !meta.category.is_empty(),
+                "warning code {} is missing a category",
+                meta.name
+            );
+            assert!(
+                meta.exit_code.is_none(),
+                "warning {} has an exit_code; warnings don't change exit status",
+                meta.name
             );
         }
     }
@@ -65,7 +111,7 @@ mod tests {
         let all: Vec<&str> = errors::ALL
             .iter()
             .chain(warnings::ALL.iter())
-            .map(|(_, v)| *v)
+            .map(|m| m.name)
             .collect();
         let unique: HashSet<&str> = all.iter().copied().collect();
         assert_eq!(

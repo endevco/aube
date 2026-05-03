@@ -9,4 +9,8 @@ homepage.workspace = true
 readme.workspace = true
 description = "Stable error and warning code identifiers shared across the aube workspace."
 
+[[bin]]
+name = "generate-error-codes-docs"
+path = "src/bin/generate_error_codes_docs.rs"
+
 [dependencies]
