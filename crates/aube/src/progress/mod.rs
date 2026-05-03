@@ -54,7 +54,7 @@ fn overflow_fetch_label(count: usize) -> String {
 /// header used by the no-op and fast-mode summaries. Centralizes the
 /// header shape so the install-finished, already-up-to-date, and
 /// fast-mode-summary paths all read consistently.
-fn aube_prefix_line(msg: &str) -> String {
+pub(crate) fn aube_prefix_line(msg: &str) -> String {
     format!(
         "{} {} {} {} {msg}",
         style::emagenta("aube").bold(),
@@ -283,20 +283,33 @@ impl InstallProgress {
     /// packument lacks the field.
     pub fn inc_estimated_bytes(&self, dep_path: &str, bytes: u64) {
         // Streaming resolver should only see each dep_path once, but
-        // `insert` is the right semantics either way: a duplicate stream
-        // would correctly overwrite, never double-count.
-        self.unpacked_sizes
+        // a defensive duplicate stream would otherwise have the map
+        // overwrite cleanly while the atomic running total
+        // double-counts (the next `reconcile_estimated_bytes` would
+        // re-sync from the map, but the bar would display an
+        // inflated estimate in the meantime). Add only the *delta*
+        // between the new value and any prior recorded value, so the
+        // atomic stays in lockstep with the map.
+        let prior = self
+            .unpacked_sizes
             .lock()
             .unwrap()
-            .insert(dep_path.to_string(), bytes);
+            .insert(dep_path.to_string(), bytes)
+            .unwrap_or(0);
         match &self.mode {
             Mode::Tty {
                 estimated_bytes, ..
             } => {
+                if prior > 0 {
+                    estimated_bytes.fetch_sub(prior, Ordering::Relaxed);
+                }
                 estimated_bytes.fetch_add(bytes, Ordering::Relaxed);
                 self.refresh_bytes_segment();
             }
             Mode::Ci(s) => {
+                if prior > 0 {
+                    s.estimated_bytes.fetch_sub(prior, Ordering::Relaxed);
+                }
                 s.estimated_bytes.fetch_add(bytes, Ordering::Relaxed);
             }
         }

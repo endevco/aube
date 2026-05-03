@@ -4470,19 +4470,15 @@ fn print_already_up_to_date() {
     }
     use clx::style;
     use std::io::Write;
-    // Only the check mark is green — same shape as the
-    // `print_install_summary` no-op branch so the two sites stay
-    // visually consistent across the install code paths that emit
-    // this line.
-    let line = format!(
-        "{} {} {} {} {} {}",
-        style::emagenta("aube").bold(),
-        style::edim(crate::version::VERSION.as_str()),
-        style::edim("by en.dev"),
-        style::edim("·"),
+    // Routed through the shared `aube_prefix_line` helper so this
+    // site and `print_install_summary`'s no-op branch can't drift —
+    // both produce `aube VERSION by en.dev · ✓ Already up to date`.
+    let msg = format!(
+        "{} {}",
         style::egreen("✓").bold(),
         style::ebold("Already up to date"),
     );
+    let line = crate::progress::aube_prefix_line(&msg);
     let _ = writeln!(std::io::stderr(), "{line}");
 }
 
