@@ -62,6 +62,13 @@ pub(super) struct CiState {
     /// no packument fetch happens). The display gates the
     /// `/ ~13.8 MB` estimated-total segment on this being non-zero.
     pub(super) estimated_bytes: AtomicU64,
+    /// Snapshot of `reused + downloaded` at the moment
+    /// `set_phase("fetching")` first fires. Used as the baseline for
+    /// the fetch-window ETA so the displayed estimate reflects
+    /// per-package throughput *during fetching*, not the inflated
+    /// install-elapsed denominator that includes lockfile parse and
+    /// resolve time. `usize::MAX` sentinel = "not captured yet".
+    completed_at_fetch_start: AtomicUsize,
     start: Instant,
     /// Captured the first time `set_phase("fetching")` is called. Used
     /// as the denominator for the transfer rate so it measures network
@@ -127,6 +134,7 @@ impl CiState {
             downloaded: AtomicUsize::new(0),
             downloaded_bytes: AtomicU64::new(0),
             estimated_bytes: AtomicU64::new(0),
+            completed_at_fetch_start: AtomicUsize::new(usize::MAX),
             start: Instant::now(),
             fetch_start: OnceLock::new(),
             last_printed: Mutex::new(String::new()),
@@ -149,6 +157,7 @@ impl CiState {
             .get()
             .map(|t| t.elapsed().as_millis() as u64)
             .unwrap_or(0);
+        let baseline = self.completed_at_fetch_start.load(Ordering::Relaxed);
         Snap {
             phase: self.phase.load(Ordering::Relaxed),
             resolved: self.resolved.load(Ordering::Relaxed),
@@ -156,8 +165,15 @@ impl CiState {
             downloaded: self.downloaded.load(Ordering::Relaxed),
             bytes: self.downloaded_bytes.load(Ordering::Relaxed),
             estimated: self.estimated_bytes.load(Ordering::Relaxed),
-            elapsed_ms: self.start.elapsed().as_millis() as u64,
             fetch_elapsed_ms,
+            // `usize::MAX` means the baseline hasn't been captured yet
+            // (still pre-fetching). Render layer treats that as
+            // "ETA …" rather than computing against a missing baseline.
+            completed_at_fetch_start: if baseline == usize::MAX {
+                None
+            } else {
+                Some(baseline)
+            },
         }
     }
 
@@ -245,6 +261,18 @@ impl CiState {
             // First-writer-wins; a second "fetching" transition (shouldn't
             // happen but defend against it) doesn't reset the rate window.
             let _ = self.fetch_start.set(Instant::now());
+            // Capture the completion baseline for the fetch-window ETA.
+            // `compare_exchange` so a duplicate phase=2 transition doesn't
+            // overwrite the original snapshot (matches `fetch_start` first-
+            // writer-wins semantics).
+            let completed =
+                self.reused.load(Ordering::Relaxed) + self.downloaded.load(Ordering::Relaxed);
+            let _ = self.completed_at_fetch_start.compare_exchange(
+                usize::MAX,
+                completed,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         }
         self.phase.store(n, Ordering::Relaxed);
         // Phase transitions deliberately do *not* notify the heartbeat:
@@ -334,8 +362,11 @@ pub(super) struct Snap {
     pub(super) downloaded: usize,
     pub(super) bytes: u64,
     pub(super) estimated: u64,
-    pub(super) elapsed_ms: u64,
     pub(super) fetch_elapsed_ms: u64,
+    /// Numerator (`reused + downloaded`) at the moment fetching
+    /// started. `None` until phase=2 first fires; render layer falls
+    /// back to `ETA …` while it's missing.
+    pub(super) completed_at_fetch_start: Option<usize>,
 }
 
 /// Format an elapsed duration compactly: sub-second → `240ms`,

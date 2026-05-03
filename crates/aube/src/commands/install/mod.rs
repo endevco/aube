@@ -2739,7 +2739,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     if let Some(p) = fetch_progress.as_ref() {
                         p.inc_total(1);
                         if let Some(sz) = pkg.unpacked_size {
-                            p.inc_estimated_bytes(sz);
+                            p.inc_estimated_bytes(&pkg.dep_path, sz);
                         }
                     }
 
@@ -3353,16 +3353,19 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &install_ignored_optional,
             );
 
-            // Reconcile the progress denominator. The streaming pass
-            // bumped `inc_total` once per *resolved* package; `filter_graph`
-            // just dropped the platform-mismatched optionals, so the
-            // denominator now overcounts by the number of culled entries
-            // and the bar would otherwise stick well below 100%
-            // (historical "stays at 90%" bug). Resetting to the surviving
-            // graph size produces a stable cur/total ratio for the
-            // remaining fetch + link work.
+            // Reconcile the progress denominator and the running
+            // estimated-download total. The streaming pass bumped
+            // `inc_total` once per *resolved* package and recorded
+            // each `unpacked_size`; `filter_graph` just dropped the
+            // platform-mismatched optionals, so both totals overcount
+            // by the culled entries (the historical "stays at 90%"
+            // and over-inflated `~X MB` segments). Resetting against
+            // the surviving graph produces a stable cur/total ratio
+            // and a size estimate that reflects only what will
+            // actually install.
             if let Some(p) = prog_ref {
                 p.set_total(graph.packages.len());
+                p.reconcile_estimated_bytes(graph.packages.keys());
             }
 
             // Catch-up fetch: the streaming coordinator deferred
@@ -4467,13 +4470,18 @@ fn print_already_up_to_date() {
     }
     use clx::style;
     use std::io::Write;
+    // Only the check mark is green — same shape as the
+    // `print_install_summary` no-op branch so the two sites stay
+    // visually consistent across the install code paths that emit
+    // this line.
     let line = format!(
-        "{} {} {} {} {}",
+        "{} {} {} {} {} {}",
         style::emagenta("aube").bold(),
         style::edim(crate::version::VERSION.as_str()),
         style::edim("by en.dev"),
         style::edim("·"),
-        style::egreen("Already up to date").bold(),
+        style::egreen("✓").bold(),
+        style::ebold("Already up to date"),
     );
     let _ = writeln!(std::io::stderr(), "{line}");
 }

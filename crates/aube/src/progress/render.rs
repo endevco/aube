@@ -83,7 +83,15 @@ fn label_for(snap: Snap) -> String {
                 style::ebold(completed),
                 style::ebold(snap.resolved),
             ));
-            parts.push(bytes_segment(snap));
+            // Skip the bytes segment when nothing has landed and no
+            // unpackedSize estimate is available — older publishes
+            // and the lockfile fast path both miss the field. Pushing
+            // an empty string would produce `pkgs ·  · ETA …` with a
+            // doubled separator after the `parts.join` below.
+            let seg = bytes_segment(snap);
+            if !seg.is_empty() {
+                parts.push(seg);
+            }
             if let Some(rate) = transfer_rate(snap) {
                 parts.push(style::edim(format!("{}/s", format_bytes(rate))).to_string());
             }
@@ -138,9 +146,11 @@ fn bytes_segment(snap: Snap) -> String {
 
 /// Convert a sum of `unpackedSize` values to an estimated tarball
 /// (download) byte count. Pure helper so the call sites that build
-/// the segment, and the eventual ETA-based-on-bytes calculation,
-/// stay aligned on the same conversion.
-fn estimated_download_bytes(unpacked: u64) -> u64 {
+/// the segment — CI's heartbeat render and TTY's `refresh_bytes_segment`
+/// — stay aligned on the same conversion. Without this both modes
+/// would have to copy the constant; TTY previously displayed the raw
+/// unpacked sum (~3.3× too high) before this was hoisted.
+pub(super) fn estimated_download_bytes(unpacked: u64) -> u64 {
     if unpacked == 0 {
         return 0;
     }
@@ -148,15 +158,25 @@ fn estimated_download_bytes(unpacked: u64) -> u64 {
 }
 
 /// `ETA 5s` once we have enough data to extrapolate; `ETA …`
-/// otherwise. The ETA assumes the per-package work rate stays
-/// constant from now on, which is good enough for "is this 5 seconds
-/// or 5 minutes" UX.
+/// otherwise. Uses *fetch-window* throughput (completions since
+/// `set_phase("fetching")` divided by `fetch_elapsed_ms`) so the
+/// estimate reflects per-package work-rate during fetching, not the
+/// inflated install-elapsed denominator that would include lockfile
+/// parse and resolve time. Falls back to `ETA …` until enough fetch-
+/// window data has accrued for a non-flapping number.
 fn eta_segment(snap: Snap, completed: usize) -> String {
-    if completed == 0 || completed >= snap.resolved || snap.elapsed_ms == 0 {
+    if completed >= snap.resolved {
+        return style::edim("ETA …").to_string();
+    }
+    let Some(baseline) = snap.completed_at_fetch_start else {
+        return style::edim("ETA …").to_string();
+    };
+    let fetch_completed = completed.saturating_sub(baseline);
+    if fetch_completed == 0 || snap.fetch_elapsed_ms == 0 {
         return style::edim("ETA …").to_string();
     }
     let remaining = snap.resolved - completed;
-    let eta_ms = snap.elapsed_ms.saturating_mul(remaining as u64) / completed as u64;
+    let eta_ms = snap.fetch_elapsed_ms.saturating_mul(remaining as u64) / fetch_completed as u64;
     style::edim(format!(
         "ETA {}",
         format_duration(std::time::Duration::from_millis(eta_ms))
@@ -232,8 +252,11 @@ mod tests {
             downloaded: 0,
             bytes,
             estimated,
-            elapsed_ms: 5_000,
             fetch_elapsed_ms: 3_000,
+            // Tests model an install where fetching started at zero
+            // completions; the eta_segment then derives its rate from
+            // `completed - 0 / fetch_elapsed_ms`.
+            completed_at_fetch_start: Some(0),
         }
     }
 

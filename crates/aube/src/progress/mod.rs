@@ -32,6 +32,7 @@ use clx::progress::{
     ProgressJob, ProgressJobBuilder, ProgressJobDoneBehavior, ProgressOutput, ProgressStatus,
 };
 use clx::style;
+use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -66,6 +67,16 @@ fn aube_prefix_line(msg: &str) -> String {
 /// Install-time progress UI. Cheap to clone (internally `Arc`).
 pub struct InstallProgress {
     mode: Mode,
+    /// Per-dep_path `unpacked_size` values captured during streaming
+    /// resolve. The running `estimated_bytes` total is the sum, but
+    /// `filter_graph` later prunes platform-mismatched optionals from
+    /// `graph.packages` — leaving that pruned size still folded into
+    /// the estimate would overstate the `~13.8 MB` segment. The post-
+    /// `filter_graph` reconcile walks the surviving dep_paths through
+    /// this map and resets the estimate to the survivors' sum. `Mutex`
+    /// is fine: the streaming pass is the only writer and the
+    /// reconcile reads once at the phase boundary.
+    unpacked_sizes: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 #[derive(Clone)]
@@ -100,9 +111,13 @@ enum Mode {
         /// measures the fetch window only, not `bytes / (resolve_time +
         /// fetch_time)`.
         fetch_start: Arc<OnceLock<Instant>>,
-        /// Wall-clock start of the install, used by `eta` recomputation
-        /// to derive elapsed time without re-querying clx.
-        install_start: Arc<Instant>,
+        /// Snapshot of `reused + downloaded` at the moment
+        /// `set_phase("fetching")` first fires. Used as the baseline
+        /// for the fetch-window ETA so the displayed estimate
+        /// reflects per-package throughput *during fetching*, not the
+        /// install-elapsed denominator. `usize::MAX` sentinel = "not
+        /// captured yet"; render falls back to `ETA …`.
+        completed_at_fetch_start: Arc<AtomicUsize>,
         /// Bounded visible-fetch-row bookkeeping. `visible` is the count
         /// of live per-package child rows (capped at
         /// `TTY_MAX_VISIBLE_FETCH_ROWS`); `overflow` is the count of
@@ -131,6 +146,7 @@ impl Clone for InstallProgress {
         }
         Self {
             mode: self.mode.clone(),
+            unpacked_sizes: self.unpacked_sizes.clone(),
         }
     }
 }
@@ -200,13 +216,14 @@ impl InstallProgress {
                 downloaded_bytes: Arc::new(AtomicU64::new(0)),
                 estimated_bytes: Arc::new(AtomicU64::new(0)),
                 fetch_start: Arc::new(OnceLock::new()),
-                install_start: Arc::new(Instant::now()),
+                completed_at_fetch_start: Arc::new(AtomicUsize::new(usize::MAX)),
                 fetch_state: Arc::new(Mutex::new(FetchState {
                     visible: 0,
                     overflow: 0,
                     overflow_row: None,
                 })),
             },
+            unpacked_sizes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -220,6 +237,7 @@ impl InstallProgress {
         CiState::spawn_heartbeat(&state);
         Self {
             mode: Mode::Ci(state),
+            unpacked_sizes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -251,21 +269,67 @@ impl InstallProgress {
         }
     }
 
-    /// Add `n` bytes to the running estimated-total-download counter.
-    /// Fed from `dist.unpackedSize` as resolver streams in packuments.
-    /// Surfaces in the bar's `bytes` segment as the `/ ~13.8 MB`
-    /// suffix so users have a sense of total install scope before the
-    /// fetch finishes. No-op when the packument lacks the field.
-    pub fn inc_estimated_bytes(&self, n: u64) {
+    /// Add `bytes` to the running estimated-total-download counter
+    /// and record the per-`dep_path` contribution. Fed from
+    /// `dist.unpackedSize` as resolver streams in packuments;
+    /// surfaces as the `/ ~13.8 MB` suffix on the bytes segment so
+    /// users have a sense of total install scope before the fetch
+    /// finishes.
+    ///
+    /// The `dep_path` map lets [`reconcile_estimated_bytes`] later
+    /// subtract platform-mismatched optionals that `filter_graph`
+    /// drops, so the displayed estimate doesn't overstate the install
+    /// size by the dropped-optionals' unpacked sizes. No-op when the
+    /// packument lacks the field.
+    pub fn inc_estimated_bytes(&self, dep_path: &str, bytes: u64) {
+        // Streaming resolver should only see each dep_path once, but
+        // `insert` is the right semantics either way: a duplicate stream
+        // would correctly overwrite, never double-count.
+        self.unpacked_sizes
+            .lock()
+            .unwrap()
+            .insert(dep_path.to_string(), bytes);
         match &self.mode {
             Mode::Tty {
                 estimated_bytes, ..
             } => {
-                estimated_bytes.fetch_add(n, Ordering::Relaxed);
+                estimated_bytes.fetch_add(bytes, Ordering::Relaxed);
                 self.refresh_bytes_segment();
             }
             Mode::Ci(s) => {
-                s.estimated_bytes.fetch_add(n, Ordering::Relaxed);
+                s.estimated_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Recompute the estimated-total-download from the surviving set
+    /// of dep_paths after `filter_graph` has pruned the resolver
+    /// graph. Called from `install::run` once filtering completes —
+    /// the running sum from `inc_estimated_bytes` includes platform-
+    /// mismatched optionals that `filter_graph` just dropped, and
+    /// without this reconcile the `~X MB` segment would overcount by
+    /// their cumulative size. Mirrors the `set_total(graph.packages.len())`
+    /// reconcile applied to the package denominator at the same site.
+    pub fn reconcile_estimated_bytes<I, S>(&self, surviving_dep_paths: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let map = self.unpacked_sizes.lock().unwrap();
+        let sum: u64 = surviving_dep_paths
+            .into_iter()
+            .filter_map(|k| map.get(k.as_ref()).copied())
+            .sum();
+        drop(map);
+        match &self.mode {
+            Mode::Tty {
+                estimated_bytes, ..
+            } => {
+                estimated_bytes.store(sum, Ordering::Relaxed);
+                self.refresh_bytes_segment();
+            }
+            Mode::Ci(s) => {
+                s.estimated_bytes.store(sum, Ordering::Relaxed);
             }
         }
     }
@@ -278,6 +342,9 @@ impl InstallProgress {
                 root,
                 phase_num,
                 fetch_start,
+                reused,
+                downloaded,
+                completed_at_fetch_start,
                 ..
             } => {
                 if phase.is_empty() {
@@ -301,6 +368,19 @@ impl InstallProgress {
                     // Seed the rate denominator on the fetching transition.
                     // First-writer-wins; repeated calls are no-ops.
                     let _ = fetch_start.set(Instant::now());
+                    // Capture the completion baseline so the ETA divides
+                    // remaining work by *fetch-window* throughput, not by
+                    // total install elapsed (which would inflate the
+                    // estimate when resolve was slow). `compare_exchange`
+                    // matches `fetch_start` first-writer-wins.
+                    let baseline =
+                        reused.load(Ordering::Relaxed) + downloaded.load(Ordering::Relaxed);
+                    let _ = completed_at_fetch_start.compare_exchange(
+                        usize::MAX,
+                        baseline,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
                 } else if n == 3 {
                     // Linking phase: rate / ETA aren't meaningful — the
                     // network's done, the linker work is dominated by
@@ -349,6 +429,13 @@ impl InstallProgress {
                 downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
                 self.refresh_bytes_segment();
                 self.refresh_rate();
+                // The package counter that drives ETA only changes via
+                // `inc_reused` and `FetchRow::drop`, but bytes landing
+                // is the strongest signal that fetch-window throughput
+                // is still alive — refresh ETA on every byte event so
+                // it keeps ticking down through long-lived downloads
+                // even when no new package completion has fired.
+                self.refresh_eta();
             }
             Mode::Ci(s) => {
                 s.downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -374,7 +461,12 @@ impl InstallProgress {
             return;
         };
         let bytes = downloaded_bytes.load(Ordering::Relaxed);
-        let estimated = estimated_bytes.load(Ordering::Relaxed);
+        // `estimated_bytes` is the raw `unpackedSize` sum; convert to
+        // the same compressed-tarball units that `bytes` is in so the
+        // `/ ~13.8 MB` segment compares apples-to-apples. CI mode
+        // does the same conversion inside its render path.
+        let estimated_unpacked = estimated_bytes.load(Ordering::Relaxed);
+        let estimated = render::estimated_download_bytes(estimated_unpacked);
         let phase = phase_num.load(Ordering::Relaxed);
         // The bytes segment only carries useful information from
         // fetching onward. Hide it in resolving — there's nothing
@@ -439,7 +531,11 @@ impl InstallProgress {
     }
 
     /// TTY-only: rebuild the `eta` prop. `ETA …` while we don't have
-    /// enough data to extrapolate; `ETA Xs` once we do.
+    /// enough fetch-window data to extrapolate; `ETA Xs` once we do.
+    /// Mirrors the CI render's eta_segment logic: divides remaining
+    /// work by fetch-window throughput (`completed - baseline / fetch_elapsed_ms`)
+    /// instead of total install elapsed, so a slow resolve doesn't
+    /// inflate the early-fetching estimate.
     fn refresh_eta(&self) {
         let Mode::Tty {
             root,
@@ -447,7 +543,8 @@ impl InstallProgress {
             reused,
             downloaded,
             phase_num,
-            install_start,
+            fetch_start,
+            completed_at_fetch_start,
             ..
         } = &self.mode
         else {
@@ -463,13 +560,24 @@ impl InstallProgress {
         let total_n = total.load(Ordering::Relaxed);
         let completed =
             (reused.load(Ordering::Relaxed) + downloaded.load(Ordering::Relaxed)).min(total_n);
-        let elapsed_ms = install_start.elapsed().as_millis() as u64;
-        if completed == 0 || completed >= total_n || total_n == 0 || elapsed_ms == 0 {
-            root.prop("eta", &format!(" · {}", style::edim("ETA …")));
+        let baseline = completed_at_fetch_start.load(Ordering::Relaxed);
+        let placeholder = || root.prop("eta", &format!(" · {}", style::edim("ETA …")));
+        if completed >= total_n || total_n == 0 || baseline == usize::MAX {
+            placeholder();
+            return;
+        }
+        let Some(start) = fetch_start.get() else {
+            placeholder();
+            return;
+        };
+        let fetch_elapsed_ms = start.elapsed().as_millis() as u64;
+        let fetch_completed = completed.saturating_sub(baseline);
+        if fetch_completed == 0 || fetch_elapsed_ms == 0 {
+            placeholder();
             return;
         }
         let remaining = total_n - completed;
-        let eta_ms = elapsed_ms.saturating_mul(remaining as u64) / completed as u64;
+        let eta_ms = fetch_elapsed_ms.saturating_mul(remaining as u64) / fetch_completed as u64;
         let eta_str = format_duration(Duration::from_millis(eta_ms));
         root.prop(
             "eta",
@@ -602,7 +710,7 @@ impl InstallProgress {
         elapsed: Duration,
     ) {
         if linked == 0 && top_level_linked == 0 {
-            let msg = if total_packages == 0 {
+            let body = if total_packages == 0 {
                 "Already up to date".to_string()
             } else {
                 format!(
@@ -610,12 +718,13 @@ impl InstallProgress {
                     pluralizer::pluralize("package", total_packages as isize, true)
                 )
             };
+            // Only the check mark is green so it stays the visual
+            // success cue without the whole message bleeding green.
             // Same single-line `aube VERSION by en.dev · ✓ msg` shape
-            // for both TTY and CI modes. CI mode's heartbeat may have
-            // emitted intermediate progress lines above this; the
-            // self-identifying summary still reads fine as the closing
-            // line of a multi-line CI block.
-            let line = aube_prefix_line(&style::egreen(&msg).bold().to_string());
+            // for both TTY and CI modes; CI mode's heartbeat may have
+            // emitted intermediate progress lines above this.
+            let msg = format!("{} {}", style::egreen("✓").bold(), style::ebold(&body));
+            let line = aube_prefix_line(&msg);
             let _ = writeln!(std::io::stderr(), "{line}");
             return;
         }
@@ -634,12 +743,15 @@ impl InstallProgress {
         if !needs_summary {
             return;
         }
+        // Only the check mark is green so the success cue is sharp
+        // without the whole sentence bleeding into one color block.
         let msg = format!(
-            "✓ installed {} in {}",
-            pluralizer::pluralize("package", linked as isize, true),
-            format_duration(elapsed)
+            "{} installed {} in {}",
+            style::egreen("✓").bold(),
+            style::ebold(pluralizer::pluralize("package", linked as isize, true)),
+            style::edim(format_duration(elapsed)),
         );
-        let line = aube_prefix_line(&style::egreen(msg).bold().to_string());
+        let line = aube_prefix_line(&msg);
         let _ = writeln!(std::io::stderr(), "{line}");
     }
 }
@@ -723,6 +835,18 @@ impl FetchRow {
                 downloaded,
                 visible,
             } => {
+                // Note: this site bumps `downloaded` but doesn't call
+                // `refresh_eta` — the ETA prop is recomputed on every
+                // `inc_downloaded_bytes` event, which fires once per
+                // tarball *before* this drop. The off-by-one (ETA
+                // computed against pre-bump `downloaded`) self-corrects
+                // on the next fetch's bytes; for the very last fetch,
+                // `set_phase("linking")` immediately clears the prop.
+                // Wiring a refresh here would require either bundling
+                // every refresh-related Arc into the FetchRow weak ref
+                // or holding a back-pointer to InstallProgress; the
+                // observable lag is ≤ one fetch worth of time and the
+                // last-fetch case never reaches the user.
                 if let Some(root) = root.upgrade() {
                     root.increment(1);
                 }
