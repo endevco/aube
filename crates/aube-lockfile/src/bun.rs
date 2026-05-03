@@ -37,7 +37,7 @@ use crate::{
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 struct RawBunLockfile {
@@ -251,6 +251,18 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         let entry = BunEntry::from_array(key, value).map_err(|e| Error::parse(path, e))?;
         entries.insert(key.clone(), entry);
     }
+    let mut workspace_scopes: Vec<(&str, &str)> = raw
+        .workspaces
+        .iter()
+        .filter(|(ws_path, _)| !ws_path.is_empty())
+        .filter_map(|(ws_path, ws)| {
+            ws.extra
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(|name| (name, ws_path.as_str()))
+        })
+        .collect();
+    workspace_scopes.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
 
     // First pass: parse (name, version) for each entry. bun.lock keys look
     // like the package name ("foo") for the hoisted version, or a nested
@@ -286,6 +298,8 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             entry.integrity.as_deref(),
             path,
         )?;
+        let local_source = local_source
+            .map(|local| rebase_workspace_scoped_local_source(key, local, &workspace_scopes));
         key_info.insert(key.clone(), (name.clone(), version.clone()));
 
         let dep_path = format!("{name}@{version}");
@@ -701,6 +715,57 @@ fn classify_bun_ident(
     }
     // Plain registry pin.
     Ok((name, raw_version.to_string(), None, alias_of))
+}
+
+fn rebase_workspace_scoped_local_source(
+    key: &str,
+    local: LocalSource,
+    workspace_scopes: &[(&str, &str)],
+) -> LocalSource {
+    let Some(local_path) = local.path() else {
+        return local;
+    };
+    if !local_path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return local;
+    }
+    let Some((_, ws_path)) = workspace_scopes.iter().find(|(name, _)| {
+        key.strip_prefix(*name)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+    }) else {
+        return local;
+    };
+    let rebased = normalize_path(&Path::new(ws_path).join(local_path));
+    match local {
+        LocalSource::Directory(_) => LocalSource::Directory(rebased),
+        LocalSource::Tarball(_) => LocalSource::Tarball(rebased),
+        LocalSource::Link(_) => LocalSource::Link(rebased),
+        LocalSource::Git(_) | LocalSource::RemoteTarball(_) => local,
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                if out
+                    .components()
+                    .next_back()
+                    .is_some_and(|c| matches!(c, Component::Normal(_)))
+                {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn split_committish(spec: &str) -> (String, Option<String>) {
@@ -2722,6 +2787,42 @@ mod tests {
         assert_eq!(
             tslib.dep_path, "tslib@2.4.0",
             "workspace dep must resolve to z-app/tslib, not hoisted tslib"
+        );
+    }
+
+    #[test]
+    fn test_parse_rebases_workspace_scoped_local_tarball() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let sri = fake_sri('a');
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root" },
+    "packages/app": {
+      "name": "app",
+      "dependencies": { "local-tar": "file:../../vendor/local-tar-1.0.0.tgz" }
+    }
+  },
+  "packages": {
+    "app": ["app@workspace:packages/app"],
+    "app/local-tar": ["local-tar@../../vendor/local-tar-1.0.0.tgz", {}, "SRI"]
+  }
+}"#
+        .replace("SRI", &sri);
+        std::fs::write(tmp.path(), &content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        let local_tar = graph
+            .packages
+            .values()
+            .find(|p| p.name == "local-tar")
+            .expect("local-tar package");
+        assert_eq!(local_tar.version, "../../vendor/local-tar-1.0.0.tgz");
+        assert_eq!(
+            local_tar.local_source,
+            Some(LocalSource::Tarball(PathBuf::from(
+                "vendor/local-tar-1.0.0.tgz"
+            )))
         );
     }
 
