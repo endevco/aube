@@ -8,6 +8,7 @@
 
 use super::ci::Snap;
 use clx::style;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Rough gzip compression ratio for npm tarballs. `dist.unpackedSize`
 /// is what aube installs to disk, not what crosses the wire — typical
@@ -26,11 +27,21 @@ pub(super) fn progress_line(snap: Snap, term_width: usize, bar_width: usize) -> 
     if snap.phase == 0 {
         return String::new();
     }
-    let label = label_for(snap);
+    // Compute the clamped numerator once per render so the
+    // `WARN_AUBE_PROGRESS_OVERFLOW` warning isn't double-fired across
+    // the bar + label call sites; both helpers consume the result via
+    // a parameter rather than re-loading the atomics. Resolving phase
+    // doesn't display a numerator so we don't bother computing it.
+    let completed = if snap.phase == 1 {
+        0
+    } else {
+        clamped_completed(snap)
+    };
+    let label = label_for(snap, completed);
     if label.is_empty() {
         return String::new();
     }
-    let bar = bar_only(snap, bar_width);
+    let bar = bar_only(snap, bar_width, completed);
     let _ = term_width; // reserved for future right-align/truncate logic
     format!("{bar} {label}")
 }
@@ -38,11 +49,10 @@ pub(super) fn progress_line(snap: Snap, term_width: usize, bar_width: usize) -> 
 /// The fixed-width left-aligned bar. Filled portion is green, empty
 /// portion is dim. During resolving the bar is empty (the work hasn't
 /// started yet); during linking it's effectively full.
-pub(super) fn bar_only(snap: Snap, width: usize) -> String {
+pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
     let (numerator, denominator) = if snap.phase == 1 {
         (0, 1)
     } else {
-        let completed = clamped_completed(snap);
         let denom = snap.resolved.max(1);
         (completed, denom)
     };
@@ -62,7 +72,7 @@ pub(super) fn bar_only(snap: Snap, width: usize) -> String {
 /// * resolving: `N pkgs · resolving · ETA …`
 /// * fetching:  `cur/total pkgs · 4.2 MB / ~13.8 MB · 1.4 MB/s · ETA 5s`
 /// * linking:   `cur/total pkgs · 13.8 MB · linking`
-fn label_for(snap: Snap) -> String {
+fn label_for(snap: Snap, completed: usize) -> String {
     match snap.phase {
         1 => {
             // No bar to fill yet — show the running resolved count and
@@ -76,7 +86,6 @@ fn label_for(snap: Snap) -> String {
             )
         }
         2 => {
-            let completed = clamped_completed(snap);
             let mut parts = Vec::with_capacity(4);
             parts.push(format!(
                 "{}/{} pkgs",
@@ -99,7 +108,6 @@ fn label_for(snap: Snap) -> String {
             parts.join(&format!(" {} ", style::edim("·")))
         }
         3 => {
-            let completed = clamped_completed(snap);
             // Suppress the bytes segment when nothing was downloaded
             // (fully warm cache) — `0 B` would be visual noise.
             let mut parts = vec![format!(
@@ -194,17 +202,22 @@ fn transfer_rate(snap: Snap) -> Option<u64> {
     Some(snap.bytes.saturating_mul(1000) / snap.fetch_elapsed_ms)
 }
 
+/// Process-wide latch: once the overflow warning has fired, every
+/// subsequent render skips it. The bookkeeping condition tends to
+/// recur across multiple heartbeats once tripped — without this
+/// gate the CLI would log dozens of identical warnings to stderr,
+/// drowning out the actual install output. One warning per CLI
+/// session is enough to flag the regression for diagnosis.
+static OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
+
 /// Defensive clamp: numerator can never exceed denominator. The two
 /// known sources of overrun (the catch-up bookkeeping bug and
 /// streamed-then-pruned packages) are fixed at their roots, but if a
 /// new code path regresses we want the display to stay sane and the
-/// `WARN_AUBE_PROGRESS_OVERFLOW` warning to fire.
+/// `WARN_AUBE_PROGRESS_OVERFLOW` warning to fire — once.
 fn clamped_completed(snap: Snap) -> usize {
     let raw = snap.reused + snap.downloaded;
-    if raw > snap.resolved && snap.resolved > 0 {
-        // The warning fires on the rendering path so it's emitted at
-        // most once per heartbeat, not once per increment. The
-        // tracing layer already deduplicates identical events.
+    if raw > snap.resolved && snap.resolved > 0 && !OVERFLOW_WARNED.swap(true, Ordering::Relaxed) {
         tracing::warn!(
             code = aube_codes::warnings::WARN_AUBE_PROGRESS_OVERFLOW,
             raw_completed = raw,
