@@ -1,109 +1,626 @@
 {
   "errors": [
-    {"name": "ERR_AUBE_NO_LOCKFILE", "category": "Lockfile", "description": "An operation that required a lockfile (`--frozen-lockfile`, `aube fetch`, etc.) found none in the project.", "exit_code": 10},
-    {"name": "ERR_AUBE_LOCKFILE_PARSE", "category": "Lockfile", "description": "Lockfile is structurally invalid — version guard failed, YAML shape is wrong, or `yaml_serde` couldn't round-trip the contents.", "exit_code": 11},
-    {"name": "ERR_AUBE_LOCKFILE_UNSUPPORTED_FORMAT", "category": "Lockfile", "description": "Lockfile filename was recognized but its format isn't supported on this aube version.", "exit_code": 12},
-    {"name": "ERR_AUBE_NO_MATCHING_VERSION", "category": "Resolver", "description": "No published version of the named package satisfies the requested range.", "exit_code": 20},
-    {"name": "ERR_AUBE_NO_MATURE_MATCHING_VERSION", "category": "Resolver", "description": "A version satisfying the range exists but every candidate was younger than `minimumReleaseAge` and `minimumReleaseAgeStrict=true`.", "exit_code": 21},
-    {"name": "ERR_AUBE_BLOCKED_EXOTIC_SUBDEP", "category": "Resolver", "description": "Transitive dep used a `git:` / `file:` / `tarball` specifier and `blockExoticSubdeps=true`.", "exit_code": 22},
-    {"name": "ERR_AUBE_TRUST_DOWNGRADE", "category": "Resolver", "description": "Picked version dropped trust evidence the prior version had (`trustPolicy=no-downgrade`).", "exit_code": 23},
-    {"name": "ERR_AUBE_TRUST_MISSING_TIME", "category": "Resolver", "description": "Registry's packument has no `time` entry for the picked version (`trustPolicy=no-downgrade`).", "exit_code": 24},
-    {"name": "ERR_AUBE_UNKNOWN_CATALOG", "category": "Resolver", "description": "A `catalog:<name>` reference was used but the catalog isn't defined.", "exit_code": 25},
-    {"name": "ERR_AUBE_UNKNOWN_CATALOG_ENTRY", "category": "Resolver", "description": "The catalog exists but has no entry for the requested package.", "exit_code": 26},
-    {"name": "ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED", "category": "Resolver", "description": "Peer-context fixed-point loop hit `MAX_ITERATIONS=16` without converging — usually mutually-recursive peers.", "exit_code": 27},
-    {"name": "ERR_AUBE_REGISTRY_ERROR", "category": "Resolver", "description": "Generic registry error from inside the resolver.", "exit_code": null},
-    {"name": "ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION", "category": "Resolver", "description": "A `trustPolicyExclude` pattern had a non-exact version.", "exit_code": null},
-    {"name": "ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS", "category": "Resolver", "description": "A `trustPolicyExclude` pattern combined a name glob with versions.", "exit_code": null},
-    {"name": "ERR_AUBE_TARBALL_INTEGRITY", "category": "Tarball / store", "description": "Downloaded tarball's hash didn't match the lockfile's / packument's `dist.integrity`.", "exit_code": 30},
-    {"name": "ERR_AUBE_TARBALL_EXTRACT", "category": "Tarball / store", "description": "Tarball couldn't be extracted (corrupt gzip, unexpected entry shape, etc.).", "exit_code": 31},
-    {"name": "ERR_AUBE_PKG_CONTENT_MISMATCH", "category": "Tarball / store", "description": "Tarball's `package.json` declared a different `(name, version)` than the resolver expected (`strictStorePkgContentCheck=true`).", "exit_code": 32},
-    {"name": "ERR_AUBE_GIT_ERROR", "category": "Tarball / store", "description": "Git operation failed during a `git:` dep prepare or checkout.", "exit_code": 33},
-    {"name": "ERR_AUBE_NO_HOME", "category": "Tarball / store", "description": "`HOME` (or platform equivalent) is unset, so aube can't locate its store.", "exit_code": null},
-    {"name": "ERR_AUBE_PACKAGE_NOT_FOUND", "category": "Registry / network", "description": "Registry returned 404 for the package name.", "exit_code": 40},
-    {"name": "ERR_AUBE_VERSION_NOT_FOUND", "category": "Registry / network", "description": "Package exists but the requested version doesn't.", "exit_code": 41},
-    {"name": "ERR_AUBE_UNAUTHORIZED", "category": "Registry / network", "description": "Registry returned 401/403 — missing or invalid auth. Run `aube login`.", "exit_code": 42},
-    {"name": "ERR_AUBE_OFFLINE", "category": "Registry / network", "description": "Offline mode and the requested resource isn't in the local cache.", "exit_code": 43},
-    {"name": "ERR_AUBE_INVALID_PACKAGE_NAME", "category": "Registry / network", "description": "A name doesn't match npm's grammar — rejected before any I/O so a hostile manifest can't use the cache-path builder as a write primitive.", "exit_code": 44},
-    {"name": "ERR_AUBE_REGISTRY_WRITE_REJECTED", "category": "Registry / network", "description": "Registry rejected a publish/deprecate/owner write with a non-2xx response.", "exit_code": 45},
-    {"name": "ERR_AUBE_SCRIPT_NON_ZERO_EXIT", "category": "Scripts / build", "description": "A lifecycle script (`preinstall` / `install` / `postinstall` / a `package.json` script) exited non-zero.", "exit_code": 50},
-    {"name": "ERR_AUBE_SCRIPT_SPAWN", "category": "Scripts / build", "description": "Couldn't spawn a script's interpreter (shell missing, jail setup failed, etc.).", "exit_code": 51},
-    {"name": "ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE", "category": "Scripts / build", "description": "An entry in `allowBuilds` had a value that wasn't `true`/`false`.", "exit_code": null},
-    {"name": "ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION", "category": "Scripts / build", "description": "An `allowBuilds` pattern's version union was unparseable.", "exit_code": null},
-    {"name": "ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION", "category": "Scripts / build", "description": "An `allowBuilds` pattern combined a wildcard name with a version union.", "exit_code": null},
-    {"name": "ERR_AUBE_PATCH_FAILED", "category": "Linker", "description": "Applying a `pnpm.patchedDependencies` patch failed.", "exit_code": 60},
-    {"name": "ERR_AUBE_LINK_FAILED", "category": "Linker", "description": "Symlink / junction / hardlink couldn't be created — usually permissions or filesystem support.", "exit_code": 61},
-    {"name": "ERR_AUBE_MISSING_PACKAGE_INDEX", "category": "Linker", "description": "Internal: a caller skipped `load_index` but the package wasn't already materialized.", "exit_code": 62},
-    {"name": "ERR_AUBE_MISSING_STORE_FILE", "category": "Linker", "description": "A package index references a CAS shard that doesn't exist on disk. Re-run install to re-fetch.", "exit_code": 63},
-    {"name": "ERR_AUBE_MANIFEST_PARSE", "category": "Manifest / workspace", "description": "A `package.json` had a syntax error. miette renders a pointer at the offending byte.", "exit_code": 70},
-    {"name": "ERR_AUBE_WORKSPACE_PARSE", "category": "Manifest / workspace", "description": "An `aube-workspace.yaml` / `pnpm-workspace.yaml` was structurally invalid.", "exit_code": 71},
-    {"name": "ERR_AUBE_MANIFEST_YAML_PARSE", "category": "Manifest / workspace", "description": "A workspace YAML helper file was structurally invalid (no source pointer available).", "exit_code": null},
-    {"name": "ERR_AUBE_FILTER_EMPTY", "category": "Manifest / workspace", "description": "`--filter` was passed an empty selector.", "exit_code": null},
-    {"name": "ERR_AUBE_FILTER_GIT_IO", "category": "Manifest / workspace", "description": "A `--filter ...[ref]` selector failed to spawn `git`.", "exit_code": null},
-    {"name": "ERR_AUBE_FILTER_GIT_FAILED", "category": "Manifest / workspace", "description": "The git subprocess for a `--filter ...[ref]` selector exited non-zero.", "exit_code": null},
-    {"name": "ERR_AUBE_UNSUPPORTED_ENGINE", "category": "Engine / CLI", "description": "One or more packages declared an `engines` constraint incompatible with the running Node/aube and `engine-strict=true`.", "exit_code": 80},
-    {"name": "ERR_AUBE_UNKNOWN_COMMAND", "category": "Engine / CLI", "description": "The named subcommand isn't a built-in aube command and isn't a script in the manifest.", "exit_code": 81},
-    {"name": "ERR_AUBE_NPM_ONLY_COMMAND", "category": "Engine / CLI", "description": "The user invoked an npm-only command (`whoami`, `token`, `owner`, `search`, `pkg`, `set-script`) — aube doesn't implement these; use npm.", "exit_code": 82},
-    {"name": "ERR_AUBE_RECURSIVE_NOT_SUPPORTED", "category": "Engine / CLI", "description": "A command was invoked under `--recursive` but doesn't support recursive execution.", "exit_code": null},
-    {"name": "ERR_AUBE_COMPLETION_FAILED", "category": "Engine / CLI", "description": "`aube completion` couldn't invoke `usage` to render the shell completions.", "exit_code": null},
-    {"name": "ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR", "category": "Engine / CLI", "description": "Couldn't clean up a prior global install dir before re-installing.", "exit_code": null},
-    {"name": "ERR_AUBE_UNSAFE_INDEX_KEY", "category": "Misc / safety", "description": "A package index key tried to escape its directory (path traversal defense in depth).", "exit_code": 90},
-    {"name": "ERR_AUBE_UNSAFE_SHEBANG_INTERPRETER", "category": "Misc / safety", "description": "A `#!` shebang named an unsafe interpreter when generating a shim — substituted with `node` instead. Surfaced as `tracing::error!` but install continues.", "exit_code": 91},
-    {"name": "ERR_AUBE_PATCHES_TRACKING_WRITE", "category": "Misc / safety", "description": "Couldn't write `.aube-applied-patches.json` after applying patches. Non-fatal; next install may miss stale patched entries.", "exit_code": null}
+    {
+      "name": "ERR_AUBE_NO_LOCKFILE",
+      "category": "Lockfile",
+      "description": "An operation that required a lockfile (`--frozen-lockfile`, `aube fetch`, etc.) found none in the project.",
+      "exit_code": 10
+    },
+    {
+      "name": "ERR_AUBE_LOCKFILE_PARSE",
+      "category": "Lockfile",
+      "description": "Lockfile is structurally invalid — version guard failed, YAML shape is wrong, or `yaml_serde` couldn't round-trip the contents.",
+      "exit_code": 11
+    },
+    {
+      "name": "ERR_AUBE_LOCKFILE_UNSUPPORTED_FORMAT",
+      "category": "Lockfile",
+      "description": "Lockfile filename was recognized but its format isn't supported on this aube version.",
+      "exit_code": 12
+    },
+    {
+      "name": "ERR_AUBE_NO_MATCHING_VERSION",
+      "category": "Resolver",
+      "description": "No published version of the named package satisfies the requested range.",
+      "exit_code": 20
+    },
+    {
+      "name": "ERR_AUBE_NO_MATURE_MATCHING_VERSION",
+      "category": "Resolver",
+      "description": "A version satisfying the range exists but every candidate was younger than `minimumReleaseAge` and `minimumReleaseAgeStrict=true`.",
+      "exit_code": 21
+    },
+    {
+      "name": "ERR_AUBE_BLOCKED_EXOTIC_SUBDEP",
+      "category": "Resolver",
+      "description": "Transitive dep used a `git:` / `file:` / `tarball` specifier and `blockExoticSubdeps=true`.",
+      "exit_code": 22
+    },
+    {
+      "name": "ERR_AUBE_TRUST_DOWNGRADE",
+      "category": "Resolver",
+      "description": "Picked version dropped trust evidence the prior version had (`trustPolicy=no-downgrade`).",
+      "exit_code": 23
+    },
+    {
+      "name": "ERR_AUBE_TRUST_MISSING_TIME",
+      "category": "Resolver",
+      "description": "Registry's packument has no `time` entry for the picked version (`trustPolicy=no-downgrade`).",
+      "exit_code": 24
+    },
+    {
+      "name": "ERR_AUBE_UNKNOWN_CATALOG",
+      "category": "Resolver",
+      "description": "A `catalog:<name>` reference was used but the catalog isn't defined.",
+      "exit_code": 25
+    },
+    {
+      "name": "ERR_AUBE_UNKNOWN_CATALOG_ENTRY",
+      "category": "Resolver",
+      "description": "The catalog exists but has no entry for the requested package.",
+      "exit_code": 26
+    },
+    {
+      "name": "ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED",
+      "category": "Resolver",
+      "description": "Peer-context fixed-point loop hit `MAX_ITERATIONS=16` without converging — usually mutually-recursive peers.",
+      "exit_code": 27
+    },
+    {
+      "name": "ERR_AUBE_REGISTRY_ERROR",
+      "category": "Resolver",
+      "description": "Generic registry error from inside the resolver.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION",
+      "category": "Resolver",
+      "description": "A `trustPolicyExclude` pattern had a non-exact version.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS",
+      "category": "Resolver",
+      "description": "A `trustPolicyExclude` pattern combined a name glob with versions.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_TARBALL_INTEGRITY",
+      "category": "Tarball / store",
+      "description": "Downloaded tarball's hash didn't match the lockfile's / packument's `dist.integrity`.",
+      "exit_code": 30
+    },
+    {
+      "name": "ERR_AUBE_TARBALL_EXTRACT",
+      "category": "Tarball / store",
+      "description": "Tarball couldn't be extracted (corrupt gzip, unexpected entry shape, etc.).",
+      "exit_code": 31
+    },
+    {
+      "name": "ERR_AUBE_PKG_CONTENT_MISMATCH",
+      "category": "Tarball / store",
+      "description": "Tarball's `package.json` declared a different `(name, version)` than the resolver expected (`strictStorePkgContentCheck=true`).",
+      "exit_code": 32
+    },
+    {
+      "name": "ERR_AUBE_GIT_ERROR",
+      "category": "Tarball / store",
+      "description": "Git operation failed during a `git:` dep prepare or checkout.",
+      "exit_code": 33
+    },
+    {
+      "name": "ERR_AUBE_NO_HOME",
+      "category": "Tarball / store",
+      "description": "`HOME` (or platform equivalent) is unset, so aube can't locate its store.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_PACKAGE_NOT_FOUND",
+      "category": "Registry / network",
+      "description": "Registry returned 404 for the package name.",
+      "exit_code": 40
+    },
+    {
+      "name": "ERR_AUBE_VERSION_NOT_FOUND",
+      "category": "Registry / network",
+      "description": "Package exists but the requested version doesn't.",
+      "exit_code": 41
+    },
+    {
+      "name": "ERR_AUBE_UNAUTHORIZED",
+      "category": "Registry / network",
+      "description": "Registry returned 401/403 — missing or invalid auth. Run `aube login`.",
+      "exit_code": 42
+    },
+    {
+      "name": "ERR_AUBE_OFFLINE",
+      "category": "Registry / network",
+      "description": "Offline mode and the requested resource isn't in the local cache.",
+      "exit_code": 43
+    },
+    {
+      "name": "ERR_AUBE_INVALID_PACKAGE_NAME",
+      "category": "Registry / network",
+      "description": "A name doesn't match npm's grammar — rejected before any I/O so a hostile manifest can't use the cache-path builder as a write primitive.",
+      "exit_code": 44
+    },
+    {
+      "name": "ERR_AUBE_REGISTRY_WRITE_REJECTED",
+      "category": "Registry / network",
+      "description": "Registry rejected a publish/deprecate/owner write with a non-2xx response.",
+      "exit_code": 45
+    },
+    {
+      "name": "ERR_AUBE_SCRIPT_NON_ZERO_EXIT",
+      "category": "Scripts / build",
+      "description": "A lifecycle script (`preinstall` / `install` / `postinstall` / a `package.json` script) exited non-zero.",
+      "exit_code": 50
+    },
+    {
+      "name": "ERR_AUBE_SCRIPT_SPAWN",
+      "category": "Scripts / build",
+      "description": "Couldn't spawn a script's interpreter (shell missing, jail setup failed, etc.).",
+      "exit_code": 51
+    },
+    {
+      "name": "ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE",
+      "category": "Scripts / build",
+      "description": "An entry in `allowBuilds` had a value that wasn't `true`/`false`.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION",
+      "category": "Scripts / build",
+      "description": "An `allowBuilds` pattern's version union was unparseable.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION",
+      "category": "Scripts / build",
+      "description": "An `allowBuilds` pattern combined a wildcard name with a version union.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_PATCH_FAILED",
+      "category": "Linker",
+      "description": "Applying a `pnpm.patchedDependencies` patch failed.",
+      "exit_code": 60
+    },
+    {
+      "name": "ERR_AUBE_LINK_FAILED",
+      "category": "Linker",
+      "description": "Symlink / junction / hardlink couldn't be created — usually permissions or filesystem support.",
+      "exit_code": 61
+    },
+    {
+      "name": "ERR_AUBE_MISSING_PACKAGE_INDEX",
+      "category": "Linker",
+      "description": "Internal: a caller skipped `load_index` but the package wasn't already materialized.",
+      "exit_code": 62
+    },
+    {
+      "name": "ERR_AUBE_MISSING_STORE_FILE",
+      "category": "Linker",
+      "description": "A package index references a CAS shard that doesn't exist on disk. Re-run install to re-fetch.",
+      "exit_code": 63
+    },
+    {
+      "name": "ERR_AUBE_MANIFEST_PARSE",
+      "category": "Manifest / workspace",
+      "description": "A `package.json` had a syntax error. miette renders a pointer at the offending byte.",
+      "exit_code": 70
+    },
+    {
+      "name": "ERR_AUBE_WORKSPACE_PARSE",
+      "category": "Manifest / workspace",
+      "description": "An `aube-workspace.yaml` / `pnpm-workspace.yaml` was structurally invalid.",
+      "exit_code": 71
+    },
+    {
+      "name": "ERR_AUBE_MANIFEST_YAML_PARSE",
+      "category": "Manifest / workspace",
+      "description": "A workspace YAML helper file was structurally invalid (no source pointer available).",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_FILTER_EMPTY",
+      "category": "Manifest / workspace",
+      "description": "`--filter` was passed an empty selector.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_FILTER_GIT_IO",
+      "category": "Manifest / workspace",
+      "description": "A `--filter ...[ref]` selector failed to spawn `git`.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_FILTER_GIT_FAILED",
+      "category": "Manifest / workspace",
+      "description": "The git subprocess for a `--filter ...[ref]` selector exited non-zero.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_UNSUPPORTED_ENGINE",
+      "category": "Engine / CLI",
+      "description": "One or more packages declared an `engines` constraint incompatible with the running Node/aube and `engine-strict=true`.",
+      "exit_code": 80
+    },
+    {
+      "name": "ERR_AUBE_UNKNOWN_COMMAND",
+      "category": "Engine / CLI",
+      "description": "The named subcommand isn't a built-in aube command and isn't a script in the manifest.",
+      "exit_code": 81
+    },
+    {
+      "name": "ERR_AUBE_NPM_ONLY_COMMAND",
+      "category": "Engine / CLI",
+      "description": "The user invoked an npm-only command (`whoami`, `token`, `owner`, `search`, `pkg`, `set-script`) — aube doesn't implement these; use npm.",
+      "exit_code": 82
+    },
+    {
+      "name": "ERR_AUBE_RECURSIVE_NOT_SUPPORTED",
+      "category": "Engine / CLI",
+      "description": "A command was invoked under `--recursive` but doesn't support recursive execution.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_COMPLETION_FAILED",
+      "category": "Engine / CLI",
+      "description": "`aube completion` couldn't invoke `usage` to render the shell completions.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR",
+      "category": "Engine / CLI",
+      "description": "Couldn't clean up a prior global install dir before re-installing.",
+      "exit_code": null
+    },
+    {
+      "name": "ERR_AUBE_UNSAFE_INDEX_KEY",
+      "category": "Misc / safety",
+      "description": "A package index key tried to escape its directory (path traversal defense in depth).",
+      "exit_code": 90
+    },
+    {
+      "name": "ERR_AUBE_UNSAFE_SHEBANG_INTERPRETER",
+      "category": "Misc / safety",
+      "description": "A `#!` shebang named an unsafe interpreter when generating a shim — substituted with `node` instead. Surfaced as `tracing::error!` but install continues.",
+      "exit_code": 91
+    },
+    {
+      "name": "ERR_AUBE_PATCHES_TRACKING_WRITE",
+      "category": "Misc / safety",
+      "description": "Couldn't write `.aube-applied-patches.json` after applying patches. Non-fatal; next install may miss stale patched entries.",
+      "exit_code": null
+    }
   ],
   "warnings": [
-    {"name": "WARN_AUBE_PNPMFILE_NOT_FOUND", "category": "pnpmfile / hooks", "description": "A pnpmfile path (CLI arg, workspace setting, global) pointed at a missing file.", "exit_code": null},
-    {"name": "WARN_AUBE_PNPMFILE_STDERR_FORWARDER", "category": "pnpmfile / hooks", "description": "The background task forwarding pnpmfile stderr panicked.", "exit_code": null},
-    {"name": "WARN_AUBE_HOOK_IMPORTER_MUTATED", "category": "pnpmfile / hooks", "description": "A pnpmfile `afterAllResolved` hook mutated `importers[...]`; aube ignored the edit.", "exit_code": null},
-    {"name": "WARN_AUBE_HOOK_IMPORTER_ADDED", "category": "pnpmfile / hooks", "description": "A pnpmfile `afterAllResolved` hook added a new `importers[...]` entry; aube ignored it.", "exit_code": null},
-    {"name": "WARN_AUBE_HOOK_IDENTITY_REWRITTEN", "category": "pnpmfile / hooks", "description": "A pnpmfile hook rewrote a package's `(name, version)` identity; aube reverted the edit.", "exit_code": null},
-    {"name": "WARN_AUBE_HOOK_PACKAGE_ADDED", "category": "pnpmfile / hooks", "description": "A pnpmfile hook added a wholly-new package entry; aube ignored it.", "exit_code": null},
-    {"name": "WARN_AUBE_IGNORED_BUILD_SCRIPTS", "category": "Install lifecycle", "description": "Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`.", "exit_code": null},
-    {"name": "WARN_AUBE_MISSING_INTEGRITY", "category": "Install lifecycle", "description": "Lockfile entry / registry response had no `dist.integrity`; importing without verification. Set `strict-store-integrity=true` to refuse.", "exit_code": null},
-    {"name": "WARN_AUBE_CACHE_WRITE_FAILED", "category": "Install lifecycle", "description": "Couldn't write a package index to the on-disk cache. Non-fatal.", "exit_code": null},
-    {"name": "WARN_AUBE_CLONE_STRATEGY_FALLBACK", "category": "Install lifecycle", "description": "`package-import-method=clone` will silently fall back to copy if the filesystem doesn't support reflinks.", "exit_code": null},
-    {"name": "WARN_AUBE_LTHASH_MISMATCH", "category": "Install lifecycle", "description": "Incremental and full LtHash digests disagreed — homomorphic invariant broken. Real bug signal.", "exit_code": null},
-    {"name": "WARN_AUBE_DELTA_INVALIDATE_FAILED", "category": "Install lifecycle", "description": "Delta install couldn't invalidate a package directory during cleanup.", "exit_code": null},
-    {"name": "WARN_AUBE_GVS_INCOMPATIBLE", "category": "Install lifecycle", "description": "A package isn't compatible with aube's global virtual store; installed per-project instead.", "exit_code": null},
-    {"name": "WARN_AUBE_GVS_MODE_CHANGED", "category": "Install lifecycle", "description": "Switching between gvs-on and gvs-off; removing `node_modules` and reinstalling from scratch.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_CONCURRENCY", "category": "Settings / config validation", "description": "`network-concurrency` or `link-concurrency` was 0 (must be ≥ 1).", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_TRUST_POLICY", "category": "Settings / config validation", "description": "A `trustPolicyExclude` entry was malformed and skipped.", "exit_code": null},
-    {"name": "WARN_AUBE_OVERRIDE_MISSING_DEP", "category": "Settings / config validation", "description": "An `overrides` `$ref` pointed at a package not in any of the importer's dependency lists.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_PEER_PATTERN", "category": "Settings / config validation", "description": "A `peerDependencyRules` pattern was unparseable and skipped.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_SAVE_PREFIX", "category": "Settings / config validation", "description": "`save-prefix` was something other than `^`, `~`, or empty. Falling back to `^`.", "exit_code": null},
-    {"name": "WARN_AUBE_CONCURRENCY_ENV_INVALID", "category": "Settings / config validation", "description": "The `AUBE_CONCURRENCY` env var was outside the `[floor, ceiling]` range or non-numeric.", "exit_code": null},
-    {"name": "WARN_AUBE_PRERELEASE_CHECK_SKIPPED", "category": "Update / prerelease", "description": "`aube update` couldn't fetch the packument or got a non-semver `latest` tag; preserved-prerelease check skipped for that package.", "exit_code": null},
-    {"name": "WARN_AUBE_AUDIT_FETCH_FAILED", "category": "Audit / npmrc", "description": "`aube audit --ignore-unfixable` couldn't fetch a packument; advisories for that package are kept verbatim.", "exit_code": null},
-    {"name": "WARN_AUBE_TOKEN_CHMOD_FAILED", "category": "Audit / npmrc", "description": "`chmod 0600` on the auth token file failed; the file may be world-readable.", "exit_code": null},
-    {"name": "WARN_AUBE_UNTRUSTED_PROXY", "category": "Registry config (trust gates)", "description": "A `*-proxy` setting came from a source aube doesn't trust (committed `.npmrc` can't set proxies).", "exit_code": null},
-    {"name": "WARN_AUBE_UNTRUSTED_STRICT_SSL_DISABLE", "category": "Registry config (trust gates)", "description": "`strict-ssl=false` came from a source aube doesn't trust. TLS validation stays on.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_LOCAL_ADDRESS", "category": "Registry config (trust gates)", "description": "`local-address` setting wasn't a valid IP.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_MAXSOCKETS", "category": "Registry config (trust gates)", "description": "`maxsockets` was 0 or non-numeric.", "exit_code": null},
-    {"name": "WARN_AUBE_UNTRUSTED_TOKEN_HELPER", "category": "Registry config (trust gates)", "description": "`tokenHelper` came from an untrusted source (CVE-2025-69262 class).", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_TOKEN_HELPER", "category": "Registry config (trust gates)", "description": "`tokenHelper` value wasn't a sanitized absolute path.", "exit_code": null},
-    {"name": "WARN_AUBE_TOKEN_HELPER_SPAWN_FAILED", "category": "Registry config (trust gates)", "description": "`tokenHelper` couldn't be spawned.", "exit_code": null},
-    {"name": "WARN_AUBE_TOKEN_HELPER_NON_ZERO_EXIT", "category": "Registry config (trust gates)", "description": "`tokenHelper` exited non-zero.", "exit_code": null},
-    {"name": "WARN_AUBE_HTTP_RETRY_TRANSIENT", "category": "Registry HTTP retries", "description": "Retrying after a transient HTTP status (429, 5xx).", "exit_code": null},
-    {"name": "WARN_AUBE_HTTP_RETRY_TRANSPORT", "category": "Registry HTTP retries", "description": "Retrying after a transport / connection error.", "exit_code": null},
-    {"name": "WARN_AUBE_HTTP_RETRY_BODY_READ", "category": "Registry HTTP retries", "description": "Retrying after a response-body read error (timeout, partial body).", "exit_code": null},
-    {"name": "WARN_AUBE_HTTP_RETRY_BODY_DECODE", "category": "Registry HTTP retries", "description": "Retrying after a JSON decode error on the response body.", "exit_code": null},
-    {"name": "WARN_AUBE_PACKUMENT_CACHE_WRITE", "category": "Registry caching / perf", "description": "Couldn't write a packument to the on-disk cache after a successful fetch. Non-fatal; next install will refetch.", "exit_code": null},
-    {"name": "WARN_AUBE_SLOW_METADATA", "category": "Registry caching / perf", "description": "A packument fetch exceeded `fetchWarnTimeoutMs`.", "exit_code": null},
-    {"name": "WARN_AUBE_SLOW_TARBALL", "category": "Registry caching / perf", "description": "A tarball download fell below `fetchMinSpeedKiBps`.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_HTTPS_PROXY", "category": "Registry TLS / proxy", "description": "`https-proxy` URL didn't parse.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_HTTP_PROXY", "category": "Registry TLS / proxy", "description": "`http-proxy` URL didn't parse.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_CA", "category": "Registry TLS / proxy", "description": "Per-registry CA PEM didn't parse.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_CAFILE", "category": "Registry TLS / proxy", "description": "`cafile` couldn't be parsed as a PEM bundle.", "exit_code": null},
-    {"name": "WARN_AUBE_UNREADABLE_CAFILE", "category": "Registry TLS / proxy", "description": "`cafile` couldn't be read from disk.", "exit_code": null},
-    {"name": "WARN_AUBE_INVALID_CLIENT_CERT", "category": "Registry TLS / proxy", "description": "Per-registry client `cert`/`key` PEM pair didn't parse.", "exit_code": null},
-    {"name": "WARN_AUBE_UNSUPPORTED_PLATFORM_INSTALL", "category": "Resolver", "description": "A required (non-optional) dep declared a platform aube doesn't satisfy; installing anyway.", "exit_code": null},
-    {"name": "WARN_AUBE_EXOTIC_SUBDEP_SKIPPED", "category": "Resolver", "description": "An optional or peer dep used an exotic specifier and was skipped under `blockExoticSubdeps=true`.", "exit_code": null},
-    {"name": "WARN_AUBE_PEER_DEDUPE_COLLISION", "category": "Resolver", "description": "`dedupe-peers=true` would have collapsed a distinct peer-variant; preserved the longer form to avoid dropping it.", "exit_code": null},
-    {"name": "WARN_AUBE_LOCKFILE_MERGE_CONFLICT", "category": "Lockfile", "description": "Branch-lockfile merge had conflicting entries for the same dep_path; one was chosen.", "exit_code": null},
-    {"name": "WARN_AUBE_LOCKFILE_MERGE_CLEANUP_FAILED", "category": "Lockfile", "description": "After a successful merge, removing one of the merged branch lockfiles failed.", "exit_code": null},
-    {"name": "WARN_AUBE_YARN_BERRY_UNSUPPORTED", "category": "Lockfile", "description": "A Yarn Berry `patch:` / `portal:` / `exec:` protocol — or any unrecognized protocol — was found in `yarn.lock`. Entry was skipped.", "exit_code": null}
+    {
+      "name": "WARN_AUBE_PNPMFILE_NOT_FOUND",
+      "category": "pnpmfile / hooks",
+      "description": "A pnpmfile path (CLI arg, workspace setting, global) pointed at a missing file.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_PNPMFILE_STDERR_FORWARDER",
+      "category": "pnpmfile / hooks",
+      "description": "The background task forwarding pnpmfile stderr panicked.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HOOK_IMPORTER_MUTATED",
+      "category": "pnpmfile / hooks",
+      "description": "A pnpmfile `afterAllResolved` hook mutated `importers[...]`; aube ignored the edit.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HOOK_IMPORTER_ADDED",
+      "category": "pnpmfile / hooks",
+      "description": "A pnpmfile `afterAllResolved` hook added a new `importers[...]` entry; aube ignored it.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HOOK_IDENTITY_REWRITTEN",
+      "category": "pnpmfile / hooks",
+      "description": "A pnpmfile hook rewrote a package's `(name, version)` identity; aube reverted the edit.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HOOK_PACKAGE_ADDED",
+      "category": "pnpmfile / hooks",
+      "description": "A pnpmfile hook added a wholly-new package entry; aube ignored it.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_IGNORED_BUILD_SCRIPTS",
+      "category": "Install lifecycle",
+      "description": "Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_MISSING_INTEGRITY",
+      "category": "Install lifecycle",
+      "description": "Lockfile entry / registry response had no `dist.integrity`; importing without verification. Set `strict-store-integrity=true` to refuse.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_CACHE_WRITE_FAILED",
+      "category": "Install lifecycle",
+      "description": "Couldn't write a package index to the on-disk cache. Non-fatal.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_CLONE_STRATEGY_FALLBACK",
+      "category": "Install lifecycle",
+      "description": "`package-import-method=clone` will silently fall back to copy if the filesystem doesn't support reflinks.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_LTHASH_MISMATCH",
+      "category": "Install lifecycle",
+      "description": "Incremental and full LtHash digests disagreed — homomorphic invariant broken. Real bug signal.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_DELTA_INVALIDATE_FAILED",
+      "category": "Install lifecycle",
+      "description": "Delta install couldn't invalidate a package directory during cleanup.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_GVS_INCOMPATIBLE",
+      "category": "Install lifecycle",
+      "description": "A package isn't compatible with aube's global virtual store; installed per-project instead.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_GVS_MODE_CHANGED",
+      "category": "Install lifecycle",
+      "description": "Switching between gvs-on and gvs-off; removing `node_modules` and reinstalling from scratch.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_CONCURRENCY",
+      "category": "Settings / config validation",
+      "description": "`network-concurrency` or `link-concurrency` was 0 (must be ≥ 1).",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_TRUST_POLICY",
+      "category": "Settings / config validation",
+      "description": "A `trustPolicyExclude` entry was malformed and skipped.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_OVERRIDE_MISSING_DEP",
+      "category": "Settings / config validation",
+      "description": "An `overrides` `$ref` pointed at a package not in any of the importer's dependency lists.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_PEER_PATTERN",
+      "category": "Settings / config validation",
+      "description": "A `peerDependencyRules` pattern was unparseable and skipped.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_SAVE_PREFIX",
+      "category": "Settings / config validation",
+      "description": "`save-prefix` was something other than `^`, `~`, or empty. Falling back to `^`.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_CONCURRENCY_ENV_INVALID",
+      "category": "Settings / config validation",
+      "description": "The `AUBE_CONCURRENCY` env var was outside the `[floor, ceiling]` range or non-numeric.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_PRERELEASE_CHECK_SKIPPED",
+      "category": "Update / prerelease",
+      "description": "`aube update` couldn't fetch the packument or got a non-semver `latest` tag; preserved-prerelease check skipped for that package.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_AUDIT_FETCH_FAILED",
+      "category": "Audit / npmrc",
+      "description": "`aube audit --ignore-unfixable` couldn't fetch a packument; advisories for that package are kept verbatim.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_TOKEN_CHMOD_FAILED",
+      "category": "Audit / npmrc",
+      "description": "`chmod 0600` on the auth token file failed; the file may be world-readable.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_UNTRUSTED_PROXY",
+      "category": "Registry config (trust gates)",
+      "description": "A `*-proxy` setting came from a source aube doesn't trust (committed `.npmrc` can't set proxies).",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_UNTRUSTED_STRICT_SSL_DISABLE",
+      "category": "Registry config (trust gates)",
+      "description": "`strict-ssl=false` came from a source aube doesn't trust. TLS validation stays on.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_LOCAL_ADDRESS",
+      "category": "Registry config (trust gates)",
+      "description": "`local-address` setting wasn't a valid IP.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_MAXSOCKETS",
+      "category": "Registry config (trust gates)",
+      "description": "`maxsockets` was 0 or non-numeric.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_UNTRUSTED_TOKEN_HELPER",
+      "category": "Registry config (trust gates)",
+      "description": "`tokenHelper` came from an untrusted source (CVE-2025-69262 class).",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_TOKEN_HELPER",
+      "category": "Registry config (trust gates)",
+      "description": "`tokenHelper` value wasn't a sanitized absolute path.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_TOKEN_HELPER_SPAWN_FAILED",
+      "category": "Registry config (trust gates)",
+      "description": "`tokenHelper` couldn't be spawned.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_TOKEN_HELPER_NON_ZERO_EXIT",
+      "category": "Registry config (trust gates)",
+      "description": "`tokenHelper` exited non-zero.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HTTP_RETRY_TRANSIENT",
+      "category": "Registry HTTP retries",
+      "description": "Retrying after a transient HTTP status (429, 5xx).",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HTTP_RETRY_TRANSPORT",
+      "category": "Registry HTTP retries",
+      "description": "Retrying after a transport / connection error.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HTTP_RETRY_BODY_READ",
+      "category": "Registry HTTP retries",
+      "description": "Retrying after a response-body read error (timeout, partial body).",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_HTTP_RETRY_BODY_DECODE",
+      "category": "Registry HTTP retries",
+      "description": "Retrying after a JSON decode error on the response body.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_PACKUMENT_CACHE_WRITE",
+      "category": "Registry caching / perf",
+      "description": "Couldn't write a packument to the on-disk cache after a successful fetch. Non-fatal; next install will refetch.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_SLOW_METADATA",
+      "category": "Registry caching / perf",
+      "description": "A packument fetch exceeded `fetchWarnTimeoutMs`.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_SLOW_TARBALL",
+      "category": "Registry caching / perf",
+      "description": "A tarball download fell below `fetchMinSpeedKiBps`.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_HTTPS_PROXY",
+      "category": "Registry TLS / proxy",
+      "description": "`https-proxy` URL didn't parse.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_HTTP_PROXY",
+      "category": "Registry TLS / proxy",
+      "description": "`http-proxy` URL didn't parse.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_CA",
+      "category": "Registry TLS / proxy",
+      "description": "Per-registry CA PEM didn't parse.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_CAFILE",
+      "category": "Registry TLS / proxy",
+      "description": "`cafile` couldn't be parsed as a PEM bundle.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_UNREADABLE_CAFILE",
+      "category": "Registry TLS / proxy",
+      "description": "`cafile` couldn't be read from disk.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_INVALID_CLIENT_CERT",
+      "category": "Registry TLS / proxy",
+      "description": "Per-registry client `cert`/`key` PEM pair didn't parse.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_UNSUPPORTED_PLATFORM_INSTALL",
+      "category": "Resolver",
+      "description": "A required (non-optional) dep declared a platform aube doesn't satisfy; installing anyway.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_EXOTIC_SUBDEP_SKIPPED",
+      "category": "Resolver",
+      "description": "An optional or peer dep used an exotic specifier and was skipped under `blockExoticSubdeps=true`.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_PEER_DEDUPE_COLLISION",
+      "category": "Resolver",
+      "description": "`dedupe-peers=true` would have collapsed a distinct peer-variant; preserved the longer form to avoid dropping it.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_LOCKFILE_MERGE_CONFLICT",
+      "category": "Lockfile",
+      "description": "Branch-lockfile merge had conflicting entries for the same dep_path; one was chosen.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_LOCKFILE_MERGE_CLEANUP_FAILED",
+      "category": "Lockfile",
+      "description": "After a successful merge, removing one of the merged branch lockfiles failed.",
+      "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_YARN_BERRY_UNSUPPORTED",
+      "category": "Lockfile",
+      "description": "A Yarn Berry `patch:` / `portal:` / `exec:` protocol — or any unrecognized protocol — was found in `yarn.lock`. Entry was skipped.",
+      "exit_code": null
+    }
   ],
   "categories": {
-    "errors": ["Lockfile", "Resolver", "Tarball / store", "Registry / network", "Scripts / build", "Linker", "Manifest / workspace", "Engine / CLI", "Misc / safety"],
-    "warnings": ["pnpmfile / hooks", "Install lifecycle", "Settings / config validation", "Update / prerelease", "Audit / npmrc", "Registry config (trust gates)", "Registry HTTP retries", "Registry caching / perf", "Registry TLS / proxy", "Resolver", "Lockfile"]
+    "errors": [
+      "Lockfile",
+      "Resolver",
+      "Tarball / store",
+      "Registry / network",
+      "Scripts / build",
+      "Linker",
+      "Manifest / workspace",
+      "Engine / CLI",
+      "Misc / safety"
+    ],
+    "warnings": [
+      "pnpmfile / hooks",
+      "Install lifecycle",
+      "Settings / config validation",
+      "Update / prerelease",
+      "Audit / npmrc",
+      "Registry config (trust gates)",
+      "Registry HTTP retries",
+      "Registry caching / perf",
+      "Registry TLS / proxy",
+      "Resolver",
+      "Lockfile"
+    ]
   }
 }

@@ -37,11 +37,16 @@ pub mod warnings;
 /// flow through both with no drift.
 ///
 /// `description` and `category` feed the generated docs page
-/// (`docs/error-codes.md`, produced by the
-/// `generate-error-codes-docs` binary). `exit_code` is `Some(_)`
-/// only for errors that have a bespoke entry — warnings always set
-/// `None` because they don't change exit status.
-#[derive(Debug)]
+/// (`docs/error-codes.data.json`, consumed by `<ErrorCodesTable>`).
+/// `exit_code` is `Some(_)` only for errors that have a bespoke
+/// entry — warnings always set `None` because they don't change
+/// exit status.
+///
+/// `Serialize` is derived so the generator binary can emit each
+/// entry verbatim via `serde_json`. Every consuming crate already
+/// has `serde` in its dep tree; adding it here doesn't grow the
+/// compile graph.
+#[derive(Debug, serde::Serialize)]
 pub struct CodeMeta {
     pub name: &'static str,
     pub category: &'static str,

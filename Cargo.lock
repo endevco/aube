@@ -270,6 +270,10 @@ dependencies = [
 [[package]]
 name = "aube-codes"
 version = "1.7.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "aube-linker"
