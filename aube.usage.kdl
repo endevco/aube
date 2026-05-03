@@ -17,52 +17,23 @@ flag "-v --verbose" help="Enable verbose/debug logging (shortcut for `--loglevel
 flag "-V --version" help="Print version and check for updates" global=#true {
     long_help "Print version and check for updates.\n\nManual flag so we can run the async update notifier alongside the version print — clap's auto `Action::Version` exits inside `parse_from`, before the tokio runtime is built."
 }
-flag --aggregate-output help="Group workspace command output after each package finishes" global=#true {
+flag --aggregate-output help="Group workspace command output after each package finishes" hide=#true global=#true {
     long_help "Group workspace command output after each package finishes.\n\nAccepted for pnpm compatibility; aube's workspace fanout is currently sequential, so output is already grouped."
 }
 flag --color help="Force colored output even when stderr is not a TTY" global=#true {
     long_help "Force colored output even when stderr is not a TTY.\n\nOverrides `NO_COLOR` / `CLICOLOR=0`. Mutually exclusive with `--no-color`."
 }
-flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" global=#true {
-    long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
-}
-flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" global=#true {
-    long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
-}
 flag --fail-if-no-match help="Error when a workspace selector matches no packages" global=#true {
     long_help "Error when a workspace selector matches no packages.\n\nAccepted globally; selected commands already fail on empty matches."
-}
-flag --fetch-retries help="Number of retry attempts for failed registry fetches" global=#true {
-    long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
-    arg <N>
-}
-flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" global=#true {
-    long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`, matching the `int` type declared for `fetchRetryFactor` in `settings.toml` and the `.npmrc` parser. Fractional values like `1.5` are rejected by clap."
-    arg <N>
-}
-flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" global=#true {
-    long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
-    arg <MS>
-}
-flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" global=#true {
-    long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
-    arg <MS>
-}
-flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" global=#true {
-    long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
-    arg <MS>
 }
 flag --filter-prod help="Production-only variant of `--filter`" var=#true global=#true {
     long_help "Production-only variant of `--filter`.\n\nSame selector grammar as `--filter`, but graph walks (`pkg...`, `...pkg`) only follow `dependencies` / `optionalDependencies` / `peerDependencies` edges — `devDependencies` (and packages reachable solely through them) are skipped. Non-graph forms (exact name, glob, path, `[git-ref]`) behave identically to `--filter`. Repeatable; can be combined with `--filter`."
     arg <PATTERN>
 }
-flag --frozen-lockfile help="Error if the lockfile drifts from package.json" global=#true {
-    long_help "Error if the lockfile drifts from package.json.\n\nAccepted on every command for pnpm parity; aube commands that trigger an install (directly or via auto-install) pick this up through the process-wide flag snapshot."
-}
-flag --ignore-workspace help="Ignore workspace discovery for commands that support workspace fanout" global=#true {
+flag --ignore-workspace help="Ignore workspace discovery for commands that support workspace fanout" hide=#true global=#true {
     long_help "Ignore workspace discovery for commands that support workspace fanout.\n\nParsed for pnpm compatibility."
 }
-flag --include-workspace-root help="Include the workspace root in recursive workspace operations" global=#true {
+flag --include-workspace-root help="Include the workspace root in recursive workspace operations" hide=#true global=#true {
     long_help "Include the workspace root in recursive workspace operations.\n\nParsed for pnpm compatibility."
 }
 flag --loglevel help="Set the log level. Logs at or above this level are shown" global=#true {
@@ -73,16 +44,6 @@ flag --loglevel help="Set the log level. Logs at or above this level are shown" 
 flag --no-color help="Disable colored output" global=#true {
     long_help "Disable colored output.\n\nOverrides `FORCE_COLOR` / `CLICOLOR_FORCE` and sets `NO_COLOR=1` so downstream libraries (miette, clx, child processes) all see the same choice."
 }
-flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date" global=#true {
-    long_help "Always re-resolve, even if the lockfile is up to date.\n\nGlobal counterpart to the same `install` flag."
-}
-flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale" global=#true {
-    long_help "Use the lockfile when fresh, re-resolve when stale.\n\nGlobal counterpart to the same `install` flag."
-}
-flag --registry help="Override the default registry URL for this invocation" global=#true {
-    long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
-    arg <URL>
-}
 flag --reporter help="Output format: default, append-only, ndjson, silent" global=#true {
     long_help "Output format: default, append-only, ndjson, silent.\n\n`default` renders the progress UI when stderr is a TTY; `append-only` disables the progress UI in favor of plain line-at-a-time logs; `ndjson` swaps the tracing fmt layer for the JSON formatter (one JSON object per log event on stderr) and is what tooling wrappers should consume; `silent` suppresses all non-error output (alias for `--loglevel silent`)."
     arg <NAME> {
@@ -90,17 +51,17 @@ flag --reporter help="Output format: default, append-only, ndjson, silent" globa
     }
 }
 flag --silent help="Suppress all non-error output (alias for `--loglevel silent`)" global=#true
-flag --stream help="Stream workspace command output as each child process writes it" global=#true {
+flag --stream help="Stream workspace command output as each child process writes it" hide=#true global=#true {
     long_help "Stream workspace command output as each child process writes it.\n\nAccepted for pnpm compatibility; aube's workspace fanout is currently sequential."
 }
-flag --use-stderr help="Route lifecycle and workspace command output through stderr" global=#true {
+flag --use-stderr help="Route lifecycle and workspace command output through stderr" hide=#true global=#true {
     long_help "Route lifecycle and workspace command output through stderr.\n\nAccepted for pnpm compatibility."
 }
-flag --workspace-packages help="Prefer workspace packages when resolving dependencies" global=#true {
+flag --workspace-packages help="Prefer workspace packages when resolving dependencies" hide=#true global=#true {
     long_help "Prefer workspace packages when resolving dependencies.\n\nParsed for pnpm compatibility; aube already resolves workspace packages when a workspace is present."
 }
 flag --workspace-root help="Run from the workspace root regardless of the current package" global=#true
-flag "-y --yes" help="Automatically answer yes to prompts" global=#true {
+flag "-y --yes" help="Automatically answer yes to prompts" hide=#true global=#true {
     long_help "Automatically answer yes to prompts.\n\nParsed for pnpm compatibility; aube does not currently prompt on these paths."
 }
 cmd add help="Add a dependency" {
@@ -134,6 +95,39 @@ cmd add help="Add a dependency" {
     }
     flag "-W --ignore-workspace-root-check" help="Allow `add` to run in a workspace root" {
         long_help "Allow `add` to run in a workspace root.\n\nBy default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`."
+    }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
     }
     arg "[PACKAGES]…" help="Package(s) to add" required=#false var=#true
 }
@@ -172,6 +166,30 @@ cmd audit help="Check installed packages against the registry advisory DB" {
     flag --json help="Emit the report as JSON (pnpm-compatible shape) instead of a table"
     flag --no-optional help="Skip `optionalDependencies`"
     flag "-P --prod --production" help="Only audit `dependencies` and `optionalDependencies`"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
 }
 cmd bin help="Print the path to `node_modules/.bin`" {
     after_long_help "Examples:\n\n  $ aube bin\n  /home/user/project/node_modules/.bin\n\n  $ aube bin -g\n  /home/user/.local/share/aube/global/node_modules/.bin\n\n  # Extend PATH with the project bin directory\n  $ export PATH=\"$(aube bin):$PATH\"\n"
@@ -218,6 +236,39 @@ cmd ci help="Clean install: delete node_modules, then install with frozen lockfi
     long_help "Clean install: delete node_modules, then install with frozen lockfile.\n\nUse in CI to guarantee a reproducible install from the committed lockfile."
     flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
     flag --no-optional help="Skip optionalDependencies; don't install optional native modules"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
 }
 cmd clean help="Remove `node_modules` across every workspace project" {
     long_help "Remove `node_modules` across every workspace project.\n\n`--lockfile` / `-l` also deletes lockfiles. A `clean` script in the root `package.json` overrides the built-in."
@@ -308,11 +359,68 @@ cmd config help="Read and write settings in `.npmrc`" {
     cmd tui help="Browse known settings in an interactive terminal UI"
 }
 cmd create help="Scaffold a project from a `create-*` starter kit (via dlx)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[PARAMS]…" help="Template package name followed by any args to pass through to the scaffold binary" help_long="Template package name followed by any args to pass through to the scaffold binary.\n\nThe first positional is the template; the rest are forwarded verbatim to `create-<template>`." required=#false double_dash=automatic var=#true
 }
 cmd dedupe help="Re-resolve the lockfile to collapse duplicate versions" {
     flag --check help="Check whether dedupe would change the lockfile; don't write anything" {
         long_help "Check whether dedupe would change the lockfile; don't write anything.\n\nExits non-zero when dedupe would make changes — useful in CI."
+    }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
     }
 }
 cmd deploy help="Deploy a workspace package into a target directory with deps inlined" {
@@ -323,12 +431,69 @@ cmd deploy help="Deploy a workspace package into a target directory with deps in
     flag "-P --prod --production" help="Install only production dependencies (default)" {
         long_help "Install only production dependencies (default).\n\nAccepted for pnpm compatibility."
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg <TARGET> help="Target directory to deploy into" help_long="Target directory to deploy into.\n\nMust be empty or not yet exist."
 }
 cmd deprecate help="Mark published versions of a package as deprecated on the registry" {
     flag --dry-run help="Don't PUT anything — print which versions would be touched and exit"
     flag --otp help="One-time password from a 2FA authenticator; sent as `npm-otp`" {
         arg <CODE>
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
     arg <PACKAGE> help="Package spec: `name`, `name@version`, or `name@<range>`" help_long="Package spec: `name`, `name@version`, or `name@<range>`.\n\nOmitting the version deprecates every published version."
     arg <MESSAGE> help="Deprecation message shown to installers" help_long="Deprecation message shown to installers.\n\nPass an empty string to clear an existing deprecation (or use `aube undeprecate`)."
@@ -337,9 +502,57 @@ cmd deprecations help="Report deprecated packages in the resolved dependency gra
     flag --exit-code help="Exit with a non-zero status if any deprecations are found"
     flag --json help="Emit JSON instead of the default text layout"
     flag --transitive help="Include transitive dependencies as well as direct ones"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
 }
 cmd dist-tag subcommand_required=#true help="Manage package distribution tags on the registry" {
     alias dist-tags
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     cmd add help="Add or update a dist-tag on a package" {
         long_help "Add or update a dist-tag on a package.\n\nSpec must include a concrete version: `aube dist-tag add react@18.2.0 stable`. The tag argument defaults to `latest`."
         arg <SPEC> help="Package spec in `name@version` form (exact version required, ranges and tags aren't resolved here)"
@@ -362,6 +575,30 @@ cmd dlx help="Fetch a package into a throwaway environment and run its binary" {
     flag "-p --package" help="Install a specific package (repeatable)" var=#true {
         long_help "Install a specific package (repeatable).\n\nOverrides inferring from the command."
         arg <PACKAGE>
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
     arg "[PARAMS]…" help="Command (binary) to run, followed by arguments to pass through to it" help_long="Command (binary) to run, followed by arguments to pass through to it.\n\nThe first positional is the command; the rest are forwarded verbatim to the binary. Without `--package`, a local `node_modules/.bin/<command>` wins when present; otherwise dlx installs into a throwaway project. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up directly." required=#false double_dash=automatic var=#true
 }
@@ -400,17 +637,107 @@ cmd exec help="Execute a locally installed binary" {
         long_help "Recursive workspace concurrency.\n\nParsed for pnpm compatibility."
         arg <N>
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg <BIN> help="Binary name"
     arg "[ARGS]…" help="Arguments to pass to the binary" required=#false double_dash=automatic var=#true
 }
 cmd fetch help="Download lockfile dependencies into the store without linking node_modules" {
     flag "-D --dev" help="Only fetch devDependencies"
     flag "-P --prod" help="Only fetch production + optional dependencies (skip devDependencies)"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
 }
 cmd find-hash help="List packages whose cached index references a given file hash" {
     after_long_help "Examples:\n\n  # Accepts integrity strings\n  $ aube find-hash sha512-abc123...\n  lodash@4.17.21\tpackage/lodash.js\n  express@4.19.2\tnode_modules/lodash/lodash.js\n\n  # ...or raw hex digests\n  $ aube find-hash 5d41402abc4b2a76b9719d911017c592...\n\n  # Machine-readable\n  $ aube find-hash --json sha512-abc123...\n"
     flag --json help="Emit machine-readable JSON instead of a plain text listing" {
         long_help "Emit machine-readable JSON instead of a plain text listing.\n\nOutput is an array of `{ \"name\", \"version\", \"path\" }` objects."
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
     arg <HASH> help="Hash to look up" help_long="Hash to look up.\n\nAccepts `sha512-<base64>` (pnpm integrity format) or a raw hex CAS digest."
 }
@@ -449,6 +776,30 @@ cmd init help="Create a `package.json` in the current directory" {
         arg <commonjs|module> {
             choices commonjs module
         }
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
 }
 cmd install help="Install all dependencies" {
@@ -525,11 +876,77 @@ cmd install help="Install all dependencies" {
     flag -w help="Short alias for the global `--workspace-root` flag" hide=#true {
         long_help "Short alias for the global `--workspace-root` flag.\n\nRuns install from the workspace root regardless of cwd (`pnpm install -w`)."
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
 }
 cmd install-test hide=#true help="Install dependencies, then run the `test` script (pnpm compat alias)" {
     alias it hide=#true
     long_help "Install dependencies, then run the `test` script (pnpm compat alias).\n\nHidden from help because `aube test` already auto-installs."
     flag --no-install help="Skip auto-install check"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
 cmd la hide=#true help="Alias for `list --long` (hidden; prefer `list --long`)" {
@@ -562,6 +979,30 @@ cmd licenses help="Report the licenses of installed dependencies" {
     flag --json help="Emit a JSON array keyed by package instead of the default table"
     flag --long help="Include the resolved path on disk for each package"
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[SUBCOMMAND]" help="pnpm-compat subcommand marker" help_long="pnpm-compat subcommand marker.\n\n`aube licenses ls [flags...]` is accepted as a synonym for bare `aube licenses [flags...]` so scripts written for pnpm keep working. Modeled as an optional positional instead of a clap subcommand so flags can appear on either side of `ls` (subcommands swallow the parent's flags)." required=#false hide=#true {
         choices ls
     }
@@ -632,10 +1073,58 @@ cmd login help="Store a registry auth token in the user's ~/.npmrc" {
         long_help "Scope to bind this registry to (e.g. `@myorg`).\n\nWhen set, the scope->registry mapping is also written to `~/.npmrc`."
         arg <SCOPE>
     }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
 }
 cmd logout help="Remove a registry auth token from the user's ~/.npmrc" {
     flag --scope help="Scope whose registry mapping should also be removed (e.g. `@myorg`)" {
         arg <SCOPE>
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
 }
 cmd outdated help="Report dependencies whose installed version lags behind the registry" {
@@ -644,9 +1133,57 @@ cmd outdated help="Report dependencies whose installed version lags behind the r
     flag --json help="Emit a JSON object keyed by package name instead of the default table"
     flag --long help="Also show deps whose `wanted` version matches the installed version"
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[PATTERN]" help="Optional package name (prefix match) to filter the report" required=#false
 }
 cmd owner hide=#true help="Manage package owners (not implemented — use `npm owner`)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd pack help="Create a publishable `.tgz` tarball from the current project" {
@@ -655,6 +1192,30 @@ cmd pack help="Create a publishable `.tgz` tarball from the current project" {
     flag --json help="Print the result as a JSON object"
     flag --pack-destination help="Directory to write the tarball into (default: current directory)" {
         arg <DIR>
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
 }
 cmd patch help="Extract a package into an edit directory so it can be patched" {
@@ -685,6 +1246,30 @@ cmd peers subcommand_required=#true help="Inspect peer-dependency resolution fro
     }
 }
 cmd pkg hide=#true help="Manage package.json entries (not implemented — use `npm pkg`)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd prune help="Remove extraneous packages from node_modules" {
@@ -719,6 +1304,30 @@ cmd publish help="Publish the current package to the registry" {
     flag --tag help="Default dist-tag to publish under (default: `latest`)" {
         arg <TAG>
     }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
 }
 cmd purge help="Alias for `clean` — remove `node_modules` across every workspace project" {
     long_help "Alias for `clean` — remove `node_modules` across every workspace project.\n\nA `purge` script in the root `package.json` overrides the built-in."
@@ -751,10 +1360,76 @@ cmd remove help="Remove a dependency" {
     flag "-w --workspace" help="Remove the dependency from the workspace root's `package.json`" {
         long_help "Remove the dependency from the workspace root's `package.json`.\n\nApplies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the remove against that directory. Takes precedence over `--filter` when both are supplied (same as `add --workspace`)."
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[PACKAGES]…" help="Package(s) to remove" required=#false var=#true
 }
 cmd restart help="Restart a package (shortcut for `run restart`; falls back to `stop` + `start`)" {
     flag --no-install help="Skip auto-install check"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
 cmd root help="Print the path to `node_modules`" {
@@ -797,6 +1472,39 @@ cmd run help="Run a script defined in package.json" {
         long_help "Recursive workspace concurrency.\n\nParsed for pnpm compatibility."
         arg <N>
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[SCRIPT]" help="Script or local binary name" help_long="Script or local binary name.\n\nOmit on an interactive TTY to pick from `package.json` scripts. If no script matches, aube falls back to `node_modules/.bin/<name>`." required=#false
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
@@ -810,6 +1518,30 @@ cmd sbom help="Generate a Software Bill of Materials (CycloneDX or SPDX)" {
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
 }
 cmd search hide=#true help="Search the registry for packages (not implemented — use `npm search`)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd set hide=#true help="Alias for `config set` (hidden; prefer `config set`)" {
@@ -824,14 +1556,104 @@ cmd set hide=#true help="Alias for `config set` (hidden; prefer `config set`)" {
     arg <VALUE> help="Value to write. Stored verbatim after `key=`"
 }
 cmd set-script hide=#true help="Set a `package.json` script (not implemented — use `npm set-script`)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd start help="Start a package (shortcut for `run start`)" {
     flag --no-install help="Skip auto-install check"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
 cmd stop help="Stop a package (shortcut for `run stop`)" {
     flag --no-install help="Skip auto-install check"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
 cmd store subcommand_required=#true help="Manage the global store" {
@@ -848,15 +1670,96 @@ cmd store subcommand_required=#true help="Manage the global store" {
 cmd test help="Run the `test` script (shortcut for `run test`)" {
     alias t
     flag --no-install help="Skip auto-install check"
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
 cmd token hide=#true help="Manage registry auth tokens (not implemented — use `npm token`)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd undeprecate help="Clear an existing deprecation on the registry" {
     flag --dry-run help="Don't PUT anything — print which versions would be touched and exit"
     flag --otp help="One-time password from a 2FA authenticator; sent as `npm-otp`" {
         arg <CODE>
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
     arg <PACKAGE> help="Package spec: `name`, `name@version`, or `name@<range>`" help_long="Package spec: `name`, `name@version`, or `name@<range>`.\n\nOmitting the version clears the deprecation on every published version."
 }
@@ -875,6 +1778,30 @@ cmd unpublish help="Remove a package (or a single version) from the registry" {
     flag --otp help="One-time password for registries that require 2FA" {
         long_help "One-time password for registries that require 2FA.\n\nSent verbatim as the `npm-otp` header."
         arg <CODE>
+    }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
     }
     arg "[SPEC]" help="Package spec: `name`, `name@version`, or omitted to use the current project's `package.json`" required=#false
 }
@@ -915,6 +1842,39 @@ cmd update help="Update dependencies" {
         long_help "Override the local pnpmfile location.\n\nMirrors pnpm's `--pnpmfile <path>`. Relative paths resolve against the project root; absolute paths are used as-is. Wins over `pnpmfilePath` from `pnpm-workspace.yaml`."
         arg <PATH>
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
+    }
     arg "[PACKAGES]…" help="Package(s) to update (all if empty)" required=#false var=#true
 }
 cmd usage hide=#true help="Print a usage.jdx.dev KDL spec for the CLI (internal)"
@@ -943,10 +1903,58 @@ cmd view help="Print package metadata from the registry" {
     flag --json help="Print the full JSON of the selected version instead of the summary" {
         long_help "Print the full JSON of the selected version instead of the summary.\n\nMutually exclusive with `field`."
     }
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg <PACKAGE> help="Package to view, optionally with a version or dist-tag" help_long="Package to view, optionally with a version or dist-tag.\n\nExamples: `lodash`, `lodash@4.17.21`, `react@next`, `express@^4`."
     arg "[FIELD]" help="Dotted path into the version metadata to print" help_long="Dotted path into the version metadata to print.\n\nExamples: `version`, `dependencies`, `dist.tarball`, `maintainers.0.name`. When omitted, prints a formatted summary." required=#false
 }
 cmd whoami hide=#true help="Report the current registry user (not implemented — use `npm whoami`)" {
+    flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
+        long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
+        arg <N>
+    }
+    flag --fetch-retry-factor help="Exponential backoff factor between retry attempts" {
+        long_help "Exponential backoff factor between retry attempts.\n\nOverrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap."
+        arg <N>
+    }
+    flag --fetch-retry-maxtimeout help="Upper bound (ms) on the computed retry backoff" {
+        long_help "Upper bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-retry-mintimeout help="Lower bound (ms) on the computed retry backoff" {
+        long_help "Lower bound (ms) on the computed retry backoff.\n\nOverrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set."
+        arg <MS>
+    }
+    flag --fetch-timeout help="Per-request HTTP timeout in milliseconds" {
+        long_help "Per-request HTTP timeout in milliseconds.\n\nOverrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together."
+        arg <MS>
+    }
+    flag --registry help="Override the default registry URL for this invocation" {
+        long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
+        arg <URL>
+    }
     arg "[ARGS]…" help="Unused; captured so `aube <cmd> foo bar` parses instead of erroring on unexpected args before the fallback message prints" required=#false double_dash=automatic var=#true hide=#true
 }
 cmd why help="Print reverse dependency chains explaining why a package is installed" {

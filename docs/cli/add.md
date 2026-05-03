@@ -91,3 +91,63 @@ Applies regardless of the current working directory: walks up from cwd looking f
 Allow `add` to run in a workspace root.
 
 By default aube refuses to add dependencies to the root `package.json` of a workspace (a directory containing `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field) because deps added there end up shared by every package and usually reflect a mistake. Pass this flag to opt in. Mirrors `pnpm add -W`.
+
+### `--frozen-lockfile`
+
+Error if the lockfile drifts from package.json
+
+### `--no-frozen-lockfile`
+
+Always re-resolve, even if the lockfile is up to date
+
+### `--prefer-frozen-lockfile`
+
+Use the lockfile when fresh, re-resolve when stale
+
+### `--fetch-retries <N>`
+
+Number of retry attempts for failed registry fetches.
+
+Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs.
+
+### `--fetch-retry-factor <N>`
+
+Exponential backoff factor between retry attempts.
+
+Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`. Fractional values like `1.5` are rejected by clap.
+
+### `--fetch-retry-maxtimeout <MS>`
+
+Upper bound (ms) on the computed retry backoff.
+
+Overrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set.
+
+### `--fetch-retry-mintimeout <MS>`
+
+Lower bound (ms) on the computed retry backoff.
+
+Overrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set.
+
+### `--fetch-timeout <MS>`
+
+Per-request HTTP timeout in milliseconds.
+
+Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together.
+
+### `--registry <URL>`
+
+Override the default registry URL for this invocation.
+
+Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
+
+### `--disable-global-virtual-store`
+
+Force the shared global virtual store off for this invocation.
+
+Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
+
+### `--enable-global-virtual-store`
+
+Force the shared global virtual store on for this invocation.
+
+Overrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic.

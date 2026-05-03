@@ -37,29 +37,11 @@ Print version and check for updates.
 
 Manual flag so we can run the async update notifier alongside the version print — clap's auto `Action::Version` exits inside `parse_from`, before the tokio runtime is built.
 
-### `--aggregate-output`
-
-Group workspace command output after each package finishes.
-
-Accepted for pnpm compatibility; aube's workspace fanout is currently sequential, so output is already grouped.
-
 ### `--color`
 
 Force colored output even when stderr is not a TTY.
 
 Overrides `NO_COLOR` / `CLICOLOR=0`. Mutually exclusive with `--no-color`.
-
-### `--disable-global-virtual-store`
-
-Force the shared global virtual store off for this invocation.
-
-Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
-
-### `--enable-global-virtual-store`
-
-Force the shared global virtual store on for this invocation.
-
-Overrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic.
 
 ### `--fail-if-no-match`
 
@@ -67,59 +49,11 @@ Error when a workspace selector matches no packages.
 
 Accepted globally; selected commands already fail on empty matches.
 
-### `--fetch-retries <N>`
-
-Number of retry attempts for failed registry fetches.
-
-Overrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs.
-
-### `--fetch-retry-factor <N>`
-
-Exponential backoff factor between retry attempts.
-
-Overrides `fetchRetryFactor` / `fetch-retry-factor` from `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the underlying `FetchPolicy.retry_factor` is `u32`, matching the `int` type declared for `fetchRetryFactor` in `settings.toml` and the `.npmrc` parser. Fractional values like `1.5` are rejected by clap.
-
-### `--fetch-retry-maxtimeout <MS>`
-
-Upper bound (ms) on the computed retry backoff.
-
-Overrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from `.npmrc` / `aube-workspace.yaml` when set.
-
-### `--fetch-retry-mintimeout <MS>`
-
-Lower bound (ms) on the computed retry backoff.
-
-Overrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from `.npmrc` / `aube-workspace.yaml` when set.
-
-### `--fetch-timeout <MS>`
-
-Per-request HTTP timeout in milliseconds.
-
-Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml` when set. Applied via `reqwest`'s `.timeout()` so it covers headers + body together.
-
 ### `--filter-prod… <PATTERN>`
 
 Production-only variant of `--filter`.
 
 Same selector grammar as `--filter`, but graph walks (`pkg...`, `...pkg`) only follow `dependencies` / `optionalDependencies` / `peerDependencies` edges — `devDependencies` (and packages reachable solely through them) are skipped. Non-graph forms (exact name, glob, path, `[git-ref]`) behave identically to `--filter`. Repeatable; can be combined with `--filter`.
-
-### `--frozen-lockfile`
-
-Error if the lockfile drifts from package.json.
-
-Accepted on every command for pnpm parity; aube commands that trigger an install (directly or via auto-install) pick this up through the process-wide flag snapshot.
-
-### `--ignore-workspace`
-
-Ignore workspace discovery for commands that support workspace fanout.
-
-Parsed for pnpm compatibility.
-
-### `--include-workspace-root`
-
-Include the workspace root in recursive workspace operations.
-
-Parsed for pnpm compatibility.
 
 ### `--loglevel <LEVEL>`
 
@@ -140,24 +74,6 @@ Disable colored output.
 
 Overrides `FORCE_COLOR` / `CLICOLOR_FORCE` and sets `NO_COLOR=1` so downstream libraries (miette, clx, child processes) all see the same choice.
 
-### `--no-frozen-lockfile`
-
-Always re-resolve, even if the lockfile is up to date.
-
-Global counterpart to the same `install` flag.
-
-### `--prefer-frozen-lockfile`
-
-Use the lockfile when fresh, re-resolve when stale.
-
-Global counterpart to the same `install` flag.
-
-### `--registry <URL>`
-
-Override the default registry URL for this invocation.
-
-Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
-
 ### `--reporter <NAME>`
 
 Output format: default, append-only, ndjson, silent.
@@ -175,33 +91,9 @@ Output format: default, append-only, ndjson, silent.
 
 Suppress all non-error output (alias for `--loglevel silent`)
 
-### `--stream`
-
-Stream workspace command output as each child process writes it.
-
-Accepted for pnpm compatibility; aube's workspace fanout is currently sequential.
-
-### `--use-stderr`
-
-Route lifecycle and workspace command output through stderr.
-
-Accepted for pnpm compatibility.
-
-### `--workspace-packages`
-
-Prefer workspace packages when resolving dependencies.
-
-Parsed for pnpm compatibility; aube already resolves workspace packages when a workspace is present.
-
 ### `--workspace-root`
 
 Run from the workspace root regardless of the current package
-
-### `-y --yes`
-
-Automatically answer yes to prompts.
-
-Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 
 ## Subcommands
 
@@ -218,7 +110,7 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube cat-file <HASH>`](/cli/cat-file.md)
 - [`aube cat-index <PACKAGE>`](/cli/cat-index.md)
 - [`aube check [--json]`](/cli/check.md)
-- [`aube ci [--ignore-scripts] [--no-optional]`](/cli/ci.md)
+- [`aube ci [FLAGS]`](/cli/ci.md)
 - [`aube clean [-l --lockfile]`](/cli/clean.md)
 - [`aube completion <SHELL>`](/cli/completion.md)
 - [`aube config [FLAGS] <SUBCOMMAND>`](/cli/config.md)
@@ -229,20 +121,20 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube config list [FLAGS]`](/cli/config/list.md)
 - [`aube config set [--local] [--location <LOCATION>] <KEY> <VALUE>`](/cli/config/set.md)
 - [`aube config tui`](/cli/config/tui.md)
-- [`aube create [PARAMS]…`](/cli/create.md)
-- [`aube dedupe [--check]`](/cli/dedupe.md)
+- [`aube create [FLAGS] [PARAMS]…`](/cli/create.md)
+- [`aube dedupe [FLAGS]`](/cli/dedupe.md)
 - [`aube deploy [FLAGS] <TARGET>`](/cli/deploy.md)
-- [`aube deprecate [--dry-run] [--otp <CODE>] <PACKAGE> <MESSAGE>`](/cli/deprecate.md)
+- [`aube deprecate [FLAGS] <PACKAGE> <MESSAGE>`](/cli/deprecate.md)
 - [`aube deprecations [FLAGS]`](/cli/deprecations.md)
-- [`aube dist-tag <SUBCOMMAND>`](/cli/dist-tag.md)
+- [`aube dist-tag [FLAGS] <SUBCOMMAND>`](/cli/dist-tag.md)
 - [`aube dist-tag add <SPEC> [TAG]`](/cli/dist-tag/add.md)
 - [`aube dist-tag ls [PACKAGE]`](/cli/dist-tag/ls.md)
 - [`aube dist-tag rm <PACKAGE> <TAG>`](/cli/dist-tag/rm.md)
-- [`aube dlx [-c --shell-mode] [-p --package… <PACKAGE>] [PARAMS]…`](/cli/dlx.md)
+- [`aube dlx [FLAGS] [PARAMS]…`](/cli/dlx.md)
 - [`aube doctor [-J --json]`](/cli/doctor.md)
 - [`aube exec [FLAGS] <BIN> [ARGS]…`](/cli/exec.md)
-- [`aube fetch [-D --dev] [-P --prod]`](/cli/fetch.md)
-- [`aube find-hash [--json] <HASH>`](/cli/find-hash.md)
+- [`aube fetch [FLAGS]`](/cli/fetch.md)
+- [`aube find-hash [FLAGS] <HASH>`](/cli/find-hash.md)
 - [`aube ignored-builds [-g --global]`](/cli/ignored-builds.md)
 - [`aube import [FLAGS]`](/cli/import.md)
 - [`aube init [FLAGS]`](/cli/init.md)
@@ -250,8 +142,8 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube licenses [FLAGS]`](/cli/licenses.md)
 - [`aube link [-g --global] [PACKAGE]`](/cli/link.md)
 - [`aube list [FLAGS] [PATTERN]`](/cli/list.md)
-- [`aube login [--auth-type <TYPE>] [--scope <SCOPE>]`](/cli/login.md)
-- [`aube logout [--scope <SCOPE>]`](/cli/logout.md)
+- [`aube login [FLAGS]`](/cli/login.md)
+- [`aube logout [FLAGS]`](/cli/logout.md)
 - [`aube outdated [FLAGS] [PATTERN]`](/cli/outdated.md)
 - [`aube pack [FLAGS]`](/cli/pack.md)
 - [`aube patch [--edit-dir <DIR>] [--ignore-existing] <PACKAGE>`](/cli/patch.md)
@@ -266,22 +158,22 @@ Parsed for pnpm compatibility; aube does not currently prompt on these paths.
 - [`aube rebuild [PACKAGE]…`](/cli/rebuild.md)
 - [`aube recursive [ARGS]…`](/cli/recursive.md)
 - [`aube remove [FLAGS] [PACKAGES]…`](/cli/remove.md)
-- [`aube restart [--no-install] [ARGS]…`](/cli/restart.md)
+- [`aube restart [FLAGS] [ARGS]…`](/cli/restart.md)
 - [`aube root [-g --global]`](/cli/root.md)
 - [`aube run [FLAGS] [SCRIPT] [ARGS]…`](/cli/run.md)
 - [`aube sbom [FLAGS]`](/cli/sbom.md)
-- [`aube start [--no-install] [ARGS]…`](/cli/start.md)
-- [`aube stop [--no-install] [ARGS]…`](/cli/stop.md)
+- [`aube start [FLAGS] [ARGS]…`](/cli/start.md)
+- [`aube stop [FLAGS] [ARGS]…`](/cli/stop.md)
 - [`aube store <SUBCOMMAND>`](/cli/store.md)
 - [`aube store add <PACKAGES>…`](/cli/store/add.md)
 - [`aube store path`](/cli/store/path.md)
 - [`aube store prune`](/cli/store/prune.md)
 - [`aube store status`](/cli/store/status.md)
-- [`aube test [--no-install] [ARGS]…`](/cli/test.md)
-- [`aube undeprecate [--dry-run] [--otp <CODE>] <PACKAGE>`](/cli/undeprecate.md)
+- [`aube test [FLAGS] [ARGS]…`](/cli/test.md)
+- [`aube undeprecate [FLAGS] <PACKAGE>`](/cli/undeprecate.md)
 - [`aube unlink [-g --global] [PACKAGE]`](/cli/unlink.md)
 - [`aube unpublish [FLAGS] [SPEC]`](/cli/unpublish.md)
 - [`aube update [FLAGS] [PACKAGES]…`](/cli/update.md)
 - [`aube version [FLAGS] [NEW_VERSION]`](/cli/version.md)
-- [`aube view [--json] <PACKAGE> [FIELD]`](/cli/view.md)
+- [`aube view [FLAGS] <PACKAGE> [FIELD]`](/cli/view.md)
 - [`aube why [FLAGS] <PACKAGE>`](/cli/why.md)
