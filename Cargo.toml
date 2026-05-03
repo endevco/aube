@@ -134,3 +134,6 @@ aube-manifest = { path = "crates/aube-manifest", version = "1.7.0" }
 aube-scripts = { path = "crates/aube-scripts", version = "1.7.0" }
 aube-workspace = { path = "crates/aube-workspace", version = "1.7.0" }
 aube-util = { path = "crates/aube-util", version = "1.7.0" }
+
+[profile.dev]
+debug = 1
