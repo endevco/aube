@@ -31,6 +31,12 @@ Install only production dependencies (default).
 
 Accepted for pnpm compatibility.
 
+### `--no-prod`
+
+Deploy every dependency kind (production + dev + optional).
+
+Opts out of the implicit `--prod` deploy default. Useful when a deployed package needs its devDependencies at runtime (test harnesses, build-step deploys). Combine with `--no-optional` to drop optionals while keeping prod + dev. Mutually exclusive with `--prod` and `--dev`.
+
 ### `--frozen-lockfile`
 
 Error if the lockfile drifts from package.json
