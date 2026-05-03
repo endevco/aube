@@ -536,6 +536,7 @@ impl From<FrozenMode> for InstallOptions {
 /// opens the `.tgz` and reuses the normal tarball importer. `Link`
 /// returns `None` because link deps never have a store-backed index —
 /// the linker symlinks directly to the target in step 2.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn import_local_source(
     store: &std::sync::Arc<aube_store::Store>,
     project_root: &std::path::Path,
@@ -544,7 +545,15 @@ pub(super) async fn import_local_source(
     ignore_scripts: bool,
     git_prepare_depth: u32,
     git_shallow_hosts: &[String],
+    pkg_name: &str,
+    pkg_version: &str,
 ) -> miette::Result<Option<aube_store::PackageIndex>> {
+    // `chain` is appended to per-error messages below so users see
+    // *why* a `file:` / `link:` / git / remote-tarball dep was pulled
+    // in. Empty when the package isn't in the resolved chain index
+    // (e.g. when the install pipeline hasn't seeded one yet for an
+    // out-of-band caller).
+    let chain = crate::dep_chain::format_chain_for(pkg_name, pkg_version);
     use aube_lockfile::LocalSource;
     match local {
         LocalSource::Link(_) => Ok(None),
@@ -552,24 +561,24 @@ pub(super) async fn import_local_source(
             let abs = project_root.join(rel);
             if !abs.is_dir() {
                 return Err(miette!(
-                    "local dependency {}: {} is not a directory",
+                    "local dependency {}: {} is not a directory{chain}",
                     local.specifier(),
                     abs.display()
                 ));
             }
             let index = store
                 .import_directory(&abs)
-                .map_err(|e| miette!("failed to import {}: {e}", local.specifier()))?;
+                .map_err(|e| miette!("failed to import {}: {e}{chain}", local.specifier()))?;
             Ok(Some(index))
         }
         LocalSource::Tarball(rel) => {
             let abs = project_root.join(rel);
             let bytes = std::fs::read(&abs)
                 .into_diagnostic()
-                .wrap_err_with(|| format!("read {}", abs.display()))?;
+                .wrap_err_with(|| format!("read {}{chain}", abs.display()))?;
             let index = store
                 .import_tarball(&bytes)
-                .map_err(|e| miette!("failed to import {}: {e}", local.specifier()))?;
+                .map_err(|e| miette!("failed to import {}: {e}{chain}", local.specifier()))?;
             Ok(Some(index))
         }
         LocalSource::Git(g) => {
@@ -661,8 +670,8 @@ pub(super) async fn import_local_source(
                     aube_store::git_shallow_clone(&url_for_clone, &resolved_for_clone, shallow)
                 })
                 .await
-                .map_err(|e| miette!("git clone task panicked: {e}"))?
-                .map_err(|e| miette!("failed to clone {spec}: {e}"))?;
+                .map_err(|e| miette!("git clone task panicked: {e}{chain}"))?
+                .map_err(|e| miette!("failed to clone {spec}: {e}{chain}"))?;
                 dir
             };
 
@@ -683,7 +692,7 @@ pub(super) async fn import_local_source(
             };
             if !pkg_root.is_dir() {
                 return Err(miette!(
-                    "git dep {spec}: subpath {} not found in clone",
+                    "git dep {spec}: subpath {} not found in clone{chain}",
                     pkg_root.display()
                 ));
             }
@@ -691,14 +700,14 @@ pub(super) async fn import_local_source(
                 let canonical_clone = clone_dir
                     .canonicalize()
                     .into_diagnostic()
-                    .wrap_err_with(|| format!("canonicalize clone dir for {spec}"))?;
+                    .wrap_err_with(|| format!("canonicalize clone dir for {spec}{chain}"))?;
                 let canonical_pkg = pkg_root
                     .canonicalize()
                     .into_diagnostic()
-                    .wrap_err_with(|| format!("canonicalize subpath for {spec}"))?;
+                    .wrap_err_with(|| format!("canonicalize subpath for {spec}{chain}"))?;
                 if !canonical_pkg.starts_with(&canonical_clone) {
                     return Err(miette!(
-                        "git dep {spec}: subpath {} escapes clone root {}",
+                        "git dep {spec}: subpath {} escapes clone root {}{chain}",
                         canonical_pkg.display(),
                         canonical_clone.display()
                     ));
@@ -750,16 +759,16 @@ pub(super) async fn import_local_source(
                 run_git_dep_prepare(scratch.path(), &spec, ignore_scripts, git_prepare_depth)
                     .await?;
                 let archive = crate::commands::pack::build_archive(scratch.path())
-                    .wrap_err_with(|| format!("failed to pack prepared git dep {spec}"))?;
+                    .wrap_err_with(|| format!("failed to pack prepared git dep {spec}{chain}"))?;
                 let index = store
                     .import_tarball(&archive.tarball)
-                    .map_err(|e| miette!("failed to import prepared {spec}: {e}"))?;
+                    .map_err(|e| miette!("failed to import prepared {spec}: {e}{chain}"))?;
                 return Ok(Some(index));
             }
 
             let index = store
                 .import_directory(&pkg_root)
-                .map_err(|e| miette!("failed to import {}: {e}", local.specifier()))?;
+                .map_err(|e| miette!("failed to import {}: {e}{chain}", local.specifier()))?;
             Ok(Some(index))
         }
         LocalSource::RemoteTarball(t) => {
@@ -773,14 +782,14 @@ pub(super) async fn import_local_source(
             // redundant walk isn't worth a new cache namespace.
             let client = client.ok_or_else(|| {
                 miette!(
-                    "internal: import_local_source called without a registry client for {}",
+                    "internal: import_local_source called without a registry client for {}{chain}",
                     local.specifier()
                 )
             })?;
             let bytes = client
                 .fetch_tarball_bytes(&t.url)
                 .await
-                .map_err(|e| miette!("failed to fetch {}: {e}", t.url))?;
+                .map_err(|e| miette!("failed to fetch {}: {e}{chain}", t.url))?;
             if t.integrity.is_empty() {
                 tracing::warn!(
                     code = aube_codes::warnings::WARN_AUBE_MISSING_INTEGRITY,
@@ -789,11 +798,11 @@ pub(super) async fn import_local_source(
                 );
             } else {
                 aube_store::verify_integrity(&bytes, &t.integrity)
-                    .map_err(|e| miette!("{}: {e}", aube_util::url::redact_url(&t.url)))?;
+                    .map_err(|e| miette!("{}: {e}{chain}", aube_util::url::redact_url(&t.url)))?;
             }
             let index = store
                 .import_tarball(&bytes)
-                .map_err(|e| miette!("failed to import {}: {e}", local.specifier()))?;
+                .map_err(|e| miette!("failed to import {}: {e}{chain}", local.specifier()))?;
             Ok(Some(index))
         }
     }
@@ -1048,6 +1057,8 @@ where
             ignore_scripts,
             git_prepare_depth,
             &git_shallow_hosts,
+            &pkg.name,
+            &pkg.version,
         )
         .await?
         {
@@ -2755,6 +2766,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             fetch_ignore_scripts,
                             fetch_git_prepare_depth,
                             &fetch_git_shallow_hosts,
+                            &pkg.name,
+                            &pkg.version,
                         )
                         .await
                         {

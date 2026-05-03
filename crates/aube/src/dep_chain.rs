@@ -72,14 +72,30 @@ impl ChainIndex {
             let Some(pkg) = graph.packages.get(&dep_path) else {
                 continue;
             };
-            let key = (pkg.name.clone(), pkg.version.clone());
-            // First-write-wins under BFS = shortest path. Skip on
-            // collision so we don't replace a shorter chain with a
-            // longer alternate.
-            if chains.contains_key(&key) {
+            // First-write-wins under BFS = shortest path. The alias
+            // key gates both index entries (alias and `alias_of`);
+            // skipping on alias-collision is the right invariant
+            // because the alias is the unique identifier for an
+            // installed entry — `(real_name, version)` may legitimately
+            // appear under two distinct aliases (e.g. `h3` plus
+            // `h3-v2: npm:h3@...`), and each alias gets its own row
+            // in the queue with its own chain.
+            let alias_key = (pkg.name.clone(), pkg.version.clone());
+            if chains.contains_key(&alias_key) {
                 continue;
             }
-            chains.insert(key.clone(), ancestors.clone());
+            chains.insert(alias_key, ancestors.clone());
+            // Mirror the entry under `(alias_of, version)` for
+            // aliased packages so call sites that key off the real
+            // npm name (`registry_name` in the install pipeline)
+            // also resolve. Conflicts here are tolerable: another
+            // alias of the same real package would have its own
+            // chain, and we keep the first-seen one — same
+            // "shortest chain" semantics as the alias key.
+            if let Some(real) = &pkg.alias_of {
+                let real_key = (real.clone(), pkg.version.clone());
+                chains.entry(real_key).or_insert_with(|| ancestors.clone());
+            }
 
             // Enqueue children. `dependencies` holds the dep_path
             // tail (`<version>(<peer-context>)?`); the full child
@@ -240,5 +256,38 @@ mod tests {
     #[test]
     fn format_chain_empty_returns_empty() {
         assert_eq!(format_chain(&[], "leaf", "3"), "");
+    }
+
+    #[test]
+    fn aliased_packages_resolve_under_both_alias_and_real_name() {
+        // `h3-v2: npm:h3@2.0.0` lands as a `LockedPackage` whose
+        // `name` is the alias (`h3-v2`) and whose `alias_of` is the
+        // real npm name (`h3`). Install-pipeline error wrappers in
+        // `lifecycle.rs` look up by `registry_name` (the real name)
+        // and `mod.rs` looks up by `display_name` (the alias) — both
+        // must resolve.
+        let mut graph = LockfileGraph::default();
+        graph.importers.insert(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "h3-v2".to_string(),
+                dep_path: "h3-v2@2.0.0".to_string(),
+                dep_type: aube_lockfile::DepType::Production,
+                specifier: None,
+            }],
+        );
+        graph.packages.insert(
+            "h3-v2@2.0.0".to_string(),
+            LockedPackage {
+                name: "h3-v2".to_string(),
+                version: "2.0.0".to_string(),
+                dep_path: "h3-v2@2.0.0".to_string(),
+                alias_of: Some("h3".to_string()),
+                ..Default::default()
+            },
+        );
+        let idx = ChainIndex::from_graph(&graph);
+        assert_eq!(idx.lookup("h3-v2", "2.0.0"), Some(&[][..]));
+        assert_eq!(idx.lookup("h3", "2.0.0"), Some(&[][..]));
     }
 }
