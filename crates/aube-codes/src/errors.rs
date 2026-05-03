@@ -25,10 +25,11 @@ pub const ERR_AUBE_UNKNOWN_CATALOG_ENTRY: &str = "ERR_AUBE_UNKNOWN_CATALOG_ENTRY
 pub const ERR_AUBE_BLOCKED_EXOTIC_SUBDEP: &str = "ERR_AUBE_BLOCKED_EXOTIC_SUBDEP";
 pub const ERR_AUBE_TRUST_DOWNGRADE: &str = "ERR_AUBE_TRUST_DOWNGRADE";
 pub const ERR_AUBE_TRUST_MISSING_TIME: &str = "ERR_AUBE_TRUST_MISSING_TIME";
-pub const ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION: &str =
-    "ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION";
-pub const ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS: &str =
-    "ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS";
+// `#[rustfmt::skip]` keeps the long names on a single visual line so the
+// declaration list reads as a flat table — rustfmt would otherwise wrap
+// to a `name: &str =\n    "name";` two-liner for any const past col 100.
+#[rustfmt::skip] pub const ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION: &str = "ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION";
+#[rustfmt::skip] pub const ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS: &str = "ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS";
 pub const ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED: &str = "ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED";
 
 // ── registry / network ──────────────────────────────────────────────
@@ -56,11 +57,9 @@ pub const ERR_AUBE_MISSING_STORE_FILE: &str = "ERR_AUBE_MISSING_STORE_FILE";
 // ── scripts ─────────────────────────────────────────────────────────
 pub const ERR_AUBE_SCRIPT_SPAWN: &str = "ERR_AUBE_SCRIPT_SPAWN";
 pub const ERR_AUBE_SCRIPT_NON_ZERO_EXIT: &str = "ERR_AUBE_SCRIPT_NON_ZERO_EXIT";
-pub const ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE: &str = "ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE";
-pub const ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION: &str =
-    "ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION";
-pub const ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION: &str =
-    "ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION";
+#[rustfmt::skip] pub const ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE: &str = "ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE";
+#[rustfmt::skip] pub const ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION: &str = "ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION";
+#[rustfmt::skip] pub const ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION: &str = "ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION";
 
 // ── workspace / filter ──────────────────────────────────────────────
 pub const ERR_AUBE_WORKSPACE_PARSE: &str = "ERR_AUBE_WORKSPACE_PARSE";
