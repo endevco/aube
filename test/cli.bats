@@ -30,14 +30,18 @@ teardown() {
 }
 
 @test "aube parses pnpm global workspace/output flags" {
+	# Visible globals show up in `--help`; the workspace/output noops
+	# (--workspace-packages, --aggregate-output, --use-stderr, etc.) are
+	# hidden but still parseable for pnpm muscle memory. Verify both.
 	run aube --help
 	assert_success
 	assert_output --partial "--dir"
 	assert_output --partial "--filter-prod"
 	assert_output --partial "--workspace-root"
-	assert_output --partial "--workspace-packages"
-	assert_output --partial "--aggregate-output"
-	assert_output --partial "--use-stderr"
+
+	# Hidden compat noops parse silently.
+	run aube --workspace-packages --aggregate-output --use-stderr config get registry
+	assert_success
 }
 
 @test "aube update parses pnpm workspace selection flags" {

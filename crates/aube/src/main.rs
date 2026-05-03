@@ -978,7 +978,14 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                     no_color: cli.no_color,
                 },
             )?;
-            let nested = Cli::try_parse_from(argv).into_diagnostic()?;
+            // The reconstructed argv may carry pre-subcommand-positioned
+            // flags that moved off `global = true` (e.g. `--registry`,
+            // `--frozen-lockfile`). Run the same lift-pass we use on the
+            // outer argv so the nested clap parse sees them after the
+            // subcommand.
+            let nested_argv: Vec<OsString> =
+                lift_per_subcommand_flags(argv.into_iter().map(OsString::from).collect());
+            let nested = Cli::try_parse_from(nested_argv).into_diagnostic()?;
             let nested_filter = compute_effective_filter(&nested);
             match nested.command {
                 Some(Commands::Add(args)) => {
