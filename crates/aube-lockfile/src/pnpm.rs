@@ -501,7 +501,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
         if packages.contains_key(&alias_dep_path) {
             continue;
         }
-        let Some(real_pkg) = packages.get(&real_dep_path) else {
+        let Some(real_pkg) = packages
+            .get(&real_dep_path)
+            .or_else(|| peerless_alias_target(&packages, &real_dep_path))
+        else {
             return Err(Error::parse(
                 path,
                 format!(
@@ -582,6 +585,10 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
 
 /// Write a LockfileGraph as pnpm-lock.yaml v9 format.
 pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Result<(), Error> {
+    let native_pnpm_aliases = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "pnpm-lock.yaml");
     let mut importers = BTreeMap::new();
     let exclude_links = graph.settings.exclude_links_from_lockfile;
     for (importer_path, deps) in &graph.importers {
@@ -637,6 +644,11 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 .and_then(|p| p.local_source.as_ref())
             {
                 local.specifier()
+            } else if native_pnpm_aliases
+                && let Some(pkg) = graph.packages.get(&dep.dep_path)
+                && let Some(real_name) = pkg.alias_of.as_deref()
+            {
+                format!("{real_name}@{}", dep_path_tail(&dep.dep_path, &dep.name))
             } else {
                 dep.dep_path
                     .strip_prefix(&format!("{}@", dep.name))
@@ -728,15 +740,20 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         let canonical = match pkg.local_source.as_ref() {
             Some(LocalSource::Link(_)) => continue,
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
-            None if url_keyed => {
-                // Strip any peer suffix; the packages section keys the
-                // canonical form (no peer contexts), the snapshots
-                // section keys the full dep_path.
-                let (name, version) = parse_dep_path(&pkg.dep_path)
-                    .unwrap_or_else(|| (pkg.name.clone(), pkg.version.clone()));
-                format!("{name}@{version}")
+            None => {
+                if native_pnpm_aliases && let Some(real_name) = pkg.alias_of.as_deref() {
+                    version_to_dep_path(real_name, &pkg.version)
+                } else if url_keyed {
+                    // Strip any peer suffix; the packages section keys the
+                    // canonical form (no peer contexts), the snapshots
+                    // section keys the full dep_path.
+                    let (name, version) = parse_dep_path(&pkg.dep_path)
+                        .unwrap_or_else(|| (pkg.name.clone(), pkg.version.clone()));
+                    format!("{name}@{version}")
+                } else {
+                    version_to_dep_path(&pkg.name, &pkg.version)
+                }
             }
-            None => version_to_dep_path(&pkg.name, &pkg.version),
         };
         let peer_deps = if pkg.peer_dependencies.is_empty() {
             None
@@ -875,11 +892,9 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 has_bin: !pkg.bin.is_empty(),
                 peer_dependencies: peer_deps,
                 peer_dependencies_meta: peer_meta,
-                // Preserve the alias→real-name mapping so a subsequent
-                // install from this lockfile still hits the real
-                // registry instead of re-404ing on the alias-qualified
-                // tarball URL.
-                alias_of: pkg.alias_of.clone(),
+                alias_of: (!native_pnpm_aliases)
+                    .then(|| pkg.alias_of.clone())
+                    .flatten(),
             },
         );
     }
@@ -893,12 +908,23 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
     let rewrite_local_deps = |deps: BTreeMap<String, String>| -> BTreeMap<String, String> {
         deps.into_iter()
             .map(|(name, value)| {
-                let dp = format!("{name}@{value}");
-                if let Some(target) = graph.packages.get(&dp)
+                let dp = version_to_dep_path(&name, &value);
+                if let Some(target) = graph
+                    .packages
+                    .get(&dp)
+                    .or_else(|| graph.packages.get(&peerless_dep_path(&name, &value)))
                     && let Some(ref local) = target.local_source
                     && !matches!(local, LocalSource::Link(_))
                 {
                     (name, local.specifier())
+                } else if native_pnpm_aliases
+                    && let Some(target) = graph
+                        .packages
+                        .get(&dp)
+                        .or_else(|| graph.packages.get(&peerless_dep_path(&name, &value)))
+                    && let Some(real_name) = target.alias_of.as_deref()
+                {
+                    (name, format!("{real_name}@{value}"))
                 } else {
                     (name, value)
                 }
@@ -913,7 +939,13 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         let key = match pkg.local_source.as_ref() {
             Some(LocalSource::Link(_)) => continue,
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
-            None => dep_path.clone(),
+            None => {
+                if native_pnpm_aliases && let Some(real_name) = pkg.alias_of.as_deref() {
+                    format!("{real_name}@{}", dep_path_tail(dep_path, &pkg.name))
+                } else {
+                    dep_path.clone()
+                }
+            }
         };
         let pkg_deps = rewrite_local_deps(pkg.dependencies.clone());
         let pkg_opt_deps = rewrite_local_deps(pkg.optional_dependencies.clone());
@@ -1126,6 +1158,24 @@ fn reformat_for_pnpm_parity(yaml: &str) -> String {
 
 fn version_to_dep_path(name: &str, version: &str) -> String {
     format!("{name}@{version}")
+}
+
+fn dep_path_tail<'a>(dep_path: &'a str, name: &str) -> &'a str {
+    dep_path
+        .strip_prefix(&format!("{name}@"))
+        .unwrap_or(dep_path)
+}
+
+fn peerless_dep_path(name: &str, value: &str) -> String {
+    version_to_dep_path(name, value.split('(').next().unwrap_or(value))
+}
+
+fn peerless_alias_target<'a>(
+    packages: &'a BTreeMap<String, LockedPackage>,
+    real_dep_path: &str,
+) -> Option<&'a LockedPackage> {
+    let (real_name, real_version) = parse_dep_path(real_dep_path)?;
+    packages.get(&version_to_dep_path(&real_name, &real_version))
 }
 
 /// Parse a dep path like "@scope/name@1.0.0" or "name@1.0.0" into (name, version).
@@ -3406,6 +3456,79 @@ snapshots:
             reparsed.skipped_optional_dependencies["."]["optional-native"],
             "^1.0.0"
         );
+    }
+
+    #[test]
+    fn write_pnpm_lockfile_uses_native_alias_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-lock.yaml");
+        let manifest = PackageJson {
+            name: Some("alias-native-pnpm".to_string()),
+            version: Some("1.0.0".to_string()),
+            dependencies: [("odd-alias".to_string(), "npm:is-odd@3.0.1".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let graph = LockfileGraph {
+            importers: [(
+                ".".to_string(),
+                vec![DirectDep {
+                    name: "odd-alias".to_string(),
+                    dep_path: "odd-alias@3.0.1".to_string(),
+                    dep_type: DepType::Production,
+                    specifier: Some("npm:is-odd@3.0.1".to_string()),
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            packages: [
+                (
+                    "odd-alias@3.0.1".to_string(),
+                    LockedPackage {
+                        name: "odd-alias".to_string(),
+                        version: "3.0.1".to_string(),
+                        integrity: Some("sha512-odd".to_string()),
+                        dep_path: "odd-alias@3.0.1".to_string(),
+                        alias_of: Some("is-odd".to_string()),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "consumer@1.0.0".to_string(),
+                    LockedPackage {
+                        name: "consumer".to_string(),
+                        version: "1.0.0".to_string(),
+                        integrity: Some("sha512-consumer".to_string()),
+                        dep_path: "consumer@1.0.0".to_string(),
+                        dependencies: [(
+                            "odd-alias".to_string(),
+                            "3.0.1(peer-host@1.0.0)".to_string(),
+                        )]
+                        .into_iter()
+                        .collect(),
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        write(&path, &graph, &manifest).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("version: is-odd@3.0.1"), "{written}");
+        assert!(written.contains("is-odd@3.0.1:"), "{written}");
+        assert!(
+            written.contains("odd-alias: is-odd@3.0.1(peer-host@1.0.0)"),
+            "{written}"
+        );
+        assert!(!written.contains("aliasOf:"), "{written}");
+
+        let reparsed = parse(&path).unwrap();
+        let alias_pkg = reparsed.packages.get("odd-alias@3.0.1").unwrap();
+        assert_eq!(alias_pkg.alias_of.as_deref(), Some("is-odd"));
     }
 
     #[test]

@@ -71,6 +71,73 @@ post
 prepare"
 }
 
+@test "workspace install runs member postinstall hooks after member deps are linked" {
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-lifecycle-root",
+  "version": "1.0.0"
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/app
+	cat >packages/app/package.json <<'JSON'
+{
+  "name": "workspace-lifecycle-app",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"is-odd\"); require(\"fs\").writeFileSync(\"postinstall.marker\", \"ran\")'"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists packages/app/postinstall.marker
+}
+
+@test "workspace member onlyBuiltDependencies allows member dep postinstall" {
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-build-policy-root",
+  "version": "1.0.0"
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/app/dep-with-build
+	cat >packages/app/dep-with-build/package.json <<'JSON'
+{
+  "name": "member-dep-with-build",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e 'require(\"fs\").writeFileSync(\"built.marker\", \"ran\")'"
+  }
+}
+JSON
+	cat >packages/app/package.json <<'JSON'
+{
+  "name": "workspace-build-policy-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "member-dep-with-build": "file:./dep-with-build"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["member-dep-with-build"]
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_file_exists packages/app/node_modules/member-dep-with-build/built.marker
+}
+
 @test "requiredScripts enforces root package scripts" {
 	cat >.npmrc <<'EOF'
 requiredScripts=build,test

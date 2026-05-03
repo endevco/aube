@@ -23,7 +23,10 @@ use bin_linking::{link_bin_entries, link_bins, link_bins_for_dep};
 pub use dep_selection::DepSelection;
 pub use frozen::{FrozenMode, FrozenOverride, GlobalVirtualStoreFlags};
 use git_prepare::{prepare_scratch_copy, run_git_dep_prepare};
-pub(crate) use lifecycle::{JailBuildPolicy, build_policy_from_sources, run_dep_lifecycle_scripts};
+pub(crate) use lifecycle::{
+    JailBuildPolicy, build_policy_from_manifest_sources, build_policy_from_sources,
+    run_dep_lifecycle_scripts,
+};
 use lifecycle::{
     import_verified_tarball_streamed, resolve_link_strategy, run_root_lifecycle,
     unreviewed_dep_builds, validate_required_scripts,
@@ -1802,34 +1805,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // read-side encoding agrees with what the linker actually wrote.
     let virtual_store_dir_max_length = super::resolve_virtual_store_dir_max_length(&settings_ctx);
 
-    // 1b. Root `preinstall` lifecycle hook.
-    //     Runs before anything touches the dep graph, matching pnpm/npm.
-    //     Runs before the progress UI is started so script stdout can't
-    //     collide with the progress display. Skipped when --ignore-scripts
-    //     is set, under --lockfile-only, or with enableModulesDir=false
-    //     (both imply "no node_modules touched, so lifecycle scripts
-    //     have nothing to gate"). Dependency scripts are always
-    //     skipped.
-    if !opts.ignore_scripts && !lockfile_only_effective && !opts.skip_root_lifecycle {
-        let phase_start = std::time::Instant::now();
-        run_root_lifecycle(
-            &cwd,
-            &modules_dir_name,
-            &manifest,
-            aube_scripts::LifecycleHook::PreInstall,
-        )
-        .await?;
-        phase_timings.record("root_preinstall", phase_start.elapsed());
-    }
-
-    // Progress UI. `None` on non-TTY stderr, in text mode (e.g. `-v`), or
-    // when progress output is otherwise disabled. A normal install produces
-    // *no* output other than the bar itself — everything else is tracing at
-    // debug level, visible with `aube -v install`. Must be constructed after
-    // any lifecycle script that writes to stderr.
-    let prog = InstallProgress::try_new();
-    let prog_ref = prog.as_ref();
-
     // 2. Detect workspace
     let workspace_packages = aube_workspace::find_workspace_packages(&cwd)
         .into_diagnostic()
@@ -1895,6 +1870,46 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             }
         }
     }
+
+    let lifecycle_manifests: Vec<(String, aube_manifest::PackageJson)> =
+        if has_workspace && link_all_workspace_importers {
+            order_lifecycle_manifests(
+                manifests
+                    .iter()
+                    .filter(|(importer, _)| aube_linker::is_physical_importer(importer))
+                    .cloned()
+                    .collect(),
+            )
+        } else {
+            vec![(".".to_string(), manifest.clone())]
+        };
+
+    // 1b. Project `preinstall` lifecycle hooks.
+    //     Workspace installs run the hook for every physical importer
+    //     that will be linked, matching pnpm's recursive install
+    //     behavior. Runs before the progress UI starts so script output
+    //     cannot collide with the progress display.
+    if !opts.ignore_scripts && !lockfile_only_effective && !opts.skip_root_lifecycle {
+        let phase_start = std::time::Instant::now();
+        for (importer_path, importer_manifest) in &lifecycle_manifests {
+            let project_dir = importer_project_dir(&cwd, importer_path);
+            run_root_lifecycle(
+                &project_dir,
+                &modules_dir_name,
+                importer_manifest,
+                aube_scripts::LifecycleHook::PreInstall,
+            )
+            .await?;
+        }
+        phase_timings.record("root_preinstall", phase_start.elapsed());
+    }
+    // Progress UI. `None` on non-TTY stderr, in text mode (e.g. `-v`), or
+    // when progress output is otherwise disabled. A normal install produces
+    // *no* output other than the bar itself — everything else is tracing at
+    // debug level, visible with `aube -v install`. Must be constructed after
+    // any lifecycle script that writes to stderr.
+    let prog = InstallProgress::try_new();
+    let prog_ref = prog.as_ref();
 
     // Auto-disable the global virtual store when any importer depends
     // on a package listed in `disableGlobalVirtualStoreForPackages`
@@ -3518,8 +3533,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         virtual_store_dir_max_length,
     )?;
 
-    let (build_policy, policy_warnings) = build_policy_from_sources(
-        &manifest,
+    let (build_policy, policy_warnings) = build_policy_from_manifest_sources(
+        lifecycle_manifests.iter().map(|(_, manifest)| manifest),
         &ws_config_shared,
         opts.dangerously_allow_all_builds,
     );
@@ -3988,12 +4003,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     A hook that exits non-zero fails the install (fail-fast, matching pnpm).
     if !opts.ignore_scripts && !virtual_store_only && !opts.skip_root_lifecycle {
         let phase_start = std::time::Instant::now();
-        for hook in [
-            aube_scripts::LifecycleHook::Install,
-            aube_scripts::LifecycleHook::PostInstall,
-            aube_scripts::LifecycleHook::Prepare,
-        ] {
-            run_root_lifecycle(&cwd, &modules_dir_name, &manifest, hook).await?;
+        for (importer_path, importer_manifest) in &lifecycle_manifests {
+            let project_dir = importer_project_dir(&cwd, importer_path);
+            for hook in [
+                aube_scripts::LifecycleHook::Install,
+                aube_scripts::LifecycleHook::PostInstall,
+                aube_scripts::LifecycleHook::Prepare,
+            ] {
+                run_root_lifecycle(&project_dir, &modules_dir_name, importer_manifest, hook)
+                    .await?;
+            }
         }
         phase_timings.record("root_lifecycle", phase_start.elapsed());
     }
@@ -4646,6 +4665,101 @@ fn filter_graph_to_workspace_selection(
     Ok(filtered.filter_deps(|_| true))
 }
 
+fn importer_project_dir(
+    workspace_root: &std::path::Path,
+    importer_path: &str,
+) -> std::path::PathBuf {
+    if importer_path == "." {
+        workspace_root.to_path_buf()
+    } else {
+        workspace_root.join(importer_path)
+    }
+}
+
+fn order_lifecycle_manifests(
+    manifests: Vec<(String, aube_manifest::PackageJson)>,
+) -> Vec<(String, aube_manifest::PackageJson)> {
+    if manifests.len() < 2 {
+        return manifests;
+    }
+
+    let importer_index: std::collections::HashMap<&str, usize> = manifests
+        .iter()
+        .enumerate()
+        .map(|(idx, (importer, _))| (importer.as_str(), idx))
+        .collect();
+    let workspace_name_to_importer: std::collections::HashMap<&str, &str> = manifests
+        .iter()
+        .filter_map(|(importer, manifest)| {
+            manifest
+                .name
+                .as_deref()
+                .map(|name| (name, importer.as_str()))
+        })
+        .collect();
+
+    let mut edges = vec![Vec::<usize>::new(); manifests.len()];
+    let mut indegree = vec![0usize; manifests.len()];
+    for (dependent_idx, (dependent_importer, manifest)) in manifests.iter().enumerate() {
+        for dep_name in manifest
+            .dependencies
+            .keys()
+            .chain(manifest.dev_dependencies.keys())
+            .chain(manifest.optional_dependencies.keys())
+        {
+            let Some(dependency_importer) = workspace_name_to_importer.get(dep_name.as_str())
+            else {
+                continue;
+            };
+            if *dependency_importer == dependent_importer {
+                continue;
+            }
+            let Some(&dependency_idx) = importer_index.get(dependency_importer) else {
+                continue;
+            };
+            if !edges[dependency_idx].contains(&dependent_idx) {
+                edges[dependency_idx].push(dependent_idx);
+                indegree[dependent_idx] += 1;
+            }
+        }
+    }
+
+    let mut ready: std::collections::VecDeque<usize> = indegree
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, degree)| (*degree == 0).then_some(idx))
+        .collect();
+    let mut ordered = Vec::with_capacity(manifests.len());
+    let mut emitted = vec![false; manifests.len()];
+    while let Some(idx) = ready.pop_front() {
+        if emitted[idx] {
+            continue;
+        }
+        emitted[idx] = true;
+        ordered.push(idx);
+        for &dependent_idx in &edges[idx] {
+            indegree[dependent_idx] -= 1;
+            if indegree[dependent_idx] == 0 {
+                ready.push_back(dependent_idx);
+            }
+        }
+    }
+    for (idx, is_emitted) in emitted.iter().enumerate() {
+        if !is_emitted {
+            ordered.push(idx);
+        }
+    }
+
+    let mut manifests = manifests
+        .into_iter()
+        .map(Some)
+        .collect::<Vec<Option<(String, aube_manifest::PackageJson)>>>();
+    ordered
+        .into_iter()
+        .filter_map(|idx| manifests[idx].take())
+        .collect()
+}
+
 /// Write one lockfile per non-root workspace importer when
 /// `sharedWorkspaceLockfile=false` is set. Each lockfile contains
 /// only the importer's own deps (remapped to `.`) plus the transitive
@@ -4711,7 +4825,7 @@ fn filter_graph_to_importers<const N: usize>(
 
 #[cfg(test)]
 mod allow_build_review_tests {
-    use super::package_name_from_spec_key;
+    use super::{order_lifecycle_manifests, package_name_from_spec_key};
 
     #[test]
     fn package_name_from_spec_key_handles_scoped_names() {
@@ -4723,6 +4837,39 @@ mod allow_build_review_tests {
     fn package_name_from_spec_key_handles_unscoped_names() {
         assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
         assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
+    }
+
+    #[test]
+    fn lifecycle_manifests_follow_workspace_dependency_order() {
+        let ordered = order_lifecycle_manifests(vec![
+            (".".to_string(), named_manifest("root")),
+            (
+                "packages/app".to_string(),
+                manifest_with_dep("app", "@scope/lib"),
+            ),
+            ("packages/lib".to_string(), named_manifest("@scope/lib")),
+        ]);
+        let importers = ordered
+            .iter()
+            .map(|(importer, _)| importer.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(importers, [".", "packages/lib", "packages/app"]);
+    }
+
+    fn named_manifest(name: &str) -> aube_manifest::PackageJson {
+        aube_manifest::PackageJson {
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn manifest_with_dep(name: &str, dep: &str) -> aube_manifest::PackageJson {
+        let mut manifest = named_manifest(name);
+        manifest
+            .dependencies
+            .insert(dep.to_string(), "workspace:*".to_string());
+        manifest
     }
 }
 
