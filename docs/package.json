@@ -1,8 +1,10 @@
 {
   "scripts": {
     "settings:gen": "cargo run --manifest-path ../Cargo.toml -p aube-settings --bin generate-settings-docs",
-    "docs:dev": "npm run settings:gen && vitepress dev",
-    "docs:build": "npm run settings:gen && vitepress build",
+    "error-codes:gen": "cargo run --manifest-path ../Cargo.toml -p aube-codes --bin generate-error-codes-docs",
+    "data:gen": "npm run settings:gen && npm run error-codes:gen",
+    "docs:dev": "npm run data:gen && vitepress dev",
+    "docs:build": "npm run data:gen && vitepress build",
     "docs:preview": "vitepress preview",
     "icons:render": "node scripts/render-icons.mjs"
   },

@@ -4,6 +4,7 @@ import { h } from "vue";
 import AubeSocialLinks from "./AubeSocialLinks.vue";
 import BenchChart from "./BenchChart.vue";
 import EndevFooter from "./EndevFooter.vue";
+import ErrorCodesTable from "./ErrorCodesTable.vue";
 import HomeLanding from "./HomeLanding.vue";
 import { initBanner } from "./banner";
 import "./custom.css";
@@ -19,6 +20,7 @@ export default {
   },
   enhanceApp({ app }) {
     app.component("BenchChart", BenchChart);
+    app.component("ErrorCodesTable", ErrorCodesTable);
     app.component("HomeLanding", HomeLanding);
     initBanner();
   },
