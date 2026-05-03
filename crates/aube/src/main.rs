@@ -171,6 +171,18 @@ fn lift_per_subcommand_flags(mut args: Vec<OsString>) -> Vec<OsString> {
     ];
     const KEPT_SHORTS_WITH_VALUE: &[&str] = &["-C", "-F"];
 
+    // True when the token at `args[idx]` looks like another flag rather
+    // than a free-form value. Used to avoid eating the next flag as the
+    // current flag's value when the user wrote `--dir --frozen-lockfile
+    // install` (omitting the `--dir` value); without this guard we'd
+    // silently consume `--frozen-lockfile` as a directory name and
+    // `--frozen-lockfile` would never get lifted past the subcommand.
+    let token_looks_like_flag = |args: &[OsString], idx: usize| -> bool {
+        args.get(idx)
+            .and_then(|t| t.to_str())
+            .is_some_and(|s| s.starts_with('-') && s != "-")
+    };
+
     let mut lifted: Vec<OsString> = Vec::new();
     let mut subcommand_idx: Option<usize> = None;
     let mut i = 1;
@@ -188,14 +200,18 @@ fn lift_per_subcommand_flags(mut args: Vec<OsString>) -> Vec<OsString> {
                 LIFTED_LONGS.iter().copied().find(|(name, _)| *name == bare)
             {
                 lifted.push(args.remove(i));
-                if takes_value && !has_inline_value && i < args.len() {
+                if takes_value
+                    && !has_inline_value
+                    && i < args.len()
+                    && !token_looks_like_flag(&args, i)
+                {
                     lifted.push(args.remove(i));
                 }
                 continue;
             }
             if KEPT_LONGS_WITH_VALUE.contains(&bare) {
                 i += 1;
-                if !has_inline_value && i < args.len() {
+                if !has_inline_value && i < args.len() && !token_looks_like_flag(&args, i) {
                     i += 1;
                 }
                 continue;
@@ -210,15 +226,11 @@ fn lift_per_subcommand_flags(mut args: Vec<OsString>) -> Vec<OsString> {
             subcommand_idx = Some(i);
             break;
         }
-        if let Some(rest) = s.strip_prefix('-') {
-            if rest.is_empty() {
-                subcommand_idx = Some(i);
-                break;
-            }
+        if let Some(_rest) = s.strip_prefix('-') {
             // -F (kept, takes value)
             if s == "-F" {
                 i += 1;
-                if i < args.len() {
+                if i < args.len() && !token_looks_like_flag(&args, i) {
                     i += 1;
                 }
                 continue;
@@ -233,7 +245,7 @@ fn lift_per_subcommand_flags(mut args: Vec<OsString>) -> Vec<OsString> {
             // -C (kept, takes value)
             if KEPT_SHORTS_WITH_VALUE.contains(&s) {
                 i += 1;
-                if i < args.len() {
+                if i < args.len() && !token_looks_like_flag(&args, i) {
                     i += 1;
                 }
                 continue;
@@ -1742,6 +1754,31 @@ mod cli_spec_tests {
         assert_eq!(
             install_args.network.registry.as_deref(),
             Some("https://registry.example.com/")
+        );
+    }
+
+    #[test]
+    fn lifter_does_not_eat_lifted_flag_as_kept_flag_value() {
+        // Regression: `aube --dir /tmp --frozen-lockfile install` would
+        // previously lose `--frozen-lockfile` if `--dir`'s value was
+        // omitted because the rewriter unconditionally consumed the next
+        // token as the kept flag's value.
+        let argv = lift_per_subcommand_flags(
+            ["aube", "--dir", "--frozen-lockfile", "install"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        );
+        // After the lift, `--frozen-lockfile` should sit after `install`,
+        // NOT have been consumed as `--dir`'s value.
+        let strs: Vec<&str> = argv.iter().filter_map(|t| t.to_str()).collect();
+        let install_idx = strs
+            .iter()
+            .position(|s| *s == "install")
+            .expect("install subcommand should survive the lift");
+        assert!(
+            strs[install_idx + 1..].contains(&"--frozen-lockfile"),
+            "--frozen-lockfile should land after the subcommand: {strs:?}"
         );
     }
 

@@ -59,7 +59,9 @@ pub async fn run(args: CreateArgs) -> miette::Result<()> {
         params: dlx_params,
         package: Vec::new(),
         shell_mode: false,
+        lockfile: Default::default(),
         network,
+        virtual_store: Default::default(),
     })
     .await
 }
