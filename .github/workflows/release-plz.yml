@@ -177,8 +177,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           TAG: ${{ needs.release-plz-release.outputs.tag }}
         run: |
+          body="$(gh release view "$TAG" --json body --jq .body)"
+          if grep -Fqx '## 💚 Sponsor aube' <<<"$body"; then
+            echo "Release notes already include the sponsor blurb; leaving them unchanged."
+            exit 0
+          fi
+
           {
-            gh release view "$TAG" --json body --jq .body
+            printf '%s\n' "$body"
             cat <<'EOF'
 
           ## 💚 Sponsor aube
