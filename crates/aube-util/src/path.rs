@@ -1,6 +1,34 @@
 //! Cross-crate path normalization helpers.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// Collapse `.` and resolvable `..` components without touching the
+/// filesystem.
+///
+/// Unlike `canonicalize`, this does not require the path to exist and
+/// does not follow symlinks. Leading `..` components that cannot be
+/// collapsed are preserved.
+pub fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                let prev_is_normal = out
+                    .components()
+                    .next_back()
+                    .is_some_and(|c| matches!(c, Component::Normal(_)));
+                if prev_is_normal {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 /// Strip a Windows `\\?\` verbatim drive prefix from `path` so callers
 /// that interpolate it into a path-concatenating template (`%~dp0\{rel}`
@@ -30,6 +58,30 @@ pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexical_normalization_collapses_internal_parent_dirs() {
+        assert_eq!(
+            normalize_lexical(Path::new("packages/app/../../vendor")),
+            PathBuf::from("vendor")
+        );
+    }
+
+    #[test]
+    fn lexical_normalization_preserves_leading_parent_dirs() {
+        assert_eq!(
+            normalize_lexical(Path::new("../vendor")),
+            PathBuf::from("../vendor")
+        );
+    }
+
+    #[test]
+    fn lexical_normalization_ignores_current_dirs() {
+        assert_eq!(
+            normalize_lexical(Path::new("./vendor/./pkg")),
+            PathBuf::from("vendor/pkg")
+        );
+    }
 
     #[cfg(windows)]
     #[test]

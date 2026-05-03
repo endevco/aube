@@ -1,39 +1,8 @@
 use crate::{Error, ResolveTask};
 use aube_lockfile::{LocalSource, LockedPackage};
 use aube_registry::client::RegistryClient;
+use aube_util::path::normalize_lexical;
 use std::collections::BTreeMap;
-
-/// Lexical path normalization — collapse `.` and `..` components
-/// against earlier components without touching the filesystem. Unlike
-/// `canonicalize`, this doesn't require the path to exist and doesn't
-/// follow symlinks, which matters because `link:` deps deliberately
-/// point at symlinks the user controls. Leading `..` that can't be
-/// collapsed are preserved (e.g. `../foo` stays `../foo`).
-fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
-    use std::path::{Component, PathBuf};
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::ParentDir => {
-                // Pop the previous component if it was a plain name;
-                // otherwise record the `..` literally so leading
-                // ascents out of the base don't silently disappear.
-                let prev_is_normal = out
-                    .components()
-                    .next_back()
-                    .is_some_and(|c| matches!(c, Component::Normal(_)));
-                if prev_is_normal {
-                    out.pop();
-                } else {
-                    out.push("..");
-                }
-            }
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
 
 /// Rewrite a `LocalSource` whose path is relative to `importer_root`
 /// into one whose path is relative to `project_root`, so downstream
@@ -65,8 +34,8 @@ pub(crate) fn rebase_local(
         // Non-path sources (git) have nothing to rebase.
         return local.clone();
     };
-    let abs = normalize_path(&importer_root.join(local_path));
-    let rebased = pathdiff::diff_paths(&abs, project_root).map_or(abs, |p| normalize_path(&p));
+    let abs = normalize_lexical(&importer_root.join(local_path));
+    let rebased = pathdiff::diff_paths(&abs, project_root).map_or(abs, |p| normalize_lexical(&p));
     match local {
         LocalSource::Directory(_) => LocalSource::Directory(rebased),
         LocalSource::Tarball(_) => LocalSource::Tarball(rebased),
@@ -548,7 +517,7 @@ mod rebase_local_tests {
         // `..` at the root of the project is still meaningful —
         // don't silently drop it.
         assert_eq!(
-            normalize_path(Path::new("../vendor")),
+            normalize_lexical(Path::new("../vendor")),
             PathBuf::from("../vendor")
         );
     }

@@ -35,9 +35,10 @@ use crate::{
     DepType, DirectDep, Error, GitSource, LocalSource, LockedPackage, LockfileGraph, PeerDepMeta,
     RemoteTarballSource,
 };
+use aube_util::path::normalize_lexical;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 #[derive(Debug, Deserialize)]
 struct RawBunLockfile {
@@ -741,35 +742,13 @@ fn rebase_workspace_scoped_local_source(
     }) else {
         return local;
     };
-    let rebased = normalize_path(&Path::new(ws_path).join(local_path));
+    let rebased = normalize_lexical(&Path::new(ws_path).join(local_path));
     match local {
         LocalSource::Directory(_) => LocalSource::Directory(rebased),
         LocalSource::Tarball(_) => LocalSource::Tarball(rebased),
         LocalSource::Link(_) => LocalSource::Link(rebased),
         LocalSource::Git(_) | LocalSource::RemoteTarball(_) => local,
     }
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::ParentDir => {
-                if out
-                    .components()
-                    .next_back()
-                    .is_some_and(|c| matches!(c, Component::Normal(_)))
-                {
-                    out.pop();
-                } else {
-                    out.push("..");
-                }
-            }
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 fn split_committish(spec: &str) -> (String, Option<String>) {
@@ -1708,6 +1687,7 @@ fn inline_json(value: &serde_json::Value, _base_indent: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_split_ident() {
