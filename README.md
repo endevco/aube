@@ -21,7 +21,7 @@
 ## Why Try It
 
 <!-- BENCH_RATIOS:START -->
-**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs are about 11x faster than pnpm and about 7x faster than Bun in the current benchmarks. Repeat test commands run up to 28x faster than pnpm and up to 4x faster than Bun.
+**[Fast installs](https://aube.en.dev/benchmarks).** Warm installs are about 8x faster than pnpm and about 7x faster than Bun in the current benchmarks. Repeat test commands run up to 32x faster than pnpm and up to 6x faster than Bun.
 <!-- BENCH_RATIOS:END -->
 
 **[Existing lockfiles](https://aube.en.dev/package-manager/lockfiles).** Reads and writes `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock` in place.
