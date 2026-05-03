@@ -194,7 +194,14 @@ function escapeHtml(s: string): string {
   gap: 0.75rem;
   margin-bottom: 1.5rem;
   position: sticky;
-  top: var(--vp-nav-height, 64px);
+  /* Stick just below the fixed banner+navbar overlay. The banner
+     contributes `--vp-layout-top-height` (0 when not rendered);
+     `--vp-nav-height` is the navbar itself. Using only
+     `--vp-nav-height` would tuck the top ~36px of the search input
+     behind the navbar whenever the jdx-banner is active — same
+     class of bug the layout's `padding-bottom` fix in banner.css
+     addresses for the page-bottom side. */
+  top: calc(var(--vp-layout-top-height, 0px) + var(--vp-nav-height, 64px));
   background: var(--vp-c-bg);
   padding: 0.75rem 0;
   z-index: 1;
