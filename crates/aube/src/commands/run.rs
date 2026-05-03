@@ -266,13 +266,13 @@ pub(crate) async fn run_script_with(
 
     let manifest = load_manifest(&cwd)?;
     if !manifest.scripts.contains_key(script) {
-        if if_present {
-            return Ok(());
-        }
         ensure_installed(no_install).await?;
         let bin_path = super::project_modules_dir(&cwd).join(".bin").join(script);
         if bin_path.exists() {
             return super::exec::exec_bin(&cwd, &bin_path, script, args, false).await;
+        }
+        if if_present {
+            return Ok(());
         }
         // Old error was "script not found: foo" with no list. User
         // has to cat package.json to figure out what to type. npm
@@ -342,10 +342,17 @@ async fn run_script_filtered(
             .into_iter()
             .filter_map(|pkg| {
                 if pkg.manifest.scripts.contains_key(script) {
-                    Some(Ok(pkg))
-                } else if if_present {
-                    None
+                    Some(Ok((pkg, None)))
                 } else {
+                    let bin_path = super::project_modules_dir(&pkg.dir)
+                        .join(".bin")
+                        .join(script);
+                    if bin_path.exists() {
+                        return Some(Ok((pkg, Some(bin_path))));
+                    }
+                    if if_present {
+                        return None;
+                    }
                     let name = pkg
                         .name
                         .clone()
@@ -360,7 +367,7 @@ async fn run_script_filtered(
         let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
             Vec::with_capacity(runnable.len());
         let mut task_names: Vec<String> = Vec::with_capacity(runnable.len());
-        for pkg in runnable {
+        for (pkg, bin_path) in runnable {
             let name = pkg
                 .name
                 .clone()
@@ -374,8 +381,18 @@ async fn run_script_filtered(
             let manifest = pkg.manifest.clone();
             task_names.push(name);
             tasks.push(tokio::spawn(async move {
-                exec_script_status_chain(&dir, &manifest, &script, &args, enable_pre_post_scripts)
+                if let Some(bin_path) = bin_path {
+                    super::exec::exec_bin_status(&dir, &bin_path, &script, &args, false).await
+                } else {
+                    exec_script_status_chain(
+                        &dir,
+                        &manifest,
+                        &script,
+                        &args,
+                        enable_pre_post_scripts,
+                    )
                     .await
+                }
             }));
         }
         let mut first_err: Option<miette::Report> = None;
@@ -412,6 +429,16 @@ async fn run_script_filtered(
             .as_deref()
             .unwrap_or_else(|| pkg.dir.to_str().unwrap_or("(unnamed)"));
         if !pkg.manifest.scripts.contains_key(script) {
+            let bin_path = super::project_modules_dir(&pkg.dir)
+                .join(".bin")
+                .join(script);
+            if bin_path.exists() {
+                if !silent {
+                    tracing::info!("aube run: {name} -> {script}");
+                }
+                super::exec::exec_bin(&pkg.dir, &bin_path, script, args, false).await?;
+                continue;
+            }
             if if_present {
                 continue;
             }

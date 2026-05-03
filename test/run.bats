@@ -66,6 +66,113 @@ teardown() {
 	assert_line "local-bin:alpha,beta"
 }
 
+@test "aube run --if-present still falls back to local binary" {
+	mkdir -p tools/local-bin
+	cat >package.json <<-'JSON'
+		{
+		  "name": "run-bin-if-present",
+		  "version": "1.0.0",
+		  "private": true,
+		  "dependencies": {
+		    "local-bin": "file:tools/local-bin"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/package.json <<-'JSON'
+		{
+		  "name": "local-bin",
+		  "version": "1.0.0",
+		  "bin": {
+		    "local-bin": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log(`local-bin-if-present:${process.argv.slice(2).join(",")}`)
+	JS
+	chmod +x tools/local-bin/index.js
+
+	aube install
+	run aube run --if-present local-bin alpha beta
+	assert_success
+	assert_line "local-bin-if-present:alpha,beta"
+}
+
+@test "aube run filtered falls back to local binaries" {
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - packages/*
+	EOF
+	cat >package.json <<-'JSON'
+		{"name":"root","version":"0.0.0","private":true}
+	JSON
+	mkdir -p packages/a packages/b tools/local-bin
+	cat >packages/a/package.json <<-'JSON'
+		{"name":"a","version":"0.0.0","dependencies":{"local-bin":"file:../../tools/local-bin"}}
+	JSON
+	cat >packages/b/package.json <<-'JSON'
+		{"name":"b","version":"0.0.0","dependencies":{"local-bin":"file:../../tools/local-bin"}}
+	JSON
+	cat >tools/local-bin/package.json <<-'JSON'
+		{
+		  "name": "local-bin",
+		  "version": "1.0.0",
+		  "bin": {
+		    "local-bin": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log(`filtered-bin:${process.cwd().split("/").pop()}`)
+	JS
+	chmod +x tools/local-bin/index.js
+
+	aube install
+	run aube -r run local-bin
+	assert_success
+	assert_output --partial "filtered-bin:a"
+	assert_output --partial "filtered-bin:b"
+}
+
+@test "aube run filtered parallel falls back to local binaries" {
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - packages/*
+	EOF
+	cat >package.json <<-'JSON'
+		{"name":"root","version":"0.0.0","private":true}
+	JSON
+	mkdir -p packages/a packages/b tools/local-bin
+	cat >packages/a/package.json <<-'JSON'
+		{"name":"a","version":"0.0.0","dependencies":{"local-bin":"file:../../tools/local-bin"}}
+	JSON
+	cat >packages/b/package.json <<-'JSON'
+		{"name":"b","version":"0.0.0","dependencies":{"local-bin":"file:../../tools/local-bin"}}
+	JSON
+	cat >tools/local-bin/package.json <<-'JSON'
+		{
+		  "name": "local-bin",
+		  "version": "1.0.0",
+		  "bin": {
+		    "local-bin": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log(`filtered-parallel-bin:${process.cwd().split("/").pop()}`)
+	JS
+	chmod +x tools/local-bin/index.js
+
+	aube install
+	run aube -r run --parallel local-bin
+	assert_success
+	assert_output --partial "filtered-parallel-bin:a"
+	assert_output --partial "filtered-parallel-bin:b"
+}
+
 @test "aube run without a script errors with available scripts when stdin isn't a TTY" {
 	_setup_basic_fixture
 	aube install

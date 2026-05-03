@@ -194,7 +194,8 @@ pub(crate) async fn exec_bin(
         cmd.env("PATH", &new_path);
         cmd
     } else {
-        let mut cmd = tokio::process::Command::new(bin_path);
+        let exec_path = resolve_exec_shim(bin_path);
+        let mut cmd = tokio::process::Command::new(exec_path);
         cmd.args(args);
         cmd
     };
@@ -213,7 +214,7 @@ pub(crate) async fn exec_bin(
     Ok(())
 }
 
-async fn exec_bin_status(
+pub(crate) async fn exec_bin_status(
     cwd: &Path,
     bin_path: &Path,
     bin: &str,
@@ -237,7 +238,8 @@ async fn exec_bin_status(
         cmd.env("PATH", &new_path);
         cmd
     } else {
-        let mut cmd = tokio::process::Command::new(bin_path);
+        let exec_path = resolve_exec_shim(bin_path);
+        let mut cmd = tokio::process::Command::new(exec_path);
         cmd.args(args);
         cmd
     };
@@ -248,4 +250,58 @@ async fn exec_bin_status(
         .await
         .into_diagnostic()
         .wrap_err("failed to execute binary")
+}
+
+/// Pick the executable variant of a `node_modules/.bin/<name>` shim.
+///
+/// On Unix the bare path is a sh shebang script and is what we want.
+/// On Windows the linker writes `<name>.cmd`, `<name>.ps1`, and a bare
+/// `<name>` sh shim. `Command::new` can launch the `.cmd` shim, but the
+/// bare sh shim fails with OS error 193.
+pub(crate) fn resolve_exec_shim(bin_path: &Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if bin_path.extension().is_none() {
+            let cmd_path = bin_path.with_extension("cmd");
+            if cmd_path.exists() {
+                return cmd_path;
+            }
+        }
+    }
+    bin_path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_exec_shim;
+
+    #[test]
+    fn resolve_exec_shim_returns_bare_path_when_no_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("loner");
+        std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
+        assert_eq!(resolve_exec_shim(&bare), bare);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_exec_shim_prefers_cmd_sibling_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("cowsay");
+        let cmd_shim = tmp.path().join("cowsay.cmd");
+        std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&cmd_shim, b"@echo off\n").unwrap();
+        assert_eq!(resolve_exec_shim(&bare), cmd_shim);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_exec_shim_keeps_bare_path_on_unix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("cowsay");
+        let cmd_shim = tmp.path().join("cowsay.cmd");
+        std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&cmd_shim, b"@echo off\n").unwrap();
+        assert_eq!(resolve_exec_shim(&bare), bare);
+    }
 }
