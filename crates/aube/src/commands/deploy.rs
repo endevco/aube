@@ -1,41 +1,52 @@
 //! `aube deploy` — copy a workspace package into a standalone target
-//! directory and install its production dependencies there.
+//! directory and install its dependencies there.
 //!
 //! Mirrors `pnpm --filter=<name> deploy <target>`: we pick one workspace
 //! package by name, copy the files it would publish (same selection as
-//! `aube pack`), rewrite any `workspace:` protocol deps in its
-//! `package.json` to the concrete versions of the matched workspace
-//! siblings, then run a fresh `aube install` rooted at the target dir so
-//! the result is a self-contained project.
+//! `aube pack`), bundle any `workspace:` / `file:` / `link:` deps the
+//! deployed package reaches into a staging dir under the target, rewrite
+//! the deployed `package.json` to point at the bundled copies, then run a
+//! fresh `aube install` rooted at the target dir so the result is a
+//! self-contained project — siblings included, no registry round-trip.
 //!
 //! Implements the common monorepo-CI path:
 //!
 //!   * required `-F/--filter` (one or more pnpm-style selectors, shared
 //!     with the global `-F` flag — exact names, `@scope/*` globs, path
 //!     selectors, including dependency-graph selectors)
-//!   * `--prod` (default), `--dev`, `--no-optional` forwarded to install
+//!   * `--prod` (default), `--dev`, `--no-prod` (deploy every dep kind),
+//!     `--no-optional` forwarded to install and to the manifest rewrite
 //!   * single-match fanout drops straight into `<target>`
 //!   * multi-match fanout stages each match into
 //!     `<target>/<source-dir-basename>/` and requires `<target>` itself
 //!     to be empty/missing
 //!
-//! When the source workspace has a lockfile, deploy prunes it to the
-//! deployed package's transitive closure and drops the subset into the
-//! target before install runs — a `FrozenMode::Prefer` install then
-//! reproduces the workspace's exact resolved versions without
-//! re-fetching packuments. When there is no source lockfile, or the
-//! deployed package has workspace-sibling deps (`link:` / `file:`
-//! roots that can't resolve standalone), subsetting is skipped and
-//! the original fresh-install path runs.
+//! Workspace siblings + `file:`/`link:` dep targets reachable from the
+//! deployed package land at `<target>/.aube-deploy-injected/<id>/`. The
+//! deployed manifest (and any nested bundled manifest) gets its
+//! `workspace:` / `file:` / `link:` specs rewritten to relative `file:`
+//! pointers at those staged copies, so install resolves them as plain
+//! local-directory deps. Recursion handles siblings whose own deps are
+//! workspace siblings.
+//!
+//! When the source workspace has a lockfile and no bundling was needed,
+//! deploy prunes that lockfile to the deployed package's transitive
+//! closure and drops the subset into the target before install runs — a
+//! `FrozenMode::Prefer` install then reproduces the workspace's exact
+//! resolved versions without re-fetching packuments. When bundling
+//! happened, when there is no source lockfile, or the deployed package
+//! has workspace-sibling / `link:` / `file:` roots whose rewritten form
+//! diverges from the source lockfile, subsetting is skipped and a fresh
+//! install runs.
 //!
 //! Deferred: `--legacy`.
 
 use crate::commands::install::{self, FrozenMode, InstallOptions};
-use crate::commands::pack::build_archive;
+use crate::commands::pack::{build_archive, collect_package_files};
 use aube_manifest::PackageJson;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Args)]
@@ -49,7 +60,7 @@ pub struct DeployArgs {
     /// Implemented by stripping `dependencies` and
     /// `optionalDependencies` from the deployed `package.json` before
     /// install runs.
-    #[arg(short = 'D', long, conflicts_with = "prod")]
+    #[arg(short = 'D', long, conflicts_with_all = ["prod", "no_prod"])]
     pub dev: bool,
     /// Skip `optionalDependencies`
     #[arg(long)]
@@ -58,10 +69,19 @@ pub struct DeployArgs {
     ///
     /// Accepted for pnpm compatibility.
     // Intentionally unread by the deploy code: production is the deploy
-    // default, so the `!args.dev` axis already captures it. Reach for
-    // `!args.dev`, not `args.prod`, when extending the filter.
+    // default, so the `!args.dev && !args.no_prod` axis already captures
+    // it. Reach for that, not `args.prod`, when extending the filter.
     #[arg(short = 'P', long, visible_alias = "production")]
     pub prod: bool,
+    /// Deploy every dependency kind (production + dev + optional).
+    ///
+    /// Opts out of the implicit `--prod` deploy default. Useful when a
+    /// deployed package needs its devDependencies at runtime (test
+    /// harnesses, build-step deploys). Combine with `--no-optional` to
+    /// drop optionals while keeping prod + dev. Mutually exclusive with
+    /// `--prod` and `--dev`.
+    #[arg(long, conflicts_with_all = ["prod", "dev"])]
+    pub no_prod: bool,
     #[command(flatten)]
     pub lockfile: crate::cli_args::LockfileArgs,
     #[command(flatten)]
@@ -213,10 +233,19 @@ pub async fn run(
         // with `retarget_cwd` doesn't matter for correctness — doing
         // it before keeps the side-effect timeline "stage → seed →
         // install" readable top-to-bottom. Returns `false` when we
-        // fell back to a fresh install (no source lockfile, or the
-        // importer had workspace-sibling deps we can't represent
-        // standalone).
-        let seeded = seed_target_lockfile(&source_root, source_pkg_dir, &s.target, &args)?;
+        // fell back to a fresh install (no source lockfile, the
+        // importer had local roots we couldn't seed, or staging
+        // bundled local refs in a way that diverges from the source
+        // lockfile).
+        let seeded = if s.bundled_local_refs {
+            tracing::debug!(
+                "deploy: bundled local refs into {}; skipping lockfile subset",
+                s.target.display()
+            );
+            false
+        } else {
+            seed_target_lockfile(&source_root, source_pkg_dir, &s.target, &args)?
+        };
 
         super::retarget_cwd(&s.target)?;
 
@@ -241,7 +270,7 @@ pub async fn run(
         let opts = InstallOptions {
             project_dir: Some(s.target.clone()),
             mode,
-            dep_selection: install::DepSelection::from_flags(!args.dev, args.dev, args.no_optional),
+            dep_selection: dep_selection_for_args(&args),
             ignore_pnpmfile: false,
             pnpmfile: None,
             global_pnpmfile: None,
@@ -278,6 +307,12 @@ struct StagedDeploy {
     name: String,
     version: String,
     target: PathBuf,
+    /// Whether staging bundled any local refs (workspace siblings,
+    /// `file:` / `link:` targets) into `<target>/.aube-deploy-injected/`.
+    /// When set, the source lockfile subset must be skipped — the
+    /// rewritten manifest's `file:` pointers don't appear in the source
+    /// lockfile, so a frozen install would immediately read as drifted.
+    bundled_local_refs: bool,
 }
 
 /// Attempt to seed `target` with a subset of the source workspace's
@@ -336,19 +371,7 @@ fn seed_target_lockfile(
     // keys, which is what `subset_to_importer` indexes by.
     let importer_path = super::workspace_importer_path(source_root, source_pkg_dir)?;
 
-    // Match `stage_one`'s `StripFields` semantics for which dep
-    // types survive the manifest rewrite. `--dev` also strips
-    // optional deps on the manifest side; mirror that here so the
-    // lockfile and manifest agree.
-    let prod = !args.dev;
-    let dev = args.dev;
-    let keep_optional = !(args.no_optional || args.dev);
-    let keep = move |d: &aube_lockfile::DirectDep| match d.dep_type {
-        aube_lockfile::DepType::Production => prod,
-        aube_lockfile::DepType::Dev => dev,
-        aube_lockfile::DepType::Optional => keep_optional,
-    };
-    let Some(mut subset) = graph.subset_to_importer(&importer_path, keep) else {
+    let Some(mut subset) = graph.subset_to_importer(&importer_path, keep_dep_for_args(args)) else {
         tracing::debug!(
             "deploy: importer {importer_path:?} not in source lockfile; fresh install instead"
         );
@@ -420,9 +443,11 @@ fn seed_target_lockfile(
 }
 
 /// Copy files into `target` (either pack's publish-selection or the
-/// whole source tree, depending on `deploy_all_files`) and rewrite the
-/// deployed `package.json` (strip excluded dep fields, inline
-/// `workspace:` deps). Returns enough state for the caller to drive
+/// whole source tree, depending on `deploy_all_files`), bundle any
+/// local-ref deps the deployed package reaches into
+/// `<target>/.aube-deploy-injected/<id>/`, and rewrite each manifest's
+/// `workspace:` / `file:` / `link:` specs so install resolves them to
+/// the bundled copies. Returns enough state for the caller to drive
 /// install.
 fn stage_one(
     source_pkg_dir: &Path,
@@ -477,31 +502,309 @@ fn stage_one(
             .wrap_err_with(|| format!("failed to copy {} -> {}", src.display(), dst.display()))?;
     }
 
-    // Rewrite package.json: strip `workspace:` prefixes, resolving them
-    // to the matched sibling's concrete version while preserving any
-    // range operator (`^`, `~`, literal). Unknown workspace: refs are a
-    // hard error — they'd fail the subsequent install anyway, and
-    // erroring here produces a clearer message.
-    //
-    // We also physically strip the dep fields that this deploy excludes
-    // *before* running install. That's load-bearing, not a convenience:
+    // Plan + materialize bundled local refs, then rewrite each manifest
+    // (top-level + every bundled sibling) to point at the staged
+    // copies. We strip excluded dep fields *before* install runs:
     // install's resolver walks every dep type in the manifest up front
     // and only the linker applies `--prod` / `--no-optional` filtering,
     // so leaving e.g. a devDependency with an unpublished `workspace:`
     // ref in the manifest would make `--prod` deploys fail resolution
     // on a package that would never have been installed.
-    let strip = StripFields {
-        dependencies: args.dev,
-        dev_dependencies: !args.dev,
-        optional_dependencies: args.no_optional || args.dev,
-    };
-    rewrite_workspace_deps(&target.join("package.json"), ws_index, strip)?;
+    let plan = plan_injections(source_pkg_dir, target, ws_index, args)?;
+    materialize_injections(&plan, ws_index, deploy_all_files)?;
+    rewrite_local_refs(
+        &target.join("package.json"),
+        source_pkg_dir,
+        target,
+        ws_index,
+        &plan,
+        StripFields::for_args(args),
+    )?;
+    let bundled_strip = StripFields::for_bundled_sibling(args);
+    for inj in plan.values() {
+        rewrite_local_refs(
+            &inj.target_dir.join("package.json"),
+            &inj.source_dir,
+            &inj.target_dir,
+            ws_index,
+            &plan,
+            bundled_strip,
+        )?;
+    }
 
     Ok(StagedDeploy {
         name,
         version,
         target: target.to_path_buf(),
+        bundled_local_refs: !plan.is_empty(),
     })
+}
+
+/// Where a bundled local ref ends up under
+/// `<target>/.aube-deploy-injected/`. Distinct sources with distinct
+/// canonical paths each get their own entry — siblings shared between
+/// multiple parents bundle once.
+#[derive(Debug, Clone)]
+struct Injection {
+    /// Source directory (workspace sibling root or `file:` directory)
+    /// or tarball path on disk. Reads come from here.
+    source_dir: PathBuf,
+    /// Set when `source_dir` is actually a tarball file (`*.tgz` /
+    /// `*.tar.gz`) rather than a directory. Materialization copies the
+    /// tarball verbatim and the rewriter emits `file:` pointers at the
+    /// staged tarball.
+    is_tarball: bool,
+    /// Absolute path inside the deploy target where the bundled copy
+    /// lives. For directory sources this is the staged package root;
+    /// for tarball sources this is the directory holding the tarball.
+    target_dir: PathBuf,
+    /// For tarball sources: filename under `target_dir`. Empty for
+    /// directory sources.
+    tarball_filename: String,
+}
+
+/// Map keyed by the canonical absolute source path — that gives us
+/// stable identity across multiple rewriters that find the same local
+/// ref via different relative specs (e.g. `file:../foo` from two
+/// different consumer manifests).
+type InjectionPlan = BTreeMap<PathBuf, Injection>;
+
+/// BFS the deployed package's manifest plus every bundled sibling's
+/// manifest, recording one [`Injection`] per distinct local-ref target.
+/// The returned map preserves insertion order via canonical path keys —
+/// callers iterate it to materialize copies and rewrite manifests in any
+/// order they like.
+fn plan_injections(
+    deployed_pkg_dir: &Path,
+    target_root: &Path,
+    ws_index: &BTreeMap<String, (PathBuf, String)>,
+    args: &DeployArgs,
+) -> miette::Result<InjectionPlan> {
+    let injected_root = target_root.join(".aube-deploy-injected");
+    let mut plan: InjectionPlan = BTreeMap::new();
+    // Track id collisions so a second sibling with the same encoded
+    // name gets a `_2`, `_3`, ... suffix. Keyed by the encoded id.
+    let mut used_ids: BTreeMap<String, u32> = BTreeMap::new();
+
+    // BFS frontier: each entry is `(source_dir, strip)`. The first
+    // entry is the deployed package; everything queued after is a
+    // bundled sibling, which uses the bundled-sibling strip policy.
+    let mut queue: VecDeque<(PathBuf, StripFields)> = VecDeque::new();
+    queue.push_back((deployed_pkg_dir.to_path_buf(), StripFields::for_args(args)));
+
+    while let Some((pkg_dir, strip)) = queue.pop_front() {
+        let manifest_path = pkg_dir.join("package.json");
+        let manifest = super::load_manifest(&manifest_path)?;
+
+        for (dep_name, dep_spec) in iter_strippable_deps(&manifest, strip) {
+            // Workspace sibling refs win over file:/link: parsing —
+            // a workspace sibling can also be referenced via `link:`
+            // pointing at its dir, but the workspace index is the
+            // authoritative match.
+            if aube_util::pkg::is_workspace_spec(&dep_spec) {
+                let Some((sibling_dir, _)) = ws_index.get(&dep_name) else {
+                    return Err(miette!(
+                        "aube deploy: {} declares `{dep_name}: {dep_spec}` but no workspace package named {dep_name:?} was found",
+                        manifest_path.display()
+                    ));
+                };
+                let canonical = canonicalize(sibling_dir);
+                if !plan.contains_key(&canonical) {
+                    let id = unique_id(&dep_name, &canonical, &mut used_ids);
+                    plan.insert(
+                        canonical.clone(),
+                        Injection {
+                            source_dir: sibling_dir.clone(),
+                            is_tarball: false,
+                            target_dir: injected_root.join(&id),
+                            tarball_filename: String::new(),
+                        },
+                    );
+                    queue.push_back((sibling_dir.clone(), StripFields::for_bundled_sibling(args)));
+                }
+            } else if let Some(local) = aube_lockfile::LocalSource::parse(&dep_spec, &pkg_dir) {
+                match local {
+                    aube_lockfile::LocalSource::Directory(rel)
+                    | aube_lockfile::LocalSource::Link(rel) => {
+                        let abs = pkg_dir.join(&rel);
+                        let canonical = canonicalize(&abs);
+                        if !plan.contains_key(&canonical) {
+                            let id_seed = canonical
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&dep_name);
+                            let id = unique_id(id_seed, &canonical, &mut used_ids);
+                            plan.insert(
+                                canonical.clone(),
+                                Injection {
+                                    source_dir: canonical.clone(),
+                                    is_tarball: false,
+                                    target_dir: injected_root.join(&id),
+                                    tarball_filename: String::new(),
+                                },
+                            );
+                            // Recurse: a bundled `file:` directory may
+                            // itself reach further siblings or `file:`
+                            // targets. Tarballs don't recurse — they
+                            // ship as opaque archives.
+                            queue.push_back((
+                                canonical.clone(),
+                                StripFields::for_bundled_sibling(args),
+                            ));
+                        }
+                    }
+                    aube_lockfile::LocalSource::Tarball(rel) => {
+                        let abs = pkg_dir.join(&rel);
+                        let canonical = canonicalize(&abs);
+                        if !plan.contains_key(&canonical) {
+                            let stem = canonical
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&dep_name);
+                            let id = unique_id(stem, &canonical, &mut used_ids);
+                            let filename = canonical
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| format!("{stem}.tgz"));
+                            plan.insert(
+                                canonical.clone(),
+                                Injection {
+                                    source_dir: canonical.clone(),
+                                    is_tarball: true,
+                                    target_dir: injected_root.join(&id),
+                                    tarball_filename: filename,
+                                },
+                            );
+                        }
+                    }
+                    // Git / RemoteTarball: install fetches these
+                    // standalone from their source — the deploy target
+                    // doesn't need a bundled copy.
+                    aube_lockfile::LocalSource::Git(_)
+                    | aube_lockfile::LocalSource::RemoteTarball(_) => {}
+                }
+            }
+        }
+    }
+
+    Ok(plan)
+}
+
+/// Iterate the three bundleable dep fields, skipping any field the
+/// strip policy will drop. Yields `(name, spec)` pairs the rewriter
+/// will keep — the bundling planner only needs to see deps that
+/// survive the strip, otherwise it would copy a sibling that the
+/// deployed manifest is about to discard. `peerDependencies` is
+/// intentionally omitted: peers are satisfied by the consumer's
+/// installed tree, not bundled into the deploy.
+fn iter_strippable_deps(manifest: &PackageJson, strip: StripFields) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if !strip.dependencies {
+        for (k, v) in &manifest.dependencies {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    if !strip.dev_dependencies {
+        for (k, v) in &manifest.dev_dependencies {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    if !strip.optional_dependencies {
+        for (k, v) in &manifest.optional_dependencies {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    out
+}
+
+/// Pick a filesystem-safe id under `.aube-deploy-injected/`. Starts
+/// from `seed` (with `/` and any other unsafe characters sanitized) and
+/// disambiguates collisions with `_2`, `_3`, ... — collisions are rare
+/// and the suffix keeps the staged path readable when debugging.
+fn unique_id(seed: &str, _canonical: &Path, used: &mut BTreeMap<String, u32>) -> String {
+    let cleaned: String = seed
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | ' ' | '\t') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let base = if cleaned.is_empty() {
+        "pkg".to_string()
+    } else {
+        cleaned
+    };
+    let count = used.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}_{count}")
+    }
+}
+
+fn canonicalize(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Copy each planned source into its `target_dir`. Directory sources
+/// honor pack's selection (or the `deployAllFiles` carve-out when the
+/// caller opted in); tarball sources copy the archive bytes verbatim.
+fn materialize_injections(
+    plan: &InjectionPlan,
+    ws_index: &BTreeMap<String, (PathBuf, String)>,
+    deploy_all_files: bool,
+) -> miette::Result<()> {
+    for inj in plan.values() {
+        std::fs::create_dir_all(&inj.target_dir)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to create {}", inj.target_dir.display()))?;
+
+        if inj.is_tarball {
+            let dst = inj.target_dir.join(&inj.tarball_filename);
+            std::fs::copy(&inj.source_dir, &dst)
+                .into_diagnostic()
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to copy {} -> {}",
+                        inj.source_dir.display(),
+                        dst.display()
+                    )
+                })?;
+            continue;
+        }
+
+        // Directory source. Reuse pack's file selection by default so a
+        // sibling with `files: [...]` ships the same payload it would
+        // publish; honor `deployAllFiles=true` for parity with the
+        // top-level deployed-package selection.
+        let source_is_workspace_sibling = ws_index
+            .values()
+            .any(|(p, _)| canonicalize(p) == inj.source_dir);
+        let files: Vec<(PathBuf, String)> = if deploy_all_files && source_is_workspace_sibling {
+            collect_all_files(&inj.source_dir, &inj.target_dir)?
+        } else {
+            let manifest = super::load_manifest(&inj.source_dir.join("package.json"))?;
+            collect_package_files(&inj.source_dir, &manifest)?
+        };
+        for (src, rel) in &files {
+            let dst = inj.target_dir.join(rel);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
+            }
+            std::fs::copy(src, &dst)
+                .into_diagnostic()
+                .wrap_err_with(|| {
+                    format!("failed to copy {} -> {}", src.display(), dst.display())
+                })?;
+        }
+    }
+    Ok(())
 }
 
 /// Walk `source` recursively and collect every file path. Skips only
@@ -596,8 +899,8 @@ fn ensure_target_writable(target: &Path) -> miette::Result<()> {
     }
 }
 
-/// Which dep fields `rewrite_workspace_deps` should physically remove
-/// from the deployed `package.json` before install runs.
+/// Which dep fields `rewrite_local_refs` should physically remove from a
+/// `package.json` before install runs.
 #[derive(Debug, Clone, Copy, Default)]
 struct StripFields {
     dependencies: bool,
@@ -605,26 +908,87 @@ struct StripFields {
     optional_dependencies: bool,
 }
 
-/// Walk `dependencies` / `devDependencies` / `optionalDependencies` /
-/// `peerDependencies` in the target package.json and resolve every
-/// `workspace:` specifier against the workspace index, preserving the
-/// range operator per pnpm semantics:
-///
-///   * `workspace:*`        → `<version>` (exact pin)
-///   * `workspace:^`        → `^<version>`
-///   * `workspace:~`        → `~<version>`
-///   * `workspace:<range>`  → `<range>` (literal suffix wins; `<range>`
-///     already carries its own operator, e.g. `^1.2.3`, `>=2`, `1.2.3`)
-///
-/// Anything that isn't `workspace:` is left untouched. `strip` names
+impl StripFields {
+    /// Stripping policy for the top-level deployed manifest. Honors the
+    /// CLI flags: `--prod` (default), `--dev`, `--no-prod`,
+    /// `--no-optional`.
+    fn for_args(args: &DeployArgs) -> Self {
+        // Stays in lockstep with `dep_selection_for_args` and
+        // `keep_dep_for_args` — drift between the strip set, the install
+        // dep_selection, and the lockfile-subset keep predicate would
+        // surface as install drift detection failures.
+        let prod = !args.dev;
+        let dev = args.dev || args.no_prod;
+        let optional = !args.dev && !args.no_optional;
+        Self {
+            dependencies: !prod,
+            dev_dependencies: !dev,
+            optional_dependencies: !optional,
+        }
+    }
+
+    /// Stripping policy for bundled siblings. Bundled siblings exist
+    /// only to satisfy the deployed package's runtime tree, so their
+    /// devDependencies are always dropped — the deploy isn't a dev
+    /// environment for siblings. Optional sibling deps mirror the
+    /// top-level `--no-optional` choice so a sibling's optional sub-dep
+    /// doesn't sneak past the user's filter.
+    fn for_bundled_sibling(args: &DeployArgs) -> Self {
+        Self {
+            dependencies: false,
+            dev_dependencies: true,
+            optional_dependencies: args.no_optional,
+        }
+    }
+}
+
+fn dep_selection_for_args(args: &DeployArgs) -> install::DepSelection {
+    let prod = !args.dev && !args.no_prod;
+    let dev = args.dev;
+    install::DepSelection::from_flags(prod, dev, args.no_optional)
+}
+
+/// `subset_to_importer` keep predicate: same axis as
+/// `StripFields::for_args` so the source lockfile subset and the
+/// rewritten target manifest agree on which dep types survive.
+fn keep_dep_for_args(args: &DeployArgs) -> impl Fn(&aube_lockfile::DirectDep) -> bool + use<> {
+    let prod = !args.dev;
+    let dev = args.dev || args.no_prod;
+    let optional = !args.dev && !args.no_optional;
+    move |d: &aube_lockfile::DirectDep| match d.dep_type {
+        aube_lockfile::DepType::Production => prod,
+        aube_lockfile::DepType::Dev => dev,
+        aube_lockfile::DepType::Optional => optional,
+    }
+}
+
+/// Rewrite the `dependencies` / `devDependencies` / `optionalDependencies`
+/// fields of `manifest_path` so every `workspace:` / `file:` / `link:`
+/// specifier becomes a relative `file:` pointer at the bundled copy
+/// staged under `<target>/.aube-deploy-injected/<id>/`. `strip` names
 /// any dep fields the caller wants physically removed before install
 /// runs — load-bearing for `--prod` / `--dev` / `--no-optional`, since
-/// install's resolver walks the full manifest before the linker
-/// applies filtering, so an unstripped workspace: dep in an excluded
-/// field would still be fetched.
-fn rewrite_workspace_deps(
+/// install's resolver walks the full manifest before the linker applies
+/// filtering, so an unstripped sibling devDep would still be fetched.
+///
+/// `source_pkg_dir` resolves relative `file:` / `link:` paths the same
+/// way they resolve in the source workspace; `manifest_dir` is where
+/// the rewritten manifest lives, used to compute the relative
+/// `file:./...` path back to the staged sibling. For the deployed
+/// package these are the source pkg and the target root; for a bundled
+/// sibling they are the sibling's own source dir and its
+/// `<target>/.aube-deploy-injected/<id>/` staging dir.
+///
+/// Unknown `workspace:` refs are a hard error (bundling would have
+/// already inserted them into `plan` if they were valid).
+/// `peerDependencies` is left untouched — peers are satisfied by the
+/// consumer's installed tree, not bundled.
+fn rewrite_local_refs(
     manifest_path: &Path,
+    source_pkg_dir: &Path,
+    manifest_dir: &Path,
     ws_index: &BTreeMap<String, (PathBuf, String)>,
+    plan: &InjectionPlan,
     strip: StripFields,
 ) -> miette::Result<()> {
     let raw = std::fs::read_to_string(manifest_path)
@@ -663,16 +1027,49 @@ fn rewrite_workspace_deps(
             let Some(spec) = spec_val.as_str() else {
                 continue;
             };
-            if !aube_util::pkg::is_workspace_spec(spec) {
-                continue;
+            if aube_util::pkg::is_workspace_spec(spec) {
+                let Some((sibling_dir, _)) = ws_index.get(name) else {
+                    return Err(miette!(
+                        "aube deploy: {} declares `{name}: {spec}` but no workspace package named {name:?} was found",
+                        manifest_path.display()
+                    ));
+                };
+                let canonical = canonicalize(sibling_dir);
+                let Some(inj) = plan.get(&canonical) else {
+                    // Reachable when `peerDependencies` references a
+                    // workspace sibling — peers aren't bundled (bundling
+                    // is dep-field-scoped via StripFields), so leave
+                    // those refs as `workspace:*` for the install layer
+                    // to error on if it's actually unsatisfied.
+                    if *field == "peerDependencies" {
+                        continue;
+                    }
+                    return Err(miette!(
+                        "aube deploy: bundling plan missing entry for workspace sibling {name:?} declared in {}",
+                        manifest_path.display()
+                    ));
+                };
+                *spec_val = serde_json::Value::String(file_spec_for_injection(manifest_dir, inj));
+            } else if let Some(local) = aube_lockfile::LocalSource::parse(spec, source_pkg_dir) {
+                let abs = match &local {
+                    aube_lockfile::LocalSource::Directory(rel)
+                    | aube_lockfile::LocalSource::Link(rel)
+                    | aube_lockfile::LocalSource::Tarball(rel) => source_pkg_dir.join(rel),
+                    aube_lockfile::LocalSource::Git(_)
+                    | aube_lockfile::LocalSource::RemoteTarball(_) => continue,
+                };
+                let canonical = canonicalize(&abs);
+                let Some(inj) = plan.get(&canonical) else {
+                    if *field == "peerDependencies" {
+                        continue;
+                    }
+                    return Err(miette!(
+                        "aube deploy: bundling plan missing entry for `{name}: {spec}` declared in {}",
+                        manifest_path.display()
+                    ));
+                };
+                *spec_val = serde_json::Value::String(file_spec_for_injection(manifest_dir, inj));
             }
-            let (_, concrete_version) = ws_index.get(name).ok_or_else(|| {
-                miette!(
-                    "aube deploy: {} declares `{name}: {spec}` but no workspace package named {name:?} was found",
-                    manifest_path.display()
-                )
-            })?;
-            *spec_val = serde_json::Value::String(resolve_workspace_spec(spec, concrete_version));
         }
     }
 
@@ -685,17 +1082,28 @@ fn rewrite_workspace_deps(
     Ok(())
 }
 
-/// Resolve a `workspace:...` specifier against the sibling's concrete
-/// version, preserving the range operator. See `rewrite_workspace_deps`
-/// for the full mapping table.
-fn resolve_workspace_spec(spec: &str, concrete_version: &str) -> String {
-    let suffix = spec.strip_prefix("workspace:").unwrap_or(spec);
-    match suffix {
-        "" | "*" => concrete_version.to_string(),
-        "^" => format!("^{concrete_version}"),
-        "~" => format!("~{concrete_version}"),
-        other => other.to_string(),
+/// Build the `file:./...` spec the rewriter writes for an injected ref.
+/// For directory sources the path points at the staged package root;
+/// for tarball sources it points at the staged tarball file. Always
+/// emits POSIX separators so a deploy artifact built on macOS/Linux
+/// installs unchanged on Windows.
+fn file_spec_for_injection(manifest_dir: &Path, inj: &Injection) -> String {
+    let target_path = if inj.is_tarball {
+        inj.target_dir.join(&inj.tarball_filename)
+    } else {
+        inj.target_dir.clone()
+    };
+    let rel =
+        pathdiff::diff_paths(&target_path, manifest_dir).unwrap_or_else(|| target_path.clone());
+    let mut s = rel.to_string_lossy().replace('\\', "/");
+    // npm/pnpm canonicalize plain `file:` refs; `file:./x` is more
+    // visually obviously a relative path than `file:x`, so prefix `./`
+    // when the result doesn't already start with a path-traversal or
+    // absolute marker.
+    if !s.starts_with("./") && !s.starts_with("../") && !s.starts_with('/') {
+        s = format!("./{s}");
     }
+    format!("file:{s}")
 }
 
 #[cfg(test)]
@@ -709,104 +1117,97 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn resolve_workspace_spec_star_pins_exact() {
-        assert_eq!(resolve_workspace_spec("workspace:*", "1.2.3"), "1.2.3");
-        assert_eq!(resolve_workspace_spec("workspace:", "1.2.3"), "1.2.3");
+    fn deploy_args() -> DeployArgs {
+        DeployArgs {
+            target: PathBuf::from("/tmp/unused"),
+            dev: false,
+            no_optional: false,
+            prod: false,
+            no_prod: false,
+            lockfile: crate::cli_args::LockfileArgs::default(),
+            network: crate::cli_args::NetworkArgs::default(),
+            virtual_store: crate::cli_args::VirtualStoreArgs::default(),
+        }
     }
 
     #[test]
-    fn resolve_workspace_spec_caret_and_tilde_preserve_operator() {
-        assert_eq!(resolve_workspace_spec("workspace:^", "1.2.3"), "^1.2.3");
-        assert_eq!(resolve_workspace_spec("workspace:~", "1.2.3"), "~1.2.3");
+    fn dep_selection_default_is_prod() {
+        let a = deploy_args();
+        assert_eq!(dep_selection_for_args(&a), install::DepSelection::Prod);
     }
 
     #[test]
-    fn resolve_workspace_spec_literal_suffix_wins() {
-        // Explicit range after `workspace:` is used verbatim — it already
-        // carries its own operator.
+    fn dep_selection_no_prod_is_all() {
+        let a = DeployArgs {
+            no_prod: true,
+            ..deploy_args()
+        };
+        assert_eq!(dep_selection_for_args(&a), install::DepSelection::All);
+    }
+
+    #[test]
+    fn dep_selection_no_prod_and_no_optional_is_no_optional() {
+        let a = DeployArgs {
+            no_prod: true,
+            no_optional: true,
+            ..deploy_args()
+        };
         assert_eq!(
-            resolve_workspace_spec("workspace:^2.0.0", "1.2.3"),
-            "^2.0.0"
+            dep_selection_for_args(&a),
+            install::DepSelection::NoOptional
         );
-        assert_eq!(resolve_workspace_spec("workspace:1.2.3", "9.9.9"), "1.2.3");
-        assert_eq!(resolve_workspace_spec("workspace:>=2", "1.2.3"), ">=2");
     }
 
     #[test]
-    fn rewrite_replaces_workspace_star_with_version() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("package.json");
-        std::fs::write(
-            &path,
-            r#"{"name":"x","version":"1.0.0","dependencies":{"@test/lib":"workspace:*","lodash":"^4"}}"#,
-        )
-        .unwrap();
-
-        let idx = ws_index(&[("@test/lib", "1.2.3")]);
-        rewrite_workspace_deps(&path, &idx, StripFields::default()).unwrap();
-
-        let out: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(out["dependencies"]["@test/lib"], "1.2.3");
-        assert_eq!(out["dependencies"]["lodash"], "^4");
+    fn strip_default_drops_dev_keeps_prod_and_optional() {
+        let s = StripFields::for_args(&deploy_args());
+        assert!(!s.dependencies);
+        assert!(s.dev_dependencies);
+        assert!(!s.optional_dependencies);
     }
 
     #[test]
-    fn rewrite_preserves_caret_and_tilde_range_operators() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("package.json");
-        std::fs::write(
-            &path,
-            r#"{"name":"x","version":"1.0.0","dependencies":{"@a/lib":"workspace:^","@b/lib":"workspace:~"}}"#,
-        )
-        .unwrap();
-
-        let idx = ws_index(&[("@a/lib", "1.2.3"), ("@b/lib", "4.5.6")]);
-        rewrite_workspace_deps(&path, &idx, StripFields::default()).unwrap();
-
-        let out: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(out["dependencies"]["@a/lib"], "^1.2.3");
-        assert_eq!(out["dependencies"]["@b/lib"], "~4.5.6");
+    fn strip_no_prod_keeps_everything() {
+        let a = DeployArgs {
+            no_prod: true,
+            ..deploy_args()
+        };
+        let s = StripFields::for_args(&a);
+        assert!(!s.dependencies);
+        assert!(!s.dev_dependencies);
+        assert!(!s.optional_dependencies);
     }
 
     #[test]
-    fn rewrite_dev_only_drops_non_dev_dep_fields() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("package.json");
-        std::fs::write(
-            &path,
-            r#"{"name":"x","version":"1.0.0","dependencies":{"lodash":"^4"},"optionalDependencies":{"fsevents":"^2"},"devDependencies":{"jest":"^29"}}"#,
-        )
-        .unwrap();
-
-        let idx = ws_index(&[]);
-        rewrite_workspace_deps(
-            &path,
-            &idx,
-            StripFields {
-                dependencies: true,
-                dev_dependencies: false,
-                optional_dependencies: true,
-            },
-        )
-        .unwrap();
-
-        let out: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(out.get("dependencies").is_none());
-        assert!(out.get("optionalDependencies").is_none());
-        assert_eq!(out["devDependencies"]["jest"], "^29");
+    fn strip_dev_only_drops_prod_and_optional() {
+        let a = DeployArgs {
+            dev: true,
+            ..deploy_args()
+        };
+        let s = StripFields::for_args(&a);
+        assert!(s.dependencies);
+        assert!(!s.dev_dependencies);
+        assert!(s.optional_dependencies);
     }
 
     #[test]
-    fn rewrite_prod_mode_drops_dev_dependencies() {
-        // --prod default: devDependencies must be physically removed
-        // from the manifest, not just filtered at link time. Install's
-        // resolver walks every dep type before filtering, so an
-        // unpublished `workspace:` devDep would otherwise fail the
-        // whole deploy.
+    fn strip_for_bundled_sibling_always_drops_dev() {
+        // Bundled siblings exist only to satisfy the runtime tree. The
+        // top-level flag set must not flip dev back on for siblings.
+        let s = StripFields::for_bundled_sibling(&DeployArgs {
+            no_prod: true,
+            ..deploy_args()
+        });
+        assert!(s.dev_dependencies);
+        assert!(!s.dependencies);
+        assert!(!s.optional_dependencies);
+    }
+
+    #[test]
+    fn rewrite_local_refs_drops_workspace_dep_when_field_stripped() {
+        // `--prod` default: a workspace: devDep must be physically
+        // removed from the deployed manifest before install runs (the
+        // resolver walks every dep field before filtering).
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("package.json");
         std::fs::write(
@@ -815,10 +1216,14 @@ mod tests {
         )
         .unwrap();
 
-        let idx = ws_index(&[]); // unpublished devDep — deliberately absent
-        rewrite_workspace_deps(
+        let idx = ws_index(&[]); // empty: dev is stripped, sibling never looked up
+        let plan = InjectionPlan::new();
+        rewrite_local_refs(
             &path,
+            tmp.path(),
+            tmp.path(),
             &idx,
+            &plan,
             StripFields {
                 dependencies: false,
                 dev_dependencies: true,
@@ -834,7 +1239,56 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_errors_on_unknown_workspace_ref() {
+    fn rewrite_local_refs_writes_relative_file_spec_for_workspace_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_dir = tmp.path();
+        let sibling_dir = tmp.path().join("packages/lib");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        let injected_dir = manifest_dir.join(".aube-deploy-injected").join("lib");
+        std::fs::create_dir_all(&injected_dir).unwrap();
+
+        let path = manifest_dir.join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","dependencies":{"@test/lib":"workspace:*"}}"#,
+        )
+        .unwrap();
+
+        let mut idx = BTreeMap::new();
+        idx.insert(
+            "@test/lib".to_string(),
+            (sibling_dir.clone(), "1.2.3".to_string()),
+        );
+        let mut plan = InjectionPlan::new();
+        plan.insert(
+            canonicalize(&sibling_dir),
+            Injection {
+                source_dir: sibling_dir.clone(),
+                is_tarball: false,
+                target_dir: injected_dir.clone(),
+                tarball_filename: String::new(),
+            },
+        );
+        rewrite_local_refs(
+            &path,
+            manifest_dir,
+            manifest_dir,
+            &idx,
+            &plan,
+            StripFields::default(),
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            out["dependencies"]["@test/lib"],
+            "file:./.aube-deploy-injected/lib"
+        );
+    }
+
+    #[test]
+    fn rewrite_local_refs_errors_on_unknown_workspace_ref() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("package.json");
         std::fs::write(
@@ -843,8 +1297,81 @@ mod tests {
         )
         .unwrap();
         let idx = ws_index(&[]);
-        let err = rewrite_workspace_deps(&path, &idx, StripFields::default()).unwrap_err();
+        let plan = InjectionPlan::new();
+        let err = rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &idx,
+            &plan,
+            StripFields::default(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("@test/missing"));
+    }
+
+    #[test]
+    fn file_spec_for_injection_emits_relative_directory_path() {
+        let manifest_dir = PathBuf::from("/tmp/deploy/out");
+        let target_dir = PathBuf::from("/tmp/deploy/out/.aube-deploy-injected/lib");
+        let inj = Injection {
+            source_dir: PathBuf::from("/src/lib"),
+            is_tarball: false,
+            target_dir,
+            tarball_filename: String::new(),
+        };
+        assert_eq!(
+            file_spec_for_injection(&manifest_dir, &inj),
+            "file:./.aube-deploy-injected/lib"
+        );
+    }
+
+    #[test]
+    fn file_spec_for_injection_emits_relative_tarball_path() {
+        let manifest_dir = PathBuf::from("/tmp/deploy/out");
+        let target_dir = PathBuf::from("/tmp/deploy/out/.aube-deploy-injected/foo");
+        let inj = Injection {
+            source_dir: PathBuf::from("/src/foo.tgz"),
+            is_tarball: true,
+            target_dir,
+            tarball_filename: "foo.tgz".to_string(),
+        };
+        assert_eq!(
+            file_spec_for_injection(&manifest_dir, &inj),
+            "file:./.aube-deploy-injected/foo/foo.tgz"
+        );
+    }
+
+    #[test]
+    fn file_spec_for_injection_emits_dotdot_for_sibling_in_injected_dir() {
+        // A bundled sibling whose own manifest references another
+        // bundled sibling: rewrite emits `../<id>` relative to the
+        // sibling's own staging dir, not the deploy root.
+        let manifest_dir = PathBuf::from("/tmp/deploy/out/.aube-deploy-injected/lib");
+        let target_dir = PathBuf::from("/tmp/deploy/out/.aube-deploy-injected/core");
+        let inj = Injection {
+            source_dir: PathBuf::from("/src/core"),
+            is_tarball: false,
+            target_dir,
+            tarball_filename: String::new(),
+        };
+        assert_eq!(file_spec_for_injection(&manifest_dir, &inj), "file:../core");
+    }
+
+    #[test]
+    fn unique_id_disambiguates_collisions() {
+        let mut used = BTreeMap::new();
+        let p1 = PathBuf::from("/a/lib");
+        let p2 = PathBuf::from("/b/lib");
+        assert_eq!(unique_id("lib", &p1, &mut used), "lib");
+        assert_eq!(unique_id("lib", &p2, &mut used), "lib_2");
+    }
+
+    #[test]
+    fn unique_id_sanitizes_unsafe_chars() {
+        let mut used = BTreeMap::new();
+        let p = PathBuf::from("/a/x");
+        assert_eq!(unique_id("@scope/name", &p, &mut used), "@scope_name");
     }
 
     #[test]
