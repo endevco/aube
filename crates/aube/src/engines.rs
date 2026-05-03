@@ -412,6 +412,7 @@ pub fn run_checks(
 
     if strict {
         return Err(miette::miette!(
+            code = aube_codes::errors::ERR_AUBE_UNSUPPORTED_ENGINE,
             "engine-strict: {} package(s) declare incompatible engine constraints",
             mismatches.len(),
         ));

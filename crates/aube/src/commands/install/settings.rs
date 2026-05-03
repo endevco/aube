@@ -232,7 +232,10 @@ pub(super) fn maybe_cleanup_unused_catalogs(
 pub(super) fn resolve_network_concurrency(ctx: &aube_settings::ResolveCtx<'_>) -> Option<usize> {
     aube_settings::resolved::network_concurrency(ctx).and_then(|n| {
         if n == 0 {
-            tracing::warn!("ignoring network-concurrency=0 (must be >= 1)");
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_INVALID_CONCURRENCY,
+                "ignoring network-concurrency=0 (must be >= 1)"
+            );
             None
         } else {
             Some(n as usize)
@@ -243,7 +246,10 @@ pub(super) fn resolve_network_concurrency(ctx: &aube_settings::ResolveCtx<'_>) -
 pub(super) fn resolve_link_concurrency(ctx: &aube_settings::ResolveCtx<'_>) -> Option<usize> {
     aube_settings::resolved::link_concurrency(ctx).and_then(|n| {
         if n == 0 {
-            tracing::warn!("ignoring link-concurrency=0 (must be >= 1)");
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_INVALID_CONCURRENCY,
+                "ignoring link-concurrency=0 (must be >= 1)"
+            );
             None
         } else {
             Some(n as usize)
@@ -424,7 +430,11 @@ pub(crate) fn resolve_dependency_policy(
     let trust_excludes = aube_settings::resolved::trust_policy_exclude(ctx);
     let (user_rules, parse_errors) = aube_resolver::TrustExcludeRules::parse_lossy(trust_excludes);
     for err in parse_errors {
-        tracing::warn!(error = %err, "ignoring malformed trustPolicyExclude entry");
+        tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_INVALID_TRUST_POLICY,
+            error = %err,
+            "ignoring malformed trustPolicyExclude entry"
+        );
     }
     policy.trust_policy_exclude =
         aube_resolver::TrustExcludeRules::with_defaults_and_user_rules(user_rules);
@@ -661,6 +671,7 @@ pub(super) fn configure_resolver(
     let unresolved_refs = manifest.resolve_override_refs(&mut effective_overrides);
     for key in &unresolved_refs {
         tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_OVERRIDE_MISSING_DEP,
             "override {key:?} uses a $ reference to a package that is not in \
              dependencies, devDependencies, or optionalDependencies — \
              dropping the override"
@@ -874,7 +885,10 @@ fn compile_peer_patterns(field: &str, raw: &[String]) -> Vec<glob::Pattern> {
         .filter_map(|p| match glob::Pattern::new(p) {
             Ok(pat) => Some(pat),
             Err(err) => {
-                tracing::warn!("ignoring invalid peerDependencyRules.{field} pattern {p:?}: {err}");
+                tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_INVALID_PEER_PATTERN,
+                    "ignoring invalid peerDependencyRules.{field} pattern {p:?}: {err}"
+                );
                 None
             }
         })

@@ -273,15 +273,17 @@ struct GlobMatcher {
     trailing_wildcard: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum TrustExcludeParseError {
     #[error(
         "invalid trustPolicyExclude pattern `{pattern}`: only exact versions are allowed in version unions, ranges (^/~/>=) are not supported"
     )]
+    #[diagnostic(code(ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION))]
     InvalidVersionUnion { pattern: String },
     #[error(
         "invalid trustPolicyExclude pattern `{pattern}`: name patterns (`*`) cannot be combined with version unions"
     )]
+    #[diagnostic(code(ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS))]
     NameGlobWithVersions { pattern: String },
 }
 

@@ -572,6 +572,7 @@ impl RegistryClient {
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
                         status = status.as_u16(),
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -586,6 +587,7 @@ impl RegistryClient {
                         max_attempts,
                         backoff_ms = wait.as_millis() as u64,
                         error = %e,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
                     tokio::time::sleep(wait).await;
@@ -630,6 +632,7 @@ impl RegistryClient {
                 elapsed_ms,
                 threshold_ms = threshold,
                 label,
+                code = aube_codes::warnings::WARN_AUBE_SLOW_METADATA,
                 "slow registry metadata request exceeded fetchWarnTimeoutMs",
             );
         }
@@ -644,6 +647,7 @@ impl RegistryClient {
                 elapsed_ms,
                 threshold_ms = threshold,
                 label,
+                code = aube_codes::warnings::WARN_AUBE_SLOW_METADATA,
                 "slow registry metadata request exceeded fetchWarnTimeoutMs",
             );
         }
@@ -677,6 +681,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         status = resp.status().as_u16(),
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -702,6 +707,7 @@ impl RegistryClient {
                                 backoff_ms = wait.as_millis() as u64,
                                 error = %err,
                                 label,
+                                code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_READ,
                                 "retrying HTTP request after response body read error",
                             );
                             tokio::time::sleep(wait).await;
@@ -723,6 +729,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
                     tokio::time::sleep(wait).await;
@@ -756,6 +763,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         status = resp.status().as_u16(),
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -781,6 +789,7 @@ impl RegistryClient {
                                 backoff_ms = wait.as_millis() as u64,
                                 error = %err,
                                 label,
+                                code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_READ,
                                 "retrying HTTP request after response body read error",
                             );
                             tokio::time::sleep(wait).await;
@@ -802,6 +811,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
                     tokio::time::sleep(wait).await;
@@ -887,6 +897,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         status = resp.status().as_u16(),
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -911,6 +922,7 @@ impl RegistryClient {
                         };
                         if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
                             tracing::warn!(
+                                code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                 "failed to write packument cache {}: {e}",
                                 cache_path.display()
                             );
@@ -934,6 +946,7 @@ impl RegistryClient {
                             };
                             if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
                                 tracing::warn!(
+                                    code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                     "failed to write packument cache {}: {e}",
                                     cache_path.display()
                                 );
@@ -944,13 +957,15 @@ impl RegistryClient {
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                             tracing::warn!(
-                                attempt = attempt + 1,
-                                max_attempts,
-                                backoff_ms = wait.as_millis() as u64,
-                                error = %err,
-                                label,
-                                "retrying HTTP request after response body decode error",
-                            );
+                                    attempt = attempt + 1,
+                                    max_attempts,
+                                    backoff_ms = wait.as_millis() as u64,
+                                    error = %err,
+                                    label,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                            "retrying HTTP request after response body decode error",
+                                );
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -964,6 +979,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
                     tokio::time::sleep(wait).await;
@@ -1078,6 +1094,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         status = resp.status().as_u16(),
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -1109,6 +1126,7 @@ impl RegistryClient {
                     to_cache.max_age_secs = revalidated_max_age;
                     if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
                         tracing::warn!(
+                            code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                             "failed to write packument cache {}: {e}",
                             cache_path.display()
                         );
@@ -1132,6 +1150,7 @@ impl RegistryClient {
                             };
                             if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
                                 tracing::warn!(
+                                    code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                     "failed to write packument cache {}: {e}",
                                     cache_path.display()
                                 );
@@ -1149,13 +1168,15 @@ impl RegistryClient {
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                             tracing::warn!(
-                                attempt = attempt + 1,
-                                max_attempts,
-                                backoff_ms = wait.as_millis() as u64,
-                                error = %err,
-                                label,
-                                "retrying HTTP request after response body decode error",
-                            );
+                                    attempt = attempt + 1,
+                                    max_attempts,
+                                    backoff_ms = wait.as_millis() as u64,
+                                    error = %err,
+                                    label,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                            "retrying HTTP request after response body decode error",
+                                );
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -1169,6 +1190,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
                     tokio::time::sleep(wait).await;
@@ -1210,6 +1232,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         status = resp.status().as_u16(),
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -1227,13 +1250,15 @@ impl RegistryClient {
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                             tracing::warn!(
-                                attempt = attempt + 1,
-                                max_attempts,
-                                backoff_ms = wait.as_millis() as u64,
-                                error = %err,
-                                label,
-                                "retrying HTTP request after response body decode error",
-                            );
+                                    attempt = attempt + 1,
+                                    max_attempts,
+                                    backoff_ms = wait.as_millis() as u64,
+                                    error = %err,
+                                    label,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                            "retrying HTTP request after response body decode error",
+                                );
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -1247,6 +1272,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
                         "retrying HTTP request after response body decode error",
                     );
                     tokio::time::sleep(wait).await;
@@ -1357,6 +1383,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         status = resp.status().as_u16(),
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
                     tokio::time::sleep(wait).await;
@@ -1379,6 +1406,7 @@ impl RegistryClient {
                     };
                     if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
                         tracing::warn!(
+                            code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                             "failed to write packument cache {}: {e}",
                             cache_path.display()
                         );
@@ -1403,6 +1431,7 @@ impl RegistryClient {
                             };
                             if let Err(e) = write_cached_packument(&cache_path, &to_cache) {
                                 tracing::warn!(
+                                    code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                     "failed to write packument cache {}: {e}",
                                     cache_path.display()
                                 );
@@ -1413,13 +1442,15 @@ impl RegistryClient {
                         Err(err) if !is_last => {
                             let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
                             tracing::warn!(
-                                attempt = attempt + 1,
-                                max_attempts,
-                                backoff_ms = wait.as_millis() as u64,
-                                error = %err,
-                                label,
-                                "retrying HTTP request after response body decode error",
-                            );
+                                    attempt = attempt + 1,
+                                    max_attempts,
+                                    backoff_ms = wait.as_millis() as u64,
+                                    error = %err,
+                                    label,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                                    code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
+                            "retrying HTTP request after response body decode error",
+                                );
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -1433,6 +1464,7 @@ impl RegistryClient {
                         backoff_ms = wait.as_millis() as u64,
                         error = %err,
                         label,
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
                         "retrying HTTP request after response body decode error",
                     );
                     tokio::time::sleep(wait).await;
@@ -1867,7 +1899,10 @@ fn build_http_client(
                 }
                 builder = builder.proxy(p);
             }
-            Err(e) => tracing::warn!("ignoring https-proxy {url:?}: {e}"),
+            Err(e) => tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_INVALID_HTTPS_PROXY,
+                "ignoring https-proxy {url:?}: {e}"
+            ),
         }
     }
     if let Some(ref url) = config.http_proxy {
@@ -1878,7 +1913,10 @@ fn build_http_client(
                 }
                 builder = builder.proxy(p);
             }
-            Err(e) => tracing::warn!("ignoring http-proxy {url:?}: {e}"),
+            Err(e) => tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_INVALID_HTTP_PROXY,
+                "ignoring http-proxy {url:?}: {e}"
+            ),
         }
     }
 
@@ -1886,7 +1924,10 @@ fn build_http_client(
         for ca in &registry_config.tls.ca {
             match reqwest::Certificate::from_pem(ca.as_bytes()) {
                 Ok(cert) => builder = builder.add_root_certificate(cert),
-                Err(e) => tracing::warn!("ignoring invalid per-registry ca: {e}"),
+                Err(e) => tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_INVALID_CA,
+                    "ignoring invalid per-registry ca: {e}"
+                ),
             }
         }
         if let Some(cafile) = &registry_config.tls.cafile {
@@ -1897,9 +1938,17 @@ fn build_http_client(
                             builder = builder.add_root_certificate(cert);
                         }
                     }
-                    Err(e) => tracing::warn!("ignoring invalid cafile {}: {e}", cafile.display()),
+                    Err(e) => tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_INVALID_CAFILE,
+                        "ignoring invalid cafile {}: {e}",
+                        cafile.display()
+                    ),
                 },
-                Err(e) => tracing::warn!("ignoring unreadable cafile {}: {e}", cafile.display()),
+                Err(e) => tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_UNREADABLE_CAFILE,
+                    "ignoring unreadable cafile {}: {e}",
+                    cafile.display()
+                ),
             }
         }
         if let (Some(cert), Some(key)) = (&registry_config.tls.cert, &registry_config.tls.key) {
@@ -1911,7 +1960,10 @@ fn build_http_client(
             pem.extend_from_slice(key.as_bytes());
             match reqwest::Identity::from_pem(&pem) {
                 Ok(identity) => builder = builder.identity(identity),
-                Err(e) => tracing::warn!("ignoring invalid per-registry client cert/key: {e}"),
+                Err(e) => tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_INVALID_CLIENT_CERT,
+                    "ignoring invalid per-registry client cert/key: {e}"
+                ),
             }
         }
     }
@@ -2227,6 +2279,7 @@ fn warn_slow_tarball(threshold_kibps: u64, url: &str, len: usize, elapsed: std::
             bytes = len,
             elapsed_ms,
             url = %safe_url,
+            code = aube_codes::warnings::WARN_AUBE_SLOW_TARBALL,
             "slow tarball download fell below fetchMinSpeedKiBps",
         );
     }

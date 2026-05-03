@@ -11,9 +11,11 @@ readme.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
+aube-codes = { workspace = true }
 aube-manifest = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+miette = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

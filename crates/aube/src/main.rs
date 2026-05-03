@@ -1,4 +1,5 @@
 mod commands;
+mod dep_chain;
 mod deprecations;
 mod dirs;
 mod engines;
@@ -657,7 +658,33 @@ enum Commands {
     External(Vec<String>),
 }
 
-fn main() -> miette::Result<()> {
+fn main() {
+    // Two-phase wrapper: `inner_main` runs the real CLI and returns
+    // `Result<(), miette::Report>`. On Err we render via miette's
+    // fancy handler (matching the previous `Termination` behavior),
+    // then look up the diagnostic's `code()` against
+    // `aube_codes::exit::EXIT_TABLE` to pick a bespoke exit code.
+    // Codes outside the table fall through to `EXIT_GENERIC` (1).
+    if let Err(report) = inner_main() {
+        eprintln!("{report:?}");
+        std::process::exit(report_exit_code(&report));
+    }
+}
+
+/// Resolve a diagnostic's exit code by walking its `code()` chain.
+/// Falls back to `EXIT_GENERIC` (1) when no `code` is set or the
+/// reported code has no entry in `aube_codes::exit::EXIT_TABLE`.
+fn report_exit_code(report: &miette::Report) -> i32 {
+    if let Some(code) = report.code() {
+        let code = code.to_string();
+        if let Some(exit) = aube_codes::exit::exit_code_for(&code) {
+            return exit;
+        }
+    }
+    aube_codes::exit::EXIT_GENERIC
+}
+
+fn inner_main() -> miette::Result<()> {
     let mut argv: Vec<OsString> = std::env::args_os().collect();
     // pnpm-compat: pull `--config.<key>[=<value>]` out of argv before
     // clap parses it. Stripping here means the rest of the binary sees
@@ -1017,6 +1044,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 }
                 Some(_) | None => {
                     return Err(miette::miette!(
+                        code = aube_codes::errors::ERR_AUBE_RECURSIVE_NOT_SUPPORTED,
                         "aube recursive: command does not support recursive execution"
                     ));
                 }
@@ -1142,7 +1170,10 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                     let mut cmd = Cli::command();
                     cmd.print_help().ok();
                     eprintln!();
-                    return Err(miette::miette!("unknown command: {script}"));
+                    return Err(miette::miette!(
+                        code = aube_codes::errors::ERR_AUBE_UNKNOWN_COMMAND,
+                        "unknown command: {script}"
+                    ));
                 }
             }
             commands::run::run_script(script, &script_args, false, false, &effective_filter)

@@ -924,11 +924,13 @@ pub async fn run_dep_hook(
     Ok(true)
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("failed to spawn script {0}: {1}")]
+    #[diagnostic(code(ERR_AUBE_SCRIPT_SPAWN))]
     Spawn(String, String),
     #[error("script `{script}` exited with code {code:?}")]
+    #[diagnostic(code(ERR_AUBE_SCRIPT_NON_ZERO_EXIT))]
     NonZeroExit { script: String, code: Option<i32> },
 }
 

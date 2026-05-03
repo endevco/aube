@@ -315,13 +315,16 @@ fn matches_wildcard(name: &str, pattern: &str) -> bool {
     remaining.len() >= last.len() && remaining.ends_with(last)
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
 pub enum BuildPolicyError {
     #[error("build policy entry {pattern:?} has unsupported value {raw:?}: expected true/false")]
+    #[diagnostic(code(ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE))]
     UnsupportedValue { pattern: String, raw: String },
     #[error("build policy pattern {0:?} contains an invalid version union")]
+    #[diagnostic(code(ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION))]
     InvalidVersionUnion(String),
     #[error("build policy pattern {0:?} mixes a wildcard name with a version union")]
+    #[diagnostic(code(ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION))]
     WildcardWithVersion(String),
 }
 

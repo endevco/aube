@@ -381,6 +381,8 @@ pub fn apply_peer_contexts(
         // from apply_peer_contexts but that cascades up through
         // Resolver::resolve signature, do that separately.
         tracing::error!(
+            code = aube_codes::errors::ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED,
+            max_iterations = MAX_ITERATIONS,
             "peer-context hit MAX_ITERATIONS={MAX_ITERATIONS} without convergence. \
              mutually recursive peers likely. lockfile incomplete, linker output will be wrong"
         );
@@ -849,6 +851,7 @@ pub(crate) fn dedupe_peer_suffixes(graph: LockfileGraph) -> LockfileGraph {
         .map(|(old, new)| {
             if target_counts.get(&new).copied().unwrap_or(0) > 1 {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_PEER_DEDUPE_COLLISION,
                     "dedupe-peers: collision on {new} — keeping {old} in full form to avoid \
                      dropping a distinct peer-variant"
                 );

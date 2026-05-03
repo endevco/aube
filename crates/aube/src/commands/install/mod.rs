@@ -783,6 +783,7 @@ pub(super) async fn import_local_source(
                 .map_err(|e| miette!("failed to fetch {}: {e}", t.url))?;
             if t.integrity.is_empty() {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_MISSING_INTEGRITY,
                     url = %aube_util::url::redact_url(&t.url),
                     "remote tarball lockfile entry has no integrity field; importing fetched bytes without verification (run `aube install --no-frozen-lockfile` to refresh the lockfile)",
                 );
@@ -1190,12 +1191,18 @@ where
                         .fetch_tarball_bytes_streaming_sha512(&url)
                         .await
                         .map_err(|e| {
-                            miette!("failed to fetch {display_name}@{version}: {e}")
+                            miette!(
+                                "failed to fetch {display_name}@{version}: {e}{}",
+                                crate::dep_chain::format_chain_for(&display_name, &version)
+                            )
                         })?;
                     (bytes, Some(digest))
                 } else {
                     let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
-                        miette!("failed to fetch {display_name}@{version}: {e}")
+                        miette!(
+                            "failed to fetch {display_name}@{version}: {e}{}",
+                            crate::dep_chain::format_chain_for(&display_name, &version)
+                        )
                     })?;
                     (bytes, None)
                 };
@@ -1916,6 +1923,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             && !virtual_store_only_setting
         {
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_GVS_INCOMPATIBLE,
                 "`{name}` isn't compatible with aube's global virtual store — \
                  installing per-project instead. Install still succeeds; repeat \
                  installs of this project just won't share materialized packages \
@@ -2228,6 +2236,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         let to = if planned_gvs { "enabled" } else { "disabled" };
         let modules_dir_path = cwd.join(&modules_dir_name);
         tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_GVS_MODE_CHANGED,
             "global virtual store {from} → {to}; removing {} and reinstalling from scratch",
             modules_dir_path.display()
         );
@@ -2479,6 +2488,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 p.set_total(graph.packages.len());
                 p.set_phase("fetching");
             }
+            // Seed the chain index for diagnostic enrichment on the
+            // lockfile fast path. Same effect as the resolve-fresh
+            // branch above — error wrappers in `dep_chain` now know
+            // each package's ancestor path.
+            crate::dep_chain::set_active(&graph);
 
             // Lockfile path: check index cache and fetch missing tarballs.
             // The tarball client (reqwest + rustls) is lazily built —
@@ -2819,12 +2833,22 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 .fetch_tarball_bytes_streaming_sha512(&url)
                                 .await
                                 .map_err(|e| {
-                                    miette!("failed to fetch {}@{}: {e}", pkg.name, pkg.version)
+                                    miette!(
+                                        "failed to fetch {}@{}: {e}{}",
+                                        pkg.name,
+                                        pkg.version,
+                                        crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
+                                    )
                                 })?;
                             (bytes, Some(digest))
                         } else {
                             let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
-                                miette!("failed to fetch {}@{}: {e}", pkg.name, pkg.version)
+                                miette!(
+                                    "failed to fetch {}@{}: {e}{}",
+                                    pkg.name,
+                                    pkg.version,
+                                    crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
+                                )
                             })?;
                             (bytes, None)
                         };
@@ -2942,6 +2966,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 graph.overlay_metadata_from(&prior);
             }
             tracing::debug!("Resolved {} packages", graph.packages.len());
+            // Seed the chain index for diagnostic enrichment. Any
+            // post-resolver error wrapping `(name, version)` via
+            // `crate::dep_chain::format_chain_for` now sees a
+            // chain back to the importer.
+            crate::dep_chain::set_active(&graph);
             if let Some(p) = prog_ref {
                 p.set_phase("fetching");
             }
@@ -4069,6 +4098,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // hides it behind `-v` so CI would silently
                     // ship broken homomorphic bookkeeping.
                     tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_LTHASH_MISMATCH,
                         "lthash: incremental/full mismatch, homomorphic invariant broken"
                     );
                 }
@@ -4262,6 +4292,9 @@ fn emit_unreviewed_builds_warning(unreviewed: &[String]) {
         )
     };
     tracing::warn!(
+        code = aube_codes::warnings::WARN_AUBE_IGNORED_BUILD_SCRIPTS,
+        count = unreviewed.len(),
+        packages = ?unreviewed,
         "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
         unreviewed.len(),
         list
@@ -4419,7 +4452,11 @@ fn invalidate_changed_aube_entries(
         match result {
             Ok(()) => removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!("delta: failed to invalidate {}: {e}", path.display()),
+            Err(e) => tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_DELTA_INVALIDATE_FAILED,
+                "delta: failed to invalidate {}: {e}",
+                path.display()
+            ),
         }
     }
     removed

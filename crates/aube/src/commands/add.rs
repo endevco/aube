@@ -839,7 +839,10 @@ async fn update_manifest_for_add(
             match raw.as_str() {
                 "^" | "~" | "" => raw,
                 _ => {
-                    tracing::warn!("ignoring invalid save-prefix={raw:?}, falling back to ^");
+                    tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_INVALID_SAVE_PREFIX,
+                        "ignoring invalid save-prefix={raw:?}, falling back to ^"
+                    );
                     "^".to_string()
                 }
             }
@@ -1892,7 +1895,12 @@ async fn run_global_inner(
                         Err(e)
                     }
                 })
-                .map_err(|e| miette::miette!("failed to remove prior install dir: {e}"))
+                .map_err(|e| {
+                    miette::miette!(
+                        code = aube_codes::errors::ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR,
+                        "failed to remove prior install dir: {e}"
+                    )
+                })
         } else {
             global::remove_package(prior, layout)
         };

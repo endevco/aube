@@ -1,6 +1,7 @@
 use crate::ResolveTask;
 use crate::semver_util::highest_stable_version;
 use crate::trust::{MissingTimeDetails, TrustDowngradeDetails};
+use aube_codes::errors::*;
 use aube_registry::Packument;
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +112,19 @@ pub struct ExoticSubdepDetails {
 }
 
 impl miette::Diagnostic for Error {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new(match self {
+            Self::NoMatch(_) => ERR_AUBE_NO_MATCHING_VERSION,
+            Self::AgeGate(_) => ERR_AUBE_NO_MATURE_MATCHING_VERSION,
+            Self::Registry(_, _) => ERR_AUBE_REGISTRY_ERROR,
+            Self::UnknownCatalog(_) => ERR_AUBE_UNKNOWN_CATALOG,
+            Self::UnknownCatalogEntry(_) => ERR_AUBE_UNKNOWN_CATALOG_ENTRY,
+            Self::BlockedExoticSubdep(_) => ERR_AUBE_BLOCKED_EXOTIC_SUBDEP,
+            Self::TrustDowngrade(_) => ERR_AUBE_TRUST_DOWNGRADE,
+            Self::TrustCheckMissingTime(_) => ERR_AUBE_TRUST_MISSING_TIME,
+        }))
+    }
+
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
         match self {
             Self::NoMatch(d) => Some(Box::new(format_no_match_help(d))),

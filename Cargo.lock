@@ -213,6 +213,7 @@ version = "1.7.0"
 dependencies = [
  "ambient-id",
  "assert_cmd",
+ "aube-codes",
  "aube-linker",
  "aube-lockfile",
  "aube-manifest",
@@ -267,9 +268,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aube-codes"
+version = "1.7.0"
+
+[[package]]
 name = "aube-linker"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-lockfile",
  "aube-store",
  "aube-util",
@@ -277,6 +283,7 @@ dependencies = [
  "glob",
  "hex",
  "junction",
+ "miette",
  "pathdiff",
  "rayon",
  "reflink-copy",
@@ -294,6 +301,7 @@ dependencies = [
 name = "aube-lockfile"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-manifest",
  "aube-settings",
  "aube-util",
@@ -318,6 +326,7 @@ dependencies = [
 name = "aube-manifest"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-util",
  "miette",
  "serde",
@@ -332,6 +341,7 @@ dependencies = [
 name = "aube-registry"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-manifest",
  "aube-settings",
  "aube-store",
@@ -340,6 +350,7 @@ dependencies = [
  "blake3",
  "bytes",
  "flate2",
+ "miette",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -358,6 +369,7 @@ dependencies = [
 name = "aube-resolver"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-lockfile",
  "aube-manifest",
  "aube-registry",
@@ -386,9 +398,11 @@ dependencies = [
 name = "aube-scripts"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-manifest",
  "landlock",
  "libc",
+ "miette",
  "seccompiler",
  "thiserror 2.0.18",
  "tokio",
@@ -409,12 +423,14 @@ dependencies = [
 name = "aube-store"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-util",
  "base64",
  "blake3",
  "flate2",
  "hex",
  "log",
+ "miette",
  "rayon",
  "serde",
  "serde_json",
@@ -431,6 +447,7 @@ dependencies = [
 name = "aube-util"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "blake3",
  "reflink-copy",
  "rustc-hash",
@@ -444,6 +461,7 @@ dependencies = [
 name = "aube-workspace"
 version = "1.7.0"
 dependencies = [
+ "aube-codes",
  "aube-manifest",
  "glob",
  "miette",

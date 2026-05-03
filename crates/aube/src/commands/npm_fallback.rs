@@ -8,7 +8,7 @@
 //! `package.json` and produce a confusing "script not found" error.
 
 use clap::Args;
-use miette::{Context, IntoDiagnostic, bail};
+use miette::{Context, IntoDiagnostic, miette};
 
 #[derive(Debug, Args)]
 pub struct FallbackArgs {
@@ -45,10 +45,11 @@ pub fn run(name: &str, args: &[String], registry: Option<&str>) -> miette::Resul
         return Ok(child_exit_code(status));
     }
 
-    bail!(
+    Err(miette!(
+        code = aube_codes::errors::ERR_AUBE_NPM_ONLY_COMMAND,
         "`aube {name}` is not implemented. This is an npm-only command — \
          run it with `npm {name}` instead, or set `npmPath` to let aube delegate it."
-    )
+    ))
 }
 
 fn child_exit_code(status: std::process::ExitStatus) -> i32 {

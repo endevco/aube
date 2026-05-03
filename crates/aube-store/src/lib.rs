@@ -1317,22 +1317,27 @@ pub fn integrity_to_hex(integrity: &str) -> Option<String> {
     Some(hex::encode(bytes))
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[non_exhaustive]
 pub enum Error {
     #[error("HOME environment variable not set")]
+    #[diagnostic(code(ERR_AUBE_NO_HOME))]
     NoHome,
     #[error("I/O error at {0}: {1}")]
     Io(PathBuf, std::io::Error),
     #[error("file error: {0}")]
     Xx(String),
     #[error("tarball extraction error: {0}")]
+    #[diagnostic(code(ERR_AUBE_TARBALL_EXTRACT))]
     Tar(String),
     #[error("integrity verification failed: {0}")]
+    #[diagnostic(code(ERR_AUBE_TARBALL_INTEGRITY))]
     Integrity(String),
     #[error("package.json content mismatch: tarball declares {actual}")]
+    #[diagnostic(code(ERR_AUBE_PKG_CONTENT_MISMATCH))]
     PkgContentMismatch { actual: String },
     #[error("git error: {0}")]
+    #[diagnostic(code(ERR_AUBE_GIT_ERROR))]
     Git(String),
 }
 

@@ -865,6 +865,7 @@ pub enum Error {
     #[diagnostic(transparent)]
     Parse(Box<ParseError>),
     #[error("failed to parse {0}: {1}")]
+    #[diagnostic(code(ERR_AUBE_MANIFEST_YAML_PARSE))]
     YamlParse(std::path::PathBuf, String),
 }
 
@@ -886,6 +887,10 @@ pub struct ParseError {
 }
 
 impl miette::Diagnostic for ParseError {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new(aube_codes::errors::ERR_AUBE_MANIFEST_PARSE))
+    }
+
     fn source_code(&self) -> Option<&dyn miette::SourceCode> {
         Some(&self.src)
     }

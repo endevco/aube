@@ -1994,8 +1994,10 @@ fn refine_yarn_kind(path: &Path, kind: LockfileKind) -> LockfileKind {
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("no lockfile found in {0}")]
+    #[diagnostic(code(ERR_AUBE_NO_LOCKFILE))]
     NotFound(std::path::PathBuf),
     #[error("unsupported lockfile format: {0}")]
+    #[diagnostic(code(ERR_AUBE_LOCKFILE_UNSUPPORTED_FORMAT))]
     UnsupportedFormat(String),
     #[error("failed to read lockfile {0}: {1}")]
     Io(std::path::PathBuf, std::io::Error),
@@ -2004,6 +2006,7 @@ pub enum Error {
     /// (`lockfileVersion N unsupported`), and `yaml_serde::to_string`
     /// failures during write.
     #[error("failed to parse lockfile {0}: {1}")]
+    #[diagnostic(code(ERR_AUBE_LOCKFILE_PARSE))]
     Parse(std::path::PathBuf, String),
     /// Deserialization failure with a byte offset into the source
     /// content, so miette's `fancy` handler can draw a pointer at the

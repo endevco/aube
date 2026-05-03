@@ -96,6 +96,7 @@ export default defineConfig({
           { text: "For yarn users", link: "/yarn-users" },
           { text: "For bun users", link: "/bun-users" },
           { text: "Troubleshooting", link: "/troubleshooting" },
+          { text: "Error codes", link: "/error-codes" },
         ],
       },
       {

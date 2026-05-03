@@ -356,6 +356,7 @@ impl NpmConfig {
                 // apply.
                 if !source.is_trusted_for_subprocess_settings() {
                     tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_UNTRUSTED_PROXY,
                         "ignoring {key} from untrusted source {source:?}: committed `.npmrc` cannot set registry proxies"
                     );
                 } else {
@@ -388,6 +389,7 @@ impl NpmConfig {
                     // Same trust gate tokenHelper already uses.
                     if !b && !source.is_trusted_for_subprocess_settings() {
                         tracing::warn!(
+                            code = aube_codes::warnings::WARN_AUBE_UNTRUSTED_STRICT_SSL_DISABLE,
                             "ignoring strict-ssl=false: {source:?} source is not trusted (committed `.npmrc` cannot disable TLS validation)"
                         );
                     } else {
@@ -397,13 +399,22 @@ impl NpmConfig {
             } else if matches!(key.as_str(), "local-address" | "localAddress") {
                 match value.trim().parse::<std::net::IpAddr>() {
                     Ok(ip) => self.local_address = Some(ip),
-                    Err(e) => tracing::warn!("ignoring invalid local-address {value:?}: {e}"),
+                    Err(e) => tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_INVALID_LOCAL_ADDRESS,
+                        "ignoring invalid local-address {value:?}: {e}"
+                    ),
                 }
             } else if key == "maxsockets" {
                 match value.trim().parse::<usize>() {
                     Ok(n) if n > 0 => self.max_sockets = Some(n),
-                    Ok(_) => tracing::warn!("ignoring maxsockets=0"),
-                    Err(e) => tracing::warn!("ignoring invalid maxsockets {value:?}: {e}"),
+                    Ok(_) => tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_INVALID_MAXSOCKETS,
+                        "ignoring maxsockets=0"
+                    ),
+                    Err(e) => tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_INVALID_MAXSOCKETS,
+                        "ignoring invalid maxsockets {value:?}: {e}"
+                    ),
                 }
             } else if let Some(scope) = key.strip_suffix(":registry") {
                 if scope.starts_with('@') {
@@ -437,12 +448,14 @@ impl NpmConfig {
                             // path to an interpreter.
                             if !source.is_trusted_for_subprocess_settings() {
                                 tracing::warn!(
+                                    code = aube_codes::warnings::WARN_AUBE_UNTRUSTED_TOKEN_HELPER,
                                     "ignoring tokenHelper for {uri}: {source:?} source is not trusted for subprocess settings (committed `.npmrc` cannot set this)"
                                 );
                                 continue;
                             }
                             let Some(sanitized) = sanitize_token_helper(&value) else {
                                 tracing::warn!(
+                                    code = aube_codes::warnings::WARN_AUBE_INVALID_TOKEN_HELPER,
                                     "ignoring tokenHelper for {uri}: value is not a bare absolute path: {value:?}"
                                 );
                                 continue;
@@ -1228,12 +1241,19 @@ pub(crate) fn run_token_helper(command: &str) -> Option<String> {
             // tokenHelper path (missing binary, wrong permissions)
             // gets a clear hint instead of a mysterious 401 from
             // the registry.
-            tracing::warn!("tokenHelper {command:?} could not be spawned: {e}");
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_TOKEN_HELPER_SPAWN_FAILED,
+                "tokenHelper {command:?} could not be spawned: {e}"
+            );
             return None;
         }
     };
     if !output.status.success() {
-        tracing::warn!("tokenHelper {command:?} exited with {}", output.status);
+        tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_TOKEN_HELPER_NON_ZERO_EXIT,
+            "tokenHelper {command:?} exited with {}",
+            output.status
+        );
         return None;
     }
     let token = String::from_utf8(output.stdout).ok()?;

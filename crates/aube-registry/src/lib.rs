@@ -339,31 +339,37 @@ where
     })
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("package not found: {0}")]
+    #[diagnostic(code(ERR_AUBE_PACKAGE_NOT_FOUND))]
     NotFound(String),
     #[error("version not found: {0}@{1}")]
+    #[diagnostic(code(ERR_AUBE_VERSION_NOT_FOUND))]
     VersionNotFound(String, String),
     /// The registry rejected the request with 401/403 — either no auth
     /// token was configured, it was invalid, or the account doesn't
     /// have permission for this package. Callers should point the user
     /// at `aube login`.
     #[error("authentication required")]
+    #[diagnostic(code(ERR_AUBE_UNAUTHORIZED))]
     Unauthorized,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("registry rejected write: HTTP {status}: {body}")]
+    #[diagnostic(code(ERR_AUBE_REGISTRY_WRITE_REJECTED))]
     RegistryWrite { status: u16, body: String },
     #[error("offline: {0} is not available in the local cache")]
+    #[diagnostic(code(ERR_AUBE_OFFLINE))]
     Offline(String),
     /// The caller passed a package name that does not match the npm
     /// name grammar. Returned eagerly (before any I/O) so a hostile
     /// packument or manifest cannot use the cache-path builder as an
     /// arbitrary-file-write primitive.
     #[error("invalid package name: {0:?}")]
+    #[diagnostic(code(ERR_AUBE_INVALID_PACKAGE_NAME))]
     InvalidName(String),
 }
 

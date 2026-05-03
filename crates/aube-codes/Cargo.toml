@@ -1,0 +1,12 @@
+[package]
+name = "aube-codes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Stable error and warning code identifiers shared across the aube workspace."
+
+[dependencies]

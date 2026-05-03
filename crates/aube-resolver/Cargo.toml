@@ -11,6 +11,7 @@ readme.workspace = true
 include = ["src/**/*.rs", "build.rs"]
 
 [dependencies]
+aube-codes = { workspace = true }
 aube-registry = { workspace = true }
 aube-manifest = { workspace = true }
 aube-lockfile = { workspace = true }

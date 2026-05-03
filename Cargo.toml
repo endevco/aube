@@ -123,6 +123,7 @@ diffy = "0.4"
 # transitive crate dependencies via crates.io. release-plz keeps these
 # versions in sync with [workspace.package].version during release PRs.
 aube = { path = "crates/aube", version = "1.7.0" }
+aube-codes = { path = "crates/aube-codes", version = "1.7.0" }
 aube-settings = { path = "crates/aube-settings", version = "1.7.0" }
 aube-resolver = { path = "crates/aube-resolver", version = "1.7.0" }
 aube-registry = { path = "crates/aube-registry", version = "1.7.0" }

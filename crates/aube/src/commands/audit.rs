@@ -452,6 +452,7 @@ async fn filter_unfixable(
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_AUDIT_FETCH_FAILED,
                     "audit --ignore-unfixable: keeping advisories for {name}: packument fetch failed: {e}"
                 );
                 out.insert(name.clone(), Value::Array(arr.clone()));

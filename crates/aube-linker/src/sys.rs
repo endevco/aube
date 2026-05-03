@@ -568,7 +568,10 @@ fn safe_prog(prog: &str) -> &str {
     if is_safe_prog(prog) {
         prog
     } else {
-        tracing::error!("refusing to splice unsafe prog {prog:?} into shim, substituting \"node\"");
+        tracing::error!(
+            code = aube_codes::errors::ERR_AUBE_UNSAFE_SHEBANG_INTERPRETER,
+            "refusing to splice unsafe prog {prog:?} into shim, substituting \"node\""
+        );
         "node"
     }
 }

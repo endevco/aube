@@ -136,7 +136,10 @@ async fn add(specs: Vec<String>) -> miette::Result<()> {
         // Otherwise we fall back to the plain key (proxies that strip
         // integrity still get a warm cache).
         if let Err(e) = store.save_index(name, &version, integrity.as_deref(), &index) {
-            tracing::warn!("failed to cache index for {name}@{version}: {e}");
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_CACHE_WRITE_FAILED,
+                "failed to cache index for {name}@{version}: {e}"
+            );
         }
 
         println!("+ {name}@{version}");

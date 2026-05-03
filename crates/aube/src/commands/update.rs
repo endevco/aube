@@ -341,6 +341,7 @@ pub async fn run(
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!(
+                            code = aube_codes::warnings::WARN_AUBE_PRERELEASE_CHECK_SKIPPED,
                             "skipping prerelease-preservation check for {real_name}: {e}"
                         );
                         return None;
@@ -349,6 +350,7 @@ pub async fn run(
                 let latest_v = packument.dist_tags.get("latest")?;
                 let Ok(parsed_latest) = node_semver::Version::parse(latest_v) else {
                     tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_PRERELEASE_CHECK_SKIPPED,
                         "skipping prerelease-preservation check for {real_name}: \
                          registry returned non-semver latest dist-tag {latest_v:?}"
                     );

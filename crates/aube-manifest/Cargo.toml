@@ -11,6 +11,7 @@ readme.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
+aube-codes = { workspace = true }
 aube-util = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }

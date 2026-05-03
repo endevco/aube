@@ -33,6 +33,7 @@ pub fn parse_concurrency_env() -> Option<u32> {
         return Some(n);
     }
     tracing::warn!(
+        code = aube_codes::warnings::WARN_AUBE_CONCURRENCY_ENV_INVALID,
         value = ?raw,
         floor = CONCURRENCY_FLOOR,
         ceiling = CONCURRENCY_CEILING,

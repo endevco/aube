@@ -192,6 +192,7 @@ pub enum Error {
     #[error("I/O error at {0}: {1}")]
     Io(PathBuf, std::io::Error),
     #[error("failed to parse {0}: {1}")]
+    #[diagnostic(code(ERR_AUBE_WORKSPACE_PARSE))]
     Parse(PathBuf, String),
     /// Parse failure that came in via `aube_manifest::Error::Parse` and
     /// still carries its `NamedSource` + `SourceSpan`. Forwarded via

@@ -1474,6 +1474,7 @@ impl Resolver {
                     })?;
                     if after.name != before_name || after.version != before_version {
                         tracing::warn!(
+                            code = aube_codes::warnings::WARN_AUBE_HOOK_IDENTITY_REWRITTEN,
                             "[pnpmfile] readPackage rewrote {}@{} identity to {}@{}; \
                              aube ignores identity edits",
                             before_name,
@@ -1529,6 +1530,7 @@ impl Resolver {
                         continue;
                     }
                     tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_UNSUPPORTED_PLATFORM_INSTALL,
                         "required dep {}@{} declares unsupported platform (os={:?} cpu={:?} libc={:?}); installing anyway",
                         task.name,
                         version_meta.version,
@@ -1822,6 +1824,7 @@ impl Resolver {
                         && is_non_registry_specifier(dep_range)
                     {
                         tracing::warn!(
+                            code = aube_codes::warnings::WARN_AUBE_EXOTIC_SUBDEP_SKIPPED,
                             "skipping optional dependency {dep_name} of {} — \
                              exotic specifier \"{dep_range}\" blocked by blockExoticSubdeps",
                             task.name
@@ -1906,6 +1909,7 @@ impl Resolver {
                             && is_non_registry_specifier(dep_range)
                         {
                             tracing::warn!(
+                                code = aube_codes::warnings::WARN_AUBE_EXOTIC_SUBDEP_SKIPPED,
                                 "skipping peer dependency {dep_name} of {} — \
                                  exotic specifier \"{dep_range}\" blocked \
                                  by blockExoticSubdeps",

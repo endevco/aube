@@ -135,6 +135,7 @@ impl NpmrcEdit {
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_TOKEN_CHMOD_FAILED,
                     "failed to chmod 0600 {}: {e}. File may be world-readable, check filesystem permissions",
                     path.display()
                 );

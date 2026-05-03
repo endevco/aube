@@ -663,6 +663,7 @@ fn parse_berry_str(
             }
             "patch" | "portal" | "exec" => {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_YARN_BERRY_UNSUPPORTED,
                     "yarn berry '{}' protocol in block '{}' is not supported — entry skipped",
                     res_protocol,
                     key_str,
@@ -700,6 +701,7 @@ fn parse_berry_str(
             }
             _ => {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_YARN_BERRY_UNSUPPORTED,
                     "yarn berry unrecognized protocol '{}' in block '{}' — entry skipped",
                     res_protocol,
                     key_str,

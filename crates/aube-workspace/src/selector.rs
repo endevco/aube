@@ -199,9 +199,10 @@ pub struct WorkspacePkg<'a> {
     pub workspace_root: &'a Path,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum ParseError {
     #[error("empty --filter selector")]
+    #[diagnostic(code(ERR_AUBE_FILTER_EMPTY))]
     Empty,
 }
 
@@ -487,13 +488,16 @@ fn git_root(workspace_root: &Path) -> Result<PathBuf, SelectError> {
     ))
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum SelectError {
     #[error("{0}")]
+    #[diagnostic(transparent)]
     Parse(#[from] ParseError),
     #[error("failed to run git for [ref] filter: {0}")]
+    #[diagnostic(code(ERR_AUBE_FILTER_GIT_IO))]
     GitIo(std::io::Error),
     #[error("git [ref] filter failed: {0}")]
+    #[diagnostic(code(ERR_AUBE_FILTER_GIT_FAILED))]
     GitFailed(String),
 }
 

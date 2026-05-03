@@ -84,6 +84,7 @@ pub fn detect(
         };
         if !p.is_file() {
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_PNPMFILE_NOT_FOUND,
                 "--pnpmfile override {:?} points at a missing file — hooks will not run",
                 p.display().to_string(),
             );
@@ -95,6 +96,7 @@ pub fn detect(
         let p = cwd.join(rel);
         if !p.is_file() {
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_PNPMFILE_NOT_FOUND,
                 "pnpmfilePath override {:?} (from pnpm-workspace.yaml) points at a missing file — hooks will not run",
                 p.display().to_string(),
             );
@@ -125,6 +127,7 @@ pub fn detect_global(cwd: &Path, cli_global: Option<&Path>) -> Option<PathBuf> {
     };
     if !p.is_file() {
         tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_PNPMFILE_NOT_FOUND,
             "--global-pnpmfile override {:?} points at a missing file — global hooks will not run",
             p.display().to_string(),
         );
@@ -221,6 +224,7 @@ fn apply(wire: LockfileWire, graph: &mut LockfileGraph) {
                     .all(|(g, w)| g.name == w.name && g.dep_path == w.version);
             if !same {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_HOOK_IMPORTER_MUTATED,
                     "[pnpmfile] afterAllResolved mutated importers[{path}]; \
                      aube ignores importer edits because they would require \
                      re-running the resolver",
@@ -228,6 +232,7 @@ fn apply(wire: LockfileWire, graph: &mut LockfileGraph) {
             }
         } else {
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_HOOK_IMPORTER_ADDED,
                 "[pnpmfile] afterAllResolved added importers[{path}]; \
                  aube ignores new importer entries",
             );
@@ -237,6 +242,7 @@ fn apply(wire: LockfileWire, graph: &mut LockfileGraph) {
         if let Some(locked) = graph.packages.get_mut(&key) {
             if pkg.name != locked.name || pkg.version != locked.version {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_HOOK_IDENTITY_REWRITTEN,
                     "[pnpmfile] afterAllResolved rewrote name/version for {key} \
                      (to {}@{}); aube ignores identity edits on existing packages",
                     pkg.name,
@@ -251,6 +257,7 @@ fn apply(wire: LockfileWire, graph: &mut LockfileGraph) {
             }
         } else {
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_HOOK_PACKAGE_ADDED,
                 "[pnpmfile] afterAllResolved added a new package entry {key}; \
                  aube ignores newly-introduced packages from the hook",
             );
@@ -755,7 +762,10 @@ impl ReadPackageHost {
     /// install phases emit their own output.
     pub async fn drain_forwarder(forwarder: ReadPackageForwarder) {
         if let Err(e) = forwarder.await {
-            tracing::warn!("pnpmfile readPackage stderr forwarder task failed: {e}");
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_PNPMFILE_STDERR_FORWARDER,
+                "pnpmfile readPackage stderr forwarder task failed: {e}"
+            );
         }
     }
 

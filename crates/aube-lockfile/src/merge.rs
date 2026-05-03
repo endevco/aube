@@ -80,6 +80,7 @@ pub fn merge_branch_lockfiles(
             // Non-fatal: the merged graph is already written. Surface
             // a warning so the user can clean up manually if needed.
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_LOCKFILE_MERGE_CLEANUP_FAILED,
                 "failed to remove merged branch lockfile {}: {err}",
                 path.display()
             );
@@ -191,7 +192,10 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
                         format!("version differs, kept {}", chosen.version)
                     };
                     report.conflicts.push(format!("{dep_path}: {reason}"));
-                    tracing::warn!("merge conflict on {dep_path}: {reason}");
+                    tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_LOCKFILE_MERGE_CONFLICT,
+                        "merge conflict on {dep_path}: {reason}"
+                    );
                     dst.packages.insert(dep_path, chosen);
                 } else {
                     // Identical. Put existing one back.

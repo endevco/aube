@@ -31,6 +31,7 @@ path = "src/bin/aubx.rs"
 test = false
 
 [dependencies]
+aube-codes = { workspace = true }
 aube-lockfile = { workspace = true }
 aube-manifest = { workspace = true }
 aube-registry = { workspace = true }

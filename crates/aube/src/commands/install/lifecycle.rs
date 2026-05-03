@@ -222,6 +222,7 @@ pub(super) fn resolve_link_strategy(
             "clone-or-copy" => aube_linker::LinkStrategy::Reflink,
             "clone" => {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_CLONE_STRATEGY_FALLBACK,
                     "package-import-method=clone: reflink will silently fall back to copy \
                      if the filesystem does not support it (strict enforcement is a known TODO)"
                 );
@@ -245,6 +246,7 @@ pub(super) fn resolve_link_strategy(
             }
             aube_settings::resolved::PackageImportMethod::Clone => {
                 tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_CLONE_STRATEGY_FALLBACK,
                     "package-import-method=clone: reflink will silently fall back to copy \
                      if the filesystem does not support it (strict enforcement is a known TODO)"
                 );
@@ -571,8 +573,12 @@ pub(super) fn import_verified_tarball(
 ) -> miette::Result<aube_store::PackageIndex> {
     if verify_integrity {
         if let Some(expected) = integrity {
-            aube_store::verify_integrity(bytes, expected)
-                .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+            aube_store::verify_integrity(bytes, expected).map_err(|e| {
+                miette!(
+                    "{display_name}@{version}: {e}{}",
+                    crate::dep_chain::format_chain_for(registry_name, version)
+                )
+            })?;
         } else if strict_integrity {
             // strict-store-integrity=true opts the user into
             // fail-closed. Default is off so ecosystem parity with
@@ -580,17 +586,22 @@ pub(super) fn import_verified_tarball(
             // dist.integrity will no longer slip past silently when
             // strict is on.
             return Err(miette!(
-                "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes."
+                "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes.{}",
+                crate::dep_chain::format_chain_for(registry_name, version)
             ));
         } else {
             tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_MISSING_INTEGRITY,
                 "{display_name}@{version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
             );
         }
     }
-    let index = store
-        .import_tarball(bytes)
-        .map_err(|e| miette!("failed to import {display_name}@{version}: {e}"))?;
+    let index = store.import_tarball(bytes).map_err(|e| {
+        miette!(
+            "failed to import {display_name}@{version}: {e}{}",
+            crate::dep_chain::format_chain_for(registry_name, version)
+        )
+    })?;
     // strictStorePkgContentCheck: cross-check the freshly stored
     // package.json against the resolver-asserted (name, version)
     // before the index is cached or returned to the linker. Validate
@@ -598,8 +609,12 @@ pub(super) fn import_verified_tarball(
     // in the tarball's own `package.json` — not the alias, or this
     // would fail every npm-aliased entry.
     if strict_pkg_content_check {
-        aube_store::validate_pkg_content(&index, registry_name, version)
-            .map_err(|e| miette!("{display_name}@{version}: {e}"))?;
+        aube_store::validate_pkg_content(&index, registry_name, version).map_err(|e| {
+            miette!(
+                "{display_name}@{version}: {e}{}",
+                crate::dep_chain::format_chain_for(registry_name, version)
+            )
+        })?;
     }
     // Cache under `registry_name` so two aliases of the same real
     // package hit the same on-disk index file and avoid redundant
@@ -609,7 +624,10 @@ pub(super) fn import_verified_tarball(
     // plain name@version key so warm installs still find the cache
     // on integrity-stripping proxies.
     if let Err(e) = store.save_index(registry_name, version, integrity, &index) {
-        tracing::warn!("Failed to cache index for {display_name}@{version}: {e}");
+        tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_CACHE_WRITE_FAILED,
+            "Failed to cache index for {display_name}@{version}: {e}"
+        );
     }
     Ok(index)
 }

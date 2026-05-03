@@ -27,6 +27,7 @@ pub async fn run(args: CompletionArgs) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(miette::miette!(
+            code = aube_codes::errors::ERR_AUBE_COMPLETION_FAILED,
             "`usage g completion {}` failed: {}",
             args.shell,
             stderr.trim()

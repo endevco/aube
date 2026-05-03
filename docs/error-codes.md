@@ -1,0 +1,284 @@
+# Error and warning codes
+
+aube emits a stable string identifier with every error and most
+warnings. Codes look like `ERR_AUBE_NO_LOCKFILE` or
+`WARN_AUBE_IGNORED_BUILD_SCRIPTS`, and they're attached as a
+structured field — no regex on stderr required.
+
+This page lists every code aube currently emits, what it means, and
+(for errors) the bespoke Unix exit code it produces.
+
+## How to read codes
+
+**Default text output**: errors include the code in their
+miette-rendered output, e.g. `× foo (ERR_AUBE_NO_LOCKFILE)`. Warnings
+include the code as a structured field after the message.
+
+**ndjson output** (`aube --reporter ndjson <cmd>`): every record carries
+a `code` field. Branch on `code == "ERR_AUBE_..."` instead of
+substring-matching the human message.
+
+```jsonc
+{
+  "level": "WARN",
+  "code": "WARN_AUBE_IGNORED_BUILD_SCRIPTS",
+  "count": 2,
+  "packages": ["esbuild", "opencode-ai"],
+  "message": "ignored build scripts for 2 package(s): esbuild, opencode-ai. ..."
+}
+```
+
+**Exit codes**: errors exit with `1` (generic) by default. The errors
+called out as having a bespoke exit in the table below get a stable
+numeric exit code instead, so shell scripts can branch without parsing
+stderr.
+
+## Naming
+
+- `ERR_AUBE_*` — fatal errors. Process exits non-zero.
+- `WARN_AUBE_*` — non-fatal warnings. Install continues; the warning
+  is informational.
+
+aube does not emit `ERR_PNPM_*` codes. Where a code maps onto a pnpm
+concept (lockfile, peer-deps, tarball, etc.) the suffix matches pnpm's
+naming so the meaning is obvious to anyone familiar with pnpm's
+[error page](https://pnpm.io/errors), but aube reserves its own
+prefix so the codes can evolve independently.
+
+## Stability
+
+Once published, a code's identifier and meaning don't change. New
+codes can be added at any time. Removing or repurposing a code is a
+breaking change.
+
+Bespoke exit codes follow the same contract. The exit-code allocation
+is grouped by category — see [`crates/aube-codes/src/exit.rs`][exit-src]
+for the full layout — but consumers should branch on the exit *value*,
+not the category, since categories are documentation, not API.
+
+[exit-src]: https://github.com/endevco/aube/blob/main/crates/aube-codes/src/exit.rs
+
+## Errors
+
+### Lockfile
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_NO_LOCKFILE` | `10` | An operation that required a lockfile (`--frozen-lockfile`, `aube fetch`, etc.) found none in the project. |
+| `ERR_AUBE_LOCKFILE_PARSE` | `11` | Lockfile is structurally invalid — version guard failed, YAML shape is wrong, or `yaml_serde` couldn't round-trip the contents. |
+| `ERR_AUBE_LOCKFILE_UNSUPPORTED_FORMAT` | `12` | Lockfile filename was recognized but its format isn't supported on this aube version. |
+
+### Resolver
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_NO_MATCHING_VERSION` | `20` | No published version of the named package satisfies the requested range. |
+| `ERR_AUBE_NO_MATURE_MATCHING_VERSION` | `21` | A version satisfying the range exists but every candidate was younger than `minimumReleaseAge` and `minimumReleaseAgeStrict=true`. |
+| `ERR_AUBE_BLOCKED_EXOTIC_SUBDEP` | `22` | Transitive dep used a `git:` / `file:` / `tarball` specifier and `blockExoticSubdeps=true`. |
+| `ERR_AUBE_TRUST_DOWNGRADE` | `23` | Picked version dropped trust evidence the prior version had (`trustPolicy=no-downgrade`). |
+| `ERR_AUBE_TRUST_MISSING_TIME` | `24` | Registry's packument has no `time` entry for the picked version (`trustPolicy=no-downgrade`). |
+| `ERR_AUBE_UNKNOWN_CATALOG` | `25` | A `catalog:<name>` reference was used but the catalog isn't defined. |
+| `ERR_AUBE_UNKNOWN_CATALOG_ENTRY` | `26` | The catalog exists but has no entry for the requested package. |
+| `ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED` | `27` | Peer-context fixed-point loop hit `MAX_ITERATIONS=16` without converging — usually mutually-recursive peers. |
+
+### Tarball / store
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_TARBALL_INTEGRITY` | `30` | Downloaded tarball's hash didn't match the lockfile's / packument's `dist.integrity`. |
+| `ERR_AUBE_TARBALL_EXTRACT` | `31` | Tarball couldn't be extracted (corrupt gzip, unexpected entry shape, etc.). |
+| `ERR_AUBE_PKG_CONTENT_MISMATCH` | `32` | Tarball's `package.json` declared a different `(name, version)` than the resolver expected (`strictStorePkgContentCheck=true`). |
+| `ERR_AUBE_GIT_ERROR` | `33` | Git operation failed during a `git:` dep prepare or checkout. |
+| `ERR_AUBE_NO_HOME` | `1`  | `HOME` (or platform equivalent) is unset, so aube can't locate its store. |
+
+### Registry / network
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_PACKAGE_NOT_FOUND` | `40` | Registry returned 404 for the package name. |
+| `ERR_AUBE_VERSION_NOT_FOUND` | `41` | Package exists but the requested version doesn't. |
+| `ERR_AUBE_UNAUTHORIZED` | `42` | Registry returned 401/403 — missing or invalid auth. Run `aube login`. |
+| `ERR_AUBE_OFFLINE` | `43` | Offline mode and the requested resource isn't in the local cache. |
+| `ERR_AUBE_INVALID_PACKAGE_NAME` | `44` | A name doesn't match npm's grammar — rejected before any I/O so a hostile manifest can't use the cache-path builder as a write primitive. |
+| `ERR_AUBE_REGISTRY_WRITE_REJECTED` | `45` | Registry rejected a publish/deprecate/owner write with a non-2xx response. |
+| `ERR_AUBE_REGISTRY_ERROR` | `1`  | Generic registry error from inside the resolver. |
+
+### Scripts / build
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_SCRIPT_NON_ZERO_EXIT` | `50` | A lifecycle script (`preinstall` / `install` / `postinstall` / a `package.json` script) exited non-zero. |
+| `ERR_AUBE_SCRIPT_SPAWN` | `51` | Couldn't spawn a script's interpreter (shell missing, jail setup failed, etc.). |
+| `ERR_AUBE_BUILD_POLICY_UNSUPPORTED_VALUE` | `1` | An entry in `allowBuilds` had a value that wasn't `true`/`false`. |
+| `ERR_AUBE_BUILD_POLICY_INVALID_VERSION_UNION` | `1` | An `allowBuilds` pattern's version union was unparseable. |
+| `ERR_AUBE_BUILD_POLICY_WILDCARD_WITH_VERSION` | `1` | An `allowBuilds` pattern combined a wildcard name with a version union. |
+
+### Linker
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_PATCH_FAILED` | `60` | Applying a `pnpm.patchedDependencies` patch failed. |
+| `ERR_AUBE_LINK_FAILED` | `61` | Symlink / junction / hardlink couldn't be created — usually permissions or filesystem support. |
+| `ERR_AUBE_MISSING_PACKAGE_INDEX` | `62` | Internal: a caller skipped `load_index` but the package wasn't already materialized. |
+| `ERR_AUBE_MISSING_STORE_FILE` | `63` | A package index references a CAS shard that doesn't exist on disk. Re-run install to re-fetch. |
+
+### Manifest / workspace
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_MANIFEST_PARSE` | `70` | A `package.json` had a syntax error. miette renders a pointer at the offending byte. |
+| `ERR_AUBE_WORKSPACE_PARSE` | `71` | An `aube-workspace.yaml` / `pnpm-workspace.yaml` was structurally invalid. |
+| `ERR_AUBE_MANIFEST_YAML_PARSE` | `1`  | A workspace YAML helper file was structurally invalid (no source pointer available). |
+| `ERR_AUBE_FILTER_EMPTY` | `1` | `--filter` was passed an empty selector. |
+| `ERR_AUBE_FILTER_GIT_IO` | `1` | A `--filter ...[ref]` selector failed to spawn `git`. |
+| `ERR_AUBE_FILTER_GIT_FAILED` | `1` | The git subprocess for a `--filter ...[ref]` selector exited non-zero. |
+| `ERR_AUBE_TRUST_EXCLUDE_INVALID_VERSION_UNION` | `1` | A `trustPolicyExclude` pattern had a non-exact version. |
+| `ERR_AUBE_TRUST_EXCLUDE_NAME_GLOB_WITH_VERSIONS` | `1` | A `trustPolicyExclude` pattern combined a name glob with versions. |
+
+### Engine / CLI
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_UNSUPPORTED_ENGINE` | `80` | One or more packages declared an `engines` constraint incompatible with the running Node/aube and `engine-strict=true`. |
+| `ERR_AUBE_UNKNOWN_COMMAND` | `81` | The named subcommand isn't a built-in aube command and isn't a script in the manifest. |
+| `ERR_AUBE_NPM_ONLY_COMMAND` | `82` | The user invoked an npm-only command (`whoami`, `token`, `owner`, `search`, `pkg`, `set-script`) — aube doesn't implement these; use npm. |
+| `ERR_AUBE_RECURSIVE_NOT_SUPPORTED` | `1` | A command was invoked under `--recursive` but doesn't support recursive execution. |
+| `ERR_AUBE_COMPLETION_FAILED` | `1` | `aube completion` couldn't invoke `usage` to render the shell completions. |
+| `ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR` | `1` | Couldn't clean up a prior global install dir before re-installing. |
+
+### Misc / safety
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `ERR_AUBE_UNSAFE_INDEX_KEY` | `90` | A package index key tried to escape its directory (path traversal defense in depth). |
+| `ERR_AUBE_UNSAFE_SHEBANG_INTERPRETER` | `91` | A `#!` shebang named an unsafe interpreter when generating a shim — substituted with `node` instead. Surfaced as `tracing::error!` but install continues. |
+| `ERR_AUBE_PATCHES_TRACKING_WRITE` | `1` | Couldn't write `.aube-applied-patches.json` after applying patches. Non-fatal; next install may miss stale patched entries. |
+
+## Warnings
+
+Codes prefixed `WARN_AUBE_*` indicate non-fatal conditions. The
+install proceeds; the warning surfaces something the user may want to
+act on. Bespoke exit codes do not apply to warnings.
+
+### pnpmfile / hooks
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_PNPMFILE_NOT_FOUND` | A pnpmfile path (CLI arg, workspace setting, global) pointed at a missing file. |
+| `WARN_AUBE_PNPMFILE_STDERR_FORWARDER` | The background task forwarding pnpmfile stderr panicked. |
+| `WARN_AUBE_HOOK_IMPORTER_MUTATED` | A pnpmfile `afterAllResolved` hook mutated `importers[...]`; aube ignored the edit. |
+| `WARN_AUBE_HOOK_IMPORTER_ADDED` | A pnpmfile `afterAllResolved` hook added a new `importers[...]` entry; aube ignored it. |
+| `WARN_AUBE_HOOK_IDENTITY_REWRITTEN` | A pnpmfile hook rewrote a package's `(name, version)` identity; aube reverted the edit. |
+| `WARN_AUBE_HOOK_PACKAGE_ADDED` | A pnpmfile hook added a wholly-new package entry; aube ignored it. |
+
+### Install lifecycle
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_IGNORED_BUILD_SCRIPTS` | Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`. |
+| `WARN_AUBE_MISSING_INTEGRITY` | Lockfile entry / registry response had no `dist.integrity`; importing without verification. Set `strict-store-integrity=true` to refuse. |
+| `WARN_AUBE_CACHE_WRITE_FAILED` | Couldn't write a package index to the on-disk cache. Non-fatal. |
+| `WARN_AUBE_CLONE_STRATEGY_FALLBACK` | `package-import-method=clone` will silently fall back to copy if the filesystem doesn't support reflinks. |
+| `WARN_AUBE_LTHASH_MISMATCH` | Incremental and full LtHash digests disagreed — homomorphic invariant broken. Real bug signal. |
+| `WARN_AUBE_DELTA_INVALIDATE_FAILED` | Delta install couldn't invalidate a package directory during cleanup. |
+| `WARN_AUBE_GVS_INCOMPATIBLE` | A package isn't compatible with aube's global virtual store; installed per-project instead. |
+| `WARN_AUBE_GVS_MODE_CHANGED` | Switching between gvs-on and gvs-off; removing `node_modules` and reinstalling from scratch. |
+
+### Settings / config validation
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_INVALID_CONCURRENCY` | `network-concurrency` or `link-concurrency` was 0 (must be ≥ 1). |
+| `WARN_AUBE_INVALID_TRUST_POLICY` | A `trustPolicyExclude` entry was malformed and skipped. |
+| `WARN_AUBE_OVERRIDE_MISSING_DEP` | An `overrides` `$ref` pointed at a package not in any of the importer's dependency lists. |
+| `WARN_AUBE_INVALID_PEER_PATTERN` | A `peerDependencyRules` pattern was unparseable and skipped. |
+| `WARN_AUBE_INVALID_SAVE_PREFIX` | `save-prefix` was something other than `^`, `~`, or empty. Falling back to `^`. |
+| `WARN_AUBE_CONCURRENCY_ENV_INVALID` | The `AUBE_CONCURRENCY` env var was outside the `[floor, ceiling]` range or non-numeric. |
+
+### Update / prerelease
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_PRERELEASE_CHECK_SKIPPED` | `aube update` couldn't fetch the packument or got a non-semver `latest` tag; preserved-prerelease check skipped for that package. |
+
+### Audit / npmrc
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_AUDIT_FETCH_FAILED` | `aube audit --ignore-unfixable` couldn't fetch a packument; advisories for that package are kept verbatim. |
+| `WARN_AUBE_TOKEN_CHMOD_FAILED` | `chmod 0600` on the auth token file failed; the file may be world-readable. |
+
+### Registry config (trust gates)
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_UNTRUSTED_PROXY` | A `*-proxy` setting came from a source aube doesn't trust (committed `.npmrc` can't set proxies). |
+| `WARN_AUBE_UNTRUSTED_STRICT_SSL_DISABLE` | `strict-ssl=false` came from a source aube doesn't trust. TLS validation stays on. |
+| `WARN_AUBE_INVALID_LOCAL_ADDRESS` | `local-address` setting wasn't a valid IP. |
+| `WARN_AUBE_INVALID_MAXSOCKETS` | `maxsockets` was 0 or non-numeric. |
+| `WARN_AUBE_UNTRUSTED_TOKEN_HELPER` | `tokenHelper` came from an untrusted source (CVE-2025-69262 class). |
+| `WARN_AUBE_INVALID_TOKEN_HELPER` | `tokenHelper` value wasn't a sanitized absolute path. |
+| `WARN_AUBE_TOKEN_HELPER_SPAWN_FAILED` | `tokenHelper` couldn't be spawned. |
+| `WARN_AUBE_TOKEN_HELPER_NON_ZERO_EXIT` | `tokenHelper` exited non-zero. |
+
+### Registry HTTP retries
+
+These fire once per retry attempt. The `attempt`, `max_attempts`, and
+`backoff_ms` fields carry the retry state; the underlying error is in
+`status` (HTTP code) or `error` (transport / decode message).
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_HTTP_RETRY_TRANSIENT` | Retrying after a transient HTTP status (429, 5xx). |
+| `WARN_AUBE_HTTP_RETRY_TRANSPORT` | Retrying after a transport / connection error. |
+| `WARN_AUBE_HTTP_RETRY_BODY_READ` | Retrying after a response-body read error (timeout, partial body). |
+| `WARN_AUBE_HTTP_RETRY_BODY_DECODE` | Retrying after a JSON decode error on the response body. |
+
+### Registry caching / perf
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_PACKUMENT_CACHE_WRITE` | Couldn't write a packument to the on-disk cache after a successful fetch. Non-fatal; next install will refetch. |
+| `WARN_AUBE_SLOW_METADATA` | A packument fetch exceeded `fetchWarnTimeoutMs`. |
+| `WARN_AUBE_SLOW_TARBALL` | A tarball download fell below `fetchMinSpeedKiBps`. |
+
+### Registry TLS / proxy
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_INVALID_HTTPS_PROXY` | `https-proxy` URL didn't parse. |
+| `WARN_AUBE_INVALID_HTTP_PROXY` | `http-proxy` URL didn't parse. |
+| `WARN_AUBE_INVALID_CA` | Per-registry CA PEM didn't parse. |
+| `WARN_AUBE_INVALID_CAFILE` | `cafile` couldn't be parsed as a PEM bundle. |
+| `WARN_AUBE_UNREADABLE_CAFILE` | `cafile` couldn't be read from disk. |
+| `WARN_AUBE_INVALID_CLIENT_CERT` | Per-registry client `cert`/`key` PEM pair didn't parse. |
+
+### Resolver
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_UNSUPPORTED_PLATFORM_INSTALL` | A required (non-optional) dep declared a platform aube doesn't satisfy; installing anyway. |
+| `WARN_AUBE_EXOTIC_SUBDEP_SKIPPED` | An optional or peer dep used an exotic specifier and was skipped under `blockExoticSubdeps=true`. |
+| `WARN_AUBE_PEER_DEDUPE_COLLISION` | `dedupe-peers=true` would have collapsed a distinct peer-variant; preserved the longer form to avoid dropping it. |
+
+### Lockfile
+
+| Code | Description |
+|------|-------------|
+| `WARN_AUBE_LOCKFILE_MERGE_CONFLICT` | Branch-lockfile merge had conflicting entries for the same dep_path; one was chosen. |
+| `WARN_AUBE_LOCKFILE_MERGE_CLEANUP_FAILED` | After a successful merge, removing one of the merged branch lockfiles failed. |
+| `WARN_AUBE_YARN_BERRY_UNSUPPORTED` | A Yarn Berry `patch:` / `portal:` / `exec:` protocol — or any unrecognized protocol — was found in `yarn.lock`. Entry was skipped. |
+
+## Adding a code
+
+1. Add a `pub const` to `crates/aube-codes/src/errors.rs` or
+   `warnings.rs`, plus an entry in the local `ALL` array.
+2. (Errors only, optional) Add an entry to `EXIT_TABLE` in
+   `crates/aube-codes/src/exit.rs`. Pick from the right category
+   range; the self-tests will reject duplicates and out-of-range
+   values.
+3. Reference the constant from the call site:
+   - For warnings: `tracing::warn!(code = aube_codes::warnings::WARN_AUBE_X, ...);`
+   - For thiserror enums: `#[diagnostic(code(ERR_AUBE_X))]`.
+   - For ad-hoc miette: `miette::miette!(code = aube_codes::errors::ERR_AUBE_X, ...)`.
+4. Document it here.

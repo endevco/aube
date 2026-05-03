@@ -10,6 +10,7 @@ readme.workspace = true
 description = "Shared helpers reused across aube crates (semantic hashing, async dedup, atomic filesystem ops, bincode sidecars)."
 
 [dependencies]
+aube-codes = { workspace = true }
 rustc-hash = { workspace = true }
 blake3 = { workspace = true }
 reflink-copy = { workspace = true }
