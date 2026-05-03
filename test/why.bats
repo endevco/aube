@@ -232,3 +232,30 @@ EOF
 	assert_output --partial "packages/lib-a"
 	refute_output --partial "packages/lib-b"
 }
+
+@test "aube why walks up to the workspace root from a subpackage cwd" {
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - packages/*
+EOF
+	cat >package.json <<'EOF'
+{"name":"root","version":"0.0.0","private":true}
+EOF
+	mkdir -p packages/lib-a
+	cat >packages/lib-a/package.json <<'EOF'
+{
+  "name": "@scope/lib-a",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "^3.0.1" }
+}
+EOF
+
+	run aube install
+	assert_success
+
+	cd packages/lib-a
+	run aube why is-number
+	assert_success
+	refute_output --partial "No lockfile found"
+	assert_output --partial "is-number"
+}

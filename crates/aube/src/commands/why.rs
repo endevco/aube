@@ -72,7 +72,11 @@ pub async fn run(
     args: WhyArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let cwd = crate::dirs::project_or_workspace_root()?;
+    // Workspace root wins over the nearest project root so `aube why`
+    // run from inside `packages/foo/` reads the lockfile + manifest at
+    // the workspace root instead of the subpackage (which has no
+    // lockfile of its own).
+    let cwd = crate::dirs::workspace_or_project_root()?;
 
     if !filter.is_empty() {
         return run_filtered(&cwd, &args, &filter);

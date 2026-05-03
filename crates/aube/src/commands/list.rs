@@ -166,18 +166,13 @@ pub async fn run(
         return run_global(&args);
     }
 
-    let cwd = crate::dirs::project_or_workspace_root()?;
-    // In yarn / npm / bun monorepos the lockfile lives only at the
-    // workspace root, not in the subpackage. When the caller asks for
-    // `--filter` we read manifest + lockfile from the root so
-    // `run_filtered` sees the real graph — otherwise `parse_lockfile`
-    // returns `NotFound` from the child and we exit before ever
-    // iterating the workspace.
-    let read_from = if !filter.is_empty() {
-        crate::dirs::find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone())
-    } else {
-        cwd.clone()
-    };
+    // Workspace root wins over the nearest project root so `aube list`
+    // run from inside `packages/foo/` reads the lockfile + manifest at
+    // the workspace root instead of the subpackage (which has no
+    // lockfile of its own). yaml-only coordinator monorepos and plain
+    // single-project trees fall back to project root for free.
+    let cwd = crate::dirs::workspace_or_project_root()?;
+    let read_from = cwd.clone();
 
     // When a workspace filter is set, resolve workspace + selectors
     // first so a no-match case takes the warn-and-exit-0 path before
