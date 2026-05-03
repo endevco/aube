@@ -182,6 +182,12 @@ pub struct ResolvedPackage {
     /// suppression is applied upstream, so anything set here is meant
     /// to surface to the user.
     pub deprecated: Option<Arc<str>>,
+    /// Best-effort install-size hint from the packument's
+    /// `dist.unpackedSize`. Summed across the resolve stream to drive
+    /// the `4.2 MB / ~13.8 MB` segment in the progress bar. `None`
+    /// when the packument doesn't carry the field (older publishes,
+    /// `file:`/`link:` deps, JSR packages without npm metadata).
+    pub unpacked_size: Option<u64>,
 }
 
 impl ResolvedPackage {

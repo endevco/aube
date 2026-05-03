@@ -113,7 +113,7 @@ function formatReleasePhrase() {
 const progressBar = computed(() => {
   const width = progressBarColumns.value;
   const filled = Math.floor(progress.value * width);
-  return "#".repeat(filled) + "-".repeat(width - filled);
+  return "█".repeat(filled) + "░".repeat(width - filled);
 });
 const packageRows = computed(() => [
   packages[packageIndex.value % packages.length],
@@ -289,7 +289,7 @@ watch(progressBarEl, (el, previousEl) => {
                 <span class="aube-byline">by en.dev</span>
                 <span class="aube-phase">fetching</span>
                 <span ref="progressBarEl" class="aube-progress-bar">{{ progressBar }}</span>
-                <span class="aube-progress-count">{{ installed }}/{{ installedPackageTotal }}</span>
+                <span class="aube-progress-count">{{ installed }}/{{ installedPackageTotal }} pkgs</span>
               </div>
               <div
                 v-for="(pkg, index) in packageRows"

@@ -579,6 +579,7 @@ fn make_version(name: &str, version: &str) -> VersionMetadata {
             tarball: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
             integrity: Some(format!("sha512-fake-{name}-{version}")),
             shasum: None,
+            unpacked_size: None,
             attestations: None,
         }),
         os: vec![],

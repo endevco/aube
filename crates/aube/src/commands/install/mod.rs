@@ -2723,6 +2723,26 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             },
                         );
                     }
+                    // Each resolved package bumps the overall denominator by
+                    // one. Cached packages are immediately credited against
+                    // the numerator; missing ones get a transient child row.
+                    //
+                    // Bumping the denominator *before* the platform-deferred
+                    // skip below is intentional: the catch-up pass (after
+                    // `filter_graph`) credits surviving deferred packages
+                    // against the numerator, and skipping the increment
+                    // here would let the numerator overrun the denominator
+                    // (the historical "2/1 packages" display bug). The
+                    // overcount on dropped optionals is reconciled by a
+                    // single `set_total(graph.packages.len())` after
+                    // `filter_graph` runs.
+                    if let Some(p) = fetch_progress.as_ref() {
+                        p.inc_total(1);
+                        if let Some(sz) = pkg.unpacked_size {
+                            p.inc_estimated_bytes(sz);
+                        }
+                    }
+
                     // Defer platform-mismatched registry packages to
                     // the post-filter_graph catch-up pass: almost all
                     // of them are optional natives that `filter_graph`
@@ -2745,13 +2765,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             pkg.version
                         );
                         continue;
-                    }
-
-                    // Each resolved package bumps the overall denominator by
-                    // one. Cached packages are immediately credited against
-                    // the numerator; missing ones get a transient child row.
-                    if let Some(p) = fetch_progress.as_ref() {
-                        p.inc_total(1);
                     }
 
                     // Local (`file:` / `link:`) deps materialize from
@@ -3339,6 +3352,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &install_supported_architectures,
                 &install_ignored_optional,
             );
+
+            // Reconcile the progress denominator. The streaming pass
+            // bumped `inc_total` once per *resolved* package; `filter_graph`
+            // just dropped the platform-mismatched optionals, so the
+            // denominator now overcounts by the number of culled entries
+            // and the bar would otherwise stick well below 100%
+            // (historical "stays at 90%" bug). Resetting to the surviving
+            // graph size produces a stable cur/total ratio for the
+            // remaining fetch + link work.
+            if let Some(p) = prog_ref {
+                p.set_total(graph.packages.len());
+            }
 
             // Catch-up fetch: the streaming coordinator deferred
             // platform-mismatched registry tarballs on the assumption

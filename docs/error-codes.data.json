@@ -595,6 +595,12 @@
       "category": "Lockfile",
       "description": "A Yarn Berry `patch:` / `portal:` / `exec:` protocol — or any unrecognized protocol — was found in `yarn.lock`. Entry was skipped.",
       "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_PROGRESS_OVERFLOW",
+      "category": "Progress UI",
+      "description": "Install progress numerator exceeded the resolved-package denominator. Display clamps to total; the warning surfaces the bookkeeping mismatch so the underlying race can be diagnosed.",
+      "exit_code": null
     }
   ],
   "categories": {
@@ -620,7 +626,8 @@
       "Registry caching / perf",
       "Registry TLS / proxy",
       "Resolver",
-      "Lockfile"
+      "Lockfile",
+      "Progress UI"
     ]
   }
 }

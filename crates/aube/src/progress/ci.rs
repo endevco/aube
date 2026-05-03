@@ -1,13 +1,14 @@
-//! CI-mode progress: append-only `Progress:` line on a ~2s heartbeat,
-//! plus a framed header and final summary. No spinners, no child rows,
-//! no redraws — shape safe for GitHub Actions / plain pipes, where
-//! cursor-control escapes get stripped and each animation frame would
-//! otherwise land as its own log line.
+//! CI-mode progress: append-only line on a ~2s heartbeat with a
+//! left-aligned bar and stats on the right. No spinners, no child
+//! rows, no redraws — shape safe for GitHub Actions / plain pipes,
+//! where cursor-control escapes get stripped and each animation frame
+//! would otherwise land as its own log line.
 //!
-//! `CiState` owns the heartbeat thread; callers in `super` poke atomic
-//! counters (`resolved`, `reused`, `downloaded`, `downloaded_bytes`) and
-//! the heartbeat renders from those snapshots. See `super::InstallProgress`
-//! for how TTY vs CI is selected and how these counters are updated.
+//! `CiState` owns the heartbeat thread; callers in `super` poke
+//! atomic counters (`resolved`, `reused`, `downloaded`,
+//! `downloaded_bytes`, `estimated_bytes`) and the heartbeat renders
+//! from those snapshots. See `super::InstallProgress` for how TTY vs
+//! CI is selected and how these counters are updated.
 
 use clx::style;
 use std::io::Write;
@@ -19,7 +20,7 @@ use std::time::{Duration, Instant};
 /// How often the CI heartbeat thread wakes to check whether to print a
 /// progress line. Kept long enough that a 142-package fetch produces a
 /// handful of lines, not a flood.
-const CI_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+pub(super) const CI_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Fallback width used when the terminal size can't be detected and
 /// `$COLUMNS` isn't set. 80 is the historical terminal default and
@@ -34,20 +35,33 @@ const MIN_BAR_WIDTH: usize = 40;
 /// 200-column bar that the CI log viewer wraps awkwardly.
 const MAX_BAR_WIDTH: usize = 120;
 
+/// Width of the standalone progress bar in CI mode. Small on purpose:
+/// the bar is an indicator, the numbers next to it carry the precise
+/// state. Wider bars dominate narrow terminals and waste columns the
+/// rate / ETA segments need.
+const CI_BAR_WIDTH: usize = 15;
+
 /// CI-mode shared state. Owns the heartbeat thread.
 ///
-/// The status line has three moving parts: a phase counter (`[N/3]`
-/// where 1=resolving, 2=fetching, 3=linking), the byte total for
-/// downloaded tarballs, and an ASCII bar for `completed / resolved`
-/// (where completed = reused + downloaded). One line, same shape each
-/// time — reprinted only when something actually changed since the
-/// previous line.
+/// The status line has a fixed-width bar followed by a label that
+/// adapts to the current phase: in `resolving` it shows "N pkgs ·
+/// resolving · ETA …"; in `fetching` it shows
+/// "cur/total pkgs · downloaded[/ ~estimated] · rate · ETA"; in
+/// `linking` the rate / ETA segments drop out and the word "linking"
+/// takes their place. Reprinted only when the rendered string
+/// actually changes since the previous line.
 pub(super) struct CiState {
     phase: AtomicUsize,
     pub(super) resolved: AtomicUsize,
     pub(super) reused: AtomicUsize,
     pub(super) downloaded: AtomicUsize,
     pub(super) downloaded_bytes: AtomicU64,
+    /// Running sum of `dist.unpackedSize` from packuments seen during
+    /// the streaming resolve. `0` until the first packument with the
+    /// field arrives, and stays `0` on the lockfile fast path (where
+    /// no packument fetch happens). The display gates the
+    /// `/ ~13.8 MB` estimated-total segment on this being non-zero.
+    pub(super) estimated_bytes: AtomicU64,
     start: Instant,
     /// Captured the first time `set_phase("fetching")` is called. Used
     /// as the denominator for the transfer rate so it measures network
@@ -61,10 +75,10 @@ pub(super) struct CiState {
     /// bucket, or a phase change when phase isn't in the render — stay
     /// quiet instead of reprinting an identical line.
     last_printed: Mutex<String>,
-    /// Whether the heartbeat has ever emitted the header + a progress
-    /// line. Stays `false` for fast installs that finish before the
-    /// first 2s tick — those stay completely silent, including in the
-    /// final summary.
+    /// Whether the heartbeat has ever emitted a progress line. Stays
+    /// `false` for fast installs that finish before the first 2s tick
+    /// — `print_install_summary` then takes the no-bar single-line
+    /// fast-mode path instead of writing a final framed bar.
     pub(super) shown: AtomicBool,
     done: AtomicBool,
     /// Live `InstallProgress` clone count. Incremented in `Clone`,
@@ -73,7 +87,10 @@ pub(super) struct CiState {
     /// because the heartbeat thread owns its own strong `Arc<CiState>`
     /// for the entire run.
     pub(super) alive: AtomicUsize,
-    /// Signals the heartbeat thread to wake early (phase change / stop).
+    /// Signals the heartbeat thread to wake early on shutdown. Phase
+    /// transitions deliberately do *not* wake the heartbeat — letting
+    /// every phase change punch through the 2s gate would flood the
+    /// log with one extra line per phase on every fast install.
     wake: Condvar,
     wake_lock: Mutex<()>,
     /// The heartbeat thread's join handle, taken by `stop()` so the
@@ -109,6 +126,7 @@ impl CiState {
             reused: AtomicUsize::new(0),
             downloaded: AtomicUsize::new(0),
             downloaded_bytes: AtomicU64::new(0),
+            estimated_bytes: AtomicU64::new(0),
             start: Instant::now(),
             fetch_start: OnceLock::new(),
             last_printed: Mutex::new(String::new()),
@@ -121,7 +139,7 @@ impl CiState {
         }
     }
 
-    fn snapshot(&self) -> (usize, usize, usize, usize, u64, u64, u64) {
+    fn snapshot(&self) -> Snap {
         // `fetch_elapsed_ms` is 0 until fetching has started, and
         // frozen at the elapsed-so-far value once it does — so after
         // fetching ends the rate no longer decays, and before it
@@ -131,59 +149,32 @@ impl CiState {
             .get()
             .map(|t| t.elapsed().as_millis() as u64)
             .unwrap_or(0);
-        (
-            self.phase.load(Ordering::Relaxed),
-            self.resolved.load(Ordering::Relaxed),
-            self.reused.load(Ordering::Relaxed),
-            self.downloaded.load(Ordering::Relaxed),
-            self.downloaded_bytes.load(Ordering::Relaxed),
-            self.start.elapsed().as_millis() as u64,
+        Snap {
+            phase: self.phase.load(Ordering::Relaxed),
+            resolved: self.resolved.load(Ordering::Relaxed),
+            reused: self.reused.load(Ordering::Relaxed),
+            downloaded: self.downloaded.load(Ordering::Relaxed),
+            bytes: self.downloaded_bytes.load(Ordering::Relaxed),
+            estimated: self.estimated_bytes.load(Ordering::Relaxed),
+            elapsed_ms: self.start.elapsed().as_millis() as u64,
             fetch_elapsed_ms,
-        )
+        }
     }
 
-    fn render(snap: (usize, usize, usize, usize, u64, u64, u64)) -> String {
-        let (phase, resolved, reused, downloaded, bytes, elapsed_ms, fetch_elapsed_ms) = snap;
-        let completed = reused + downloaded;
-        let phase_str = if phase > 0 {
-            format!(" [{phase}/3]")
-        } else {
-            String::new()
-        };
-        // Only show transfer rate during the fetching phase, and only when
-        // at least one byte has landed. Before fetch starts it's always 0;
-        // after fetch finishes it becomes stale (decaying toward 0 as
-        // elapsed grows with no new bytes). Gating to phase == 2 keeps it
-        // meaningful. Denominator is `fetch_elapsed_ms` (time since the
-        // fetching transition), not total install time — otherwise
-        // multi-second resolves would deflate the displayed rate.
-        let rate_str = if phase == 2 && bytes > 0 && fetch_elapsed_ms > 0 {
-            let rate = bytes.saturating_mul(1000) / fetch_elapsed_ms;
-            format!(" · {}/s", format_bytes(rate))
-        } else {
-            String::new()
-        };
-        let elapsed_str = format!(" · {}", format_duration(Duration::from_millis(elapsed_ms)));
-        let label = format!(
-            "{completed}/{resolved} pkgs{phase_str} · {}{rate_str}{elapsed_str}",
-            format_bytes(bytes)
-        );
-        render_bar_with_label(completed, resolved, term_width(), &label)
+    fn render(snap: Snap) -> String {
+        super::render::progress_line(snap, term_width(), CI_BAR_WIDTH)
     }
 
-    /// Framed header line. Emitted once, on the first heartbeat tick
-    /// where there's something to show — so the CI log only grows an
-    /// aube banner when an install is actually happening. Styling
-    /// routes through `style::e*`, so `NO_COLOR` / `--no-color` drops
-    /// the ANSI escapes automatically.
+    /// Render the one-line header banner that prints once above the
+    /// first heartbeat-emitted progress line. Plain whitespace
+    /// alignment, no frame: `aube VERSION by en.dev`.
     fn render_header() -> String {
-        let header_text = format!(
+        format!(
             "{} {} {}",
             style::emagenta("aube").bold(),
             style::edim(crate::version::VERSION.as_str()),
             style::edim("by en.dev"),
-        );
-        render_centered_line(&header_text, term_width())
+        )
     }
 
     pub(super) fn spawn_heartbeat(state: &Arc<Self>) {
@@ -211,12 +202,15 @@ impl CiState {
                 let snap = state.snapshot();
                 // Don't make noise until an install is actually underway.
                 // Until then there's nothing to bar-graph and no reason to
-                // print the aube header — a no-op install should remain
+                // print anything — a no-op install should remain
                 // completely silent.
-                if snap.1 == 0 {
+                if snap.resolved == 0 || snap.phase == 0 {
                     continue;
                 }
                 let line = Self::render(snap);
+                if line.is_empty() {
+                    continue;
+                }
                 let mut last = state.last_printed.lock().unwrap();
                 if *last == line {
                     // Same rendered line as before — stay quiet.
@@ -224,8 +218,10 @@ impl CiState {
                 }
                 *last = line.clone();
                 drop(last);
-                // First time we actually print, emit the framed header
-                // above the bar so the CI log shows the aube banner.
+                // First time we actually print, emit the unframed
+                // `aube VERSION by en.dev` header above the bar so
+                // the CI log shows the aube banner. Only printed
+                // once per install — `shown` flips true here.
                 if !state.shown.swap(true, Ordering::Relaxed) {
                     let _ = writeln!(std::io::stderr(), "{}", Self::render_header());
                 }
@@ -237,7 +233,8 @@ impl CiState {
 
     pub(super) fn set_phase(&self, phase: &str) {
         // Map the free-form phase label from `install::run` onto the fixed
-        // `[N/3]` counter. Unknown labels leave the counter alone.
+        // 1=resolving / 2=fetching / 3=linking counter. Unknown labels
+        // leave the counter alone.
         let n = match phase {
             "resolving" => 1,
             "fetching" => 2,
@@ -249,17 +246,20 @@ impl CiState {
             // happen but defend against it) doesn't reset the rate window.
             let _ = self.fetch_start.set(Instant::now());
         }
-        if self.phase.swap(n, Ordering::Relaxed) != n {
-            self.wake.notify_all();
-        }
+        self.phase.store(n, Ordering::Relaxed);
+        // Phase transitions deliberately do *not* notify the heartbeat:
+        // a sub-2s install runs through resolving → fetching → linking
+        // in tens of milliseconds, and waking the heartbeat on every
+        // transition would defeat the fast-mode quiet path. The next
+        // natural 2s tick (or `stop()`) picks up the new phase.
     }
 
     /// Stop the heartbeat and (optionally) write the final summary.
     ///
-    /// Crucially, we `join()` the heartbeat thread *before* writing the
-    /// `Done in …` line so there's no race where a heartbeat tick lands
-    /// after the summary. Idempotent via `done.swap`: the second caller
-    /// (Drop after explicit `finish()`, etc.) finds `done == true` and
+    /// We `join()` the heartbeat thread *before* writing the summary
+    /// line so there's no race where a heartbeat tick lands after the
+    /// summary. Idempotent via `done.swap`: the second caller (Drop
+    /// after explicit `finish()`, etc.) finds `done == true` and
     /// returns without doing anything.
     pub(super) fn stop(&self, print_summary: bool) {
         if self.done.swap(true, Ordering::Relaxed) {
@@ -273,8 +273,9 @@ impl CiState {
             return;
         }
         // If the heartbeat never printed anything (fast install, no-op,
-        // or error before the first tick), stay completely silent — no
-        // header, no final bar, no summary.
+        // or error before the first tick), stay completely silent — the
+        // separate `print_install_summary` call writes the single-line
+        // fast-mode summary.
         if !self.shown.load(Ordering::Relaxed) {
             return;
         }
@@ -282,39 +283,59 @@ impl CiState {
         // taking two separate snapshots would let a concurrent
         // `FetchRow::drop` land between them and desync the numbers.
         let snap = self.snapshot();
-        // Emit one final bar so CI logs end on a complete snapshot even
-        // if the last heartbeat was skipped (fast install, or the last
-        // tarball landed between ticks).
-        let line = Self::render(snap);
-        let mut last = self.last_printed.lock().unwrap();
-        if *last != line {
-            *last = line.clone();
-            drop(last);
-            let _ = writeln!(std::io::stderr(), "{line}");
+        // Emit one final bar so CI logs end on a complete snapshot
+        // even when the last heartbeat was skipped (fast fetch+link
+        // between ticks). Skipped if it would duplicate the previous
+        // line.
+        let final_bar = Self::render(snap);
+        if !final_bar.is_empty() {
+            let mut last = self.last_printed.lock().unwrap();
+            if *last != final_bar {
+                *last = final_bar.clone();
+                drop(last);
+                let _ = writeln!(std::io::stderr(), "{final_bar}");
+            }
         }
         // Final stats line: elapsed time plus the full resolve / reuse /
-        // download breakdown, framed in the same `[ ]` block as the
-        // header and the progress bar so the three lines read as one
-        // coherent unit. Each segment is labeled so the numbers are
-        // self-describing in a CI log weeks later without needing
-        // context about aube's vocabulary.
-        let (_phase, resolved, reused, downloaded, bytes, _elapsed_ms, _fetch_elapsed_ms) = snap;
+        // download breakdown, color-styled so the green check stands
+        // out against the dim text of the timing. No `aube` prefix —
+        // the header line above already identified the install.
+        // Drops the `downloaded N (X B)` segment entirely when nothing
+        // was downloaded (warm cache); same with the parenthesized
+        // byte count when the download count itself is non-zero but
+        // the byte total is — `0 B` is just noise.
         let elapsed = self.start.elapsed();
-        let summary = format!(
-            "{} {} · resolved {} · reused {} · downloaded {} ({})",
-            style::egreen("✓"),
-            style::edim(format_duration(elapsed)),
-            resolved,
-            reused,
-            downloaded,
-            format_bytes(bytes),
+        let mut summary = format!(
+            "{} resolved {} · reused {}",
+            style::egreen("✓").bold(),
+            style::ebold(snap.resolved),
+            style::ebold(snap.reused),
         );
-        let _ = writeln!(
-            std::io::stderr(),
-            "{}",
-            render_centered_line(&summary, term_width()),
-        );
+        if snap.downloaded > 0 || snap.bytes > 0 {
+            summary.push_str(&format!(" · downloaded {}", style::ebold(snap.downloaded)));
+            if snap.bytes > 0 {
+                summary.push_str(&format!(
+                    " ({})",
+                    style::edim(super::render::format_bytes(snap.bytes))
+                ));
+            }
+        }
+        summary.push_str(&format!(" in {}", style::edim(format_duration(elapsed))));
+        let _ = writeln!(std::io::stderr(), "{summary}");
     }
+}
+
+/// Snapshot of the atomic counters at one heartbeat tick.
+#[derive(Clone, Copy)]
+pub(super) struct Snap {
+    pub(super) phase: usize,
+    pub(super) resolved: usize,
+    pub(super) reused: usize,
+    pub(super) downloaded: usize,
+    pub(super) bytes: u64,
+    pub(super) estimated: u64,
+    pub(super) elapsed_ms: u64,
+    pub(super) fetch_elapsed_ms: u64,
 }
 
 /// Format an elapsed duration compactly: sub-second → `240ms`,
@@ -329,85 +350,5 @@ pub(super) fn format_duration(d: Duration) -> String {
     } else {
         let total = d.as_secs();
         format!("{}m{:02}s", total / 60, total % 60)
-    }
-}
-
-/// Render a plain-text line centered inside the same `[ ]` bracket
-/// frame as the progress bar. Used for the header and the final
-/// summary so all three lines share one consistent visual block.
-///
-/// `text` may contain ANSI escape sequences (for colored / dim /
-/// bold styling); width is measured with `console::measure_text_width`
-/// so escapes are excluded from the layout math. Text longer than the
-/// inner width is returned as-is inside the brackets with no padding.
-pub(super) fn render_centered_line(text: &str, outer_width: usize) -> String {
-    let outer_width = outer_width.max(MIN_BAR_WIDTH);
-    let inner_width = outer_width.saturating_sub(2);
-    let text_width = console::measure_text_width(text);
-    if text_width >= inner_width {
-        return format!("[{text}]");
-    }
-    let pad = inner_width - text_width;
-    let left = pad / 2;
-    let right = pad - left;
-    format!("[{}{text}{}]", " ".repeat(left), " ".repeat(right))
-}
-
-/// Render a progress bar of `outer_width` characters with a label
-/// centered inside it. The bar fills from the left with `#` up to
-/// `current / total`, pads with `-`, and overlays `label` across the
-/// middle positions — so the text stays visible whether the cursor is
-/// in the filled or unfilled region.
-///
-/// Output shape (outer_width=60, 40% complete):
-///   `[########################  183/239 pkgs · 13.8 MB  -----------]`
-fn render_bar_with_label(current: usize, total: usize, outer_width: usize, label: &str) -> String {
-    let outer_width = outer_width.max(MIN_BAR_WIDTH);
-    // Two slots for the enclosing brackets.
-    let inner_width = outer_width.saturating_sub(2);
-    // Pad the label with a space on each side so it doesn't butt up
-    // against the fill / empty characters — makes the text legible
-    // inside a dense `#` run.
-    let padded = format!(" {label} ");
-    let padded_chars: Vec<char> = padded.chars().collect();
-    let label_len = padded_chars.len().min(inner_width);
-    let label_start = inner_width.saturating_sub(label_len) / 2;
-    let label_end = label_start + label_len;
-
-    let filled = current
-        .checked_mul(inner_width)
-        .and_then(|value| value.checked_div(total))
-        .unwrap_or(0)
-        .min(inner_width);
-
-    let mut body = String::with_capacity(inner_width);
-    for i in 0..inner_width {
-        if i >= label_start && i < label_end {
-            body.push(padded_chars[i - label_start]);
-        } else if i < filled {
-            body.push('#');
-        } else {
-            body.push('-');
-        }
-    }
-    format!("[{body}]")
-}
-
-/// Format a byte count using the same SI units pnpm / npm show: `B`, `kB`,
-/// `MB`, `GB`. Decimal (1000-based) because that's what every package
-/// manager uses for on-the-wire sizes — closer to what the registry
-/// `Content-Length` reports.
-pub(super) fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1_000;
-    const MB: u64 = 1_000_000;
-    const GB: u64 = 1_000_000_000;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.0} kB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
     }
 }

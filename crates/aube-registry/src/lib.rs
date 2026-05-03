@@ -206,6 +206,12 @@ pub struct Dist {
     pub tarball: String,
     pub integrity: Option<String>,
     pub shasum: Option<String>,
+    /// Unpacked tarball size in bytes (`dist.unpackedSize`). Present
+    /// on most modern packuments, absent on older ones — used as the
+    /// best-effort install-size estimate that the progress bar shows
+    /// as `4.2 MB / ~13.8 MB`. Decimal MB to match every other PM.
+    #[serde(default, rename = "unpackedSize")]
+    pub unpacked_size: Option<u64>,
     /// Sigstore attestations block. The trust-policy check reads
     /// `dist.attestations.provenance` as rank-1 trust evidence when
     /// it is an object with an SLSA provenance `predicateType`. aube

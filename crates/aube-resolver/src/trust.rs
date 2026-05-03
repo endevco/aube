@@ -501,6 +501,7 @@ mod tests {
                 tarball: format!("https://r/{name}/-/{name}-{ver}.tgz"),
                 integrity: None,
                 shasum: None,
+                unpacked_size: None,
                 attestations: None,
             }),
             os: vec![],

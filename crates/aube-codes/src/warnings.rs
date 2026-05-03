@@ -79,6 +79,9 @@ pub const WARN_AUBE_LOCKFILE_MERGE_CONFLICT: &str = "WARN_AUBE_LOCKFILE_MERGE_CO
 pub const WARN_AUBE_LOCKFILE_MERGE_CLEANUP_FAILED: &str = "WARN_AUBE_LOCKFILE_MERGE_CLEANUP_FAILED";
 pub const WARN_AUBE_YARN_BERRY_UNSUPPORTED: &str = "WARN_AUBE_YARN_BERRY_UNSUPPORTED";
 
+// ── progress UI ─────────────────────────────────────────────────────
+pub const WARN_AUBE_PROGRESS_OVERFLOW: &str = "WARN_AUBE_PROGRESS_OVERFLOW";
+
 /// Stable category labels that group codes in the generated docs.
 /// Public so the docs generator can iterate them deterministically.
 pub mod category {
@@ -93,6 +96,7 @@ pub mod category {
     pub const REGISTRY_TLS: &str = "Registry TLS / proxy";
     pub const RESOLVER: &str = "Resolver";
     pub const LOCKFILE: &str = "Lockfile";
+    pub const PROGRESS_UI: &str = "Progress UI";
 }
 
 /// Registry of every warning code with its category and description.
@@ -408,6 +412,13 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_YARN_BERRY_UNSUPPORTED,
         category: category::LOCKFILE,
         description: "A Yarn Berry `patch:` / `portal:` / `exec:` protocol — or any unrecognized protocol — was found in `yarn.lock`. Entry was skipped.",
+        exit_code: None,
+    },
+    // Progress UI
+    CodeMeta {
+        name: WARN_AUBE_PROGRESS_OVERFLOW,
+        category: category::PROGRESS_UI,
+        description: "Install progress numerator exceeded the resolved-package denominator. Display clamps to total; the warning surfaces the bookkeeping mismatch so the underlying race can be diagnosed.",
         exit_code: None,
     },
 ];

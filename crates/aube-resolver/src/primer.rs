@@ -118,6 +118,7 @@ impl PrimerDist {
             tarball: self.tarball.clone(),
             integrity: self.integrity.clone(),
             shasum: self.shasum.clone(),
+            unpacked_size: None,
             attestations: self.provenance.then(|| Attestations {
                 provenance: Some(serde_json::json!({
                     "predicateType": "https://slsa.dev/provenance/v1"

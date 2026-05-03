@@ -25,6 +25,7 @@
 //! their own output and we stay out of the way.
 
 mod ci;
+mod render;
 
 use ci::{CiState, format_duration};
 use clx::progress::{
@@ -48,6 +49,20 @@ fn overflow_fetch_label(count: usize) -> String {
     format!("{count} more {word}…")
 }
 
+/// Build the standard `aube VERSION by en.dev · <msg>` one-line
+/// header used by the no-op and fast-mode summaries. Centralizes the
+/// header shape so the install-finished, already-up-to-date, and
+/// fast-mode-summary paths all read consistently.
+fn aube_prefix_line(msg: &str) -> String {
+    format!(
+        "{} {} {} {} {msg}",
+        style::emagenta("aube").bold(),
+        style::edim(crate::version::VERSION.as_str()),
+        style::edim("by en.dev"),
+        style::edim("·"),
+    )
+}
+
 /// Install-time progress UI. Cheap to clone (internally `Arc`).
 pub struct InstallProgress {
     mode: Mode,
@@ -61,19 +76,33 @@ enum Mode {
         /// fetch-add without racing a concurrent reader/writer through clx's
         /// separate `overall_progress()` / `progress_total()` calls.
         total: Arc<AtomicUsize>,
+        /// Mirror of cumulative reused-package count so the TTY bar can
+        /// recompute the live numerator without taking a round-trip
+        /// through clx's progress accessors.
+        reused: Arc<AtomicUsize>,
+        /// Mirror of cumulative downloaded-package count for the same
+        /// reason.
+        downloaded: Arc<AtomicUsize>,
         /// Phase number: 0=init, 1=resolving, 2=fetching, 3=linking. Used
-        /// by `inc_downloaded_bytes` to gate the transfer-rate prop to the
-        /// fetching window — before/after that the rate is either zero or
-        /// stale.
+        /// by the rate / ETA props to gate display to the fetching
+        /// window and switch to the `linking` label in phase 3.
         phase_num: Arc<AtomicUsize>,
         /// Cumulative downloaded bytes. Fed into the transfer-rate
         /// calculation displayed in the TTY bar's `rate` prop.
         downloaded_bytes: Arc<AtomicU64>,
+        /// Running sum of `dist.unpackedSize` from packuments seen
+        /// during the streaming resolve. `0` on the lockfile fast path.
+        /// The bar's `bytes` prop renders `4.2 MB / ~13.8 MB` when this
+        /// is set; otherwise just `4.2 MB`.
+        estimated_bytes: Arc<AtomicU64>,
         /// Captured the first time `set_phase("fetching")` is called.
         /// Used as the rate denominator so the displayed throughput
         /// measures the fetch window only, not `bytes / (resolve_time +
         /// fetch_time)`.
         fetch_start: Arc<OnceLock<Instant>>,
+        /// Wall-clock start of the install, used by `eta` recomputation
+        /// to derive elapsed time without re-querying clx.
+        install_start: Arc<Instant>,
         /// Bounded visible-fetch-row bookkeeping. `visible` is the count
         /// of live per-package child rows (capped at
         /// `TTY_MAX_VISIBLE_FETCH_ROWS`); `overflow` is the count of
@@ -140,16 +169,23 @@ impl InstallProgress {
             style::edim(crate::version::VERSION.as_str()),
             style::edim("by en.dev"),
         );
+        // Layout: header, animated bar, cur/total, optional bytes
+        // segment (running download, with `/ ~estimated` when
+        // available), phase-gated rate, ETA. Mirrors the CI-mode
+        // label segment-for-segment so both modes show the same
+        // information.
         let root = ProgressJobBuilder::new()
             .body(
-                "{{aube}}{{phase}}  {{progress_bar(flex=true)}} {{cur}}/{{total}}{{rate}} · {{ elapsed() }}",
+                "{{aube}}{{phase}}  {{progress_bar(flex=true)}} {{cur}}/{{total}}{{bytes}}{{rate}}{{eta}}",
             )
             .body_text(Some(
-                "{{aube}}{{phase}} {{cur}}/{{total}}{{rate}} · {{ elapsed() }}",
+                "{{aube}}{{phase}} {{cur}}/{{total}}{{bytes}}{{rate}}{{eta}}",
             ))
             .prop("aube", &header)
             .prop("phase", "")
+            .prop("bytes", "")
             .prop("rate", "")
+            .prop("eta", "")
             .progress_current(0)
             .progress_total(0)
             .on_done(ProgressJobDoneBehavior::Hide)
@@ -158,9 +194,13 @@ impl InstallProgress {
             mode: Mode::Tty {
                 root,
                 total: Arc::new(AtomicUsize::new(0)),
+                reused: Arc::new(AtomicUsize::new(0)),
+                downloaded: Arc::new(AtomicUsize::new(0)),
                 phase_num: Arc::new(AtomicUsize::new(0)),
                 downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                estimated_bytes: Arc::new(AtomicU64::new(0)),
                 fetch_start: Arc::new(OnceLock::new()),
+                install_start: Arc::new(Instant::now()),
                 fetch_state: Arc::new(Mutex::new(FetchState {
                     visible: 0,
                     overflow: 0,
@@ -189,6 +229,7 @@ impl InstallProgress {
             Mode::Tty { root, total: t, .. } => {
                 t.store(total, Ordering::Relaxed);
                 root.progress_total(total);
+                self.refresh_eta();
             }
             Mode::Ci(s) => {
                 s.resolved.store(total, Ordering::Relaxed);
@@ -202,6 +243,7 @@ impl InstallProgress {
             Mode::Tty { root, total, .. } => {
                 let new_total = total.fetch_add(n, Ordering::Relaxed) + n;
                 root.progress_total(new_total);
+                self.refresh_eta();
             }
             Mode::Ci(s) => {
                 s.resolved.fetch_add(n, Ordering::Relaxed);
@@ -209,9 +251,27 @@ impl InstallProgress {
         }
     }
 
+    /// Add `n` bytes to the running estimated-total-download counter.
+    /// Fed from `dist.unpackedSize` as resolver streams in packuments.
+    /// Surfaces in the bar's `bytes` segment as the `/ ~13.8 MB`
+    /// suffix so users have a sense of total install scope before the
+    /// fetch finishes. No-op when the packument lacks the field.
+    pub fn inc_estimated_bytes(&self, n: u64) {
+        match &self.mode {
+            Mode::Tty {
+                estimated_bytes, ..
+            } => {
+                estimated_bytes.fetch_add(n, Ordering::Relaxed);
+                self.refresh_bytes_segment();
+            }
+            Mode::Ci(s) => {
+                s.estimated_bytes.fetch_add(n, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// Set the phase label shown to the right of the header (e.g. "resolving",
-    /// "fetching", "linking"). Empty string clears it. In CI mode this
-    /// bumps the `[N/3]` phase counter shown on the status line.
+    /// "fetching", "linking"). Empty string clears it.
     pub fn set_phase(&self, phase: &str) {
         match &self.mode {
             Mode::Tty {
@@ -223,7 +283,12 @@ impl InstallProgress {
                 if phase.is_empty() {
                     root.prop("phase", "");
                 } else {
-                    root.prop("phase", &format!("{}", style::edim(format!(" — {phase}"))));
+                    let colored_phase = match phase {
+                        "resolving" => style::eyellow(phase).to_string(),
+                        "linking" => style::ecyan(phase).to_string(),
+                        _ => style::edim(phase).to_string(),
+                    };
+                    root.prop("phase", &format!(" {} {}", style::edim("—"), colored_phase));
                 }
                 let n = match phase {
                     "resolving" => 1,
@@ -236,12 +301,17 @@ impl InstallProgress {
                     // Seed the rate denominator on the fetching transition.
                     // First-writer-wins; repeated calls are no-ops.
                     let _ = fetch_start.set(Instant::now());
-                } else {
-                    // Transfer rate is only meaningful *during* fetching — clear
-                    // the prop when we leave the phase so the label doesn't
-                    // carry a stale number into `linking`.
+                } else if n == 3 {
+                    // Linking phase: rate / ETA aren't meaningful — the
+                    // network's done, the linker work is dominated by
+                    // filesystem ops on a fixed package count. Clear
+                    // both props so the "linking" word reads cleanly.
                     root.prop("rate", "");
+                    root.prop("eta", "");
                 }
+                self.refresh_bytes_segment();
+                self.refresh_rate();
+                self.refresh_eta();
             }
             Mode::Ci(s) => s.set_phase(phase),
         }
@@ -252,7 +322,11 @@ impl InstallProgress {
     /// `file:` / `link:` source — anything that didn't touch the network.
     pub fn inc_reused(&self, n: usize) {
         match &self.mode {
-            Mode::Tty { root, .. } => root.increment(n),
+            Mode::Tty { root, reused, .. } => {
+                reused.fetch_add(n, Ordering::Relaxed);
+                root.increment(n);
+                self.refresh_eta();
+            }
             Mode::Ci(s) => {
                 s.reused.fetch_add(n, Ordering::Relaxed);
             }
@@ -263,48 +337,144 @@ impl InstallProgress {
     /// tarball after the registry fetch completes, on top of the per-package
     /// increment that `FetchRow::drop` contributes to the downloaded count.
     ///
-    /// In TTY mode this updates the transfer-rate prop rendered to the right
-    /// of `cur/total` — gated to `phase == fetching && bytes > 0` so the
-    /// label stays clean before/after the fetch window. In CI mode the
-    /// heartbeat re-renders the rate from the cumulative byte counter on
-    /// each tick; here we just bump that counter.
+    /// In TTY mode this refreshes the bytes / rate / ETA props on the
+    /// animated bar. In CI mode the heartbeat re-renders from the
+    /// cumulative byte counter on each tick; here we just bump that
+    /// counter.
     pub fn inc_downloaded_bytes(&self, bytes: u64) {
         match &self.mode {
             Mode::Tty {
-                root,
-                phase_num,
-                downloaded_bytes,
-                fetch_start,
-                ..
+                downloaded_bytes, ..
             } => {
-                let total = downloaded_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-                if phase_num.load(Ordering::Relaxed) != 2 || total == 0 {
-                    return;
-                }
-                // `fetch_start` is seeded by `set_phase("fetching")`; if
-                // bytes land before that (shouldn't happen but defend
-                // against it), skip the update instead of computing against
-                // install start time.
-                let Some(fetch_start) = fetch_start.get() else {
-                    return;
-                };
-                let elapsed_ms = fetch_start.elapsed().as_millis() as u64;
-                if elapsed_ms == 0 {
-                    return;
-                }
-                let rate = total.saturating_mul(1000) / elapsed_ms;
-                root.prop(
-                    "rate",
-                    &format!(
-                        " · {}",
-                        style::edim(format!("{}/s", ci::format_bytes(rate)))
-                    ),
-                );
+                downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
+                self.refresh_bytes_segment();
+                self.refresh_rate();
             }
             Mode::Ci(s) => {
                 s.downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
             }
         }
+    }
+
+    /// TTY-only: rebuild the `bytes` prop from the current downloaded /
+    /// estimated counters. Picks shape based on what we know:
+    ///   `4.2 MB / ~13.8 MB` when both are available, `4.2 MB` when
+    ///   only the running total is, `~13.8 MB` when only the estimate
+    ///   is, empty otherwise. CI mode does this inside the heartbeat
+    ///   render — no per-call refresh needed there.
+    fn refresh_bytes_segment(&self) {
+        let Mode::Tty {
+            root,
+            downloaded_bytes,
+            estimated_bytes,
+            phase_num,
+            ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let bytes = downloaded_bytes.load(Ordering::Relaxed);
+        let estimated = estimated_bytes.load(Ordering::Relaxed);
+        let phase = phase_num.load(Ordering::Relaxed);
+        // The bytes segment only carries useful information from
+        // fetching onward. Hide it in resolving — there's nothing
+        // downloaded yet — and during phase 0 (pre-progress).
+        if phase < 2 || (bytes == 0 && estimated == 0) {
+            root.prop("bytes", "");
+            return;
+        }
+        let segment = if estimated > bytes && bytes > 0 {
+            format!(
+                " · {} {} {}",
+                style::ebold(render::format_bytes(bytes)),
+                style::edim("/"),
+                style::edim(format!("~{}", render::format_bytes(estimated))),
+            )
+        } else if bytes > 0 {
+            format!(" · {}", style::ebold(render::format_bytes(bytes)))
+        } else {
+            // bytes == 0, estimated > 0
+            format!(
+                " · {}",
+                style::edim(format!("~{}", render::format_bytes(estimated)))
+            )
+        };
+        root.prop("bytes", &segment);
+    }
+
+    /// TTY-only: rebuild the `rate` prop. Active during fetching only;
+    /// cleared in resolving (no data) and linking (network done).
+    fn refresh_rate(&self) {
+        let Mode::Tty {
+            root,
+            phase_num,
+            downloaded_bytes,
+            fetch_start,
+            ..
+        } = &self.mode
+        else {
+            return;
+        };
+        if phase_num.load(Ordering::Relaxed) != 2 {
+            root.prop("rate", "");
+            return;
+        }
+        let bytes = downloaded_bytes.load(Ordering::Relaxed);
+        let Some(start) = fetch_start.get() else {
+            return;
+        };
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if bytes == 0 || elapsed_ms == 0 {
+            root.prop("rate", "");
+            return;
+        }
+        let rate = bytes.saturating_mul(1000) / elapsed_ms;
+        root.prop(
+            "rate",
+            &format!(
+                " · {}",
+                style::edim(format!("{}/s", render::format_bytes(rate)))
+            ),
+        );
+    }
+
+    /// TTY-only: rebuild the `eta` prop. `ETA …` while we don't have
+    /// enough data to extrapolate; `ETA Xs` once we do.
+    fn refresh_eta(&self) {
+        let Mode::Tty {
+            root,
+            total,
+            reused,
+            downloaded,
+            phase_num,
+            install_start,
+            ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let phase = phase_num.load(Ordering::Relaxed);
+        // Only show ETA in resolving + fetching. Linking is fast and
+        // bounded — adding an ETA there would just flap around 0s.
+        if phase == 0 || phase == 3 {
+            root.prop("eta", "");
+            return;
+        }
+        let total_n = total.load(Ordering::Relaxed);
+        let completed =
+            (reused.load(Ordering::Relaxed) + downloaded.load(Ordering::Relaxed)).min(total_n);
+        let elapsed_ms = install_start.elapsed().as_millis() as u64;
+        if completed == 0 || completed >= total_n || total_n == 0 || elapsed_ms == 0 {
+            root.prop("eta", &format!(" · {}", style::edim("ETA …")));
+            return;
+        }
+        let remaining = total_n - completed;
+        let eta_ms = elapsed_ms.saturating_mul(remaining as u64) / completed as u64;
+        let eta_str = format_duration(Duration::from_millis(eta_ms));
+        root.prop(
+            "eta",
+            &format!(" · {}", style::edim(format!("ETA {eta_str}"))),
+        );
     }
 
     /// Add a transient child row for an in-flight tarball fetch. Drop the
@@ -316,7 +486,10 @@ impl InstallProgress {
     pub fn start_fetch(&self, name: &str, version: &str) -> FetchRow {
         match &self.mode {
             Mode::Tty {
-                root, fetch_state, ..
+                root,
+                fetch_state,
+                downloaded,
+                ..
             } => {
                 let mut st = fetch_state.lock().unwrap();
                 if st.visible < TTY_MAX_VISIBLE_FETCH_ROWS {
@@ -335,6 +508,7 @@ impl InstallProgress {
                             child,
                             root: Arc::downgrade(root),
                             fetch_state: Arc::downgrade(fetch_state),
+                            downloaded: Arc::downgrade(downloaded),
                             visible: true,
                         },
                         completed: false,
@@ -363,6 +537,7 @@ impl InstallProgress {
                         child: st.overflow_row.as_ref().unwrap().clone(),
                         root: Arc::downgrade(root),
                         fetch_state: Arc::downgrade(fetch_state),
+                        downloaded: Arc::downgrade(downloaded),
                         visible: false,
                     },
                     completed: false,
@@ -435,57 +610,36 @@ impl InstallProgress {
                     pluralizer::pluralize("package", total_packages as isize, true)
                 )
             };
-            // In CI mode the framed `aube VERSION by en.dev` header prints
-            // above the bar on the first heartbeat tick, so repeating the
-            // prefix in the summary is noise — use the bracketed frame
-            // instead, matching the `[ ✓ resolved … ]` summary from the
-            // non-empty path. *But* if the install finished before the
-            // first heartbeat tick (`shown == false`), the framed header
-            // was never printed; a framed summary would then appear as an
-            // orphaned bracketed block with no context. Fall back to the
-            // unframed `aube VERSION · …` shape in that case so the
-            // no-op line still identifies itself.
-            let framed_ci = matches!(&self.mode, Mode::Ci(s) if s.shown.load(Ordering::Relaxed));
-            let line = if framed_ci {
-                let inner = format!("{} {}", style::egreen("✓"), style::egreen(&msg).bold());
-                ci::render_centered_line(&inner, ci::term_width())
-            } else {
-                format!(
-                    "{} {} {} {} {}",
-                    style::emagenta("aube").bold(),
-                    style::edim(crate::version::VERSION.as_str()),
-                    style::edim("by en.dev"),
-                    style::edim("·"),
-                    style::egreen(&msg).bold(),
-                )
-            };
+            // Same single-line `aube VERSION by en.dev · ✓ msg` shape
+            // for both TTY and CI modes. CI mode's heartbeat may have
+            // emitted intermediate progress lines above this; the
+            // self-identifying summary still reads fine as the closing
+            // line of a multi-line CI block.
+            let line = aube_prefix_line(&style::egreen(&msg).bold().to_string());
             let _ = writeln!(std::io::stderr(), "{line}");
             return;
         }
         if linked == 0 {
             return;
         }
-        if !matches!(self.mode, Mode::Tty { .. }) {
+        // CI mode prints its own multi-segment summary from the
+        // heartbeat's final tick (resolve / reused / downloaded
+        // breakdown). For fast installs that never hit the heartbeat,
+        // print the single-line summary here so the user still sees
+        // a confirmation. TTY mode always prints here.
+        let needs_summary = match &self.mode {
+            Mode::Tty { .. } => true,
+            Mode::Ci(s) => !s.shown.load(Ordering::Relaxed),
+        };
+        if !needs_summary {
             return;
         }
-        // Single line: `aube VERSION by en.dev · ✓ installed N packages in Xs`.
-        // Same `aube VERSION by en.dev` shape the progress bar drew
-        // while the install was running, joined to the green
-        // success line by a middle dot so the whole thing reads as
-        // one continuous status.
         let msg = format!(
             "✓ installed {} in {}",
             pluralizer::pluralize("package", linked as isize, true),
             format_duration(elapsed)
         );
-        let line = format!(
-            "{} {} {} {} {}",
-            style::emagenta("aube").bold(),
-            style::edim(crate::version::VERSION.as_str()),
-            style::edim("by en.dev"),
-            style::edim("·"),
-            style::egreen(msg).bold(),
-        );
+        let line = aube_prefix_line(&style::egreen(msg).bold().to_string());
         let _ = writeln!(std::io::stderr(), "{line}");
     }
 }
@@ -539,6 +693,11 @@ enum FetchRowInner {
         /// decrement visible/overflow counters and refresh the
         /// overflow row label without pinning it alive.
         fetch_state: Weak<Mutex<FetchState>>,
+        /// Weak ref to the TTY mirror of the downloaded counter so
+        /// drop can bump it without holding the root alive. Mirrors
+        /// CI mode's `downloaded` counter — used by the ETA / clamp
+        /// computations in the bar render.
+        downloaded: Weak<AtomicUsize>,
         /// Whether this row occupies one of the `TTY_MAX_VISIBLE_FETCH_ROWS`
         /// visible slots. Overflow rows share a single child job; they
         /// only bump the overflow counter and the label on drop.
@@ -561,10 +720,14 @@ impl FetchRow {
                 child,
                 root,
                 fetch_state,
+                downloaded,
                 visible,
             } => {
                 if let Some(root) = root.upgrade() {
                     root.increment(1);
+                }
+                if let Some(d) = downloaded.upgrade() {
+                    d.fetch_add(1, Ordering::Relaxed);
                 }
                 if *visible {
                     child.set_status(ProgressStatus::Done);

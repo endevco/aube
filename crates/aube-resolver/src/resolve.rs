@@ -886,6 +886,7 @@ impl Resolver {
                                     cpu: aube_lockfile::PlatformList::new(),
                                     libc: aube_lockfile::PlatformList::new(),
                                     deprecated: None,
+                                    unpacked_size: None,
                                 })
                                 .await;
                         }
@@ -1155,6 +1156,15 @@ impl Resolver {
                                         // packuments live for the
                                         // after-the-fact view.
                                         deprecated: None,
+                                        // Same reasoning: lockfile reuse
+                                        // doesn't refetch the packument and
+                                        // LockedPackage doesn't carry size
+                                        // metadata, so the size-estimate
+                                        // segment stays absent for these
+                                        // packages. The progress UI displays
+                                        // a running download total instead
+                                        // when the estimate is unavailable.
+                                        unpacked_size: None,
                                     })
                                     .await;
                             }
@@ -1648,6 +1658,7 @@ impl Resolver {
                             cpu: version_meta.cpu.iter().cloned().collect(),
                             libc: version_meta.libc.iter().cloned().collect(),
                             deprecated: deprecated_msg.clone(),
+                            unpacked_size: version_meta.dist.as_ref().and_then(|d| d.unpacked_size),
                         })
                         .await;
                 }
