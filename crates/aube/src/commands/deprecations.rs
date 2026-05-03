@@ -33,6 +33,8 @@ pub struct DeprecationsArgs {
     /// Include transitive dependencies as well as direct ones.
     #[arg(long)]
     pub transitive: bool,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,6 +47,7 @@ struct JsonEntry {
 }
 
 pub async fn run(args: DeprecationsArgs) -> miette::Result<Option<i32>> {
+    args.network.install_overrides();
     let cwd = crate::dirs::project_root()?;
 
     let manifest = super::load_manifest(&cwd.join("package.json"))?;

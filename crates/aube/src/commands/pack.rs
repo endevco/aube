@@ -48,6 +48,8 @@ pub struct PackArgs {
     /// Directory to write the tarball into (default: current directory)
     #[arg(long, value_name = "DIR")]
     pub pack_destination: Option<PathBuf>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,6 +66,7 @@ struct FileEntry {
 }
 
 pub async fn run(args: PackArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     let invocation_cwd = crate::dirs::cwd()?;
     let project_root = crate::dirs::project_root()?;
 

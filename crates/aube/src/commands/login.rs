@@ -33,9 +33,12 @@ pub struct LoginArgs {
     /// `~/.npmrc`.
     #[arg(long, value_name = "SCOPE")]
     pub scope: Option<String>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
-pub async fn run(args: LoginArgs, registry_override: Option<&str>) -> miette::Result<()> {
+pub async fn run(args: LoginArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     if args.auth_type != "legacy" && args.auth_type != "web" {
         return Err(miette!(
             "--auth-type={} is not supported (expected `legacy` or `web`)",
@@ -49,7 +52,7 @@ pub async fn run(args: LoginArgs, registry_override: Option<&str>) -> miette::Re
         return Err(miette!("--scope must start with `@` (got `{scope}`)"));
     }
 
-    let registry = resolve_registry(registry_override, args.scope.as_deref())?;
+    let registry = resolve_registry(args.network.registry.as_deref(), args.scope.as_deref())?;
     let host_key = registry_host_key(&registry);
     let token = if args.auth_type == "web" {
         web_login(&registry).await?

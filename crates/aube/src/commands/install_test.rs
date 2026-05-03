@@ -8,7 +8,16 @@ use miette::miette;
 /// form and still honor the explicit install so the command behaves the way
 /// a pnpm muscle-memory user expects.
 pub async fn run(script_args: ScriptArgs) -> miette::Result<()> {
-    let ScriptArgs { args, no_install } = script_args;
+    script_args.network.install_overrides();
+    script_args.lockfile.install_overrides();
+    script_args.virtual_store.install_overrides();
+    let ScriptArgs {
+        args,
+        no_install,
+        lockfile: _,
+        network: _,
+        virtual_store: _,
+    } = script_args;
 
     eprintln!(
         "aube: `install-test` is redundant — aube auto-installs before scripts, \

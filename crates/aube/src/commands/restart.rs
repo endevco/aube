@@ -8,7 +8,16 @@ pub async fn run(
     script_args: ScriptArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
-    let ScriptArgs { args, no_install } = script_args;
+    script_args.network.install_overrides();
+    script_args.lockfile.install_overrides();
+    script_args.virtual_store.install_overrides();
+    let ScriptArgs {
+        args,
+        no_install,
+        lockfile: _,
+        network: _,
+        virtual_store: _,
+    } = script_args;
     // When a filter is present we only honor the explicit `restart` script
     // in each matched package — `run_script` handles workspace discovery,
     // sequential fanout, and the one-shot install. The `stop → start`

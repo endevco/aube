@@ -63,9 +63,12 @@ pub struct ViewArgs {
     /// Mutually exclusive with `field`.
     #[arg(long, conflicts_with = "field")]
     pub json: bool,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 pub async fn run(args: ViewArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     let (name, version_spec) = split_name_spec(&args.package);
     let name = name.to_string();
 

@@ -23,6 +23,8 @@ pub struct CreateArgs {
     /// verbatim to `create-<template>`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub params: Vec<String>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 /// `aube create <template> [args...]`
@@ -31,7 +33,8 @@ pub struct CreateArgs {
 /// semantics: `aube create foo` runs the `create-foo` package via dlx,
 /// `aube create @scope/foo` runs `@scope/create-foo`, etc.
 pub async fn run(args: CreateArgs) -> miette::Result<()> {
-    let CreateArgs { params } = args;
+    args.network.install_overrides();
+    let CreateArgs { params, network } = args;
 
     // Bare `aube create` or `aube create --help` / `-h` prints aube's
     // help for the subcommand. Once a template is present, any further
@@ -56,6 +59,7 @@ pub async fn run(args: CreateArgs) -> miette::Result<()> {
         params: dlx_params,
         package: Vec::new(),
         shell_mode: false,
+        network,
     })
     .await
 }

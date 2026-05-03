@@ -24,12 +24,21 @@ pub struct RemoveArgs {
     /// when both are supplied (same as `add --workspace`).
     #[arg(short = 'w', long, conflicts_with = "global")]
     pub workspace: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(
     args: RemoveArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     let packages = &args.packages[..];
     if packages.is_empty() {
         return Err(miette!("no packages specified"));

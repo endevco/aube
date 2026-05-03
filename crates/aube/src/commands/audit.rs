@@ -103,6 +103,8 @@ pub struct AuditArgs {
         visible_alias = "production"
     )]
     pub prod: bool,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(
@@ -135,7 +137,8 @@ pub enum FixMode {
     Override,
 }
 
-pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Result<()> {
+pub async fn run(args: AuditArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     let cwd = crate::dirs::project_root()?;
 
     let manifest = super::load_manifest(&cwd.join("package.json"))?;
@@ -168,7 +171,7 @@ pub async fn run(args: AuditArgs, registry_override: Option<&str>) -> miette::Re
         return Ok(());
     }
 
-    let client = build_client(&cwd, registry_override);
+    let client = build_client(&cwd, args.network.registry.as_deref());
     let raw = match client.fetch_advisories_bulk(&pkg_versions).await {
         Ok(v) => v,
         Err(e) => {

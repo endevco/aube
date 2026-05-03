@@ -135,6 +135,12 @@ pub struct AddArgs {
     /// this flag to opt in. Mirrors `pnpm add -W`.
     #[arg(short = 'W', long)]
     pub ignore_workspace_root_check: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 /// Parsed result of a package spec like "lodash@^4" or "my-alias@npm:real-pkg@^2".
@@ -614,6 +620,9 @@ pub async fn run(
     args: AddArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     if !filter.is_empty() && !args.global && !args.workspace {
         return run_filtered(args, &filter).await;
     }
@@ -632,6 +641,9 @@ pub async fn run(
         save_catalog,
         save_catalog_name,
         allow_build,
+        lockfile: _,
+        network: _,
+        virtual_store: _,
     } = args;
     let save_catalog_target = save_catalog_name.or_else(|| {
         if save_catalog {
@@ -1883,6 +1895,9 @@ async fn run_global_inner(
         save_catalog: false,
         save_catalog_name: None,
         allow_build: Vec::new(),
+        lockfile: crate::cli_args::LockfileArgs::default(),
+        network: crate::cli_args::NetworkArgs::default(),
+        virtual_store: crate::cli_args::VirtualStoreArgs::default(),
     };
     Box::pin(run(
         inner,

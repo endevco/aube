@@ -1,3 +1,4 @@
+mod cli_args;
 mod commands;
 mod dep_chain;
 mod deprecations;
@@ -128,6 +129,141 @@ fn normalize_npm_interpreter_shim_argv(args: &mut Vec<OsString>) {
     args.remove(1);
 }
 
+/// pnpm-compat: shift flag tokens that used to be `global = true` on
+/// `Cli` past the subcommand so `aube --frozen-lockfile install`,
+/// `aube --registry=URL install`, etc. keep parsing after those flags
+/// moved into per-command Args groups.
+///
+/// Only flags listed in `LIFTED_LONGS` (long names) and the hardcoded
+/// short-flag arms below are moved; every other token is left in place
+/// so the still-global flags (`-C/--dir`, `--loglevel`, `--reporter`,
+/// …) keep their pre-subcommand meaning. We need to know the
+/// value-arity of *every* surviving global flag with a value so we
+/// don't mistake a flag's value for the subcommand position.
+fn lift_per_subcommand_flags(mut args: Vec<OsString>) -> Vec<OsString> {
+    // (long_name_without_dashes, takes_value)
+    const LIFTED_LONGS: &[(&str, bool)] = &[
+        ("frozen-lockfile", false),
+        ("no-frozen-lockfile", false),
+        ("prefer-frozen-lockfile", false),
+        ("registry", true),
+        ("fetch-retries", true),
+        ("fetch-retry-factor", true),
+        ("fetch-retry-maxtimeout", true),
+        ("fetch-retry-mintimeout", true),
+        ("fetch-timeout", true),
+        ("disable-global-virtual-store", false),
+        ("disable-gvs", false),
+        ("enable-global-virtual-store", false),
+        ("enable-gvs", false),
+    ];
+    // Long-form Cli flags that still live on `Cli` *and* take a value.
+    // We must skip past `flag value` pairs so the value isn't mistaken
+    // for the subcommand. Bool flags need no entry here.
+    const KEPT_LONGS_WITH_VALUE: &[&str] = &[
+        "dir",
+        "cd",
+        "prefix",
+        "loglevel",
+        "reporter",
+        "filter",
+        "filter-prod",
+    ];
+    const KEPT_SHORTS_WITH_VALUE: &[&str] = &["-C", "-F"];
+
+    let mut lifted: Vec<OsString> = Vec::new();
+    let mut subcommand_idx: Option<usize> = None;
+    let mut i = 1;
+    while i < args.len() {
+        let Some(s) = args[i].to_str() else { break };
+        if s == "--" {
+            break;
+        }
+        if let Some(rest) = s.strip_prefix("--") {
+            let (bare, has_inline_value) = match rest.split_once('=') {
+                Some((bare, _)) => (bare, true),
+                None => (rest, false),
+            };
+            if let Some((_, takes_value)) =
+                LIFTED_LONGS.iter().copied().find(|(name, _)| *name == bare)
+            {
+                lifted.push(args.remove(i));
+                if takes_value && !has_inline_value && i < args.len() {
+                    lifted.push(args.remove(i));
+                }
+                continue;
+            }
+            if KEPT_LONGS_WITH_VALUE.contains(&bare) {
+                i += 1;
+                if !has_inline_value && i < args.len() {
+                    i += 1;
+                }
+                continue;
+            }
+            // Other long flag (kept bool): skip the token only.
+            i += 1;
+            continue;
+        }
+        if s == "-" {
+            // Bare `-` is a positional (stdin sentinel) — treat as the
+            // subcommand position so trailing tokens stay put.
+            subcommand_idx = Some(i);
+            break;
+        }
+        if let Some(rest) = s.strip_prefix('-') {
+            if rest.is_empty() {
+                subcommand_idx = Some(i);
+                break;
+            }
+            // -F (kept, takes value)
+            if s == "-F" {
+                i += 1;
+                if i < args.len() {
+                    i += 1;
+                }
+                continue;
+            }
+            // -F=foo or -Ffoo (kept inline form)
+            if let Some(rest) = s.strip_prefix("-F")
+                && !rest.is_empty()
+            {
+                i += 1;
+                continue;
+            }
+            // -C (kept, takes value)
+            if KEPT_SHORTS_WITH_VALUE.contains(&s) {
+                i += 1;
+                if i < args.len() {
+                    i += 1;
+                }
+                continue;
+            }
+            // -r is an alias for --recursive but stays global (workspace
+            // selection is still on Cli), so skip — don't lift.
+            // Other short flags (-V, -v, -y, -r) are bool, kept.
+            i += 1;
+            continue;
+        }
+        // First non-flag token = subcommand.
+        subcommand_idx = Some(i);
+        break;
+    }
+    if let Some(idx) = subcommand_idx {
+        let insert_at = idx + 1;
+        for (j, tok) in lifted.into_iter().enumerate() {
+            args.insert(insert_at + j, tok);
+        }
+    } else {
+        // No subcommand found — restore the lifted tokens at their
+        // original front position so clap's error message still
+        // mentions them in argv order.
+        for tok in lifted.into_iter().rev() {
+            args.insert(1, tok);
+        }
+    }
+    args
+}
+
 #[derive(Parser)]
 #[command(
     name = "aube",
@@ -177,7 +313,7 @@ pub(crate) struct Cli {
     ///
     /// Accepted for pnpm compatibility; aube's workspace fanout is
     /// currently sequential, so output is already grouped.
-    #[arg(long, global = true, conflicts_with = "stream")]
+    #[arg(long, global = true, conflicts_with = "stream", hide = true)]
     aggregate_output: bool,
 
     /// Force colored output even when stderr is not a TTY.
@@ -187,76 +323,11 @@ pub(crate) struct Cli {
     #[arg(long, global = true, conflicts_with = "no_color")]
     color: bool,
 
-    /// Force the shared global virtual store off for this invocation.
-    ///
-    /// Packages are materialized inside the project's virtual store
-    /// instead of symlinked from `~/.cache/aube/virtual-store/`.
-    #[arg(
-        long,
-        visible_alias = "disable-gvs",
-        global = true,
-        conflicts_with = "enable_global_virtual_store"
-    )]
-    disable_global_virtual_store: bool,
-
-    /// Force the shared global virtual store on for this invocation.
-    ///
-    /// Overrides CI's default per-project materialization and the
-    /// `disableGlobalVirtualStoreForPackages` auto-disable heuristic.
-    #[arg(
-        long,
-        visible_alias = "enable-gvs",
-        global = true,
-        conflicts_with = "disable_global_virtual_store"
-    )]
-    enable_global_virtual_store: bool,
-
     /// Error when a workspace selector matches no packages.
     ///
     /// Accepted globally; selected commands already fail on empty matches.
     #[arg(long, global = true)]
     fail_if_no_match: bool,
-
-    /// Number of retry attempts for failed registry fetches.
-    ///
-    /// Overrides `fetchRetries` / `fetch-retries` from `.npmrc` /
-    /// `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to
-    /// fail fast in scripted test runs.
-    #[arg(long, global = true, value_name = "N")]
-    fetch_retries: Option<u64>,
-
-    /// Exponential backoff factor between retry attempts.
-    ///
-    /// Overrides `fetchRetryFactor` / `fetch-retry-factor` from
-    /// `.npmrc` / `aube-workspace.yaml` when set. Integer-only — the
-    /// underlying `FetchPolicy.retry_factor` is `u32`, matching the
-    /// `int` type declared for `fetchRetryFactor` in `settings.toml`
-    /// and the `.npmrc` parser. Fractional values like `1.5` are
-    /// rejected by clap.
-    #[arg(long, global = true, value_name = "N")]
-    fetch_retry_factor: Option<u64>,
-
-    /// Upper bound (ms) on the computed retry backoff.
-    ///
-    /// Overrides `fetchRetryMaxtimeout` / `fetch-retry-maxtimeout` from
-    /// `.npmrc` / `aube-workspace.yaml` when set.
-    #[arg(long, global = true, value_name = "MS")]
-    fetch_retry_maxtimeout: Option<u64>,
-
-    /// Lower bound (ms) on the computed retry backoff.
-    ///
-    /// Overrides `fetchRetryMintimeout` / `fetch-retry-mintimeout` from
-    /// `.npmrc` / `aube-workspace.yaml` when set.
-    #[arg(long, global = true, value_name = "MS")]
-    fetch_retry_mintimeout: Option<u64>,
-
-    /// Per-request HTTP timeout in milliseconds.
-    ///
-    /// Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` /
-    /// `aube-workspace.yaml` when set. Applied via `reqwest`'s
-    /// `.timeout()` so it covers headers + body together.
-    #[arg(long, global = true, value_name = "MS")]
-    fetch_timeout: Option<u64>,
 
     /// Production-only variant of `--filter`.
     ///
@@ -269,24 +340,16 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATTERN")]
     filter_prod: Vec<String>,
 
-    /// Error if the lockfile drifts from package.json.
-    ///
-    /// Accepted on every command for pnpm parity; aube commands that
-    /// trigger an install (directly or via auto-install) pick this up
-    /// through the process-wide flag snapshot.
-    #[arg(long, global = true, conflicts_with_all = ["no_frozen_lockfile", "prefer_frozen_lockfile"])]
-    frozen_lockfile: bool,
-
     /// Ignore workspace discovery for commands that support workspace fanout.
     ///
     /// Parsed for pnpm compatibility.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     ignore_workspace: bool,
 
     /// Include the workspace root in recursive workspace operations.
     ///
     /// Parsed for pnpm compatibility.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     include_workspace_root: bool,
 
     /// Set the log level. Logs at or above this level are shown.
@@ -300,25 +363,6 @@ pub(crate) struct Cli {
     /// the same choice.
     #[arg(long, global = true)]
     no_color: bool,
-
-    /// Always re-resolve, even if the lockfile is up to date.
-    ///
-    /// Global counterpart to the same `install` flag.
-    #[arg(long, global = true, conflicts_with_all = ["frozen_lockfile", "prefer_frozen_lockfile"])]
-    no_frozen_lockfile: bool,
-
-    /// Use the lockfile when fresh, re-resolve when stale.
-    ///
-    /// Global counterpart to the same `install` flag.
-    #[arg(long, global = true, conflicts_with_all = ["frozen_lockfile", "no_frozen_lockfile"])]
-    prefer_frozen_lockfile: bool,
-
-    /// Override the default registry URL for this invocation.
-    ///
-    /// Use this npm registry URL for package metadata, tarballs,
-    /// audit requests, dist-tags, and registry writes.
-    #[arg(long, global = true, value_name = "URL")]
-    registry: Option<String>,
 
     /// Output format: default, append-only, ndjson, silent.
     ///
@@ -339,20 +383,20 @@ pub(crate) struct Cli {
     ///
     /// Accepted for pnpm compatibility; aube's workspace fanout is
     /// currently sequential.
-    #[arg(long, global = true, conflicts_with = "aggregate_output")]
+    #[arg(long, global = true, conflicts_with = "aggregate_output", hide = true)]
     stream: bool,
 
     /// Route lifecycle and workspace command output through stderr.
     ///
     /// Accepted for pnpm compatibility.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     use_stderr: bool,
 
     /// Prefer workspace packages when resolving dependencies.
     ///
     /// Parsed for pnpm compatibility; aube already resolves workspace
     /// packages when a workspace is present.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     workspace_packages: bool,
 
     /// Run from the workspace root regardless of the current package.
@@ -363,7 +407,7 @@ pub(crate) struct Cli {
     ///
     /// Parsed for pnpm compatibility; aube does not currently prompt
     /// on these paths.
-    #[arg(short = 'y', long, global = true)]
+    #[arg(short = 'y', long, global = true, hide = true)]
     yes: bool,
 
     #[command(subcommand)]
@@ -692,7 +736,7 @@ fn inner_main() -> miette::Result<()> {
     // through the process-global slot in `aube_settings`.
     let config_overrides = extract_config_overrides(&mut argv);
     aube_settings::set_global_cli_overrides(config_overrides);
-    let cli = Cli::parse_from(rewrite_multicall_argv(argv));
+    let cli = Cli::parse_from(lift_per_subcommand_flags(rewrite_multicall_argv(argv)));
 
     // `--color` / `--no-color` take effect before anything else touches
     // color state: we translate the flags into the env vars that miette,
@@ -846,15 +890,6 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     // already set, `-r` is a no-op — the explicit scope wins.
     let effective_filter = compute_effective_filter(&cli);
 
-    // Snapshot the global frozen-lockfile flags so every install entry
-    // point (direct `install`, chained `add`/`remove`/`update`, bare
-    // `aube`, auto-install via `ensure_installed`) honors them.
-    let global_frozen = frozen_override_from_cli(&cli);
-    let global_gvs = global_virtual_store_flags_from_cli(&cli);
-    commands::set_global_frozen_override(global_frozen);
-    commands::set_global_virtual_store_flags(global_gvs);
-    commands::set_registry_override(cli.registry.clone());
-    commands::set_fetch_cli_overrides(fetch_cli_overrides_from_cli(&cli));
     commands::set_global_output_flags(commands::GlobalOutputFlags {
         silent: matches!(effective_level, LogLevel::Silent),
     });
@@ -864,7 +899,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             commands::add::run(args, effective_filter.clone()).await?;
         }
         Some(Commands::ApproveBuilds(args)) => commands::approve_builds::run(args).await?,
-        Some(Commands::Audit(args)) => commands::audit::run(args, cli.registry.as_deref()).await?,
+        Some(Commands::Audit(args)) => commands::audit::run(args).await?,
         Some(Commands::Bin(args)) => commands::bin::run(args).await?,
         Some(Commands::Cache(args)) => commands::cache::run(args).await?,
         Some(Commands::CatFile(args)) => commands::cat_file::run(args).await?,
@@ -879,9 +914,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Deploy(args)) => {
             commands::deploy::run(args, effective_filter.clone()).await?
         }
-        Some(Commands::Deprecate(args)) => {
-            commands::deprecate::run(args, cli.registry.as_deref()).await?
-        }
+        Some(Commands::Deprecate(args)) => commands::deprecate::run(args).await?,
         Some(Commands::Deprecations(args)) => {
             if let Some(code) = commands::deprecations::run(args).await? {
                 return Ok(Some(code));
@@ -898,14 +931,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Import(args)) => commands::import::run(args).await?,
         Some(Commands::Init(args)) => commands::init::run(args).await?,
         Some(Commands::Install(args)) => {
-            run_install_command(
-                args,
-                global_frozen,
-                global_gvs,
-                effective_filter.clone(),
-                cli.workspace_root,
-            )
-            .await?;
+            run_install_command(args, effective_filter.clone(), cli.workspace_root).await?;
         }
         Some(Commands::InstallTest(args)) => commands::install_test::run(args).await?,
         Some(Commands::La(mut args)) | Some(Commands::Ll(mut args)) => {
@@ -915,19 +941,13 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Licenses(args)) => commands::licenses::run(args).await?,
         Some(Commands::Link(args)) => commands::link::run(args).await?,
         Some(Commands::List(args)) => commands::list::run(args, effective_filter.clone()).await?,
-        Some(Commands::Login(args)) => commands::login::run(args, cli.registry.as_deref()).await?,
-        Some(Commands::Logout(args)) => {
-            commands::logout::run(args, cli.registry.as_deref()).await?
-        }
+        Some(Commands::Login(args)) => commands::login::run(args).await?,
+        Some(Commands::Logout(args)) => commands::logout::run(args).await?,
         Some(Commands::Outdated(args)) => {
             commands::outdated::run(args, effective_filter.clone()).await?
         }
         Some(Commands::Owner(args)) => {
-            return Ok(Some(commands::npm_fallback::run(
-                "owner",
-                &args.args,
-                cli.registry.as_deref(),
-            )?));
+            return Ok(Some(commands::npm_fallback::run("owner", &args)?));
         }
         Some(Commands::Pack(args)) => commands::pack::run(args).await?,
         Some(Commands::Patch(args)) => commands::patch::run(args).await?,
@@ -935,15 +955,11 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::PatchRemove(args)) => commands::patch_remove::run(args).await?,
         Some(Commands::Peers(args)) => commands::peers::run(args).await?,
         Some(Commands::Pkg(args)) => {
-            return Ok(Some(commands::npm_fallback::run(
-                "pkg",
-                &args.args,
-                cli.registry.as_deref(),
-            )?));
+            return Ok(Some(commands::npm_fallback::run("pkg", &args)?));
         }
         Some(Commands::Prune(args)) => commands::prune::run(args).await?,
         Some(Commands::Publish(args)) => {
-            commands::publish::run(args, effective_filter.clone(), cli.registry.as_deref()).await?
+            commands::publish::run(args, effective_filter.clone()).await?
         }
         Some(Commands::Purge(args)) => commands::clean::run_purge(args).await?,
         Some(Commands::Query(args)) => commands::query::run(args, effective_filter.clone()).await?,
@@ -964,9 +980,6 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
             )?;
             let nested = Cli::try_parse_from(argv).into_diagnostic()?;
             let nested_filter = compute_effective_filter(&nested);
-            let nested_frozen = merge_nested_frozen_override(global_frozen, &nested);
-            let nested_gvs = merge_nested_global_virtual_store_flags(global_gvs, &nested);
-            let _registry_guard = commands::scoped_registry_override(nested.registry.clone());
             match nested.command {
                 Some(Commands::Add(args)) => {
                     commands::add::run(args, nested_filter).await?;
@@ -974,14 +987,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 Some(Commands::Deploy(args)) => commands::deploy::run(args, nested_filter).await?,
                 Some(Commands::Exec(args)) => commands::exec::run(args, nested_filter).await?,
                 Some(Commands::Install(args)) => {
-                    run_install_command(
-                        args,
-                        nested_frozen,
-                        nested_gvs,
-                        nested_filter,
-                        nested.workspace_root,
-                    )
-                    .await?;
+                    run_install_command(args, nested_filter, nested.workspace_root).await?;
                 }
                 Some(Commands::List(args)) => commands::list::run(args, nested_filter).await?,
                 Some(Commands::La(mut args)) | Some(Commands::Ll(mut args)) => {
@@ -992,7 +998,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                     commands::outdated::run(args, nested_filter).await?
                 }
                 Some(Commands::Publish(args)) => {
-                    commands::publish::run(args, nested_filter, nested.registry.as_deref()).await?
+                    commands::publish::run(args, nested_filter).await?
                 }
                 Some(Commands::Rebuild(args)) => {
                     commands::rebuild::run(args, nested_filter).await?
@@ -1003,34 +1009,13 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 }
                 Some(Commands::Run(args)) => commands::run::run(args, nested_filter).await?,
                 Some(Commands::Start(args)) => {
-                    commands::run::run_script(
-                        "start",
-                        &args.args,
-                        args.no_install,
-                        false,
-                        &nested_filter,
-                    )
-                    .await?;
+                    run_script_lifecycle("start", args, &nested_filter).await?;
                 }
                 Some(Commands::Stop(args)) => {
-                    commands::run::run_script(
-                        "stop",
-                        &args.args,
-                        args.no_install,
-                        false,
-                        &nested_filter,
-                    )
-                    .await?;
+                    run_script_lifecycle("stop", args, &nested_filter).await?;
                 }
                 Some(Commands::Test(args)) => {
-                    commands::run::run_script(
-                        "test",
-                        &args.args,
-                        args.no_install,
-                        false,
-                        &nested_filter,
-                    )
-                    .await?;
+                    run_script_lifecycle("test", args, &nested_filter).await?;
                 }
                 Some(Commands::Update(args)) => {
                     commands::update::run(args, nested_filter).await?;
@@ -1057,76 +1042,35 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
         Some(Commands::Run(args)) => commands::run::run(args, effective_filter.clone()).await?,
         Some(Commands::Sbom(args)) => commands::sbom::run(args).await?,
         Some(Commands::Search(args)) => {
-            return Ok(Some(commands::npm_fallback::run(
-                "search",
-                &args.args,
-                cli.registry.as_deref(),
-            )?));
+            return Ok(Some(commands::npm_fallback::run("search", &args)?));
         }
         Some(Commands::Set(args)) => commands::config::set(args)?,
         Some(Commands::SetScript(args)) => {
-            return Ok(Some(commands::npm_fallback::run(
-                "set-script",
-                &args.args,
-                cli.registry.as_deref(),
-            )?));
+            return Ok(Some(commands::npm_fallback::run("set-script", &args)?));
         }
         Some(Commands::Start(args)) => {
-            commands::run::run_script(
-                "start",
-                &args.args,
-                args.no_install,
-                false,
-                &effective_filter,
-            )
-            .await?;
+            run_script_lifecycle("start", args, &effective_filter).await?;
         }
         Some(Commands::Stop(args)) => {
-            commands::run::run_script(
-                "stop",
-                &args.args,
-                args.no_install,
-                false,
-                &effective_filter,
-            )
-            .await?;
+            run_script_lifecycle("stop", args, &effective_filter).await?;
         }
         Some(Commands::Store(args)) => commands::store::run(args).await?,
         Some(Commands::Test(args)) => {
-            commands::run::run_script(
-                "test",
-                &args.args,
-                args.no_install,
-                false,
-                &effective_filter,
-            )
-            .await?;
+            run_script_lifecycle("test", args, &effective_filter).await?;
         }
         Some(Commands::Token(args)) => {
-            return Ok(Some(commands::npm_fallback::run(
-                "token",
-                &args.args,
-                cli.registry.as_deref(),
-            )?));
+            return Ok(Some(commands::npm_fallback::run("token", &args)?));
         }
-        Some(Commands::Undeprecate(args)) => {
-            commands::undeprecate::run(args, cli.registry.as_deref()).await?
-        }
+        Some(Commands::Undeprecate(args)) => commands::undeprecate::run(args).await?,
         Some(Commands::Unlink(args)) => commands::unlink::run(args).await?,
-        Some(Commands::Unpublish(args)) => {
-            commands::unpublish::run(args, cli.registry.as_deref()).await?
-        }
+        Some(Commands::Unpublish(args)) => commands::unpublish::run(args).await?,
         Some(Commands::Update(args)) => {
             commands::update::run(args, effective_filter.clone()).await?;
         }
         Some(Commands::Version(args)) => commands::version::run(args).await?,
         Some(Commands::View(args)) => commands::view::run(args).await?,
         Some(Commands::Whoami(args)) => {
-            return Ok(Some(commands::npm_fallback::run(
-                "whoami",
-                &args.args,
-                cli.registry.as_deref(),
-            )?));
+            return Ok(Some(commands::npm_fallback::run("whoami", &args)?));
         }
         Some(Commands::Why(args)) => commands::why::run(args, effective_filter.clone()).await?,
         Some(Commands::Usage) => {
@@ -1675,70 +1619,27 @@ fn compute_effective_filter(cli: &Cli) -> aube_workspace::selector::EffectiveFil
     }
 }
 
-fn frozen_override_from_cli(cli: &Cli) -> Option<commands::install::FrozenOverride> {
-    if cli.frozen_lockfile {
-        Some(commands::install::FrozenOverride::Frozen)
-    } else if cli.no_frozen_lockfile {
-        Some(commands::install::FrozenOverride::No)
-    } else if cli.prefer_frozen_lockfile {
-        Some(commands::install::FrozenOverride::Prefer)
-    } else {
-        None
-    }
-}
-
-fn global_virtual_store_flags_from_cli(cli: &Cli) -> commands::install::GlobalVirtualStoreFlags {
-    commands::install::GlobalVirtualStoreFlags {
-        enable: cli.enable_global_virtual_store,
-        disable: cli.disable_global_virtual_store,
-    }
-}
-
-/// Extract the `--fetch-*` CLI flags into the `(name, value)` shape
-/// expected by `ResolveCtx::cli`. Keys match the `sources.cli` aliases
-/// declared for each setting in `settings.toml` (kebab-case).
-fn fetch_cli_overrides_from_cli(cli: &Cli) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    if let Some(v) = cli.fetch_timeout {
-        out.push(("fetch-timeout".to_string(), v.to_string()));
-    }
-    if let Some(v) = cli.fetch_retries {
-        out.push(("fetch-retries".to_string(), v.to_string()));
-    }
-    if let Some(v) = cli.fetch_retry_factor {
-        out.push(("fetch-retry-factor".to_string(), v.to_string()));
-    }
-    if let Some(v) = cli.fetch_retry_mintimeout {
-        out.push(("fetch-retry-mintimeout".to_string(), v.to_string()));
-    }
-    if let Some(v) = cli.fetch_retry_maxtimeout {
-        out.push(("fetch-retry-maxtimeout".to_string(), v.to_string()));
-    }
-    out
-}
-
-fn merge_nested_frozen_override(
-    outer: Option<commands::install::FrozenOverride>,
-    nested: &Cli,
-) -> Option<commands::install::FrozenOverride> {
-    outer.or_else(|| frozen_override_from_cli(nested))
-}
-
-fn merge_nested_global_virtual_store_flags(
-    outer: commands::install::GlobalVirtualStoreFlags,
-    nested: &Cli,
-) -> commands::install::GlobalVirtualStoreFlags {
-    if outer.is_set() {
-        outer
-    } else {
-        global_virtual_store_flags_from_cli(nested)
-    }
+/// Run a lifecycle script (`start` / `stop` / `test` / `restart`).
+///
+/// `ScriptArgs` carries the moved-off-global `LockfileArgs` /
+/// `NetworkArgs` / `VirtualStoreArgs` flattens for these commands, so we
+/// drain them into the process-global slots before delegating to the
+/// shared `run_script` helper. Auto-install (triggered by `run_script`
+/// when the named script doesn't exist locally) reads the slots through
+/// `ensure_installed`.
+async fn run_script_lifecycle(
+    name: &str,
+    args: commands::run::ScriptArgs,
+    filter: &aube_workspace::selector::EffectiveFilter,
+) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
+    commands::run::run_script(name, &args.args, args.no_install, false, filter).await
 }
 
 async fn run_install_command(
     args: commands::install::InstallArgs,
-    global_frozen: Option<commands::install::FrozenOverride>,
-    global_gvs: commands::install::GlobalVirtualStoreFlags,
     filter: aube_workspace::selector::EffectiveFilter,
     workspace_root_already: bool,
 ) -> miette::Result<()> {
@@ -1757,6 +1658,11 @@ async fn run_install_command(
         }
         crate::dirs::set_cwd(&root)?;
     }
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
+    let global_frozen = args.lockfile.frozen_override();
+    let global_gvs = args.virtual_store.flags();
     // Match `install::run`'s precedence so settings here resolve from
     // the same root the install will operate against. Workspace-first
     // means `aube install` from inside a member loads `.npmrc` /
@@ -1796,11 +1702,40 @@ mod cli_spec_tests {
         ])
         .expect("install --registry should parse");
 
+        let Some(Commands::Install(install_args)) = cli.command else {
+            panic!("expected install subcommand");
+        };
         assert_eq!(
-            cli.registry.as_deref(),
+            install_args.network.registry.as_deref(),
             Some("https://registry.example.com/")
         );
-        assert!(matches!(cli.command, Some(Commands::Install(_))));
+    }
+
+    #[test]
+    fn pre_subcommand_registry_lifts_to_install() {
+        // pnpm-compat: `--registry=URL install` continues to parse via
+        // `lift_per_subcommand_flags`, which shifts the flag past the
+        // subcommand before clap sees argv.
+        let argv = lift_per_subcommand_flags(
+            [
+                "aube",
+                "--registry",
+                "https://registry.example.com/",
+                "install",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        );
+        let cli = Cli::try_parse_from(argv)
+            .expect("pre-subcommand --registry should still parse via the rewriter");
+        let Some(Commands::Install(install_args)) = cli.command else {
+            panic!("expected install subcommand");
+        };
+        assert_eq!(
+            install_args.network.registry.as_deref(),
+            Some("https://registry.example.com/")
+        );
     }
 
     #[test]
@@ -2075,18 +2010,79 @@ mod package_manager_guard_tests {
 mod cli_ordering_tests {
     use super::*;
     use clap::CommandFactory;
+    use std::collections::BTreeMap;
 
-    /// Validate that aube's CLI commands and arguments are ordered via
-    /// the `clap-sort` crate:
+    /// Validate that aube's CLI commands and arguments are ordered:
     /// - Subcommands alphabetical by name
     /// - Short flags alphabetical by short option
-    /// - Long-only flags alphabetical by long name
-    /// - Positional args keep their source order
+    /// - Long-only flags alphabetical by long name *within each help-heading
+    ///   bucket* (the unheaded default counts as one bucket)
     ///
-    /// If this fails, reorder the enum variants and `#[arg(...)]` fields
-    /// to match the expected order the panic prints.
+    /// We can't use `clap_sort::assert_sorted` directly because flags from
+    /// flattened `cli_args::*Args` groups carry their own `help_heading`
+    /// (e.g. "Lockfile", "Network", "Virtual store") and clap-sort enforces
+    /// strict alphabetical across the full long-only set, which would
+    /// require interleaving group flags between per-command flags. The
+    /// help-grouped layout is the whole point of the move, so we sort
+    /// within heading buckets instead.
     #[test]
     fn test_cli_ordering() {
-        clap_sort::assert_sorted(&Cli::command());
+        check_command_sorted(&Cli::command(), &[]);
+    }
+
+    fn check_command_sorted(cmd: &clap::Command, path: &[&str]) {
+        let mut current_path: Vec<&str> = path.to_vec();
+        current_path.push(cmd.get_name());
+
+        // Subcommands alphabetical
+        let names: Vec<_> = cmd.get_subcommands().map(|s| s.get_name()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert!(
+            names == sorted,
+            "Subcommands in '{}' are not sorted alphabetically!\nActual: {:?}\nExpected: {:?}",
+            current_path.join(" "),
+            names,
+            sorted,
+        );
+
+        // Short flags alphabetical, long-only alphabetical within heading.
+        let mut shorts: Vec<char> = Vec::new();
+        let mut by_heading: BTreeMap<Option<&str>, Vec<&str>> = BTreeMap::new();
+        for arg in cmd.get_arguments() {
+            if let Some(s) = arg.get_short() {
+                shorts.push(s);
+            } else if let Some(l) = arg.get_long() {
+                by_heading
+                    .entry(arg.get_help_heading())
+                    .or_default()
+                    .push(l);
+            }
+        }
+        let mut sorted_shorts = shorts.clone();
+        sorted_shorts.sort_by_key(|c| (c.to_ascii_lowercase(), c.is_uppercase()));
+        assert!(
+            shorts == sorted_shorts,
+            "Short flags in '{}' are not sorted!\nActual: {:?}\nExpected: {:?}",
+            current_path.join(" "),
+            shorts,
+            sorted_shorts,
+        );
+        for (heading, longs) in &by_heading {
+            let mut sorted_longs = longs.clone();
+            sorted_longs.sort();
+            assert!(
+                longs == &sorted_longs,
+                "Long-only flags under heading {:?} in '{}' are not sorted!\nActual: {:?}\nExpected: {:?}",
+                heading,
+                current_path.join(" "),
+                longs,
+                sorted_longs,
+            );
+        }
+
+        for sub in cmd.get_subcommands() {
+            check_command_sorted(sub, &current_path);
+        }
     }
 }

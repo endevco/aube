@@ -105,13 +105,15 @@ pub struct PublishArgs {
     /// Default dist-tag to publish under (default: `latest`).
     #[arg(long, value_name = "TAG")]
     pub tag: Option<String>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 pub async fn run(
     args: PublishArgs,
     filter: aube_workspace::selector::EffectiveFilter,
-    registry_override: Option<&str>,
 ) -> miette::Result<()> {
+    args.network.install_overrides();
     let cwd = crate::dirs::project_root()?;
 
     if !args.no_git_checks {
@@ -119,14 +121,22 @@ pub async fn run(
     }
 
     if !filter.is_empty() {
-        return run_recursive(&cwd, &args, &filter, registry_override).await;
+        return run_recursive(&cwd, &args, &filter, args.network.registry.as_deref()).await;
     }
 
     // Single-package mode: config_root == pkg_dir == cwd.
     let config = super::load_npm_config(&cwd);
     let policy = super::resolve_fetch_policy(&cwd);
     let client = RegistryClient::from_config_with_policy(config.clone(), policy);
-    let outcome = publish_one(&cwd, &config, &client, &args, false, registry_override).await?;
+    let outcome = publish_one(
+        &cwd,
+        &config,
+        &client,
+        &args,
+        false,
+        args.network.registry.as_deref(),
+    )
+    .await?;
     emit_outcome(&outcome, args.json)?;
     Ok(())
 }

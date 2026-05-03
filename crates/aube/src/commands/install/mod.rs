@@ -208,6 +208,12 @@ pub struct InstallArgs {
     /// install -w`).
     #[arg(short = 'w', hide = true)]
     pub workspace_root_short: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 impl InstallArgs {

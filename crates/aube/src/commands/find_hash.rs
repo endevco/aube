@@ -47,6 +47,8 @@ pub struct FindHashArgs {
     /// Output is an array of `{ "name", "version", "path" }` objects.
     #[arg(long)]
     pub json: bool,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 /// A single match: one package's index referenced the queried hash via
@@ -59,6 +61,7 @@ struct Match {
 }
 
 pub async fn run(args: FindHashArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     // Normalize input: integrity → hex, or validate raw hex up front so
     // we don't compare nonsense strings against every cached index.
     let target_hex = if args.hash.starts_with(aube_store::SHA512_INTEGRITY_PREFIX) {

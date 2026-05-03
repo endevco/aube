@@ -27,6 +27,8 @@ use miette::{Context, miette};
 pub struct DistTagArgs {
     #[command(subcommand)]
     pub command: DistTagCommand,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -64,6 +66,7 @@ pub enum DistTagCommand {
 }
 
 pub async fn run(args: DistTagArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     match args.command {
         DistTagCommand::Add { spec, tag } => add(&spec, tag.as_deref()).await,
         DistTagCommand::Rm { package, tag } => rm(&package, &tag).await,

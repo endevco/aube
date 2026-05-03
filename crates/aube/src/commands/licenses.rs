@@ -68,6 +68,8 @@ pub struct LicensesArgs {
         visible_alias = "production"
     )]
     pub prod: bool,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,6 +82,7 @@ struct Row {
 }
 
 pub async fn run(args: LicensesArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     // `licenses ls` is pnpm-compat; it behaves identically to bare `licenses`.
     let _ = args.subcommand;
 

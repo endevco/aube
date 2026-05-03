@@ -22,9 +22,18 @@ pub struct FetchArgs {
     /// Only fetch production + optional dependencies (skip devDependencies)
     #[arg(long, short = 'P', conflicts_with = "dev")]
     pub prod: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(args: FetchArgs) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     let cwd = crate::dirs::project_root_or_cwd()?;
     let _lock = super::take_project_lock(&cwd)?;
     let start = std::time::Instant::now();

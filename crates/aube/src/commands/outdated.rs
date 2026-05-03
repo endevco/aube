@@ -78,6 +78,8 @@ pub struct OutdatedArgs {
         visible_alias = "production"
     )]
     pub prod: bool,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +119,7 @@ pub async fn run(
     args: OutdatedArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    args.network.install_overrides();
     let cwd = crate::dirs::project_root()?;
     if !filter.is_empty() {
         return run_filtered(&cwd, args, &filter).await;
@@ -317,6 +320,7 @@ impl OutdatedArgs {
             json: self.json,
             long: self.long,
             prod: self.prod,
+            network: self.network.clone(),
         }
     }
 }

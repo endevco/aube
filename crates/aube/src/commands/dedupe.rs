@@ -17,9 +17,18 @@ pub struct DedupeArgs {
     /// Exits non-zero when dedupe would make changes — useful in CI.
     #[arg(long)]
     pub check: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(args: DedupeArgs) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     let cwd = crate::dirs::project_root()?;
     let _lock = super::take_project_lock(&cwd)?;
 

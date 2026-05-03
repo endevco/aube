@@ -23,6 +23,8 @@ pub struct InitArgs {
     /// Set the module system for the package. Defaults to `commonjs`.
     #[arg(long, value_name = "commonjs|module")]
     pub init_type: Option<InitType>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -33,6 +35,7 @@ pub enum InitType {
 }
 
 pub async fn run(args: InitArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     let cwd = crate::dirs::cwd()?;
     let pkg_path = cwd.join("package.json");
 
@@ -176,6 +179,7 @@ mod tests {
             bare: false,
             init_package_manager: false,
             init_type: None,
+            network: Default::default(),
         }
     }
 

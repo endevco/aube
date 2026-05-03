@@ -92,12 +92,21 @@ pub struct UpdateArgs {
     /// over `pnpmfilePath` from `pnpm-workspace.yaml`.
     #[arg(long, value_name = "PATH", conflicts_with = "ignore_pnpmfile")]
     pub pnpmfile: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(
     args: UpdateArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     let _ = args.ignore_scripts; // parity no-op: dep scripts already gated by allowBuilds
     let _ = (args.global, args.workspace, args.interactive);
     if let Some(depth) = args.depth.as_deref() {

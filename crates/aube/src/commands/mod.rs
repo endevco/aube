@@ -125,29 +125,6 @@ pub(crate) fn skip_auto_install_on_package_manager_mismatch() -> bool {
     SKIP_AUTO_INSTALL_ON_PM_MISMATCH.load(Ordering::Relaxed)
 }
 
-pub(crate) struct RegistryOverrideGuard {
-    previous: Option<String>,
-    changed: bool,
-}
-
-impl Drop for RegistryOverrideGuard {
-    fn drop(&mut self) {
-        if self.changed {
-            *REGISTRY_OVERRIDE.write().expect("registry lock poisoned") = self.previous.take();
-        }
-    }
-}
-
-pub(crate) fn scoped_registry_override(url: Option<String>) -> RegistryOverrideGuard {
-    let mut guard = REGISTRY_OVERRIDE.write().expect("registry lock poisoned");
-    let previous = guard.clone();
-    let changed = url.is_some();
-    if let Some(u) = url {
-        *guard = Some(aube_registry::config::normalize_registry_url_pub(&u));
-    }
-    RegistryOverrideGuard { previous, changed }
-}
-
 pub(crate) fn registry_override() -> Option<String> {
     REGISTRY_OVERRIDE
         .read()

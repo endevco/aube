@@ -79,6 +79,12 @@ pub struct RunArgs {
     /// Parsed for pnpm compatibility.
     #[arg(long, value_name = "N")]
     pub workspace_concurrency: Option<usize>,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 /// Shared args for the lifecycle shortcut commands: `start`, `stop`, `test`,
@@ -94,12 +100,21 @@ pub struct ScriptArgs {
     /// Skip auto-install check
     #[arg(long)]
     pub no_install: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(
     run_args: RunArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    run_args.network.install_overrides();
+    run_args.lockfile.install_overrides();
+    run_args.virtual_store.install_overrides();
     let RunArgs {
         script,
         args,
@@ -115,6 +130,9 @@ pub async fn run(
         silent,
         sort: _,
         workspace_concurrency: _,
+        lockfile: _,
+        network: _,
+        virtual_store: _,
     } = run_args;
     let silent = silent || super::global_output_flags().silent;
     let script = match script {

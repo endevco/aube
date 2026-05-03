@@ -27,12 +27,24 @@ pub struct CiArgs {
     /// Skip optionalDependencies; don't install optional native modules
     #[arg(long)]
     pub no_optional: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(args: CiArgs) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     let CiArgs {
         ignore_scripts,
         no_optional,
+        lockfile: _,
+        network: _,
+        virtual_store: _,
     } = args;
     let cwd = crate::dirs::project_root()?;
     let _lock = super::take_project_lock(&cwd)?;

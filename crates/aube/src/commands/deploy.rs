@@ -62,12 +62,21 @@ pub struct DeployArgs {
     // `!args.dev`, not `args.prod`, when extending the filter.
     #[arg(short = 'P', long, visible_alias = "production")]
     pub prod: bool,
+    #[command(flatten)]
+    pub lockfile: crate::cli_args::LockfileArgs,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
+    #[command(flatten)]
+    pub virtual_store: crate::cli_args::VirtualStoreArgs,
 }
 
 pub async fn run(
     args: DeployArgs,
     filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
+    args.network.install_overrides();
+    args.lockfile.install_overrides();
+    args.virtual_store.install_overrides();
     if filter.is_empty() {
         return Err(miette!(
             "aube deploy: --filter/-F is required to pick a workspace package"

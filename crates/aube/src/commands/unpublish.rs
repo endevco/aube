@@ -53,6 +53,8 @@ pub struct UnpublishArgs {
     /// Package spec: `name`, `name@version`, or omitted to use the
     /// current project's `package.json`.
     pub spec: Option<String>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
 /// What the user is asking to unpublish, once the optional spec has been
@@ -64,7 +66,8 @@ struct Target {
     version: Option<String>,
 }
 
-pub async fn run(args: UnpublishArgs, registry_override: Option<&str>) -> miette::Result<()> {
+pub async fn run(args: UnpublishArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     let cwd = if args.spec.is_some() {
         crate::dirs::project_root_or_cwd()?
     } else {
@@ -81,7 +84,10 @@ pub async fn run(args: UnpublishArgs, registry_override: Option<&str>) -> miette
     }
 
     let config = NpmConfig::load(&cwd);
-    let registry_url = registry_override
+    let registry_url = args
+        .network
+        .registry
+        .as_deref()
         .map(normalize_registry_url_pub)
         .unwrap_or_else(|| config.registry_for(&target.name).to_string());
 

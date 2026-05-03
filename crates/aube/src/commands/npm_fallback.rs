@@ -16,9 +16,12 @@ pub struct FallbackArgs {
     /// erroring on unexpected args before the fallback message prints.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     pub args: Vec<String>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
-pub fn run(name: &str, args: &[String], registry: Option<&str>) -> miette::Result<i32> {
+pub fn run(name: &str, args: &FallbackArgs) -> miette::Result<i32> {
+    args.network.install_overrides();
     let cwd = crate::dirs::cwd()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
     let empty_ws = std::collections::BTreeMap::new();
@@ -33,9 +36,9 @@ pub fn run(name: &str, args: &[String], registry: Option<&str>) -> miette::Resul
     if let Some(npm_path) = aube_settings::resolved::npm_path(&ctx) {
         let mut cmd = std::process::Command::new(&npm_path);
         cmd.arg(name)
-            .args(args)
+            .args(&args.args)
             .stderr(aube_scripts::child_stderr());
-        if let Some(registry) = registry {
+        if let Some(registry) = args.network.registry.as_deref() {
             cmd.arg(format!("--registry={registry}"));
         }
         let status = cmd

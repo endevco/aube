@@ -20,9 +20,12 @@ pub struct UndeprecateArgs {
     /// One-time password from a 2FA authenticator; sent as `npm-otp`.
     #[arg(long, value_name = "CODE")]
     pub otp: Option<String>,
+    #[command(flatten)]
+    pub network: crate::cli_args::NetworkArgs,
 }
 
-pub async fn run(args: UndeprecateArgs, registry_override: Option<&str>) -> miette::Result<()> {
+pub async fn run(args: UndeprecateArgs) -> miette::Result<()> {
+    args.network.install_overrides();
     let (name, spec) = split_name_spec(&args.package);
     let name = name.to_string();
     let spec = spec.unwrap_or("*").to_string();
@@ -32,7 +35,7 @@ pub async fn run(args: UndeprecateArgs, registry_override: Option<&str>) -> miet
         "",
         args.dry_run,
         args.otp.as_deref(),
-        registry_override,
+        args.network.registry.as_deref(),
     )
     .await
 }
