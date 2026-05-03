@@ -20,6 +20,7 @@ env:
 jobs:
   bench:
     name: Compare PR performance
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-plz-')
     runs-on: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
     timeout-minutes: 25
     steps:
