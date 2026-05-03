@@ -1050,28 +1050,41 @@ fn visit_peer_context<'g>(
     // of the fixed-point loop.
     // Resolution source priority for each declared peer:
     //   1. Ancestor scope — if the ancestor's version actually
-    //      satisfies the declared peer range. Different subtrees can
-    //      pin different versions of the same peer name (classic
-    //      `lib-a peers on react@^17`, `lib-b peers on react@^18`),
-    //      and silently reusing the ancestor's version regardless of
-    //      the declared range would force both libs onto the same
-    //      version — exactly the behavior we want to fix here.
+    //      satisfies the declared peer range. Different subtrees
+    //      naturally see different ancestors (lib-a in subtree-A
+    //      and lib-b in subtree-B keep their own peer pins), so
+    //      preferring the closest ancestor here doesn't conflate
+    //      cross-subtree variants.
     //   2. The current package's own `pkg.dependencies` entry — the
     //      BFS peer-walk enqueued this peer with the declared range,
     //      so whatever got picked there is guaranteed to satisfy.
-    //   3. A graph-wide scan as a last resort: any package whose name
-    //      matches and whose version satisfies the declared range.
-    //      This keeps nested-context callers from losing their peer
-    //      resolution when neither ancestor nor own-deps has it.
-    //   4. If no satisfying version exists, fall back to the nearest
-    //      incompatible ancestor/root/pkg dependency. pnpm still wires
-    //      that user-declared version into the peer context and then
-    //      reports the semver mismatch; omitting it would produce a
-    //      weaker "missing peer" warning and an unsuffixed snapshot.
+    //      Captures the case where a single subtree holds two
+    //      consumers with conflicting peer ranges (lib-a@^17 next to
+    //      a parent that pins react@18): the BFS auto-installs the
+    //      satisfying version into lib-a's own deps, which beats the
+    //      ancestor's incompatible version.
+    //   3. Ancestor scope — even when the version doesn't satisfy
+    //      the declared range. This mirrors what Node's module
+    //      resolution would surface (`require('peer')` from the
+    //      package would walk up node_modules and find the parent's
+    //      version). pnpm and bun do the same and emit an unmet-peer
+    //      warning rather than picking a more-distant matching
+    //      version. `detect_unmet_peers` flags the mismatch after
+    //      the pass.
+    //   4. The current package's own `pkg.dependencies` entry,
+    //      ignoring range satisfaction — symmetric to (3) for the
+    //      BFS-installed case.
+    //   5. Workspace root scope (compatible) — `resolve-peers-from-
+    //      workspace-root` fallback for monorepos that pin shared
+    //      peers at the root.
+    //   6. A graph-wide scan: any package whose name matches and
+    //      whose version satisfies the declared range. Last resort
+    //      for nested-context callers when nothing closer has it.
+    //   7. Workspace root scope, ignoring range satisfaction.
     //
-    // If nothing in the graph satisfies, the peer is left out of the
-    // context entirely — `detect_unmet_peers` will surface it as a
-    // warning after the pass.
+    // If nothing in the graph holds a version of this peer at all,
+    // it's left out of the context entirely — `detect_unmet_peers`
+    // will surface it as a warning after the pass.
     let mut peer_context: Vec<(String, String)> = Vec::new();
     for (peer_name, declared_range) in &pkg.peer_dependencies {
         let satisfies_declared = |v: &str| -> bool {
@@ -1147,10 +1160,10 @@ fn visit_peer_context<'g>(
 
         if let Some(version) = from_ancestor
             .or(from_pkg_deps)
-            .or(from_root)
-            .or_else(from_graph_scan)
             .or(from_ancestor_incompatible)
             .or(from_pkg_deps_incompatible)
+            .or(from_root)
+            .or_else(from_graph_scan)
             .or(from_root_incompatible)
         {
             peer_context.push((peer_name.clone(), version));

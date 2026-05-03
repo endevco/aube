@@ -1301,6 +1301,89 @@ fn apply_peer_contexts_produces_nested_peer_suffixes() {
     }
 }
 
+// Repro for the johnpyp/aube-vite-peer-variant case: a workspace
+// importer pins a peer version that DOESN'T satisfy a sibling's
+// declared peer range, while the workspace ROOT pins a satisfying
+// one. The peer context must follow node_modules-resolution order
+// — closest-ancestor-wins, even when its version misses the range
+// — and emit an unmet-peer warning rather than reaching past the
+// importer to grab a more-distant matching version. Matches what
+// pnpm and bun produce for the same shape.
+#[test]
+fn apply_peer_contexts_prefers_incompatible_ancestor_over_root() {
+    // consumer peers on dep@^5. Workspace `app` directly depends on
+    // BOTH consumer and dep@8 (out of range). Root pins dep@5 (in
+    // range). The expected pick is the closest provider — `app`'s
+    // dep@8 — not root's dep@5.
+    let mut consumer = mk_locked("consumer", "1.0.0", &[], &[("dep", "^5")]);
+    consumer.dep_path = "consumer@1.0.0".to_string();
+    let dep5 = mk_locked("dep", "5.0.0", &[], &[]);
+    let dep8 = mk_locked("dep", "8.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("dep@5.0.0".to_string(), dep5);
+    packages.insert("dep@8.0.0".to_string(), dep8);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "dep".to_string(),
+            dep_path: "dep@5.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("5.0.0".to_string()),
+        }],
+    );
+    importers.insert(
+        "packages/app".to_string(),
+        vec![
+            DirectDep {
+                name: "consumer".to_string(),
+                dep_path: "consumer@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1".to_string()),
+            },
+            DirectDep {
+                name: "dep".to_string(),
+                dep_path: "dep@8.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("8.0.0".to_string()),
+            },
+        ],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+
+    // consumer must follow `app`'s dep@8 (its actual node_modules
+    // sibling), even though dep@8 doesn't satisfy `^5`.
+    assert!(
+        out.packages.contains_key("consumer@1.0.0(dep@8.0.0)"),
+        "consumer must pick app's incompatible dep@8 over root's compatible dep@5: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !out.packages.contains_key("consumer@1.0.0(dep@5.0.0)"),
+        "consumer was incorrectly pinned to root's dep@5: {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+
+    // detect_unmet_peers should flag the mismatch so the CLI prints
+    // a warning, matching pnpm/bun behavior.
+    let unmet = detect_unmet_peers(&out);
+    assert!(
+        unmet
+            .iter()
+            .any(|u| u.peer_name == "dep" && u.found.as_deref() == Some("8.0.0")),
+        "expected unmet-peer warning for consumer's dep peer: {unmet:?}"
+    );
+}
+
 // Per-peer-range cross-subtree satisfaction: two sibling packages
 // that declare peer react with INCOMPATIBLE ranges should each
 // end up pinned to the version satisfying their own range, even
