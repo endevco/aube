@@ -231,7 +231,16 @@ function escapeHtml(s: string): string {
 .error-codes-table__heading {
   font-size: 1.1rem;
   margin: 1.25rem 0 0.5rem;
-  scroll-margin-top: calc(var(--vp-nav-height, 64px) + 1rem);
+  /* Anchor jumps need to clear the same banner+navbar overlay the
+     sticky `top:` above accounts for. Without the
+     `--vp-layout-top-height` term, jumping to a category heading
+     when the jdx-banner is active scrolls the heading text behind
+     the banner — same offset bug, this side. The trailing `1rem`
+     leaves a small visual gap between the navbar's bottom edge and
+     the heading. */
+  scroll-margin-top: calc(
+    var(--vp-layout-top-height, 0px) + var(--vp-nav-height, 64px) + 1rem
+  );
 }
 
 .error-codes-table__table {
