@@ -666,3 +666,31 @@ JSON
 	# Basename-derived key shouldn't appear when an alias is given.
 	refute_output --partial '"local-dep":'
 }
+
+@test "aube add ./<dir> auto-detects bare path and writes link: spec" {
+	# Regression for discussions/497 — `aube add /path/to/lib` (and
+	# `./lib`, `~/lib`) used to send the path to the registry and
+	# fail with HTTP 405. Bare paths now normalize to `link:` (pnpm
+	# default for directory deps) and skip the packument fetch.
+	mkdir local-dep
+	cat >local-dep/package.json <<'JSON'
+{"name": "local-dep", "version": "1.2.3"}
+JSON
+
+	cat >package.json <<'JSON'
+{
+  "name": "test-add-bare-path",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add ./local-dep
+	assert_success
+
+	# Verbatim spec is the auto-prepended `link:` form.
+	run cat package.json
+	assert_output --partial '"local-dep": "link:./local-dep"'
+
+	[ -L node_modules/local-dep ]
+	assert_file_exists node_modules/local-dep/package.json
+}

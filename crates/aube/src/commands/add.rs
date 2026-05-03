@@ -281,18 +281,93 @@ fn split_git_alias(spec: &str) -> Option<(&str, &str)> {
     split_protocol_alias(spec)
 }
 
-/// `true` when `spec` is a `file:` / `link:` local-path form. Any
-/// `file:` URL form that `parse_git_spec` recognizes (e.g.
-/// `file:///host/repo.git`) is treated as a git spec instead — same
-/// precedence the resolver's `is_non_registry_specifier` uses.
+/// `true` when `spec` is a local-path form: an explicit `file:` /
+/// `link:` prefix, or a bare path the user typed at the shell
+/// (`./foo`, `/abs/foo`, `~/foo`, `C:/foo`). Mirrors pnpm's
+/// `parseBareSpecifier` so `aube add /path/to/lib` no longer falls
+/// through to the registry path and 405s. Any `file:` URL form that
+/// `parse_git_spec` recognizes (e.g. `file:///host/repo.git`) is
+/// treated as a git spec instead — same precedence the resolver's
+/// `is_non_registry_specifier` uses.
 fn is_local_path_spec(spec: &str) -> bool {
     if spec.starts_with("link:") {
         return true;
     }
-    if !spec.starts_with("file:") {
-        return false;
+    if spec.starts_with("file:") {
+        // `file:` git URLs (`file:///host/repo.git`) belong on the git
+        // branch, not here. The bare-path branch below has no such
+        // collision because git URL forms always use a protocol.
+        return aube_lockfile::parse_git_spec(spec).is_none();
     }
-    aube_lockfile::parse_git_spec(spec).is_none()
+    looks_like_path(spec)
+}
+
+/// `true` when `s` looks like a path the user typed at the shell:
+/// absolute, relative, home-relative, or a Windows drive-letter form.
+/// Deliberately narrower than pnpm's `includes(path.sep)` rule so
+/// scoped registry names like `@babel/core` don't get mistaken for a
+/// directory path. The drive-letter branch requires a `/` or `\` after
+/// the colon so a single-character alias like `a:1.0.0` isn't
+/// reclassified.
+fn looks_like_path(s: &str) -> bool {
+    if s.starts_with("./")
+        || s.starts_with("../")
+        || s.starts_with('/')
+        || s.starts_with("~/")
+        || s.starts_with("~\\")
+        || s.starts_with('\\')
+        || s.starts_with(".\\")
+        || s.starts_with("..\\")
+    {
+        return true;
+    }
+    let bytes = s.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+fn is_tarball_suffix(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.ends_with(".tgz") || lower.ends_with(".tar.gz") || lower.ends_with(".tar")
+}
+
+/// Expand a leading `~/` (or `~\`) to the user's home directory.
+/// Returns the input unchanged when there's no tilde. Used at parse
+/// time so the verbatim spec written to the manifest is something the
+/// resolver (which has no tilde-expansion of its own) can actually
+/// open. Errors when `$HOME` is unavailable rather than letting the
+/// literal `~` leak into a `cwd`-joined path the resolver can't make
+/// sense of.
+fn expand_tilde(s: &str) -> miette::Result<String> {
+    let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")) else {
+        return Ok(s.to_string());
+    };
+    let home = aube_util::env::home_dir().ok_or_else(|| {
+        miette!(
+            "cannot expand `~/` in `{s}` — $HOME is not set; \
+             pass an absolute path or set $HOME"
+        )
+    })?;
+    Ok(home.join(rest).to_string_lossy().into_owned())
+}
+
+/// Normalize a bare local-path spec into its `file:` / `link:` form
+/// (pnpm parity: directories default to `link:`, tarballs to `file:`).
+/// Returns the input unchanged when it already carries an explicit
+/// protocol prefix.
+fn prefix_bare_local_path(spec: &str) -> miette::Result<String> {
+    if spec.starts_with("file:") || spec.starts_with("link:") {
+        return Ok(spec.to_string());
+    }
+    let expanded = expand_tilde(spec)?;
+    let prefix = if is_tarball_suffix(&expanded) {
+        "file:"
+    } else {
+        "link:"
+    };
+    Ok(format!("{prefix}{expanded}"))
 }
 
 /// Split `alias@<rest>` for the local-spec alias form. Mirrors
@@ -377,7 +452,13 @@ fn parse_git_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<P
 /// carries the verbatim spec so `local_spec` and `range` agree, and
 /// the install pipeline's lockfile reader sees the same string the
 /// user typed.
-fn parse_local_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<ParsedPkgSpec> {
+///
+/// Bare paths (`./foo`, `/abs/foo`, `~/foo`) are normalized into their
+/// `file:` / `link:` form before being stored — pnpm parity for
+/// `aube add /path/to/lib`. `~/` is expanded eagerly because the
+/// resolver has no tilde handling.
+fn parse_local_pkg_spec(input: &str, alias: Option<String>) -> miette::Result<ParsedPkgSpec> {
+    let verbatim = prefix_bare_local_path(input)?;
     let path = verbatim
         .strip_prefix("file:")
         .or_else(|| verbatim.strip_prefix("link:"))
@@ -398,10 +479,10 @@ fn parse_local_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result
         alias,
         name,
         jsr_name: None,
-        range: verbatim.to_string(),
+        range: verbatim.clone(),
         has_explicit_range: true,
         git_spec: None,
-        local_spec: Some(verbatim.to_string()),
+        local_spec: Some(verbatim),
     })
 }
 
@@ -424,13 +505,15 @@ fn repo_name_from_clone_url(url: &str) -> Option<String> {
 /// Derive the manifest key from the path portion of a `file:` /
 /// `link:` spec. Strips a trailing `.tgz` / `.tar.gz` so a tarball
 /// like `file:./bundle.tgz` lands as `"bundle"` in the manifest.
-/// Returns `None` for empty / pathless inputs.
+/// Returns `None` for empty / pathless inputs. Splits on both `/` and
+/// `\` so a Windows path like `c:\projects\lib` resolves to `"lib"`,
+/// not the whole string.
 fn basename_from_local_path(path: &str) -> Option<String> {
-    let trimmed = path.trim_end_matches('/');
+    let trimmed = path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return None;
     }
-    let last = trimmed.rsplit('/').next()?;
+    let last = trimmed.rsplit(['/', '\\']).next()?;
     // `.tar.gz` checked before `.tgz` / `.tar` so a doubly-suffixed
     // name strips both compression and archive in one pass.
     let stripped = last
@@ -2210,5 +2293,97 @@ mod tests {
         let s = parse_pkg_spec("file:./bundle.tar").unwrap();
         assert_eq!(s.local_spec.as_deref(), Some("file:./bundle.tar"));
         assert_eq!(s.name, "bundle");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_bare_absolute_path() {
+        // discussions/497 — `aube add /path/to/library-foo/` used to
+        // fall through to the registry and 405. It now normalizes to
+        // `link:/path/to/library-foo/` and routes through the local
+        // branch.
+        let s = parse_pkg_spec("/path/to/library-foo/").unwrap();
+        assert_eq!(s.local_spec.as_deref(), Some("link:/path/to/library-foo/"));
+        assert_eq!(s.name, "library-foo");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_bare_relative_path() {
+        for input in ["./lib", "../lib", "../../foo/bar"] {
+            let s = parse_pkg_spec(input).unwrap();
+            let local = s.local_spec.expect("relative path should detect as local");
+            assert_eq!(local, format!("link:{input}"));
+        }
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_bare_tilde_path_expands() {
+        // Resolver has no tilde handling, so the verbatim spec stored
+        // in the manifest must already be absolute. The exact home
+        // path differs by platform (`/home/…` on Linux,
+        // `C:\Users\…` on Windows), and `Path::join` mixes separators
+        // (`C:\Users\runneradmin\proj/lib`) — only what matters for
+        // this test is that the literal `~` is gone and the basename
+        // resolved to `lib`.
+        let s = parse_pkg_spec("~/proj/lib").unwrap();
+        let local = s.local_spec.expect("~/ path should detect as local");
+        assert!(
+            local.starts_with("link:"),
+            "expected link: prefix in `{local}`"
+        );
+        assert!(
+            !local.contains('~'),
+            "tilde must be expanded eagerly, got `{local}`"
+        );
+        assert_eq!(s.name, "lib");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_bare_tarball_uses_file_protocol() {
+        // pnpm parity: bare paths default to `link:` for directories
+        // and `file:` for tarballs. Basename-strip is shared with the
+        // explicit `file:./foo.tgz` branch.
+        let s = parse_pkg_spec("./vendor/local-helper-1.0.0.tgz").unwrap();
+        assert_eq!(
+            s.local_spec.as_deref(),
+            Some("file:./vendor/local-helper-1.0.0.tgz")
+        );
+        assert_eq!(s.name, "local-helper-1.0.0");
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_short_alias_not_drive_letter() {
+        // `a:1.0.0` looks superficially like a Windows drive form
+        // (`<letter>:`) but has no path separator after the colon —
+        // it's a single-character npm alias and must NOT be
+        // reclassified as a local path.
+        let s = parse_pkg_spec("a:1.0.0").unwrap();
+        assert!(s.local_spec.is_none());
+        assert!(s.git_spec.is_none());
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_windows_drive_letter() {
+        for input in ["C:/projects/lib", "c:\\projects\\lib"] {
+            let s = parse_pkg_spec(input).unwrap();
+            let local = s
+                .local_spec
+                .expect("drive-letter path should detect as local");
+            assert_eq!(local, format!("link:{input}"));
+            // Basename derivation must split on `\` too — `lib`, not
+            // the whole `c:\projects\lib`.
+            assert_eq!(s.name, "lib");
+        }
+    }
+
+    #[test]
+    fn test_parse_pkg_spec_windows_backslash_relative() {
+        // `..\lib` and `.\lib` are the Windows shells' path-typing
+        // convention; both must route through the local branch and
+        // basename-derive to `lib`, not the verbatim string.
+        for input in ["..\\lib", ".\\lib"] {
+            let s = parse_pkg_spec(input).unwrap();
+            assert!(s.local_spec.is_some(), "`{input}` should detect as local");
+            assert_eq!(s.name, "lib", "wrong basename for `{input}`");
+        }
     }
 }
