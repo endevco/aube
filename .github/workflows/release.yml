@@ -30,6 +30,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  AUBE_PRIMER_TOP: "2000"
+  AUBE_PRIMER_VERSION_CAP: "1000"
+  AUBE_REQUIRE_PRIMER: "1"
 
 jobs:
   upload-assets:
@@ -76,6 +79,16 @@ jobs:
         if: ${{ matrix.runner != 'windows-latest' }}
         with:
           cache: rust
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Generate metadata primer
+        shell: bash
+        run: |
+          node scripts/generate-primer.mjs \
+            --top "$AUBE_PRIMER_TOP" \
+            --versions "$AUBE_PRIMER_VERSION_CAP" \
+            --out "crates/aube-resolver/data/primer-top${AUBE_PRIMER_TOP}-v${AUBE_PRIMER_VERSION_CAP}.rkyv.json"
       - name: Import codesign certs
         if: startsWith(matrix.os, 'macos')
         uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3

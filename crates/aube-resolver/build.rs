@@ -12,7 +12,7 @@ use primer_schema::Seed;
 
 const DEV_TOP: usize = 100;
 const RELEASE_TOP: usize = 2000;
-const VERSION_CAP: usize = 1000;
+const DEFAULT_VERSION_CAP: usize = 1000;
 const FAST_COMPRESSION_LEVEL: i32 = 10;
 const RELEASE_CI_COMPRESSION_LEVEL: i32 = 19;
 
@@ -23,14 +23,19 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             let top = primer_top();
+            let version_cap = version_cap();
             manifest_dir
                 .join("data")
-                .join(format!("primer-top{top}-v{VERSION_CAP}.rkyv.zst"))
+                .join(format!("primer-top{top}-v{version_cap}.rkyv.zst"))
         });
 
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_PATH");
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_TOP");
+    println!("cargo:rerun-if-env-changed=AUBE_PRIMER_VERSION_CAP");
+    println!("cargo:rerun-if-env-changed=AUBE_REQUIRE_PRIMER");
     println!("cargo:rerun-if-changed={}", source.display());
+    let json = source.with_extension("json");
+    println!("cargo:rerun-if-changed={}", json.display());
 
     if !source.is_file() {
         if std::env::var_os("AUBE_PRIMER_PATH").is_some() {
@@ -39,13 +44,25 @@ fn main() {
                 source.display()
             );
         }
-        let script = manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .map(|w| w.join("scripts/generate-primer.mjs"));
-        let generated = matches!(&script, Some(s) if s.is_file())
-            && generate(&manifest_dir, &source, primer_top());
+        let generated = if json.is_file() {
+            compress_json_primer(&json, &source);
+            let _ = std::fs::remove_file(&json);
+            true
+        } else {
+            let script = manifest_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(|w| w.join("scripts/generate-primer.mjs"));
+            matches!(&script, Some(s) if s.is_file())
+                && generate(&manifest_dir, &source, primer_top())
+        };
         if !generated {
+            if primer_required() {
+                panic!(
+                    "metadata primer is required, but {} was missing and could not be generated",
+                    source.display()
+                );
+            }
             // No primer data file and no working generator. Three cases:
             //   1. published crate / downstream consumer (no script),
             //   2. cross-rs Docker container building Linux release
@@ -89,6 +106,16 @@ fn primer_top() -> usize {
     }
 }
 
+fn version_cap() -> usize {
+    if let Some(cap) = std::env::var_os("AUBE_PRIMER_VERSION_CAP") {
+        return cap
+            .to_string_lossy()
+            .parse()
+            .expect("AUBE_PRIMER_VERSION_CAP must be a positive integer");
+    }
+    DEFAULT_VERSION_CAP
+}
+
 fn generate(manifest_dir: &Path, source: &Path, top: usize) -> bool {
     let workspace = manifest_dir
         .parent()
@@ -102,7 +129,7 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) -> bool {
         .arg("--top")
         .arg(top.to_string())
         .arg("--versions")
-        .arg(VERSION_CAP.to_string())
+        .arg(version_cap().to_string())
         .arg("--out")
         .arg(&json)
         .status()
@@ -119,14 +146,19 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) -> bool {
     };
     assert!(status.success(), "scripts/generate-primer.mjs failed");
 
-    let input = std::fs::read(&json).unwrap();
+    compress_json_primer(&json, source);
+    let _ = std::fs::remove_file(json);
+    true
+}
+
+fn compress_json_primer(json: &Path, source: &Path) {
+    let input = std::fs::read(json)
+        .unwrap_or_else(|e| panic!("failed to read primer JSON {}: {e}", json.display()));
     let primer: BTreeMap<String, Seed> = serde_json::from_slice(&input).unwrap();
     let archived = rkyv::to_bytes::<rkyv::rancor::Error>(&primer).unwrap();
     let compressed =
         zstd::stream::encode_all(Cursor::new(archived), primer_compression_level()).unwrap();
     std::fs::write(source, compressed).unwrap();
-    let _ = std::fs::remove_file(json);
-    true
 }
 
 fn write_package_blob(out_dir: &Path, compressed: &[u8]) {
@@ -147,6 +179,9 @@ fn write_package_blob(out_dir: &Path, compressed: &[u8]) {
             index.push((name, offset, len));
         }
     }
+    if primer_required() && index.is_empty() {
+        panic!("metadata primer is required, but the embedded primer is empty");
+    }
     std::fs::write(out_dir.join("primer-packages.bin"), blob).unwrap();
 
     let mut generated =
@@ -157,6 +192,13 @@ fn write_package_blob(out_dir: &Path, compressed: &[u8]) {
     }
     generated.push_str("];\n");
     std::fs::write(out_dir.join("primer_index.rs"), generated).unwrap();
+}
+
+fn primer_required() -> bool {
+    matches!(
+        std::env::var("AUBE_REQUIRE_PRIMER").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
 }
 
 fn primer_compression_level() -> i32 {

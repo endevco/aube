@@ -1,0 +1,6 @@
+[build.env]
+passthrough = [
+    "AUBE_PRIMER_TOP",
+    "AUBE_PRIMER_VERSION_CAP",
+    "AUBE_REQUIRE_PRIMER",
+]
