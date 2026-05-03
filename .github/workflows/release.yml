@@ -35,7 +35,31 @@ env:
   AUBE_REQUIRE_PRIMER: "1"
 
 jobs:
+  generate-primer:
+    runs-on: namespace-profile-endev-linux-amd64
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          submodules: recursive
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Generate metadata primer
+        shell: bash
+        run: |
+          node scripts/generate-primer.mjs \
+            --top "$AUBE_PRIMER_TOP" \
+            --versions "$AUBE_PRIMER_VERSION_CAP" \
+            --out "crates/aube-resolver/data/primer-top${AUBE_PRIMER_TOP}-v${AUBE_PRIMER_VERSION_CAP}.rkyv.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: metadata-primer
+          path: crates/aube-resolver/data/primer-top${{ env.AUBE_PRIMER_TOP }}-v${{ env.AUBE_PRIMER_VERSION_CAP }}.rkyv.json
+
   upload-assets:
+    needs: generate-primer
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -75,20 +99,10 @@ jobs:
         with:
           ref: refs/tags/${{ inputs.tag }}
           submodules: recursive
-      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
-        if: ${{ matrix.runner != 'windows-latest' }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          cache: rust
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-      - name: Generate metadata primer
-        shell: bash
-        run: |
-          node scripts/generate-primer.mjs \
-            --top "$AUBE_PRIMER_TOP" \
-            --versions "$AUBE_PRIMER_VERSION_CAP" \
-            --out "crates/aube-resolver/data/primer-top${AUBE_PRIMER_TOP}-v${AUBE_PRIMER_VERSION_CAP}.rkyv.json"
+          name: metadata-primer
+          path: crates/aube-resolver/data
       - name: Import codesign certs
         if: startsWith(matrix.os, 'macos')
         uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
