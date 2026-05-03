@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0](https://github.com/endevco/aube/compare/aube-registry-v1.7.0...aube-registry-v1.8.0) - 2026-05-03
+
+### Added
+
+- *(progress)* redesign install progress UI ([#501](https://github.com/endevco/aube/pull/501))
+- *(run)* prefer local bins for run and dlx ([#502](https://github.com/endevco/aube/pull/502))
+- *(codes)* introduce ERR_AUBE_/WARN_AUBE_ codes, exit codes, dep chains ([#492](https://github.com/endevco/aube/pull/492))
+
+### Other
+
+- refresh benchmarks for v1.7.0 ([#490](https://github.com/endevco/aube/pull/490))
+
 ## [1.7.0](https://github.com/endevco/aube/compare/aube-registry-v1.6.2...aube-registry-v1.7.0) - 2026-05-03
 
 ### Other
