@@ -363,7 +363,7 @@ cmd dlx help="Fetch a package into a throwaway environment and run its binary" {
         long_help "Install a specific package (repeatable).\n\nOverrides inferring from the command."
         arg <PACKAGE>
     }
-    arg "[PARAMS]…" help="Command (binary) to run, followed by arguments to pass through to it" help_long="Command (binary) to run, followed by arguments to pass through to it.\n\nThe first positional is the command; the rest are forwarded verbatim to the installed binary. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up in `node_modules/.bin`." required=#false double_dash=automatic var=#true
+    arg "[PARAMS]…" help="Command (binary) to run, followed by arguments to pass through to it" help_long="Command (binary) to run, followed by arguments to pass through to it.\n\nThe first positional is the command; the rest are forwarded verbatim to the binary. Without `--package`, a local `node_modules/.bin/<command>` wins when present; otherwise dlx installs into a throwaway project. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up directly." required=#false double_dash=automatic var=#true
 }
 cmd doctor help="Run broad install-health diagnostics" {
     after_long_help "Examples:\n\n  $ aube doctor\n  version: 1.0.0-beta.4\n  node: v22.11.0\n  ...\n  No problems found\n\n  $ aube doctor --json | jq .warnings\n"
@@ -797,7 +797,7 @@ cmd run help="Run a script defined in package.json" {
         long_help "Recursive workspace concurrency.\n\nParsed for pnpm compatibility."
         arg <N>
     }
-    arg "[SCRIPT]" help="Script name" help_long="Script name.\n\nOmit on an interactive TTY to pick from `package.json` scripts." required=#false
+    arg "[SCRIPT]" help="Script or local binary name" help_long="Script or local binary name.\n\nOmit on an interactive TTY to pick from `package.json` scripts. If no script matches, aube falls back to `node_modules/.bin/<name>`." required=#false
     arg "[ARGS]…" help="Arguments to pass to the script" required=#false double_dash=automatic var=#true
 }
 cmd sbom help="Generate a Software Bill of Materials (CycloneDX or SPDX)" {
