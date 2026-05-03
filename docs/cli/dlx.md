@@ -27,6 +27,18 @@ Install a specific package (repeatable).
 
 Overrides inferring from the command.
 
+### `--frozen-lockfile`
+
+Error if the lockfile drifts from package.json
+
+### `--no-frozen-lockfile`
+
+Always re-resolve, even if the lockfile is up to date
+
+### `--prefer-frozen-lockfile`
+
+Use the lockfile when fresh, re-resolve when stale
+
 ### `--fetch-retries <N>`
 
 Number of retry attempts for failed registry fetches.
@@ -62,3 +74,15 @@ Overrides `fetchTimeout` / `fetch-timeout` from `.npmrc` / `aube-workspace.yaml`
 Override the default registry URL for this invocation.
 
 Use this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes.
+
+### `--disable-global-virtual-store`
+
+Force the shared global virtual store off for this invocation.
+
+Packages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.
+
+### `--enable-global-virtual-store`
+
+Force the shared global virtual store on for this invocation.
+
+Overrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic.

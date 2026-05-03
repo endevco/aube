@@ -3130,6 +3130,42 @@
             }
           },
           {
+            "name": "frozen-lockfile",
+            "usage": "--frozen-lockfile",
+            "help": "Error if the lockfile drifts from package.json",
+            "help_first_line": "Error if the lockfile drifts from package.json",
+            "short": [],
+            "long": [
+              "frozen-lockfile"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "no-frozen-lockfile",
+            "usage": "--no-frozen-lockfile",
+            "help": "Always re-resolve, even if the lockfile is up to date",
+            "help_first_line": "Always re-resolve, even if the lockfile is up to date",
+            "short": [],
+            "long": [
+              "no-frozen-lockfile"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "prefer-frozen-lockfile",
+            "usage": "--prefer-frozen-lockfile",
+            "help": "Use the lockfile when fresh, re-resolve when stale",
+            "help_first_line": "Use the lockfile when fresh, re-resolve when stale",
+            "short": [],
+            "long": [
+              "prefer-frozen-lockfile"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "fetch-retries",
             "usage": "--fetch-retries <N>",
             "help": "Number of retry attempts for failed registry fetches",
@@ -3248,6 +3284,34 @@
               "double_dash": "Optional",
               "hide": false
             }
+          },
+          {
+            "name": "disable-global-virtual-store",
+            "usage": "--disable-global-virtual-store",
+            "help": "Force the shared global virtual store off for this invocation",
+            "help_long": "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`.",
+            "help_first_line": "Force the shared global virtual store off for this invocation",
+            "short": [],
+            "long": [
+              "disable-global-virtual-store",
+              "disable-gvs"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "enable-global-virtual-store",
+            "usage": "--enable-global-virtual-store",
+            "help": "Force the shared global virtual store on for this invocation",
+            "help_long": "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic.",
+            "help_first_line": "Force the shared global virtual store on for this invocation",
+            "short": [],
+            "long": [
+              "enable-global-virtual-store",
+              "enable-gvs"
+            ],
+            "hide": false,
+            "global": false
           }
         ],
         "mounts": [],

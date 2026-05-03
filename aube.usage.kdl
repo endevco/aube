@@ -576,6 +576,9 @@ cmd dlx help="Fetch a package into a throwaway environment and run its binary" {
         long_help "Install a specific package (repeatable).\n\nOverrides inferring from the command."
         arg <PACKAGE>
     }
+    flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
+    flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
+    flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"
     flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
         long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
         arg <N>
@@ -599,6 +602,12 @@ cmd dlx help="Fetch a package into a throwaway environment and run its binary" {
     flag --registry help="Override the default registry URL for this invocation" {
         long_help "Override the default registry URL for this invocation.\n\nUse this npm registry URL for package metadata, tarballs, audit requests, dist-tags, and registry writes."
         arg <URL>
+    }
+    flag "--disable-global-virtual-store --disable-gvs" help="Force the shared global virtual store off for this invocation" {
+        long_help "Force the shared global virtual store off for this invocation.\n\nPackages are materialized inside the project's virtual store instead of symlinked from `~/.cache/aube/virtual-store/`."
+    }
+    flag "--enable-global-virtual-store --enable-gvs" help="Force the shared global virtual store on for this invocation" {
+        long_help "Force the shared global virtual store on for this invocation.\n\nOverrides CI's default per-project materialization and the `disableGlobalVirtualStoreForPackages` auto-disable heuristic."
     }
     arg "[PARAMS]…" help="Command (binary) to run, followed by arguments to pass through to it" help_long="Command (binary) to run, followed by arguments to pass through to it.\n\nThe first positional is the command; the rest are forwarded verbatim to the binary. Without `--package`, a local `node_modules/.bin/<command>` wins when present; otherwise dlx installs into a throwaway project. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up directly." required=#false double_dash=automatic var=#true
 }
