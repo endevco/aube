@@ -725,6 +725,10 @@ fn rebase_workspace_scoped_local_source(
     let Some(local_path) = local.path() else {
         return local;
     };
+    // Bun may write workspace-name-scoped local entries with
+    // root-relative bare paths (`vendor/local-dir`) or
+    // importer-relative climbs (`../../vendor/local.tgz`). Only the
+    // latter needs rebasing to project-root form.
     if !local_path
         .components()
         .any(|c| matches!(c, Component::ParentDir))
