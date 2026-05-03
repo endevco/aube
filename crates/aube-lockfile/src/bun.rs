@@ -440,13 +440,14 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
     // Workspace importers. bun.lock keys workspace paths as `""` for
     // the root and relative paths (`packages/app`, etc.) for each
     // workspace package. Each importer's direct deps resolve first
-    // to a workspace-scoped override (`packages/app/foo`) when one
-    // exists, falling back to the hoisted entry (`foo`). We don't
-    // walk intermediate ancestors like `packages/foo` the way
-    // `resolve_nested_bun` does for package-nesting — workspace path
-    // segments are directories, not package-nesting scopes, so a
-    // partial walk could wrongly match a literal npm package named
-    // `packages` that has its own nested `foo` entry.
+    // to a name-scoped override (`app/foo`) or path-scoped override
+    // (`packages/app/foo`) when one exists, falling back to the
+    // hoisted entry (`foo`). We don't walk intermediate ancestors
+    // like `packages/foo` the way `resolve_nested_bun` does for
+    // package-nesting — workspace path segments are directories, not
+    // package-nesting scopes, so a partial walk could wrongly match a
+    // literal npm package named `packages` that has its own nested
+    // `foo` entry.
     let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
     let mut workspace_extra_fields: BTreeMap<String, BTreeMap<String, serde_json::Value>> =
         BTreeMap::new();
@@ -2702,6 +2703,16 @@ mod tests {
         .replace("SRI", &sri);
         std::fs::write(tmp.path(), &content).unwrap();
         let graph = parse(tmp.path()).unwrap();
+
+        let other = graph
+            .importers
+            .get("packages/a-other")
+            .expect("packages/a-other importer");
+        let hoisted_tslib = other.iter().find(|d| d.name == "tslib").expect("tslib dep");
+        assert_eq!(
+            hoisted_tslib.dep_path, "tslib@2.8.1",
+            "sibling workspace must still resolve to the hoisted tslib"
+        );
 
         let app = graph
             .importers
