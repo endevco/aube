@@ -586,3 +586,83 @@ EOF2
 	# and shell completions, not just at runtime.
 	assert_output --partial "the argument '--no-save' cannot be used with '--global'"
 }
+
+@test "aube add file:./<dir> writes verbatim spec and installs the directory" {
+	# `aube add file:./local-dep` routes through the non-packument
+	# branch: the verbatim spec lands in package.json, the resolver
+	# materializes the local dir into node_modules. Offline-safe —
+	# touches no registry.
+	mkdir local-dep
+	cat >local-dep/package.json <<'JSON'
+{"name": "local-dep", "version": "1.0.0", "main": "index.js"}
+JSON
+	cat >local-dep/index.js <<'JS'
+module.exports = "from local-dep";
+JS
+
+	cat >package.json <<'JSON'
+{
+  "name": "test-add-file",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add file:./local-dep
+	assert_success
+
+	# Verbatim spec written under the path basename.
+	run cat package.json
+	assert_output --partial '"local-dep": "file:./local-dep"'
+
+	# Install pipeline materialized the dir.
+	assert_file_exists node_modules/local-dep/package.json
+	assert_file_exists node_modules/local-dep/index.js
+}
+
+@test "aube add link:./<dir> writes verbatim spec and creates a symlink" {
+	# `link:` deps are a bare symlink — no virtual-store entry, no
+	# recursive install of the target's deps.
+	mkdir local-dep
+	cat >local-dep/package.json <<'JSON'
+{"name": "local-dep", "version": "1.0.0"}
+JSON
+
+	cat >package.json <<'JSON'
+{
+  "name": "test-add-link",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add link:./local-dep
+	assert_success
+
+	run cat package.json
+	assert_output --partial '"local-dep": "link:./local-dep"'
+
+	[ -L node_modules/local-dep ]
+	assert_file_exists node_modules/local-dep/package.json
+}
+
+@test "aube add my-alias@file:./<dir> uses alias as manifest key" {
+	# Alias overrides the basename-derived manifest key.
+	mkdir local-dep
+	cat >local-dep/package.json <<'JSON'
+{"name": "local-dep", "version": "1.0.0"}
+JSON
+
+	cat >package.json <<'JSON'
+{
+  "name": "test-add-file-alias",
+  "version": "0.0.0"
+}
+JSON
+
+	run aube add my-alias@file:./local-dep
+	assert_success
+
+	run cat package.json
+	assert_output --partial '"my-alias": "file:./local-dep"'
+	# Basename-derived key shouldn't appear when an alias is given.
+	refute_output --partial '"local-dep":'
+}
