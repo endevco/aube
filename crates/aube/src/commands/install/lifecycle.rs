@@ -58,17 +58,39 @@ pub(crate) fn build_policy_from_sources(
     aube_scripts::BuildPolicy,
     Vec<aube_scripts::BuildPolicyError>,
 ) {
-    let mut merged = manifest.pnpm_allow_builds();
+    build_policy_from_manifest_sources(
+        std::iter::once(manifest),
+        workspace,
+        dangerously_allow_all_builds,
+    )
+}
+
+pub(crate) fn build_policy_from_manifest_sources<'a>(
+    manifests: impl IntoIterator<Item = &'a aube_manifest::PackageJson>,
+    workspace: &aube_manifest::WorkspaceConfig,
+    dangerously_allow_all_builds: bool,
+) -> (
+    aube_scripts::BuildPolicy,
+    Vec<aube_scripts::BuildPolicyError>,
+) {
+    let mut merged = std::collections::BTreeMap::new();
+    let mut only_built = Vec::new();
+    let mut never_built = Vec::new();
+    for manifest in manifests {
+        for (pattern, allow) in manifest.pnpm_allow_builds() {
+            merged
+                .entry(pattern)
+                .and_modify(|existing| merge_allow_build(existing, allow.clone()))
+                .or_insert(allow);
+        }
+        only_built.extend(manifest.pnpm_only_built_dependencies());
+        only_built.extend(manifest.trusted_dependencies());
+        never_built.extend(manifest.pnpm_never_built_dependencies());
+    }
     for (k, v) in workspace.allow_builds_raw() {
         merged.insert(k, v);
     }
-    let mut only_built = manifest.pnpm_only_built_dependencies();
     only_built.extend(workspace.only_built_dependencies.iter().cloned());
-    // Bun's top-level `trustedDependencies` feeds the same allowlist so
-    // bun projects migrating to aube keep running their install scripts
-    // without moving the list under `pnpm.onlyBuiltDependencies` first.
-    only_built.extend(manifest.trusted_dependencies());
-    let mut never_built = manifest.pnpm_never_built_dependencies();
     never_built.extend(workspace.never_built_dependencies.iter().cloned());
     aube_scripts::BuildPolicy::from_config(
         &merged,
@@ -76,6 +98,19 @@ pub(crate) fn build_policy_from_sources(
         &never_built,
         dangerously_allow_all_builds,
     )
+}
+
+fn merge_allow_build(
+    existing: &mut aube_manifest::AllowBuildRaw,
+    next: aube_manifest::AllowBuildRaw,
+) {
+    use aube_manifest::AllowBuildRaw;
+    match (&*existing, next) {
+        (AllowBuildRaw::Bool(false), _) | (_, AllowBuildRaw::Bool(true)) => {}
+        (_, AllowBuildRaw::Bool(false)) => *existing = AllowBuildRaw::Bool(false),
+        (AllowBuildRaw::Bool(true), other) => *existing = other,
+        (AllowBuildRaw::Other(_), AllowBuildRaw::Other(_)) => {}
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -792,4 +827,43 @@ pub(super) fn unreviewed_dep_builds(
     unreviewed.sort();
     unreviewed.dedup();
     Ok(unreviewed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_allow_build_conflict_denies() {
+        let allow_manifest = manifest_with_allow_build("native-dep", true);
+        let deny_manifest = manifest_with_allow_build("native-dep", false);
+        let workspace = aube_manifest::WorkspaceConfig::default();
+        let (policy, warnings) = build_policy_from_manifest_sources(
+            [&allow_manifest, &deny_manifest],
+            &workspace,
+            false,
+        );
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            policy.decide("native-dep", "1.0.0"),
+            aube_scripts::AllowDecision::Deny
+        );
+    }
+
+    fn manifest_with_allow_build(name: &str, allow: bool) -> aube_manifest::PackageJson {
+        let mut pnpm = serde_json::Map::new();
+        let mut allow_builds = serde_json::Map::new();
+        allow_builds.insert(name.to_string(), serde_json::Value::Bool(allow));
+        pnpm.insert(
+            "allowBuilds".to_string(),
+            serde_json::Value::Object(allow_builds),
+        );
+
+        let mut manifest = aube_manifest::PackageJson::default();
+        manifest
+            .extra
+            .insert("pnpm".to_string(), serde_json::Value::Object(pnpm));
+        manifest
+    }
 }
