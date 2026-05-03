@@ -11,7 +11,7 @@ Fetch a package into a throwaway environment and run its binary
 
 Command (binary) to run, followed by arguments to pass through to it.
 
-The first positional is the command; the rest are forwarded verbatim to the installed binary. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up in `node_modules/.bin`.
+The first positional is the command; the rest are forwarded verbatim to the binary. Without `--package`, a local `node_modules/.bin/<command>` wins when present; otherwise dlx installs into a throwaway project. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up directly.
 
 ## Flags
 

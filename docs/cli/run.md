@@ -9,9 +9,9 @@ Run a script defined in package.json
 
 ### `[SCRIPT]`
 
-Script name.
+Script or local binary name.
 
-Omit on an interactive TTY to pick from `package.json` scripts.
+Omit on an interactive TTY to pick from `package.json` scripts. If no script matches, aube falls back to `node_modules/.bin/<name>`.
 
 ### `[ARGS]…`
 

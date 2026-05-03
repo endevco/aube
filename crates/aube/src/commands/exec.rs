@@ -170,7 +170,7 @@ async fn run_filtered(
     Ok(())
 }
 
-async fn exec_bin(
+pub(crate) async fn exec_bin(
     cwd: &Path,
     bin_path: &Path,
     bin: &str,

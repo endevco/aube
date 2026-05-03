@@ -30,6 +30,39 @@ teardown() {
 	assert_line "1.2.3"
 }
 
+@test "aube dlx prefers an installed local binary" {
+	mkdir -p tools/local-bin
+	cat >package.json <<-'JSON'
+		{
+		  "name": "dlx-local-bin",
+		  "version": "1.0.0",
+		  "private": true,
+		  "dependencies": {
+		    "local-bin": "file:tools/local-bin"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/package.json <<-'JSON'
+		{
+		  "name": "local-bin",
+		  "version": "1.0.0",
+		  "bin": {
+		    "local-bin": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log(`local-dlx:${process.argv.slice(2).join(",")}`)
+	JS
+	chmod +x tools/local-bin/index.js
+
+	aube install
+	run aube dlx local-bin alpha beta
+	assert_success
+	assert_line "local-dlx:alpha,beta"
+}
+
 @test "aube dlx -p installs a different package than the bin name" {
 	# The `which` npm package ships a binary named `node-which`, not `which`.
 	# Running `node-which node` prints the absolute path of the `node`

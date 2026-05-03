@@ -7,10 +7,11 @@ use std::path::Path;
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Script name.
+    /// Script or local binary name.
     ///
     /// Omit on an interactive TTY to pick from `package.json`
-    /// scripts.
+    /// scripts. If no script matches, aube falls back to
+    /// `node_modules/.bin/<name>`.
     pub script: Option<String>,
     /// Arguments to pass to the script
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -267,6 +268,11 @@ pub(crate) async fn run_script_with(
     if !manifest.scripts.contains_key(script) {
         if if_present {
             return Ok(());
+        }
+        ensure_installed(no_install).await?;
+        let bin_path = super::project_modules_dir(&cwd).join(".bin").join(script);
+        if bin_path.exists() {
+            return super::exec::exec_bin(&cwd, &bin_path, script, args, false).await;
         }
         // Old error was "script not found: foo" with no list. User
         // has to cat package.json to figure out what to type. npm

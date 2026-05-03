@@ -1744,7 +1744,7 @@
             "name": "PARAMS",
             "usage": "[PARAMS]…",
             "help": "Command (binary) to run, followed by arguments to pass through to it",
-            "help_long": "Command (binary) to run, followed by arguments to pass through to it.\n\nThe first positional is the command; the rest are forwarded verbatim to the installed binary. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up in `node_modules/.bin`.",
+            "help_long": "Command (binary) to run, followed by arguments to pass through to it.\n\nThe first positional is the command; the rest are forwarded verbatim to the binary. Without `--package`, a local `node_modules/.bin/<command>` wins when present; otherwise dlx installs into a throwaway project. Under `--shell-mode`/`-c` the positionals are joined and evaluated by `sh -c` instead of looked up directly.",
             "help_first_line": "Command (binary) to run, followed by arguments to pass through to it",
             "required": false,
             "double_dash": "Automatic",
@@ -4460,9 +4460,9 @@
           {
             "name": "SCRIPT",
             "usage": "[SCRIPT]",
-            "help": "Script name",
-            "help_long": "Script name.\n\nOmit on an interactive TTY to pick from `package.json` scripts.",
-            "help_first_line": "Script name",
+            "help": "Script or local binary name",
+            "help_long": "Script or local binary name.\n\nOmit on an interactive TTY to pick from `package.json` scripts. If no script matches, aube falls back to `node_modules/.bin/<name>`.",
+            "help_first_line": "Script or local binary name",
             "required": false,
             "double_dash": "Optional",
             "hide": false

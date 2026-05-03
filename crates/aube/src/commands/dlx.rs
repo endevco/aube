@@ -18,9 +18,11 @@ pub struct DlxArgs {
     /// it.
     ///
     /// The first positional is the command; the rest are forwarded
-    /// verbatim to the installed binary. Under `--shell-mode`/`-c` the
+    /// verbatim to the binary. Without `--package`, a local
+    /// `node_modules/.bin/<command>` wins when present; otherwise dlx
+    /// installs into a throwaway project. Under `--shell-mode`/`-c` the
     /// positionals are joined and evaluated by `sh -c` instead of
-    /// looked up in `node_modules/.bin`.
+    /// looked up directly.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub params: Vec<String>,
     /// Run the assembled command line through `sh -c`.
@@ -110,6 +112,18 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // user assembles their own line and we run it through `sh -c`, so any
     // bin lookup is the shell's job.
     let bin_name = bin_name_for(&command);
+    if !explicit_package && !shell_mode {
+        let initial_cwd = crate::dirs::cwd()?;
+        if let Some(project_dir) = crate::dirs::find_project_root(&initial_cwd) {
+            let bin_path = super::project_modules_dir(&project_dir)
+                .join(".bin")
+                .join(&bin_name);
+            if bin_path.exists() {
+                return super::exec::exec_bin(&initial_cwd, &bin_path, &bin_name, &bin_args, false)
+                    .await;
+            }
+        }
+    }
 
     let tmp = tempfile::Builder::new()
         .prefix("aube-dlx-")

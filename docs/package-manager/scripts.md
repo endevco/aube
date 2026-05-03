@@ -28,6 +28,10 @@ Use `--if-present` for optional scripts:
 aube run --if-present lint
 ```
 
+When no `package.json` script matches, `aube run <name>` falls back to a
+local binary with the same name in `node_modules/.bin`. Scripts still win over
+bins, so a project can override a tool command with its own script.
+
 ## Local binaries
 
 ```sh
@@ -45,8 +49,10 @@ aubx cowsay hi
 aubx -p create-vite create-vite my-app
 ```
 
-`aubx` is shorthand for `aube dlx`. It installs into a throwaway project and
-runs the requested binary.
+`aubx` is shorthand for `aube dlx`. It first checks for a matching local binary
+in the current project. If none is installed, it installs into a throwaway
+project and runs the requested binary. Pass `-p` / `--package` when the package
+name differs from the binary name or when you want to force a throwaway install.
 
 ## Shortcuts: `aubr` and `aubx`
 

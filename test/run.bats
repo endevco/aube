@@ -33,6 +33,39 @@ teardown() {
 	assert_output --partial "script not found"
 }
 
+@test "aube run falls back to local binary when no script matches" {
+	mkdir -p tools/local-bin
+	cat >package.json <<-'JSON'
+		{
+		  "name": "run-bin-fallback",
+		  "version": "1.0.0",
+		  "private": true,
+		  "dependencies": {
+		    "local-bin": "file:tools/local-bin"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/package.json <<-'JSON'
+		{
+		  "name": "local-bin",
+		  "version": "1.0.0",
+		  "bin": {
+		    "local-bin": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log(`local-bin:${process.argv.slice(2).join(",")}`)
+	JS
+	chmod +x tools/local-bin/index.js
+
+	aube install
+	run aube run local-bin alpha beta
+	assert_success
+	assert_line "local-bin:alpha,beta"
+}
+
 @test "aube run without a script errors with available scripts when stdin isn't a TTY" {
 	_setup_basic_fixture
 	aube install

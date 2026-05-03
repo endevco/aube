@@ -26,7 +26,7 @@
 
 **[Existing lockfiles](https://aube.en.dev/package-manager/lockfiles).** Reads and writes `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and `bun.lock` in place.
 
-**[Cheap repeat commands](https://aube.en.dev/package-manager/scripts).** `aubr test`, `aube test`, and `aube exec vitest` auto-install when dependencies are stale, then skip that work when nothing changed. `aubx` runs one-off tools in a throwaway environment.
+**[Cheap repeat commands](https://aube.en.dev/package-manager/scripts).** `aubr test`, `aube test`, and `aube exec vitest` auto-install when dependencies are stale, then skip that work when nothing changed. `aubx` uses a local binary when one is installed, or a throwaway environment for one-off tools.
 
 **[Less disk use](https://aube.en.dev/package-manager/node-modules).** A global content-addressable store lets projects share package files instead of keeping a full copy of the same dependencies in every checkout.
 
@@ -122,7 +122,7 @@ aube update               # update dependencies within package.json ranges
 aubr build                # run a package.json script, auto-installing first if needed
 aube test                 # run the test script, auto-installing first if needed
 aube exec vitest          # run a local binary, auto-installing first if needed
-aubx cowsay hi            # run a package in a throwaway environment
+aubx cowsay hi            # run a local bin, or fetch one in a throwaway environment
 aube install              # install only, for setup or lockfile/install modes
 aube ci                   # clean, frozen install for CI
 ```
@@ -147,6 +147,11 @@ that works on the full command also works on the shim:
 aubr build            # aube run build
 aubx cowsay hi        # aube dlx cowsay hi
 ```
+
+`aubr <name>` runs a package script first, then falls back to a matching
+local binary. `aubx <name>` prefers an installed local binary before fetching
+into a throwaway environment; pass `-p` / `--package` to force the package
+that should be installed for a one-off command.
 
 The release archives ship all three binaries side by side; no extra
 setup is needed when you install aube via mise or the tarball.
