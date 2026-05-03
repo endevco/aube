@@ -5,7 +5,6 @@
 // first-seen order) and toggles whether to show the Exit column.
 //
 // Search filters by code name + description (case-insensitive).
-// Category chips toggle individual categories on/off; "All" resets.
 // State is purely local to the component — no router updates, no
 // query params, no localStorage. Two of these mount on the same
 // page (one for errors, one for warnings) so cross-component state
@@ -32,27 +31,17 @@ const props = defineProps<{
 }>();
 
 const search = ref("");
-// `null` = all categories shown. A specific string = only that one.
-// We deliberately keep this single-select rather than multi-select:
-// users almost always want either "everything" or "this one
-// category", and a multi-select chip row adds visual noise without
-// a real workflow win.
-const activeCategory = ref<string | null>(null);
 
 const filtered = computed<CodeMeta[]>(() => {
   const needle = search.value.trim().toLowerCase();
-  return props.codes.filter((c) => {
-    if (activeCategory.value && c.category !== activeCategory.value) {
-      return false;
-    }
-    if (!needle) {
-      return true;
-    }
-    return (
+  if (!needle) {
+    return props.codes;
+  }
+  return props.codes.filter(
+    (c) =>
       c.name.toLowerCase().includes(needle) ||
-      c.description.toLowerCase().includes(needle)
-    );
-  });
+      c.description.toLowerCase().includes(needle),
+  );
 });
 
 // Group filtered results by category, preserving the first-seen
@@ -75,10 +64,6 @@ const grouped = computed<Array<{ category: string; rows: CodeMeta[] }>>(
       .filter((g) => g.rows.length > 0);
   },
 );
-
-function setCategory(cat: string | null) {
-  activeCategory.value = cat;
-}
 
 function exitLabel(code: CodeMeta): string {
   // Errors with no bespoke entry fall through to `EXIT_GENERIC = 1`
@@ -103,28 +88,6 @@ function exitLabel(code: CodeMeta): string {
             : 'Filter warning codes by code or description'
         "
       />
-      <div class="error-codes-table__chips" role="tablist">
-        <button
-          type="button"
-          class="error-codes-table__chip"
-          :class="{ 'error-codes-table__chip--active': activeCategory === null }"
-          :aria-pressed="activeCategory === null"
-          @click="setCategory(null)"
-        >
-          All
-        </button>
-        <button
-          v-for="cat in categories"
-          :key="cat"
-          type="button"
-          class="error-codes-table__chip"
-          :class="{ 'error-codes-table__chip--active': activeCategory === cat }"
-          :aria-pressed="activeCategory === cat"
-          @click="setCategory(cat)"
-        >
-          {{ cat }}
-        </button>
-      </div>
     </div>
 
     <p
@@ -251,35 +214,6 @@ function escapeHtml(s: string): string {
 
 .error-codes-table__search:focus {
   outline: none;
-  border-color: var(--vp-c-brand-1);
-}
-
-.error-codes-table__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.error-codes-table__chip {
-  font-size: 0.825rem;
-  padding: 0.25rem 0.65rem;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 999px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-2);
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-  font-family: inherit;
-}
-
-.error-codes-table__chip:hover {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-text-1);
-}
-
-.error-codes-table__chip--active {
-  background: var(--vp-c-brand-1);
-  color: var(--vp-c-bg);
   border-color: var(--vp-c-brand-1);
 }
 

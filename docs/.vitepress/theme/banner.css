@@ -15,6 +15,22 @@
   line-height: 1.4;
   text-align: center;
 }
+
+/* Reserve breathing room at the layout bottom so content near the
+   document bottom (the final H2 / paragraph on a long page) doesn't
+   end up stuck behind the fixed banner + navbar at maxScroll.
+   Without this, the last in-flow content lands at viewport y ≈ 0–100
+   when the user scrolls all the way down — partially covered by the
+   banner-and-navbar overlay. Only kicks in when banner.ts has
+   actually rendered the banner, so doc-layout pages that skip the
+   banner aren't affected. The `:has()` lookup matches the dom shape
+   banner.ts produces (`document.body.prepend(banner)`).
+   --vp-nav-height defaults to 64 (VitePress' navbar) so callers
+   don't need a fallback for the banner-less case if we later relax
+   the gate. */
+body:has(> .jdx-banner) .Layout {
+  padding-bottom: calc(var(--vp-layout-top-height, 0px) + var(--vp-nav-height, 64px));
+}
 .jdx-banner a {
   color: #fff;
   text-decoration: underline;
