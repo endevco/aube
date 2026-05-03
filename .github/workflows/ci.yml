@@ -209,7 +209,9 @@ jobs:
       - windows
     runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 2
-    if: always()
+    # Run on success or upstream failure but skip when the workflow is cancelled
+    # — `always()` would override `cancel-in-progress` and waste a runner.
+    if: ${{ !cancelled() }}
     steps:
       - name: Gate on upstream job results
         env:
