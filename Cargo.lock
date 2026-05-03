@@ -402,7 +402,6 @@ dependencies = [
 name = "aube-scripts"
 version = "1.7.0"
 dependencies = [
- "aube-codes",
  "aube-manifest",
  "landlock",
  "libc",
@@ -427,7 +426,6 @@ dependencies = [
 name = "aube-store"
 version = "1.7.0"
 dependencies = [
- "aube-codes",
  "aube-util",
  "base64",
  "blake3",
@@ -465,7 +463,6 @@ dependencies = [
 name = "aube-workspace"
 version = "1.7.0"
 dependencies = [
- "aube-codes",
  "aube-manifest",
  "glob",
  "miette",

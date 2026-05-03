@@ -11,7 +11,12 @@ readme.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
-aube-codes = { workspace = true }
+# aube-codes is *not* a dep here even though `#[diagnostic(code(ERR_AUBE_X))]`
+# attributes appear below. miette treats the `code(...)` argument as an
+# identifier token, not a symbol reference, so the codes flow through as
+# string literals at macro-expansion time. cargo-machete correctly flags
+# the dep as unused. Validation that the names exist in `aube-codes`'s
+# registry is a workspace-level concern, not a per-crate one.
 aube-manifest = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }

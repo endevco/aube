@@ -11,7 +11,9 @@ readme.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
-aube-codes = { workspace = true }
+# `#[diagnostic(code(ERR_AUBE_X))]` below uses code names as macro
+# tokens, not symbol references — cargo-machete correctly sees no
+# usage. Same situation as aube-scripts and aube-workspace.
 aube-util = { workspace = true }
 miette = { workspace = true }
 sha1 = { workspace = true }
