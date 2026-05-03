@@ -888,6 +888,19 @@ pub(crate) fn load_manifest(manifest_path: &Path) -> miette::Result<aube_manifes
         .wrap_err("failed to read package.json")
 }
 
+/// Load `<root>/package.json` when it exists, else return a default
+/// (empty) manifest. Used by workspace-scoped commands that accept
+/// yaml-only coordinator roots (`pnpm-workspace.yaml` only, no root
+/// `package.json`).
+pub(crate) fn load_manifest_or_default(root: &Path) -> miette::Result<aube_manifest::PackageJson> {
+    let path = root.join("package.json");
+    if path.is_file() {
+        load_manifest(&path)
+    } else {
+        Ok(aube_manifest::PackageJson::default())
+    }
+}
+
 /// Serialize `value` as pretty JSON with a trailing newline and
 /// atomically write it to `path`. Wraps the serialize + atomic-write
 /// pair used by add/remove/update/audit when mutating `package.json`.

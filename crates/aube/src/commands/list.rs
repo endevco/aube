@@ -166,7 +166,7 @@ pub async fn run(
         return run_global(&args);
     }
 
-    let cwd = crate::dirs::project_root()?;
+    let cwd = crate::dirs::project_or_workspace_root()?;
     // In yarn / npm / bun monorepos the lockfile lives only at the
     // workspace root, not in the subpackage. When the caller asks for
     // `--filter` we read manifest + lockfile from the root so
@@ -241,7 +241,10 @@ pub async fn run(
 
     // Read manifest (needed even for `list` — we print the project name/version
     // at the top, and the lockfile parser needs it for non-pnpm formats).
-    let manifest = super::load_manifest(&read_from.join("package.json"))?;
+    // Pure-coordinator workspaces (pnpm-workspace.yaml at the root, no root
+    // package.json) read as a default manifest so the lockfile parser still
+    // gets the same shape it expects.
+    let manifest = super::load_manifest_or_default(&read_from)?;
 
     // Lockfile may be absent in a brand-new project — treat that as "nothing
     // installed yet" rather than a hard error, and print an empty tree.

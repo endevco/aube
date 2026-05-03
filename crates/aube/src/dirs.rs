@@ -193,6 +193,56 @@ pub fn project_root_or_cwd() -> miette::Result<PathBuf> {
     Ok(find_project_root(&initial_cwd).unwrap_or(initial_cwd))
 }
 
+/// Return the nearest project root, falling back to the workspace root
+/// when no ancestor has a `package.json` but a `pnpm-workspace.yaml` /
+/// `aube-workspace.yaml` (or `package.json#workspaces`) marks a
+/// workspace root above the cwd.
+///
+/// Used by workspace-scoped read commands (`list`, `query`, `why`) and
+/// by `install` so a "pure coordinator" monorepo — workspace yaml at
+/// the root, sub-packages under `packages/*`, no root `package.json` —
+/// still operates against the workspace as a whole. Single-project
+/// commands (`add`, `remove`, root-only `run <script>`) keep using
+/// [`project_root`], which still hard-errors without a manifest.
+pub fn project_or_workspace_root() -> miette::Result<PathBuf> {
+    let initial_cwd = cwd()?;
+    if let Some(root) = find_project_root(&initial_cwd) {
+        return Ok(root);
+    }
+    if let Some(root) = find_workspace_root(&initial_cwd) {
+        return Ok(root);
+    }
+    Err(no_root_error(&initial_cwd))
+}
+
+/// Return the workspace root if one exists above the cwd, falling back
+/// to the nearest project root. The opposite precedence of
+/// [`project_or_workspace_root`].
+///
+/// Used by `install` and `patch` so `cd packages/app && aube install`
+/// writes the lockfile + `.aube/` virtual store at the workspace root
+/// (matching pnpm), and `aube patch` from a member finds the shared
+/// store. Falls back to the project root for non-workspace trees.
+pub fn workspace_or_project_root() -> miette::Result<PathBuf> {
+    let initial_cwd = cwd()?;
+    if let Some(root) = find_workspace_root(&initial_cwd) {
+        return Ok(root);
+    }
+    if let Some(root) = find_project_root(&initial_cwd) {
+        return Ok(root);
+    }
+    Err(no_root_error(&initial_cwd))
+}
+
+fn no_root_error(initial_cwd: &Path) -> miette::Report {
+    miette!(
+        "no package.json or workspace yaml \
+         (pnpm-workspace.yaml / aube-workspace.yaml) found in {} \
+         or any parent directory",
+        initial_cwd.display()
+    )
+}
+
 /// Retarget the logical cwd to an explicit path.
 pub fn set_cwd(path: &Path) -> miette::Result<()> {
     let path = if path.is_absolute() {

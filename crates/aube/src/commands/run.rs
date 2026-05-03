@@ -224,12 +224,28 @@ pub(crate) async fn run_script_with(
     let initial_cwd = crate::dirs::cwd()?;
     // Walk upward to the nearest `package.json` so `aube run` from a
     // subdirectory picks up the project root's scripts, matching pnpm.
-    let cwd = crate::dirs::find_project_root(&initial_cwd).ok_or_else(|| {
-        miette!(
-            "no package.json found in {} or any parent directory",
-            initial_cwd.display()
-        )
-    })?;
+    // Filtered/recursive runs accept a yaml-only workspace root —
+    // `run_script_filtered` resolves its own root via
+    // `select_workspace_packages` and only needs each member's manifest.
+    let cwd = match crate::dirs::find_project_root(&initial_cwd) {
+        Some(p) => p,
+        None if !filter.is_empty() => {
+            crate::dirs::find_workspace_root(&initial_cwd).ok_or_else(|| {
+                miette!(
+                    "no project (package.json) or workspace root \
+                     (aube-workspace.yaml / pnpm-workspace.yaml) found in {} \
+                     or any parent directory",
+                    initial_cwd.display()
+                )
+            })?
+        }
+        None => {
+            return Err(miette!(
+                "no package.json found in {} or any parent directory",
+                initial_cwd.display()
+            ));
+        }
+    };
     let enable_pre_post_scripts = configure_script_settings_for_project(&cwd)?;
 
     if !filter.is_empty() {
