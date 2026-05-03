@@ -112,7 +112,7 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // user assembles their own line and we run it through `sh -c`, so any
     // bin lookup is the shell's job.
     let bin_name = bin_name_for(&command);
-    if !explicit_package && !shell_mode {
+    if !explicit_package && !shell_mode && can_use_local_bin(&command) {
         let initial_cwd = crate::dirs::cwd()?;
         if let Some(project_dir) = crate::dirs::find_project_root(&initial_cwd) {
             let bin_path = super::project_modules_dir(&project_dir)
@@ -412,6 +412,10 @@ fn bin_name_for(command: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_string()
 }
 
+fn can_use_local_bin(command: &str) -> bool {
+    !is_non_registry_spec(command) && super::split_name_spec(command).1.is_none()
+}
+
 /// When the bin derived from the package name doesn't match the installed
 /// package's actual bin, fall back to reading the package's `bin` field to
 /// find the right name. Matches `npx`/`pnpm dlx` behavior so e.g.
@@ -479,6 +483,16 @@ mod tests {
         assert_eq!(bin_name_for("cowsay@1.5.0"), "cowsay");
         assert_eq!(bin_name_for("@scope/foo@2"), "foo");
         assert_eq!(bin_name_for("@scope/foo"), "foo");
+    }
+
+    #[test]
+    fn local_bin_shortcut_only_applies_to_bare_registry_names() {
+        assert!(can_use_local_bin("cowsay"));
+        assert!(can_use_local_bin("@scope/foo"));
+        assert!(!can_use_local_bin("cowsay@1.5.0"));
+        assert!(!can_use_local_bin("cowsay@next"));
+        assert!(!can_use_local_bin("@scope/foo@2"));
+        assert!(!can_use_local_bin("github:owner/repo"));
     }
 
     #[test]

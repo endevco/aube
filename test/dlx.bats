@@ -91,6 +91,40 @@ teardown() {
 	assert_line "1.2.3-alpha.1"
 }
 
+@test "aube dlx version spec bypasses local binary shortcut" {
+	mkdir -p tools/semver
+	cat >package.json <<-'JSON'
+		{
+		  "name": "dlx-versioned-local-bin",
+		  "version": "1.0.0",
+		  "private": true,
+		  "dependencies": {
+		    "semver": "file:tools/semver"
+		  }
+		}
+	JSON
+	cat >tools/semver/package.json <<-'JSON'
+		{
+		  "name": "semver",
+		  "version": "0.0.0",
+		  "bin": {
+		    "semver": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/semver/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log("local-semver")
+	JS
+	chmod +x tools/semver/index.js
+
+	aube install
+	run aube dlx semver@7.7.4 1.2.3-alpha.1
+	assert_success
+	assert_line "1.2.3-alpha.1"
+	refute_output --partial "local-semver"
+}
+
 @test "aube dlx --shell-mode runs the joined line through sh -c" {
 	# `semver 1.2.3` would print "1.2.3"; piping through tr proves the
 	# command actually ran inside a shell instead of being exec'd as a
