@@ -44,6 +44,11 @@ pub async fn run(args: PatchArgs) -> Result<()> {
     // from a workspace member finds the shared `.aube/` store at the
     // workspace root (where install actually wrote it). Falls back to
     // the project root for non-workspace trees.
+    //
+    // Yaml-only workspace roots are handled downstream:
+    // `upsert_patched_dependency` routes through `config_write_target`
+    // and lands the entry in the workspace yaml when no
+    // `package.json` exists at the resolved root.
     let cwd = crate::dirs::workspace_or_project_root()?;
     let (name, version) = parse_spec(&args.package)?;
 
