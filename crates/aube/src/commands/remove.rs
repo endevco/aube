@@ -112,8 +112,43 @@ pub async fn run(
     // Write updated package.json atomically. Crash mid-write would
     // otherwise truncate the user manifest, worst-case aube failure
     // mode. Tempfile + persist keeps the swap atomic.
+    //
+    // We mutate the parsed JSON object in place rather than going
+    // through `sync_manifest_dep_sections`. The latter rebuilds each
+    // dep section from `BTreeMap`, which would alphabetize the keys
+    // and reshuffle the user's manifest as a side-effect of removing
+    // an unrelated entry. `aube remove` must only touch the names the
+    // user named — surrounding entries stay in their original on-disk
+    // order. (`aube add` keeps using the BTreeMap path because it
+    // both inserts and is expected to land new entries in a stable
+    // sorted spot.)
+    let dep_sections: &[&str] = if args.save_dev {
+        &["devDependencies"]
+    } else {
+        &[
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ]
+    };
     super::update_manifest_json_object(&manifest_path, |obj| {
-        super::sync_manifest_dep_sections(obj, &manifest);
+        for section_key in dep_sections {
+            let Some(section) = obj.get_mut(*section_key).and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+            for name in packages {
+                // shift_remove rather than remove: serde_json's `Map`
+                // is an `IndexMap` under the `preserve_order` feature
+                // and the default `remove` is `swap_remove`, which
+                // would scramble the surviving keys. shift_remove
+                // keeps every other entry in its on-disk position.
+                section.shift_remove(name);
+            }
+            if section.is_empty() {
+                obj.shift_remove(*section_key);
+            }
+        }
         for name in packages {
             prune_sidecar_entries_json(obj, name);
         }
@@ -191,13 +226,17 @@ fn run_global(packages: &[String]) -> miette::Result<()> {
 }
 
 fn prune_sidecar_entries_json(obj: &mut serde_json::Map<String, serde_json::Value>, name: &str) {
+    // shift_remove (not remove → swap_remove) keeps the surrounding
+    // keys in their original on-disk position. Same rationale as the
+    // dep-section pruning above: `aube remove` must not reshuffle the
+    // user's manifest as a side effect.
     for ns_key in ["pnpm", "aube"] {
         let remove_ns = if let Some(ns) = obj.get_mut(ns_key).and_then(|v| v.as_object_mut()) {
             for map_key in ["allowBuilds", "overrides", "peerDependencyRules"] {
                 if let Some(inner) = ns.get_mut(map_key).and_then(|v| v.as_object_mut()) {
-                    inner.remove(name);
+                    inner.shift_remove(name);
                     if inner.is_empty() {
-                        ns.remove(map_key);
+                        ns.shift_remove(map_key);
                     }
                 }
             }
@@ -212,7 +251,7 @@ fn prune_sidecar_entries_json(obj: &mut serde_json::Map<String, serde_json::Valu
                         None => true,
                     });
                     if arr.is_empty() {
-                        ns.remove(arr_key);
+                        ns.shift_remove(arr_key);
                     }
                 }
             }
@@ -221,19 +260,19 @@ fn prune_sidecar_entries_json(obj: &mut serde_json::Map<String, serde_json::Valu
             false
         };
         if remove_ns {
-            obj.remove(ns_key);
+            obj.shift_remove(ns_key);
         }
     }
 
     for top_key in ["overrides", "resolutions"] {
         let remove_top = if let Some(top) = obj.get_mut(top_key).and_then(|v| v.as_object_mut()) {
-            top.remove(name);
+            top.shift_remove(name);
             top.is_empty()
         } else {
             false
         };
         if remove_top {
-            obj.remove(top_key);
+            obj.shift_remove(top_key);
         }
     }
 }
@@ -312,5 +351,69 @@ fn prune_sidecar_entries(manifest: &mut aube_manifest::PackageJson, name: &str) 
         if top.is_empty() {
             manifest.extra.remove("resolutions");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    fn collect_section_order(raw: &str, section: &str) -> Vec<String> {
+        let v: Value = serde_json::from_str(raw).unwrap();
+        let obj = v.as_object().unwrap().get(section).unwrap();
+        obj.as_object().unwrap().keys().cloned().collect()
+    }
+
+    /// Regression: `aube remove` previously rebuilt every dep section
+    /// from `BTreeMap`, alphabetizing the surviving entries even
+    /// though the user only asked to drop one name. This test exercises
+    /// the in-place pruning path used by `update_manifest_json_object`
+    /// to confirm the surrounding keys stay in their original order.
+    #[test]
+    fn remove_preserves_dep_order_in_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "name": "example",
+  "dependencies": {
+    "zod": "^3.22.0",
+    "axios": "^1.6.0",
+    "lodash": "^4.17.21",
+    "react": "^18.2.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        crate::commands::update_manifest_json_object(&path, |obj| {
+            let dep_sections: &[&str] = &[
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            ];
+            for section_key in dep_sections {
+                let Some(section) = obj.get_mut(*section_key).and_then(|v| v.as_object_mut())
+                else {
+                    continue;
+                };
+                section.shift_remove("axios");
+                if section.is_empty() {
+                    obj.shift_remove(*section_key);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            collect_section_order(&written, "dependencies"),
+            ["zod", "lodash", "react"],
+            "remove must keep on-disk order — got:\n{written}"
+        );
     }
 }
