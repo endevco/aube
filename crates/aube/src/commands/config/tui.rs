@@ -889,6 +889,23 @@ fn clear_workspace_value(path: &std::path::Path, key: &str) -> miette::Result<bo
     if !path.exists() {
         return Ok(false);
     }
+    // Pre-flight: a workspace yaml that doesn't even parse as a
+    // top-level mapping was a graceful `Ok(false)` before the
+    // `edit_workspace_yaml` migration, and clearing one key is not a
+    // good place to surface a parse error to the user. Mirror that
+    // by skipping the rewrite for malformed/empty/non-mapping files.
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| miette!("failed to read {}: {e}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
+    let parsed: Value = match yaml_serde::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    if parsed.as_mapping().is_none() {
+        return Ok(false);
+    }
     // The bool return reports whether the key was actually present, so
     // we have to track removal inside the closure. `edit_workspace_yaml`
     // already short-circuits the rewrite when the closure produces no

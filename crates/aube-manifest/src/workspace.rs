@@ -1327,24 +1327,18 @@ mod yaml_patch {
         raw.trim_end().to_string()
     }
 
-    /// Quote a mapping key when it carries any YAML-special
-    /// character. Conservative: anything outside the plain-scalar
-    /// alphanumeric / dash / dot / underscore set gets a double-quote
-    /// wrap. Plain identifiers (including `package@version` shapes
-    /// like `is-positive@3.1.0`) round-trip as-is.
+    /// Render a mapping key for emission, quoting only when the YAML
+    /// 1.2 plain-scalar grammar requires it. Defers to serde_yaml's
+    /// emitter so the rules stay in lockstep with the rest of the
+    /// file: identifiers like `b@2.0.0` and `is-positive@3.1.0`
+    /// round-trip unquoted (the `@` is reserved only at the *start*
+    /// of a scalar), while keys that lead with a reserved indicator
+    /// or contain flow/quote/comment characters get the canonical
+    /// quoted form serde_yaml would have produced.
     fn scalar_key_str(key: &str) -> String {
-        let safe = !key.is_empty()
-            && key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'));
-        if safe {
-            key.to_string()
-        } else {
-            // serde_json's escape rules are a strict subset of YAML's
-            // double-quoted scalar grammar — reuse them rather than
-            // hand-rolling escapes.
-            serde_json::to_string(key).unwrap_or_else(|_| format!("\"{key}\""))
-        }
+        let raw = serde_yaml::to_string(&serde_yaml::Value::String(key.to_string()))
+            .unwrap_or_else(|_| format!("{key}\n"));
+        raw.trim_end().to_string()
     }
 
     /// Inspect a parent block-mapping's source text to decide what
@@ -2106,6 +2100,48 @@ patchedDependencies:
         assert!(
             written.contains("set this to true or false"),
             "placeholder missing:\n{written}"
+        );
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_does_not_quote_unreserved_at_keys() {
+        // Cursor bot follow-up: `b@2.0.0` and `is-positive@3.1.0` are
+        // valid YAML plain scalars (the `@` is reserved only when it
+        // *starts* a scalar). Earlier revisions of `scalar_key_str`
+        // quoted them anyway, producing `"b@2.0.0": ...` style entries
+        // that drifted from the rest of the file. Guard the unquoted
+        // form on the wire.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        upsert_workspace_patched_dependency(&path, "b@2.0.0", "patches/b@2.0.0.patch").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("\n  b@2.0.0: patches/b@2.0.0.patch"),
+            "expected unquoted plain-scalar key:\n{written}"
+        );
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_quotes_leading_at_keys() {
+        // The complement of the above: a key that *starts* with `@`
+        // (scoped npm package) must be quoted — leading `@` is a YAML
+        // reserved indicator and would otherwise produce a parse
+        // error on read.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        upsert_workspace_patched_dependency(&path, "@scope/pkg@1.0.0", "patches/scope-pkg.patch")
+            .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        // Round-trip through the typed parser as the soundness check.
+        let parsed: WorkspaceConfig = yaml_serde::from_str(&written)
+            .unwrap_or_else(|e| panic!("written yaml fails to parse: {e}\n{written}"));
+        assert_eq!(
+            parsed
+                .patched_dependencies
+                .get("@scope/pkg@1.0.0")
+                .map(String::as_str),
+            Some("patches/scope-pkg.patch"),
+            "scoped key did not round-trip:\n{written}"
         );
     }
 
