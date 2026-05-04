@@ -889,20 +889,22 @@ fn clear_workspace_value(path: &std::path::Path, key: &str) -> miette::Result<bo
     if !path.exists() {
         return Ok(false);
     }
-    // Pre-flight: a workspace yaml that doesn't even parse as a
-    // top-level mapping was a graceful `Ok(false)` before the
-    // `edit_workspace_yaml` migration, and clearing one key is not a
-    // good place to surface a parse error to the user. Mirror that
-    // by skipping the rewrite for malformed/empty/non-mapping files.
+    // Pre-flight: read the file once so a non-mapping or empty
+    // top-level shape (which `edit_workspace_yaml` would reject as
+    // a hard error) stays a graceful `Ok(false)` — the original
+    // behavior before the comment-preserving migration. Parse
+    // errors *do* propagate, since silently treating a malformed
+    // workspace yaml as "key not found" would mask file corruption
+    // the user needs to know about. The double read against the
+    // file is fine: this only fires on an interactive TUI clear,
+    // not the install hot path.
     let content = std::fs::read_to_string(path)
         .map_err(|e| miette!("failed to read {}: {e}", path.display()))?;
     if content.trim().is_empty() {
         return Ok(false);
     }
-    let parsed: Value = match yaml_serde::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Ok(false),
-    };
+    let parsed: Value = yaml_serde::from_str(&content)
+        .map_err(|e| miette!("failed to parse {}: {e}", path.display()))?;
     if parsed.as_mapping().is_none() {
         return Ok(false);
     }
