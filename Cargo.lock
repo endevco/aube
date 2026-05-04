@@ -252,7 +252,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha1",
  "sha2 0.10.9",
  "sigstore-oidc",
@@ -266,8 +265,6 @@ dependencies = [
  "tracing-subscriber",
  "xx",
  "yaml_serde",
- "yamlpatch",
- "yamlpath",
 ]
 
 [[package]]
