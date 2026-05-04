@@ -2425,10 +2425,12 @@ Remove unused catalog entries during install.
 When enabled, `aube install` rewrites `aube-workspace.yaml` (or
 `pnpm-workspace.yaml`, whichever is present) after resolution to drop
 entries no importer references. A catalog that ends up empty is
-removed entirely. The rewrite goes through `yaml_serde`, so comments
-and custom formatting in the workspace file are not preserved — turn
-this on only when you're happy to keep the workspace YAML
-machine-generated.
+removed entirely. The rewrite is comment- and format-preserving:
+yaml comments around surviving entries (and on the rest of the file)
+stay intact. yamlpatch's `Remove` op only deletes the line carrying
+the entry's `key: value`, so a `# annotation` line above a pruned
+entry is left in place rather than guessed-at; clean those up by
+hand if you don't want orphaned annotations.
 
 ## aube-specific
 

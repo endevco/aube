@@ -476,6 +476,66 @@ mod tests {
     }
 
     #[test]
+    fn prune_preserves_comments_when_dropping_one_entry() {
+        // Cleanup of an unused catalog entry must keep `# ...`
+        // annotations on the catalog entries that survive — the whole
+        // reason aube routes catalog rewrites through
+        // `edit_workspace_yaml` is so the daily install (which runs
+        // `cleanupUnusedCatalogs`) doesn't silently strip comments off
+        // the entries the user took the time to document.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(
+            &path,
+            "\
+# default catalog for the monorepo
+catalog:
+  # is-odd: keep, used by tooling
+  is-odd: ^3.0.1
+  # is-even: legacy, slated for removal
+  is-even: ^1.0.0
+",
+        )
+        .unwrap();
+
+        let mut declared = BTreeMap::new();
+        let mut default = BTreeMap::new();
+        default.insert("is-odd".to_string(), "^3.0.1".to_string());
+        default.insert("is-even".to_string(), "^1.0.0".to_string());
+        declared.insert("default".to_string(), default);
+
+        let mut used: BTreeMap<String, BTreeMap<String, aube_lockfile::CatalogEntry>> =
+            BTreeMap::new();
+        used.entry("default".to_string()).or_default().insert(
+            "is-odd".to_string(),
+            aube_lockfile::CatalogEntry {
+                specifier: "^3.0.1".into(),
+                version: "3.0.1".into(),
+            },
+        );
+
+        prune_unused_catalog_entries(&path, &declared, &used).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("# default catalog for the monorepo"),
+            "header comment lost:\n{written}"
+        );
+        assert!(
+            written.contains("# is-odd: keep, used by tooling"),
+            "surviving annotation lost:\n{written}"
+        );
+        // Entry's key:value line is gone. yamlpatch may leave the
+        // orphaned `# is-even: legacy ...` annotation behind on its own
+        // line; we accept that — preserving stray user text is a
+        // feature, not a bug, and the alternative (heuristically
+        // hunting for "owner" comments) would risk eating real ones.
+        assert!(
+            !written.contains("is-even: ^1.0.0"),
+            "pruned entry value still present:\n{written}"
+        );
+    }
+
+    #[test]
     fn prune_noop_when_all_entries_used() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pnpm-workspace.yaml");

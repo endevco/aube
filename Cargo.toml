@@ -33,6 +33,16 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 yaml_serde = "0.10.4"
+# Comment- and format-preserving YAML edits. Used by aube-manifest /
+# aube to surgically rewrite user-authored workspace YAML files
+# (catalogs, allowBuilds, patchedDependencies) without stripping
+# comments — yaml_serde's round-trip would otherwise destroy them.
+# yamlpatch's value/parse types come from serde_yaml 0.9, which is the
+# upstream of yaml_serde; we keep yaml_serde for typed reads and only
+# touch serde_yaml at the patch boundary.
+yamlpatch = "1.24"
+yamlpath = "1.24"
+serde_yaml = "0.9"
 simd-json = "0.17"
 toml = "0.8"
 rkyv = "0.8"
