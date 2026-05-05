@@ -913,13 +913,11 @@ impl StripFields {
     /// CLI flags: `--prod` (default), `--dev`, `--no-prod`,
     /// `--no-optional`.
     fn for_args(args: &DeployArgs) -> Self {
-        // Stays in lockstep with `dep_selection_for_args` and
-        // `keep_dep_for_args` — drift between the strip set, the install
-        // dep_selection, and the lockfile-subset keep predicate would
-        // surface as install drift detection failures.
-        let prod = !args.dev;
-        let dev = args.dev || args.no_prod;
-        let optional = !args.dev && !args.no_optional;
+        let DepAxis {
+            prod,
+            dev,
+            optional,
+        } = DepAxis::for_args(args);
         Self {
             dependencies: !prod,
             dev_dependencies: !dev,
@@ -942,19 +940,64 @@ impl StripFields {
     }
 }
 
-fn dep_selection_for_args(args: &DeployArgs) -> install::DepSelection {
-    let prod = !args.dev && !args.no_prod;
-    let dev = args.dev;
-    install::DepSelection::from_flags(prod, dev, args.no_optional)
+/// Single source of truth for which dep types a deploy keeps, given the
+/// CLI flag combination. Every consumer (manifest strip, install
+/// `DepSelection`, lockfile-subset keep predicate) derives from this,
+/// so the three paths can't silently drift onto different formulas.
+/// Booleans are "keep this dep type", not "the flag is set".
+#[derive(Debug, Clone, Copy)]
+struct DepAxis {
+    prod: bool,
+    dev: bool,
+    optional: bool,
 }
 
-/// `subset_to_importer` keep predicate: same axis as
+impl DepAxis {
+    fn for_args(args: &DeployArgs) -> Self {
+        // clap enforces `--prod`, `--dev`, `--no-prod` mutually
+        // exclusive on the deploy surface, so the cases collapse:
+        //   default / --prod  -> prod + optional
+        //   --dev             -> dev only
+        //   --no-prod         -> prod + dev + optional
+        // `--no-optional` is independent and only suppresses optionals.
+        Self {
+            prod: !args.dev,
+            dev: args.dev || args.no_prod,
+            optional: !args.dev && !args.no_optional,
+        }
+    }
+}
+
+fn dep_selection_for_args(args: &DeployArgs) -> install::DepSelection {
+    use install::DepSelection::*;
+    let DepAxis {
+        prod,
+        dev,
+        optional,
+    } = DepAxis::for_args(args);
+    match (prod, dev, optional) {
+        (true, true, true) => All,
+        (true, true, false) => NoOptional,
+        (true, false, true) => Prod,
+        (true, false, false) => ProdNoOptional,
+        (false, true, true) => Dev,
+        (false, true, false) => DevNoOptional,
+        // Unreachable: mutually-exclusive `--prod`/`--dev`/`--no-prod`
+        // means at least one of `prod`/`dev` is always true. Fall
+        // through to `All` rather than panic if clap config drifts.
+        (false, false, _) => All,
+    }
+}
+
+/// `subset_to_importer` keep predicate: shares `DepAxis::for_args` with
 /// `StripFields::for_args` so the source lockfile subset and the
 /// rewritten target manifest agree on which dep types survive.
 fn keep_dep_for_args(args: &DeployArgs) -> impl Fn(&aube_lockfile::DirectDep) -> bool + use<> {
-    let prod = !args.dev;
-    let dev = args.dev || args.no_prod;
-    let optional = !args.dev && !args.no_optional;
+    let DepAxis {
+        prod,
+        dev,
+        optional,
+    } = DepAxis::for_args(args);
     move |d: &aube_lockfile::DirectDep| match d.dep_type {
         aube_lockfile::DepType::Production => prod,
         aube_lockfile::DepType::Dev => dev,
@@ -1156,6 +1199,36 @@ mod tests {
             dep_selection_for_args(&a),
             install::DepSelection::NoOptional
         );
+    }
+
+    #[test]
+    fn dep_selection_covers_every_flag_combo() {
+        // Lock the (dev, no_prod, no_optional) -> DepSelection table so a
+        // future tweak to DepAxis::for_args can't silently drift any of
+        // the six reachable cells. Note `--dev` alone maps to
+        // DevNoOptional (not Dev): the deploy axis drops optional under
+        // `--dev`, matching the manifest strip and lockfile subset.
+        let cases: &[(bool, bool, bool, install::DepSelection)] = &[
+            (false, false, false, install::DepSelection::Prod),
+            (false, false, true, install::DepSelection::ProdNoOptional),
+            (false, true, false, install::DepSelection::All),
+            (false, true, true, install::DepSelection::NoOptional),
+            (true, false, false, install::DepSelection::DevNoOptional),
+            (true, false, true, install::DepSelection::DevNoOptional),
+        ];
+        for &(dev, no_prod, no_optional, want) in cases {
+            let a = DeployArgs {
+                dev,
+                no_prod,
+                no_optional,
+                ..deploy_args()
+            };
+            assert_eq!(
+                dep_selection_for_args(&a),
+                want,
+                "dev={dev} no_prod={no_prod} no_optional={no_optional}"
+            );
+        }
     }
 
     #[test]
