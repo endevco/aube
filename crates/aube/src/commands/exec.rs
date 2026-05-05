@@ -328,21 +328,44 @@ fn resolve_node_bin_target(bin_path: &Path) -> Option<std::path::PathBuf> {
 }
 
 fn is_node_backed_bin(target: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(target) else {
+    use std::io::Read;
+
+    let Ok(mut file) = std::fs::File::open(target) else {
         return false;
     };
-    let first_line = bytes
+    let mut buf = [0u8; 256];
+    let n = file.read(&mut buf).unwrap_or(0);
+    let first_line = buf[..n]
         .split(|b| *b == b'\n')
         .next()
         .and_then(|line| std::str::from_utf8(line).ok())
-        .unwrap_or("");
-    if first_line.starts_with("#!") && first_line.contains("node") {
-        return true;
+        .unwrap_or("")
+        .trim_end_matches('\r');
+    if let Some(interpreter) = first_line.strip_prefix("#!") {
+        return is_node_interpreter(interpreter);
     }
     matches!(
         target.extension().and_then(|ext| ext.to_str()),
         Some("js" | "cjs" | "mjs")
     )
+}
+
+fn is_node_interpreter(raw: &str) -> bool {
+    let interpreter = raw.trim();
+    let name = if let Some(rest) = interpreter.strip_prefix("/usr/bin/env") {
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix("-S").map_or(rest, |r| r.trim_start());
+        rest.split_whitespace()
+            .find(|part| !part.contains('='))
+            .unwrap_or("")
+    } else {
+        interpreter.split_whitespace().next().unwrap_or("")
+    };
+    let basename = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    matches!(basename, "node" | "nodejs")
 }
 
 /// Pick the executable variant of a `node_modules/.bin/<name>` shim.
@@ -414,6 +437,31 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("bin");
         std::fs::write(&target, b"#!/usr/bin/env node\nconsole.log(1)\n").unwrap();
+        assert!(is_node_backed_bin(&target));
+    }
+
+    #[test]
+    fn is_node_backed_bin_rejects_node_substring_interpreters() {
+        let tmp = tempfile::tempdir().unwrap();
+        for interpreter in ["nodemon", "nodeenv", "node-gyp", "node-18"] {
+            let target = tmp.path().join(interpreter);
+            std::fs::write(
+                &target,
+                format!("#!/usr/bin/env {interpreter}\n").as_bytes(),
+            )
+            .unwrap();
+            assert!(
+                !is_node_backed_bin(&target),
+                "{interpreter} should not be treated as node"
+            );
+        }
+    }
+
+    #[test]
+    fn is_node_backed_bin_accepts_nodejs_shebang() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("bin");
+        std::fs::write(&target, b"#!/usr/bin/nodejs\nconsole.log(1)\n").unwrap();
         assert!(is_node_backed_bin(&target));
     }
 }
