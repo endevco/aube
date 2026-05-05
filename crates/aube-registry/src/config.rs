@@ -996,7 +996,15 @@ fn parse_npmrc(path: &Path) -> Result<Vec<(String, String)>, std::io::Error> {
         }
 
         if let Some((key, value)) = line.split_once('=') {
-            let key = key.trim().to_string();
+            // Expand env vars on both sides. pnpm/npm both substitute
+            // `${VAR}` in keys as well as values, which lets users
+            // template the registry-prefix portion of per-URI auth
+            // keys like `${NEXUS_URL}:_auth=${TOKEN}` (common for
+            // Nexus / Artifactory setups where the registry host is
+            // injected by sops/CI). Without key-side expansion the
+            // entry lands in `auth_by_uri` keyed by the literal
+            // `${NEXUS_URL}` and never matches the real tarball URL.
+            let key = substitute_env(key.trim());
             let value = substitute_env(strip_matched_quotes(value.trim()));
             entries.push((key, value));
         }
@@ -1375,6 +1383,61 @@ mod tests {
                 ("unmatched".to_string(), "\"only-leading".to_string()),
                 ("plain".to_string(), "value".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn parse_npmrc_expands_env_in_keys_for_per_uri_auth() {
+        // Regression for endevco/aube#519. Nexus / Artifactory setups
+        // commonly template the registry-prefix portion of per-URI
+        // auth keys via env vars injected by sops/CI:
+        //
+        //     ${NEXUS_NPM_AUTH_URL}:_auth=${NEXUS_NPM_TOKEN}
+        //
+        // pnpm/npm both expand `${VAR}` on the key side as well as
+        // the value side, so the entry lands in `auth_by_uri` keyed
+        // by the real host. Without key-side expansion the entry was
+        // stored under the literal `${NEXUS_NPM_AUTH_URL}` and the
+        // tarball request never picked up the basic-auth credential.
+        unsafe {
+            std::env::set_var(
+                "AUBE_TEST_NEXUS_HOST_CFG",
+                "//nexus.example.com/repository/npm/",
+            );
+            std::env::set_var("AUBE_TEST_NEXUS_TOKEN_CFG", "dXNlcjpwYXNz");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".npmrc");
+        std::fs::write(
+            &rc,
+            "${AUBE_TEST_NEXUS_HOST_CFG}:_auth=${AUBE_TEST_NEXUS_TOKEN_CFG}\n",
+        )
+        .unwrap();
+
+        let entries = parse_npmrc(&rc).unwrap();
+
+        unsafe {
+            std::env::remove_var("AUBE_TEST_NEXUS_HOST_CFG");
+            std::env::remove_var("AUBE_TEST_NEXUS_TOKEN_CFG");
+        }
+
+        assert_eq!(
+            entries,
+            vec![(
+                "//nexus.example.com/repository/npm/:_auth".to_string(),
+                "dXNlcjpwYXNz".to_string(),
+            )]
+        );
+
+        let mut config = NpmConfig::default();
+        config.apply(entries);
+        assert_eq!(
+            config.basic_auth_for(
+                "https://nexus.example.com/repository/npm/@scope/pkg/-/pkg-1.0.0.tgz"
+            ),
+            Some("dXNlcjpwYXNz".to_string()),
+            "tarball URL under the env-templated host must pick up _auth",
         );
     }
 
