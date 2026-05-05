@@ -512,6 +512,11 @@ fn stage_one(
     // on a package that would never have been installed.
     let plan = plan_injections(source_pkg_dir, target, ws_index, args)?;
     materialize_injections(&plan, ws_index, deploy_all_files)?;
+    let deployed_canonical = canonicalize(source_pkg_dir);
+    let root = DeployRoot {
+        deployed_canonical: &deployed_canonical,
+        target_root: target,
+    };
     rewrite_local_refs(
         &target.join("package.json"),
         source_pkg_dir,
@@ -519,6 +524,7 @@ fn stage_one(
         ws_index,
         &plan,
         StripFields::for_args(args),
+        root,
     )?;
     let bundled_strip = StripFields::for_bundled_sibling(args);
     for inj in plan.values() {
@@ -536,6 +542,7 @@ fn stage_one(
             ws_index,
             &plan,
             bundled_strip,
+            root,
         )?;
     }
 
@@ -592,6 +599,12 @@ fn plan_injections(
     // Track id collisions so a second sibling with the same encoded
     // name gets a `_2`, `_3`, ... suffix. Keyed by the encoded id.
     let mut used_ids: BTreeMap<String, u32> = BTreeMap::new();
+    // Don't bundle the deployed package itself: a sibling B with a
+    // back-dep `"@deployed-pkg": "workspace:*"` would otherwise duplicate
+    // the deploy root under `.aube-deploy-injected/` and break runtime
+    // singleton assumptions (two distinct module instances). The
+    // rewriter handles back-refs separately.
+    let deployed_canonical = canonicalize(deployed_pkg_dir);
 
     // BFS frontier: each entry is `(source_dir, strip)`. The first
     // entry is the deployed package; everything queued after is a
@@ -616,6 +629,9 @@ fn plan_injections(
                     ));
                 };
                 let canonical = canonicalize(sibling_dir);
+                if canonical == deployed_canonical {
+                    continue;
+                }
                 if !plan.contains_key(&canonical) {
                     let id = unique_id(&dep_name, &mut used_ids);
                     plan.insert(
@@ -990,25 +1006,20 @@ impl DepAxis {
     }
 }
 
+/// Install-side dep selection. Intentionally NOT derived from `DepAxis`:
+/// the manifest strip and lockfile subset operate on *direct* dep fields
+/// (under `--dev` they drop the top-level `optionalDependencies` field,
+/// matching pnpm), but install's `DepSelection` filters the *resolved*
+/// dependency graph — folding `--dev` into `no_optional` here would also
+/// strip transitive optional sub-deps of devDependencies (e.g. an
+/// optional sub-dep of `jest`), breaking dev tooling at runtime. Only
+/// the explicit `--no-optional` flag gates the install-side optional
+/// axis; the direct `optionalDependencies` field is already gone from
+/// the deployed manifest before install runs.
 fn dep_selection_for_args(args: &DeployArgs) -> install::DepSelection {
-    use install::DepSelection::*;
-    let DepAxis {
-        prod,
-        dev,
-        optional,
-    } = DepAxis::for_args(args);
-    match (prod, dev, optional) {
-        (true, true, true) => All,
-        (true, true, false) => NoOptional,
-        (true, false, true) => Prod,
-        (true, false, false) => ProdNoOptional,
-        (false, true, true) => Dev,
-        (false, true, false) => DevNoOptional,
-        // Unreachable: mutually-exclusive `--prod`/`--dev`/`--no-prod`
-        // means at least one of `prod`/`dev` is always true. Fall
-        // through to `All` rather than panic if clap config drifts.
-        (false, false, _) => All,
-    }
+    let prod = !args.dev && !args.no_prod;
+    let dev = args.dev;
+    install::DepSelection::from_flags(prod, dev, args.no_optional)
 }
 
 /// `subset_to_importer` keep predicate: shares `DepAxis::for_args` with
@@ -1048,6 +1059,16 @@ fn keep_dep_for_args(args: &DeployArgs) -> impl Fn(&aube_lockfile::DirectDep) ->
 /// already inserted them into `plan` if they were valid).
 /// `peerDependencies` is left untouched — peers are satisfied by the
 /// consumer's installed tree, not bundled.
+/// Where the deployed package lives in the source workspace (canonical
+/// path) and the deploy target root. Used by the rewriter to recognize
+/// back-refs to the deployed package and emit a `file:` pointer back at
+/// the target instead of bundling a duplicate copy.
+#[derive(Debug, Clone, Copy)]
+struct DeployRoot<'a> {
+    deployed_canonical: &'a Path,
+    target_root: &'a Path,
+}
+
 fn rewrite_local_refs(
     manifest_path: &Path,
     source_pkg_dir: &Path,
@@ -1055,6 +1076,7 @@ fn rewrite_local_refs(
     ws_index: &BTreeMap<String, (PathBuf, String)>,
     plan: &InjectionPlan,
     strip: StripFields,
+    root: DeployRoot<'_>,
 ) -> miette::Result<()> {
     let raw = std::fs::read_to_string(manifest_path)
         .into_diagnostic()
@@ -1100,6 +1122,16 @@ fn rewrite_local_refs(
                     ));
                 };
                 let canonical = canonicalize(sibling_dir);
+                // Back-ref to the deployed package itself: a sibling B
+                // depending on `@deployed-pkg` via `workspace:*` must
+                // resolve to the deploy root, not a bundled copy
+                // (singletons would otherwise break). Emit a `file:`
+                // pointer back at `target_root` from `manifest_dir`.
+                if canonical == root.deployed_canonical {
+                    *spec_val =
+                        serde_json::Value::String(file_spec_to_dir(manifest_dir, root.target_root));
+                    continue;
+                }
                 let Some(inj) = plan.get(&canonical) else {
                     // Reachable when `peerDependencies` references a
                     // workspace sibling — peers aren't bundled (bundling
@@ -1131,8 +1163,16 @@ fn rewrite_local_refs(
                 };
                 let canonical = canonicalize(&abs);
                 let Some(inj) = plan.get(&canonical) else {
+                    // `file:`/`link:` peers are not bundled (peerDependencies
+                    // is excluded from `iter_strippable_deps`), so a peer
+                    // pointing at a relative local path can't be left as-is:
+                    // the relative path means something else under the
+                    // deploy target. Fail loudly rather than ship a manifest
+                    // whose paths resolve nowhere at runtime.
                     if *field == "peerDependencies" {
-                        continue;
+                        return Err(miette!(
+                            "aube deploy: peerDependencies cannot reference a local `file:`/`link:` target ({name:?} -> {spec:?}) — peers aren't bundled into the deploy and the relative path won't resolve under the target. Promote the peer to a regular dependency or drop the local path."
+                        ));
                     }
                     return Err(miette!(
                         "aube deploy: bundling plan missing entry for `{name}: {spec}` declared in {}",
@@ -1164,9 +1204,18 @@ fn file_spec_for_injection(manifest_dir: &Path, inj: &Injection) -> String {
     } else {
         inj.target_dir.clone()
     };
-    let rel =
-        pathdiff::diff_paths(&target_path, manifest_dir).unwrap_or_else(|| target_path.clone());
+    file_spec_to_dir(manifest_dir, &target_path)
+}
+
+/// `file:` spec from `manifest_dir` to `target` as a forward-slashed
+/// relative path. Used both for bundled-injection refs and for
+/// back-refs from a bundled sibling to the deploy root.
+fn file_spec_to_dir(manifest_dir: &Path, target: &Path) -> String {
+    let rel = pathdiff::diff_paths(target, manifest_dir).unwrap_or_else(|| target.to_path_buf());
     let mut s = rel.to_string_lossy().replace('\\', "/");
+    if s.is_empty() {
+        s = ".".to_string();
+    }
     // npm/pnpm canonicalize plain `file:` refs; `file:./x` is more
     // visually obviously a relative path than `file:x`, so prefix `./`
     // when the result doesn't already start with a path-traversal or
@@ -1231,17 +1280,19 @@ mod tests {
 
     #[test]
     fn dep_selection_covers_every_flag_combo() {
-        // Lock the (dev, no_prod, no_optional) -> DepSelection table so a
-        // future tweak to DepAxis::for_args can't silently drift any of
-        // the six reachable cells. Note `--dev` alone maps to
-        // DevNoOptional (not Dev): the deploy axis drops optional under
-        // `--dev`, matching the manifest strip and lockfile subset.
+        // Lock the (dev, no_prod, no_optional) -> DepSelection table so
+        // a future tweak to dep_selection_for_args can't silently drift.
+        // Note `--dev` alone maps to `Dev`, not `DevNoOptional`: the
+        // direct `optionalDependencies` field is stripped by
+        // `StripFields`, but install's optional axis must stay open so
+        // transitive optional sub-deps of devDependencies still resolve
+        // (see comment on `dep_selection_for_args`).
         let cases: &[(bool, bool, bool, install::DepSelection)] = &[
             (false, false, false, install::DepSelection::Prod),
             (false, false, true, install::DepSelection::ProdNoOptional),
             (false, true, false, install::DepSelection::All),
             (false, true, true, install::DepSelection::NoOptional),
-            (true, false, false, install::DepSelection::DevNoOptional),
+            (true, false, false, install::DepSelection::Dev),
             (true, false, true, install::DepSelection::DevNoOptional),
         ];
         for &(dev, no_prod, no_optional, want) in cases {
@@ -1319,6 +1370,7 @@ mod tests {
 
         let idx = ws_index(&[]); // empty: dev is stripped, sibling never looked up
         let plan = InjectionPlan::new();
+        let stub = PathBuf::from("/nonexistent-deployed");
         rewrite_local_refs(
             &path,
             tmp.path(),
@@ -1329,6 +1381,10 @@ mod tests {
                 dependencies: false,
                 dev_dependencies: true,
                 optional_dependencies: false,
+            },
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
             },
         )
         .unwrap();
@@ -1370,6 +1426,7 @@ mod tests {
                 tarball_filename: String::new(),
             },
         );
+        let stub = PathBuf::from("/nonexistent-deployed");
         rewrite_local_refs(
             &path,
             manifest_dir,
@@ -1377,6 +1434,10 @@ mod tests {
             &idx,
             &plan,
             StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: manifest_dir,
+            },
         )
         .unwrap();
 
@@ -1423,6 +1484,7 @@ mod tests {
         ] {
             idx.insert(n.to_string(), (sibling_dir.clone(), "1.2.3".to_string()));
         }
+        let stub = PathBuf::from("/nonexistent-deployed");
         rewrite_local_refs(
             &path,
             manifest_dir,
@@ -1430,6 +1492,10 @@ mod tests {
             &idx,
             &InjectionPlan::new(),
             StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: manifest_dir,
+            },
         )
         .unwrap();
 
@@ -1443,6 +1509,85 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_local_refs_writes_back_ref_to_target_root_for_deployed_pkg() {
+        // Sibling B (staged at <target>/.aube-deploy-injected/B/)
+        // declares a `workspace:*` back-dep on the deployed package.
+        // We must not bundle the deployed package as a separate
+        // injection (singleton would break); instead, rewrite the spec
+        // to a `file:` pointer back at the deploy root.
+        let tmp = tempfile::tempdir().unwrap();
+        let target_root = tmp.path();
+        let deployed_dir = target_root.join("source/deployed-pkg");
+        std::fs::create_dir_all(&deployed_dir).unwrap();
+        let deployed_canonical = canonicalize(&deployed_dir);
+        let sibling_target = target_root.join(".aube-deploy-injected").join("b");
+        std::fs::create_dir_all(&sibling_target).unwrap();
+
+        let sibling_manifest = sibling_target.join("package.json");
+        std::fs::write(
+            &sibling_manifest,
+            r#"{"name":"@test/b","version":"1.0.0","dependencies":{"@deployed/pkg":"workspace:*"}}"#,
+        )
+        .unwrap();
+
+        let mut idx = BTreeMap::new();
+        idx.insert(
+            "@deployed/pkg".to_string(),
+            (deployed_canonical.clone(), "9.9.9".to_string()),
+        );
+        rewrite_local_refs(
+            &sibling_manifest,
+            &deployed_canonical,
+            &sibling_target,
+            &idx,
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &deployed_canonical,
+                target_root,
+            },
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sibling_manifest).unwrap()).unwrap();
+        // From <target>/.aube-deploy-injected/b/ back to <target>/ is
+        // `../..`.
+        assert_eq!(out["dependencies"]["@deployed/pkg"], "file:../..");
+    }
+
+    #[test]
+    fn rewrite_local_refs_errors_on_file_peer_dep() {
+        // `file:`/`link:` peer specs aren't bundled and the relative
+        // path doesn't survive the deploy. Hard-fail rather than ship a
+        // manifest whose peer paths resolve nowhere.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","peerDependencies":{"vendor":"file:../local-vendor"}}"#,
+        )
+        .unwrap();
+        let stub = PathBuf::from("/nonexistent-deployed");
+        let err = rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("peerDependencies"), "msg was: {msg}");
+        assert!(msg.contains("vendor"), "msg was: {msg}");
+    }
+
+    #[test]
     fn rewrite_local_refs_errors_on_unknown_workspace_ref() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("package.json");
@@ -1453,6 +1598,7 @@ mod tests {
         .unwrap();
         let idx = ws_index(&[]);
         let plan = InjectionPlan::new();
+        let stub = PathBuf::from("/nonexistent-deployed");
         let err = rewrite_local_refs(
             &path,
             tmp.path(),
@@ -1460,6 +1606,10 @@ mod tests {
             &idx,
             &plan,
             StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
         )
         .unwrap_err();
         assert!(err.to_string().contains("@test/missing"));
