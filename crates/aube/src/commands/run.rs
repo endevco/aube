@@ -596,14 +596,14 @@ pub(crate) async fn exec_script(
 /// so the parallel path can collect all outcomes). Keeping one place
 /// to configure these means future security fixes land once, not
 /// twice.
-fn build_script_command(
+async fn build_script_command(
     cwd: &Path,
     manifest: &PackageJson,
     script: &str,
     cmd: &str,
     args: &[String],
     node_args: &[String],
-) -> tokio::process::Command {
+) -> miette::Result<tokio::process::Command> {
     let cmd = inject_node_args(cmd, node_args);
     let shell_cmd = if args.is_empty() {
         cmd
@@ -624,7 +624,22 @@ fn build_script_command(
     };
 
     let bin_dir = super::project_modules_dir(cwd).join(".bin");
-    let new_path = aube_scripts::prepend_path(&bin_dir);
+    let node_gyp_bin_dir = super::install::node_gyp_bootstrap::lazy_shim_bin_dir(&bin_dir)?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries = Vec::with_capacity(2 + usize::from(node_gyp_bin_dir.is_some()));
+    entries.push(bin_dir);
+    if let Some(dir) = node_gyp_bin_dir {
+        entries.push(dir);
+    }
+    entries.extend(std::env::split_paths(&path));
+    let new_path = std::env::join_paths(entries).unwrap_or(path);
+    let script_dir = if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        crate::dirs::cwd()?.join(cwd)
+    };
+    let node_gyp_project_dir =
+        crate::dirs::find_workspace_root(&script_dir).unwrap_or_else(|| script_dir.clone());
 
     // npm-compat env vars. Lifecycle path sets these in
     // aube-scripts::run_root_hook, `aube run` was bare env before.
@@ -636,6 +651,11 @@ fn build_script_command(
     command
         .env("PATH", &new_path)
         .current_dir(cwd)
+        .env(
+            "AUBE_NODE_GYP_EXE",
+            std::env::current_exe().into_diagnostic()?,
+        )
+        .env("AUBE_NODE_GYP_PROJECT_DIR", node_gyp_project_dir)
         .env("npm_lifecycle_event", script)
         .stderr(aube_scripts::child_stderr());
     if let Some(ref name) = manifest.name {
@@ -655,7 +675,7 @@ fn build_script_command(
         let init_cwd = crate::dirs::cwd().ok().unwrap_or_else(|| cwd.to_path_buf());
         command.env("INIT_CWD", init_cwd);
     }
-    command
+    Ok(command)
 }
 
 fn inject_node_args(cmd: &str, node_args: &[String]) -> String {
@@ -713,7 +733,7 @@ async fn exec_script_with_node_args(
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
 
-    let mut command = build_script_command(cwd, manifest, script, cmd, args, node_args);
+    let mut command = build_script_command(cwd, manifest, script, cmd, args, node_args).await?;
 
     let status = command
         .status()
@@ -783,6 +803,7 @@ async fn exec_script_status_with_node_args(
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
     build_script_command(cwd, manifest, script, cmd, args, node_args)
+        .await?
         .status()
         .await
         .into_diagnostic()

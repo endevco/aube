@@ -58,8 +58,12 @@ fn node_gyp_on_path() -> bool {
 /// `node-gyp` shim filenames. On Windows npm installs `node-gyp.cmd`
 /// (sometimes `.exe` alongside), so a bare-string check would always
 /// miss the bootstrapped shim and the fast-path would never fire.
-fn node_gyp_bin_exists(bin_dir: &Path) -> bool {
+pub(crate) fn node_gyp_bin_exists(bin_dir: &Path) -> bool {
     BINARY_NAMES.iter().any(|name| bin_dir.join(name).exists())
+}
+
+fn primary_binary_name() -> &'static str {
+    BINARY_NAMES[0]
 }
 
 fn tool_root() -> miette::Result<PathBuf> {
@@ -80,11 +84,15 @@ pub async fn ensure(project_dir: &Path) -> miette::Result<Option<PathBuf>> {
     if node_gyp_on_path() {
         return Ok(None);
     }
+    ensure_cached(project_dir).await.map(Some)
+}
+
+pub async fn ensure_cached(project_dir: &Path) -> miette::Result<PathBuf> {
     let root = tool_root()?;
     let tool_dir = root.join(BUCKET);
     let bin_dir = tool_dir.join("node_modules").join(".bin");
     if node_gyp_bin_exists(&bin_dir) {
-        return Ok(Some(bin_dir));
+        return Ok(bin_dir);
     }
     let lock_key = root.join(format!("{BUCKET}.lock"));
     let tool_dir_blocking = tool_dir.clone();
@@ -101,7 +109,52 @@ pub async fn ensure(project_dir: &Path) -> miette::Result<Option<PathBuf>> {
     .await
     .into_diagnostic()
     .wrap_err("node-gyp bootstrap task panicked")??;
-    Ok(Some(bin_dir))
+    Ok(bin_dir)
+}
+
+pub(crate) fn lazy_shim_bin_dir(project_bin_dir: &Path) -> miette::Result<Option<PathBuf>> {
+    if node_gyp_bin_exists(project_bin_dir) || node_gyp_on_path() {
+        return Ok(None);
+    }
+    let shim_dir = tool_root()?.join("lazy-bin");
+    std::fs::create_dir_all(&shim_dir).into_diagnostic()?;
+    write_lazy_shims(&shim_dir)?;
+    Ok(Some(shim_dir))
+}
+
+pub(crate) async fn print_bootstrapped_binary(project_dir: &Path) -> miette::Result<()> {
+    let bin_dir = ensure_cached(project_dir).await?;
+    println!("{}", bin_dir.join(primary_binary_name()).display());
+    Ok(())
+}
+
+fn write_lazy_shims(shim_dir: &Path) -> miette::Result<()> {
+    let sh = r#"#!/usr/bin/env sh
+set -eu
+real="$("$AUBE_NODE_GYP_EXE" __node-gyp-bootstrap "$AUBE_NODE_GYP_PROJECT_DIR")"
+exec "$real" "$@"
+"#;
+    let sh_path = shim_dir.join("node-gyp");
+    aube_util::fs_atomic::atomic_write(&sh_path, sh.as_bytes()).into_diagnostic()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&sh_path, std::fs::Permissions::from_mode(0o755))
+            .into_diagnostic()?;
+    }
+
+    #[cfg(windows)]
+    {
+        let cmd = r#"@echo off
+for /f "usebackq delims=" %%i in (`"%AUBE_NODE_GYP_EXE%" __node-gyp-bootstrap "%AUBE_NODE_GYP_PROJECT_DIR%"`) do set "AUBE_REAL_NODE_GYP=%%i"
+if not defined AUBE_REAL_NODE_GYP exit /b 1
+"%AUBE_REAL_NODE_GYP%" %*
+"#;
+        aube_util::fs_atomic::atomic_write(&shim_dir.join("node-gyp.cmd"), cmd.as_bytes())
+            .into_diagnostic()?;
+    }
+
+    Ok(())
 }
 
 fn bootstrap_blocking(

@@ -14,7 +14,7 @@ mod dep_selection;
 mod frozen;
 mod git_prepare;
 mod lifecycle;
-mod node_gyp_bootstrap;
+pub(crate) mod node_gyp_bootstrap;
 mod settings;
 mod side_effects_cache;
 
