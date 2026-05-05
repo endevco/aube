@@ -93,9 +93,97 @@ struct RawNpmPackage {
     #[serde(default)]
     bin: BTreeMap<String, String>,
     #[serde(default)]
-    license: Option<String>,
+    license: Option<RawNpmLicense>,
     #[serde(default)]
     funding: Option<RawNpmFunding>,
+}
+
+/// npm's `license:` field on a package entry. Modern npm writes the
+/// SPDX expression as a bare string, but older packages (e.g. `tv4`)
+/// still ship the deprecated object / array-of-objects shapes that
+/// npm copies verbatim from the package's `package.json`:
+///
+/// 1. SPDX string: `"license": "MIT"`
+/// 2. object: `"license": {"type": "MIT", "url": "…"}`
+/// 3. array: `"license": [{"type": "Public Domain", …}, {"type": "MIT", …}]`
+///
+/// Aube only carries a single `license: Option<String>` on
+/// `LockedPackage`, so on read we collapse to the first usable
+/// `type` (or bare string element); on write we always emit the
+/// bare string form.
+#[derive(Debug, Clone, Default)]
+struct RawNpmLicense {
+    value: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RawNpmLicense {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct LicenseVisitor;
+
+        impl<'de> Visitor<'de> for LicenseVisitor {
+            type Value = RawNpmLicense;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an SPDX string, a {type: ...} object, or an array of either")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(RawNpmLicense {
+                    value: Some(v.to_owned()),
+                })
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(RawNpmLicense { value: Some(v) })
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut value: Option<String> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "type" {
+                        value = map.next_value::<Option<String>>()?;
+                    } else {
+                        // Skip unknown fields (e.g. `url`).
+                        let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(RawNpmLicense { value })
+            }
+
+            fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+            where
+                S: SeqAccess<'de>,
+            {
+                // Pick the first usable license from the array; aube's
+                // single-string model can't represent a list. Drain the
+                // rest so the deserializer state stays consistent.
+                let mut chosen: Option<String> = None;
+                while let Some(item) = seq.next_element::<RawNpmLicense>()? {
+                    if chosen.is_none() {
+                        chosen = item.value;
+                    }
+                }
+                Ok(RawNpmLicense { value: chosen })
+            }
+        }
+
+        deserializer.deserialize_any(LicenseVisitor)
+    }
 }
 
 #[derive(Clone)]
@@ -402,7 +490,7 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
                 declared_dependencies: declared,
                 engines: package_entry.engines.clone(),
                 bin: package_entry.bin.clone(),
-                license: package_entry.license.clone(),
+                license: package_entry.license.as_ref().and_then(|l| l.value.clone()),
                 funding_url: package_entry.funding.as_ref().and_then(|f| f.url.clone()),
                 ..Default::default()
             },
@@ -3199,5 +3287,71 @@ mod tests {
             Some("https://github.com/fb55/htmlparser2?sponsor=1"),
         );
         assert!(graph.packages["no-funding@1.0.0"].funding_url.is_none());
+    }
+
+    /// Real-world `package-lock.json` entries can carry the legacy
+    /// object / array-of-objects shapes for `license:` (npm copies
+    /// whatever's in the package's `package.json` verbatim, and older
+    /// packages like `tv4` still ship the deprecated forms). Regression
+    /// guard for https://github.com/endevco/aube/discussions/510.
+    #[test]
+    fn test_parse_license_all_shapes() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "name": "test",
+                    "version": "1.0.0",
+                    "dependencies": {
+                        "string-license": "1.0.0",
+                        "object-license": "1.0.0",
+                        "array-license": "1.0.0",
+                        "no-license": "1.0.0"
+                    }
+                },
+                "node_modules/string-license": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-aaa",
+                    "license": "MIT"
+                },
+                "node_modules/object-license": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-bbb",
+                    "license": { "type": "ISC", "url": "https://example.com/ISC" }
+                },
+                "node_modules/array-license": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-ccc",
+                    "license": [
+                        { "type": "Public Domain", "url": "http://geraintluff.github.io/tv4/LICENSE.txt" },
+                        { "type": "MIT", "url": "http://jsonary.com/LICENSE.txt" }
+                    ]
+                },
+                "node_modules/no-license": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-ddd"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+        assert_eq!(
+            graph.packages["string-license@1.0.0"].license.as_deref(),
+            Some("MIT"),
+        );
+        assert_eq!(
+            graph.packages["object-license@1.0.0"].license.as_deref(),
+            Some("ISC"),
+        );
+        // Array form: aube collapses to the first license type.
+        assert_eq!(
+            graph.packages["array-license@1.0.0"].license.as_deref(),
+            Some("Public Domain"),
+        );
+        assert!(graph.packages["no-license@1.0.0"].license.is_none());
     }
 }
