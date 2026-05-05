@@ -4,7 +4,7 @@
 - **Usage**: `aube config list [FLAGS]`
 - **Aliases**: `ls`
 
-Print every key/value from the selected `.npmrc` file(s)
+Print every key/value from aube config and selected `.npmrc` file(s)
 
 ## Flags
 
@@ -30,9 +30,9 @@ Conflicts with `--all` since `--all` only makes sense against the merged view â€
 
 ### `--location <LOCATION>`
 
-Which `.npmrc` file(s) to list.
+Which config location(s) to list.
 
-`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.
+`merged` (default) walks `~/.npmrc`, user aube config, then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.
 
 **Choices:**
 

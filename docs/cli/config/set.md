@@ -3,7 +3,7 @@
 
 - **Usage**: `aube config set [--local] [--location <LOCATION>] <KEY> <VALUE>`
 
-Write a key=value pair to the selected `.npmrc` file
+Write a key=value pair to aube config or the selected `.npmrc` file
 
 ## Arguments
 
@@ -23,9 +23,9 @@ Shortcut for `--location project`
 
 ### `--location <LOCATION>`
 
-Which `.npmrc` file to write to.
+Which config location to write to.
 
-Defaults to `user`.
+Defaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.
 
 **Choices:**
 

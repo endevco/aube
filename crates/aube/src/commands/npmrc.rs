@@ -104,12 +104,14 @@ impl NpmrcEdit {
         before != self.lines.len()
     }
 
-    /// Atomically replace `path` with the current contents. Writes into a
-    /// sibling temp file and `rename`s over the target — on POSIX the
-    /// rename is atomic, so a crash/OOM/disk-full mid-write leaves the
-    /// original `~/.npmrc` intact rather than truncated (which would
-    /// silently wipe every stored auth token).
+    /// Atomically replace `path` with the current contents, following
+    /// the final component when `path` is a symlink. Writes into a
+    /// sibling temp file and `rename`s over the real target — on POSIX
+    /// the rename is atomic, so a crash/OOM/disk-full mid-write leaves
+    /// the original `~/.npmrc` intact rather than truncated (which
+    /// would silently wipe every stored auth token).
     pub fn save(&self, path: &Path) -> miette::Result<()> {
+        let write_path = symlink_target_or_self(path).into_diagnostic()?;
         let mut out = String::new();
         for line in &self.lines {
             match line {
@@ -123,9 +125,9 @@ impl NpmrcEdit {
             out.push('\n');
         }
 
-        aube_util::fs_atomic::atomic_write(path, out.as_bytes())
+        aube_util::fs_atomic::atomic_write(&write_path, out.as_bytes())
             .into_diagnostic()
-            .wrap_err_with(|| format!("failed to write {}", path.display()))?;
+            .wrap_err_with(|| format!("failed to write {}", write_path.display()))?;
         // .npmrc commonly holds _authToken values. Default umask
         // leaves the file at 0644 after the rename, readable by every
         // other user on a shared host. Force 0600 so only the owner
@@ -133,16 +135,28 @@ impl NpmrcEdit {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            if let Err(e) =
+                std::fs::set_permissions(&write_path, std::fs::Permissions::from_mode(0o600))
+            {
                 tracing::warn!(
                     code = aube_codes::warnings::WARN_AUBE_TOKEN_CHMOD_FAILED,
                     "failed to chmod 0600 {}: {e}. File may be world-readable, check filesystem permissions",
-                    path.display()
+                    write_path.display()
                 );
             }
         }
         Ok(())
     }
+}
+
+fn symlink_target_or_self(path: &Path) -> std::io::Result<PathBuf> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(path.to_path_buf());
+    };
+    if !meta.file_type().is_symlink() {
+        return Ok(path.to_path_buf());
+    }
+    std::fs::canonicalize(path)
 }
 
 /// Resolve the registry URL that `login` / `logout` should act on.
@@ -256,6 +270,56 @@ mod tests {
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("registry=https://r.example.com/"));
         assert!(!after.contains("_authToken"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real-npmrc");
+        let link = dir.path().join(".npmrc");
+        std::fs::write(&target, "registry=https://r.example.com/\n").unwrap();
+        std::os::unix::fs::symlink("real-npmrc", &link).unwrap();
+
+        let mut edit = NpmrcEdit::load(&link).unwrap();
+        edit.set("minimumReleaseAge", "2880");
+        edit.save(&link).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let after = std::fs::read_to_string(&target).unwrap();
+        assert!(after.contains("minimumReleaseAge=2880"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_symlink_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real-npmrc");
+        let mid = dir.path().join("dotfiles-npmrc");
+        let link = dir.path().join(".npmrc");
+        std::fs::write(&target, "registry=https://r.example.com/\n").unwrap();
+        std::os::unix::fs::symlink("real-npmrc", &mid).unwrap();
+        std::os::unix::fs::symlink("dotfiles-npmrc", &link).unwrap();
+
+        let mut edit = NpmrcEdit::load(&link).unwrap();
+        edit.set("minimumReleaseAge", "2880");
+        edit.save(&link).unwrap();
+
+        for path in [&link, &mid] {
+            assert!(
+                std::fs::symlink_metadata(path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+        let after = std::fs::read_to_string(&target).unwrap();
+        assert!(after.contains("minimumReleaseAge=2880"));
     }
 
     #[test]

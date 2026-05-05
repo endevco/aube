@@ -1,4 +1,4 @@
-use super::{Location, NpmrcEdit, resolve_aliases};
+use super::{Location, NpmrcEdit, aube_config, resolve_aliases, user_npmrc_path};
 use clap::Args;
 
 #[derive(Debug, Args)]
@@ -13,9 +13,11 @@ pub struct SetArgs {
     #[arg(long, conflicts_with = "location")]
     pub local: bool,
 
-    /// Which `.npmrc` file to write to.
+    /// Which config location to write to.
     ///
-    /// Defaults to `user`.
+    /// Defaults to `user`. Known aube settings use
+    /// `~/.config/aube/config.toml`; registry/auth and unknown keys
+    /// use `~/.npmrc`.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
 }
@@ -40,6 +42,20 @@ pub(super) fn set_value(
     location: Location,
     report: bool,
 ) -> miette::Result<()> {
+    if matches!(location, Location::User | Location::Global)
+        && let Some(meta) = aube_config::is_aube_config_key(key)
+    {
+        let path = aube_config::user_aube_config_path()?;
+        let mut edit = aube_config::AubeConfigEdit::load(&path)?;
+        edit.set(meta, value)?;
+        edit.save(&path)?;
+        remove_stale_user_npmrc_aliases(key)?;
+        if report {
+            eprintln!("set {}={} ({})", meta.name, value, path.display());
+        }
+        return Ok(());
+    }
+
     let aliases = resolve_aliases(key);
     let write_key = preferred_write_key(key, &aliases);
     let path = location.path()?;
@@ -53,6 +69,24 @@ pub(super) fn set_value(
     edit.save(&path)?;
     if report {
         eprintln!("set {}={} ({})", write_key, value, path.display());
+    }
+    Ok(())
+}
+
+fn remove_stale_user_npmrc_aliases(key: &str) -> miette::Result<()> {
+    let Ok(path) = user_npmrc_path() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut edit = NpmrcEdit::load(&path)?;
+    let mut removed = false;
+    for alias in resolve_aliases(key) {
+        removed |= edit.remove(&alias);
+    }
+    if removed {
+        edit.save(&path)?;
     }
     Ok(())
 }

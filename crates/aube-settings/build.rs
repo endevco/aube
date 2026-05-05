@@ -42,10 +42,10 @@ struct SettingDef {
     #[serde(default, rename = "typedAccessorUnused")]
     typed_accessor_unused: bool,
     /// Source precedence for the generated accessor, high-to-low.
-    /// Valid entries: `"npmrc"`, `"workspaceYaml"`. Unspecified
-    /// sources are appended in the default order
-    /// (`["npmrc", "workspaceYaml"]`) so a partial override still
-    /// falls back on every source. Settings that pnpm v11 reads
+    /// Valid entries: `"npmrc"`, `"aubeConfig"`, `"workspaceYaml"`.
+    /// Unspecified sources are appended in the default order
+    /// (`["npmrc", "aubeConfig", "workspaceYaml"]`) so a partial
+    /// override still falls back on every source. Settings that pnpm v11 reads
     /// primarily from `pnpm-workspace.yaml` (e.g.
     /// `minimumReleaseAge`) override this to
     /// `["workspaceYaml", "npmrc"]`.
@@ -255,7 +255,7 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
         };
 
         // Emit source lookups in the declared precedence order. The
-        // default order is `[npmrc, workspaceYaml]`; a setting whose
+        // default order is `[npmrc, aubeConfig, workspaceYaml]`; a setting whose
         // `precedence` field names only one source gets the rest
         // appended after it. Unknown source names panic loudly at
         // build time — cheaper to catch a typo here than in a user
@@ -282,6 +282,7 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
                 "cli" => (cli_call, "ctx.cli"),
                 "env" => (env_call, "ctx.env"),
                 "npmrc" => (npmrc_call, "ctx.npmrc"),
+                "aubeConfig" => (npmrc_call, "ctx.aube_config"),
                 "workspaceYaml" => (ws_call, "ctx.workspace_yaml"),
                 other => panic!("{name}: unknown source `{other}` in precedence"),
             };
@@ -531,10 +532,10 @@ fn pascal_case(name: &str) -> String {
 fn resolve_precedence(declared: &[String]) -> Vec<String> {
     // CLI and env are always highest-precedence, in that order. The
     // per-setting `precedence` override only reorders the file-based
-    // sources (`npmrc`, `workspaceYaml`). Anyone who declares `cli`
+    // sources (`npmrc`, `aubeConfig`, `workspaceYaml`). Anyone who declares `cli`
     // or `env` in their precedence list gets it silently dropped
     // below because it's already pinned on top.
-    let file_default = ["npmrc", "workspaceYaml"];
+    let file_default = ["npmrc", "aubeConfig", "workspaceYaml"];
     let mut files: Vec<String> = Vec::with_capacity(file_default.len());
     for src in declared {
         match src.as_str() {

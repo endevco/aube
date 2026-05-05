@@ -191,12 +191,14 @@ pub(crate) fn configure_script_settings(ctx: &aube_settings::ResolveCtx<'_>) {
 /// which already does this via `configure_script_settings` directly.
 pub(crate) fn configure_script_settings_for_cwd(cwd: &Path) -> miette::Result<()> {
     let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
+    let aube_config_entries = config::load_user_aube_config_entries();
     let (_, raw_workspace) = aube_manifest::workspace::load_both(cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
     let env_snapshot = aube_settings::values::capture_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
+        aube_config: &aube_config_entries,
         workspace_yaml: &raw_workspace,
         env: &env_snapshot,
         cli: &[],
@@ -401,6 +403,7 @@ pub(crate) fn with_settings_ctx<T>(
     f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,
 ) -> T {
     let npmrc = aube_registry::config::load_npmrc_entries(cwd);
+    let aube_config = config::load_user_aube_config_entries();
     let raw_workspace = aube_manifest::workspace::load_raw(cwd).unwrap_or_default();
     // `process_env()` returns a `&'static` borrow of the once-captured
     // env. Avoids cloning ~200-500 String pairs every time a command
@@ -409,6 +412,7 @@ pub(crate) fn with_settings_ctx<T>(
     let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &aube_config,
         workspace_yaml: &raw_workspace,
         env,
         cli: &[],
@@ -512,12 +516,14 @@ pub(crate) fn build_resolver(
 /// boilerplate.
 pub(crate) fn resolve_fetch_policy(cwd: &std::path::Path) -> aube_registry::config::FetchPolicy {
     let npmrc = aube_registry::config::load_npmrc_entries(cwd);
+    let aube_config = config::load_user_aube_config_entries();
     let workspace_yaml = aube_manifest::workspace::load_both(cwd)
         .map(|(_, raw)| raw)
         .unwrap_or_default();
     let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &aube_config,
         workspace_yaml: &workspace_yaml,
         env,
         cli: fetch_cli_overrides(),
@@ -663,6 +669,7 @@ mod resolve_virtual_store_dir_tests {
     ) -> ResolveCtx<'a> {
         ResolveCtx {
             npmrc: &[],
+            aube_config: &[],
             workspace_yaml: ws,
             env,
             cli: &[],
@@ -1314,10 +1321,12 @@ enum VerifyDepsBeforeRun {
 
 fn resolve_verify_deps_before_run(cwd: &std::path::Path) -> miette::Result<VerifyDepsBeforeRun> {
     let npmrc = aube_registry::config::load_npmrc_entries(cwd);
+    let aube_config = config::load_user_aube_config_entries();
     let empty_ws = std::collections::BTreeMap::new();
     let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &aube_config,
         workspace_yaml: &empty_ws,
         env,
         cli: &[],

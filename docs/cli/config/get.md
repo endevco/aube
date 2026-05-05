@@ -27,9 +27,9 @@ Shortcut for `--location project`
 
 ### `--location <LOCATION>`
 
-Which `.npmrc` file(s) to read.
+Which config location(s) to read.
 
-Defaults to `merged` — the last-write-wins view of `~/.npmrc` then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup to a single file.
+Defaults to `merged` — the last-write-wins view of user aube config, `~/.npmrc`, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup.
 
 **Choices:**
 

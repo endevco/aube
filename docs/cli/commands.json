@@ -1400,9 +1400,9 @@
               {
                 "name": "location",
                 "usage": "--location <LOCATION>",
-                "help": "Which `.npmrc` file to act on",
-                "help_long": "Which `.npmrc` file to act on.\n\nDefaults to `user` (`~/.npmrc`), matching pnpm.",
-                "help_first_line": "Which `.npmrc` file to act on",
+                "help": "Which config location to act on",
+                "help_long": "Which config location to act on.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.",
+                "help_first_line": "Which config location to act on",
                 "short": [],
                 "long": [
                   "location"
@@ -1430,7 +1430,7 @@
             ],
             "mounts": [],
             "hide": false,
-            "help": "Delete a key from the selected `.npmrc` file",
+            "help": "Delete a key from aube config or the selected `.npmrc` file",
             "name": "delete",
             "aliases": [
               "rm",
@@ -1545,9 +1545,9 @@
               {
                 "name": "location",
                 "usage": "--location <LOCATION>",
-                "help": "Which `.npmrc` file(s) to read",
-                "help_long": "Which `.npmrc` file(s) to read.\n\nDefaults to `merged` — the last-write-wins view of `~/.npmrc` then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup to a single file.",
-                "help_first_line": "Which `.npmrc` file(s) to read",
+                "help": "Which config location(s) to read",
+                "help_long": "Which config location(s) to read.\n\nDefaults to `merged` — the last-write-wins view of user aube config, `~/.npmrc`, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup.",
+                "help_first_line": "Which config location(s) to read",
                 "short": [],
                 "long": [
                   "location"
@@ -1633,9 +1633,9 @@
               {
                 "name": "location",
                 "usage": "--location <LOCATION>",
-                "help": "Which `.npmrc` file(s) to list",
-                "help_long": "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.",
-                "help_first_line": "Which `.npmrc` file(s) to list",
+                "help": "Which config location(s) to list",
+                "help_long": "Which config location(s) to list.\n\n`merged` (default) walks `~/.npmrc`, user aube config, then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.",
+                "help_first_line": "Which config location(s) to list",
                 "short": [],
                 "long": [
                   "location"
@@ -1661,7 +1661,7 @@
             ],
             "mounts": [],
             "hide": false,
-            "help": "Print every key/value from the selected `.npmrc` file(s)",
+            "help": "Print every key/value from aube config and selected `.npmrc` file(s)",
             "name": "list",
             "aliases": [
               "ls"
@@ -1712,9 +1712,9 @@
               {
                 "name": "location",
                 "usage": "--location <LOCATION>",
-                "help": "Which `.npmrc` file to write to",
-                "help_long": "Which `.npmrc` file to write to.\n\nDefaults to `user`.",
-                "help_first_line": "Which `.npmrc` file to write to",
+                "help": "Which config location to write to",
+                "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.",
+                "help_first_line": "Which config location to write to",
                 "short": [],
                 "long": [
                   "location"
@@ -1742,7 +1742,7 @@
             ],
             "mounts": [],
             "hide": false,
-            "help": "Write a key=value pair to the selected `.npmrc` file",
+            "help": "Write a key=value pair to aube config or the selected `.npmrc` file",
             "name": "set",
             "aliases": [],
             "hidden_aliases": [],
@@ -1810,9 +1810,9 @@
           {
             "name": "location",
             "usage": "--location <LOCATION>",
-            "help": "Which `.npmrc` file(s) to list",
-            "help_long": "Which `.npmrc` file(s) to list.\n\n`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.",
-            "help_first_line": "Which `.npmrc` file(s) to list",
+            "help": "Which config location(s) to list",
+            "help_long": "Which config location(s) to list.\n\n`merged` (default) walks `~/.npmrc`, user aube config, then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.",
+            "help_first_line": "Which config location(s) to list",
             "short": [],
             "long": [
               "location"
@@ -4184,9 +4184,9 @@
           {
             "name": "location",
             "usage": "--location <LOCATION>",
-            "help": "Which `.npmrc` file(s) to read",
-            "help_long": "Which `.npmrc` file(s) to read.\n\nDefaults to `merged` — the last-write-wins view of `~/.npmrc` then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup to a single file.",
-            "help_first_line": "Which `.npmrc` file(s) to read",
+            "help": "Which config location(s) to read",
+            "help_long": "Which config location(s) to read.\n\nDefaults to `merged` — the last-write-wins view of user aube config, `~/.npmrc`, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup.",
+            "help_first_line": "Which config location(s) to read",
             "short": [],
             "long": [
               "location"
@@ -8985,9 +8985,9 @@
           {
             "name": "location",
             "usage": "--location <LOCATION>",
-            "help": "Which `.npmrc` file to write to",
-            "help_long": "Which `.npmrc` file to write to.\n\nDefaults to `user`.",
-            "help_first_line": "Which `.npmrc` file to write to",
+            "help": "Which config location to write to",
+            "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.",
+            "help_first_line": "Which config location to write to",
             "short": [],
             "long": [
               "location"

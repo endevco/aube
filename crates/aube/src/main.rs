@@ -802,10 +802,12 @@ fn inner_main() -> miette::Result<()> {
         let use_stderr_active = cli.use_stderr
             || startup_cwd(&cli).ok().is_some_and(|cwd| {
                 let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+                let aube_config = commands::config::load_user_aube_config_entries();
                 let ws = std::collections::BTreeMap::new();
                 let env_snap = aube_settings::values::capture_env();
                 let ctx = aube_settings::ResolveCtx {
                     npmrc: &npmrc,
+                    aube_config: &aube_config,
                     workspace_yaml: &ws,
                     env: &env_snap,
                     cli: &[],
@@ -1299,10 +1301,12 @@ fn startup_cwd(cli: &Cli) -> miette::Result<PathBuf> {
 fn load_startup_settings() -> miette::Result<StartupSettings> {
     let cwd = std::env::current_dir().into_diagnostic()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+    let aube_config = commands::config::load_user_aube_config_entries();
     let empty_ws = std::collections::BTreeMap::new();
     let env = aube_settings::values::capture_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &aube_config,
         workspace_yaml: &empty_ws,
         env: &env,
         cli: &[],
@@ -1694,8 +1698,10 @@ async fn run_install_command(
         .wrap_err("failed to load workspace config")?;
     let env = aube_settings::values::capture_env();
     let cli_flags = args.to_cli_flag_bag(global_frozen, global_gvs);
+    let aube_config = commands::config::load_user_aube_config_entries();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &aube_config,
         workspace_yaml: &raw_ws,
         env: &env,
         cli: &cli_flags,

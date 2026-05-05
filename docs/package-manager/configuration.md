@@ -1,8 +1,8 @@
 # Configuration
 
 aube reads pnpm-compatible configuration from project `.npmrc`, user `.npmrc`,
-`aube-workspace.yaml`, environment variables, and supported CLI flags. Existing
-`pnpm-workspace.yaml` files are migration inputs.
+user aube config, `aube-workspace.yaml`, environment variables, and supported
+CLI flags. Existing `pnpm-workspace.yaml` files are migration inputs.
 
 ## Defaults worth knowing
 
@@ -16,6 +16,24 @@ aube reads pnpm-compatible configuration from project `.npmrc`, user `.npmrc`,
 | Jailed builds | `jailBuilds=false` | Opt in to running approved dependency scripts with a restricted env, temporary `HOME`, and native macOS jail. Planned to default to `true` in the next major version. |
 | Auto-install before scripts | enabled | `aube run`, `aube test`, and `aube exec` repair stale installs first. |
 
+## User aube config
+
+`aube config set` writes known aube-owned user settings to
+`~/.config/aube/config.toml` by default. If `XDG_CONFIG_HOME` is set, the path
+is `$XDG_CONFIG_HOME/aube/config.toml`.
+
+```toml
+minimumReleaseAge = 2880
+autoInstallPeers = true
+nodeLinker = "isolated"
+packageImportMethod = "auto"
+```
+
+This keeps aube-only settings out of `~/.npmrc`, so npm does not warn about
+unknown user config keys. aube still reads old user `.npmrc` settings for
+compatibility, but `aube config set <known-setting> <value>` removes stale user
+`.npmrc` aliases for that same setting so the new TOML value takes effect.
+
 ## .npmrc
 
 ```ini
@@ -26,7 +44,13 @@ node-linker=isolated
 package-import-method=auto
 ```
 
-See the [settings reference](/settings/) for the full list — each entry lists its `.npmrc` key alongside the other sources.
+Use `.npmrc` for registry, scoped registry, auth, and project-local
+pnpm-compatible settings. Registry auth still lives in `.npmrc` so npm and
+other package-manager tools can share the same credentials. aube preserves
+symlinked `.npmrc` files when it writes registry/auth keys.
+
+See the [settings reference](/settings/) for the full list — each entry lists
+its `.npmrc` key alongside the other sources.
 
 ## Workspace YAML
 
@@ -79,6 +103,10 @@ aube config get registry
 aube config set auto-install-peers false
 aube config list --json
 ```
+
+Known user/global aube settings are stored in user aube config. Unknown keys
+and registry/auth keys are stored in `.npmrc`; `--local` and
+`--location project` write project `.npmrc`.
 
 ## `package.json` — `pnpm.*` and `aube.*` namespaces
 

@@ -21,8 +21,9 @@
 //!
 //! Supported scalar types are `bool`, `string` (including `path` and
 //! quoted-union enum strings), `int` (as `u64`), and `list<string>`.
-//! Supported sources are `.npmrc` entries, a raw `pnpm-workspace.yaml`
-//! map, captured environment variables, and parsed CLI flags.
+//! Supported sources are `.npmrc` entries, aube's user config file, a
+//! raw `pnpm-workspace.yaml` map, captured environment variables, and
+//! parsed CLI flags.
 
 use std::sync::OnceLock;
 
@@ -54,6 +55,10 @@ pub struct ResolveCtx<'a> {
     /// Merged `.npmrc` entries (user-scope first, project-scope last),
     /// as returned by `aube_registry::config::load_npmrc_entries`.
     pub npmrc: &'a [(String, String)],
+    /// Entries from aube's user config file (`config.toml`). Keys use
+    /// canonical setting names, with npmrc aliases accepted for manual
+    /// edits.
+    pub aube_config: &'a [(String, String)],
     /// Raw top-level map from `pnpm-workspace.yaml` /
     /// `aube-workspace.yaml`, as returned by
     /// `aube_manifest::workspace::load_raw`.
@@ -81,6 +86,7 @@ impl<'a> ResolveCtx<'a> {
     ) -> Self {
         Self {
             npmrc,
+            aube_config: &[],
             workspace_yaml,
             env: &[],
             cli: &[],
@@ -124,9 +130,9 @@ pub fn process_env() -> &'static [(String, String)] {
 /// returns `bool`, `store_dir` returns `Option<String>`, and
 /// calling either on the wrong type is a compile error.
 ///
-/// Precedence is `cli > env > npmrc > workspaceYaml`. The
+/// Precedence is `cli > env > npmrc > aubeConfig > workspaceYaml`. The
 /// per-setting `precedence` override in `settings.toml` reorders the
-/// file-based sources (`npmrc`, `workspaceYaml`) but cannot demote
+/// file-based sources (`npmrc`, `aubeConfig`, `workspaceYaml`) but cannot demote
 /// `cli` or `env` off the top — CLI flags and environment variables
 /// always win. Settings with concrete parseable defaults return the
 /// defaulted value directly; settings whose default is undefined or
@@ -897,6 +903,7 @@ mod tests {
         let cli = vec![("auto-install-peers".to_string(), "true".to_string())];
         let ctx = ResolveCtx {
             npmrc: &npmrc,
+            aube_config: &[],
             workspace_yaml: &ws,
             env: &env,
             cli: &cli,
@@ -907,6 +914,7 @@ mod tests {
     #[test]
     fn env_wins_over_file_sources_when_cli_empty() {
         let npmrc = entries(&[("auto-install-peers", "false")]);
+        let aube_config = entries(&[("autoInstallPeers", "false")]);
         let ws = raw_yaml("autoInstallPeers: false\n");
         let env = vec![(
             "npm_config_auto_install_peers".to_string(),
@@ -914,11 +922,37 @@ mod tests {
         )];
         let ctx = ResolveCtx {
             npmrc: &npmrc,
+            aube_config: &aube_config,
             workspace_yaml: &ws,
             env: &env,
             cli: &[],
         };
         assert!(resolved::auto_install_peers(&ctx));
+    }
+
+    #[test]
+    fn generated_accessor_reads_aube_config_between_npmrc_and_workspace_yaml() {
+        let npmrc = Vec::new();
+        let aube_config = entries(&[("minimumReleaseAge", "2880")]);
+        let ws = raw_yaml("minimumReleaseAge: 1440\n");
+        let ctx = ResolveCtx {
+            npmrc: &npmrc,
+            aube_config: &aube_config,
+            workspace_yaml: &ws,
+            env: &[],
+            cli: &[],
+        };
+        assert_eq!(resolved::minimum_release_age(&ctx), 1440);
+
+        let ws = BTreeMap::new();
+        let ctx = ResolveCtx {
+            npmrc: &npmrc,
+            aube_config: &aube_config,
+            workspace_yaml: &ws,
+            env: &[],
+            cli: &[],
+        };
+        assert_eq!(resolved::minimum_release_age(&ctx), 2880);
     }
 
     #[test]

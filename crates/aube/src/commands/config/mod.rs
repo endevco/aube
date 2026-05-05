@@ -1,11 +1,13 @@
-//! `aube config` — read/write settings in `.npmrc`.
+//! `aube config` — read/write settings in aube config and `.npmrc`.
 //!
 //! The command's known setting surface is derived from
 //! [`aube_settings::meta::SETTINGS`], generated at build time from
-//! `settings.toml`. Unknown keys are still accepted verbatim because
-//! `.npmrc` is free-form and includes auth-token entries such as
-//! `//registry.npmjs.org/:_authToken`.
+//! `settings.toml`. Known aube-owned user/global settings are written
+//! to `~/.config/aube/config.toml`; unknown and registry/auth keys are
+//! still accepted verbatim because `.npmrc` is free-form and includes
+//! auth-token entries such as `//registry.npmjs.org/:_authToken`.
 
+mod aube_config;
 mod delete;
 mod explain;
 mod find;
@@ -34,7 +36,7 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    /// Delete a key from the selected `.npmrc` file
+    /// Delete a key from aube config or the selected `.npmrc` file
     #[command(visible_aliases = ["rm", "remove", "unset"])]
     Delete(delete::DeleteArgs),
     /// Explain a known setting, including defaults and supported config sources
@@ -44,10 +46,10 @@ pub enum ConfigCommand {
     Find(find::FindArgs),
     /// Print the effective value of a key
     Get(GetArgs),
-    /// Print every key/value from the selected `.npmrc` file(s)
+    /// Print every key/value from aube config and selected `.npmrc` file(s)
     #[command(visible_alias = "ls")]
     List(list::ListArgs),
-    /// Write a key=value pair to the selected `.npmrc` file
+    /// Write a key=value pair to aube config or the selected `.npmrc` file
     Set(SetArgs),
     /// Browse known settings in an interactive terminal UI
     Tui,
@@ -65,9 +67,11 @@ pub(crate) struct KeyArgs {
     #[arg(long, conflicts_with = "location")]
     pub local: bool,
 
-    /// Which `.npmrc` file to act on.
+    /// Which config location to act on.
     ///
-    /// Defaults to `user` (`~/.npmrc`), matching pnpm.
+    /// Defaults to `user`. Known aube settings use
+    /// `~/.config/aube/config.toml`; registry/auth and unknown keys
+    /// use `~/.npmrc`.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
 }
@@ -84,7 +88,8 @@ impl KeyArgs {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum Location {
-    /// `~/.npmrc`
+    /// User config (`~/.config/aube/config.toml` for known aube
+    /// settings, `~/.npmrc` for registry/auth and unknown keys)
     User,
     /// `<cwd>/.npmrc`
     Project,
@@ -94,10 +99,10 @@ pub(crate) enum Location {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum ListLocation {
-    /// Merge `~/.npmrc` + project `.npmrc`, last-write-wins (same
-    /// precedence install uses).
+    /// Merge `~/.npmrc`, user aube config, and project `.npmrc`,
+    /// last-write-wins (same precedence install uses).
     Merged,
-    /// Only `~/.npmrc`
+    /// Only user config (`~/.config/aube/config.toml` + `~/.npmrc`)
     User,
     /// Only `<cwd>/.npmrc`
     Project,
@@ -105,6 +110,7 @@ pub(crate) enum ListLocation {
     Global,
 }
 
+pub(crate) use aube_config::load_user_entries as load_user_aube_config_entries;
 pub(crate) use get_cmd::GetArgs;
 pub(crate) use set_cmd::SetArgs;
 
@@ -263,10 +269,11 @@ fn search_text_matches(haystack: &str, term: &str) -> bool {
         .any(|word| word.starts_with(term))
 }
 
-/// Read `~/.npmrc` then `<cwd>/.npmrc` and return every entry in file
-/// order (user-first, project-second) so a later duplicate wins.
+/// Read aube's user config, `~/.npmrc`, then `<cwd>/.npmrc` and return
+/// every entry in file order so a later duplicate wins.
 pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
+    out.extend(aube_config::load_user_entries());
     if let Ok(user) = user_npmrc_path() {
         out.extend(read_single(&user)?);
     }

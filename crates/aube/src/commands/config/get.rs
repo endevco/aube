@@ -20,11 +20,11 @@ pub struct GetArgs {
     #[arg(long, conflicts_with = "location")]
     pub local: bool,
 
-    /// Which `.npmrc` file(s) to read.
+    /// Which config location(s) to read.
     ///
-    /// Defaults to `merged` — the last-write-wins view of `~/.npmrc`
-    /// then `./.npmrc`, matching what install actually sees. Use
-    /// `user` or `project` to restrict the lookup to a single file.
+    /// Defaults to `merged` — the last-write-wins view of user aube
+    /// config, `~/.npmrc`, then `./.npmrc`, matching what install
+    /// actually sees. Use `user` or `project` to restrict the lookup.
     #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
     pub location: ListLocation,
 }
@@ -44,7 +44,11 @@ pub fn run(args: GetArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root_or_cwd()?;
     let entries: Vec<(String, String)> = match args.effective_location() {
         ListLocation::Merged => read_merged(&cwd)?,
-        ListLocation::User | ListLocation::Global => read_single(&user_npmrc_path()?)?,
+        ListLocation::User | ListLocation::Global => {
+            let mut entries = super::aube_config::load_user_entries();
+            entries.extend(read_single(&user_npmrc_path()?)?);
+            entries
+        }
         ListLocation::Project => read_single(&cwd.join(".npmrc"))?,
     };
 
