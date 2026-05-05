@@ -1399,6 +1399,20 @@ mod tests {
         // by the real host. Without key-side expansion the entry was
         // stored under the literal `${NEXUS_NPM_AUTH_URL}` and the
         // tarball request never picked up the basic-auth credential.
+        //
+        // RAII guard so a panic between `set_var` and the manual
+        // cleanup can't leak these names into the rest of the test
+        // run (the harness runs cases in parallel threads on shared
+        // process-wide env).
+        struct EnvVars(&'static [&'static str]);
+        impl Drop for EnvVars {
+            fn drop(&mut self) {
+                for name in self.0 {
+                    unsafe { std::env::remove_var(name) };
+                }
+            }
+        }
+        let _vars = EnvVars(&["AUBE_TEST_NEXUS_HOST_CFG", "AUBE_TEST_NEXUS_TOKEN_CFG"]);
         unsafe {
             std::env::set_var(
                 "AUBE_TEST_NEXUS_HOST_CFG",
@@ -1416,11 +1430,6 @@ mod tests {
         .unwrap();
 
         let entries = parse_npmrc(&rc).unwrap();
-
-        unsafe {
-            std::env::remove_var("AUBE_TEST_NEXUS_HOST_CFG");
-            std::env::remove_var("AUBE_TEST_NEXUS_TOKEN_CFG");
-        }
 
         assert_eq!(
             entries,
