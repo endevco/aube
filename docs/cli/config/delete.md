@@ -4,7 +4,7 @@
 - **Usage**: `aube config delete [--local] [--location <LOCATION>] <KEY>`
 - **Aliases**: `rm`, `remove`, `unset`
 
-Delete a key from the selected `.npmrc` file
+Delete a key from aube config or the selected `.npmrc` file
 
 ## Arguments
 
@@ -22,9 +22,9 @@ Shortcut for `--location project`
 
 ### `--location <LOCATION>`
 
-Which `.npmrc` file to act on.
+Which config location to act on.
 
-Defaults to `user` (`~/.npmrc`), matching pnpm.
+Defaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.
 
 **Choices:**
 

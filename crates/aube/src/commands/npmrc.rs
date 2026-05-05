@@ -156,12 +156,7 @@ fn symlink_target_or_self(path: &Path) -> std::io::Result<PathBuf> {
     if !meta.file_type().is_symlink() {
         return Ok(path.to_path_buf());
     }
-    let target = std::fs::read_link(path)?;
-    if target.is_absolute() {
-        Ok(target)
-    } else {
-        Ok(path.parent().unwrap_or_else(|| Path::new("")).join(target))
-    }
+    std::fs::canonicalize(path)
 }
 
 /// Resolve the registry URL that `login` / `logout` should act on.
@@ -296,6 +291,33 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+        let after = std::fs::read_to_string(&target).unwrap();
+        assert!(after.contains("minimumReleaseAge=2880"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_symlink_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real-npmrc");
+        let mid = dir.path().join("dotfiles-npmrc");
+        let link = dir.path().join(".npmrc");
+        std::fs::write(&target, "registry=https://r.example.com/\n").unwrap();
+        std::os::unix::fs::symlink("real-npmrc", &mid).unwrap();
+        std::os::unix::fs::symlink("dotfiles-npmrc", &link).unwrap();
+
+        let mut edit = NpmrcEdit::load(&link).unwrap();
+        edit.set("minimumReleaseAge", "2880");
+        edit.save(&link).unwrap();
+
+        for path in [&link, &mid] {
+            assert!(
+                std::fs::symlink_metadata(path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
         let after = std::fs::read_to_string(&target).unwrap();
         assert!(after.contains("minimumReleaseAge=2880"));
     }

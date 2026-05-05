@@ -34,12 +34,13 @@ pub async fn run(script_args: ScriptArgs) -> miette::Result<()> {
 
     if !no_install {
         let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+        let aube_config = crate::commands::config::load_user_aube_config_entries();
         let raw_ws = aube_manifest::workspace::load_raw(&cwd)
             .map_err(|e| miette!("failed to load workspace config: {e}"))?;
         let env = aube_settings::values::capture_env();
         let ctx = aube_settings::ResolveCtx {
             npmrc: &npmrc,
-            aube_config: &[],
+            aube_config: &aube_config,
             workspace_yaml: &raw_ws,
             env: &env,
             cli: &[],

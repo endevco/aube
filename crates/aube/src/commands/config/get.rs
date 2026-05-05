@@ -20,11 +20,11 @@ pub struct GetArgs {
     #[arg(long, conflicts_with = "location")]
     pub local: bool,
 
-    /// Which `.npmrc` file(s) to read.
+    /// Which config location(s) to read.
     ///
-    /// Defaults to `merged` — the last-write-wins view of `~/.npmrc`
-    /// then `./.npmrc`, matching what install actually sees. Use
-    /// `user` or `project` to restrict the lookup to a single file.
+    /// Defaults to `merged` — the last-write-wins view of `~/.npmrc`,
+    /// user aube config, then `./.npmrc`, matching what install
+    /// actually sees. Use `user` or `project` to restrict the lookup.
     #[arg(long, value_enum, default_value_t = ListLocation::Merged)]
     pub location: ListLocation,
 }

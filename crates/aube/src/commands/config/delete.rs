@@ -1,5 +1,6 @@
 use super::{KeyArgs, Location, NpmrcEdit, aube_config, resolve_aliases, user_npmrc_path};
 use miette::miette;
+use std::path::PathBuf;
 
 pub type DeleteArgs = KeyArgs;
 
@@ -9,13 +10,13 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
         && aube_config::is_aube_config_key(&args.key).is_some()
     {
         let path = aube_config::user_aube_config_path()?;
+        let mut removed_paths: Vec<PathBuf> = Vec::new();
         let mut removed = false;
-        if path.exists() {
-            let mut edit = aube_config::AubeConfigEdit::load(&path)?;
-            removed |= edit.remove_aliases(&aliases);
-            if removed {
-                edit.save(&path)?;
-            }
+        let mut edit = aube_config::AubeConfigEdit::load(&path)?;
+        if edit.remove_aliases(&aliases) {
+            edit.save(&path)?;
+            removed = true;
+            removed_paths.push(path.clone());
         }
         if let Ok(npmrc_path) = user_npmrc_path()
             && npmrc_path.exists()
@@ -28,12 +29,22 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
             if npmrc_removed {
                 removed = true;
                 edit.save(&npmrc_path)?;
+                removed_paths.push(npmrc_path);
             }
         }
         if !removed {
-            return Err(miette!("{} not set in {}", args.key, path.display()));
+            return Err(miette!(
+                "{} not set in {} or user .npmrc",
+                args.key,
+                path.display()
+            ));
         }
-        eprintln!("deleted {} ({})", args.key, path.display());
+        let paths = removed_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("deleted {} ({})", args.key, paths);
         return Ok(());
     }
 

@@ -24,11 +24,12 @@ pub fn run(name: &str, args: &FallbackArgs) -> miette::Result<i32> {
     args.network.install_overrides();
     let cwd = crate::dirs::cwd()?;
     let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+    let aube_config = crate::commands::config::load_user_aube_config_entries();
     let empty_ws = std::collections::BTreeMap::new();
     let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
-        aube_config: &[],
+        aube_config: &aube_config,
         workspace_yaml: &empty_ws,
         env,
         cli: &[],

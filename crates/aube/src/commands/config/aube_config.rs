@@ -8,14 +8,19 @@ pub(super) struct AubeConfigEdit {
 
 impl AubeConfigEdit {
     pub(super) fn load(path: &Path) -> miette::Result<Self> {
-        if !path.exists() {
-            return Ok(Self {
-                table: toml::map::Map::new(),
-            });
-        }
-        let raw = std::fs::read_to_string(path)
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to read {}", path.display()))?;
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    table: toml::map::Map::new(),
+                });
+            }
+            Err(e) => {
+                return Err(e)
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("failed to read {}", path.display()));
+            }
+        };
         let value = raw
             .parse::<toml::Value>()
             .into_diagnostic()

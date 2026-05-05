@@ -3,7 +3,7 @@
 
 - **Usage**: `aube config [FLAGS] <SUBCOMMAND>`
 
-Read and write settings in `.npmrc`
+Read and write settings in aube config and `.npmrc`
 
 ## Flags
 
@@ -29,9 +29,9 @@ Conflicts with `--all` since `--all` only makes sense against the merged view â€
 
 ### `--location <LOCATION>`
 
-Which `.npmrc` file(s) to list.
+Which config location(s) to list.
 
-`merged` (default) walks `~/.npmrc` then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.
+`merged` (default) walks `~/.npmrc`, user aube config, then the project's `.npmrc` with last-write-wins precedence, matching how install reads config.
 
 **Choices:**
 
