@@ -320,7 +320,7 @@ cmd config help="Read and write settings in `.npmrc`" {
         }
         flag --local help="Shortcut for `--location project`"
         flag --location help="Which config location(s) to read" default=merged {
-            long_help "Which config location(s) to read.\n\nDefaults to `merged` — the last-write-wins view of `~/.npmrc`, user aube config, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup."
+            long_help "Which config location(s) to read.\n\nDefaults to `merged` — the last-write-wins view of user aube config, `~/.npmrc`, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup."
             arg <LOCATION> {
                 choices merged user project global
             }
@@ -756,7 +756,7 @@ cmd get hide=#true help="Alias for `config get` (hidden; prefer `config get`)" {
     }
     flag --local help="Shortcut for `--location project`"
     flag --location help="Which config location(s) to read" default=merged {
-        long_help "Which config location(s) to read.\n\nDefaults to `merged` — the last-write-wins view of `~/.npmrc`, user aube config, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup."
+        long_help "Which config location(s) to read.\n\nDefaults to `merged` — the last-write-wins view of user aube config, `~/.npmrc`, then `./.npmrc`, matching what install actually sees. Use `user` or `project` to restrict the lookup."
         arg <LOCATION> {
             choices merged user project global
         }
