@@ -389,7 +389,9 @@ pub(crate) fn resolve_exec_shim(bin_path: &Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_node_backed_bin, resolve_exec_shim, resolve_node_bin_target};
+    #[cfg(unix)]
+    use super::resolve_node_bin_target;
+    use super::{is_node_backed_bin, resolve_exec_shim};
 
     #[test]
     fn resolve_exec_shim_returns_bare_path_when_no_sibling() {

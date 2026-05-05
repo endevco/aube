@@ -20,10 +20,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub if_present: bool,
     /// Forward `--inspect` to a Node-backed script or local binary.
-    #[arg(long, value_name = "[HOST:]PORT", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    #[arg(long, value_name = "[[HOST:]PORT]", num_args = 0..=1, require_equals = true, default_missing_value = "")]
     pub inspect: Option<String>,
     /// Forward `--inspect-brk` to a Node-backed script or local binary.
-    #[arg(long, value_name = "[HOST:]PORT", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    #[arg(long, value_name = "[[HOST:]PORT]", num_args = 0..=1, require_equals = true, default_missing_value = "")]
     pub inspect_brk: Option<String>,
     /// Continue recursive execution after a script fails.
     ///
@@ -584,24 +584,7 @@ pub(crate) async fn exec_script(
     script: &str,
     args: &[String],
 ) -> miette::Result<()> {
-    let cmd = manifest
-        .scripts
-        .get(script)
-        .ok_or_else(|| miette!("script not found: {script}"))?;
-
-    let mut command = build_script_command(cwd, manifest, script, cmd, args, &[]);
-
-    let status = command
-        .status()
-        .await
-        .into_diagnostic()
-        .wrap_err("failed to execute script")?;
-
-    if !status.success() {
-        std::process::exit(aube_scripts::exit_code_from_status(status));
-    }
-
-    Ok(())
+    exec_script_with_node_args(cwd, manifest, script, args, &[]).await
 }
 
 /// Build a fully-configured `tokio::process::Command` for running a
@@ -753,15 +736,7 @@ pub(crate) async fn exec_script_status(
     script: &str,
     args: &[String],
 ) -> miette::Result<std::process::ExitStatus> {
-    let cmd = manifest
-        .scripts
-        .get(script)
-        .ok_or_else(|| miette!("script not found: {script}"))?;
-    build_script_command(cwd, manifest, script, cmd, args, &[])
-        .status()
-        .await
-        .into_diagnostic()
-        .wrap_err("failed to execute script")
+    exec_script_status_with_node_args(cwd, manifest, script, args, &[]).await
 }
 
 pub(crate) async fn exec_script_status_chain(
@@ -832,7 +807,10 @@ mod tests {
         let args = vec!["--inspect".to_string()];
         assert_eq!(
             inject_node_args("node test.js", &args),
-            "node '--inspect' test.js"
+            format!(
+                "node {} test.js",
+                aube_scripts::shell_quote_arg("--inspect")
+            )
         );
         assert_eq!(inject_node_args("tsx test.ts", &args), "tsx test.ts");
         assert_eq!(
