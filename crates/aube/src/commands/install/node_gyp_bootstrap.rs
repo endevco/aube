@@ -58,7 +58,7 @@ fn node_gyp_on_path() -> bool {
 /// `node-gyp` shim filenames. On Windows npm installs `node-gyp.cmd`
 /// (sometimes `.exe` alongside), so a bare-string check would always
 /// miss the bootstrapped shim and the fast-path would never fire.
-fn node_gyp_bin_exists(bin_dir: &Path) -> bool {
+pub(crate) fn node_gyp_bin_exists(bin_dir: &Path) -> bool {
     BINARY_NAMES.iter().any(|name| bin_dir.join(name).exists())
 }
 

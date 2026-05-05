@@ -17,7 +17,7 @@ Network is acceptable for tests when the offline registry can't host the fixture
 Triaged (decisions recorded, awaiting work):
 
 - ~~**support** — hooks.ts:580 — readPackage during `aube remove` in a workspace.~~ Ported in [test/pnpm_install_hooks.bats](pnpm_install_hooks.bats) — workspace install with a hook injecting a peerDep into `is-odd`, then `aube remove is-even` from the sub-project; the survivor's snapshot retains the injected peerDep through the chained install.
-- **support** — lifecycleScripts.ts:128 — node-gyp on PATH (test-only). Port with network, gate slow.
+- ~~**support** — lifecycleScripts.ts:128 — node-gyp on PATH.~~ Aube now reuses the node-gyp bootstrap for `aube run` / `aube test` scripts when ambient `PATH` has no `node-gyp`; ported in [test/node_gyp_bootstrap.bats](node_gyp_bootstrap.bats) using the offline mirrored node-gyp fixture.
 - **support, landed** — lifecycleScripts.ts:245 — repeat-install warning preservation. Aube fix shipped: `.aube-state` now persists the unreviewed-build set (`InstallState::unreviewed_builds`) and the warm-path short-circuit re-emits the same `tracing::warn!` line. Test ported to `lifecycle_scripts.bats`.
 - **support** — lifecycleScripts.ts:336 — git-dep prepare under `dangerouslyAllowAllBuilds`. Port with network + a stable upstream pin (prefer a repo under github.com/endevco), gate slow.
 - **support — landed** — monorepo/index.ts:56 — workspace-yaml-only-root for `list/run/install/query/why`. `project_or_workspace_root()` shipped in [crates/aube/src/dirs.rs](../crates/aube/src/dirs.rs); the five commands route through it and synthesize an empty manifest when the workspace root has no `package.json`. Coverage in [test/yaml_only_root.bats](yaml_only_root.bats).
@@ -68,7 +68,7 @@ Goal: highest install-path parity coverage for lowest cost. Each row is a pnpm s
   - Aube divergence worth noting in ports: aube's strict-dep-builds error reads "dependencies with build scripts must be reviewed before install" where pnpm's reads "Ignored build scripts:". Aube now writes the same `"set this to true or false"` placeholder string as pnpm, so review-placeholder ports can assert verbatim.
   - Equivalent coverage already exists in aube: installation-fails-on-lifecycle-script-error (17 — aube's "fails fast if a root lifecycle script exits non-zero" at lifecycle_scripts.bats:187 covers the same contract).
   - **Support** (aube fix needed before / alongside port):
-    - node-gyp on PATH (128) — port with network, gate slow.
+    - ~~node-gyp on PATH (128)~~ — ported in [test/node_gyp_bootstrap.bats](node_gyp_bootstrap.bats); uses the offline mirrored node-gyp fixture, so no slow/network gate is needed.
     - git-dep prepare under dangerouslyAllowAllBuilds (336) — port with network + a stable upstream pin (prefer a repo under github.com/endevco), gate slow.
     - selective `aube rebuild <pkg>` (282) — **landed** as the CLI-side feature: [rebuild.rs](../crates/aube/src/commands/rebuild.rs) now accepts positional package names, filters `run_dep_lifecycle_scripts` to those, bypasses the build policy for the named deps, and skips root preinstall/install/postinstall/prepare hooks. Bats coverage in [test/rebuild.bats](rebuild.bats). Pnpm test port pending.
   - **Support — real bug, not test-only** (aube fix needed before port):

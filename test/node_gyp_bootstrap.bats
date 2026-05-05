@@ -72,3 +72,76 @@ JSON
 	assert_dir_exists "$XDG_CACHE_HOME/aube/tools/node-gyp/v12/node_modules/.bin"
 	assert_file_exists "$XDG_CACHE_HOME/aube/tools/node-gyp/v12/node_modules/.bin/node-gyp"
 }
+
+@test "aube test adds bootstrapped node-gyp to PATH" {
+	# Ported from pnpm/test/install/lifecycleScripts.ts:128
+	# ('node-gyp is in the PATH'). The setup scrubbed ambient node-gyp,
+	# so success means aube supplied its cached tool shim to the script.
+	if [ -z "${AUBE_TEST_REGISTRY:-}" ]; then
+		skip "AUBE_TEST_REGISTRY not set (Verdaccio not running)"
+	fi
+	cat >package.json <<'JSON'
+{
+  "name": "node-gyp-path-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node-gyp --help >/dev/null && node -e 'require(\"fs\").writeFileSync(\"node-gyp-ok\", \"ok\")'"
+  }
+}
+JSON
+
+	run aube test
+	assert_success
+	assert_file_exists node-gyp-ok
+}
+
+@test "aube test does not bootstrap node-gyp for unrelated scripts" {
+	# Regression for PR review feedback: a cold node-gyp cache plus an
+	# unreachable registry must not break scripts that don't call node-gyp.
+	cat >.npmrc <<'EOF'
+registry=http://127.0.0.1:9/
+EOF
+	cat >package.json <<'JSON'
+{
+  "name": "node-gyp-unrelated-script-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node -e 'require(\"fs\").writeFileSync(\"plain-ok\", \"ok\")'"
+  }
+}
+JSON
+
+	run aube test
+	assert_success
+	assert_file_exists plain-ok
+	assert_dir_not_exists "$XDG_CACHE_HOME/aube/tools/node-gyp"
+}
+
+@test "aube test uses project node-gyp bin without bootstrapping" {
+	# Regression for PR review feedback: if the project already installed
+	# node-gyp, a cold aube tool cache and unreachable registry must not
+	# block the script.
+	cat >.npmrc <<'EOF'
+registry=http://127.0.0.1:9/
+EOF
+	mkdir -p node_modules/.bin
+	cat >node_modules/.bin/node-gyp <<SHIM
+#!/usr/bin/env bash
+printf 'project-node-gyp\n' > "$TEST_TEMP_DIR/project-node-gyp"
+SHIM
+	chmod +x node_modules/.bin/node-gyp
+	cat >package.json <<'JSON'
+{
+  "name": "node-gyp-project-bin-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node-gyp --help"
+  }
+}
+JSON
+
+	run aube test --no-install
+	assert_success
+	assert_file_exists project-node-gyp
+	assert_dir_not_exists "$XDG_CACHE_HOME/aube/tools/node-gyp"
+}

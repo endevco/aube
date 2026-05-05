@@ -596,14 +596,14 @@ pub(crate) async fn exec_script(
 /// so the parallel path can collect all outcomes). Keeping one place
 /// to configure these means future security fixes land once, not
 /// twice.
-fn build_script_command(
+async fn build_script_command(
     cwd: &Path,
     manifest: &PackageJson,
     script: &str,
     cmd: &str,
     args: &[String],
     node_args: &[String],
-) -> tokio::process::Command {
+) -> miette::Result<tokio::process::Command> {
     let cmd = inject_node_args(cmd, node_args);
     let shell_cmd = if args.is_empty() {
         cmd
@@ -624,7 +624,21 @@ fn build_script_command(
     };
 
     let bin_dir = super::project_modules_dir(cwd).join(".bin");
-    let new_path = aube_scripts::prepend_path(&bin_dir);
+    let node_gyp_bin_dir = if script_references_node_gyp(&shell_cmd)
+        && !super::install::node_gyp_bootstrap::node_gyp_bin_exists(&bin_dir)
+    {
+        super::install::node_gyp_bootstrap::ensure(cwd).await?
+    } else {
+        None
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries = Vec::with_capacity(2 + usize::from(node_gyp_bin_dir.is_some()));
+    entries.push(bin_dir);
+    if let Some(dir) = node_gyp_bin_dir {
+        entries.push(dir);
+    }
+    entries.extend(std::env::split_paths(&path));
+    let new_path = std::env::join_paths(entries).unwrap_or(path);
 
     // npm-compat env vars. Lifecycle path sets these in
     // aube-scripts::run_root_hook, `aube run` was bare env before.
@@ -655,7 +669,7 @@ fn build_script_command(
         let init_cwd = crate::dirs::cwd().ok().unwrap_or_else(|| cwd.to_path_buf());
         command.env("INIT_CWD", init_cwd);
     }
-    command
+    Ok(command)
 }
 
 fn inject_node_args(cmd: &str, node_args: &[String]) -> String {
@@ -679,6 +693,11 @@ fn inject_node_args(cmd: &str, node_args: &[String]) -> String {
     }
     out.push_str(rest);
     out
+}
+
+fn script_references_node_gyp(cmd: &str) -> bool {
+    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .any(|word| word == "node-gyp")
 }
 
 pub(crate) async fn exec_script_chain(
@@ -713,7 +732,7 @@ async fn exec_script_with_node_args(
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
 
-    let mut command = build_script_command(cwd, manifest, script, cmd, args, node_args);
+    let mut command = build_script_command(cwd, manifest, script, cmd, args, node_args).await?;
 
     let status = command
         .status()
@@ -783,6 +802,7 @@ async fn exec_script_status_with_node_args(
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
     build_script_command(cwd, manifest, script, cmd, args, node_args)
+        .await?
         .status()
         .await
         .into_diagnostic()
@@ -791,7 +811,7 @@ async fn exec_script_status_with_node_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_node_args, node_args_from_run_flags};
+    use super::{inject_node_args, node_args_from_run_flags, script_references_node_gyp};
 
     #[test]
     fn node_args_from_flags_supports_optional_values() {
@@ -819,5 +839,13 @@ mod tests {
             inject_node_args("node-gyp rebuild", &args),
             "node-gyp rebuild"
         );
+    }
+
+    #[test]
+    fn script_references_node_gyp_matches_command_token() {
+        assert!(script_references_node_gyp("node-gyp --help"));
+        assert!(script_references_node_gyp("cd native && node-gyp rebuild"));
+        assert!(!script_references_node_gyp("echo node-gyp-build"));
+        assert!(!script_references_node_gyp("node ./scripts/build.js"));
     }
 }
