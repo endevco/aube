@@ -264,7 +264,7 @@ fn merge_into(dst: &mut LockfileGraph, src: LockfileGraph, report: &mut MergeRep
             }
         }
     }
-    let mut seen: rustc_hash::FxHashSet<String> =
+    let mut seen: aube_util::collections::FxSet<String> =
         dst.trusted_dependencies.iter().cloned().collect();
     for name in src.trusted_dependencies {
         if seen.insert(name.clone()) {

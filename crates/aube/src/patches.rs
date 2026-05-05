@@ -97,6 +97,27 @@ pub fn split_patch_key(key: &str) -> Result<(String, String)> {
 /// `package.json` on key conflict. Missing patch files become a hard
 /// error — that matches pnpm, which refuses to install with a
 /// declared-but-missing patch.
+/// Load patches and pre-build the two shapes the linker + GVS-prewarm
+/// materializer want: a `(name@version, content)` map and a
+/// `(name@version, content_hash)` map. Both materializer call sites
+/// (lockfile + no-lockfile) and the link phase compute these from the
+/// same `load_patches` output, hoisted here so the BTreeMap walks
+/// happen once per install.
+pub fn load_patches_for_linker(
+    cwd: &Path,
+) -> Result<(aube_linker::Patches, BTreeMap<String, String>)> {
+    let resolved = load_patches(cwd)?;
+    let patches: aube_linker::Patches = resolved
+        .values()
+        .map(|p| (p.key.clone(), p.content.clone()))
+        .collect();
+    let hashes: BTreeMap<String, String> = resolved
+        .values()
+        .map(|p| (p.key.clone(), p.content_hash()))
+        .collect();
+    Ok((patches, hashes))
+}
+
 pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
     let mut entries: BTreeMap<String, String> = BTreeMap::new();
 

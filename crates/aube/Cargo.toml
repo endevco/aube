@@ -42,6 +42,7 @@ aube-store = { workspace = true }
 aube-linker = { workspace = true }
 aube-scripts = { workspace = true }
 aube-workspace = { workspace = true }
+bytes = "1"
 xx = { workspace = true }
 clap = { workspace = true }
 clap_usage = "2"

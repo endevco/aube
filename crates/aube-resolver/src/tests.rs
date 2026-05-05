@@ -1183,7 +1183,8 @@ fn apply_peer_contexts_handles_mutual_peer_cycle() {
         packages,
         ..Default::default()
     };
-    let out = apply_peer_contexts(canonical, &PeerContextOptions::default());
+    let out = apply_peer_contexts(canonical, &PeerContextOptions::default())
+        .expect("test graph should converge");
 
     // Both packages got contextualized dep_paths with each other's
     // resolved version baked in.
@@ -1270,7 +1271,8 @@ fn apply_peer_contexts_produces_nested_peer_suffixes() {
         packages,
         ..Default::default()
     };
-    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
 
     // adapter's standalone key should have just its own peer (core).
     assert!(
@@ -1359,7 +1361,8 @@ fn apply_peer_contexts_prefers_incompatible_ancestor_over_root() {
         packages,
         ..Default::default()
     };
-    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
 
     // consumer must follow `app`'s dep@8 (its actual node_modules
     // sibling), even though dep@8 doesn't satisfy `^5`.
@@ -1460,7 +1463,8 @@ fn apply_peer_contexts_per_range_satisfaction() {
         packages,
         ..Default::default()
     };
-    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
 
     // consumer17 should be suffixed with react@17 (satisfies ^17).
     assert!(
@@ -1538,7 +1542,8 @@ fn from_graph_scan_returns_full_dep_path_tail() {
         packages,
         ..Default::default()
     };
-    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
 
     // consumer's key must reference helper with its CONTEXTUALIZED
     // tail. Returning `p.version` would have produced
@@ -1796,7 +1801,7 @@ fn dedupe_peers_suffix_is_version_only() {
         dedupe_peers: true,
         ..PeerContextOptions::default()
     };
-    let out = apply_peer_contexts(graph, &options);
+    let out = apply_peer_contexts(graph, &options).expect("test graph should converge");
 
     // Suffix should be `(18.2.0)`, not `(react@18.2.0)`.
     assert!(
@@ -1871,7 +1876,8 @@ fn resolve_peers_from_workspace_root_prefers_root() {
         resolve_from_workspace_root: true,
         ..PeerContextOptions::default()
     };
-    let out_on = apply_peer_contexts(build_graph(), &options_on);
+    let out_on =
+        apply_peer_contexts(build_graph(), &options_on).expect("test graph should converge");
     assert!(
         out_on.packages.contains_key("consumer@1.0.0(react@17.0.2)"),
         "with flag on, consumer should resolve peer from workspace root (17.0.2): {:?}",
@@ -1882,7 +1888,8 @@ fn resolve_peers_from_workspace_root_prefers_root() {
         resolve_from_workspace_root: false,
         ..PeerContextOptions::default()
     };
-    let out_off = apply_peer_contexts(build_graph(), &options_off);
+    let out_off =
+        apply_peer_contexts(build_graph(), &options_off).expect("test graph should converge");
     assert!(
         out_off
             .packages
@@ -1928,7 +1935,7 @@ fn dedupe_peers_cycle_break_still_converges() {
         dedupe_peers: true,
         ..PeerContextOptions::default()
     };
-    let out = apply_peer_contexts(canonical, &options);
+    let out = apply_peer_contexts(canonical, &options).expect("test graph should converge");
 
     // Under dedupe_peers=true the keys collapse to version-only
     // suffixes.
@@ -2002,7 +2009,7 @@ fn dedupe_peers_no_false_positive_on_version_collision() {
         dedupe_peers: true,
         ..PeerContextOptions::default()
     };
-    let out = apply_peer_contexts(graph, &options);
+    let out = apply_peer_contexts(graph, &options).expect("test graph should converge");
 
     // A's key must carry B's full nested tail including C's peer.
     // If cycle detection false-positived on the bare version, B's
@@ -2988,7 +2995,7 @@ fn peer_suffix_is_hashed_when_exceeding_cap() {
         peers_suffix_max_length: 10,
         ..PeerContextOptions::default()
     };
-    let out = apply_peer_contexts(graph, &options);
+    let out = apply_peer_contexts(graph, &options).expect("test graph should converge");
 
     // At least one package should have a hashed suffix. The outer
     // `consumer` package is the one most likely to overflow (nested
@@ -3043,7 +3050,8 @@ fn peer_suffix_unchanged_when_within_cap() {
         packages,
         ..Default::default()
     };
-    let out = apply_peer_contexts(graph, &PeerContextOptions::default());
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
 
     // The nested-peer test's expected key must still be produced.
     assert!(

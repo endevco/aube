@@ -826,7 +826,27 @@ fn inner_main() -> miette::Result<()> {
         }
     }
 
+    // High-core boxes don't need 64-128 worker threads for an I/O
+    // pipeline. Default worker_threads = num_cpus and
+    // max_blocking_threads = 512 are both wasteful. Cap workers at 8
+    // (install semaphore already gates network), blocking at 64
+    // (covers tarball decode plus linker fan-out on a 16-core box).
+    // AUBE_TOKIO_WORKERS / AUBE_TOKIO_BLOCKING for benchmarking.
+    let parse_env = |key: &str, default: usize| -> usize {
+        std::env::var(key)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(default)
+    };
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let workers = parse_env("AUBE_TOKIO_WORKERS", cpu_count.min(8));
+    let blocking = parse_env("AUBE_TOKIO_BLOCKING", 64);
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .max_blocking_threads(blocking)
         .enable_all()
         .build()
         .into_diagnostic()

@@ -361,6 +361,10 @@ impl Store {
     /// call out of tight loops.
     pub fn ensure_shards_exist(&self) -> Result<(), Error> {
         std::fs::create_dir_all(&self.root).map_err(|e| Error::Io(self.root.clone(), e))?;
+        // Windows Defender and Search both touch every file in the
+        // store on default installs. Setting this attribute makes
+        // them skip. Non-NTFS volumes ignore it harmlessly.
+        aube_util::fs::set_not_content_indexed(&self.root);
         let mut buf = [0u8; 2];
         for hi in 0u8..16 {
             for lo in 0u8..16 {
@@ -393,6 +397,26 @@ impl Store {
             content: Option<&[u8]>,
         ) -> Result<CasWriteOutcome, Error> {
             if let Some(bytes) = content {
+                // O_TMPFILE creates anon file in parent, linkat
+                // publishes atomically. Skips mkstemp uniqueness probe
+                // and post-write fchmod. Docker overlayfs hits the
+                // EOPNOTSUPP fallback. AUBE_DISABLE_O_TMPFILE for
+                // regression cover.
+                #[cfg(target_os = "linux")]
+                {
+                    static O_TMPFILE_DISABLED: std::sync::OnceLock<bool> =
+                        std::sync::OnceLock::new();
+                    let disabled = *O_TMPFILE_DISABLED
+                        .get_or_init(|| std::env::var_os("AUBE_DISABLE_O_TMPFILE").is_some());
+                    if !disabled {
+                        match try_o_tmpfile_publish(path, bytes) {
+                            Ok(outcome) => return Ok(outcome),
+                            Err(OTmpfileFallback::Unsupported) => {}
+                            Err(OTmpfileFallback::Hard(e)) => return Err(e),
+                        }
+                    }
+                }
+
                 // Tempfile + persist_noclobber gives atomic crash
                 // semantics: a partial write on `tmp` is dropped by
                 // tempfile's Drop impl, so the final path either
@@ -615,6 +639,18 @@ impl Store {
     /// Below the threshold the small-tarball overhead of rayon
     /// dispatch outweighs the win, so the cutover is conditional.
     pub fn import_tarball(&self, tarball_bytes: &[u8]) -> Result<PackageIndex, Error> {
+        // &[u8] impls std::io::Read by advancing the slice.
+        self.import_tarball_reader(tarball_bytes)
+    }
+
+    /// Streaming variant. Accepts any compressed-tarball Read source so
+    /// callers can pipe HTTP body chunks straight through without
+    /// buffering the whole archive into memory first. Caps and CAS
+    /// publish semantics match `import_tarball` exactly.
+    pub fn import_tarball_reader<R: std::io::Read>(
+        &self,
+        compressed_reader: R,
+    ) -> Result<PackageIndex, Error> {
         use std::io::Read;
 
         // Caps defend against gzip bombs and lying tar headers. The
@@ -623,12 +659,11 @@ impl Store {
         // malicious registry or mirror from OOMing the installer
         // with a small high-compression-ratio payload.
         //
-        // `CappedReader` is used instead of `Read::take` for the
-        // archive-level cap so an exhaustion surfaces as an `Err`
-        // rather than a clean EOF. A clean EOF landing on a tar
-        // block boundary would let a crafted archive silently
+        // CappedReader instead of Read::take for the archive-level
+        // cap so exhaustion surfaces as an Err. A clean EOF landing on
+        // a tar block boundary would let a crafted archive silently
         // truncate into a partial index.
-        let gz = flate2::read::GzDecoder::new(tarball_bytes);
+        let gz = flate2::read::GzDecoder::new(compressed_reader);
         let capped = CappedReader::new(gz, MAX_TARBALL_DECOMPRESSED_BYTES);
         let buffered = std::io::BufReader::with_capacity(256 * 1024, capped);
         let mut archive = tar::Archive::new(buffered);
@@ -657,10 +692,17 @@ impl Store {
             // node-tar CVE-2021-37701 class and have no legitimate
             // use here.
             let entry_type = entry.header().entry_type();
+            // GNU LongName/LongLink and PAX X-headers carry metadata
+            // for the next real entry. The tar crate folds the long
+            // name into Entry::path() automatically. Just skip the
+            // metadata records themselves.
             if entry_type.is_dir()
                 || matches!(
                     entry_type,
-                    tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+                    tar::EntryType::XGlobalHeader
+                        | tar::EntryType::XHeader
+                        | tar::EntryType::GNULongName
+                        | tar::EntryType::GNULongLink
                 )
             {
                 continue;
@@ -698,16 +740,24 @@ impl Store {
                 continue;
             };
 
-            // Clamp the upfront allocation to a sane ceiling so a
-            // lying header cannot force a 512 MiB reservation before
-            // any byte has been read. `read_to_end` grows the Vec
-            // naturally past this point for the rare entry that
-            // really is this large.
+            // Clamp upfront alloc so a lying header can't force a 512
+            // MiB reservation before any byte has been read. read_to_end
+            // grows the Vec for the rare entry that really is huge.
             let mut content = Vec::with_capacity((declared as usize).min(VEC_PREALLOC_CEILING));
             (&mut entry)
                 .take(MAX_TARBALL_ENTRY_BYTES)
                 .read_to_end(&mut content)
                 .map_err(|e| Error::Tar(e.to_string()))?;
+
+            // Reject header that declared 0 bytes but produced a
+            // non-empty stream. Synthetic-entry injection: header
+            // claims empty file, real bytes go to disk.
+            if declared == 0 && !content.is_empty() {
+                return Err(Error::Tar(format!(
+                    "tarball entry declared 0 bytes but yielded {} bytes",
+                    content.len()
+                )));
+            }
 
             let mode = entry.header().mode().unwrap_or(0o644);
             let executable = mode & 0o111 != 0;
@@ -746,16 +796,10 @@ impl Store {
     }
 }
 
-/// Tarballs with at least this many staged entries fan out into
-/// rayon for the CAS-write phase. Tuned conservatively at 256 to
-/// avoid contending with the linker's rayon symlink pass and to
-/// keep medium tarballs (typescript ~370, @swc/* ~30-60 per
-/// platform) on the cheap serial path; only the long-tail giants
-/// (playwright ~600, next ~3000) pay the rayon dispatch cost. The
-/// historical "rayon-inner is slower" measurement was at threshold
-/// 0 (always parallel) — the threshold is what makes the win
-/// real on the long tail without the regression on the body.
-const PARALLEL_IMPORT_THRESHOLD: usize = 256;
+// Median npm tarball has 7 files. Old 256 threshold almost never
+// tripped. Rayon dispatch is cheap on tiny batches.
+// AUBE_DISABLE_PARALLEL_IMPORT kills the parallel path entirely.
+const PARALLEL_IMPORT_THRESHOLD: usize = 16;
 
 /// Strip the wrapper directory from `raw` and return a safe POSIX-style
 /// index key, or refuse the entry outright.
@@ -1026,6 +1070,140 @@ const MAX_TARBALL_ENTRY_BYTES: u64 = 1 << 20;
 const MAX_TARBALL_ENTRIES: usize = 200_000;
 #[cfg(test)]
 const MAX_TARBALL_ENTRIES: usize = 64;
+
+// Thin wrapper over posix_fallocate(3) which returns the error code
+// directly (does not set errno). Caller decides how to handle the
+// error. Existing call site uses `let _ = ...` to ignore EOPNOTSUPP /
+// ENOSYS / EINVAL on filesystems where pre-allocation is a no-op.
+#[cfg(target_os = "linux")]
+fn posix_fallocate(file: &std::fs::File, len: i64) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if len <= 0 {
+        return Ok(());
+    }
+    // SAFETY: fd is owned by `file` for the duration of the call.
+    let r = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, len) };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(r))
+    }
+}
+
+// Unsupported means kernel/fs lacks O_TMPFILE, caller falls back.
+// Hard is a real I/O error that bubbles up.
+#[cfg(target_os = "linux")]
+enum OTmpfileFallback {
+    Unsupported,
+    Hard(Error),
+}
+
+// Open anonymous file in parent dir, write, linkat via /proc/self/fd.
+// Skips the tempfile unique-name probe and explicit fchmod. Falls
+// back via Unsupported on EOPNOTSUPP, ENOENT (no /proc), or EXDEV.
+// AUBE_DISABLE_O_TMPFILE forces the legacy path.
+#[cfg(target_os = "linux")]
+fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, OTmpfileFallback> {
+    use std::ffi::CString;
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let parent = path.parent().ok_or(OTmpfileFallback::Hard(Error::Io(
+        path.to_path_buf(),
+        std::io::ErrorKind::NotFound.into(),
+    )))?;
+    let parent_c = CString::new(parent.as_os_str().as_bytes()).map_err(|_| {
+        OTmpfileFallback::Hard(Error::Io(
+            path.to_path_buf(),
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "parent path has nul"),
+        ))
+    })?;
+    // SAFETY: `parent_c` is valid for the duration of the call.
+    let raw_fd = unsafe {
+        libc::open(
+            parent_c.as_ptr(),
+            libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+            0o644 as libc::c_uint,
+        )
+    };
+    if raw_fd < 0 {
+        let err = std::io::Error::last_os_error();
+        return match err.raw_os_error() {
+            // Old kernels lack O_TMPFILE. Overlayfs/tmpfs return
+            // EOPNOTSUPP, EISDIR, or EINVAL on some kernels.
+            // ENOTSUP is the same value as EOPNOTSUPP on Linux.
+            Some(libc::EOPNOTSUPP) | Some(libc::EISDIR) | Some(libc::EINVAL) => {
+                Err(OTmpfileFallback::Unsupported)
+            }
+            _ => Err(OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), err))),
+        };
+    }
+    // SAFETY: raw_fd is owned, OwnedFd closes on drop.
+    let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
+    let mut file = std::fs::File::from(owned);
+    // Best-effort fallocate so the kernel allocates contiguous extents
+    // up front. Skips ext4 fragmentation churn on the next write.
+    // EOPNOTSUPP and ENOSYS are fine, regular write_all handles them.
+    let _ = posix_fallocate(&file, bytes.len() as i64);
+    file.write_all(bytes)
+        .map_err(|e| OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), e)))?;
+    // No sync_data: contradicts the no-fsync CAS policy. Crash window
+    // between write and linkat is acceptable, lockfile + state hash
+    // recovers the missing entry on next install.
+
+    let proc_link = format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&file));
+    let proc_c = CString::new(proc_link.as_bytes()).map_err(|_| {
+        OTmpfileFallback::Hard(Error::Io(
+            path.to_path_buf(),
+            std::io::Error::other("fd path has nul"),
+        ))
+    })?;
+    let final_c = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        OTmpfileFallback::Hard(Error::Io(
+            path.to_path_buf(),
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has nul"),
+        ))
+    })?;
+    // SAFETY: both CStrings live through the call. AT_SYMLINK_FOLLOW
+    // resolves the /proc/self/fd magic-link to the anon inode.
+    let r = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            proc_c.as_ptr(),
+            libc::AT_FDCWD,
+            final_c.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if r == 0 {
+        // CAS bytes are read-once into reflinks/hardlinks. Drop them
+        // from the page cache so the parallel linker pass over many
+        // packages doesn't push the working set out.
+        use std::os::fd::AsRawFd;
+        let fd = file.as_raw_fd();
+        // SAFETY: fd is still owned by `file` here. POSIX_FADV_DONTNEED
+        // is advisory, return value is ignored.
+        unsafe {
+            libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+        }
+        return Ok(CasWriteOutcome::Created);
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EEXIST) => Ok(CasWriteOutcome::AlreadyExisted),
+        // No /proc in this sandbox.
+        Some(libc::ENOENT) => Err(OTmpfileFallback::Unsupported),
+        // Kernel opens O_TMPFILE but rejects linkat from /proc/self/fd.
+        // ENOTSUP is same value as EOPNOTSUPP on Linux.
+        Some(libc::EOPNOTSUPP) | Some(libc::EXDEV) => Err(OTmpfileFallback::Unsupported),
+        // Seccomp-filtered containers (gVisor, strict k8s pod-security
+        // profiles) block linkat and return EPERM/EACCES. Fall through
+        // to the tempfile path instead of aborting the install.
+        Some(libc::EPERM) | Some(libc::EACCES) => Err(OTmpfileFallback::Unsupported),
+        _ => Err(OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), err))),
+    }
+}
 
 /// Map a nibble (0–15) to its lowercase hex ASCII byte. Used by
 /// `ensure_shards_exist` to build the 256 two-character shard names

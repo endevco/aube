@@ -18,8 +18,8 @@
 //! (fresh resolves only) → `apply_peer_contexts` → `detect_unmet_peers`.
 
 use crate::version_satisfies;
+use crate::{FxHashMap, FxHashSet};
 use aube_lockfile::{DepType, DirectDep, LockedPackage, LockfileGraph};
-use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A peer dependency whose declared range doesn't match the version the
@@ -325,7 +325,7 @@ impl Default for PeerContextOptions {
 pub fn apply_peer_contexts(
     canonical: LockfileGraph,
     options: &PeerContextOptions,
-) -> LockfileGraph {
+) -> Result<LockfileGraph, crate::Error> {
     const MAX_ITERATIONS: usize = 16;
     let mut current = canonical;
     let mut converged = false;
@@ -372,31 +372,26 @@ pub fn apply_peer_contexts(
         before = after;
     }
     if !converged {
-        // Hit iteration cap. Means mutually recursive peers or
-        // genuine cycle. Lockfile now has partial nested suffixes.
-        // Linker downstream will wire symlinks against incomplete
-        // graph. Returning this silently ships broken node_modules.
-        // Old code used warn!, warn gets swallowed in CI. Bump to
-        // error! so ops see it. Proper fix is returning a Result
-        // from apply_peer_contexts but that cascades up through
-        // Resolver::resolve signature, do that separately.
+        // Iteration cap hit. Returning the partial graph would ship
+        // broken node_modules. Now fatal.
         tracing::error!(
             code = aube_codes::errors::ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED,
             max_iterations = MAX_ITERATIONS,
-            "peer-context hit MAX_ITERATIONS={MAX_ITERATIONS} without convergence. \
-             mutually recursive peers likely. lockfile incomplete, linker output will be wrong"
+            "peer-context hit MAX_ITERATIONS={MAX_ITERATIONS} without convergence"
         );
+        return Err(crate::Error::PeerContextDivergence(MAX_ITERATIONS));
     }
     // `dedupe-peers=true` rewrites the parenthesized peer suffix to
     // drop the `name@` prefix. Done as a post-pass rather than inline
     // so cycle detection during the fixed-point loop keeps the full
     // `name@version` form (otherwise unrelated same-version packages
     // would false-positive as back-references).
-    if options.dedupe_peers {
+    let result = if options.dedupe_peers {
         dedupe_peer_suffixes(current)
     } else {
         current
-    }
+    };
+    Ok(result)
 }
 
 /// Cross-subtree peer-variant dedupe. When `dedupe-peer-dependents` is

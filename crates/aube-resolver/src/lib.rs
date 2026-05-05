@@ -55,11 +55,15 @@ use types::format_iso8601_utc;
 use aube_lockfile::DepType;
 use aube_registry::Packument;
 use aube_registry::client::RegistryClient;
-use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+// Re-export shared aube-util collection aliases under the original
+// FxHashMap name to avoid touching every call site.
+pub(crate) use aube_util::collections::FxMap as FxHashMap;
+pub(crate) use aube_util::collections::FxSet as FxHashSet;
 
 /// BFS dependency resolver.
 pub struct Resolver {

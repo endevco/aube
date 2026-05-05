@@ -224,6 +224,28 @@ fn resolve_jail_grant_path(project_dir: &std::path::Path, raw: &str) -> std::pat
     }
 }
 
+/// Resolve the prewarm-shared bits used by both the lockfile and
+/// no-lockfile materializer setup paths: node engine version (for
+/// graph-hash domain split) plus the build-policy decision oracle
+/// (for graph-hash patch fold). Hoisted so both branches compute
+/// identical hashes and link-step-1 fast-paths through pkg_nm_dir.exists().
+/// `_policy_warnings` is dropped because the link phase calls
+/// `build_policy_from_sources` again and re-emits warnings (idempotent).
+pub(super) fn resolve_prewarm_shared(
+    settings_ctx: &aube_settings::ResolveCtx<'_>,
+    manifest: &aube_manifest::PackageJson,
+    workspace_config: &aube_manifest::WorkspaceConfig,
+    dangerously_allow_all_builds: bool,
+) -> (Option<String>, std::sync::Arc<aube_scripts::BuildPolicy>) {
+    let node_version = {
+        let override_ = aube_settings::resolved::node_version(settings_ctx);
+        crate::engines::resolve_node_version(override_.as_deref())
+    };
+    let (policy, _warnings) =
+        build_policy_from_sources(manifest, workspace_config, dangerously_allow_all_builds);
+    (node_version, std::sync::Arc::new(policy))
+}
+
 /// Resolve the link strategy (reflink / hardlink / copy) from CLI
 /// override, `.npmrc` / `pnpm-workspace.yaml`, or filesystem detection.
 /// Shared by the prewarm-GVS materializer (which needs the strategy
@@ -244,10 +266,25 @@ pub(super) fn resolve_link_strategy(
         let store_dir = super::super::open_store(cwd)
             .map(|s| s.root().to_path_buf())
             .ok();
-        match store_dir.as_deref() {
+        let strategy = match store_dir.as_deref() {
             Some(sd) => aube_linker::Linker::detect_strategy_cross(sd, cwd),
             None => aube_linker::Linker::detect_strategy(cwd),
+        };
+        // Cross-volume install hits Copy fallback because hardlink
+        // and reflink can't cross device boundaries. aube still
+        // outperforms other PMs in this regime, so just log at debug
+        // for diagnosis without spamming WARN at every invocation.
+        if matches!(strategy, aube_linker::LinkStrategy::Copy)
+            && let Some(sd) = store_dir.as_deref()
+            && aube_util::fs::cross_volume(sd, cwd)
+        {
+            tracing::debug!(
+                store = %sd.display(),
+                project = %cwd.display(),
+                "cross-volume install, using per-file copy. set `storeDir` to a path on the project volume for hardlink fast path."
+            );
         }
+        strategy
     };
     let strategy = if let Some(cli) = package_import_method_cli.as_deref() {
         match cli.trim().to_ascii_lowercase().as_str() {
@@ -673,6 +710,45 @@ pub(super) fn import_verified_tarball(
     Ok(index)
 }
 
+/// Run `import_verified_tarball_streamed` on the blocking pool.
+/// Centralizes the spawn_blocking + clone + into_diagnostic dance
+/// that both fetch branches duplicate. Returns (index, elapsed)
+/// so callers can record import phase time without rebuilding the
+/// stopwatch outside.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_import_on_blocking(
+    store: std::sync::Arc<aube_store::Store>,
+    bytes: bytes::Bytes,
+    streamed_digest: Option<[u8; 64]>,
+    display_name: String,
+    registry_name: String,
+    version: String,
+    integrity: Option<String>,
+    verify_integrity: bool,
+    strict_integrity: bool,
+    strict_pkg_content_check: bool,
+) -> miette::Result<(aube_store::PackageIndex, std::time::Duration)> {
+    use miette::IntoDiagnostic;
+    tokio::task::spawn_blocking(move || -> miette::Result<_> {
+        let import_start = std::time::Instant::now();
+        let index = import_verified_tarball_streamed(
+            &store,
+            &bytes,
+            streamed_digest.as_ref(),
+            &display_name,
+            &registry_name,
+            &version,
+            integrity.as_deref(),
+            verify_integrity,
+            strict_integrity,
+            strict_pkg_content_check,
+        )?;
+        Ok((index, import_start.elapsed()))
+    })
+    .await
+    .into_diagnostic()?
+}
+
 /// Streaming-aware variant of [`import_verified_tarball`]. When
 /// `streamed_sha512` is `Some`, the SRI is verified against the
 /// precomputed digest and the buffered hash pass is skipped. When
@@ -714,6 +790,166 @@ pub(super) fn import_verified_tarball_streamed(
         strict_integrity,
         strict_pkg_content_check,
     )
+}
+
+/// Fetch + import in one streaming pass. HTTP body chunks pipe through
+/// SHA-512 hasher + a bounded channel into a blocking task that runs
+/// gz+tar+CAS as bytes arrive. RSS bound is current tar entry size,
+/// not full tarball. SHA-512 verifies AFTER import: CAS files use
+/// content-addressed BLAKE3 paths so a verify mismatch leaves orphan
+/// shards but no package_index referencing them.
+///
+/// AUBE_TARBALL_STREAM=1 enables this path (off by default until bats
+/// covers mid-stream-drop, gzip-bomb-cap, and SHA-mismatch rollback).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn fetch_and_import_tarball_streaming(
+    client: &aube_registry::client::RegistryClient,
+    store: &std::sync::Arc<aube_store::Store>,
+    url: &str,
+    display_name: &str,
+    registry_name: &str,
+    version: &str,
+    integrity: Option<&str>,
+    verify_integrity: bool,
+    strict_integrity: bool,
+    strict_pkg_content_check: bool,
+) -> miette::Result<(aube_store::PackageIndex, u64)> {
+    use sha2::Digest;
+
+    let mut resp = client.start_tarball_stream(url).await.map_err(|e| {
+        miette!(
+            "failed to fetch {display_name}@{version}: {e}{}",
+            crate::dep_chain::format_chain_for(registry_name, version)
+        )
+    })?;
+
+    let cap = client.tarball_max_bytes();
+    let (chunk_tx, chunk_rx) =
+        tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
+
+    let store_for_import = store.clone();
+    let display_for_import = display_name.to_string();
+    let version_for_import = version.to_string();
+    let registry_for_import = registry_name.to_string();
+    let import_handle: tokio::task::JoinHandle<miette::Result<aube_store::PackageIndex>> =
+        tokio::task::spawn_blocking(move || {
+            let reader = aube_util::io::ChunkReader::new(chunk_rx);
+            store_for_import.import_tarball_reader(reader).map_err(|e| {
+                miette!(
+                    "failed to import {display_for_import}@{version_for_import}: {e}{}",
+                    crate::dep_chain::format_chain_for(&registry_for_import, &version_for_import)
+                )
+            })
+        });
+
+    // Hash every byte the server sent, regardless of whether the
+    // import task consumed them. tar end-of-archive can fire before
+    // gzip padding finishes streaming. importer drops rx, send fails,
+    // but SHA-512 still has to cover the full body or partial-stream
+    // SRI passes when verify is on.
+    let mut hasher = sha2::Sha512::new();
+    let mut total: u64 = 0;
+    let mut chunk_tx = Some(chunk_tx);
+    let stream_err: Option<aube_registry::Error> = loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if cap > 0 && total.saturating_add(chunk.len() as u64) > cap {
+                    if let Some(tx) = chunk_tx.as_ref() {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("tarball body exceeds cap {cap}"),
+                            )))
+                            .await;
+                    }
+                    break Some(aube_registry::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("tarball body exceeds cap {cap}"),
+                    )));
+                }
+                total += chunk.len() as u64;
+                hasher.update(&chunk);
+                if let Some(tx) = chunk_tx.as_ref()
+                    && tx.send(Ok(chunk)).await.is_err()
+                {
+                    // Import task closed the channel (tar EOF hit).
+                    // Drop the sender and keep draining the response
+                    // so SHA-512 covers the full tarball body.
+                    chunk_tx = None;
+                }
+            }
+            Ok(None) => break None,
+            Err(e) => {
+                if let Some(tx) = chunk_tx.as_ref() {
+                    let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+                }
+                break Some(aube_registry::Error::from(e));
+            }
+        }
+    };
+    drop(chunk_tx);
+
+    let import_result = import_handle.await.into_diagnostic()?;
+    if let Some(e) = stream_err {
+        return Err(miette!(
+            "stream error for {display_name}@{version}: {e}{}",
+            crate::dep_chain::format_chain_for(registry_name, version)
+        ));
+    }
+    let index = import_result?;
+
+    let mut sha512 = [0u8; 64];
+    sha512.copy_from_slice(&hasher.finalize()[..]);
+
+    if verify_integrity {
+        if let Some(expected) = integrity {
+            // Returns true on SHA-512 match, false on non-SHA-512 algo.
+            // Streaming path can't fall back to re-hash with another
+            // algo (no buffered bytes), so non-SHA-512 SRI bails and
+            // the caller falls back to the buffered path.
+            let matched =
+                aube_store::verify_precomputed_sha512(&sha512, expected).map_err(|e| {
+                    miette!(
+                        "{display_name}@{version}: {e}{}",
+                        crate::dep_chain::format_chain_for(registry_name, version)
+                    )
+                })?;
+            if !matched {
+                return Err(miette!(
+                    "{display_name}@{version}: SRI uses non-SHA-512 algo, streaming path cannot re-hash. Set AUBE_DISABLE_TARBALL_STREAM=1 to force buffered fetch{}",
+                    crate::dep_chain::format_chain_for(registry_name, version)
+                ));
+            }
+        } else if strict_integrity {
+            return Err(miette!(
+                "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes.{}",
+                crate::dep_chain::format_chain_for(registry_name, version)
+            ));
+        } else {
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_MISSING_INTEGRITY,
+                "{display_name}@{version}: registry response has no `dist.integrity`, importing without content verification. Set `strict-store-integrity=true` to refuse instead."
+            );
+        }
+    }
+
+    if strict_pkg_content_check {
+        aube_store::validate_pkg_content(&index, registry_name, version).map_err(|e| {
+            miette!(
+                "{display_name}@{version}: {e}{}",
+                crate::dep_chain::format_chain_for(registry_name, version)
+            )
+        })?;
+    }
+
+    if let Err(e) = store.save_index(registry_name, version, integrity, &index) {
+        tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_CACHE_WRITE_FAILED,
+            "Failed to cache index for {display_name}@{version}: {e}"
+        );
+    }
+
+    Ok((index, total))
 }
 
 pub(super) fn validate_required_scripts(
