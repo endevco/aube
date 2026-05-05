@@ -522,6 +522,13 @@ fn stage_one(
     )?;
     let bundled_strip = StripFields::for_bundled_sibling(args);
     for inj in plan.values() {
+        // Tarballs ship as opaque archives — there's no extracted
+        // `package.json` under their `target_dir` to rewrite, and no
+        // way to recurse into one anyway since the sibling pipeline
+        // doesn't unpack archives.
+        if inj.is_tarball {
+            continue;
+        }
         rewrite_local_refs(
             &inj.target_dir.join("package.json"),
             &inj.source_dir,
@@ -748,6 +755,21 @@ fn unique_id(seed: &str, used: &mut BTreeMap<String, u32>) -> String {
 
 fn canonicalize(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Translate a `workspace:` peer spec into a concrete semver range using
+/// the sibling's pinned version. `workspace:*` / `workspace:` collapse to
+/// the exact version; `^`/`~` keep their operator; any other suffix is
+/// already a valid range and used verbatim. Used only for peer-dep
+/// rewrites — regular deps go through bundling and become `file:` refs.
+fn resolve_workspace_spec(spec: &str, concrete_version: &str) -> String {
+    let suffix = spec.strip_prefix("workspace:").unwrap_or(spec);
+    match suffix {
+        "" | "*" => concrete_version.to_string(),
+        "^" => format!("^{concrete_version}"),
+        "~" => format!("~{concrete_version}"),
+        other => other.to_string(),
+    }
 }
 
 /// Copy each planned source into its `target_dir`. Directory sources
@@ -1071,7 +1093,7 @@ fn rewrite_local_refs(
                 continue;
             };
             if aube_util::pkg::is_workspace_spec(spec) {
-                let Some((sibling_dir, _)) = ws_index.get(name) else {
+                let Some((sibling_dir, sibling_version)) = ws_index.get(name) else {
                     return Err(miette!(
                         "aube deploy: {} declares `{name}: {spec}` but no workspace package named {name:?} was found",
                         manifest_path.display()
@@ -1081,10 +1103,16 @@ fn rewrite_local_refs(
                 let Some(inj) = plan.get(&canonical) else {
                     // Reachable when `peerDependencies` references a
                     // workspace sibling — peers aren't bundled (bundling
-                    // is dep-field-scoped via StripFields), so leave
-                    // those refs as `workspace:*` for the install layer
-                    // to error on if it's actually unsatisfied.
+                    // walks dependencies/devDependencies/optionalDependencies
+                    // only). Resolve the `workspace:` spec to a concrete
+                    // semver range so the install layer can actually parse
+                    // it; leaving raw `workspace:*` would hard-fail when
+                    // the deploy target has no workspace context.
                     if *field == "peerDependencies" {
+                        *spec_val = serde_json::Value::String(resolve_workspace_spec(
+                            spec,
+                            sibling_version,
+                        ));
                         continue;
                     }
                     return Err(miette!(
@@ -1358,6 +1386,60 @@ mod tests {
             out["dependencies"]["@test/lib"],
             "file:./.aube-deploy-injected/lib"
         );
+    }
+
+    #[test]
+    fn rewrite_local_refs_resolves_workspace_peer_to_concrete_range() {
+        // peerDependencies aren't bundled (bundling walks deps/devDeps/
+        // optionalDeps only), so they hit the resolve_workspace_spec
+        // path. Each spec form should land on a parseable semver range.
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_dir = tmp.path();
+        let sibling_dir = tmp.path().join("packages/lib");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+
+        let path = manifest_dir.join("package.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "name":"x",
+                "version":"1.0.0",
+                "peerDependencies":{
+                    "@test/lib":"workspace:*",
+                    "@test/lib-caret":"workspace:^",
+                    "@test/lib-tilde":"workspace:~",
+                    "@test/lib-literal":"workspace:^2.0.0"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut idx = BTreeMap::new();
+        for n in [
+            "@test/lib",
+            "@test/lib-caret",
+            "@test/lib-tilde",
+            "@test/lib-literal",
+        ] {
+            idx.insert(n.to_string(), (sibling_dir.clone(), "1.2.3".to_string()));
+        }
+        rewrite_local_refs(
+            &path,
+            manifest_dir,
+            manifest_dir,
+            &idx,
+            &InjectionPlan::new(),
+            StripFields::default(),
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let peers = &out["peerDependencies"];
+        assert_eq!(peers["@test/lib"], "1.2.3");
+        assert_eq!(peers["@test/lib-caret"], "^1.2.3");
+        assert_eq!(peers["@test/lib-tilde"], "~1.2.3");
+        assert_eq!(peers["@test/lib-literal"], "^2.0.0");
     }
 
     #[test]
