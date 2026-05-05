@@ -1,9 +1,12 @@
 pub mod buf;
 pub mod cache;
+pub mod collections;
 pub mod concurrency;
 pub mod env;
+pub mod fs;
 pub mod fs_atomic;
 pub mod hash;
+pub mod io;
 pub mod path;
 pub mod pkg;
 pub mod snapshot;
