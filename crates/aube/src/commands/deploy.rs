@@ -610,17 +610,17 @@ fn plan_injections(
                 };
                 let canonical = canonicalize(sibling_dir);
                 if !plan.contains_key(&canonical) {
-                    let id = unique_id(&dep_name, &canonical, &mut used_ids);
+                    let id = unique_id(&dep_name, &mut used_ids);
                     plan.insert(
                         canonical.clone(),
                         Injection {
-                            source_dir: sibling_dir.clone(),
+                            source_dir: canonical.clone(),
                             is_tarball: false,
                             target_dir: injected_root.join(&id),
                             tarball_filename: String::new(),
                         },
                     );
-                    queue.push_back((sibling_dir.clone(), StripFields::for_bundled_sibling(args)));
+                    queue.push_back((canonical, StripFields::for_bundled_sibling(args)));
                 }
             } else if let Some(local) = aube_lockfile::LocalSource::parse(&dep_spec, &pkg_dir) {
                 match local {
@@ -633,7 +633,7 @@ fn plan_injections(
                                 .file_name()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or(&dep_name);
-                            let id = unique_id(id_seed, &canonical, &mut used_ids);
+                            let id = unique_id(id_seed, &mut used_ids);
                             plan.insert(
                                 canonical.clone(),
                                 Injection {
@@ -661,7 +661,7 @@ fn plan_injections(
                                 .file_stem()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or(&dep_name);
-                            let id = unique_id(stem, &canonical, &mut used_ids);
+                            let id = unique_id(stem, &mut used_ids);
                             let filename = canonical
                                 .file_name()
                                 .map(|s| s.to_string_lossy().into_owned())
@@ -721,7 +721,7 @@ fn iter_strippable_deps(manifest: &PackageJson, strip: StripFields) -> Vec<(Stri
 /// from `seed` (with `/` and any other unsafe characters sanitized) and
 /// disambiguates collisions with `_2`, `_3`, ... — collisions are rare
 /// and the suffix keeps the staged path readable when debugging.
-fn unique_id(seed: &str, _canonical: &Path, used: &mut BTreeMap<String, u32>) -> String {
+fn unique_id(seed: &str, used: &mut BTreeMap<String, u32>) -> String {
     let cleaned: String = seed
         .chars()
         .map(|c| {
@@ -1361,17 +1361,14 @@ mod tests {
     #[test]
     fn unique_id_disambiguates_collisions() {
         let mut used = BTreeMap::new();
-        let p1 = PathBuf::from("/a/lib");
-        let p2 = PathBuf::from("/b/lib");
-        assert_eq!(unique_id("lib", &p1, &mut used), "lib");
-        assert_eq!(unique_id("lib", &p2, &mut used), "lib_2");
+        assert_eq!(unique_id("lib", &mut used), "lib");
+        assert_eq!(unique_id("lib", &mut used), "lib_2");
     }
 
     #[test]
     fn unique_id_sanitizes_unsafe_chars() {
         let mut used = BTreeMap::new();
-        let p = PathBuf::from("/a/x");
-        assert_eq!(unique_id("@scope/name", &p, &mut used), "@scope_name");
+        assert_eq!(unique_id("@scope/name", &mut used), "@scope_name");
     }
 
     #[test]

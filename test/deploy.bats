@@ -325,9 +325,12 @@ EOF
 	# appear, so we match the dev-only major version exactly.
 	run grep "is-number@7" out/aube-lock.yaml
 	assert_failure
-	[ ! -d out/node_modules/is-number ] || run cat out/node_modules/is-number/package.json
-	# If is-number@3 ended up there as a transitive, that's fine —
-	# we only assert the dev-version is absent.
+	# If is-number@3 ended up in node_modules as a transitive, that's
+	# fine — we only assert the dev-only major (7.x) is absent.
+	if [ -d out/node_modules/is-number ]; then
+		run grep '"version": "7\.' out/node_modules/is-number/package.json
+		assert_failure
+	fi
 }
 
 @test "aube deploy: bundles workspace siblings recursively" {
