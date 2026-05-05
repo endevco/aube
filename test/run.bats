@@ -25,6 +25,26 @@ teardown() {
 	assert_output --partial "is-odd(3): true"
 }
 
+@test "aube run forwards inspect flags to direct node scripts" {
+	cat >package.json <<-'JSON'
+		{
+		  "name": "run-inspect-script",
+		  "version": "1.0.0",
+		  "private": true,
+		  "scripts": {
+		    "show-argv": "node show-argv.js"
+		  }
+		}
+	JSON
+	cat >show-argv.js <<-'JS'
+		console.log(JSON.stringify(process.execArgv))
+	JS
+
+	run aube run --inspect=0 --no-install show-argv
+	assert_success
+	assert_output --partial '"--inspect=0"'
+}
+
 @test "aube run fails for unknown script" {
 	_setup_basic_fixture
 	aube install
@@ -64,6 +84,39 @@ teardown() {
 	run aube run local-bin alpha beta
 	assert_success
 	assert_line "local-bin:alpha,beta"
+}
+
+@test "aube run forwards inspect flags to local node binaries" {
+	mkdir -p tools/local-bin
+	cat >package.json <<-'JSON'
+		{
+		  "name": "run-bin-inspect",
+		  "version": "1.0.0",
+		  "private": true,
+		  "dependencies": {
+		    "local-bin": "file:tools/local-bin"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/package.json <<-'JSON'
+		{
+		  "name": "local-bin",
+		  "version": "1.0.0",
+		  "bin": {
+		    "local-bin": "index.js"
+		  }
+		}
+	JSON
+	cat >tools/local-bin/index.js <<-'JS'
+		#!/usr/bin/env node
+		console.log(JSON.stringify(process.execArgv))
+	JS
+	chmod +x tools/local-bin/index.js
+
+	aube install
+	run aube run --inspect=0 local-bin
+	assert_success
+	assert_output --partial '"--inspect=0"'
 }
 
 @test "aube run --if-present still falls back to local binary" {
