@@ -310,21 +310,36 @@ fn node_bin_command(
 
 fn resolve_node_bin_target(bin_path: &Path) -> Option<std::path::PathBuf> {
     let path = resolve_exec_shim(bin_path);
-    if let Ok(target) = std::fs::read_link(&path) {
+    resolve_node_bin_target_path(&path).or(Some(path))
+}
+
+fn resolve_node_bin_target_path(path: &Path) -> Option<std::path::PathBuf> {
+    if let Ok(target) = std::fs::read_link(path) {
         return Some(if target.is_absolute() {
             target
         } else {
             aube_linker::normalize_path(&path.parent()?.join(target))
         });
     }
-    #[cfg(unix)]
-    {
-        let content = std::fs::read_to_string(&path).ok()?;
-        let rel = aube_linker::parse_posix_shim_target(&content)?;
-        return Some(aube_linker::normalize_path(&path.parent()?.join(rel)));
+    let content = std::fs::read_to_string(path).ok()?;
+    let rel = aube_linker::parse_posix_shim_target(&content)
+        .or_else(|| parse_cmd_shim_target(&content))?;
+    Some(aube_linker::normalize_path(&path.parent()?.join(rel)))
+}
+
+fn parse_cmd_shim_target(content: &str) -> Option<&str> {
+    let marker = "\"%~dp0\\";
+    let mut rest = content;
+    while let Some(start) = rest.find(marker) {
+        let after_marker = &rest[start + marker.len()..];
+        let end = after_marker.find('"')?;
+        let candidate = &after_marker[..end];
+        if !candidate.ends_with(".exe") {
+            return Some(candidate);
+        }
+        rest = &after_marker[end + 1..];
     }
-    #[allow(unreachable_code)]
-    Some(path)
+    None
 }
 
 fn is_node_backed_bin(target: &Path) -> bool {
@@ -389,9 +404,8 @@ pub(crate) fn resolve_exec_shim(bin_path: &Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use super::resolve_node_bin_target;
-    use super::{is_node_backed_bin, resolve_exec_shim};
+    use super::{is_node_backed_bin, parse_cmd_shim_target, resolve_exec_shim};
 
     #[test]
     fn resolve_exec_shim_returns_bare_path_when_no_sibling() {
@@ -432,6 +446,46 @@ mod tests {
         std::fs::write(&target, b"#!/usr/bin/env node\n").unwrap();
         std::os::unix::fs::symlink("bin.js", &shim).unwrap();
         assert_eq!(resolve_node_bin_target(&shim).unwrap(), target);
+    }
+
+    #[test]
+    fn parse_cmd_shim_target_skips_program_exe() {
+        let content = "@SETLOCAL\r\n\
+             @IF EXIST \"%~dp0\\node.exe\" (\r\n\
+             \x20 \"%~dp0\\node.exe\" \"%~dp0\\pkg\\bin.js\" %*\r\n\
+             ) ELSE (\r\n\
+             \x20 node \"%~dp0\\pkg\\bin.js\" %*\r\n\
+             )\r\n";
+
+        assert_eq!(parse_cmd_shim_target(content), Some("pkg\\bin.js"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_node_bin_target_reads_cmd_shim_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pkg").join("bin.js");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"#!/usr/bin/env node\n").unwrap();
+
+        let bare = tmp.path().join("mycli");
+        std::fs::write(
+            &bare,
+            b"#!/bin/sh\nexec node \"$basedir/pkg/bin.js\" \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("mycli.cmd"),
+            b"@SETLOCAL\r\n\
+              @IF EXIST \"%~dp0\\node.exe\" (\r\n\
+              \x20 \"%~dp0\\node.exe\" \"%~dp0\\pkg\\bin.js\" %*\r\n\
+              ) ELSE (\r\n\
+              \x20 node \"%~dp0\\pkg\\bin.js\" %*\r\n\
+              )\r\n",
+        )
+        .unwrap();
+
+        assert_eq!(resolve_node_bin_target(&bare).unwrap(), target);
     }
 
     #[test]
