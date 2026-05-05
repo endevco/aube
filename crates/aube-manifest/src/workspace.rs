@@ -1216,6 +1216,24 @@ mod yaml_patch {
                         let mut sub = route.to_vec();
                         sub.push(key.to_string());
                         diff_into(bm, am, &sub, path, out)?;
+                    } else if matches!(after_v.as_mapping(), Some(m) if !m.is_empty()) {
+                        // Type-change to a non-empty sub-mapping (e.g.
+                        // scalar -> nested mapping). yamlpatch's
+                        // Op::Replace serializes the mapping value via
+                        // the same path as Op::Add, which strips nested
+                        // indentation and lands the children at the
+                        // parent's column. Split into Remove + manual
+                        // injection so step 2 can re-emit the children
+                        // with their canonical indent.
+                        out.push(Edit::Yp(Patch {
+                            route: route_obj.with_key(key.to_string()),
+                            operation: Op::Remove,
+                        }));
+                        out.push(Edit::Add {
+                            route_keys: route.to_vec(),
+                            key: key.to_string(),
+                            value: to_serde_value(path, after_v)?,
+                        });
                     } else {
                         out.push(Edit::Yp(Patch {
                             route: route_obj.with_key(key.to_string()),
@@ -1275,7 +1293,7 @@ mod yaml_patch {
         // at — `extract` alone would start mid-line and drop the
         // indent the new entry needs to inherit.
         let parent_content = document.extract_with_leading_whitespace(&feature);
-        let child_indent = detect_child_indent(parent_content);
+        let child_indent = detect_child_indent(parent_content, route_keys.len());
         let entry = render_entry(key, value, child_indent);
 
         let mut insert_at = feature.location.byte_span.1;
@@ -1298,8 +1316,9 @@ mod yaml_patch {
 
     /// Render `<key>: <value>` as block-style YAML lines, each
     /// indented by `indent` spaces. Non-empty mapping values nest
-    /// recursively; everything else is emitted as a scalar value
-    /// after the colon.
+    /// recursively; non-empty sequence values emit as block
+    /// sequences with `- ` items at child indent; everything else
+    /// is emitted as a scalar value after the colon.
     fn render_entry(key: &str, value: &serde_yaml::Value, indent: usize) -> String {
         let pad = " ".repeat(indent);
         match value {
@@ -1311,6 +1330,47 @@ mod yaml_patch {
                         other => render_scalar(other),
                     };
                     out.push_str(&render_entry(&child_key, v, indent + INDENT_STEP));
+                }
+                out
+            }
+            serde_yaml::Value::Sequence(seq) if !seq.is_empty() => {
+                // Block-sequence under a mapping key. Without an
+                // explicit arm the catch-all below would feed the
+                // sequence through `render_scalar`, which emits a
+                // multi-line `- a\n- b` chunk that lands inline on the
+                // `key:` line and produces structurally invalid YAML.
+                let mut out = format!("{pad}{}:\n", scalar_key_str(key));
+                let item_pad = " ".repeat(indent + INDENT_STEP);
+                for item in seq {
+                    if matches!(
+                        item,
+                        serde_yaml::Value::Mapping(_) | serde_yaml::Value::Sequence(_)
+                    ) {
+                        // Nested mapping/sequence as a list item: defer
+                        // to serde_yaml for inner shape, then attach
+                        // the dash to the first emitted line and pad
+                        // every continuation line so it stays inside
+                        // the same item.
+                        let raw = serde_yaml::to_string(item).unwrap_or_default();
+                        let mut first = true;
+                        for line in raw.lines() {
+                            if first {
+                                first = false;
+                                out.push_str(&item_pad);
+                                out.push_str("- ");
+                            } else {
+                                out.push_str(&item_pad);
+                                out.push_str("  ");
+                            }
+                            out.push_str(line);
+                            out.push('\n');
+                        }
+                    } else {
+                        out.push_str(&item_pad);
+                        out.push_str("- ");
+                        out.push_str(&render_scalar(item));
+                        out.push('\n');
+                    }
                 }
                 out
             }
@@ -1346,8 +1406,11 @@ mod yaml_patch {
     /// here comes from `extract_with_leading_whitespace`, so its
     /// first line is already a child of the parent route — return
     /// that first non-empty/non-comment line's leading whitespace.
-    /// Falls back to [`INDENT_STEP`] for empty parents.
-    fn detect_child_indent(parent_content: &str) -> usize {
+    /// Falls back to `parent_depth * INDENT_STEP` (the parent's own
+    /// column plus one more step) when the parent is empty: a depth-2
+    /// parent with no children otherwise had its children land at
+    /// column 2 alongside the parent itself rather than column 4.
+    fn detect_child_indent(parent_content: &str, parent_depth: usize) -> usize {
         for line in parent_content.lines() {
             let trimmed = line.trim_start();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -1355,7 +1418,7 @@ mod yaml_patch {
             }
             return line.len() - trimmed.len();
         }
-        INDENT_STEP
+        parent_depth * INDENT_STEP
     }
 
     /// Extract a string view of a mapping key, erroring out for any
@@ -1387,6 +1450,33 @@ mod yaml_patch {
 
     fn yp_err(path: &Path, msg: String) -> crate::Error {
         crate::Error::YamlParse(path.to_path_buf(), msg)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn detect_child_indent_reads_existing_child_indent() {
+            assert_eq!(detect_child_indent("    foo: 1\n", 2), 4);
+            assert_eq!(detect_child_indent("  foo: 1\n", 1), 2);
+        }
+
+        #[test]
+        fn detect_child_indent_skips_blank_and_comment_lines() {
+            assert_eq!(detect_child_indent("\n    # note\n    foo: 1\n", 2), 4);
+        }
+
+        #[test]
+        fn detect_child_indent_falls_back_to_parent_depth() {
+            // Depth-2 parent (e.g. `catalogs.evens`) with no children:
+            // children should land at column 4, not column 2.
+            assert_eq!(detect_child_indent("", 2), 4);
+            // Depth-1 parent: children at column 2.
+            assert_eq!(detect_child_indent("", 1), 2);
+            // Depth-3 parent: children at column 6.
+            assert_eq!(detect_child_indent("", 3), 6);
+        }
     }
 }
 
@@ -2221,6 +2311,76 @@ patchedDependencies:
                 .and_then(|m| m.get("is-even"))
                 .unwrap(),
             "^1.0.0"
+        );
+    }
+
+    #[test]
+    fn edit_workspace_yaml_adds_sequence_value_as_block_style() {
+        // Greptile/cursor follow-up: `render_entry`'s catch-all arm
+        // would inline a sequence value as `key: - a\n- b\n` when
+        // run through the default scalar path. The new entry must
+        // emit block-style so a re-parse round-trips through the
+        // typed `packages` field on `WorkspaceConfig`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "shamefullyHoist: true\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let packages = vec![
+                yaml_serde::Value::String("pkgs/*".to_string()),
+                yaml_serde::Value::String("apps/*".to_string()),
+            ];
+            map.insert(
+                yaml_serde::Value::String("packages".to_string()),
+                yaml_serde::Value::Sequence(packages),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let parsed: WorkspaceConfig = yaml_serde::from_str(&written).unwrap_or_else(|e| {
+            panic!("written yaml fails to parse as WorkspaceConfig: {e}\n{written}")
+        });
+        assert_eq!(parsed.packages, vec!["pkgs/*", "apps/*"]);
+        assert_eq!(parsed.shamefully_hoist, Some(true));
+    }
+
+    #[test]
+    fn edit_workspace_yaml_replaces_scalar_with_nested_mapping() {
+        // Greptile follow-up: when a key changes from a scalar value
+        // (or any non-mapping shape) to a non-empty sub-mapping, the
+        // raw `Op::Replace` path through yamlpatch strips nested
+        // indentation. The diff plumbing has to split the change into
+        // a Remove + manual injection so the new sub-mapping's
+        // children land at the canonical column rather than aliased
+        // to the parent's.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "shamefullyHoist: true\nplaceholder: legacy\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let mut nested = yaml_serde::Mapping::new();
+            nested.insert(
+                yaml_serde::Value::String("react".to_string()),
+                yaml_serde::Value::String("^18".to_string()),
+            );
+            map.insert(
+                yaml_serde::Value::String("placeholder".to_string()),
+                yaml_serde::Value::Mapping(nested),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let doc: yaml_serde::Value = yaml_serde::from_str(&written)
+            .unwrap_or_else(|e| panic!("written yaml fails to parse: {e}\n{written}"));
+        let placeholder = doc
+            .as_mapping()
+            .and_then(|m| m.get("placeholder"))
+            .and_then(|v| v.as_mapping())
+            .unwrap_or_else(|| panic!("placeholder did not round-trip as a mapping:\n{written}"));
+        assert_eq!(
+            placeholder.get("react").and_then(|v| v.as_str()),
+            Some("^18"),
+            "scalar -> mapping replacement lost child:\n{written}"
         );
     }
 
