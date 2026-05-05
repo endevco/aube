@@ -3309,6 +3309,7 @@ mod tests {
                         "string-license": "1.0.0",
                         "object-license": "1.0.0",
                         "array-license": "1.0.0",
+                        "mixed-array-license": "1.0.0",
                         "no-license": "1.0.0"
                     }
                 },
@@ -3330,9 +3331,17 @@ mod tests {
                         { "type": "MIT", "url": "http://jsonary.com/LICENSE.txt" }
                     ]
                 },
+                "node_modules/mixed-array-license": {
+                    "version": "1.0.0",
+                    "integrity": "sha512-ddd",
+                    "license": [
+                        "MIT",
+                        { "type": "Apache-2.0", "url": "https://example.com/apache" }
+                    ]
+                },
                 "node_modules/no-license": {
                     "version": "1.0.0",
-                    "integrity": "sha512-ddd"
+                    "integrity": "sha512-eee"
                 }
             }
         }"#;
@@ -3351,6 +3360,14 @@ mod tests {
         assert_eq!(
             graph.packages["array-license@1.0.0"].license.as_deref(),
             Some("Public Domain"),
+        );
+        // Mixed array (bare string + object): first element is a
+        // string, so its value is the license.
+        assert_eq!(
+            graph.packages["mixed-array-license@1.0.0"]
+                .license
+                .as_deref(),
+            Some("MIT"),
         );
         assert!(graph.packages["no-license@1.0.0"].license.is_none());
     }
