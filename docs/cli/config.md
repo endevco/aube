@@ -3,7 +3,7 @@
 
 - **Usage**: `aube config [FLAGS] <SUBCOMMAND>`
 
-Read and write settings in aube config and `.npmrc`
+Read and write settings in `.npmrc`
 
 ## Flags
 
