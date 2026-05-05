@@ -431,6 +431,9 @@ cmd deploy help="Deploy a workspace package into a target directory with deps in
     flag "-P --prod --production" help="Install only production dependencies (default)" {
         long_help "Install only production dependencies (default).\n\nAccepted for pnpm compatibility."
     }
+    flag --no-prod help="Deploy every dependency kind (production + dev + optional)" {
+        long_help "Deploy every dependency kind (production + dev + optional).\n\nOpts out of the implicit `--prod` deploy default. Useful when a deployed package needs its devDependencies at runtime (test harnesses, build-step deploys). Combine with `--no-optional` to drop optionals while keeping prod + dev. Mutually exclusive with `--prod` and `--dev`."
+    }
     flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
     flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
     flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"

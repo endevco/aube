@@ -67,20 +67,29 @@ _setup_workspace_fixture() {
 	assert_failure
 }
 
-@test "aube deploy: rewrites workspace: deps to concrete sibling versions" {
+@test "aube deploy: bundles workspace: sibling deps as file: refs" {
 	_setup_workspace_fixture
 
-	# `@test/app` originally has `"@test/lib": "workspace:*"`. Deploy will
-	# rewrite the manifest, then run install — which fails here because
-	# @test/lib isn't in the fixture registry. That's fine: we just want
-	# to verify the manifest was rewritten *before* install ran.
+	# `@test/app` has `"@test/lib": "workspace:*"`. Deploy bundles the
+	# sibling under `<target>/.aube-deploy-injected/<id>/` and rewrites
+	# the spec to a relative `file:` pointer at the staged copy — the
+	# install no longer needs to reach the registry for `@test/lib`,
+	# which the offline fixture registry doesn't carry anyway.
 	run aube deploy --filter @test/app ./out
-	assert_failure
+	assert_success
 
 	assert_file_exists out/package.json
 	run node -e "console.log(require('./out/package.json').dependencies['@test/lib'])"
 	assert_success
-	assert_output "1.0.0"
+	assert_output "file:./.aube-deploy-injected/@test_lib"
+
+	# Sibling files were copied into the staging directory.
+	assert_file_exists out/.aube-deploy-injected/@test_lib/package.json
+	assert_file_exists out/.aube-deploy-injected/@test_lib/index.js
+
+	# Install resolved the bundled sibling — `@test/lib` is reachable
+	# from the deployed package's node_modules tree.
+	assert_dir_exists out/node_modules/@test/lib
 }
 
 @test "aube deploy: errors when --filter does not match a workspace package" {
@@ -107,21 +116,23 @@ _setup_workspace_fixture() {
 
 	# `@test/*` matches both @test/lib and @test/app. Packages are
 	# sorted by name before staging, so the plan is
-	# [@test/app → out/app, @test/lib → out/lib]. Staging for both
-	# packages runs up front, then the @test/app install runs first
-	# and fails because @test/lib isn't in the fixture registry (same
-	# reason the existing rewrite test expects failure). The multi-
-	# package deploy bails after that failure, so @test/lib never
-	# gets an install run — but both target directories must exist
-	# with their rewritten manifests because staging precedes install.
+	# [@test/app → out/app, @test/lib → out/lib]. Sibling bundling
+	# now makes @test/app's deploy install successfully (the bundled
+	# @test/lib copy serves the workspace dep without a registry
+	# round-trip), so both targets land with installed trees.
 	run aube deploy --filter "@test/*" ./out
+	assert_success
 	assert_file_exists out/lib/package.json
 	assert_file_exists out/app/package.json
-	# workspace: ref in out/app was rewritten to the concrete version
-	# during staging, even though install later failed.
+	# workspace: ref in out/app was rewritten to a `file:` pointer at
+	# the staged sibling copy.
 	run node -e "console.log(require('./out/app/package.json').dependencies['@test/lib'])"
 	assert_success
-	assert_output "1.0.0"
+	assert_output "file:./.aube-deploy-injected/@test_lib"
+	# Each match got its own bundled sibling copy.
+	assert_file_exists out/app/.aube-deploy-injected/@test_lib/package.json
+	# @test/lib has no workspace deps of its own, so it bundled nothing.
+	[ ! -d out/lib/.aube-deploy-injected ]
 }
 
 @test "aube deploy: multi-match refuses a non-empty target" {
@@ -219,6 +230,143 @@ EOF
 	assert_file_exists out/scripts/run.sh
 	[ ! -e out/node_modules/ghost ]
 	[ ! -e out/.git ]
+}
+
+@test "aube deploy: bundles file: directory dep relative to the source workspace" {
+	_setup_workspace_fixture
+
+	# Add a sibling local-vendor directory and a `file:` ref into it
+	# from @test/lib. The `file:../../local-vendor` spec resolves
+	# relative to `packages/lib/` in the source workspace; without
+	# bundling, that path would resolve wrong relative to the deploy
+	# target.
+	mkdir -p local-vendor
+	cat >local-vendor/package.json <<'EOF'
+{ "name": "vendored", "version": "0.0.1", "main": "index.js" }
+EOF
+	echo "module.exports = 'vendored'" >local-vendor/index.js
+	# Append the file: dep to @test/lib's deps.
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "is-odd": "^3.0.1",
+    "vendored": "file:../../local-vendor"
+  }
+}
+EOF
+
+	run aube deploy --filter @test/lib ./out
+	assert_success
+
+	# file: target was bundled, manifest rewritten to point at the
+	# staged copy. The spec is relative to the deployed manifest,
+	# not the original source workspace path.
+	run node -e "console.log(require('./out/package.json').dependencies['vendored'])"
+	assert_success
+	assert_output "file:./.aube-deploy-injected/local-vendor"
+	assert_file_exists out/.aube-deploy-injected/local-vendor/package.json
+	assert_file_exists out/.aube-deploy-injected/local-vendor/index.js
+	# Install resolved the bundled file: dep.
+	assert_dir_exists out/node_modules/vendored
+}
+
+@test "aube deploy: --no-prod includes devDependencies in the deployed tree" {
+	_setup_workspace_fixture
+
+	# Add a workspace devDep to @test/lib. Default `--prod` deploy
+	# would strip it from the manifest and lockfile; `--no-prod`
+	# keeps it and bundles the sibling.
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": { "is-odd": "^3.0.1" },
+  "devDependencies": { "@test/app": "workspace:*" }
+}
+EOF
+
+	run aube deploy --no-prod --filter @test/lib ./out
+	assert_success
+
+	run node -e "console.log(JSON.stringify(require('./out/package.json').devDependencies))"
+	assert_success
+	assert_output --partial "@test/app"
+	assert_output --partial "file:./.aube-deploy-injected/@test_app"
+	assert_file_exists out/.aube-deploy-injected/@test_app/package.json
+}
+
+@test "aube deploy: --prod default strips devDependencies from manifest and tree" {
+	_setup_workspace_fixture
+
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": { "is-odd": "^3.0.1" },
+  "devDependencies": { "is-number": "^7.0.0" }
+}
+EOF
+
+	run aube deploy --filter @test/lib ./out
+	assert_success
+
+	# devDependencies block is gone from the deployed manifest.
+	run node -e "console.log(JSON.stringify(Object.keys(require('./out/package.json'))))"
+	assert_success
+	refute_output --partial "devDependencies"
+	# is-number@^7 is the dev-only direct dep — it must not appear in
+	# the deployed lockfile or node_modules. is-number@3 is reachable
+	# through is-even/is-odd transitive chains and may legitimately
+	# appear, so we match the dev-only major version exactly.
+	run grep "is-number@7" out/aube-lock.yaml
+	assert_failure
+	# If is-number@3 ended up in node_modules as a transitive, that's
+	# fine — we only assert the dev-only major (7.x) is absent.
+	if [ -d out/node_modules/is-number ]; then
+		run grep '"version": "7\.' out/node_modules/is-number/package.json
+		assert_failure
+	fi
+}
+
+@test "aube deploy: bundles workspace siblings recursively" {
+	_setup_workspace_fixture
+
+	# Add a third sibling `@test/core` that `@test/lib` depends on.
+	mkdir -p packages/core
+	cat >packages/core/package.json <<'EOF'
+{ "name": "@test/core", "version": "0.0.1", "main": "index.js" }
+EOF
+	echo "module.exports = 'core'" >packages/core/index.js
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "is-odd": "^3.0.1",
+    "@test/core": "workspace:*"
+  }
+}
+EOF
+
+	# Deploy @test/app, which depends on @test/lib (workspace:*),
+	# which depends on @test/core (workspace:*). Both siblings must
+	# bundle.
+	run aube deploy --filter @test/app ./out
+	assert_success
+
+	assert_file_exists out/.aube-deploy-injected/@test_lib/package.json
+	assert_file_exists out/.aube-deploy-injected/@test_core/package.json
+	# Bundled @test/lib's manifest references @test/core via a
+	# relative `file:` path inside the injected dir.
+	run node -e "console.log(require('./out/.aube-deploy-injected/@test_lib/package.json').dependencies['@test/core'])"
+	assert_success
+	assert_output "file:../@test_core"
 }
 
 @test "aube deploy: deploy-all-files=true copies symlinked files via their target" {

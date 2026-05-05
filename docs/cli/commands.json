@@ -2272,6 +2272,19 @@
             "global": false
           },
           {
+            "name": "no-prod",
+            "usage": "--no-prod",
+            "help": "Deploy every dependency kind (production + dev + optional)",
+            "help_long": "Deploy every dependency kind (production + dev + optional).\n\nOpts out of the implicit `--prod` deploy default. Useful when a deployed package needs its devDependencies at runtime (test harnesses, build-step deploys). Combine with `--no-optional` to drop optionals while keeping prod + dev. Mutually exclusive with `--prod` and `--dev`.",
+            "help_first_line": "Deploy every dependency kind (production + dev + optional)",
+            "short": [],
+            "long": [
+              "no-prod"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "frozen-lockfile",
             "usage": "--frozen-lockfile",
             "help": "Error if the lockfile drifts from package.json",
