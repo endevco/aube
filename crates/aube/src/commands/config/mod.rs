@@ -269,14 +269,14 @@ fn search_text_matches(haystack: &str, term: &str) -> bool {
         .any(|word| word.starts_with(term))
 }
 
-/// Read `~/.npmrc`, aube's user config, then `<cwd>/.npmrc` and return
+/// Read aube's user config, `~/.npmrc`, then `<cwd>/.npmrc` and return
 /// every entry in file order so a later duplicate wins.
 pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
+    out.extend(aube_config::load_user_entries());
     if let Ok(user) = user_npmrc_path() {
         out.extend(read_single(&user)?);
     }
-    out.extend(aube_config::load_user_entries());
     out.extend(read_single(&cwd.join(".npmrc"))?);
     Ok(out)
 }

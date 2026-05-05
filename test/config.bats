@@ -35,6 +35,19 @@ teardown() {
 	assert_output "true"
 }
 
+@test "config get and list prefer user .npmrc over user config.toml" {
+	mkdir -p "$XDG_CONFIG_HOME/aube"
+	echo "autoInstallPeers = true" >"$XDG_CONFIG_HOME/aube/config.toml"
+	echo "autoInstallPeers=false" >"$HOME/.npmrc"
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "false"
+	run aube config list --location user
+	assert_success
+	assert_line "auto-install-peers=false"
+	refute_line "auto-install-peers=true"
+}
+
 @test "config get --location project only reads project .npmrc" {
 	mkdir proj
 	echo "autoInstallPeers=true" >"$HOME/.npmrc"

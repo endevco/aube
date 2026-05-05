@@ -77,8 +77,8 @@ pub fn run(args: ListArgs) -> miette::Result<()> {
     let entries: Vec<(String, String)> = match location {
         ListLocation::Merged => read_merged(&cwd)?,
         ListLocation::User | ListLocation::Global => {
-            let mut entries = read_single(&user_npmrc_path()?)?;
-            entries.extend(super::aube_config::load_user_entries());
+            let mut entries = super::aube_config::load_user_entries();
+            entries.extend(read_single(&user_npmrc_path()?)?);
             entries
         }
         ListLocation::Project => read_single(&cwd.join(".npmrc"))?,

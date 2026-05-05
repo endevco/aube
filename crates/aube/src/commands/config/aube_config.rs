@@ -83,9 +83,13 @@ pub(crate) fn load_user_entries() -> Vec<(String, String)> {
     let Ok(path) = user_aube_config_path() else {
         return Vec::new();
     };
-    AubeConfigEdit::load(&path)
-        .map(|edit| edit.entries())
-        .unwrap_or_default()
+    match AubeConfigEdit::load(&path) {
+        Ok(edit) => edit.entries(),
+        Err(err) => {
+            tracing::warn!("failed to load aube config at {}: {err}", path.display());
+            Vec::new()
+        }
+    }
 }
 
 pub(super) fn is_aube_config_key(key: &str) -> Option<&'static settings_meta::SettingMeta> {
