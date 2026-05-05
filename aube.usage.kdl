@@ -64,6 +64,9 @@ flag --workspace-root help="Run from the workspace root regardless of the curren
 flag "-y --yes" help="Automatically answer yes to prompts" hide=#true global=#true {
     long_help "Automatically answer yes to prompts.\n\nParsed for pnpm compatibility; aube does not currently prompt on these paths."
 }
+cmd __node-gyp-bootstrap hide=#true help="Bootstrap aube's cached node-gyp and print the executable path" {
+    arg <PROJECT_DIR>
+}
 cmd add help="Add a dependency" {
     alias a
     flag "-D --save-dev" help="Add as dev dependency"

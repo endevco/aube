@@ -5,6 +5,30 @@
     "full_cmd": [],
     "usage": "[FLAGS] <SUBCOMMAND>",
     "subcommands": {
+      "__node-gyp-bootstrap": {
+        "full_cmd": [
+          "__node-gyp-bootstrap"
+        ],
+        "usage": "__node-gyp-bootstrap <PROJECT_DIR>",
+        "subcommands": {},
+        "args": [
+          {
+            "name": "PROJECT_DIR",
+            "usage": "<PROJECT_DIR>",
+            "required": true,
+            "double_dash": "Optional",
+            "hide": false
+          }
+        ],
+        "flags": [],
+        "mounts": [],
+        "hide": true,
+        "help": "Bootstrap aube's cached node-gyp and print the executable path",
+        "name": "__node-gyp-bootstrap",
+        "aliases": [],
+        "hidden_aliases": [],
+        "examples": []
+      },
       "add": {
         "full_cmd": [
           "add"
