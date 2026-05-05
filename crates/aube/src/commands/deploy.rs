@@ -651,6 +651,12 @@ fn plan_injections(
                     | aube_lockfile::LocalSource::Link(rel) => {
                         let abs = pkg_dir.join(&rel);
                         let canonical = canonicalize(&abs);
+                        // Same back-ref guard as the `workspace:` branch:
+                        // a bundled sibling reaching the deployed package
+                        // via `file:../deployed-pkg` must not duplicate it.
+                        if canonical == deployed_canonical {
+                            continue;
+                        }
                         if !plan.contains_key(&canonical) {
                             let id_seed = canonical
                                 .file_name()
@@ -1162,6 +1168,15 @@ fn rewrite_local_refs(
                     | aube_lockfile::LocalSource::RemoteTarball(_) => continue,
                 };
                 let canonical = canonicalize(&abs);
+                // Same back-ref guard as the `workspace:` branch: a sibling
+                // reaching the deployed package via `file:../deployed-pkg`
+                // must rewrite to a `file:` pointer at the deploy root,
+                // not to a duplicate copy.
+                if canonical == root.deployed_canonical {
+                    *spec_val =
+                        serde_json::Value::String(file_spec_to_dir(manifest_dir, root.target_root));
+                    continue;
+                }
                 let Some(inj) = plan.get(&canonical) else {
                     // `file:`/`link:` peers are not bundled (peerDependencies
                     // is excluded from `iter_strippable_deps`), so a peer
@@ -1553,6 +1568,46 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&sibling_manifest).unwrap()).unwrap();
         // From <target>/.aube-deploy-injected/b/ back to <target>/ is
         // `../..`.
+        assert_eq!(out["dependencies"]["@deployed/pkg"], "file:../..");
+    }
+
+    #[test]
+    fn rewrite_local_refs_writes_back_ref_for_file_link_to_deployed_pkg() {
+        // Same back-ref scenario as the workspace test, but the sibling
+        // references the deployed package via `file:` instead of
+        // `workspace:*`. The result must still be a relative file:
+        // pointer at the deploy root, not a bundled duplicate.
+        let tmp = tempfile::tempdir().unwrap();
+        let target_root = tmp.path();
+        let deployed_dir = target_root.join("source/deployed-pkg");
+        std::fs::create_dir_all(&deployed_dir).unwrap();
+        let deployed_canonical = canonicalize(&deployed_dir);
+        let sibling_target = target_root.join(".aube-deploy-injected").join("b");
+        std::fs::create_dir_all(&sibling_target).unwrap();
+
+        let sibling_manifest = sibling_target.join("package.json");
+        std::fs::write(
+            &sibling_manifest,
+            r#"{"name":"@test/b","version":"1.0.0","dependencies":{"@deployed/pkg":"file:../../source/deployed-pkg"}}"#,
+        )
+        .unwrap();
+
+        rewrite_local_refs(
+            &sibling_manifest,
+            &deployed_canonical,
+            &sibling_target,
+            &BTreeMap::new(),
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &deployed_canonical,
+                target_root,
+            },
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sibling_manifest).unwrap()).unwrap();
         assert_eq!(out["dependencies"]["@deployed/pkg"], "file:../..");
     }
 
