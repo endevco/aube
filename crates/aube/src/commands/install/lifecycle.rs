@@ -813,7 +813,7 @@ pub(super) async fn fetch_and_import_tarball_streaming(
     verify_integrity: bool,
     strict_integrity: bool,
     strict_pkg_content_check: bool,
-) -> miette::Result<aube_store::PackageIndex> {
+) -> miette::Result<(aube_store::PackageIndex, u64)> {
     use sha2::Digest;
 
     let mut resp = client.start_tarball_stream(url).await.map_err(|e| {
@@ -842,17 +842,26 @@ pub(super) async fn fetch_and_import_tarball_streaming(
             })
         });
 
+    // Hash every byte the server sent, regardless of whether the
+    // import task consumed them. tar end-of-archive can fire before
+    // gzip padding finishes streaming. importer drops rx, send fails,
+    // but SHA-512 still has to cover the full body or partial-stream
+    // SRI passes when verify is on.
     let mut hasher = sha2::Sha512::new();
     let mut total: u64 = 0;
+    let mut chunk_tx = Some(chunk_tx);
     let stream_err: Option<aube_registry::Error> = loop {
         match resp.chunk().await {
             Ok(Some(chunk)) => {
                 if cap > 0 && total.saturating_add(chunk.len() as u64) > cap {
-                    let e = std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("tarball body exceeds cap {cap}"),
-                    );
-                    let _ = chunk_tx.send(Err(e)).await;
+                    if let Some(tx) = chunk_tx.as_ref() {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("tarball body exceeds cap {cap}"),
+                            )))
+                            .await;
+                    }
                     break Some(aube_registry::Error::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("tarball body exceeds cap {cap}"),
@@ -860,14 +869,20 @@ pub(super) async fn fetch_and_import_tarball_streaming(
                 }
                 total += chunk.len() as u64;
                 hasher.update(&chunk);
-                if chunk_tx.send(Ok(chunk)).await.is_err() {
-                    break None;
+                if let Some(tx) = chunk_tx.as_ref()
+                    && tx.send(Ok(chunk)).await.is_err()
+                {
+                    // Import task closed the channel (tar EOF hit).
+                    // Drop the sender and keep draining the response
+                    // so SHA-512 covers the full tarball body.
+                    chunk_tx = None;
                 }
             }
             Ok(None) => break None,
             Err(e) => {
-                let io_err = std::io::Error::other(e.to_string());
-                let _ = chunk_tx.send(Err(io_err)).await;
+                if let Some(tx) = chunk_tx.as_ref() {
+                    let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+                }
                 break Some(aube_registry::Error::from(e));
             }
         }
@@ -934,7 +949,7 @@ pub(super) async fn fetch_and_import_tarball_streaming(
         );
     }
 
-    Ok(index)
+    Ok((index, total))
 }
 
 pub(super) fn validate_required_scripts(

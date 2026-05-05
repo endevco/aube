@@ -1071,8 +1071,10 @@ const MAX_TARBALL_ENTRIES: usize = 200_000;
 #[cfg(test)]
 const MAX_TARBALL_ENTRIES: usize = 64;
 
-// Best-effort posix_fallocate. Returns Ok on success, ignores
-// unsupported / EINVAL on filesystems where it's a no-op.
+// Thin wrapper over posix_fallocate(3) which returns the error code
+// directly (does not set errno). Caller decides how to handle the
+// error. Existing call site uses `let _ = ...` to ignore EOPNOTSUPP /
+// ENOSYS / EINVAL on filesystems where pre-allocation is a no-op.
 #[cfg(target_os = "linux")]
 fn posix_fallocate(file: &std::fs::File, len: i64) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -1129,11 +1131,11 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
         let err = std::io::Error::last_os_error();
         return match err.raw_os_error() {
             // Old kernels lack O_TMPFILE. Overlayfs/tmpfs return
-            // EOPNOTSUPP, ENOTSUP, EISDIR, or EINVAL on some kernels.
-            Some(libc::EOPNOTSUPP)
-            | Some(libc::ENOTSUP)
-            | Some(libc::EISDIR)
-            | Some(libc::EINVAL) => Err(OTmpfileFallback::Unsupported),
+            // EOPNOTSUPP, EISDIR, or EINVAL on some kernels.
+            // ENOTSUP is the same value as EOPNOTSUPP on Linux.
+            Some(libc::EOPNOTSUPP) | Some(libc::EISDIR) | Some(libc::EINVAL) => {
+                Err(OTmpfileFallback::Unsupported)
+            }
             _ => Err(OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), err))),
         };
     }
@@ -1193,9 +1195,8 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
         // No /proc in this sandbox.
         Some(libc::ENOENT) => Err(OTmpfileFallback::Unsupported),
         // Kernel opens O_TMPFILE but rejects linkat from /proc/self/fd.
-        Some(libc::EOPNOTSUPP) | Some(libc::ENOTSUP) | Some(libc::EXDEV) => {
-            Err(OTmpfileFallback::Unsupported)
-        }
+        // ENOTSUP is same value as EOPNOTSUPP on Linux.
+        Some(libc::EOPNOTSUPP) | Some(libc::EXDEV) => Err(OTmpfileFallback::Unsupported),
         _ => Err(OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), err))),
     }
 }

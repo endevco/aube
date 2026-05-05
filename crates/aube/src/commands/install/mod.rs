@@ -1008,11 +1008,13 @@ pub(super) async fn run_gvs_prewarm_materializer(
 
     // Map canonical name@version to set of contextualized dep_paths.
     // Resolver no-lockfile path keys by canonical, lockfile path emits
-    // contextualized. Accept both.
-    let mut canonical_to_contextualized: std::collections::HashMap<
+    // contextualized. Accept both. foldhash here matches the resolver
+    // and lockfile graph_hash hot maps so the streaming GVS-prewarm
+    // loop hits one consistent hasher.
+    let mut canonical_to_contextualized: aube_util::collections::FxMap<
         String,
-        std::collections::HashSet<String>,
-    > = std::collections::HashMap::new();
+        aube_util::collections::FxSet<String>,
+    > = aube_util::collections::FxMap::default();
     for (dep_path, pkg) in &graph.packages {
         if pkg.local_source.is_some() {
             continue;
@@ -1417,7 +1419,7 @@ where
                         .as_deref()
                         .is_none_or(|s| s.starts_with("sha512-"));
                 if stream_eligible {
-                    let index = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
+                    let (index, bytes_len) = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
                         &client,
                         &store,
                         &url,
@@ -1432,12 +1434,13 @@ where
                     .await?;
                     let dl_time = dl_start.elapsed();
                     if let Some(p) = bytes_progress.as_ref() {
-                        p.inc_downloaded_bytes(0);
+                        p.inc_downloaded_bytes(bytes_len);
                     }
                     tracing::trace!(
-                        "fetch (stream) {display_name}@{version}: wait={:.0?} total={:.0?}",
+                        "fetch (stream) {display_name}@{version}: wait={:.0?} total={:.0?} ({} bytes)",
                         wait_time,
-                        dl_time
+                        dl_time,
+                        bytes_len
                     );
                     drop(permit);
                     return Ok::<_, miette::Report>((dep_path, index));
@@ -3170,7 +3173,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 .as_deref()
                                 .is_none_or(|s| s.starts_with("sha512-"));
                         if stream_eligible {
-                            let index = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
+                            let (index, bytes_len) = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
                                 &client,
                                 &store,
                                 &url,
@@ -3183,6 +3186,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 fetch_strict_pkg_content_check,
                             )
                             .await?;
+                            if let Some(p) = bytes_progress.as_ref() {
+                                p.inc_downloaded_bytes(bytes_len);
+                            }
                             drop(permit);
                             return Ok::<_, miette::Report>((dep_path, index));
                         }
