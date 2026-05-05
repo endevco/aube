@@ -19,6 +19,12 @@ pub struct RunArgs {
     /// Don't error if the script is missing from package.json
     #[arg(long)]
     pub if_present: bool,
+    /// Forward `--inspect` to a Node-backed script or local binary.
+    #[arg(long, value_name = "[HOST:]PORT", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    pub inspect: Option<String>,
+    /// Forward `--inspect-brk` to a Node-backed script or local binary.
+    #[arg(long, value_name = "[HOST:]PORT", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    pub inspect_brk: Option<String>,
     /// Continue recursive execution after a script fails.
     ///
     /// Parsed for pnpm compatibility; aube's sequential fanout still
@@ -121,6 +127,8 @@ pub async fn run(
         no_install,
         no_sort: _,
         if_present,
+        inspect,
+        inspect_brk,
         parallel,
         no_bail: _,
         report_summary: _,
@@ -139,10 +147,30 @@ pub async fn run(
         Some(s) => s,
         None => prompt_for_script()?,
     };
+    let node_args = node_args_from_run_flags(inspect, inspect_brk);
     run_script_with(
-        &script, &args, no_install, if_present, parallel, silent, &filter,
+        &script, &args, &node_args, no_install, if_present, parallel, silent, &filter,
     )
     .await
+}
+
+fn node_args_from_run_flags(inspect: Option<String>, inspect_brk: Option<String>) -> Vec<String> {
+    let mut args = Vec::with_capacity(2);
+    if let Some(value) = inspect {
+        args.push(node_arg("--inspect", &value));
+    }
+    if let Some(value) = inspect_brk {
+        args.push(node_arg("--inspect-brk", &value));
+    }
+    args
+}
+
+fn node_arg(flag: &str, value: &str) -> String {
+    if value.is_empty() {
+        flag.to_string()
+    } else {
+        format!("{flag}={value}")
+    }
 }
 
 /// Prompt the user to pick a script from the project root's
@@ -228,12 +256,24 @@ pub(crate) async fn run_script(
     filter: &aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     let silent = super::global_output_flags().silent;
-    run_script_with(script, args, no_install, if_present, false, silent, filter).await
+    run_script_with(
+        script,
+        args,
+        &[],
+        no_install,
+        if_present,
+        false,
+        silent,
+        filter,
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_script_with(
     script: &str,
     args: &[String],
+    node_args: &[String],
     no_install: bool,
     if_present: bool,
     parallel: bool,
@@ -272,6 +312,7 @@ pub(crate) async fn run_script_with(
             &cwd,
             script,
             args,
+            node_args,
             no_install,
             if_present,
             parallel,
@@ -287,7 +328,10 @@ pub(crate) async fn run_script_with(
         ensure_installed(no_install).await?;
         let bin_path = super::project_modules_dir(&cwd).join(".bin").join(script);
         if bin_path.exists() {
-            return super::exec::exec_bin(&cwd, &bin_path, script, args, false).await;
+            return super::exec::exec_bin_with_node_args(
+                &cwd, &bin_path, script, args, node_args, false,
+            )
+            .await;
         }
         if if_present {
             return Ok(());
@@ -308,7 +352,15 @@ pub(crate) async fn run_script_with(
     }
 
     ensure_installed(no_install).await?;
-    exec_script_chain(&cwd, &manifest, script, args, enable_pre_post_scripts).await
+    exec_script_chain(
+        &cwd,
+        &manifest,
+        script,
+        args,
+        node_args,
+        enable_pre_post_scripts,
+    )
+    .await
 }
 
 /// Fan out a script over workspace packages matched by `filter`. Runs
@@ -321,6 +373,7 @@ async fn run_script_filtered(
     cwd: &Path,
     script: &str,
     args: &[String],
+    node_args: &[String],
     no_install: bool,
     if_present: bool,
     parallel: bool,
@@ -395,18 +448,23 @@ async fn run_script_filtered(
             }
             let script = script.to_string();
             let args = args.to_vec();
+            let node_args = node_args.to_vec();
             let dir = pkg.dir.clone();
             let manifest = pkg.manifest.clone();
             task_names.push(name);
             tasks.push(tokio::spawn(async move {
                 if let Some(bin_path) = bin_path {
-                    super::exec::exec_bin_status(&dir, &bin_path, &script, &args, false).await
+                    super::exec::exec_bin_status_with_node_args(
+                        &dir, &bin_path, &script, &args, &node_args, false,
+                    )
+                    .await
                 } else {
                     exec_script_status_chain(
                         &dir,
                         &manifest,
                         &script,
                         &args,
+                        &node_args,
                         enable_pre_post_scripts,
                     )
                     .await
@@ -454,7 +512,10 @@ async fn run_script_filtered(
                 if !silent {
                     tracing::info!("aube run: {name} -> {script}");
                 }
-                super::exec::exec_bin(&pkg.dir, &bin_path, script, args, false).await?;
+                super::exec::exec_bin_with_node_args(
+                    &pkg.dir, &bin_path, script, args, node_args, false,
+                )
+                .await?;
                 continue;
             }
             if if_present {
@@ -470,6 +531,7 @@ async fn run_script_filtered(
             &pkg.manifest,
             script,
             args,
+            node_args,
             enable_pre_post_scripts,
         )
         .await?;
@@ -527,7 +589,7 @@ pub(crate) async fn exec_script(
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
 
-    let mut command = build_script_command(cwd, manifest, script, cmd, args);
+    let mut command = build_script_command(cwd, manifest, script, cmd, args, &[]);
 
     let status = command
         .status()
@@ -555,9 +617,11 @@ fn build_script_command(
     script: &str,
     cmd: &str,
     args: &[String],
+    node_args: &[String],
 ) -> tokio::process::Command {
+    let cmd = inject_node_args(cmd, node_args);
     let shell_cmd = if args.is_empty() {
-        cmd.to_string()
+        cmd
     } else {
         // Quote each forwarded arg. Args land inside `sh -c "..."` or
         // cmd `/c "..."` which reparses. Unquoted $, backticks, ;, |,
@@ -566,7 +630,7 @@ fn build_script_command(
         // shell_quote_arg wraps per-platform. See aube-scripts.
         let mut buf =
             String::with_capacity(cmd.len() + args.iter().map(|a| a.len() + 3).sum::<usize>());
-        buf.push_str(cmd);
+        buf.push_str(&cmd);
         for a in args {
             buf.push(' ');
             buf.push_str(&aube_scripts::shell_quote_arg(a));
@@ -609,22 +673,73 @@ fn build_script_command(
     command
 }
 
+fn inject_node_args(cmd: &str, node_args: &[String]) -> String {
+    if node_args.is_empty() {
+        return cmd.to_string();
+    }
+    let trimmed = cmd.trim_start();
+    let leading_len = cmd.len() - trimmed.len();
+    let Some(rest) = trimmed.strip_prefix("node") else {
+        return cmd.to_string();
+    };
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return cmd.to_string();
+    }
+    let mut out =
+        String::with_capacity(cmd.len() + node_args.iter().map(|arg| arg.len() + 1).sum::<usize>());
+    out.push_str(&cmd[..leading_len + 4]);
+    for arg in node_args {
+        out.push(' ');
+        out.push_str(&aube_scripts::shell_quote_arg(arg));
+    }
+    out.push_str(rest);
+    out
+}
+
 pub(crate) async fn exec_script_chain(
     cwd: &Path,
     manifest: &PackageJson,
     script: &str,
     args: &[String],
+    node_args: &[String],
     enable_pre_post_scripts: bool,
 ) -> miette::Result<()> {
     if enable_pre_post_scripts {
         let pre = format!("pre{script}");
         exec_optional(cwd, manifest, &pre, &[]).await?;
     }
-    exec_script(cwd, manifest, script, args).await?;
+    exec_script_with_node_args(cwd, manifest, script, args, node_args).await?;
     if enable_pre_post_scripts {
         let post = format!("post{script}");
         exec_optional(cwd, manifest, &post, &[]).await?;
     }
+    Ok(())
+}
+
+async fn exec_script_with_node_args(
+    cwd: &Path,
+    manifest: &PackageJson,
+    script: &str,
+    args: &[String],
+    node_args: &[String],
+) -> miette::Result<()> {
+    let cmd = manifest
+        .scripts
+        .get(script)
+        .ok_or_else(|| miette!("script not found: {script}"))?;
+
+    let mut command = build_script_command(cwd, manifest, script, cmd, args, node_args);
+
+    let status = command
+        .status()
+        .await
+        .into_diagnostic()
+        .wrap_err("failed to execute script")?;
+
+    if !status.success() {
+        std::process::exit(aube_scripts::exit_code_from_status(status));
+    }
+
     Ok(())
 }
 
@@ -642,7 +757,7 @@ pub(crate) async fn exec_script_status(
         .scripts
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
-    build_script_command(cwd, manifest, script, cmd, args)
+    build_script_command(cwd, manifest, script, cmd, args, &[])
         .status()
         .await
         .into_diagnostic()
@@ -654,6 +769,7 @@ pub(crate) async fn exec_script_status_chain(
     manifest: &PackageJson,
     script: &str,
     args: &[String],
+    node_args: &[String],
     enable_pre_post_scripts: bool,
 ) -> miette::Result<std::process::ExitStatus> {
     if enable_pre_post_scripts {
@@ -665,7 +781,7 @@ pub(crate) async fn exec_script_status_chain(
             }
         }
     }
-    let status = exec_script_status(cwd, manifest, script, args).await?;
+    let status = exec_script_status_with_node_args(cwd, manifest, script, args, node_args).await?;
     if !status.success() {
         return Ok(status);
     }
@@ -676,4 +792,52 @@ pub(crate) async fn exec_script_status_chain(
         }
     }
     Ok(status)
+}
+
+async fn exec_script_status_with_node_args(
+    cwd: &Path,
+    manifest: &PackageJson,
+    script: &str,
+    args: &[String],
+    node_args: &[String],
+) -> miette::Result<std::process::ExitStatus> {
+    let cmd = manifest
+        .scripts
+        .get(script)
+        .ok_or_else(|| miette!("script not found: {script}"))?;
+    build_script_command(cwd, manifest, script, cmd, args, node_args)
+        .status()
+        .await
+        .into_diagnostic()
+        .wrap_err("failed to execute script")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{inject_node_args, node_args_from_run_flags};
+
+    #[test]
+    fn node_args_from_flags_supports_optional_values() {
+        assert_eq!(
+            node_args_from_run_flags(Some(String::new()), Some("0.0.0.0:9230".to_string())),
+            vec![
+                "--inspect".to_string(),
+                "--inspect-brk=0.0.0.0:9230".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_node_args_only_touches_direct_node_commands() {
+        let args = vec!["--inspect".to_string()];
+        assert_eq!(
+            inject_node_args("node test.js", &args),
+            "node '--inspect' test.js"
+        );
+        assert_eq!(inject_node_args("tsx test.ts", &args), "tsx test.ts");
+        assert_eq!(
+            inject_node_args("node-gyp rebuild", &args),
+            "node-gyp rebuild"
+        );
+    }
 }

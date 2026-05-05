@@ -189,13 +189,26 @@ pub(crate) async fn exec_bin(
     args: &[String],
     shell_mode: bool,
 ) -> miette::Result<()> {
+    exec_bin_with_node_args(cwd, bin_path, bin, args, &[], shell_mode).await
+}
+
+pub(crate) async fn exec_bin_with_node_args(
+    cwd: &Path,
+    bin_path: &Path,
+    bin: &str,
+    args: &[String],
+    node_args: &[String],
+    shell_mode: bool,
+) -> miette::Result<()> {
     if !shell_mode && !bin_path.exists() {
         return Err(miette!(
             "binary not found: {bin}\nTry running `aube install` first, or check that the package providing '{bin}' is in your dependencies."
         ));
     }
 
-    let mut command = if shell_mode {
+    let mut command = if let Some(cmd) = node_bin_command(bin_path, args, node_args, shell_mode) {
+        cmd
+    } else if shell_mode {
         let line = std::iter::once(aube_scripts::shell_quote_arg(bin))
             .chain(args.iter().map(|arg| aube_scripts::shell_quote_arg(arg)))
             .collect::<Vec<_>>()
@@ -233,13 +246,26 @@ pub(crate) async fn exec_bin_status(
     args: &[String],
     shell_mode: bool,
 ) -> miette::Result<std::process::ExitStatus> {
+    exec_bin_status_with_node_args(cwd, bin_path, bin, args, &[], shell_mode).await
+}
+
+pub(crate) async fn exec_bin_status_with_node_args(
+    cwd: &Path,
+    bin_path: &Path,
+    bin: &str,
+    args: &[String],
+    node_args: &[String],
+    shell_mode: bool,
+) -> miette::Result<std::process::ExitStatus> {
     if !shell_mode && !bin_path.exists() {
         return Err(miette!(
             "binary not found: {bin}\nTry running `aube install` first, or check that the package providing '{bin}' is in your dependencies."
         ));
     }
 
-    let mut command = if shell_mode {
+    let mut command = if let Some(cmd) = node_bin_command(bin_path, args, node_args, shell_mode) {
+        cmd
+    } else if shell_mode {
         let line = std::iter::once(aube_scripts::shell_quote_arg(bin))
             .chain(args.iter().map(|arg| aube_scripts::shell_quote_arg(arg)))
             .collect::<Vec<_>>()
@@ -264,6 +290,61 @@ pub(crate) async fn exec_bin_status(
         .wrap_err("failed to execute binary")
 }
 
+fn node_bin_command(
+    bin_path: &Path,
+    args: &[String],
+    node_args: &[String],
+    shell_mode: bool,
+) -> Option<tokio::process::Command> {
+    if shell_mode || node_args.is_empty() {
+        return None;
+    }
+    let target = resolve_node_bin_target(bin_path)?;
+    if !is_node_backed_bin(&target) {
+        return None;
+    }
+    let mut cmd = tokio::process::Command::new("node");
+    cmd.args(node_args).arg(target).args(args);
+    Some(cmd)
+}
+
+fn resolve_node_bin_target(bin_path: &Path) -> Option<std::path::PathBuf> {
+    let path = resolve_exec_shim(bin_path);
+    if let Ok(target) = std::fs::read_link(&path) {
+        return Some(if target.is_absolute() {
+            target
+        } else {
+            aube_linker::normalize_path(&path.parent()?.join(target))
+        });
+    }
+    #[cfg(unix)]
+    {
+        let content = std::fs::read_to_string(&path).ok()?;
+        let rel = aube_linker::parse_posix_shim_target(&content)?;
+        return Some(aube_linker::normalize_path(&path.parent()?.join(rel)));
+    }
+    #[allow(unreachable_code)]
+    Some(path)
+}
+
+fn is_node_backed_bin(target: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(target) else {
+        return false;
+    };
+    let first_line = bytes
+        .split(|b| *b == b'\n')
+        .next()
+        .and_then(|line| std::str::from_utf8(line).ok())
+        .unwrap_or("");
+    if first_line.starts_with("#!") && first_line.contains("node") {
+        return true;
+    }
+    matches!(
+        target.extension().and_then(|ext| ext.to_str()),
+        Some("js" | "cjs" | "mjs")
+    )
+}
+
 /// Pick the executable variant of a `node_modules/.bin/<name>` shim.
 ///
 /// On Unix the bare path is a sh shebang script and is what we want.
@@ -285,7 +366,7 @@ pub(crate) fn resolve_exec_shim(bin_path: &Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_exec_shim;
+    use super::{is_node_backed_bin, resolve_exec_shim, resolve_node_bin_target};
 
     #[test]
     fn resolve_exec_shim_returns_bare_path_when_no_sibling() {
@@ -315,5 +396,24 @@ mod tests {
         std::fs::write(&bare, b"#!/bin/sh\n").unwrap();
         std::fs::write(&cmd_shim, b"@echo off\n").unwrap();
         assert_eq!(resolve_exec_shim(&bare), bare);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_node_bin_target_follows_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("bin.js");
+        let shim = tmp.path().join("shim");
+        std::fs::write(&target, b"#!/usr/bin/env node\n").unwrap();
+        std::os::unix::fs::symlink("bin.js", &shim).unwrap();
+        assert_eq!(resolve_node_bin_target(&shim).unwrap(), target);
+    }
+
+    #[test]
+    fn is_node_backed_bin_detects_node_shebang() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("bin");
+        std::fs::write(&target, b"#!/usr/bin/env node\nconsole.log(1)\n").unwrap();
+        assert!(is_node_backed_bin(&target));
     }
 }
