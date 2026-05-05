@@ -515,6 +515,7 @@ mod tests {
         let empty_env = Vec::new();
         let ctx = aube_settings::ResolveCtx {
             npmrc: &empty_npmrc,
+            aube_config: &[],
             workspace_yaml: &empty_workspace,
             env: &empty_env,
             cli: &opts.cli_flags,

@@ -1,11 +1,13 @@
-//! `aube config` — read/write settings in `.npmrc`.
+//! `aube config` — read/write settings in aube config and `.npmrc`.
 //!
 //! The command's known setting surface is derived from
 //! [`aube_settings::meta::SETTINGS`], generated at build time from
-//! `settings.toml`. Unknown keys are still accepted verbatim because
-//! `.npmrc` is free-form and includes auth-token entries such as
-//! `//registry.npmjs.org/:_authToken`.
+//! `settings.toml`. Known aube-owned user/global settings are written
+//! to `~/.config/aube/config.toml`; unknown and registry/auth keys are
+//! still accepted verbatim because `.npmrc` is free-form and includes
+//! auth-token entries such as `//registry.npmjs.org/:_authToken`.
 
+mod aube_config;
 mod delete;
 mod explain;
 mod find;
@@ -105,6 +107,7 @@ pub(crate) enum ListLocation {
     Global,
 }
 
+pub(crate) use aube_config::load_user_entries as load_user_aube_config_entries;
 pub(crate) use get_cmd::GetArgs;
 pub(crate) use set_cmd::SetArgs;
 
@@ -263,13 +266,14 @@ fn search_text_matches(haystack: &str, term: &str) -> bool {
         .any(|word| word.starts_with(term))
 }
 
-/// Read `~/.npmrc` then `<cwd>/.npmrc` and return every entry in file
-/// order (user-first, project-second) so a later duplicate wins.
+/// Read `~/.npmrc`, aube's user config, then `<cwd>/.npmrc` and return
+/// every entry in file order so a later duplicate wins.
 pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     if let Ok(user) = user_npmrc_path() {
         out.extend(read_single(&user)?);
     }
+    out.extend(aube_config::load_user_entries());
     out.extend(read_single(&cwd.join(".npmrc"))?);
     Ok(out)
 }

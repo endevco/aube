@@ -28,6 +28,7 @@ pub fn run(name: &str, args: &FallbackArgs) -> miette::Result<i32> {
     let env = aube_settings::values::process_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &[],
         workspace_yaml: &empty_ws,
         env,
         cli: &[],

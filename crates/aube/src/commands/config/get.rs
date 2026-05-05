@@ -44,7 +44,11 @@ pub fn run(args: GetArgs) -> miette::Result<()> {
     let cwd = crate::dirs::project_root_or_cwd()?;
     let entries: Vec<(String, String)> = match args.effective_location() {
         ListLocation::Merged => read_merged(&cwd)?,
-        ListLocation::User | ListLocation::Global => read_single(&user_npmrc_path()?)?,
+        ListLocation::User | ListLocation::Global => {
+            let mut entries = read_single(&user_npmrc_path()?)?;
+            entries.extend(super::aube_config::load_user_entries());
+            entries
+        }
         ListLocation::Project => read_single(&cwd.join(".npmrc"))?,
     };
 

@@ -39,6 +39,7 @@ pub async fn run(script_args: ScriptArgs) -> miette::Result<()> {
         let env = aube_settings::values::capture_env();
         let ctx = aube_settings::ResolveCtx {
             npmrc: &npmrc,
+            aube_config: &[],
             workspace_yaml: &raw_ws,
             env: &env,
             cli: &[],

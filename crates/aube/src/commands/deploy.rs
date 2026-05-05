@@ -95,10 +95,12 @@ pub async fn run(
     // mismatches (e.g. `shamefullyHoist: "maybe"`). That would
     // silently drop `deployAllFiles: true`.
     let npmrc_entries = aube_registry::config::load_npmrc_entries(&source_root);
+    let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
     let raw_workspace = aube_manifest::workspace::load_raw(&source_root).unwrap_or_default();
     let env = aube_settings::values::process_env();
     let settings_ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc_entries,
+        aube_config: &aube_config_entries,
         workspace_yaml: &raw_workspace,
         env,
         cli: &[],

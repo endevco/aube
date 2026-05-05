@@ -889,10 +889,12 @@ fn hash_settings(project_dir: &Path, cli_flags: &[(String, String)]) -> String {
     // like catalog, overrides, packageExtensions, onlyBuiltDependencies
     // where any change means a real re-resolve.
     let npmrc = aube_registry::config::load_npmrc_entries(project_dir);
+    let aube_config = crate::commands::config::load_user_aube_config_entries();
     let raw_workspace = aube_manifest::workspace::load_raw(project_dir).unwrap_or_default();
     let env = aube_settings::values::capture_env();
     let ctx = aube_settings::ResolveCtx {
         npmrc: &npmrc,
+        aube_config: &aube_config,
         workspace_yaml: &raw_workspace,
         env: &env,
         cli: cli_flags,
