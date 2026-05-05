@@ -1619,6 +1619,78 @@ impl RegistryClient {
         Ok((bytes, sha512))
     }
 
+    /// Fetch a single VersionMetadata via the per-version registry
+    /// endpoint `{registry}/{name}/{version}`. Returns ~1-4 KiB JSON
+    /// vs the full packument's 100 KiB-2 MiB. Use when caller knows
+    /// the exact version, e.g. lockfile drift refetch with locked
+    /// version pinned. Wins 200-1000 ms on lockfile CI installs that
+    /// trigger re-resolve.
+    pub async fn fetch_single_version_metadata(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<crate::VersionMetadata, Error> {
+        let (registry_url, _) = self.packument_url(name);
+        let url = format!("{registry_url}/{version}");
+        let resp = self
+            .send_metadata_with_retry(&format!("version {name}@{version}"), || {
+                self.authed_get(&url, &self.config.registry)
+                    .header("Accept", "application/json")
+            })
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(Error::NotFound(format!("{name}@{version}")));
+        }
+        let resp = resp.error_for_status()?;
+        check_body_cap(
+            &resp,
+            self.fetch_policy.packument_max_bytes,
+            "version-metadata",
+        )?;
+        parse_full_response(resp).await
+    }
+
+    /// Start a streaming tarball fetch. Returns the live reqwest
+    /// Response so the caller can pull `chunk()` futures and pipe them
+    /// through gz+tar+CAS without buffering the full body. Caller must
+    /// enforce the body cap and retries (we skip retry here because
+    /// once chunks have started flowing into the importer, restarting
+    /// the request would require unwinding partial CAS writes).
+    /// Caller should fall back to fetch_tarball_bytes_streaming_sha512
+    /// on error if a retried buffered fetch is desired.
+    pub async fn start_tarball_stream(&self, url: &str) -> Result<reqwest::Response, Error> {
+        let safe_url = aube_util::url::redact_url(url);
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("invalid tarball url: {e}"))))?;
+        match parsed.scheme() {
+            "https" | "http" => {}
+            scheme => {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "tarball {safe_url}: refusing scheme {scheme:?}",
+                ))));
+            }
+        }
+        if self.network_mode == NetworkMode::Offline {
+            return Err(Error::Offline(format!("tarball {safe_url}")));
+        }
+        let resp = self
+            .authed_get(url, url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .send()
+            .await?;
+        let resp = resp.error_for_status()?;
+        check_body_cap(&resp, self.fetch_policy.tarball_max_bytes, "tarball")?;
+        Ok(resp)
+    }
+
+    /// Tarball body cap, surfaced so the streaming caller can enforce
+    /// it as chunks arrive (Content-Length pre-check happens in
+    /// start_tarball_stream but chunked-encoding bodies need ongoing
+    /// total tracking).
+    pub fn tarball_max_bytes(&self) -> u64 {
+        self.fetch_policy.tarball_max_bytes
+    }
+
     /// Fetch the *full* (non-corgi) packument as raw JSON, bypassing the
     /// on-disk cache entirely. Used by mutating commands like `deprecate`
     /// that need a fresh read-modify-write against the authoritative copy

@@ -285,8 +285,8 @@ pub fn filter_graph(
     supported: &SupportedArchitectures,
     ignored: &std::collections::BTreeSet<String>,
 ) {
+    use crate::FxHashSet;
     use aube_lockfile::DepType;
-    use rustc_hash::FxHashSet;
 
     let is_mismatched =
         |pkg: &aube_lockfile::LockedPackage| !is_supported(&pkg.os, &pkg.cpu, &pkg.libc, supported);

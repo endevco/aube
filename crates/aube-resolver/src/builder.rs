@@ -1,9 +1,9 @@
+use crate::FxHashMap;
 use crate::{
     DependencyPolicy, MinimumReleaseAge, ReadPackageHook, ResolutionMode, ResolvedPackage,
     Resolver, SupportedArchitectures, override_rule,
 };
 use aube_registry::client::RegistryClient;
-use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +15,8 @@ impl Resolver {
     pub fn new(client: Arc<RegistryClient>) -> Self {
         Self {
             client,
-            cache: FxHashMap::default(),
+            // 1024 covers typical monorepo without rehash. 5000-pkg tail pays one grow.
+            cache: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
             resolved_tx: None,
             packument_cache_dir: None,
             packument_full_cache_dir: None,
@@ -59,7 +60,8 @@ impl Resolver {
         (
             Self {
                 client,
-                cache: FxHashMap::default(),
+                // 1024 covers typical monorepo without rehash. 5000-pkg tail pays one grow.
+                cache: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
                 resolved_tx: Some(tx),
                 packument_cache_dir: None,
                 packument_full_cache_dir: None,

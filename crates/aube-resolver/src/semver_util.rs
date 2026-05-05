@@ -264,12 +264,12 @@ pub(crate) fn strip_alias_prefix(range: &str) -> &str {
 
 #[inline]
 pub(crate) fn version_satisfies(version: &str, range_str: &str) -> bool {
-    let Ok(v) = node_semver::Version::parse(version) else {
-        return false;
-    };
-    with_cached_range(normalize_range(range_str), |r| match r {
-        Some(r) => v.satisfies(r),
-        None => false,
+    with_cached_version(version, |v| {
+        let Some(v) = v else { return false };
+        with_cached_range(normalize_range(range_str), |r| match r {
+            Some(r) => v.satisfies(r),
+            None => false,
+        })
     })
 }
 
@@ -301,7 +301,7 @@ pub(crate) fn normalize_range(range_str: &str) -> &str {
 /// lock round-trip.
 fn with_cached_range<R>(range_str: &str, f: impl FnOnce(Option<&node_semver::Range>) -> R) -> R {
     thread_local! {
-        static CACHE: std::cell::RefCell<rustc_hash::FxHashMap<String, Option<node_semver::Range>>> =
+        static CACHE: std::cell::RefCell<crate::FxHashMap<String, Option<node_semver::Range>>> =
             std::cell::RefCell::default();
     }
     CACHE.with(|cell| {
@@ -311,5 +311,23 @@ fn with_cached_range<R>(range_str: &str, f: impl FnOnce(Option<&node_semver::Ran
             map.insert(range_str.to_string(), parsed);
         }
         f(map.get(range_str).and_then(Option::as_ref))
+    })
+}
+
+// Mirrors with_cached_range. Locked-version side hits same string
+// thousands of times across peer-context + dedupe passes. Hit rate
+// trends to 1.0 after first BFS layer.
+fn with_cached_version<R>(version: &str, f: impl FnOnce(Option<&node_semver::Version>) -> R) -> R {
+    thread_local! {
+        static CACHE: std::cell::RefCell<crate::FxHashMap<String, Option<node_semver::Version>>> =
+            std::cell::RefCell::default();
+    }
+    CACHE.with(|cell| {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(version) {
+            let parsed = node_semver::Version::parse(version).ok();
+            map.insert(version.to_string(), parsed);
+        }
+        f(map.get(version).and_then(Option::as_ref))
     })
 }

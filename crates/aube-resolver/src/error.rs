@@ -41,6 +41,10 @@ pub enum Error {
         .0.name, .0.version
     )]
     TrustCheckMissingTime(Box<MissingTimeDetails>),
+    #[error(
+        "peer-context fixed-point did not converge after {0} iterations. mutually recursive peers, lockfile would be incomplete"
+    )]
+    PeerContextDivergence(usize),
 }
 
 /// Context attached to a `NoMatch` error so the miette `help()` output can
@@ -122,6 +126,7 @@ impl miette::Diagnostic for Error {
             Self::BlockedExoticSubdep(_) => ERR_AUBE_BLOCKED_EXOTIC_SUBDEP,
             Self::TrustDowngrade(_) => ERR_AUBE_TRUST_DOWNGRADE,
             Self::TrustCheckMissingTime(_) => ERR_AUBE_TRUST_MISSING_TIME,
+            Self::PeerContextDivergence(_) => ERR_AUBE_PEER_CONTEXT_NOT_CONVERGED,
         }))
     }
 
@@ -135,6 +140,7 @@ impl miette::Diagnostic for Error {
             Self::BlockedExoticSubdep(d) => Some(Box::new(format_exotic_subdep_help(d))),
             Self::TrustDowngrade(d) => Some(Box::new(format_trust_downgrade_help(d))),
             Self::TrustCheckMissingTime(d) => Some(Box::new(format_trust_missing_time_help(d))),
+            Self::PeerContextDivergence(_) => None,
         }
     }
 }

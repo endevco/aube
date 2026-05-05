@@ -27,9 +27,11 @@
 //! for non-crypto-verifying hashes (3-5x faster than SHA-256).
 
 use crate::{LockedPackage, LockfileGraph};
-use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::collections::BTreeMap;
+
+use aube_util::collections::FxMap as FxHashMap;
+use aube_util::collections::FxSet as FxHashSet;
 
 /// A callback the caller provides to tell the hasher which
 /// `(name, version)` combinations are allowed to run lifecycle

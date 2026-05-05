@@ -87,7 +87,7 @@ impl Resolver {
 /// spec string as a last resort when nothing locked at all.
 pub(crate) fn materialize_catalog_picks(
     catalog_picks: BTreeMap<String, BTreeMap<String, String>>,
-    resolved_versions: &rustc_hash::FxHashMap<String, Vec<String>>,
+    resolved_versions: &crate::FxHashMap<String, Vec<String>>,
 ) -> BTreeMap<String, BTreeMap<String, aube_lockfile::CatalogEntry>> {
     let mut resolved_catalogs: BTreeMap<String, BTreeMap<String, aube_lockfile::CatalogEntry>> =
         BTreeMap::new();

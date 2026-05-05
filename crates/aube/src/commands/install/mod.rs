@@ -28,7 +28,7 @@ pub(crate) use lifecycle::{
     run_dep_lifecycle_scripts,
 };
 use lifecycle::{
-    import_verified_tarball_streamed, resolve_link_strategy, run_root_lifecycle,
+    resolve_link_strategy, resolve_prewarm_shared, run_import_on_blocking, run_root_lifecycle,
     unreviewed_dep_builds, validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
@@ -872,6 +872,7 @@ pub(super) async fn fetch_packages(
         progress,
         &cwd,
         &aube_dir,
+        /*materialize_tx=*/ None,
         /*skip_already_linked_shortcut=*/ true,
         virtual_store_dir_max_length,
         ignore_scripts,
@@ -883,6 +884,200 @@ pub(super) async fn fetch_packages(
         git_shallow_hosts,
     )
     .await
+}
+
+// Inputs for the GVS-prewarm materializer task. Built once before
+// fetch starts, moved into spawned task.
+#[allow(clippy::too_many_arguments)]
+pub(super) struct GvsPrewarmInputs {
+    pub graph: std::sync::Arc<aube_lockfile::LockfileGraph>,
+    pub store: std::sync::Arc<aube_store::Store>,
+    pub cwd: std::path::PathBuf,
+    pub virtual_store_dir_max_length: usize,
+    pub link_strategy: aube_linker::LinkStrategy,
+    pub link_concurrency: Option<usize>,
+    pub patches: aube_linker::Patches,
+    pub patch_hashes: std::collections::BTreeMap<String, String>,
+    pub node_version: Option<String>,
+    pub build_policy: std::sync::Arc<aube_scripts::BuildPolicy>,
+    pub use_global_virtual_store_override: Option<bool>,
+}
+
+/// Backpressure on the (canonical_key, PackageIndex) channel that
+/// feeds the GVS-prewarm materializer. 2048 ~= 2x big-monorepo
+/// median so backpressure only fires under genuine producer/consumer
+/// skew (slow FS, Defender).
+pub(super) const MATERIALIZE_CHANNEL_CAPACITY: usize = 2048;
+
+pub(super) type MaterializeChannel = (
+    tokio::sync::mpsc::Sender<(String, aube_store::PackageIndex)>,
+    tokio::sync::mpsc::Receiver<(String, aube_store::PackageIndex)>,
+);
+
+pub(super) type MaterializeJoinHandle = tokio::task::JoinHandle<
+    miette::Result<(
+        aube_linker::LinkStats,
+        Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
+    )>,
+>;
+
+/// New (tx, rx) sized to MATERIALIZE_CHANNEL_CAPACITY. Both fetch
+/// branches need to hold tx for streaming and rx for the consumer
+/// task spawned later, so the channel creation is split from the
+/// task spawn.
+pub(super) fn materialize_channel() -> MaterializeChannel {
+    tokio::sync::mpsc::channel(MATERIALIZE_CHANNEL_CAPACITY)
+}
+
+/// Spawn the GVS-prewarm consumer with the given inputs and rx.
+/// Centralizes the JoinHandle type + tokio::spawn boilerplate.
+pub(super) fn spawn_gvs_prewarm(
+    inputs: GvsPrewarmInputs,
+    rx: tokio::sync::mpsc::Receiver<(String, aube_store::PackageIndex)>,
+) -> MaterializeJoinHandle {
+    tokio::spawn(run_gvs_prewarm_materializer(inputs, rx))
+}
+
+// Consumes (canonical_key, index) from rx as tarballs land in the CAS,
+// reflinks each into the global virtual store. Returns aggregate
+// LinkStats plus computed graph hashes so the caller's link phase
+// reuses them. Hides 30-200ms of GVS reflinks behind the in-flight
+// download tail. Non-GVS installs drain rx as a no-op consumer.
+pub(super) async fn run_gvs_prewarm_materializer(
+    inputs: GvsPrewarmInputs,
+    materialize_rx: tokio::sync::mpsc::Receiver<(String, aube_store::PackageIndex)>,
+) -> miette::Result<(
+    aube_linker::LinkStats,
+    Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
+)> {
+    let GvsPrewarmInputs {
+        graph,
+        store,
+        cwd,
+        virtual_store_dir_max_length,
+        link_strategy,
+        link_concurrency,
+        patches,
+        patch_hashes,
+        node_version,
+        build_policy,
+        use_global_virtual_store_override,
+    } = inputs;
+
+    let engine = node_version
+        .as_deref()
+        .map(aube_lockfile::graph_hash::engine_name_default);
+    let allow = move |name: &str, version: &str| {
+        matches!(
+            build_policy.decide(name, version),
+            aube_scripts::AllowDecision::Allow
+        )
+    };
+    let patch_hash_fn = |name: &str, version: &str| -> Option<String> {
+        let key = format!("{name}@{version}");
+        patch_hashes.get(&key).cloned()
+    };
+    let graph_hashes_arc = std::sync::Arc::new(
+        aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
+            &graph,
+            &allow,
+            engine.as_ref(),
+            &patch_hash_fn,
+        ),
+    );
+
+    let mut linker = aube_linker::Linker::new(store.as_ref(), link_strategy)
+        .with_graph_hashes((*graph_hashes_arc).clone())
+        .with_virtual_store_dir_max_length(virtual_store_dir_max_length);
+    if !patches.is_empty() {
+        linker = linker.with_patches(patches);
+    }
+    if let Some(enabled) = use_global_virtual_store_override {
+        linker = linker.with_use_global_virtual_store(enabled);
+    }
+    if !linker.uses_global_virtual_store() {
+        // Per-project mode. Drain rx, return empty stats.
+        let mut rx = materialize_rx;
+        while rx.recv().await.is_some() {}
+        return Ok((aube_linker::LinkStats::default(), Some(graph_hashes_arc)));
+    }
+    let linker = std::sync::Arc::new(linker);
+
+    let nested_link_targets =
+        aube_linker::build_nested_link_targets(&cwd, &graph).map(std::sync::Arc::new);
+
+    // Map canonical name@version to set of contextualized dep_paths.
+    // Resolver no-lockfile path keys by canonical, lockfile path emits
+    // contextualized. Accept both.
+    let mut canonical_to_contextualized: std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    > = std::collections::HashMap::new();
+    for (dep_path, pkg) in &graph.packages {
+        if pkg.local_source.is_some() {
+            continue;
+        }
+        let canonical = pkg.spec_key();
+        canonical_to_contextualized
+            .entry(canonical)
+            .or_default()
+            .insert(dep_path.clone());
+        canonical_to_contextualized
+            .entry(dep_path.clone())
+            .or_default()
+            .insert(dep_path.clone());
+    }
+
+    let permits = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
+    let mut in_flight: Vec<tokio::task::JoinHandle<miette::Result<aube_linker::LinkStats>>> =
+        Vec::new();
+    let mut rx = materialize_rx;
+    while let Some((key, index)) = rx.recv().await {
+        let Some(dep_paths) = canonical_to_contextualized.get(&key).cloned() else {
+            continue;
+        };
+        let index = std::sync::Arc::new(index);
+        for dep_path in dep_paths {
+            let Some(pkg) = graph.packages.get(&dep_path).cloned() else {
+                continue;
+            };
+            if pkg.local_source.is_some() {
+                continue;
+            }
+            let linker = linker.clone();
+            let sem = sem.clone();
+            let index = index.clone();
+            let nested_link_targets = nested_link_targets.clone();
+            in_flight.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let dep_path_for_err = dep_path.clone();
+                tokio::task::spawn_blocking(move || -> miette::Result<_> {
+                    let mut stats = aube_linker::LinkStats::default();
+                    linker
+                        .ensure_in_virtual_store(
+                            &dep_path,
+                            &pkg,
+                            &index,
+                            &mut stats,
+                            nested_link_targets.as_deref(),
+                        )
+                        .map_err(|e| miette!("prewarm GVS for {dep_path_for_err}: {e}"))?;
+                    Ok(stats)
+                })
+                .await
+                .into_diagnostic()?
+            }));
+        }
+    }
+    let mut total = aube_linker::LinkStats::default();
+    for handle in in_flight {
+        let s = handle.await.into_diagnostic()??;
+        total.packages_linked += s.packages_linked;
+        total.packages_cached += s.packages_cached;
+        total.files_linked += s.files_linked;
+    }
+    Ok((total, Some(graph_hashes_arc)))
 }
 
 // `network_concurrency`: override for the tarball-fetch semaphore.
@@ -904,6 +1099,11 @@ pub(super) async fn fetch_packages_with_root<F>(
     progress: Option<&InstallProgress>,
     project_root: &std::path::Path,
     aube_dir: &std::path::Path,
+    // Some streams every successful (dep_path, index) so a concurrent
+    // GVS-prewarm materializer can start reflinks before the full
+    // batch finishes. None keeps batch-then-return for `aube fetch`.
+    // Sender drops on function exit so consumer sees channel close.
+    materialize_tx: Option<tokio::sync::mpsc::Sender<(String, aube_store::PackageIndex)>>,
     // When true, every package classifies as `Cached` or `NeedsFetch`
     // based on `store.load_index`, regardless of whether
     // `.aube/<dep>` already exists on disk. Callers pass true when
@@ -1078,7 +1278,8 @@ where
         }
     }
 
-    let mut to_fetch = Vec::new();
+    // Cap by check_results upper bound. Worst case fits in one alloc.
+    let mut to_fetch = Vec::with_capacity(check_results.len());
     let mut cached_count = 0usize;
 
     for (dep_path, pkg, result) in check_results {
@@ -1090,6 +1291,15 @@ where
                 cached_count += 1;
             }
             CheckResult::Cached(index) => {
+                if let Some(tx) = materialize_tx.as_ref() {
+                    // Send err means consumer died. Bail rather than
+                    // keep filling a dead pipeline.
+                    tx.send((dep_path.clone(), index.clone()))
+                        .await
+                        .map_err(|_| {
+                            miette!("materializer task exited before fetch_packages finished")
+                        })?;
+                }
                 indices.insert(dep_path, index);
                 cached_count += 1;
             }
@@ -1160,11 +1370,12 @@ where
         // time vs the previous 64.
         let sem_permits = network_concurrency.unwrap_or_else(default_lockfile_network_concurrency);
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(sem_permits));
-        // Hoist the streaming-SHA-512 killswitch out of the per-tarball
-        // closure so the env read happens once instead of N times on a
-        // 1000-pkg install. `var_os` takes a libc lock, so the
-        // amortized save is real even though each call is cheap.
+        // Hoist env-driven flags out of the per-tarball closure so
+        // the libc lock fires once instead of N times on a 1000-pkg
+        // install.
         let streaming_sha512_enabled = std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
+        let tarball_stream_enabled = std::env::var_os("AUBE_TARBALL_STREAM").is_some()
+            && std::env::var_os("AUBE_DISABLE_TARBALL_STREAM").is_none();
         // JoinSet so a first-error path aborts the sibling fetches
         // instead of detaching them into the background. Detached
         // tasks keep writing to the CAS after the install command
@@ -1196,16 +1407,47 @@ where
                     .unwrap_or_else(|| client.tarball_url(&registry_name, &version));
 
                 let dl_start = std::time::Instant::now();
-                // Streaming SHA-512 path: the registry-mandated
-                // integrity hash is computed during the chunk read
-                // loop, so the post-buffer pass in
-                // `import_verified_tarball` skips its hash and goes
-                // straight to compare. Saves ~7 ms/5 MB tarball.
-                // `AUBE_DISABLE_STREAMING_SHA512=1` reverts to the
-                // buffered-then-hash path. The killswitch covers a
-                // hypothetical regression where the streaming digest
-                // disagrees with the buffered one (it shouldn't, sha2
-                // is deterministic) and lets us isolate via env in CI.
+
+                // Stream when env enabled and SRI is SHA-512 (or
+                // absent). Streaming verify can't re-hash with
+                // another algo, so non-SHA-512 takes the buffered
+                // path below.
+                let stream_eligible = tarball_stream_enabled
+                    && integrity
+                        .as_deref()
+                        .is_none_or(|s| s.starts_with("sha512-"));
+                if stream_eligible {
+                    let index = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
+                        &client,
+                        &store,
+                        &url,
+                        &display_name,
+                        &registry_name,
+                        &version,
+                        integrity.as_deref(),
+                        verify_integrity,
+                        strict_integrity,
+                        strict_pkg_content_check,
+                    )
+                    .await?;
+                    let dl_time = dl_start.elapsed();
+                    if let Some(p) = bytes_progress.as_ref() {
+                        p.inc_downloaded_bytes(0);
+                    }
+                    tracing::trace!(
+                        "fetch (stream) {display_name}@{version}: wait={:.0?} total={:.0?}",
+                        wait_time,
+                        dl_time
+                    );
+                    drop(permit);
+                    return Ok::<_, miette::Report>((dep_path, index));
+                }
+
+                // Buffered SHA-512 path. Streaming SHA-512 hashes
+                // chunks during the read loop, so import_verified
+                // skips its hash pass and compares directly.
+                // AUBE_DISABLE_STREAMING_SHA512=1 reverts to the
+                // buffered-then-hash path.
                 let (bytes, streamed_digest) = if streaming_sha512_enabled {
                     let (bytes, digest) = client
                         .fetch_tarball_bytes_streaming_sha512(&url)
@@ -1248,30 +1490,19 @@ where
                 // thread pool so it doesn't starve the async runtime
                 // workers used for concurrent network I/O.
                 let bytes_len = bytes.len();
-                let (index, import_time) = tokio::task::spawn_blocking({
-                    let store = store.clone();
-                    let display_name = display_name.clone();
-                    let registry_name = registry_name.clone();
-                    let version = version.clone();
-                    move || -> miette::Result<_> {
-                        let import_start = std::time::Instant::now();
-                        let index = import_verified_tarball_streamed(
-                            &store,
-                            &bytes,
-                            streamed_digest.as_ref(),
-                            &display_name,
-                            &registry_name,
-                            &version,
-                            integrity.as_deref(),
-                            verify_integrity,
-                            strict_integrity,
-                            strict_pkg_content_check,
-                        )?;
-                        Ok((index, import_start.elapsed()))
-                    }
-                })
-                .await
-                .into_diagnostic()??;
+                let (index, import_time) = run_import_on_blocking(
+                    store.clone(),
+                    bytes,
+                    streamed_digest,
+                    display_name.clone(),
+                    registry_name.clone(),
+                    version.clone(),
+                    integrity.clone(),
+                    verify_integrity,
+                    strict_integrity,
+                    strict_pkg_content_check,
+                )
+                .await?;
 
                 tracing::trace!(
                     "fetch {display_name}@{version}: wait={:.0?} dl={:.0?} ({} bytes) import={:.0?}",
@@ -1288,9 +1519,19 @@ where
 
         while let Some(joined) = handles.join_next().await {
             let (dep_path, index) = joined.into_diagnostic()??;
+            if let Some(tx) = materialize_tx.as_ref() {
+                tx.send((dep_path.clone(), index.clone()))
+                    .await
+                    .map_err(|_| {
+                        miette!("materializer task exited before fetch_packages finished")
+                    })?;
+            }
             indices.insert(dep_path, index);
         }
     }
+
+    // Without explicit drop, consumer's rx.recv() loop hangs.
+    drop(materialize_tx);
 
     Ok((indices, cached_count, fetch_count))
 }
@@ -1402,7 +1643,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // no explicit frozen flag is set). Keeps node_modules in place —
     // the linker is idempotent, so the relink pass is fast.
     if opts.force {
-        let _ = state::remove_state(&cwd);
+        // Silent swallow lets a permission-denied or Windows-locked
+        // sidecar survive. Next run reads it, matches, short-circuits.
+        // remove_state already maps NotFound to Ok.
+        state::remove_state(&cwd)
+            .map_err(|e| miette!("--force: failed to remove install state: {e}"))?;
     }
 
     // `modulesCacheMaxAge` drives the orphan sweep that runs at the
@@ -2298,10 +2543,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 aube_dir.display()
             ));
         }
-        // State-file removal is best-effort: a stale sidecar the next
-        // install can't read just degrades to a fresh-install verdict,
-        // which is exactly what we want here anyway.
-        let _ = state::remove_state(&cwd);
+        // Stale sidecar after GVS transition would match against the
+        // pre-transition tree on next install and short-circuit. Need
+        // to surface remove failure not swallow it.
+        state::remove_state(&cwd).map_err(|e| {
+            miette!("global virtual store transition: failed to remove install state: {e}")
+        })?;
     }
 
     // 3. Parse or resolve lockfile, streaming tarball fetches during resolution
@@ -2485,7 +2732,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     resolve_from_workspace_root: resolve_peers_from_workspace_root(&settings_ctx),
                     peers_suffix_max_length: resolve_peers_suffix_max_length(&settings_ctx),
                 };
-                graph = aube_resolver::apply_peer_contexts(graph, &peer_options);
+                graph = aube_resolver::apply_peer_contexts(graph, &peer_options)
+                    .map_err(|e| miette!("peer-context pass failed: {e}"))?;
                 tracing::debug!(
                     "peer-context pass (lockfile={:?}) {} → {} packages in {:.1?}",
                     kind,
@@ -2526,15 +2774,45 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // each package's ancestor path.
             crate::dep_chain::set_active(&graph);
 
-            // Lockfile path: check index cache and fetch missing tarballs.
-            // The tarball client (reqwest + rustls) is lazily built —
-            // constructing it eagerly costs ~20 ms even when no
-            // network request gets sent, which dominates the no-op
-            // install time.
+            // Check index cache, fetch missing tarballs. Tarball client
+            // is lazy because eager construction costs ~20ms even when
+            // no request gets sent, dominating no-op install time.
+            //
+            // Pipeline GVS materialization into the fetch tail. Same
+            // shape as the no-lockfile branch. Channel feeds a
+            // concurrent materializer that reflinks into GVS, hiding
+            // link-step-1 cost behind the fetch tail.
             let phase_start = std::time::Instant::now();
             let network_mode = opts.network_mode;
             let cwd_for_client = cwd.clone();
-            let (indices, cached, fetched) = fetch_packages_with_root(
+
+            let (lock_node_version, lock_build_policy) = resolve_prewarm_shared(
+                &settings_ctx,
+                &manifest,
+                &ws_config_shared,
+                opts.dangerously_allow_all_builds,
+            );
+            let lock_strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
+            let (lock_patches, lock_patch_hashes) =
+                crate::patches::load_patches_for_linker(&cwd)?;
+            let (lock_materialize_tx, lock_materialize_rx) = materialize_channel();
+            let lock_prewarm_inputs = GvsPrewarmInputs {
+                graph: std::sync::Arc::new(graph.clone()),
+                store: store.clone(),
+                cwd: cwd.clone(),
+                virtual_store_dir_max_length,
+                link_strategy: lock_strategy,
+                link_concurrency: link_concurrency_setting,
+                patches: lock_patches,
+                patch_hashes: lock_patch_hashes,
+                node_version: lock_node_version,
+                build_policy: lock_build_policy,
+                use_global_virtual_store_override,
+            };
+            let lock_materialize_handle =
+                spawn_gvs_prewarm(lock_prewarm_inputs, lock_materialize_rx);
+
+            let fetch_result = fetch_packages_with_root(
                 &graph.packages,
                 &store,
                 || {
@@ -2545,6 +2823,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 prog_ref,
                 &cwd,
                 &aube_dir,
+                Some(lock_materialize_tx),
                 /*skip_already_linked_shortcut=*/ has_workspace,
                 virtual_store_dir_max_length,
                 opts.ignore_scripts,
@@ -2555,7 +2834,18 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.git_prepare_depth,
                 resolve_git_shallow_hosts(&settings_ctx),
             )
-            .await?;
+            .await;
+            // Drop alone detaches. Abort kills the task on fetch err.
+            let (indices, cached, fetched) = match fetch_result {
+                Ok(t) => t,
+                Err(e) => {
+                    lock_materialize_handle.abort();
+                    return Err(e);
+                }
+            };
+            // Materializer stats roll into link via GVS-already-linked
+            // fast path. Errors abort install.
+            let _ = lock_materialize_handle.await.into_diagnostic()??;
             tracing::debug!(
                 "phase:fetch {:.1?} ({fetched} packages)",
                 phase_start.elapsed()
@@ -2577,20 +2867,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // await) can compute the same graph hashes the link phase
             // will. Keeping a single source of truth avoids any
             // subdir-name drift between prewarm and link step 1.
-            let node_version_for_prewarm = {
-                let override_ = aube_settings::resolved::node_version(&settings_ctx);
-                crate::engines::resolve_node_version(override_.as_deref())
-            };
-            let (build_policy_for_prewarm, _policy_warnings_unused) = build_policy_from_sources(
+            let (node_version_for_prewarm, build_policy_for_prewarm) = resolve_prewarm_shared(
+                &settings_ctx,
                 &manifest,
                 &ws_config_shared,
                 opts.dangerously_allow_all_builds,
             );
-            // Note: `_policy_warnings_unused` is intentionally dropped —
-            // the later link-phase call to `build_policy_from_sources`
-            // re-emits them to stderr (it's idempotent). Emitting them
-            // here would double up.
-            let build_policy_for_prewarm = std::sync::Arc::new(build_policy_for_prewarm);
             let client =
                 std::sync::Arc::new(make_client(&cwd).with_network_mode(opts.network_mode));
             // Speculative TLS + TCP + HTTP/2 handshake. Fires while the
@@ -2702,13 +2984,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 libc: fetch_sup_libc,
                 ..Default::default()
             };
-            // Channel for pipelining GVS population into the fetch
-            // stream: each imported (dep_path, index) is forwarded to a
-            // materializer task that runs concurrently with the rest of
-            // fetch + post-resolve work. See the `materialize_handle`
-            // spawn below the resolver.await for the consumer side.
-            let (materialize_tx, materialize_rx) =
-                tokio::sync::mpsc::unbounded_channel::<(String, aube_store::PackageIndex)>();
+            // Each imported (dep_path, index) feeds the GVS-prewarm
+            // materializer running concurrently with the rest of fetch.
+            // Bounded(2048) caps RSS on huge graphs when the
+            // materializer falls behind on a slow FS (Windows Defender,
+            // network share). Backpressure only triggers under real
+            // producer/consumer skew.
+            let (materialize_tx, materialize_rx) = materialize_channel();
             // Clone the shared deprecations accumulator into the
             // spawned task. The install command reads it back after
             // `filter_graph` prunes the post-resolve graph.
@@ -2716,10 +2998,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_handle = tokio::spawn(async move {
                 let semaphore =
                     std::sync::Arc::new(tokio::sync::Semaphore::new(fetch_network_concurrency));
-                // Hoist streaming-SHA-512 killswitch out of the
-                // per-tarball loop, same shape as the lockfile path.
+                // Hoist env-driven flags out of the per-tarball loop.
                 let streaming_sha512_enabled =
                     std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
+                let tarball_stream_enabled = std::env::var_os("AUBE_TARBALL_STREAM").is_some()
+                    && std::env::var_os("AUBE_DISABLE_TARBALL_STREAM").is_none();
                 // JoinSet over bare Vec<JoinHandle>. If the first
                 // fetch errors and we return via `?`, a plain Vec
                 // drops the remaining JoinHandles which detaches the
@@ -2812,6 +3095,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 // half-wired virtual store.
                                 materialize_tx
                                     .send((pkg.dep_path.clone(), index.clone()))
+                                    .await
                                     .map_err(|_| {
                                         miette!("materializer task exited before fetch finished")
                                     })?;
@@ -2848,6 +3132,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     ) {
                         materialize_tx
                             .send((pkg.dep_path.clone(), index.clone()))
+                            .await
                             .map_err(|_| {
                                 miette!("materializer task exited before fetch finished")
                             })?;
@@ -2873,7 +3158,35 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         let url = pkg.tarball_url.clone().unwrap_or_else(|| {
                             client.tarball_url(&pkg_registry_name, &pkg.version)
                         });
+
                         tracing::trace!("Fetching {}@{}", pkg.name, pkg.version);
+
+                        let pkg_display_name = pkg.name.clone();
+                        let pkg_version = pkg.version.clone();
+                        let dep_path = pkg.dep_path.clone();
+                        let integrity = pkg.integrity.clone();
+
+                        let stream_eligible = tarball_stream_enabled
+                            && integrity
+                                .as_deref()
+                                .is_none_or(|s| s.starts_with("sha512-"));
+                        if stream_eligible {
+                            let index = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
+                                &client,
+                                &store,
+                                &url,
+                                &pkg_display_name,
+                                &pkg_registry_name,
+                                &pkg_version,
+                                integrity.as_deref(),
+                                fetch_verify_integrity,
+                                fetch_strict_integrity,
+                                fetch_strict_pkg_content_check,
+                            )
+                            .await?;
+                            drop(permit);
+                            return Ok::<_, miette::Report>((dep_path, index));
+                        }
 
                         let (bytes, streamed_digest) = if streaming_sha512_enabled {
                             let (bytes, digest) = client
@@ -2903,42 +3216,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             p.inc_downloaded_bytes(bytes.len() as u64);
                         }
 
-                        // Release the download permit before dispatching
-                        // the CPU-bound import to the blocking pool, matching
-                        // the lockfile path in `fetch_packages_with_root`.
-                        // Without this drop, `--network-concurrency N` would
-                        // cap both downloads *and* extractions at N, serializing
-                        // the network behind tar-extract + SHA-512 + store-write
-                        // even though the network itself is idle during extract.
+                        // Release download permit before CPU-bound
+                        // import. Without this drop, --network-concurrency
+                        // would cap downloads AND extractions at N.
                         drop(permit);
 
-                        // Move CPU/blocking work onto the blocking thread pool.
-                        // `pkg_display_name` is the alias when aliased
-                        // (what the user wrote in package.json) —
-                        // nicer in progress/error output than the
-                        // real registry name. Validation and cache
-                        // key use `pkg_registry_name` to match the
-                        // tarball's actual identity.
-                        let pkg_display_name = pkg.name.clone();
-                        let pkg_version = pkg.version.clone();
-                        let dep_path = pkg.dep_path.clone();
-                        let integrity = pkg.integrity.clone();
-                        let index = tokio::task::spawn_blocking(move || {
-                            import_verified_tarball_streamed(
-                                &store,
-                                &bytes,
-                                streamed_digest.as_ref(),
-                                &pkg_display_name,
-                                &pkg_registry_name,
-                                &pkg_version,
-                                integrity.as_deref(),
-                                fetch_verify_integrity,
-                                fetch_strict_integrity,
-                                fetch_strict_pkg_content_check,
-                            )
-                        })
-                        .await
-                        .into_diagnostic()??;
+                        let (index, _) = run_import_on_blocking(
+                            store,
+                            bytes,
+                            streamed_digest,
+                            pkg_display_name,
+                            pkg_registry_name,
+                            pkg_version,
+                            integrity,
+                            fetch_verify_integrity,
+                            fetch_strict_integrity,
+                            fetch_strict_pkg_content_check,
+                        )
+                        .await?;
 
                         Ok::<_, miette::Report>((dep_path, index))
                     });
@@ -2951,6 +3246,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     let (dep_path, index) = joined.into_diagnostic()??;
                     materialize_tx
                         .send((dep_path.clone(), index.clone()))
+                        .await
                         .map_err(|_| miette!("materializer task exited before fetch finished"))?;
                     indices.insert(dep_path, index);
                 }
@@ -3024,226 +3320,32 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             tracing::debug!("phase:resolve (fresh) {:.1?}", phase_start.elapsed());
             phase_timings.record("resolve", phase_start.elapsed());
 
-            // Pipeline global-virtual-store materialization into the
-            // fetch tail. `fetch_handle` streams each imported `(dep_path,
-            // index)` into `materialize_rx` as tarballs land in the CAS;
-            // the consumer task below reflinks them into the shared
-            // `~/.cache/aube/virtual-store/<subdir>` entry keyed by the
-            // contextualized graph hash. That's the work that link phase
-            // step 1 used to do serially after fetch completed — moving
-            // it here so it overlaps with the remaining in-flight
-            // downloads plus the post-resolve bookkeeping. Link step 1
-            // still runs below, but each package hits the
-            // `pkg_nm_dir.exists()` fast path and only creates the
-            // per-project `.aube/<dep_path>` symlink.
+            // fetch_handle streams imported (dep_path, index) tuples
+            // into the materializer, which reflinks each into
+            // ~/.cache/aube/virtual-store. Used to run serially after
+            // fetch as link step 1. Now overlaps with in-flight
+            // downloads and post-resolve bookkeeping. Link step 1
+            // below hits pkg_nm_dir.exists() fast path and only writes
+            // the per-project .aube/<dep_path> symlink.
             let materialize_phase_start = std::time::Instant::now();
-            let materialize_graph = std::sync::Arc::new(graph.clone());
-            let materialize_store = store.clone();
-            let materialize_virtual_store_dir_max_length = virtual_store_dir_max_length;
+            let materialize_graph_arc = std::sync::Arc::new(graph.clone());
             let materialize_strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
-            // Honor the user's `link-concurrency` setting. Falls back
-            // to the same per-OS default the linker uses so the
-            // aggregate file-system pressure matches what the
-            // post-fetch link step would have generated.
-            let materialize_link_concurrency = link_concurrency_setting;
-            let materialize_patches_vec = crate::patches::load_patches(&cwd)?;
-            let materialize_patches: aube_linker::Patches = materialize_patches_vec
-                .values()
-                .map(|p| (p.key.clone(), p.content.clone()))
-                .collect();
-            let materialize_patch_hashes: std::collections::BTreeMap<String, String> =
-                materialize_patches_vec
-                    .values()
-                    .map(|p| (p.key.clone(), p.content_hash()))
-                    .collect();
-            let materialize_node_version = node_version_for_prewarm.clone();
-            let materialize_allow = {
-                let build_policy = build_policy_for_prewarm.clone();
-                // Closure gets (name, version). Caller in graph_hash
-                // already hands us registry_name(), not alias. Safe
-                // to feed into policy.decide directly. If a new caller
-                // gets wired up that passes pkg.name instead, the
-                // alias-bypass would come back. Audit graph_hash.rs
-                // callers if changing this.
-                move |name: &str, version: &str| {
-                    matches!(
-                        build_policy.decide(name, version),
-                        aube_scripts::AllowDecision::Allow
-                    )
-                }
+            let (materialize_patches, materialize_patch_hashes) =
+                crate::patches::load_patches_for_linker(&cwd)?;
+            let materialize_inputs = GvsPrewarmInputs {
+                graph: materialize_graph_arc.clone(),
+                store: store.clone(),
+                cwd: cwd.clone(),
+                virtual_store_dir_max_length,
+                link_strategy: materialize_strategy,
+                link_concurrency: link_concurrency_setting,
+                patches: materialize_patches,
+                patch_hashes: materialize_patch_hashes,
+                node_version: node_version_for_prewarm.clone(),
+                build_policy: build_policy_for_prewarm.clone(),
+                use_global_virtual_store_override,
             };
-            let materialize_cwd = cwd.clone();
-            let materialize_handle: tokio::task::JoinHandle<
-                miette::Result<(
-                    aube_linker::LinkStats,
-                    Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
-                )>,
-            > = tokio::spawn(async move {
-                // Build the prewarm linker once the channel starts
-                // delivering — same graph hashes + patch hashes that the
-                // full linker below will use at link time, so their GVS
-                // subdir names agree and link step 1 hits the fast path.
-                let engine = materialize_node_version
-                    .as_deref()
-                    .map(aube_lockfile::graph_hash::engine_name_default);
-                let patch_hash_fn = |name: &str, version: &str| -> Option<String> {
-                    let key = format!("{name}@{version}");
-                    materialize_patch_hashes.get(&key).cloned()
-                };
-                let graph_hashes_arc = std::sync::Arc::new(
-                    aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
-                        &materialize_graph,
-                        &materialize_allow,
-                        engine.as_ref(),
-                        &patch_hash_fn,
-                    ),
-                );
-                let mut linker =
-                    aube_linker::Linker::new(materialize_store.as_ref(), materialize_strategy)
-                        .with_graph_hashes((*graph_hashes_arc).clone())
-                        .with_virtual_store_dir_max_length(
-                            materialize_virtual_store_dir_max_length,
-                        );
-                if !materialize_patches.is_empty() {
-                    linker = linker.with_patches(materialize_patches);
-                }
-                // Carry the Next.js / `disableGlobalVirtualStoreForPackages`
-                // override the main linker got — without this the prewarm
-                // linker would still see `gvs = CI.is_err() = true`, spend
-                // the whole fetch phase materializing into
-                // `~/.cache/aube/virtual-store/`, and then throw all of that
-                // work away when link phase runs in per-project mode. The
-                // `!uses_global_virtual_store` short-circuit below depends
-                // on this being applied first.
-                if let Some(enabled) = use_global_virtual_store_override {
-                    linker = linker.with_use_global_virtual_store(enabled);
-                }
-                if !linker.uses_global_virtual_store() {
-                    // Per-project mode (CI=1 or gvs-incompatible package
-                    // detected): `.aube/<dep_path>` is per-project so
-                    // prewarming a shared store is pointless. Drain the
-                    // channel to unblock the sender and return empty stats.
-                    let mut rx = materialize_rx;
-                    while rx.recv().await.is_some() {}
-                    return Ok((
-                        aube_linker::LinkStats::default(),
-                        Some(graph_hashes_arc.clone()),
-                    ));
-                }
-                let linker = std::sync::Arc::new(linker);
-                let graph = materialize_graph;
-
-                // Pre-compute the `link:` target map once, so each
-                // sibling-symlink pass inside `materialize_into` can
-                // route override-rewritten transitives at the on-disk
-                // path instead of dangling into a phantom
-                // `.aube/<name>@link+...`. `None` when the graph has
-                // no `link:` entries at all (the common case), keeping
-                // the materialize hot path one Option check per dep.
-                let nested_link_targets =
-                    aube_linker::build_nested_link_targets(&materialize_cwd, &graph)
-                        .map(std::sync::Arc::new);
-
-                // Build a reverse-index from canonical `name@version`
-                // to the set of contextualized dep_paths that share it.
-                // Peer-context rewriting produces >1 entry for some
-                // packages; the common case has exactly one. Using a
-                // `HashSet` instead of a `Vec` guards against duplicate
-                // insertions — if two graph entries collide on
-                // `name@version` (via aliasing or the canonical ==
-                // contextualized fallback below), we still dispatch
-                // exactly one `ensure_in_virtual_store` per subdir.
-                let mut canonical_to_contextualized: std::collections::HashMap<
-                    String,
-                    std::collections::HashSet<String>,
-                > = std::collections::HashMap::new();
-                for (dep_path, pkg) in &graph.packages {
-                    if pkg.local_source.is_some() {
-                        continue;
-                    }
-                    let canonical = pkg.spec_key();
-                    canonical_to_contextualized
-                        .entry(canonical)
-                        .or_default()
-                        .insert(dep_path.clone());
-                    // Also accept the contextualized dep_path directly —
-                    // fetch_handle keys by `pkg.dep_path` (canonical in
-                    // the fresh path) but the lockfile path emits the
-                    // contextualized one straight away.
-                    canonical_to_contextualized
-                        .entry(dep_path.clone())
-                        .or_default()
-                        .insert(dep_path.clone());
-                }
-
-                // Bounded concurrency over the blocking pool: reflinking
-                // is syscall-bound and APFS starts thrashing metadata
-                // well below `available_parallelism`. Honor the user's
-                // `link-concurrency` override when set; otherwise fall
-                // back to the same per-OS default the link phase uses
-                // so the aggregate file-system pressure matches what
-                // the post-fetch link step would have generated.
-                let permits = materialize_link_concurrency
-                    .unwrap_or_else(aube_linker::default_linker_parallelism);
-                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
-                let mut in_flight: Vec<
-                    tokio::task::JoinHandle<miette::Result<aube_linker::LinkStats>>,
-                > = Vec::new();
-                let mut rx = materialize_rx;
-                while let Some((key, index)) = rx.recv().await {
-                    let Some(dep_paths) = canonical_to_contextualized.get(&key).cloned() else {
-                        continue;
-                    };
-                    let index = std::sync::Arc::new(index);
-                    for dep_path in dep_paths {
-                        let Some(pkg) = graph.packages.get(&dep_path).cloned() else {
-                            continue;
-                        };
-                        if pkg.local_source.is_some() {
-                            continue;
-                        }
-                        let linker = linker.clone();
-                        let sem = sem.clone();
-                        let index = index.clone();
-                        let nested_link_targets = nested_link_targets.clone();
-                        // spawn_blocking dispatches straight to the tokio
-                        // blocking pool; the outer `tokio::spawn`
-                        // wrapper that earlier versions used added a
-                        // scheduler hop per package with no benefit,
-                        // since the acquire+spawn_blocking pair is
-                        // already awaitable from the outer collector.
-                        in_flight.push(tokio::spawn(async move {
-                            let _permit = sem.acquire().await.unwrap();
-                            let dep_path_for_err = dep_path.clone();
-                            tokio::task::spawn_blocking(move || -> miette::Result<_> {
-                                let mut stats = aube_linker::LinkStats::default();
-                                linker
-                                    .ensure_in_virtual_store(
-                                        &dep_path,
-                                        &pkg,
-                                        &index,
-                                        &mut stats,
-                                        nested_link_targets.as_deref(),
-                                    )
-                                    .map_err(|e| {
-                                        miette!("prewarm GVS for {dep_path_for_err}: {e}")
-                                    })?;
-                                Ok(stats)
-                            })
-                            .await
-                            .into_diagnostic()?
-                        }));
-                    }
-                }
-                let mut total = aube_linker::LinkStats::default();
-                for handle in in_flight {
-                    let s = handle.await.into_diagnostic()??;
-                    total.packages_linked += s.packages_linked;
-                    total.packages_cached += s.packages_cached;
-                    total.files_linked += s.files_linked;
-                }
-                Ok((total, Some(graph_hashes_arc.clone())))
-            });
+            let materialize_handle = spawn_gvs_prewarm(materialize_inputs, materialize_rx);
 
             // Wait for all fetches to complete. If fetch fails we have
             // to abort the materializer explicitly: dropping a
@@ -3427,6 +3529,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     prog_ref,
                     &cwd,
                     &aube_dir,
+                    /*materialize_tx=*/ None,
                     /*skip_already_linked_shortcut=*/ has_workspace,
                     virtual_store_dir_max_length,
                     opts.ignore_scripts,
@@ -3652,17 +3755,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         linker = linker.with_use_global_virtual_store(enabled);
     }
 
-    // Load `pnpm.patchedDependencies` and pre-compute per-package
-    // patch hashes. Hoisted ahead of subtree-hash computation so the
-    // patch content gets folded into delta fingerprints — without
-    // this, a re-patched package would not land in the `changed`
-    // bucket and the side-effects skip path could wrongly trust a
-    // stale marker.
-    let resolved_patches = crate::patches::load_patches(&cwd)?;
-    let patch_hashes: std::collections::BTreeMap<String, String> = resolved_patches
-        .values()
-        .map(|p| (p.key.clone(), p.content_hash()))
-        .collect();
+    // Patches for delta-fingerprint folding and linker injection.
+    // Hoisted ahead of subtree-hash so re-patched packages land in
+    // the `changed` bucket and side-effects skip can't trust a stale
+    // marker.
+    let (patches_for_linker, patch_hashes) = crate::patches::load_patches_for_linker(&cwd)?;
 
     // Compute leaf + subtree hashes together when both are needed.
     // Linker invalidation reads `current_subtree_hashes`; the late
@@ -3701,10 +3798,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     //     deps)` under different node / arch combos from stomping on
     //     each other; pure-JS packages with no build-allowed
     //     descendants get engine-agnostic hashes and stay shared.
-    let patches_for_linker: aube_linker::Patches = resolved_patches
-        .values()
-        .map(|p| (p.key.clone(), p.content.clone()))
-        .collect();
     let patch_hash_fn = |name: &str, version: &str| -> Option<String> {
         let key = format!("{name}@{version}");
         patch_hashes.get(&key).cloned()

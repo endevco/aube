@@ -9,10 +9,10 @@ use crate::{
     Resolver, apply_peer_contexts, catalog, error, hoist_auto_installed_peers,
     is_deprecation_allowed, is_supported,
 };
+use crate::{FxHashMap, FxHashSet};
 use aube_lockfile::{DepType, DirectDep, LocalSource, LockedPackage, LockfileGraph};
 use aube_manifest::PackageJson;
 use aube_registry::Packument;
-use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -54,10 +54,13 @@ impl Resolver {
         let mut packument_fetch_time = std::time::Duration::ZERO;
         let mut lockfile_reuse_count = 0u32;
         let mut resolved: BTreeMap<String, LockedPackage> = BTreeMap::new();
-        let mut resolved_versions: FxHashMap<String, Vec<String>> = FxHashMap::default();
+        // 1024 covers typical monorepo. 5000-dep graphs take one grow.
+        let mut resolved_versions: FxHashMap<String, Vec<String>> =
+            FxHashMap::with_capacity_and_hasher(1024, Default::default());
         let mut importers: BTreeMap<String, Vec<DirectDep>> = BTreeMap::new();
-        let mut queue: VecDeque<ResolveTask> = VecDeque::new();
-        let mut visited: FxHashSet<std::sync::Arc<str>> = FxHashSet::default();
+        let mut queue: VecDeque<ResolveTask> = VecDeque::with_capacity(512);
+        let mut visited: FxHashSet<std::sync::Arc<str>> =
+            FxHashSet::with_capacity_and_hasher(2048, Default::default());
         // Round-tripped to the lockfile's top-level `time:` block so
         // subsequent installs can reuse them for the cutoff computation.
         // Populated opportunistically from whatever packuments we fetch:
@@ -2027,7 +2030,7 @@ impl Resolver {
             resolve_from_workspace_root: self.resolve_peers_from_workspace_root,
             peers_suffix_max_length: self.peers_suffix_max_length,
         };
-        let contextualized = apply_peer_contexts(hoisted, &peer_options);
+        let contextualized = apply_peer_contexts(hoisted, &peer_options)?;
         tracing::debug!(
             "peer-context pass produced {} contextualized packages",
             contextualized.packages.len()
