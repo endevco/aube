@@ -510,6 +510,9 @@ impl Drop for SilentStderrGuard {
 // has no fixed name so the sort check skips it.
 #[derive(Subcommand)]
 enum Commands {
+    /// Bootstrap aube's cached node-gyp and print the executable path.
+    #[command(name = "__node-gyp-bootstrap", hide = true)]
+    NodeGypBootstrap { project_dir: PathBuf },
     /// Add a dependency
     #[command(visible_alias = "a")]
     Add(commands::add::AddArgs),
@@ -909,6 +912,9 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     });
 
     match cli.command {
+        Some(Commands::NodeGypBootstrap { project_dir }) => {
+            commands::install::node_gyp_bootstrap::print_bootstrapped_binary(&project_dir).await?
+        }
         Some(Commands::Add(args)) => {
             commands::add::run(args, effective_filter.clone()).await?;
         }

@@ -624,13 +624,7 @@ async fn build_script_command(
     };
 
     let bin_dir = super::project_modules_dir(cwd).join(".bin");
-    let node_gyp_bin_dir = if script_references_node_gyp(&shell_cmd)
-        && !super::install::node_gyp_bootstrap::node_gyp_bin_exists(&bin_dir)
-    {
-        super::install::node_gyp_bootstrap::ensure(cwd).await?
-    } else {
-        None
-    };
+    let node_gyp_bin_dir = super::install::node_gyp_bootstrap::lazy_shim_bin_dir(&bin_dir)?;
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut entries = Vec::with_capacity(2 + usize::from(node_gyp_bin_dir.is_some()));
     entries.push(bin_dir);
@@ -639,6 +633,13 @@ async fn build_script_command(
     }
     entries.extend(std::env::split_paths(&path));
     let new_path = std::env::join_paths(entries).unwrap_or(path);
+    let script_dir = if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        crate::dirs::cwd()?.join(cwd)
+    };
+    let node_gyp_project_dir =
+        crate::dirs::find_workspace_root(&script_dir).unwrap_or_else(|| script_dir.clone());
 
     // npm-compat env vars. Lifecycle path sets these in
     // aube-scripts::run_root_hook, `aube run` was bare env before.
@@ -650,6 +651,11 @@ async fn build_script_command(
     command
         .env("PATH", &new_path)
         .current_dir(cwd)
+        .env(
+            "AUBE_NODE_GYP_EXE",
+            std::env::current_exe().into_diagnostic()?,
+        )
+        .env("AUBE_NODE_GYP_PROJECT_DIR", node_gyp_project_dir)
         .env("npm_lifecycle_event", script)
         .stderr(aube_scripts::child_stderr());
     if let Some(ref name) = manifest.name {
@@ -693,11 +699,6 @@ fn inject_node_args(cmd: &str, node_args: &[String]) -> String {
     }
     out.push_str(rest);
     out
-}
-
-fn script_references_node_gyp(cmd: &str) -> bool {
-    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-        .any(|word| word == "node-gyp")
 }
 
 pub(crate) async fn exec_script_chain(
@@ -811,7 +812,7 @@ async fn exec_script_status_with_node_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_node_args, node_args_from_run_flags, script_references_node_gyp};
+    use super::{inject_node_args, node_args_from_run_flags};
 
     #[test]
     fn node_args_from_flags_supports_optional_values() {
@@ -839,13 +840,5 @@ mod tests {
             inject_node_args("node-gyp rebuild", &args),
             "node-gyp rebuild"
         );
-    }
-
-    #[test]
-    fn script_references_node_gyp_matches_command_token() {
-        assert!(script_references_node_gyp("node-gyp --help"));
-        assert!(script_references_node_gyp("cd native && node-gyp rebuild"));
-        assert!(!script_references_node_gyp("echo node-gyp-build"));
-        assert!(!script_references_node_gyp("node ./scripts/build.js"));
     }
 }

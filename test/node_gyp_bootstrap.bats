@@ -98,6 +98,8 @@ JSON
 @test "aube test does not bootstrap node-gyp for unrelated scripts" {
 	# Regression for PR review feedback: a cold node-gyp cache plus an
 	# unreachable registry must not break scripts that don't call node-gyp.
+	# A cheap lazy shim may be written, but the real node-gyp install must
+	# not run unless that shim is executed.
 	cat >.npmrc <<'EOF'
 registry=http://127.0.0.1:9/
 EOF
@@ -114,7 +116,60 @@ JSON
 	run aube test
 	assert_success
 	assert_file_exists plain-ok
-	assert_dir_not_exists "$XDG_CACHE_HOME/aube/tools/node-gyp"
+	assert_dir_not_exists "$XDG_CACHE_HOME/aube/tools/node-gyp/v12"
+}
+
+@test "aube test exposes node-gyp to indirect script subprocesses" {
+	# pnpm adds its own node-gyp-bin directory to every script PATH. Aube
+	# mirrors that with a lazy shim so `node build.js` can spawn node-gyp
+	# without sniffing the package.json script text up front.
+	if [ -z "${AUBE_TEST_REGISTRY:-}" ]; then
+		skip "AUBE_TEST_REGISTRY not set (Verdaccio not running)"
+	fi
+	cat >package.json <<'JSON'
+{
+  "name": "node-gyp-indirect-path-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node build.js"
+  }
+}
+JSON
+	cat >build.js <<'JS'
+const cp = require('child_process');
+const fs = require('fs');
+const result = cp.spawnSync('node-gyp', ['--help'], {stdio: 'ignore'});
+if (result.status === 0) {
+  fs.writeFileSync('node-gyp-indirect-ok', 'ok');
+}
+process.exit(result.status ?? 1);
+JS
+
+	run aube test
+	assert_success
+	assert_file_exists node-gyp-indirect-ok
+}
+
+@test "aube run passes workspace root to lazy node-gyp bootstrap" {
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/app
+	cat >packages/app/package.json <<'JSON'
+{
+  "name": "node-gyp-workspace-root-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node -e 'require(\"fs\").writeFileSync(\"node-gyp-project-dir\", process.env.AUBE_NODE_GYP_PROJECT_DIR)'"
+  }
+}
+JSON
+
+	run aube --filter node-gyp-workspace-root-test test --no-install
+	assert_success
+	assert_file_contains packages/app/node-gyp-project-dir "$TEST_TEMP_DIR"
+	refute grep -q 'packages/app' packages/app/node-gyp-project-dir
 }
 
 @test "aube test uses project node-gyp bin without bootstrapping" {
