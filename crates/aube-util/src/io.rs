@@ -12,9 +12,7 @@ pub struct ChunkReader {
 }
 
 impl ChunkReader {
-    pub fn new(
-        rx: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, std::io::Error>>,
-    ) -> Self {
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, std::io::Error>>) -> Self {
         Self {
             rx,
             current: bytes::Bytes::new(),

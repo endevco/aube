@@ -236,10 +236,7 @@ pub(super) fn resolve_prewarm_shared(
     manifest: &aube_manifest::PackageJson,
     workspace_config: &aube_manifest::WorkspaceConfig,
     dangerously_allow_all_builds: bool,
-) -> (
-    Option<String>,
-    std::sync::Arc<aube_scripts::BuildPolicy>,
-) {
+) -> (Option<String>, std::sync::Arc<aube_scripts::BuildPolicy>) {
     let node_version = {
         let override_ = aube_settings::resolved::node_version(settings_ctx);
         crate::engines::resolve_node_version(override_.as_deref())

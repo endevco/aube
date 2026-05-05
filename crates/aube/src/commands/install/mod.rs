@@ -2793,8 +2793,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.dangerously_allow_all_builds,
             );
             let lock_strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
-            let (lock_patches, lock_patch_hashes) =
-                crate::patches::load_patches_for_linker(&cwd)?;
+            let (lock_patches, lock_patch_hashes) = crate::patches::load_patches_for_linker(&cwd)?;
             let (lock_materialize_tx, lock_materialize_rx) = materialize_channel();
             let lock_prewarm_inputs = GvsPrewarmInputs {
                 graph: std::sync::Arc::new(graph.clone()),

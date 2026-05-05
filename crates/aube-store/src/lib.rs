@@ -1154,7 +1154,7 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
     let proc_c = CString::new(proc_link.as_bytes()).map_err(|_| {
         OTmpfileFallback::Hard(Error::Io(
             path.to_path_buf(),
-            std::io::Error::new(std::io::ErrorKind::Other, "fd path has nul"),
+            std::io::Error::other("fd path has nul"),
         ))
     })?;
     let final_c = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
