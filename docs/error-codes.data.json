@@ -423,6 +423,12 @@
       "exit_code": null
     },
     {
+      "name": "WARN_AUBE_WORKSPACE_PACKAGE_MISSING_NAME",
+      "category": "Update / prerelease",
+      "description": "A discovered workspace package had no `name` field, so update skipped local workspace version registration for it.",
+      "exit_code": null
+    },
+    {
       "name": "WARN_AUBE_AUDIT_FETCH_FAILED",
       "category": "Audit / npmrc",
       "description": "`aube audit --ignore-unfixable` couldn't fetch a packument; advisories for that package are kept verbatim.",

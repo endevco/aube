@@ -35,6 +35,8 @@ pub const WARN_AUBE_CONCURRENCY_ENV_INVALID: &str = "WARN_AUBE_CONCURRENCY_ENV_I
 
 // ── update / prerelease ─────────────────────────────────────────────
 pub const WARN_AUBE_PRERELEASE_CHECK_SKIPPED: &str = "WARN_AUBE_PRERELEASE_CHECK_SKIPPED";
+pub const WARN_AUBE_WORKSPACE_PACKAGE_MISSING_NAME: &str =
+    "WARN_AUBE_WORKSPACE_PACKAGE_MISSING_NAME";
 
 // ── audit / npmrc ───────────────────────────────────────────────────
 pub const WARN_AUBE_AUDIT_FETCH_FAILED: &str = "WARN_AUBE_AUDIT_FETCH_FAILED";
@@ -231,6 +233,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_PRERELEASE_CHECK_SKIPPED,
         category: category::UPDATE_PRERELEASE,
         description: "`aube update` couldn't fetch the packument or got a non-semver `latest` tag; preserved-prerelease check skipped for that package.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_WORKSPACE_PACKAGE_MISSING_NAME,
+        category: category::UPDATE_PRERELEASE,
+        description: "A discovered workspace package had no `name` field, so update skipped local workspace version registration for it.",
         exit_code: None,
     },
     // Audit / npmrc
