@@ -1197,6 +1197,10 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
         // Kernel opens O_TMPFILE but rejects linkat from /proc/self/fd.
         // ENOTSUP is same value as EOPNOTSUPP on Linux.
         Some(libc::EOPNOTSUPP) | Some(libc::EXDEV) => Err(OTmpfileFallback::Unsupported),
+        // Seccomp-filtered containers (gVisor, strict k8s pod-security
+        // profiles) block linkat and return EPERM/EACCES. Fall through
+        // to the tempfile path instead of aborting the install.
+        Some(libc::EPERM) | Some(libc::EACCES) => Err(OTmpfileFallback::Unsupported),
         _ => Err(OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), err))),
     }
 }
