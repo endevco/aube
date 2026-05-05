@@ -9,12 +9,14 @@ teardown() {
 	_common_teardown
 }
 
-@test "config set writes key=value to user .npmrc" {
+@test "config set writes aube-owned keys to user config.toml" {
 	run aube config set autoInstallPeers false
 	assert_success
-	assert [ -f "$HOME/.npmrc" ]
+	assert [ -f "$XDG_CONFIG_HOME/aube/config.toml" ]
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	assert_output --partial "autoInstallPeers = false"
 	run cat "$HOME/.npmrc"
-	assert_output --partial "autoInstallPeers=false"
+	refute_output --partial "autoInstallPeers"
 }
 
 @test "config get reads value from user .npmrc" {
@@ -90,14 +92,16 @@ teardown() {
 	assert_success
 	run cat "$HOME/.npmrc"
 	refute_output --partial "auto-install-peers=false"
-	assert_output --partial "autoInstallPeers=true"
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	assert_output --partial "autoInstallPeers = true"
 }
 
 @test "config delete removes a key" {
-	echo "autoInstallPeers=false" >"$HOME/.npmrc"
+	mkdir -p "$XDG_CONFIG_HOME/aube"
+	echo "autoInstallPeers = false" >"$XDG_CONFIG_HOME/aube/config.toml"
 	run aube config delete autoInstallPeers
 	assert_success
-	run cat "$HOME/.npmrc"
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
 	refute_output --partial "autoInstallPeers"
 }
 
@@ -204,7 +208,9 @@ teardown() {
 	assert_success
 	run cat "$HOME/.npmrc"
 	assert_output --partial "registry=https://r.example.com/"
-	assert_output --partial "autoInstallPeers=false"
+	refute_output --partial "autoInstallPeers"
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	assert_output --partial "autoInstallPeers = false"
 }
 
 @test "config get returns literal \${VAR} references, not substituted values" {
@@ -335,6 +341,6 @@ teardown() {
 @test "set delegates to config set" {
 	run aube set autoInstallPeers false
 	assert_success
-	run cat "$HOME/.npmrc"
-	assert_output --partial "autoInstallPeers=false"
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	assert_output --partial "autoInstallPeers = false"
 }
