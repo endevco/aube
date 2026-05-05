@@ -1448,6 +1448,12 @@ cmd root help="Print the path to `node_modules`" {
 cmd run help="Run a script defined in package.json" {
     alias run-script hide=#true
     flag --if-present help="Don't error if the script is missing from package.json"
+    flag --inspect help="Forward `--inspect` to a Node-backed script or local binary" {
+        arg "<[HOST:]PORT>"
+    }
+    flag --inspect-brk help="Forward `--inspect-brk` to a Node-backed script or local binary" {
+        arg "<[HOST:]PORT>"
+    }
     flag --no-bail help="Continue recursive execution after a script fails" {
         long_help "Continue recursive execution after a script fails.\n\nParsed for pnpm compatibility; aube's sequential fanout still stops on first failure."
     }
