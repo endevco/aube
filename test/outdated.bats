@@ -76,6 +76,24 @@ _write_pkg_with_old_is_odd() {
 	refute_output --partial "is-odd  "
 }
 
+@test "aube outdated skips registry for package.json workspace deps" {
+	cat >package.json <<'EOF'
+{"workspaces":["sub"],"dependencies":{"happy-sunny-hippo":"workspace:"}}
+EOF
+	mkdir sub
+	cat >sub/package.json <<'EOF'
+{"name":"happy-sunny-hippo"}
+EOF
+
+	run aube install
+	assert_success
+
+	run aube outdated
+	assert_success
+	assert_output --partial "(no matching dependencies)"
+	refute_output --partial "package not found"
+}
+
 @test "aube outdated --recursive reports workspace importers" {
 	cat >package.json <<'EOF'
 {"name":"root","version":"0.0.0","private":true}

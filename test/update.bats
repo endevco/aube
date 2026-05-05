@@ -88,6 +88,21 @@ EOF
 	assert_success
 }
 
+@test "aube update: skips registry for package.json workspace deps" {
+	cat >package.json <<'EOF'
+{"workspaces":["sub"],"dependencies":{"happy-sunny-hippo":"workspace:"}}
+EOF
+	mkdir sub
+	cat >sub/package.json <<'EOF'
+{"name":"happy-sunny-hippo"}
+EOF
+
+	run aube update
+	assert_success
+	refute_output --partial "package not found"
+	assert_file_exists node_modules/happy-sunny-hippo/package.json
+}
+
 @test "aube update: updateConfig.ignoreDependencies skips all-deps updates" {
 	_setup_outdated_project
 	cat >package.json <<'EOF'

@@ -213,6 +213,22 @@ async fn run_graph(
         }
         return Ok(false);
     }
+    let roots: Vec<&DirectDep> = roots
+        .into_iter()
+        .filter(|d| {
+            !d.specifier
+                .as_deref()
+                .is_some_and(aube_util::pkg::is_workspace_spec)
+        })
+        .collect();
+    if roots.is_empty() {
+        if args.json {
+            println!("{{}}");
+        } else {
+            println!("(no matching dependencies)");
+        }
+        return Ok(false);
+    }
 
     let client = std::sync::Arc::new(make_client(cwd));
     let cache_dir = packument_cache_dir();
