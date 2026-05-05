@@ -23,6 +23,14 @@ Arguments to pass to the script
 
 Don't error if the script is missing from package.json
 
+### `--inspect [[HOST:]PORT]`
+
+Forward `--inspect` to a Node-backed script or local binary
+
+### `--inspect-brk [[HOST:]PORT]`
+
+Forward `--inspect-brk` to a Node-backed script or local binary
+
 ### `--no-bail`
 
 Continue recursive execution after a script fails.

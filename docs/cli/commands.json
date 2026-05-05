@@ -8320,6 +8320,44 @@
             "global": false
           },
           {
+            "name": "inspect",
+            "usage": "--inspect [[HOST:]PORT]",
+            "help": "Forward `--inspect` to a Node-backed script or local binary",
+            "help_first_line": "Forward `--inspect` to a Node-backed script or local binary",
+            "short": [],
+            "long": [
+              "inspect"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "[HOST:]PORT",
+              "usage": "[[HOST:]PORT]",
+              "required": false,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
+            "name": "inspect-brk",
+            "usage": "--inspect-brk [[HOST:]PORT]",
+            "help": "Forward `--inspect-brk` to a Node-backed script or local binary",
+            "help_first_line": "Forward `--inspect-brk` to a Node-backed script or local binary",
+            "short": [],
+            "long": [
+              "inspect-brk"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "[HOST:]PORT",
+              "usage": "[[HOST:]PORT]",
+              "required": false,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "no-bail",
             "usage": "--no-bail",
             "help": "Continue recursive execution after a script fails",
