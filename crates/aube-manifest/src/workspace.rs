@@ -954,37 +954,40 @@ fn workspace_yaml_submap<'a>(
 /// Apply `f` to the parsed top-level mapping of the workspace yaml at
 /// `path` and write it back. The helper exists so every workspace-yaml
 /// writer (allowBuilds, patchedDependencies, catalog cleanup, future
-/// settings) shares one comment-preserving rule: **the file is left
-/// untouched whenever `f` produces no structural change**.
+/// settings) shares one comment-preserving rule: **user-authored
+/// comments and formatting in the file survive every edit**.
 ///
-/// `yaml_serde` is not a comment-preserving parser — every round trip
-/// strips user-authored comments and reflows the layout. That means a
-/// "no-op" edit (inserting an entry that already exists, removing one
-/// that isn't there, re-recording an unchanged value) would still
-/// rewrite the file and silently destroy the comments the workspace
-/// yaml was chosen to host.
+/// The closure mutates a parsed `yaml_serde::Mapping`. After it runs,
+/// the helper diffs before-vs-after and reduces the change set to a
+/// minimal sequence of `yamlpatch` operations applied directly to the
+/// original source. yamlpatch is comment- and format-preserving, so
+/// keys, comments, and whitespace that the closure didn't touch land
+/// back on disk byte-identical. A no-op closure produces an empty
+/// patch list and the file isn't rewritten at all.
 ///
-/// Comparing the parsed `Value` before and after the closure catches
-/// all of those cases without needing per-call peeks. When `f` does
-/// produce a structural change, the user has explicitly asked for a
-/// rewrite and the comment loss is unavoidable until aube migrates to
-/// a comment-preserving YAML library.
+/// For brand-new or empty files there is no source to preserve, so the
+/// helper falls back to `yaml_serde::to_string` for the initial write.
 pub fn edit_workspace_yaml<F>(path: &Path, f: F) -> Result<PathBuf, crate::Error>
 where
     F: FnOnce(&mut yaml_serde::Mapping) -> Result<(), crate::Error>,
 {
     use yaml_serde::{Mapping, Value};
 
-    let mut doc: Value = if path.exists() {
+    let original_source: Option<String> = if path.exists() {
         let content =
             std::fs::read_to_string(path).map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
         if content.trim().is_empty() {
-            Value::Mapping(Mapping::new())
+            None
         } else {
-            crate::parse_yaml(path, content)?
+            Some(content)
         }
     } else {
-        Value::Mapping(Mapping::new())
+        None
+    };
+
+    let mut doc: Value = match original_source.as_deref() {
+        Some(content) => crate::parse_yaml(path, content.to_string())?,
+        None => Value::Mapping(Mapping::new()),
     };
 
     let map = doc.as_mapping_mut().ok_or_else(|| {
@@ -1000,16 +1003,8 @@ where
         return Ok(path.to_path_buf());
     }
 
-    let raw = yaml_serde::to_string(&doc)
-        .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
-    // yaml_serde emits block sequences flush-left (`- foo`) while pnpm's
-    // canonical workspace yaml indents them by two (`  - foo`). Reindent
-    // so the output matches what a human or pnpm would write. Safe because
-    // yaml_serde's block style always starts sequence items at the parent's
-    // column; bumping every sequence line by two is a consistent transform.
-    let indented = indent_block_sequences(&raw);
-    aube_util::fs_atomic::atomic_write(path, indented.as_bytes())
-        .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    let after = std::mem::take(map);
+    write_workspace_yaml(path, original_source.as_deref(), &before, &after)?;
     Ok(path.to_path_buf())
 }
 
@@ -1037,10 +1032,38 @@ fn write_allow_builds_yaml(
     })
 }
 
+/// Persist a structural change against `path`. When `original_source`
+/// is `Some`, the change is encoded as a list of `yamlpatch`
+/// operations applied to the original text — comments and formatting
+/// the closure didn't touch survive the round trip. When it is `None`
+/// (fresh file or one that was empty), the after-state is serialized
+/// directly via `yaml_serde::to_string`; there is no source to
+/// preserve. Both paths atomic-write the result.
+fn write_workspace_yaml(
+    path: &Path,
+    original_source: Option<&str>,
+    before: &yaml_serde::Mapping,
+    after: &yaml_serde::Mapping,
+) -> Result<(), crate::Error> {
+    let bytes: Vec<u8> = match original_source {
+        Some(source) => yaml_patch::apply_diff(path, source, before, after)?,
+        None => {
+            let raw = yaml_serde::to_string(&yaml_serde::Value::Mapping(after.clone()))
+                .map_err(|e| crate::Error::YamlParse(path.to_path_buf(), e.to_string()))?;
+            indent_block_sequences(&raw).into_bytes()
+        }
+    };
+    aube_util::fs_atomic::atomic_write(path, &bytes)
+        .map_err(|e| crate::Error::Io(path.to_path_buf(), e))?;
+    Ok(())
+}
+
 /// Bump every block-sequence item line (`- ...`) by two spaces. Leaves
 /// already-indented lines and non-sequence lines alone. yaml_serde's
 /// output uses a single indent step per nesting level, so this produces
-/// the `parent:\n  - item` shape humans expect.
+/// the `parent:\n  - item` shape humans expect. Only used on the
+/// fresh-file write path; yamlpatch preserves the user's existing
+/// indentation otherwise.
 fn indent_block_sequences(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 16);
     for line in input.split_inclusive('\n') {
@@ -1051,6 +1074,410 @@ fn indent_block_sequences(input: &str) -> String {
         out.push_str(line);
     }
     out
+}
+
+/// Diff a parsed-then-mutated workspace yaml mapping into a minimal
+/// set of edits and apply them to the original source. Comments and
+/// formatting on untouched keys survive every edit.
+///
+/// The module is a thin wrapper around `yamlpatch` plus a manual
+/// block-mapping injector. yamlpatch handles `Remove` / `Replace` /
+/// scalar `Add` correctly. Its `Op::Add` for non-empty *mapping*
+/// values is broken upstream (it strips the nested indentation
+/// hierarchy and produces invalid YAML where a child key lands at the
+/// parent's column), so any new sub-mapping is rendered to a
+/// block-style YAML string here and inserted at the right byte
+/// offset instead.
+///
+/// The only public entry is [`apply_diff`].
+mod yaml_patch {
+    use std::path::Path;
+    use yaml_serde::{Mapping, Value};
+    use yamlpatch::{Op, Patch, apply_yaml_patches};
+    use yamlpath::{Component, Document, Route};
+
+    /// Indentation step new entries are rendered with. Two spaces
+    /// matches pnpm's canonical workspace yaml layout. Reading the
+    /// step from the source (so an existing four-space file stays
+    /// four-space) is left for a later pass — every aube install
+    /// plus existing pnpm workspaces use two.
+    const INDENT_STEP: usize = 2;
+
+    /// One unit of a structural diff. `Yp` operations go through
+    /// yamlpatch; `Add` operations are injected directly because
+    /// yamlpatch's `Op::Add` mishandles non-empty nested mappings.
+    enum Edit {
+        Yp(Patch<'static>),
+        Add {
+            route_keys: Vec<String>,
+            key: String,
+            value: serde_yaml::Value,
+        },
+    }
+
+    /// Compute the minimal edit list that turns `before` into `after`
+    /// and apply it to `source`. Returns the source unchanged when
+    /// the diff is empty.
+    pub(super) fn apply_diff(
+        path: &Path,
+        source: &str,
+        before: &Mapping,
+        after: &Mapping,
+    ) -> Result<Vec<u8>, crate::Error> {
+        let mut edits = Vec::new();
+        diff_into(before, after, &[], path, &mut edits)?;
+        if edits.is_empty() {
+            return Ok(source.as_bytes().to_vec());
+        }
+
+        // Step 1: yamlpatch-handled ops (Remove + Replace + scalar
+        // Add). These are surgical and order-independent: yamlpatch
+        // applies them sequentially against the tree-sitter doc,
+        // re-querying after each step.
+        let yp_patches: Vec<Patch<'static>> = edits
+            .iter()
+            .filter_map(|e| match e {
+                Edit::Yp(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut current = if yp_patches.is_empty() {
+            source.to_string()
+        } else {
+            let document =
+                Document::new(source.to_string()).map_err(|e| yp_err(path, e.to_string()))?;
+            apply_yaml_patches(&document, &yp_patches)
+                .map_err(|e| yp_err(path, e.to_string()))?
+                .source()
+                .to_string()
+        };
+
+        // Step 2: direct injections for new keys whose value is a
+        // mapping. Sort outer-most first so a parent that only just
+        // came into existence is queryable for its children. Within
+        // the same depth, preserve insertion order.
+        let mut adds: Vec<(Vec<String>, String, serde_yaml::Value)> = edits
+            .into_iter()
+            .filter_map(|e| match e {
+                Edit::Add {
+                    route_keys,
+                    key,
+                    value,
+                } => Some((route_keys, key, value)),
+                _ => None,
+            })
+            .collect();
+        adds.sort_by_key(|(r, _, _)| r.len());
+        for (route_keys, key, value) in adds {
+            current = inject_entry(&current, &route_keys, &key, &value, path)?;
+        }
+
+        Ok(current.into_bytes())
+    }
+
+    /// Walk `before` and `after` recursively, pushing `Edit`s for
+    /// every structural difference. Mapping-valued additions become
+    /// `Edit::Add` (handled outside yamlpatch); everything else maps
+    /// to a yamlpatch `Patch`. Non-string keys cause a hard error
+    /// rather than silent data loss.
+    fn diff_into(
+        before: &Mapping,
+        after: &Mapping,
+        route: &[String],
+        path: &Path,
+        out: &mut Vec<Edit>,
+    ) -> Result<(), crate::Error> {
+        let route_obj: Route<'static> = Route::from(
+            route
+                .iter()
+                .cloned()
+                .map(Component::from)
+                .collect::<Vec<_>>(),
+        );
+        for (k, _) in before.iter() {
+            let key = key_str(path, k)?;
+            if !after.contains_key(k) {
+                out.push(Edit::Yp(Patch {
+                    route: route_obj.with_key(key.to_string()),
+                    operation: Op::Remove,
+                }));
+            }
+        }
+        for (k, after_v) in after.iter() {
+            let key = key_str(path, k)?;
+            match before.get(k) {
+                None => out.push(Edit::Add {
+                    route_keys: route.to_vec(),
+                    key: key.to_string(),
+                    value: to_serde_value(path, after_v)?,
+                }),
+                Some(before_v) if before_v != after_v => {
+                    if let (Some(bm), Some(am)) = (before_v.as_mapping(), after_v.as_mapping()) {
+                        let mut sub = route.to_vec();
+                        sub.push(key.to_string());
+                        diff_into(bm, am, &sub, path, out)?;
+                    } else if matches!(after_v.as_mapping(), Some(m) if !m.is_empty()) {
+                        // Type-change to a non-empty sub-mapping (e.g.
+                        // scalar -> nested mapping). yamlpatch's
+                        // Op::Replace serializes the mapping value via
+                        // the same path as Op::Add, which strips nested
+                        // indentation and lands the children at the
+                        // parent's column. Split into Remove + manual
+                        // injection so step 2 can re-emit the children
+                        // with their canonical indent.
+                        out.push(Edit::Yp(Patch {
+                            route: route_obj.with_key(key.to_string()),
+                            operation: Op::Remove,
+                        }));
+                        out.push(Edit::Add {
+                            route_keys: route.to_vec(),
+                            key: key.to_string(),
+                            value: to_serde_value(path, after_v)?,
+                        });
+                    } else {
+                        out.push(Edit::Yp(Patch {
+                            route: route_obj.with_key(key.to_string()),
+                            operation: Op::Replace(to_serde_value(path, after_v)?),
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Inject a fresh `<key>: <value>` block-style entry into
+    /// `source` at the end of the route's mapping. Top-level routes
+    /// (empty) append at end-of-file. Nested routes look up the
+    /// parent feature via yamlpath, then insert just past its end
+    /// span at the parent's child indent.
+    fn inject_entry(
+        source: &str,
+        route_keys: &[String],
+        key: &str,
+        value: &serde_yaml::Value,
+        path: &Path,
+    ) -> Result<String, crate::Error> {
+        if route_keys.is_empty() {
+            let entry = render_entry(key, value, 0);
+            let mut result = source.to_string();
+            if !result.is_empty() && !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(&entry);
+            return Ok(result);
+        }
+
+        let document =
+            Document::new(source.to_string()).map_err(|e| yp_err(path, e.to_string()))?;
+        let route_obj: Route<'static> = Route::from(
+            route_keys
+                .iter()
+                .cloned()
+                .map(Component::from)
+                .collect::<Vec<_>>(),
+        );
+        let feature = document
+            .query_exact(&route_obj)
+            .map_err(|e| yp_err(path, e.to_string()))?
+            .ok_or_else(|| {
+                yp_err(
+                    path,
+                    format!("parent route {route_keys:?} not found in source"),
+                )
+            })?;
+        // `extract_with_leading_whitespace` walks the byte span back
+        // over any pure-space prefix on the parent's first line, so
+        // the snapshot mirrors the original column the children sit
+        // at — `extract` alone would start mid-line and drop the
+        // indent the new entry needs to inherit.
+        let parent_content = document.extract_with_leading_whitespace(&feature);
+        let child_indent = detect_child_indent(parent_content, route_keys.len());
+        let entry = render_entry(key, value, child_indent);
+
+        let mut insert_at = feature.location.byte_span.1;
+        // Trim back over trailing whitespace so the new entry lands
+        // just after the parent block's last content line, before any
+        // trailing blank lines that belong to the document footer.
+        let bytes = source.as_bytes();
+        while insert_at > 0 && matches!(bytes[insert_at - 1], b'\n' | b' ') {
+            insert_at -= 1;
+        }
+        let mut result = source.to_string();
+        let mut prefix = String::new();
+        if insert_at == 0 || bytes[insert_at - 1] != b'\n' {
+            prefix.push('\n');
+        }
+        prefix.push_str(&entry);
+        result.insert_str(insert_at, &prefix);
+        Ok(result)
+    }
+
+    /// Render `<key>: <value>` as block-style YAML lines, each
+    /// indented by `indent` spaces. Non-empty mapping values nest
+    /// recursively; non-empty sequence values emit as block
+    /// sequences with `- ` items at child indent; everything else
+    /// is emitted as a scalar value after the colon.
+    fn render_entry(key: &str, value: &serde_yaml::Value, indent: usize) -> String {
+        let pad = " ".repeat(indent);
+        match value {
+            serde_yaml::Value::Mapping(m) if !m.is_empty() => {
+                let mut out = format!("{pad}{}:\n", scalar_key_str(key));
+                for (k, v) in m {
+                    let child_key = match k {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        other => render_scalar(other),
+                    };
+                    out.push_str(&render_entry(&child_key, v, indent + INDENT_STEP));
+                }
+                out
+            }
+            serde_yaml::Value::Sequence(seq) if !seq.is_empty() => {
+                // Block-sequence under a mapping key. Without an
+                // explicit arm the catch-all below would feed the
+                // sequence through `render_scalar`, which emits a
+                // multi-line `- a\n- b` chunk that lands inline on the
+                // `key:` line and produces structurally invalid YAML.
+                let mut out = format!("{pad}{}:\n", scalar_key_str(key));
+                let item_pad = " ".repeat(indent + INDENT_STEP);
+                for item in seq {
+                    if matches!(
+                        item,
+                        serde_yaml::Value::Mapping(_) | serde_yaml::Value::Sequence(_)
+                    ) {
+                        // Nested mapping/sequence as a list item: defer
+                        // to serde_yaml for inner shape, then attach
+                        // the dash to the first emitted line and pad
+                        // every continuation line so it stays inside
+                        // the same item.
+                        let raw = serde_yaml::to_string(item).unwrap_or_default();
+                        let mut first = true;
+                        for line in raw.lines() {
+                            if first {
+                                first = false;
+                                out.push_str(&item_pad);
+                                out.push_str("- ");
+                            } else {
+                                out.push_str(&item_pad);
+                                out.push_str("  ");
+                            }
+                            out.push_str(line);
+                            out.push('\n');
+                        }
+                    } else {
+                        out.push_str(&item_pad);
+                        out.push_str("- ");
+                        out.push_str(&render_scalar(item));
+                        out.push('\n');
+                    }
+                }
+                out
+            }
+            _ => format!("{pad}{}: {}\n", scalar_key_str(key), render_scalar(value)),
+        }
+    }
+
+    /// Re-serialize a single scalar through serde_yaml so YAML
+    /// quoting (escapes, leading-special-char handling) matches what
+    /// the rest of the file already uses. Trailing newlines from the
+    /// emitter are stripped — the caller owns its own line break.
+    fn render_scalar(value: &serde_yaml::Value) -> String {
+        let raw = serde_yaml::to_string(value).unwrap_or_default();
+        raw.trim_end().to_string()
+    }
+
+    /// Render a mapping key for emission, quoting only when the YAML
+    /// 1.2 plain-scalar grammar requires it. Defers to serde_yaml's
+    /// emitter so the rules stay in lockstep with the rest of the
+    /// file: identifiers like `b@2.0.0` and `is-positive@3.1.0`
+    /// round-trip unquoted (the `@` is reserved only at the *start*
+    /// of a scalar), while keys that lead with a reserved indicator
+    /// or contain flow/quote/comment characters get the canonical
+    /// quoted form serde_yaml would have produced.
+    fn scalar_key_str(key: &str) -> String {
+        let raw = serde_yaml::to_string(&serde_yaml::Value::String(key.to_string()))
+            .unwrap_or_else(|_| format!("{key}\n"));
+        raw.trim_end().to_string()
+    }
+
+    /// Inspect a parent block-mapping's source text to decide what
+    /// indent its new children should land at. The slice handed in
+    /// here comes from `extract_with_leading_whitespace`, so its
+    /// first line is already a child of the parent route — return
+    /// that first non-empty/non-comment line's leading whitespace.
+    /// Falls back to `parent_depth * INDENT_STEP` (the parent's own
+    /// column plus one more step) when the parent is empty: a depth-2
+    /// parent with no children otherwise had its children land at
+    /// column 2 alongside the parent itself rather than column 4.
+    fn detect_child_indent(parent_content: &str, parent_depth: usize) -> usize {
+        for line in parent_content.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            return line.len() - trimmed.len();
+        }
+        parent_depth * INDENT_STEP
+    }
+
+    /// Extract a string view of a mapping key, erroring out for any
+    /// non-string variant. yaml_serde mappings allow non-string keys
+    /// in principle but every workspace-yaml shape aube edits uses
+    /// string keys exclusively, and silently dropping anything else
+    /// would lose data on the rewrite.
+    fn key_str<'a>(path: &Path, value: &'a Value) -> Result<&'a str, crate::Error> {
+        match value {
+            Value::String(s) => Ok(s.as_str()),
+            other => Err(yp_err(
+                path,
+                format!("workspace yaml mapping key must be a string, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Bridge `yaml_serde::Value` (our typed parse type) to
+    /// `serde_yaml::Value` (yamlpatch's payload type). yaml_serde is
+    /// the maintained fork of serde_yaml 0.9, so a YAML round-trip is
+    /// lossless for every variant we use (scalars, sequences,
+    /// mappings, tagged values). Errors on either side propagate
+    /// instead of panicking — they're vanishingly rare but a
+    /// workspace edit is a poor place to crash the process.
+    fn to_serde_value(path: &Path, value: &Value) -> Result<serde_yaml::Value, crate::Error> {
+        let raw = yaml_serde::to_string(value).map_err(|e| yp_err(path, e.to_string()))?;
+        serde_yaml::from_str(&raw).map_err(|e| yp_err(path, e.to_string()))
+    }
+
+    fn yp_err(path: &Path, msg: String) -> crate::Error {
+        crate::Error::YamlParse(path.to_path_buf(), msg)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn detect_child_indent_reads_existing_child_indent() {
+            assert_eq!(detect_child_indent("    foo: 1\n", 2), 4);
+            assert_eq!(detect_child_indent("  foo: 1\n", 1), 2);
+        }
+
+        #[test]
+        fn detect_child_indent_skips_blank_and_comment_lines() {
+            assert_eq!(detect_child_indent("\n    # note\n    foo: 1\n", 2), 4);
+        }
+
+        #[test]
+        fn detect_child_indent_falls_back_to_parent_depth() {
+            // Depth-2 parent (e.g. `catalogs.evens`) with no children:
+            // children should land at column 4, not column 2.
+            assert_eq!(detect_child_indent("", 2), 4);
+            // Depth-1 parent: children at column 2.
+            assert_eq!(detect_child_indent("", 1), 2);
+            // Depth-3 parent: children at column 6.
+            assert_eq!(detect_child_indent("", 3), 6);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1660,5 +2087,327 @@ updateConfig:
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("foo: bar"));
+    }
+
+    #[test]
+    fn edit_workspace_yaml_preserves_comments_around_unchanged_keys() {
+        // The whole point of going through yamlpatch: a structural
+        // change to one key must not strip comments attached to keys
+        // the closure didn't touch. Without a comment-preserving
+        // backend, the previous yaml_serde round-trip would erase
+        // every `# ...` line on any non-no-op edit.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "\
+# header explaining the workspace
+packages:
+  # globs we ship
+  - 'pkgs/*'
+allowBuilds:
+  # esbuild ships native bindings
+  esbuild: true
+";
+        std::fs::write(&path, original).unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let allow_builds = workspace_yaml_submap(map, "allowBuilds", &path)?;
+            allow_builds.insert(
+                yaml_serde::Value::String("sharp".to_string()),
+                yaml_serde::Value::Bool(true),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("# header explaining the workspace"),
+            "header comment lost:\n{written}"
+        );
+        assert!(
+            written.contains("# globs we ship"),
+            "sequence comment lost:\n{written}"
+        );
+        assert!(
+            written.contains("# esbuild ships native bindings"),
+            "annotation comment lost:\n{written}"
+        );
+        assert!(
+            written.contains("sharp: true"),
+            "new entry not added:\n{written}"
+        );
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_preserves_comments_on_real_change() {
+        // patch-commit on a workspace yaml that already documents
+        // existing patches with `# ...` annotations: the new entry
+        // lands at the end and the original annotations stay put.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "\
+patchedDependencies:
+  # a is patched because of upstream bug #123
+  \"a@1.0.0\": patches/a@1.0.0.patch
+";
+        std::fs::write(&path, original).unwrap();
+        upsert_workspace_patched_dependency(&path, "b@2.0.0", "patches/b@2.0.0.patch").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("# a is patched because of upstream bug #123"),
+            "annotation comment lost:\n{written}"
+        );
+        assert!(written.contains("b@2.0.0"), "new entry missing:\n{written}");
+    }
+
+    #[test]
+    fn add_to_allow_builds_merges_with_quoted_existing_key() {
+        // Repro for a bats failure: the workspace yaml's existing
+        // entry uses a quoted key (`"@pnpm.e2e/install-script-example"`).
+        // Adding a new entry must produce a parse-able file regardless
+        // of how the existing key was quoted.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "allowBuilds:\n  \"@pnpm.e2e/install-script-example\": true\n",
+        )
+        .unwrap();
+        add_to_allow_builds(
+            dir.path(),
+            &["@pnpm.e2e/pre-and-postinstall-scripts-example".to_string()],
+            AllowBuildsWriteMode::ReviewPlaceholder,
+        )
+        .unwrap();
+        let written = std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        let _config: WorkspaceConfig = yaml_serde::from_str(&written)
+            .unwrap_or_else(|e| panic!("written yaml fails to parse: {e}\n{written}"));
+        assert!(
+            written.contains("@pnpm.e2e/install-script-example"),
+            "existing entry lost:\n{written}"
+        );
+        assert!(
+            written.contains("@pnpm.e2e/pre-and-postinstall-scripts-example"),
+            "new entry missing:\n{written}"
+        );
+        assert!(
+            written.contains("set this to true or false"),
+            "placeholder missing:\n{written}"
+        );
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_does_not_quote_unreserved_at_keys() {
+        // Cursor bot follow-up: `b@2.0.0` and `is-positive@3.1.0` are
+        // valid YAML plain scalars (the `@` is reserved only when it
+        // *starts* a scalar). Earlier revisions of `scalar_key_str`
+        // quoted them anyway, producing `"b@2.0.0": ...` style entries
+        // that drifted from the rest of the file. Guard the unquoted
+        // form on the wire.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        upsert_workspace_patched_dependency(&path, "b@2.0.0", "patches/b@2.0.0.patch").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("\n  b@2.0.0: patches/b@2.0.0.patch"),
+            "expected unquoted plain-scalar key:\n{written}"
+        );
+    }
+
+    #[test]
+    fn upsert_workspace_patched_dependency_quotes_leading_at_keys() {
+        // The complement of the above: a key that *starts* with `@`
+        // (scoped npm package) must be quoted — leading `@` is a YAML
+        // reserved indicator and would otherwise produce a parse
+        // error on read.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        upsert_workspace_patched_dependency(&path, "@scope/pkg@1.0.0", "patches/scope-pkg.patch")
+            .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        // Round-trip through the typed parser as the soundness check.
+        let parsed: WorkspaceConfig = yaml_serde::from_str(&written)
+            .unwrap_or_else(|e| panic!("written yaml fails to parse: {e}\n{written}"));
+        assert_eq!(
+            parsed
+                .patched_dependencies
+                .get("@scope/pkg@1.0.0")
+                .map(String::as_str),
+            Some("patches/scope-pkg.patch"),
+            "scoped key did not round-trip:\n{written}"
+        );
+    }
+
+    #[test]
+    fn edit_workspace_yaml_adds_nested_mapping_under_existing_parent() {
+        // Same shape as the top-level case below, but the new
+        // sub-mapping (`my-catalog`) lands under an *existing*
+        // `catalogs:` block. yamlpatch's Op::Add mishandles this by
+        // collapsing nested indentation; the helper has to fall
+        // through to direct injection to keep the YAML structurally
+        // valid.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "catalogs:\n  evens:\n    is-even: ^1.0.0\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let catalogs = workspace_yaml_submap(map, "catalogs", &path)?;
+            let named = workspace_yaml_submap(catalogs, "my-catalog", &path)?;
+            named.insert(
+                yaml_serde::Value::String("is-even".to_string()),
+                yaml_serde::Value::String("^1.0.0".to_string()),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let parsed: WorkspaceConfig = yaml_serde::from_str(&written).unwrap_or_else(|e| {
+            panic!("written yaml fails to parse as WorkspaceConfig: {e}\n{written}")
+        });
+        assert_eq!(
+            parsed
+                .catalogs
+                .get("evens")
+                .and_then(|m| m.get("is-even"))
+                .unwrap(),
+            "^1.0.0"
+        );
+        assert_eq!(
+            parsed
+                .catalogs
+                .get("my-catalog")
+                .and_then(|m| m.get("is-even"))
+                .unwrap(),
+            "^1.0.0"
+        );
+    }
+
+    #[test]
+    fn edit_workspace_yaml_adds_nested_mapping_and_round_trips() {
+        // Repro for a bats failure: `aube add --save-catalog-name=my-catalog`
+        // against a workspace yaml that already declares the default
+        // `catalog:` map should append a *new* `catalogs:` block whose
+        // value is a nested mapping (catalogs.my-catalog.<pkg>: <range>).
+        // The write must produce yaml that parses back as
+        // `catalogs: { <name>: { <pkg>: <range> } }`, not as a string.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "catalog:\n  is-odd: ^3.0.1\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let catalogs = workspace_yaml_submap(map, "catalogs", &path)?;
+            let named = workspace_yaml_submap(catalogs, "my-catalog", &path)?;
+            named.insert(
+                yaml_serde::Value::String("is-even".to_string()),
+                yaml_serde::Value::String("^1.0.0".to_string()),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let parsed: WorkspaceConfig = yaml_serde::from_str(&written).unwrap_or_else(|e| {
+            panic!("written yaml fails to parse as WorkspaceConfig: {e}\n{written}")
+        });
+        assert_eq!(parsed.catalog.get("is-odd").unwrap(), "^3.0.1");
+        assert_eq!(
+            parsed
+                .catalogs
+                .get("my-catalog")
+                .and_then(|m| m.get("is-even"))
+                .unwrap(),
+            "^1.0.0"
+        );
+    }
+
+    #[test]
+    fn edit_workspace_yaml_adds_sequence_value_as_block_style() {
+        // Greptile/cursor follow-up: `render_entry`'s catch-all arm
+        // would inline a sequence value as `key: - a\n- b\n` when
+        // run through the default scalar path. The new entry must
+        // emit block-style so a re-parse round-trips through the
+        // typed `packages` field on `WorkspaceConfig`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "shamefullyHoist: true\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let packages = vec![
+                yaml_serde::Value::String("pkgs/*".to_string()),
+                yaml_serde::Value::String("apps/*".to_string()),
+            ];
+            map.insert(
+                yaml_serde::Value::String("packages".to_string()),
+                yaml_serde::Value::Sequence(packages),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let parsed: WorkspaceConfig = yaml_serde::from_str(&written).unwrap_or_else(|e| {
+            panic!("written yaml fails to parse as WorkspaceConfig: {e}\n{written}")
+        });
+        assert_eq!(parsed.packages, vec!["pkgs/*", "apps/*"]);
+        assert_eq!(parsed.shamefully_hoist, Some(true));
+    }
+
+    #[test]
+    fn edit_workspace_yaml_replaces_scalar_with_nested_mapping() {
+        // Greptile follow-up: when a key changes from a scalar value
+        // (or any non-mapping shape) to a non-empty sub-mapping, the
+        // raw `Op::Replace` path through yamlpatch strips nested
+        // indentation. The diff plumbing has to split the change into
+        // a Remove + manual injection so the new sub-mapping's
+        // children land at the canonical column rather than aliased
+        // to the parent's.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        std::fs::write(&path, "shamefullyHoist: true\nplaceholder: legacy\n").unwrap();
+        edit_workspace_yaml(&path, |map| {
+            let mut nested = yaml_serde::Mapping::new();
+            nested.insert(
+                yaml_serde::Value::String("react".to_string()),
+                yaml_serde::Value::String("^18".to_string()),
+            );
+            map.insert(
+                yaml_serde::Value::String("placeholder".to_string()),
+                yaml_serde::Value::Mapping(nested),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let doc: yaml_serde::Value = yaml_serde::from_str(&written)
+            .unwrap_or_else(|e| panic!("written yaml fails to parse: {e}\n{written}"));
+        let placeholder = doc
+            .as_mapping()
+            .and_then(|m| m.get("placeholder"))
+            .and_then(|v| v.as_mapping())
+            .unwrap_or_else(|| panic!("placeholder did not round-trip as a mapping:\n{written}"));
+        assert_eq!(
+            placeholder.get("react").and_then(|v| v.as_str()),
+            Some("^18"),
+            "scalar -> mapping replacement lost child:\n{written}"
+        );
+    }
+
+    #[test]
+    fn remove_workspace_patched_dependency_preserves_comments_on_real_remove() {
+        // Removing one patch entry from a multi-entry list must keep
+        // the surviving entries' annotation comments intact.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pnpm-workspace.yaml");
+        let original = "\
+patchedDependencies:
+  # a is patched because of upstream bug #123
+  \"a@1.0.0\": patches/a@1.0.0.patch
+  # b is patched for a build issue
+  \"b@2.0.0\": patches/b@2.0.0.patch
+";
+        std::fs::write(&path, original).unwrap();
+        let removed = remove_workspace_patched_dependency(&path, "a@1.0.0").unwrap();
+        assert!(removed);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("# b is patched for a build issue"),
+            "surviving annotation lost:\n{written}"
+        );
+        assert!(
+            !written.contains("a@1.0.0"),
+            "removed entry still present:\n{written}"
+        );
     }
 }

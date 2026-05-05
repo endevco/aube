@@ -18,7 +18,7 @@ use ratatui::{
 };
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
-use yaml_serde::{Mapping, Number, Value};
+use yaml_serde::{Number, Value};
 
 enum TuiMode {
     Browse,
@@ -889,23 +889,37 @@ fn clear_workspace_value(path: &std::path::Path, key: &str) -> miette::Result<bo
     if !path.exists() {
         return Ok(false);
     }
+    // Pre-flight: read the file once so a non-mapping or empty
+    // top-level shape (which `edit_workspace_yaml` would reject as
+    // a hard error) stays a graceful `Ok(false)` — the original
+    // behavior before the comment-preserving migration. Parse
+    // errors *do* propagate, since silently treating a malformed
+    // workspace yaml as "key not found" would mask file corruption
+    // the user needs to know about. The double read against the
+    // file is fine: this only fires on an interactive TUI clear,
+    // not the install hot path.
     let content = std::fs::read_to_string(path)
         .map_err(|e| miette!("failed to read {}: {e}", path.display()))?;
     if content.trim().is_empty() {
         return Ok(false);
     }
-    let mut doc: Value = yaml_serde::from_str(&content)
+    let parsed: Value = yaml_serde::from_str(&content)
         .map_err(|e| miette!("failed to parse {}: {e}", path.display()))?;
-    let Some(map) = doc.as_mapping_mut() else {
+    if parsed.as_mapping().is_none() {
         return Ok(false);
-    };
-    let removed = map.remove(Value::String(key.to_string())).is_some();
-    if removed {
-        let raw = yaml_serde::to_string(&doc)
-            .map_err(|e| miette!("failed to serialize {}: {e}", path.display()))?;
-        std::fs::write(path, raw)
-            .map_err(|e| miette!("failed to write {}: {e}", path.display()))?;
     }
+    // The bool return reports whether the key was actually present, so
+    // we have to track removal inside the closure. `edit_workspace_yaml`
+    // already short-circuits the rewrite when the closure produces no
+    // structural change, so a clear of a missing key won't touch
+    // comments on adjacent entries.
+    let mut removed = false;
+    aube_manifest::workspace::edit_workspace_yaml(path, |map| {
+        removed = map.shift_remove(Value::String(key.to_string())).is_some();
+        Ok(())
+    })
+    .map_err(miette::Report::new)
+    .map_err(|e| e.wrap_err(format!("failed to write {}", path.display())))?;
     Ok(removed)
 }
 
@@ -933,33 +947,13 @@ fn write_workspace_value(
     meta: &settings_meta::SettingMeta,
     value: &str,
 ) -> miette::Result<()> {
-    let mut doc = if path.exists() {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| miette!("failed to read {}: {e}", path.display()))?;
-        if content.trim().is_empty() {
-            Value::Mapping(Mapping::new())
-        } else {
-            yaml_serde::from_str(&content)
-                .map_err(|e| miette!("failed to parse {}: {e}", path.display()))?
-        }
-    } else {
-        Value::Mapping(Mapping::new())
-    };
-
-    let Some(map) = doc.as_mapping_mut() else {
-        return Err(miette!(
-            "{} must contain a top-level mapping",
-            path.display()
-        ));
-    };
-    map.insert(
-        Value::String(key.to_string()),
-        parse_workspace_value(meta.type_, value)?,
-    );
-
-    let raw = yaml_serde::to_string(&doc)
-        .map_err(|e| miette!("failed to serialize {}: {e}", path.display()))?;
-    std::fs::write(path, raw).map_err(|e| miette!("failed to write {}: {e}", path.display()))?;
+    let parsed = parse_workspace_value(meta.type_, value)?;
+    aube_manifest::workspace::edit_workspace_yaml(path, |map| {
+        map.insert(Value::String(key.to_string()), parsed);
+        Ok(())
+    })
+    .map_err(miette::Report::new)
+    .map_err(|e| e.wrap_err(format!("failed to write {}", path.display())))?;
     Ok(())
 }
 
