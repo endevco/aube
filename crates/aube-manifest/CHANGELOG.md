@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0](https://github.com/endevco/aube/compare/aube-manifest-v1.8.0...aube-manifest-v1.9.0) - 2026-05-05
+
+### Added
+
+- *(workspace)* preserve comments in workspace yaml edits via yamlpatch ([#511](https://github.com/endevco/aube/pull/511))
+
+### Other
+
+- refresh benchmarks for v1.8.0 ([#508](https://github.com/endevco/aube/pull/508))
+
 ## [1.8.0](https://github.com/endevco/aube/compare/aube-manifest-v1.7.0...aube-manifest-v1.8.0) - 2026-05-03
 
 ### Added

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.8.0...aube-lockfile-v1.9.0) - 2026-05-05
+
+### Fixed
+
+- *(lockfile)* tolerate legacy license shapes in package-lock.json ([#512](https://github.com/endevco/aube/pull/512))
+
+### Other
+
+- refresh benchmarks for v1.8.0 ([#508](https://github.com/endevco/aube/pull/508))
+
 ## [1.8.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.7.0...aube-lockfile-v1.8.0) - 2026-05-03
 
 ### Added

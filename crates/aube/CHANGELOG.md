@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0](https://github.com/endevco/aube/compare/v1.8.0...v1.9.0) - 2026-05-05
+
+### Added
+
+- *(config)* store aube settings outside npmrc ([#517](https://github.com/endevco/aube/pull/517))
+- *(run)* forward inspect flags to node targets ([#515](https://github.com/endevco/aube/pull/515))
+- *(workspace)* preserve comments in workspace yaml edits via yamlpatch ([#511](https://github.com/endevco/aube/pull/511))
+
+### Fixed
+
+- *(deploy)* bundle workspace siblings and file: deps; add --no-prod ([#507](https://github.com/endevco/aube/pull/507))
+
+### Other
+
+- refresh benchmarks for v1.8.0 ([#508](https://github.com/endevco/aube/pull/508))
+
 ## [1.8.0](https://github.com/endevco/aube/compare/v1.7.0...v1.8.0) - 2026-05-03
 
 ### Added
