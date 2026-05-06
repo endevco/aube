@@ -1109,6 +1109,13 @@ async fn run_aube_dir_materializer(
     let nested_link_targets =
         aube_linker::build_nested_link_targets(&cwd, &graph).map(std::sync::Arc::new);
 
+    // Channel emits `pkg.dep_path` (canonical on the resolver's
+    // first-pass packages, contextualized on post-pass). When the
+    // received key is a canonical that fans out to one-or-more
+    // peer-contextualized variants in the graph, this map points
+    // canonical -> {contextualized dep_paths}. Identity entries
+    // (canonical == dep_path) are skipped because the receive loop
+    // falls back to a direct graph lookup for those.
     let mut canonical_to_contextualized: aube_util::collections::FxMap<
         String,
         aube_util::collections::FxSet<String>,
@@ -1118,14 +1125,12 @@ async fn run_aube_dir_materializer(
             continue;
         }
         let canonical = pkg.spec_key();
-        canonical_to_contextualized
-            .entry(canonical)
-            .or_default()
-            .insert(dep_path.clone());
-        canonical_to_contextualized
-            .entry(dep_path.clone())
-            .or_default()
-            .insert(dep_path.clone());
+        if canonical != *dep_path {
+            canonical_to_contextualized
+                .entry(canonical)
+                .or_default()
+                .insert(dep_path.clone());
+        }
     }
 
     let linker = std::sync::Arc::new(linker);
@@ -1136,11 +1141,26 @@ async fn run_aube_dir_materializer(
     // disk writes against the install driver's cleanup.
     let mut in_flight: tokio::task::JoinSet<miette::Result<aube_linker::LinkStats>> =
         tokio::task::JoinSet::new();
+    let mut total = aube_linker::LinkStats::default();
     let mut rx = materialize_rx;
     while let Some((key, index)) = rx.recv().await {
-        let Some(dep_paths) = canonical_to_contextualized.get(&key).cloned() else {
-            continue;
-        };
+        // Surface task failures while still receiving so a sustained
+        // I/O error aborts before we queue hundreds more.
+        while let Some(joined) = in_flight.try_join_next() {
+            let s = joined.into_diagnostic()??;
+            total.packages_linked += s.packages_linked;
+            total.packages_cached += s.packages_cached;
+            total.files_linked += s.files_linked;
+        }
+
+        let dep_paths: Vec<String> =
+            if let Some(set) = canonical_to_contextualized.get(&key) {
+                set.iter().cloned().collect()
+            } else if graph.packages.contains_key(&key) {
+                vec![key.clone()]
+            } else {
+                continue;
+            };
         let index = std::sync::Arc::new(index);
         for dep_path in dep_paths {
             let Some(pkg) = graph.packages.get(&dep_path).cloned() else {
@@ -1179,7 +1199,6 @@ async fn run_aube_dir_materializer(
             });
         }
     }
-    let mut total = aube_linker::LinkStats::default();
     while let Some(joined) = in_flight.join_next().await {
         let s = joined.into_diagnostic()??;
         total.packages_linked += s.packages_linked;
