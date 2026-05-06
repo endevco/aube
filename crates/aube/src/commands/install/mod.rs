@@ -15,6 +15,7 @@ mod frozen;
 mod git_prepare;
 mod lifecycle;
 pub(crate) mod node_gyp_bootstrap;
+mod prefetch;
 mod settings;
 mod side_effects_cache;
 
@@ -969,16 +970,6 @@ pub(super) async fn run_gvs_prewarm_materializer(
     let engine = node_version
         .as_deref()
         .map(aube_lockfile::graph_hash::engine_name_default);
-    let allow = move |name: &str, version: &str| {
-        matches!(
-            build_policy.decide(name, version),
-            aube_scripts::AllowDecision::Allow
-        )
-    };
-    let patch_hash_fn = |name: &str, version: &str| -> Option<String> {
-        let key = format!("{name}@{version}");
-        patch_hashes.get(&key).cloned()
-    };
 
     // Build a probe linker without graph_hashes to check GVS mode
     // first. compute_graph_hashes_with_patches walks every package
@@ -995,28 +986,43 @@ pub(super) async fn run_gvs_prewarm_materializer(
             .await;
     }
 
-    let graph_hashes_arc = std::sync::Arc::new(
+    // Hash compute walks every package BLAKE3-style. spawn_blocking
+    // pushes it off the tokio worker so the canonical_to_contextualized
+    // build below + nested_link_targets walk + first materialize_rx
+    // recv keep making progress in parallel. compute_graph_hashes_with_patches
+    // is CPU-bound and was previously blocking the executor.
+    let graph_for_hash = graph.clone();
+    let build_policy_for_hash = build_policy.clone();
+    let engine_for_hash = engine.clone();
+    let patch_hashes_for_hash = patch_hashes.clone();
+    let hash_handle = tokio::task::spawn_blocking(move || {
+        let allow = |name: &str, version: &str| {
+            matches!(
+                build_policy_for_hash.decide(name, version),
+                aube_scripts::AllowDecision::Allow
+            )
+        };
+        let patch_hash_fn = |name: &str, version: &str| -> Option<String> {
+            let key = format!("{name}@{version}");
+            patch_hashes_for_hash.get(&key).cloned()
+        };
         aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
-            &graph,
+            &graph_for_hash,
             &allow,
-            engine.as_ref(),
+            engine_for_hash.as_ref(),
             &patch_hash_fn,
-        ),
-    );
-    let mut linker = probe.with_graph_hashes((*graph_hashes_arc).clone());
-    if !patches.is_empty() {
-        linker = linker.with_patches(patches);
-    }
-    let linker = std::sync::Arc::new(linker);
+        )
+    });
 
     let nested_link_targets =
         aube_linker::build_nested_link_targets(&cwd, &graph).map(std::sync::Arc::new);
 
-    // Map canonical name@version to set of contextualized dep_paths.
-    // Resolver no-lockfile path keys by canonical, lockfile path emits
-    // contextualized. Accept both. foldhash here matches the resolver
-    // and lockfile graph_hash hot maps so the streaming GVS-prewarm
-    // loop hits one consistent hasher.
+    // Channel emits `pkg.dep_path` (canonical on resolver first-pass,
+    // contextualized on post-pass). When the received key is canonical
+    // and fans out to one-or-more peer-contextualized variants in the
+    // graph, this map points canonical -> {contextualized}. Identity
+    // entries (canonical == dep_path) skip the map and fall back to a
+    // direct graph lookup at receive time.
     let mut canonical_to_contextualized: aube_util::collections::FxMap<
         String,
         aube_util::collections::FxSet<String>,
@@ -1026,15 +1032,24 @@ pub(super) async fn run_gvs_prewarm_materializer(
             continue;
         }
         let canonical = pkg.spec_key();
-        canonical_to_contextualized
-            .entry(canonical)
-            .or_default()
-            .insert(dep_path.clone());
-        canonical_to_contextualized
-            .entry(dep_path.clone())
-            .or_default()
-            .insert(dep_path.clone());
+        if canonical != *dep_path {
+            canonical_to_contextualized
+                .entry(canonical)
+                .or_default()
+                .insert(dep_path.clone());
+        }
     }
+
+    let graph_hashes = hash_handle
+        .await
+        .into_diagnostic()
+        .wrap_err("graph_hash compute task failed")?;
+    let graph_hashes_arc = std::sync::Arc::new(graph_hashes);
+    let mut linker = probe.with_graph_hashes((*graph_hashes_arc).clone());
+    if !patches.is_empty() {
+        linker = linker.with_patches(patches);
+    }
+    let linker = std::sync::Arc::new(linker);
 
     let permits = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
@@ -1042,7 +1057,17 @@ pub(super) async fn run_gvs_prewarm_materializer(
         Vec::new();
     let mut rx = materialize_rx;
     while let Some((key, index)) = rx.recv().await {
-        let Some(dep_paths) = canonical_to_contextualized.get(&key).cloned() else {
+        // canonical_to_contextualized only stores entries where
+        // canonical != dep_path. Identity packages (the common case)
+        // fall through to a direct graph lookup. Without this fallback
+        // the lockfile path — which emits dep_path == canonical for
+        // every non-peer-suffixed package — would silently skip
+        // materialize for every identity entry.
+        let dep_paths: Vec<String> = if let Some(set) = canonical_to_contextualized.get(&key) {
+            set.iter().cloned().collect()
+        } else if graph.packages.contains_key(&key) {
+            vec![key.clone()]
+        } else {
             continue;
         };
         let index = std::sync::Arc::new(index);
@@ -1846,6 +1871,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // no direct deps would.
     let manifest = super::load_manifest_or_default(&cwd)?;
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
+
+    // Pre-resolver packument prefetch. Reads `package.json` keys and
+    // fires fire-and-forget GETs for every registry-shaped direct dep
+    // before workspace yaml load, settings resolve, lockfile parse,
+    // pnpmfile setup, and resolver construction run. By the time the
+    // resolver pops its first task, the packument is in the on-disk
+    // cache and the reqwest pool is hot. Honors `AUBE_DISABLE_PREFETCH=1`.
+    prefetch::spawn_direct_dep_prefetch(&manifest, &cwd, opts.network_mode);
 
     // Load the workspace yaml *once* — both as the typed
     // `WorkspaceConfig` (used below for `allow_builds_raw` and

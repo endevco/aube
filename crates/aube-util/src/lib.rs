@@ -6,10 +6,13 @@ pub mod env;
 pub mod fs;
 pub mod fs_atomic;
 pub mod hash;
+pub mod http;
 pub mod io;
 pub mod path;
 pub mod pkg;
 pub mod snapshot;
+#[cfg(test)]
+mod test_env;
 pub mod url;
 
 use serde::{Deserialize, Deserializer};

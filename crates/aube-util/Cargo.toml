@@ -20,6 +20,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 bytes = "1"
 tokio = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }

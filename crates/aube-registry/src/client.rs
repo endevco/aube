@@ -246,29 +246,37 @@ impl RegistryClient {
     /// dropped: the response is discarded; subsequent real requests
     /// take the standard path.
     pub fn prewarm_connection(&self) {
-        if std::env::var_os("AUBE_DISABLE_SPECULATIVE_TLS").is_some() {
-            return;
-        }
         if matches!(self.network_mode, NetworkMode::Offline) {
             return;
         }
-        let url = self.config.registry.clone();
-        let http = self.http.clone();
-        tokio::spawn(async move {
-            // HEAD on registry root. The body is empty; the win is the
-            // handshake. Trace errors at debug — TLS / DNS / proxy
-            // failures here predict the real-request failure that
-            // follows, and surfacing them under `RUST_LOG=aube_registry=debug`
-            // saves a misconfigured-registry debugging session.
-            if let Err(e) = http
-                .head(&url)
-                .timeout(std::time::Duration::from_secs(5))
-                .send()
-                .await
-            {
-                tracing::debug!(error = %e, "tls prewarm failed");
+        // HEAD on every distinct registry root the install may touch:
+        // the default registry, every scoped registry from `.npmrc`
+        // (`@org:registry=...`), and every per-uri auth registry that
+        // owns its own pool. Prewarming only the default registry
+        // forces the first scoped/auth-uri packument to pay the full
+        // TLS+TCP+ALPN cost on the cold path.
+        //
+        // `aube_util::http::prewarm` honors `AUBE_DISABLE_SPECULATIVE_TLS=1`.
+        let mut targets: Vec<(reqwest::Client, String)> =
+            vec![(self.http.clone(), self.config.registry.clone())];
+        // Lowercase + trim trailing `/` so `Registry.NPMjs.org` and
+        // `https://registry.npmjs.org/` collapse to the same prewarm
+        // target. URL hosts are case-insensitive per RFC 3986 §3.2.2.
+        let normalize = |u: &str| u.trim_end_matches('/').to_ascii_lowercase();
+        for url in self.config.scoped_registries.values() {
+            let trimmed = normalize(url);
+            if !targets.iter().any(|(_, u)| normalize(u) == trimmed) {
+                let client = self.http_for(url).clone();
+                targets.push((client, url.clone()));
             }
-        });
+        }
+        // The HEAD requests below populate hickory-dns's in-process
+        // cache as a side effect of issuing the request. A separate
+        // `tokio::net::lookup_host` preresolve would only warm the
+        // OS-level resolver (getaddrinfo), which reqwest's hickory
+        // path does not consult. So the prewarm itself is the DNS
+        // warm-up; no extra lookup needed.
+        aube_util::http::prewarm::spawn_head(targets);
     }
 
     pub fn network_mode(&self) -> NetworkMode {
@@ -895,7 +903,17 @@ impl RegistryClient {
             match {
                 let mut req = self
                     .authed_get(&url, registry_url)
-                    .header("Accept", PACKUMENT_FULL_ACCEPT);
+                    .header("Accept", PACKUMENT_FULL_ACCEPT)
+                    // RFC 9218: packument metadata is resolver-blocking,
+                    // mark Critical so H2-aware origins prioritize it
+                    // ahead of pending tarball frames.
+                    .header(
+                        "Priority",
+                        aube_util::http::priority::header_value(
+                            aube_util::http::priority::Urgency::Critical,
+                            false,
+                        ),
+                    );
                 if let Some(c) = cached_ref {
                     if let Some(ref etag) = c.etag {
                         req = req.header("If-None-Match", etag);
@@ -1232,7 +1250,19 @@ impl RegistryClient {
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
             match {
-                let req = self.authed_get(&url, registry_url);
+                let req = self
+                    .authed_get(&url, registry_url)
+                    // RFC 9218: packument metadata is resolver-blocking,
+                    // mark Critical so Cloudflare/Fastly H2 schedulers
+                    // prioritize it ahead of pending tarball frames on
+                    // the shared connection.
+                    .header(
+                        "Priority",
+                        aube_util::http::priority::header_value(
+                            aube_util::http::priority::Urgency::Critical,
+                            false,
+                        ),
+                    );
                 if force_full_packument() {
                     req
                 } else {
@@ -1375,7 +1405,13 @@ impl RegistryClient {
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
             match {
-                let mut req = self.authed_get(&url, registry_url);
+                let mut req = self.authed_get(&url, registry_url).header(
+                    "Priority",
+                    aube_util::http::priority::header_value(
+                        aube_util::http::priority::Urgency::Critical,
+                        false,
+                    ),
+                );
                 if !force_full_packument() {
                     req = req.header("Accept", PACKUMENT_ACCEPT);
                 }
