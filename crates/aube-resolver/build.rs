@@ -142,9 +142,28 @@ fn generate(manifest_dir: &Path, source: &Path, top: usize) -> bool {
             );
             return false;
         }
-        Err(e) => panic!("failed to run scripts/generate-primer.mjs: {e}"),
+        Err(e) => {
+            if primer_required() {
+                panic!("failed to run scripts/generate-primer.mjs: {e}");
+            }
+            println!(
+                "cargo:warning=failed to run scripts/generate-primer.mjs: {e}; \
+                 shipping empty primer (runtime falls back to network packument fetches)"
+            );
+            return false;
+        }
     };
-    assert!(status.success(), "scripts/generate-primer.mjs failed");
+    if !status.success() {
+        if primer_required() {
+            panic!("scripts/generate-primer.mjs failed");
+        }
+        println!(
+            "cargo:warning=scripts/generate-primer.mjs failed; shipping empty primer \
+             (runtime falls back to network packument fetches)"
+        );
+        let _ = std::fs::remove_file(&json);
+        return false;
+    }
 
     compress_json_primer(&json, source);
     let _ = std::fs::remove_file(json);

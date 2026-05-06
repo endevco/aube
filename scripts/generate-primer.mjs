@@ -47,14 +47,17 @@ console.error(`wrote ${Object.keys(primer).length} packages to ${out}`)
 
 async function packumentSeed(name, keepVersions) {
   const url = `https://registry.npmjs.org/${encodePackageName(name)}`
-  const res = await fetchWithRetry(url, {
-    headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*' },
-  })
+  const { res, body: full } = await fetchBodyWithRetry(
+    url,
+    {
+      headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*' },
+    },
+    (res) => res.json(),
+  )
   if (!res.ok) {
     console.error(`  skipped: HTTP ${res.status}`)
     return null
   }
-  const full = await res.json()
   const selected = selectVersions(full, keepVersions)
   const packument = {
     n: full.name ?? name,
@@ -183,22 +186,23 @@ function hasProvenance(attestations) {
 }
 
 async function fetchPopularNames(url) {
-  const res = await fetchWithRetry(url)
+  const { res, body } = await fetchBodyWithRetry(url, undefined, (res) => res.text())
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
-  return parseNames(await res.text(), url)
+  return parseNames(body, url)
 }
 
-// Wrap fetch to retry transient failures: socket resets / TLS hangups
-// from npmjs.com hit a single uncached fetch hard during long primer
-// runs (786 of 2000 packages got us a SocketError once already). Also
-// retry 5xx and 429. 4xx other than 429 are permanent — propagate.
-async function fetchWithRetry(url, init, attempts = 5) {
+// Wrap fetch and body reads to retry transient failures: socket resets /
+// TLS hangups from npmjs.com can happen after headers arrive, while
+// res.json() is still reading the body. Also retry 5xx and 429. 4xx
+// other than 429 are permanent - propagate.
+async function fetchBodyWithRetry(url, init, readBody, attempts = 5) {
   let delay = 1000
   for (let i = 1; i <= attempts; i++) {
     try {
       const res = await fetch(url, init)
-      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) return res
-      if (i === attempts) return res
+      if (res.ok) return { res, body: await readBody(res) }
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) return { res }
+      if (i === attempts) return { res }
       console.error(`  retry ${i}/${attempts - 1}: HTTP ${res.status}`)
     } catch (err) {
       if (i === attempts) throw err
