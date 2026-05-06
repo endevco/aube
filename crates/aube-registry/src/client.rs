@@ -269,20 +269,12 @@ impl RegistryClient {
                 targets.push((client, url.clone()));
             }
         }
-        // Pre-resolve DNS for every prewarmed origin in parallel before
-        // the HEAD requests fire. The HEAD itself triggers another
-        // lookup if hickory-dns hasn't seen the host yet; spawning the
-        // explicit lookups first hides the round trip behind the
-        // handshake instead of stacking it.
-        let resolve_targets: Vec<(String, u16)> = targets
-            .iter()
-            .filter_map(|(_, url)| aube_util::http::resolve::host_port(url))
-            .collect();
-        if !resolve_targets.is_empty() {
-            tokio::spawn(async move {
-                let _ = aube_util::http::resolve::lookup_all(resolve_targets).await;
-            });
-        }
+        // The HEAD requests below populate hickory-dns's in-process
+        // cache as a side effect of issuing the request. A separate
+        // `tokio::net::lookup_host` preresolve would only warm the
+        // OS-level resolver (getaddrinfo), which reqwest's hickory
+        // path does not consult. So the prewarm itself is the DNS
+        // warm-up; no extra lookup needed.
         aube_util::http::prewarm::spawn_head(targets);
     }
 

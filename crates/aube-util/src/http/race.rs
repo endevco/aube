@@ -76,7 +76,14 @@ where
                 let url = resp.url().to_string();
                 tracing::debug!(status = %status, url = %url, "race candidate non-2xx");
                 if joinset.is_empty() {
-                    return Err(RaceError::NonSuccess { status, url });
+                    // Prior transport errors fold into AllFailed so the
+                    // caller's diagnostic chain shows every candidate's
+                    // failure. NonSuccess only fires when no transport
+                    // errors accumulated.
+                    if errors.is_empty() {
+                        return Err(RaceError::NonSuccess { status, url });
+                    }
+                    return Err(RaceError::AllFailed(errors));
                 }
             }
             Ok(Err((url, e))) => errors.push((url, e)),
