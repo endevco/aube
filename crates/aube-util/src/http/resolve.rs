@@ -156,10 +156,7 @@ mod tests {
 
     #[test]
     fn host_port_ipv6_default() {
-        assert_eq!(
-            host_port("https://[::1]/"),
-            Some(("::1".to_owned(), 443))
-        );
+        assert_eq!(host_port("https://[::1]/"), Some(("::1".to_owned(), 443)));
     }
 
     #[test]
