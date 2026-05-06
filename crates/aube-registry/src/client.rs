@@ -344,6 +344,27 @@ impl RegistryClient {
         }
     }
 
+    pub fn replace_packument_cache(&self, name: &str, cache_dir: &Path, packument: &Packument) {
+        let registry_url = self.config.registry_for(name);
+        let Some(cache_path) = packument_cache_path(cache_dir, name, registry_url) else {
+            return;
+        };
+        let cached = CachedPackument {
+            etag: None,
+            last_modified: None,
+            fetched_at: now_secs(),
+            max_age_secs: None,
+            packument: packument.clone(),
+        };
+        if let Err(e) = write_cached_packument(&cache_path, &cached) {
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
+                "failed to write packument cache {}: {e}",
+                cache_path.display()
+            );
+        }
+    }
+
     pub fn seed_full_packument_cache(
         &self,
         name: &str,
@@ -2460,6 +2481,25 @@ mod seed_tests {
         let lookup = client.cached_packument_lookup("demo", dir.path());
         assert!(lookup.stale);
         assert!(lookup.packument.is_none());
+    }
+
+    #[test]
+    fn replace_packument_cache_overwrites_stale_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = RegistryClient::new("https://registry.npmjs.org/");
+        let primer = packument();
+        let mut live = packument();
+        live.name = "demo-live".to_owned();
+
+        client.seed_packument_cache("demo", dir.path(), &primer, Some("etag"), None, false);
+        client.replace_packument_cache("demo", dir.path(), &live);
+
+        let path = packument_cache_path(dir.path(), "demo", "https://registry.npmjs.org/").unwrap();
+        let cached = read_cached_packument(&path).unwrap();
+        assert_eq!(cached.packument.name, "demo-live");
+        assert!(cached.fetched_at > 0);
+        assert_eq!(cached.max_age_secs, None);
+        assert!(cached_is_fresh(cached.fetched_at, cached.max_age_secs));
     }
 
     #[test]

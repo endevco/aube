@@ -1400,7 +1400,19 @@ impl Resolver {
                                     None => self.client.fetch_packument(&registry_name).await,
                                 }
                             } else {
-                                self.client.fetch_packument(&registry_name).await
+                                match self.client.fetch_packument(&registry_name).await {
+                                    Ok(live) => {
+                                        if let Some(dir) = self.packument_cache_dir.as_ref() {
+                                            self.client.replace_packument_cache(
+                                                &registry_name,
+                                                dir,
+                                                &live,
+                                            );
+                                        }
+                                        Ok(live)
+                                    }
+                                    Err(err) => Err(err),
+                                }
                             }
                             .map_err(|e| Error::Registry(registry_name.clone(), e.to_string()))?;
                             packument_fetch_time += fetch_start.elapsed();
