@@ -991,9 +991,8 @@ pub(super) async fn run_gvs_prewarm_materializer(
         probe = probe.with_use_global_virtual_store(enabled);
     }
     if !probe.uses_global_virtual_store() {
-        let mut rx = materialize_rx;
-        while rx.recv().await.is_some() {}
-        return Ok((aube_linker::LinkStats::default(), None));
+        return run_aube_dir_materializer(probe, graph, cwd, link_concurrency, materialize_rx)
+            .await;
     }
 
     let graph_hashes_arc = std::sync::Arc::new(
@@ -1087,6 +1086,107 @@ pub(super) async fn run_gvs_prewarm_materializer(
         total.files_linked += s.files_linked;
     }
     Ok((total, Some(graph_hashes_arc)))
+}
+
+/// Per-project materializer: pipelines the link work into the fetch
+/// phase under non-GVS mode. Each (canonical_key, PackageIndex) the
+/// fetch coordinator emits triggers a `materialize_into` against the
+/// per-project `.aube/<dep_path>/`, so by the time fetch finishes
+/// the dedicated link phase only has to create the top-level
+/// `node_modules/<name>` symlinks.
+async fn run_aube_dir_materializer(
+    linker: aube_linker::Linker,
+    graph: std::sync::Arc<aube_lockfile::LockfileGraph>,
+    cwd: std::path::PathBuf,
+    link_concurrency: Option<usize>,
+    materialize_rx: tokio::sync::mpsc::Receiver<(String, aube_store::PackageIndex)>,
+) -> miette::Result<(
+    aube_linker::LinkStats,
+    Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
+)> {
+    let aube_dir = std::sync::Arc::new(linker.aube_dir_for(&cwd));
+    aube_linker::mkdirp(&aube_dir).map_err(|e| miette!("create {}: {e}", aube_dir.display()))?;
+    let nested_link_targets =
+        aube_linker::build_nested_link_targets(&cwd, &graph).map(std::sync::Arc::new);
+
+    let mut canonical_to_contextualized: aube_util::collections::FxMap<
+        String,
+        aube_util::collections::FxSet<String>,
+    > = aube_util::collections::FxMap::default();
+    for (dep_path, pkg) in &graph.packages {
+        if pkg.local_source.is_some() {
+            continue;
+        }
+        let canonical = pkg.spec_key();
+        canonical_to_contextualized
+            .entry(canonical)
+            .or_default()
+            .insert(dep_path.clone());
+        canonical_to_contextualized
+            .entry(dep_path.clone())
+            .or_default()
+            .insert(dep_path.clone());
+    }
+
+    let linker = std::sync::Arc::new(linker);
+    let permits = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
+    // JoinSet aborts in-flight tasks if we early-return on error,
+    // so a failed materialize doesn't leave orphan tasks racing
+    // disk writes against the install driver's cleanup.
+    let mut in_flight: tokio::task::JoinSet<miette::Result<aube_linker::LinkStats>> =
+        tokio::task::JoinSet::new();
+    let mut rx = materialize_rx;
+    while let Some((key, index)) = rx.recv().await {
+        let Some(dep_paths) = canonical_to_contextualized.get(&key).cloned() else {
+            continue;
+        };
+        let index = std::sync::Arc::new(index);
+        for dep_path in dep_paths {
+            let Some(pkg) = graph.packages.get(&dep_path).cloned() else {
+                continue;
+            };
+            if pkg.local_source.is_some() {
+                continue;
+            }
+            let linker = linker.clone();
+            let sem = sem.clone();
+            let index = index.clone();
+            let aube_dir = aube_dir.clone();
+            let nested_link_targets = nested_link_targets.clone();
+            in_flight.spawn(async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| miette!("materializer semaphore closed: {e}"))?;
+                let dep_path_for_err = dep_path.clone();
+                tokio::task::spawn_blocking(move || -> miette::Result<_> {
+                    let mut stats = aube_linker::LinkStats::default();
+                    linker
+                        .ensure_in_aube_dir(
+                            &aube_dir,
+                            &dep_path,
+                            &pkg,
+                            &index,
+                            &mut stats,
+                            nested_link_targets.as_deref(),
+                        )
+                        .map_err(|e| miette!("materialize {dep_path_for_err}: {e}"))?;
+                    Ok(stats)
+                })
+                .await
+                .into_diagnostic()?
+            });
+        }
+    }
+    let mut total = aube_linker::LinkStats::default();
+    while let Some(joined) = in_flight.join_next().await {
+        let s = joined.into_diagnostic()??;
+        total.packages_linked += s.packages_linked;
+        total.packages_cached += s.packages_cached;
+        total.files_linked += s.files_linked;
+    }
+    Ok((total, None))
 }
 
 // `network_concurrency`: override for the tarball-fetch semaphore.

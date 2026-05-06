@@ -149,7 +149,7 @@ pub(crate) fn try_remove_entry(path: &Path) {
 /// Every materialize pass calls this before creating a symlink /
 /// junction, so the lossy `.to_string()` wrap lives in exactly one
 /// place.
-pub(crate) fn mkdirp(dir: &Path) -> Result<(), Error> {
+pub fn mkdirp(dir: &Path) -> Result<(), Error> {
     xx::file::mkdirp(dir).map_err(|e| Error::Xx(e.to_string()))
 }
 
@@ -2424,6 +2424,35 @@ impl Linker {
         }
 
         Ok(())
+    }
+
+    /// Materialize a single package directly into the per-project
+    /// virtual store at `aube_dir/<dep_path>/node_modules/<name>/`.
+    ///
+    /// Idempotent: if the entry already exists, counts as cached and
+    /// returns. Used by the install-time materializer to pipeline the
+    /// link work into the fetch phase under non-GVS mode, so the
+    /// dedicated link phase only has to create top-level
+    /// `node_modules/<name>` symlinks.
+    pub fn ensure_in_aube_dir(
+        &self,
+        aube_dir: &Path,
+        dep_path: &str,
+        pkg: &LockedPackage,
+        index: &PackageIndex,
+        stats: &mut LinkStats,
+        nested_link_targets: Option<&BTreeMap<String, PathBuf>>,
+    ) -> Result<(), Error> {
+        // `materialize_into` batches `create_dir_all` for every parent
+        // it needs, so callers don't have to mkdirp the entry's parent
+        // (which is just `aube_dir` itself, already created by the
+        // materializer driver).
+        let entry = aube_dir.join(self.aube_dir_entry_name(dep_path));
+        if entry.exists() {
+            stats.packages_cached += 1;
+            return Ok(());
+        }
+        self.materialize_into(aube_dir, dep_path, pkg, index, stats, false, nested_link_targets)
     }
 
     /// Materialize a package's files and transitive dep symlinks into a base directory.
