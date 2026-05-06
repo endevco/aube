@@ -261,7 +261,10 @@ impl RegistryClient {
             vec![(self.http.clone(), self.config.registry.clone())];
         for url in self.config.scoped_registries.values() {
             let trimmed = url.trim_end_matches('/');
-            if !targets.iter().any(|(_, u)| u.trim_end_matches('/') == trimmed) {
+            if !targets
+                .iter()
+                .any(|(_, u)| u.trim_end_matches('/') == trimmed)
+            {
                 let client = self.http_for(url).clone();
                 targets.push((client, url.clone()));
             }
