@@ -46,6 +46,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
+      # TODO: switch pnpm back to `aqua:pnpm/pnpm@latest` once aqua's
+      # pnpm registry entry stops looking for `pnpm-linux-x64.tar.gz`
+      # (pnpm publishes plain binaries, not tarballs).
       - name: Benchmark PR head
         run: |
           if [ -n "$HEAD_SHA" ]; then
@@ -61,7 +64,7 @@ jobs:
             BENCH_HERMETIC=1 \
             BENCH_BANDWIDTH=500mbit \
             BENCH_LATENCY=50ms \
-            mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh
+            mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
