@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.10.0](https://github.com/endevco/aube/compare/aube-registry-v1.9.0...aube-registry-v1.10.0) - 2026-05-06
+## [1.9.1](https://github.com/endevco/aube/compare/aube-registry-v1.9.0...aube-registry-v1.9.1) - 2026-05-06
 
 ### Added
 
