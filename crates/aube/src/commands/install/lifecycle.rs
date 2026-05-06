@@ -799,8 +799,9 @@ pub(super) fn import_verified_tarball_streamed(
 /// content-addressed BLAKE3 paths so a verify mismatch leaves orphan
 /// shards but no package_index referencing them.
 ///
-/// AUBE_TARBALL_STREAM=1 enables this path (off by default until bats
-/// covers mid-stream-drop, gzip-bomb-cap, and SHA-mismatch rollback).
+/// On by default. AUBE_DISABLE_TARBALL_STREAM=1 forces the buffered
+/// path. Non-SHA-512 SRI auto-falls-back since streaming verify can't
+/// re-hash with another algo.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn fetch_and_import_tarball_streaming(
     client: &aube_registry::client::RegistryClient,

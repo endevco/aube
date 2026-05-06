@@ -979,6 +979,23 @@ pub(super) async fn run_gvs_prewarm_materializer(
         let key = format!("{name}@{version}");
         patch_hashes.get(&key).cloned()
     };
+
+    // Build a probe linker without graph_hashes to check GVS mode
+    // first. compute_graph_hashes_with_patches walks every package
+    // BLAKE3-style, expensive on huge graphs. Skip it when GVS is
+    // off so per-project installs and cold CI (CI=true gates GVS)
+    // don't pay for hashes nothing reads.
+    let mut probe = aube_linker::Linker::new(store.as_ref(), link_strategy)
+        .with_virtual_store_dir_max_length(virtual_store_dir_max_length);
+    if let Some(enabled) = use_global_virtual_store_override {
+        probe = probe.with_use_global_virtual_store(enabled);
+    }
+    if !probe.uses_global_virtual_store() {
+        let mut rx = materialize_rx;
+        while rx.recv().await.is_some() {}
+        return Ok((aube_linker::LinkStats::default(), None));
+    }
+
     let graph_hashes_arc = std::sync::Arc::new(
         aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
             &graph,
@@ -987,21 +1004,9 @@ pub(super) async fn run_gvs_prewarm_materializer(
             &patch_hash_fn,
         ),
     );
-
-    let mut linker = aube_linker::Linker::new(store.as_ref(), link_strategy)
-        .with_graph_hashes((*graph_hashes_arc).clone())
-        .with_virtual_store_dir_max_length(virtual_store_dir_max_length);
+    let mut linker = probe.with_graph_hashes((*graph_hashes_arc).clone());
     if !patches.is_empty() {
         linker = linker.with_patches(patches);
-    }
-    if let Some(enabled) = use_global_virtual_store_override {
-        linker = linker.with_use_global_virtual_store(enabled);
-    }
-    if !linker.uses_global_virtual_store() {
-        // Per-project mode. Drain rx, return empty stats.
-        let mut rx = materialize_rx;
-        while rx.recv().await.is_some() {}
-        return Ok((aube_linker::LinkStats::default(), Some(graph_hashes_arc)));
     }
     let linker = std::sync::Arc::new(linker);
 
@@ -1295,15 +1300,11 @@ where
                 cached_count += 1;
             }
             CheckResult::Cached(index) => {
-                if let Some(tx) = materialize_tx.as_ref() {
-                    // Send err means consumer died. Bail rather than
-                    // keep filling a dead pipeline.
-                    tx.send((dep_path.clone(), index.clone()))
-                        .await
-                        .map_err(|_| {
-                            miette!("materializer task exited before fetch_packages finished")
-                        })?;
-                }
+                // Don't stream Cached items through the materializer.
+                // The link phase fast-paths them via pkg_nm_dir.exists()
+                // anyway, so the per-pkg spawn pair was pure overhead
+                // on warm-cache installs (1400-pkg fixture saw +66%
+                // wall time before the skip).
                 indices.insert(dep_path, index);
                 cached_count += 1;
             }
@@ -1378,8 +1379,7 @@ where
         // the libc lock fires once instead of N times on a 1000-pkg
         // install.
         let streaming_sha512_enabled = std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
-        let tarball_stream_enabled = std::env::var_os("AUBE_TARBALL_STREAM").is_some()
-            && std::env::var_os("AUBE_DISABLE_TARBALL_STREAM").is_none();
+        let tarball_stream_enabled = std::env::var_os("AUBE_DISABLE_TARBALL_STREAM").is_none();
         // JoinSet so a first-error path aborts the sibling fetches
         // instead of detaching them into the background. Detached
         // tasks keep writing to the CAS after the install command
@@ -3007,8 +3007,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 // Hoist env-driven flags out of the per-tarball loop.
                 let streaming_sha512_enabled =
                     std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
-                let tarball_stream_enabled = std::env::var_os("AUBE_TARBALL_STREAM").is_some()
-                    && std::env::var_os("AUBE_DISABLE_TARBALL_STREAM").is_none();
+                let tarball_stream_enabled =
+                    std::env::var_os("AUBE_DISABLE_TARBALL_STREAM").is_none();
                 // JoinSet over bare Vec<JoinHandle>. If the first
                 // fetch errors and we return via `?`, a plain Vec
                 // drops the remaining JoinHandles which detaches the
