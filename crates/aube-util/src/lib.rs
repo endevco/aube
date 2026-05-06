@@ -12,6 +12,8 @@ pub mod path;
 pub mod pkg;
 pub mod snapshot;
 pub mod url;
+#[cfg(test)]
+mod test_env;
 
 use serde::{Deserialize, Deserializer};
 

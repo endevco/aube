@@ -76,6 +76,10 @@ where
 /// `http` / `https` schemes are recognized — anything else returns
 /// `None` because the registry path never sees other schemes and a
 /// fallback default port would be guesswork.
+/// Splits an `http`/`https` URL into `(host, port)`. IPv6 literals
+/// follow RFC 3986 §3.2.2 (brackets bound the host). userinfo
+/// (`user:pass@`) and trailing `?query` / `#fragment` are stripped
+/// before the port split so neither collides with the colon.
 pub fn host_port(url: &str) -> Option<(String, u16)> {
     let (scheme, rest) = url.split_once("://")?;
     let default_port = match scheme {
@@ -85,8 +89,24 @@ pub fn host_port(url: &str) -> Option<(String, u16)> {
     };
     let authority = rest.split('/').next()?;
     let authority = authority.split('?').next()?;
+    let authority = authority.split('#').next()?;
     if authority.is_empty() {
         return None;
+    }
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if let Some(after_open) = authority.strip_prefix('[') {
+        let close = after_open.find(']')?;
+        let host = &after_open[..close];
+        if host.is_empty() {
+            return None;
+        }
+        let tail = &after_open[close + 1..];
+        if tail.is_empty() {
+            return Some((host.to_owned(), default_port));
+        }
+        let port_str = tail.strip_prefix(':')?;
+        let port = port_str.parse::<u16>().ok()?;
+        return Some((host.to_owned(), port));
     }
     if let Some((host, port_str)) = authority.rsplit_once(':') {
         if host.is_empty() {
@@ -132,5 +152,37 @@ mod tests {
         assert!(host_port("not a url").is_none());
         assert!(host_port("ftp://example.com").is_none());
         assert!(host_port("https://example.com:notnum").is_none());
+    }
+
+    #[test]
+    fn host_port_ipv6_default() {
+        assert_eq!(
+            host_port("https://[::1]/"),
+            Some(("::1".to_owned(), 443))
+        );
+    }
+
+    #[test]
+    fn host_port_ipv6_explicit() {
+        assert_eq!(
+            host_port("https://[2001:db8::1]:8443/foo"),
+            Some(("2001:db8::1".to_owned(), 8443))
+        );
+    }
+
+    #[test]
+    fn host_port_strips_userinfo() {
+        assert_eq!(
+            host_port("https://user:pass@example.com:9443/"),
+            Some(("example.com".to_owned(), 9443))
+        );
+    }
+
+    #[test]
+    fn host_port_strips_fragment() {
+        assert_eq!(
+            host_port("https://example.com/path#frag"),
+            Some(("example.com".to_owned(), 443))
+        );
     }
 }

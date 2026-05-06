@@ -259,12 +259,13 @@ impl RegistryClient {
         // `aube_util::http::prewarm` honors `AUBE_DISABLE_SPECULATIVE_TLS=1`.
         let mut targets: Vec<(reqwest::Client, String)> =
             vec![(self.http.clone(), self.config.registry.clone())];
+        // Lowercase + trim trailing `/` so `Registry.NPMjs.org` and
+        // `https://registry.npmjs.org/` collapse to the same prewarm
+        // target. URL hosts are case-insensitive per RFC 3986 §3.2.2.
+        let normalize = |u: &str| u.trim_end_matches('/').to_ascii_lowercase();
         for url in self.config.scoped_registries.values() {
-            let trimmed = url.trim_end_matches('/');
-            if !targets
-                .iter()
-                .any(|(_, u)| u.trim_end_matches('/') == trimmed)
-            {
+            let trimmed = normalize(url);
+            if !targets.iter().any(|(_, u)| normalize(u) == trimmed) {
                 let client = self.http_for(url).clone();
                 targets.push((client, url.clone()));
             }
@@ -881,7 +882,17 @@ impl RegistryClient {
             match {
                 let mut req = self
                     .authed_get(&url, registry_url)
-                    .header("Accept", PACKUMENT_FULL_ACCEPT);
+                    .header("Accept", PACKUMENT_FULL_ACCEPT)
+                    // RFC 9218: packument metadata is resolver-blocking,
+                    // mark Critical so H2-aware origins prioritize it
+                    // ahead of pending tarball frames.
+                    .header(
+                        "Priority",
+                        aube_util::http::priority::header_value(
+                            aube_util::http::priority::Urgency::Critical,
+                            false,
+                        ),
+                    );
                 if let Some(c) = cached_ref {
                     if let Some(ref etag) = c.etag {
                         req = req.header("If-None-Match", etag);
@@ -1373,7 +1384,13 @@ impl RegistryClient {
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
             match {
-                let mut req = self.authed_get(&url, registry_url);
+                let mut req = self.authed_get(&url, registry_url).header(
+                    "Priority",
+                    aube_util::http::priority::header_value(
+                        aube_util::http::priority::Urgency::Critical,
+                        false,
+                    ),
+                );
                 if !force_full_packument() {
                     req = req.header("Accept", PACKUMENT_ACCEPT);
                 }

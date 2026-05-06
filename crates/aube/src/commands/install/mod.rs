@@ -1057,7 +1057,17 @@ pub(super) async fn run_gvs_prewarm_materializer(
         Vec::new();
     let mut rx = materialize_rx;
     while let Some((key, index)) = rx.recv().await {
-        let Some(dep_paths) = canonical_to_contextualized.get(&key).cloned() else {
+        // canonical_to_contextualized only stores entries where
+        // canonical != dep_path. Identity packages (the common case)
+        // fall through to a direct graph lookup. Without this fallback
+        // the lockfile path — which emits dep_path == canonical for
+        // every non-peer-suffixed package — would silently skip
+        // materialize for every identity entry.
+        let dep_paths: Vec<String> = if let Some(set) = canonical_to_contextualized.get(&key) {
+            set.iter().cloned().collect()
+        } else if graph.packages.contains_key(&key) {
+            vec![key.clone()]
+        } else {
             continue;
         };
         let index = std::sync::Arc::new(index);

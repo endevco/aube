@@ -12,10 +12,14 @@
 //! Format: serde-json blob at `$XDG_CACHE_HOME/aube/tls-tickets.json`
 //! containing per-host entries `(server_name, port) -> TicketEntry`.
 //! Each entry holds the rustls ticket bytes plus the SPKI fingerprint
-//! observed at ticket-acquire time. On load the fingerprint is
-//! re-validated against the live cert; mismatch invalidates the
-//! ticket so a rotated cert never silently downgrades to a stale
-//! resumption. Entries past `MAX_AGE` (24 h) are pruned at load.
+//! observed at ticket-acquire time. The rustls wiring layer compares
+//! the live cert's SPKI fingerprint against `spki_fp` and calls
+//! `invalidate(host, port)` on mismatch so a rotated cert never
+//! silently downgrades to a stale resumption. Entries past `MAX_AGE`
+//! (24 h) are pruned at load.
+//!
+//! On Unix the on-disk file is created with mode 0600 so ticket bytes
+//! are not world-readable on multi-user hosts.
 //!
 //! `AUBE_DISABLE_TLS_TICKET_CACHE=1` skips load + save; rustls falls
 //! back to its per-process in-memory store.
@@ -179,7 +183,17 @@ impl TicketCache {
             entries: inner.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         };
         let bytes = serde_json::to_vec(&payload).map_err(std::io::Error::other)?;
-        crate::fs_atomic::atomic_write(&self.path, &bytes)
+        crate::fs_atomic::atomic_write(&self.path, &bytes)?;
+        // Tighten POSIX perms after the atomic rename so ticket bytes
+        // are not world-readable. Windows inherits the parent ACL,
+        // which already restricts %LOCALAPPDATA% to the user; nothing
+        // to do there.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
     }
 
     /// Total ticket count across all hosts (for diagnostics).
@@ -301,10 +315,13 @@ mod tests {
 
     #[test]
     fn killswitch_short_circuits() {
+        // Acquire the crate-shared env lock so concurrent tests in
+        // other modules (e.g. concurrency) can't race setenv/getenv.
+        let _g = crate::test_env::ENV_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
-        // SAFETY: tests run serialized via aube-util's concurrency
-        // module convention, and the killswitch is read by our own
-        // code only.
+        // SAFETY: ENV_LOCK serializes every env-mutating test in this
+        // crate; no other thread touches the process environment
+        // while this guard is held.
         unsafe { std::env::set_var("AUBE_DISABLE_TLS_TICKET_CACHE", "1") };
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         cache.put("a.example", 443, entry(1));

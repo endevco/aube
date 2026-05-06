@@ -29,11 +29,19 @@ pub fn is_disabled() -> bool {
 /// Each pair carries its own `reqwest::Client` because aube tracks one
 /// pool per auth-uri (`http_by_uri`); a single shared client would
 /// merge pools for registries with different auth headers.
+///
+/// No-op when called outside a tokio runtime context. The function
+/// lives in `aube-util` and may be reached from sync bootstrap before
+/// the runtime is entered; rather than panic in `tokio::spawn` it
+/// silently skips so callers don't have to defensively guard.
 pub fn spawn_head<I>(targets: I)
 where
     I: IntoIterator<Item = (reqwest::Client, String)>,
 {
     if is_disabled() {
+        return;
+    }
+    if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
     for (http, url) in targets {

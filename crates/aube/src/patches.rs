@@ -116,8 +116,14 @@ pub fn load_patches_for_linker(
     static CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedShape>>> =
         OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    // Canonicalize so `cwd` and `cwd.canonicalize()` collapse to one
+    // key. Windows `\\?\C:\foo` vs `C:\foo`, Unix `cwd` vs `cwd/.`
+    // would otherwise miss the cache. Falls back to the raw path when
+    // canonicalize fails (e.g. cwd is the parent of a not-yet-created
+    // workspace dir).
+    let key = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     if let Ok(guard) = cache.lock()
-        && let Some(hit) = guard.get(cwd)
+        && let Some(hit) = guard.get(&key)
     {
         return Ok(hit.clone());
     }
@@ -131,7 +137,7 @@ pub fn load_patches_for_linker(
         .map(|p| (p.key.clone(), p.content_hash()))
         .collect();
     if let Ok(mut guard) = cache.lock() {
-        guard.insert(cwd.to_path_buf(), (patches.clone(), hashes.clone()));
+        guard.insert(key, (patches.clone(), hashes.clone()));
     }
     Ok((patches, hashes))
 }

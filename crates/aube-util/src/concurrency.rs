@@ -46,10 +46,12 @@ pub fn parse_concurrency_env() -> Option<u32> {
 mod tests {
     use super::*;
 
-    // The env var is process-global. Serialize via a static mutex so
-    // these tests don't race the parallel test runner.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // The env var is process-global. Serialize via the crate-shared
+    // mutex so these tests don't race the parallel test runner. Other
+    // env-mutating tests in this crate (e.g. http::ticket_cache) take
+    // the same lock so concurrent setenv/getenv across tests can't
+    // collide on the libc environ pointer.
+    use crate::test_env::ENV_LOCK;
 
     fn with_env<F: FnOnce()>(value: Option<&str>, f: F) {
         let _g = ENV_LOCK.lock().unwrap();
