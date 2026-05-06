@@ -64,7 +64,12 @@ where
         });
     }
 
-    let mut errors: Vec<(String, reqwest::Error)> = Vec::new();
+    // Both transport errors and intermediate non-2xx responses fold
+    // into the same failure list. Dropping a non-2xx (e.g. 401 from
+    // a misconfigured-token candidate) when sibling tasks fail with
+    // transport errors would hide the actual root cause from the
+    // caller's diagnostic chain.
+    let mut failures: Vec<CandidateFailure> = Vec::new();
     while let Some(joined) = joinset.join_next().await {
         match joined {
             Ok(Ok(resp)) if resp.status().is_success() => {
@@ -75,24 +80,34 @@ where
                 let status = resp.status();
                 let url = resp.url().to_string();
                 tracing::debug!(status = %status, url = %url, "race candidate non-2xx");
-                if joinset.is_empty() {
-                    // Prior transport errors fold into AllFailed so the
-                    // caller's diagnostic chain shows every candidate's
-                    // failure. NonSuccess only fires when no transport
-                    // errors accumulated.
-                    if errors.is_empty() {
-                        return Err(RaceError::NonSuccess { status, url });
-                    }
-                    return Err(RaceError::AllFailed(errors));
-                }
+                failures.push(CandidateFailure::NonSuccess { url, status });
             }
-            Ok(Err((url, e))) => errors.push((url, e)),
+            Ok(Err((url, source))) => failures.push(CandidateFailure::Transport { url, source }),
             Err(join_err) => {
                 tracing::debug!(error = %join_err, "race candidate task panicked");
             }
         }
     }
-    Err(RaceError::AllFailed(errors))
+    Err(RaceError::AllFailed(failures))
+}
+
+/// One candidate's failure shape — transport error or non-2xx HTTP
+/// status. `race_get` collects every candidate's failure under
+/// `RaceError::AllFailed` so the caller sees all of them, not just
+/// the last one polled.
+#[derive(Debug, thiserror::Error)]
+pub enum CandidateFailure {
+    #[error("{url} transport failure: {source}")]
+    Transport {
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("{url} returned {status}")]
+    NonSuccess {
+        url: String,
+        status: reqwest::StatusCode,
+    },
 }
 
 /// Errors that can surface from `race_get`.
@@ -106,13 +121,8 @@ pub enum RaceError {
         #[source]
         source: reqwest::Error,
     },
-    #[error("all {} candidates failed (first: {})", .0.len(), .0.first().map(|(_, e)| e.to_string()).unwrap_or_default())]
-    AllFailed(Vec<(String, reqwest::Error)>),
-    #[error("only candidate returned {status}: {url}")]
-    NonSuccess {
-        status: reqwest::StatusCode,
-        url: String,
-    },
+    #[error("all {} candidates failed (first: {})", .0.len(), .0.first().map(|f| f.to_string()).unwrap_or_default())]
+    AllFailed(Vec<CandidateFailure>),
 }
 
 impl RaceError {
