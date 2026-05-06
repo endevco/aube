@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/endevco/aube/compare/v1.9.0...v1.10.0) - 2026-05-06
+
+### Added
+
+- *(install)* aube-util::http module + pre-resolver prefetch + cold-path optimizations ([#529](https://github.com/endevco/aube/pull/529))
+
+### Fixed
+
+- *(cli)* skip registry for workspace deps ([#523](https://github.com/endevco/aube/pull/523))
+- *(run)* add node-gyp bootstrap to script PATH ([#518](https://github.com/endevco/aube/pull/518))
+
+### Other
+
+- *(install)* pipeline per-project materialize into fetch phase ([#527](https://github.com/endevco/aube/pull/527))
+- refresh benchmarks for v1.9.0 ([#525](https://github.com/endevco/aube/pull/525))
+- cold install pipeline overhaul ([#522](https://github.com/endevco/aube/pull/522))
+
 ## [1.9.0](https://github.com/endevco/aube/compare/v1.8.0...v1.9.0) - 2026-05-05
 
 ### Added

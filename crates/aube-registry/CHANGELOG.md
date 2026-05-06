@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/endevco/aube/compare/aube-registry-v1.9.0...aube-registry-v1.10.0) - 2026-05-06
+
+### Added
+
+- *(install)* aube-util::http module + pre-resolver prefetch + cold-path optimizations ([#529](https://github.com/endevco/aube/pull/529))
+
+### Fixed
+
+- *(resolver)* fetch registry on primer range miss ([#531](https://github.com/endevco/aube/pull/531))
+- *(registry)* expand env vars in npmrc keys ([#521](https://github.com/endevco/aube/pull/521))
+
+### Other
+
+- refresh benchmarks for v1.9.0 ([#525](https://github.com/endevco/aube/pull/525))
+- cold install pipeline overhaul ([#522](https://github.com/endevco/aube/pull/522))
+
 ## [1.9.0](https://github.com/endevco/aube/compare/aube-registry-v1.8.0...aube-registry-v1.9.0) - 2026-05-05
 
 ### Other
