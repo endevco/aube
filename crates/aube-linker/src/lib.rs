@@ -2452,7 +2452,15 @@ impl Linker {
             stats.packages_cached += 1;
             return Ok(());
         }
-        self.materialize_into(aube_dir, dep_path, pkg, index, stats, false, nested_link_targets)
+        self.materialize_into(
+            aube_dir,
+            dep_path,
+            pkg,
+            index,
+            stats,
+            false,
+            nested_link_targets,
+        )
     }
 
     /// Materialize a package's files and transitive dep symlinks into a base directory.
