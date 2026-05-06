@@ -1153,14 +1153,13 @@ async fn run_aube_dir_materializer(
             total.files_linked += s.files_linked;
         }
 
-        let dep_paths: Vec<String> =
-            if let Some(set) = canonical_to_contextualized.get(&key) {
-                set.iter().cloned().collect()
-            } else if graph.packages.contains_key(&key) {
-                vec![key.clone()]
-            } else {
-                continue;
-            };
+        let dep_paths: Vec<String> = if let Some(set) = canonical_to_contextualized.get(&key) {
+            set.iter().cloned().collect()
+        } else if graph.packages.contains_key(&key) {
+            vec![key.clone()]
+        } else {
+            continue;
+        };
         let index = std::sync::Arc::new(index);
         for dep_path in dep_paths {
             let Some(pkg) = graph.packages.get(&dep_path).cloned() else {
