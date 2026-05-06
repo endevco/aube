@@ -158,16 +158,21 @@ impl Resolver {
         // modern dependency graphs are dominated by those active packages.
 
         // In-flight packument fetches. The spawned task returns the
-        // `(name, packument)` tuple so `join_next` gives us back the
-        // identity of whichever fetch landed next without a side
-        // table lookup.
+        // `(name, packument, from_primer)` tuple so `join_next` gives
+        // us back the identity of whichever fetch landed next without
+        // a side table lookup. `from_primer` matters because the
+        // bundled primer intentionally keeps only a capped slice of
+        // high-traffic package histories; a range miss against that
+        // slice must fall through to the live registry before we
+        // report `ERR_AUBE_NO_MATCHING_VERSION`.
         #[allow(clippy::type_complexity)]
-        let mut in_flight: tokio::task::JoinSet<Result<(String, Packument), Error>> =
+        let mut in_flight: tokio::task::JoinSet<Result<(String, Packument, bool), Error>> =
             tokio::task::JoinSet::new();
         // Names whose fetch has been spawned but not yet harvested.
         // Dedupes spawn calls when multiple tasks discover the same
         // transitive before any of them has been processed.
         let mut in_flight_names: FxHashSet<String> = FxHashSet::default();
+        let mut primer_seeded_names: FxHashSet<String> = FxHashSet::default();
         // TimeBased wave-0 gate: the publish-time cutoff is derived
         // from the direct deps' resolved versions, so transitives
         // that reach the version-pick step before all directs have
@@ -244,7 +249,7 @@ impl Resolver {
                             Default::default()
                         };
                         if let Some(packument) = cached.packument.take() {
-                            return Ok::<_, Error>((name_owned, packument));
+                            return Ok::<_, Error>((name_owned, packument, false));
                         }
                         if use_metadata_primer
                             && !cached.stale
@@ -282,7 +287,7 @@ impl Resolver {
                                     false,
                                 );
                             }
-                            return Ok::<_, Error>((name_owned, packument));
+                            return Ok::<_, Error>((name_owned, packument, true));
                         }
                         let packument = if needs_time {
                             match full_cache_dir.as_ref() {
@@ -305,7 +310,7 @@ impl Resolver {
                             client.fetch_packument(&name_owned).await
                         }
                         .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
-                        Ok::<_, Error>((name_owned, packument))
+                        Ok::<_, Error>((name_owned, packument, false))
                     });
                 }
             }};
@@ -1277,8 +1282,11 @@ impl Resolver {
                 while !self.cache.contains_key(&fetch_name) {
                     ensure_fetch!(&fetch_name);
                     match in_flight.join_next().await {
-                        Some(Ok(Ok((name, packument)))) => {
+                        Some(Ok(Ok((name, packument, from_primer)))) => {
                             in_flight_names.remove(&name);
+                            if from_primer {
+                                primer_seeded_names.insert(name.clone());
+                            }
                             self.cache.insert(name, packument);
                             packument_fetch_count += 1;
                         }
@@ -1323,13 +1331,6 @@ impl Resolver {
                 // cache. `registry_name()` is the cache key for
                 // aliased tasks (cache is populated under the real
                 // registry name), so use the same accessor here.
-                let packument = self.cache.get(task.registry_name()).ok_or_else(|| {
-                    Error::Registry(
-                        task.registry_name().to_string(),
-                        "packument not in cache".to_string(),
-                    )
-                })?;
-
                 // Find locked version
                 let locked_version = existing.and_then(|g| {
                     g.packages
@@ -1370,42 +1371,72 @@ impl Resolver {
                     Some(m) => m.strict,
                     None => true,
                 };
-                let pick = pick_version(
-                    packument,
-                    &task.range,
-                    locked_version,
-                    pick_lowest,
-                    cutoff_for_pkg,
-                    strict,
-                );
-                let picked_ref = match pick {
-                    PickResult::Found(meta) => meta,
-                    // Only surface `AgeGate` when the cutoff actually
-                    // came from `minimumReleaseAge`. When it came from
-                    // `--resolution-mode=time-based` alone, the user
-                    // never opted into the supply-chain age gate, so
-                    // the failure should report as a plain no-match
-                    // instead of a misleading "older than 0 minutes".
-                    PickResult::AgeGated => match self.minimum_release_age.as_ref() {
-                        Some(mra) => {
-                            return Err(Error::AgeGate(Box::new(error::build_age_gate(
-                                &task,
-                                packument,
-                                mra.minutes,
-                            ))));
+                let registry_name = task.registry_name().to_string();
+                let picked_version = loop {
+                    let packument = self.cache.get(&registry_name).ok_or_else(|| {
+                        Error::Registry(registry_name.clone(), "packument not in cache".to_string())
+                    })?;
+                    let pick = pick_version(
+                        packument,
+                        &task.range,
+                        locked_version,
+                        pick_lowest,
+                        cutoff_for_pkg,
+                        strict,
+                    );
+                    match pick {
+                        PickResult::Found(meta) => break meta.version.clone(),
+                        PickResult::AgeGated | PickResult::NoMatch
+                            if primer_seeded_names.remove(&registry_name) =>
+                        {
+                            let fetch_start = std::time::Instant::now();
+                            let live =
+                                self.client
+                                    .fetch_packument(&registry_name)
+                                    .await
+                                    .map_err(|e| {
+                                        Error::Registry(registry_name.clone(), e.to_string())
+                                    })?;
+                            packument_fetch_time += fetch_start.elapsed();
+                            packument_fetch_count += 1;
+                            self.cache.insert(registry_name.clone(), live);
                         }
-                        None => {
+                        // Only surface `AgeGate` when the cutoff actually
+                        // came from `minimumReleaseAge`. When it came from
+                        // `--resolution-mode=time-based` alone, the user
+                        // never opted into the supply-chain age gate, so
+                        // the failure should report as a plain no-match
+                        // instead of a misleading "older than 0 minutes".
+                        PickResult::AgeGated => match self.minimum_release_age.as_ref() {
+                            Some(mra) => {
+                                return Err(Error::AgeGate(Box::new(error::build_age_gate(
+                                    &task,
+                                    packument,
+                                    mra.minutes,
+                                ))));
+                            }
+                            None => {
+                                return Err(Error::NoMatch(Box::new(error::build_no_match(
+                                    &task, packument,
+                                ))));
+                            }
+                        },
+                        PickResult::NoMatch => {
                             return Err(Error::NoMatch(Box::new(error::build_no_match(
                                 &task, packument,
                             ))));
                         }
-                    },
-                    PickResult::NoMatch => {
-                        return Err(Error::NoMatch(Box::new(error::build_no_match(
-                            &task, packument,
-                        ))));
                     }
                 };
+                let packument = self.cache.get(&registry_name).ok_or_else(|| {
+                    Error::Registry(registry_name.clone(), "packument not in cache".to_string())
+                })?;
+                let picked_ref = packument.versions.get(&picked_version).ok_or_else(|| {
+                    Error::Registry(
+                        registry_name.clone(),
+                        format!("picked version {picked_version} missing from packument"),
+                    )
+                })?;
                 let picked_ref = prefer_non_vulnerable_pick(
                     task.registry_name(),
                     packument,
