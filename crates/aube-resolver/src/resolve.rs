@@ -1372,7 +1372,7 @@ impl Resolver {
                     None => true,
                 };
                 let registry_name = task.registry_name().to_string();
-                let picked_version = loop {
+                let selected_pick = loop {
                     let packument = self.cache.get(&registry_name).ok_or_else(|| {
                         Error::Registry(registry_name.clone(), "packument not in cache".to_string())
                     })?;
@@ -1385,18 +1385,24 @@ impl Resolver {
                         strict,
                     );
                     match pick {
-                        PickResult::Found(meta) => break meta.version.clone(),
+                        PickResult::Found(meta) => break meta.clone(),
                         PickResult::AgeGated | PickResult::NoMatch
                             if primer_seeded_names.remove(&registry_name) =>
                         {
                             let fetch_start = std::time::Instant::now();
-                            let live =
-                                self.client
-                                    .fetch_packument(&registry_name)
-                                    .await
-                                    .map_err(|e| {
-                                        Error::Registry(registry_name.clone(), e.to_string())
-                                    })?;
+                            let live = if needs_time {
+                                match self.packument_full_cache_dir.as_ref() {
+                                    Some(dir) => {
+                                        self.client
+                                            .fetch_packument_with_time_cached(&registry_name, dir)
+                                            .await
+                                    }
+                                    None => self.client.fetch_packument(&registry_name).await,
+                                }
+                            } else {
+                                self.client.fetch_packument(&registry_name).await
+                            }
+                            .map_err(|e| Error::Registry(registry_name.clone(), e.to_string()))?;
                             packument_fetch_time += fetch_start.elapsed();
                             packument_fetch_count += 1;
                             self.cache.insert(registry_name.clone(), live);
@@ -1431,17 +1437,11 @@ impl Resolver {
                 let packument = self.cache.get(&registry_name).ok_or_else(|| {
                     Error::Registry(registry_name.clone(), "packument not in cache".to_string())
                 })?;
-                let picked_ref = packument.versions.get(&picked_version).ok_or_else(|| {
-                    Error::Registry(
-                        registry_name.clone(),
-                        format!("picked version {picked_version} missing from packument"),
-                    )
-                })?;
                 let picked_ref = prefer_non_vulnerable_pick(
                     task.registry_name(),
                     packument,
                     &task.range,
-                    picked_ref,
+                    &selected_pick,
                     pick_lowest,
                     cutoff_for_pkg,
                     &self.vulnerable_ranges,
