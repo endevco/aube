@@ -103,9 +103,24 @@ pub fn split_patch_key(key: &str) -> Result<(String, String)> {
 /// (lockfile + no-lockfile) and the link phase compute these from the
 /// same `load_patches` output, hoisted here so the BTreeMap walks
 /// happen once per install.
+///
+/// Result is cached per cwd for the lifetime of the process. The 2-3
+/// call sites within a single install hit the cache on calls 2+ instead
+/// of re-walking `patches/` from disk. pnpm.patchedDependencies is
+/// resolved at install entry; patch files are static across the run.
 pub fn load_patches_for_linker(
     cwd: &Path,
 ) -> Result<(aube_linker::Patches, BTreeMap<String, String>)> {
+    use std::sync::{Mutex, OnceLock};
+    type CachedShape = (aube_linker::Patches, BTreeMap<String, String>);
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedShape>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(hit) = guard.get(cwd)
+    {
+        return Ok(hit.clone());
+    }
     let resolved = load_patches(cwd)?;
     let patches: aube_linker::Patches = resolved
         .values()
@@ -115,6 +130,9 @@ pub fn load_patches_for_linker(
         .values()
         .map(|p| (p.key.clone(), p.content_hash()))
         .collect();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(cwd.to_path_buf(), (patches.clone(), hashes.clone()));
+    }
     Ok((patches, hashes))
 }
 

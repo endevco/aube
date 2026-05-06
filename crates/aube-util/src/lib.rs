@@ -6,6 +6,7 @@ pub mod env;
 pub mod fs;
 pub mod fs_atomic;
 pub mod hash;
+pub mod http;
 pub mod io;
 pub mod path;
 pub mod pkg;

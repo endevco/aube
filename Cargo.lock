@@ -459,10 +459,12 @@ dependencies = [
  "foldhash 0.1.5",
  "libc",
  "reflink-copy",
+ "reqwest 0.12.28",
  "rustc-hash",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
