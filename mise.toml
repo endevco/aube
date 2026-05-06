@@ -37,12 +37,16 @@ depends = ["build"]
 dir = "docs"
 run = "../target/debug/aube install && exec ../target/debug/aube run docs:build"
 
+# TODO: switch pnpm back to `aqua:pnpm/pnpm@latest` once aqua's pnpm
+# registry entry stops looking for `pnpm-linux-x64.tar.gz` (pnpm
+# publishes plain binaries, not tarballs). Tracked at
+# https://github.com/aquaproj/aqua-registry/.
 [tasks.bench]
 dir = "{{config_root}}"
 env = { BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms" }
 run = [
   "cargo build --release",
-  "mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
+  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
 ]
 
 [tasks."bench:pr"]
@@ -50,7 +54,7 @@ dir = "{{config_root}}"
 env = { RUNS = "3", WARMUP = "1", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms", BENCH_TOOLS = "aube,bun,pnpm", BENCH_SCENARIOS = "gvs-warm,ci-warm,ci-cold", BENCH_PHASES = "0" }
 run = [
   "cargo build --release",
-  "mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh",
+  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh",
 ]
 
 # Regenerate `benchmarks/results.json` (and the markdown summary) by
@@ -66,7 +70,7 @@ dir = "{{config_root}}"
 env = { RUNS = "10", WARMUP = "3", RESULTS_JSON = "{{config_root}}/benchmarks/results.json", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms" }
 run = [
   "cargo build --release",
-  "mise x aqua:sharkdp/hyperfine@latest aqua:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
+  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
   "node benchmarks/update-readme.mjs",
 ]
 
