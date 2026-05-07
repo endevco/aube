@@ -344,3 +344,35 @@ _link_workspace_packages_fixture() {
 	assert_success
 	assert_link_exists node_modules/project-2
 }
+
+# Regression guard for `aube add my-alias@project-2`: the
+# `linkWorkspacePackages` eligibility block must skip aliased specs
+# because `workspace:` resolves by manifest key, so writing
+# `"my-alias": "workspace:^"` would point the resolver at a sibling
+# named `my-alias` (which doesn't exist) and 404 on the registry
+# fallback. With the skip in place the aliased spec falls through to
+# the registry path — which we don't run end-to-end here (the
+# offline registry doesn't host `project-2`), but the failure mode
+# we want to prevent is the silent `workspace:^` write.
+@test "aube add: aliased spec does NOT trigger linkWorkspacePackages workspace match" {
+	_link_workspace_packages_fixture
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+	EOF
+
+	cd project-1
+	# Aliased to a name that doesn't match any sibling, but the
+	# real name (`project-2`) does. Pre-fix this would write
+	# `"my-alias": "workspace:^"`. Post-fix the spec falls
+	# through to the registry path and fails — the success
+	# criterion is that `package.json` does NOT carry a
+	# `workspace:` entry for `my-alias`.
+	run aube add my-alias@project-2
+	# Either failure mode (registry 404) or success is acceptable;
+	# the regression guard is the manifest assertion below.
+	run grep -F '"my-alias": "workspace:' package.json
+	assert_failure
+}

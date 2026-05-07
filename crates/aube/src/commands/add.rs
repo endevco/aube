@@ -829,13 +829,10 @@ pub async fn run(
             save_optional,
             save_peer,
             save_catalog: save_catalog_target,
-            workspace_protocol_override: if save_workspace_protocol {
-                Some(true)
-            } else if no_save_workspace_protocol {
-                Some(false)
-            } else {
-                None
-            },
+            workspace_protocol_override: workspace_protocol_override_from_flags(
+                save_workspace_protocol,
+                no_save_workspace_protocol,
+            ),
         },
         !no_save,
     )
@@ -964,7 +961,10 @@ impl AddManifestOptions {
                     None
                 }
             }),
-            workspace_protocol_override: workspace_protocol_override(args),
+            workspace_protocol_override: workspace_protocol_override_from_flags(
+                args.save_workspace_protocol,
+                args.no_save_workspace_protocol,
+            ),
         }
     }
 }
@@ -972,11 +972,14 @@ impl AddManifestOptions {
 /// Map the paired `--save-workspace-protocol` / `--no-save-workspace-protocol`
 /// flags to a tri-state. `clap`'s `overrides_with` ensures only the
 /// last-typed flag survives, so at most one of the two is `true` at a
-/// time and we don't need to disambiguate.
-fn workspace_protocol_override(args: &AddArgs) -> Option<bool> {
-    if args.save_workspace_protocol {
+/// time and we don't need to disambiguate. Takes the two flag bools
+/// directly so the call site in `run()` (which destructures `AddArgs`
+/// into locals) and `from_args` can share the logic without going
+/// back through the struct.
+fn workspace_protocol_override_from_flags(save: bool, no_save: bool) -> Option<bool> {
+    if save {
         Some(true)
-    } else if args.no_save_workspace_protocol {
+    } else if no_save {
         Some(false)
     } else {
         None
@@ -995,21 +998,16 @@ async fn update_manifest_for_add(
     // default workspace catalog gets rewritten to `catalog:` (see
     // `commands::catalogs::decide_add_rewrite`).
     //
-    // Read settings from the workspace root rather than the immediate
-    // project dir — `pnpm-workspace.yaml` only lives at the root, and
-    // `aube add` from a sub-project still has to honor
-    // `linkWorkspacePackages` / `saveWorkspaceProtocol` declared
-    // there. Falls back to cwd for non-workspace projects.
-    let settings_cwd = crate::dirs::find_workspace_yaml_root(cwd)
-        .or_else(|| crate::dirs::find_workspace_root(cwd))
-        .unwrap_or_else(|| cwd.to_path_buf());
-    let (
-        default_tag,
-        default_prefix,
-        catalog_mode,
-        link_workspace_packages,
-        save_workspace_protocol_setting,
-    ) = super::with_settings_ctx(&settings_cwd, |ctx| {
+    // The two settings the workspace yaml owns end-to-end
+    // (`linkWorkspacePackages`, `saveWorkspaceProtocol`) read from
+    // the workspace yaml root so a sub-project's `aube add` honors
+    // the workspace-wide policy declared in
+    // `pnpm-workspace.yaml`/`aube-workspace.yaml`. Everything else
+    // (`tag`, `savePrefix`, `catalogMode`) reads from the project's
+    // own dir so a sub-project's `.npmrc` still wins — switching the
+    // entire context to the workspace root would silently drop those
+    // overrides, since `load_npmrc_entries` doesn't walk up.
+    let (default_tag, default_prefix, catalog_mode) = super::with_settings_ctx(cwd, |ctx| {
         let tag = aube_settings::resolved::tag(ctx);
         let prefix = if opts.save_exact {
             String::new()
@@ -1028,10 +1026,18 @@ async fn update_manifest_for_add(
             }
         };
         let catalog_mode = aube_settings::resolved::catalog_mode(ctx);
-        let link = aube_settings::resolved::link_workspace_packages(ctx);
-        let save_ws = aube_settings::resolved::save_workspace_protocol(ctx);
-        (tag, prefix, catalog_mode, link, save_ws)
+        (tag, prefix, catalog_mode)
     });
+    let workspace_settings_cwd = crate::dirs::find_workspace_yaml_root(cwd)
+        .or_else(|| crate::dirs::find_workspace_root(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let (link_workspace_packages, save_workspace_protocol_setting) =
+        super::with_settings_ctx(&workspace_settings_cwd, |ctx| {
+            (
+                aube_settings::resolved::link_workspace_packages(ctx),
+                aube_settings::resolved::save_workspace_protocol(ctx),
+            )
+        });
     // Load the workspace catalog map up front — the resolver needs it
     // later, but `catalogMode` consults the default catalog while we
     // build the specifier below. Pass the same map to the resolver to
@@ -1077,9 +1083,14 @@ async fn update_manifest_for_add(
             if spec.linked_workspace_version.is_some() {
                 continue;
             }
-            // Only registry-shaped specs are eligible: workspace/git/
-            // local/jsr/npm-aliased specs already have their own
-            // routing and the user typed them on purpose.
+            // Only registry-shaped, non-aliased specs are eligible:
+            // workspace/git/local/jsr/npm-aliased specs already have
+            // their own routing and the user typed them on purpose.
+            // Aliased specs (`my-alias@project-2`) need to skip the
+            // workspace path too — `workspace:` resolves by manifest
+            // key, so writing `"my-alias": "workspace:^"` would point
+            // the resolver at a sibling named `my-alias` (which
+            // doesn't exist) and 404 on the registry fallback.
             if aube_util::pkg::is_workspace_spec(&spec.range)
                 || aube_util::pkg::is_catalog_spec(&spec.range)
                 || aube_util::pkg::is_npm_spec(&spec.range)
@@ -1087,6 +1098,7 @@ async fn update_manifest_for_add(
                 || spec.git_spec.is_some()
                 || spec.local_spec.is_some()
                 || spec.jsr_name.is_some()
+                || spec.alias.is_some()
             {
                 continue;
             }

@@ -365,6 +365,23 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub cleanup_unused_catalogs: Option<bool>,
 
+    // -- Workspace-protocol settings --
+    /// Resolve `aube add <name>` against local workspace siblings
+    /// before falling back to the registry. Wired through
+    /// `aube_settings::resolved::link_workspace_packages`; the typed
+    /// field exists so `meta::workspace_yaml_keys_...` sees the key
+    /// as a real field and doesn't fall through to `extra`.
+    #[serde(default)]
+    pub link_workspace_packages: Option<bool>,
+
+    /// Spec form written to `package.json` when `aube add` matches a
+    /// workspace sibling. The yaml value can be the booleans `true` /
+    /// `false` or the string `"rolling"`, so the typed field lands at
+    /// `yaml_serde::Value` and the resolver normalizes via
+    /// `aube_settings::resolved::SaveWorkspaceProtocol::from_str_normalized`.
+    #[serde(default)]
+    pub save_workspace_protocol: Option<yaml_serde::Value>,
+
     // -- Peer Dependency Settings --
     /// Whether to auto-install peer dependencies (default: true).
     #[serde(default)]
