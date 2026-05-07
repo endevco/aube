@@ -1244,6 +1244,16 @@ pub(crate) async fn ensure_installed(no_install: bool) -> miette::Result<()> {
     if skip_auto_install_on_package_manager_mismatch() {
         return Ok(());
     }
+    // Skip verify-deps when invoked from inside a script. The parent
+    // install (or parent `aube run`) already validated freshness and
+    // either holds the project lock or hasn't written `.aube-state` yet
+    // — re-entering `ensure_installed` here would either deadlock on
+    // the lock (`verifyDepsBeforeRun=install`) or hard-fail on the
+    // missing state file (`verifyDepsBeforeRun=error`). Matches
+    // npm/pnpm's "no verify-deps inside lifecycle scripts" contract.
+    if std::env::var_os("npm_lifecycle_event").is_some() {
+        return Ok(());
+    }
 
     let initial_cwd = crate::dirs::cwd()?;
     // Prefer the workspace root as the freshness anchor. A monorepo
