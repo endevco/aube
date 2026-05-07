@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::IsTerminal;
 use std::path::Path;
 
+const INTERACTIVE_TTY_ERROR: &str = "approve-builds needs stdin and stderr to be TTYs for the interactive picker; pass `--all` or name packages positionally to approve non-interactively";
+
 #[derive(Debug, Args)]
 pub struct ApproveBuildsArgs {
     /// Approve every pending ignored build without prompting.
@@ -104,10 +106,8 @@ fn run_global(args: ApproveBuildsArgs) -> miette::Result<()> {
     } else if !args.packages.is_empty() {
         select_global_packages(&global_ignored, args.packages)?
     } else {
-        if !std::io::stdin().is_terminal() {
-            return Err(miette!(
-                "approve-builds needs a TTY for the interactive picker; pass `--all` or name packages positionally to approve non-interactively"
-            ));
+        if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+            return Err(miette!(INTERACTIVE_TTY_ERROR));
         }
         pick_global_interactively(&global_ignored)?
     };
@@ -172,10 +172,8 @@ fn select_project(
         }
         return Ok(dedupe(packages));
     }
-    if !std::io::stdin().is_terminal() {
-        return Err(miette!(
-            "approve-builds needs a TTY for the interactive picker; pass `--all` or name packages positionally to approve non-interactively"
-        ));
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Err(miette!(INTERACTIVE_TTY_ERROR));
     }
     pick_interactively(ignored)
 }
@@ -263,7 +261,8 @@ fn pick_interactively(
     ignored: &[super::ignored_builds::IgnoredEntry],
 ) -> miette::Result<Vec<String>> {
     let mut picker = demand::MultiSelect::new("Choose which packages to allow building")
-        .description("Space to toggle, Enter to confirm");
+        .description("Space to toggle, Enter to confirm")
+        .min(1);
     for entry in ignored {
         let label = format!("{}@{}", entry.name, entry.version);
         picker = picker.option(demand::DemandOption::new(entry.name.clone()).label(&label));
@@ -278,7 +277,8 @@ fn pick_global_interactively(
     global_ignored: &[GlobalIgnored],
 ) -> miette::Result<BTreeMap<std::path::PathBuf, Vec<String>>> {
     let mut picker = demand::MultiSelect::new("Choose which global packages to allow building")
-        .description("Space to toggle, Enter to confirm");
+        .description("Space to toggle, Enter to confirm")
+        .min(1);
     for (idx, entry) in global_ignored.iter().enumerate() {
         let aliases = entry.aliases.join(", ");
         for ignored in &entry.ignored {
