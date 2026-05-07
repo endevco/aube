@@ -1008,3 +1008,58 @@ YAML
 	run grep -F '"dependencies"' package.json
 	assert_failure
 }
+
+# Ported from pnpm/test/install/lifecycleScripts.ts:179
+# (preinstall script does not trigger verify-deps-before-run, pnpm/pnpm#8954).
+# Substitution: cowsay@1.5.0 → is-odd (in-tree fixture), and pnpm's
+# `--config.verify-deps-before-run=error` flag is preserved verbatim via
+# aube's pnpm-compat `--config.<key>=<value>` parser.
+@test "preinstall script does not trigger verify-deps-before-run" {
+	cat >package.json <<'JSON'
+{
+  "name": "preinstall-script-does-not-trigger-verify-deps-before-run",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "sayHello": "echo hello world",
+    "preinstall": "aube run sayHello"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	run aube --config.verify-deps-before-run=error install
+	assert_success
+	assert_output --partial "hello world"
+}
+
+# Ported from pnpm/test/install/lifecycleScripts.ts:200
+# (preinstall and postinstall scripts do not trigger verify-deps-before-run
+# when using settings from a config file, pnpm/pnpm#10060).
+# Without the lifecycle-context guard, the inner `aube run` deadlocks on the
+# project lock the outer install holds. The test fails fast (60s ceiling) if
+# the deadlock returns.
+@test "preinstall + postinstall scripts do not trigger verify-deps-before-run via workspace yaml" {
+	cat >package.json <<'JSON'
+{
+  "name": "preinstall-script-does-not-trigger-verify-deps-before-run-config-file",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "sayHello": "echo hello world",
+    "preinstall": "aube run sayHello",
+    "postinstall": "aube run sayHello"
+  },
+  "dependencies": {
+    "is-odd": "^3.0.1"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+verifyDepsBeforeRun: install
+YAML
+	run timeout 60 aube install
+	assert_success
+	assert_output --partial "hello world"
+}

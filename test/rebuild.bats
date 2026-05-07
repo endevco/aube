@@ -344,3 +344,44 @@ YAML
 	run cat aube-builds-marker.txt
 	assert_output "ran:aube-test-builds-marker@1.0.0"
 }
+
+# Ported from pnpm/test/install/lifecycleScripts.ts:282
+# ('selective rebuild preserves ignoredBuilds for packages not being rebuilt').
+# Aube equivalent: pnpm's `node_modules/.modules.yaml.ignoredBuilds` is
+# `.aube-state.unreviewed_builds`. Direct file inspection is brittle (the
+# state file is BLAKE3-hashed shape) so assert via the warm-path repeat-
+# install warning, which re-emits exactly when the unreviewed set is
+# non-empty (see lifecycle_scripts.bats:942 for the canonical pattern).
+@test "aube rebuild <pkg> preserves unreviewed_builds for packages not rebuilt" {
+	cat >package.json <<'JSON'
+{
+  "name": "rebuild-preserve-unreviewed-test",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/pre-and-postinstall-scripts-example": "1.0.0",
+    "@pnpm.e2e/install-script-example": "1.0.0"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "@pnpm.e2e/pre-and-postinstall-scripts-example": true
+    }
+  }
+}
+JSON
+	run aube install
+	assert_success
+	assert_output --partial "ignored build scripts"
+	assert_output --partial "@pnpm.e2e/install-script-example"
+
+	# Selectively rebuild only the approved dep.
+	run aube rebuild @pnpm.e2e/pre-and-postinstall-scripts-example
+	assert_success
+
+	# Repeat install must still fire the unreviewed-builds warning for
+	# the un-approved sibling — selective rebuild must not silently
+	# clear the unreviewed set.
+	run aube install
+	assert_success
+	assert_output --partial "ignored build scripts"
+	assert_output --partial "@pnpm.e2e/install-script-example"
+}
