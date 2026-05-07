@@ -1059,7 +1059,22 @@ JSON
 	cat >pnpm-workspace.yaml <<'YAML'
 verifyDepsBeforeRun: install
 YAML
-	run timeout 60 aube install
+	# `timeout(1)` is GNU coreutils — Linux ships it as `timeout`,
+	# macOS only ships it as `gtimeout` (after `brew install
+	# coreutils`) and not at all on a stock install. Pick whichever
+	# the host has; if neither is present (macOS without coreutils),
+	# fall back to `aube install` direct. The bats wall-clock cap
+	# (set in CI) catches the deadlock-regression case the timeout
+	# is meant to guard against — a stock-macOS dev who hits a
+	# regression locally will need to ctrl-c, which matches the
+	# existing pre-fix behavior anyway.
+	if command -v timeout >/dev/null 2>&1; then
+		run timeout 60 aube install
+	elif command -v gtimeout >/dev/null 2>&1; then
+		run gtimeout 60 aube install
+	else
+		run aube install
+	fi
 	assert_success
 	assert_output --partial "hello world"
 }
