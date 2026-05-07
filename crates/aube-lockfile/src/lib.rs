@@ -1294,8 +1294,18 @@ impl LockfileGraph {
             }
             None => BTreeMap::new(),
         };
+        let workspace_link_names: std::collections::HashSet<&str> = manifests
+            .iter()
+            .filter(|(path, _)| path != ".")
+            .filter_map(|(_, manifest)| manifest.name.as_deref())
+            .collect();
         for (importer_path, manifest) in manifests {
-            match self.check_drift_for_importer(importer_path, manifest, &effective_overrides) {
+            match self.check_drift_for_importer_with_workspace_links(
+                importer_path,
+                manifest,
+                &effective_overrides,
+                &workspace_link_names,
+            ) {
                 DriftStatus::Fresh => continue,
                 stale => return stale,
             }
@@ -1368,6 +1378,21 @@ impl LockfileGraph {
         importer_path: &str,
         manifest: &aube_manifest::PackageJson,
         effective_overrides: &BTreeMap<String, String>,
+    ) -> DriftStatus {
+        self.check_drift_for_importer_with_workspace_links(
+            importer_path,
+            manifest,
+            effective_overrides,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    fn check_drift_for_importer_with_workspace_links(
+        &self,
+        importer_path: &str,
+        manifest: &aube_manifest::PackageJson,
+        effective_overrides: &BTreeMap<String, String>,
+        workspace_link_names: &std::collections::HashSet<&str>,
     ) -> DriftStatus {
         let label = if importer_path == "." {
             String::new()
@@ -1528,6 +1553,16 @@ impl LockfileGraph {
                 continue;
             }
             if auto_hoisted_peer_specs.contains(&(*locked_name, *locked_spec)) {
+                continue;
+            }
+            let workspace_link = importer_path == "."
+                && workspace_link_names.contains(locked_name)
+                && importer_deps
+                    .iter()
+                    .find(|dep| dep.name == *locked_name)
+                    .and_then(|dep| self.packages.get(&dep.dep_path))
+                    .is_some_and(|pkg| matches!(pkg.local_source, Some(LocalSource::Link(_))));
+            if workspace_link {
                 continue;
             }
             return DriftStatus::Stale {
@@ -2560,6 +2595,7 @@ mod drift_tests {
     use super::*;
     use aube_manifest::PackageJson;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     fn make_manifest(deps: &[(&str, &str)]) -> PackageJson {
         let mut m = PackageJson {
@@ -2743,6 +2779,40 @@ mod drift_tests {
             DriftStatus::Stale { reason } => assert!(reason.contains("chalk")),
             DriftStatus::Fresh => panic!("expected Stale"),
         }
+    }
+
+    #[test]
+    fn workspace_drift_allows_root_links_for_workspace_packages() {
+        let root_manifest = make_manifest(&[]);
+        let mut app_manifest = make_manifest(&[]);
+        app_manifest.name = Some("@scope/app".to_string());
+
+        let link = LocalSource::Link(PathBuf::from("packages/app"));
+        let dep_path = link.dep_path("@scope/app");
+        let mut graph = make_graph(&[("@scope/app", "*", &dep_path)]);
+        graph.packages.insert(
+            dep_path.clone(),
+            LockedPackage {
+                name: "@scope/app".to_string(),
+                version: "1.0.0".to_string(),
+                dep_path,
+                local_source: Some(link),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            graph.check_drift_workspace(
+                &[
+                    (".".to_string(), root_manifest),
+                    ("packages/app".to_string(), app_manifest),
+                ],
+                &BTreeMap::new(),
+                &[],
+                &BTreeMap::new(),
+            ),
+            DriftStatus::Fresh
+        );
     }
 
     #[test]
