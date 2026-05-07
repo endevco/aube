@@ -83,6 +83,9 @@ cmd add help="Add a dependency" {
     flag --no-save help="Install without persisting the dependency to `package.json`" {
         long_help "Install without persisting the dependency to `package.json`.\n\nSnapshots `package.json` and the lockfile, links the named packages into `node_modules`, and then restores both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest."
     }
+    flag --no-save-workspace-protocol help="Inverse of `--save-workspace-protocol`" {
+        long_help "Inverse of `--save-workspace-protocol`.\n\nForces the manifest specifier into a registry-style spec (`^<version>`) for this invocation, even when `linkWorkspacePackages` matched a local sibling. The install pipeline still prefers the local workspace copy at resolve time — this flag only controls what's written to `package.json`. Mirrors `pnpm add --no-save-workspace-protocol`."
+    }
     flag --save-catalog help="Save the new dependency into the workspace's default catalog" {
         long_help "Save the new dependency into the workspace's default catalog.\n\nWrites `catalog:` into `package.json` and seeds/upserts the resolved range under `catalog:` in the workspace yaml. Mirrors `pnpm add --save-catalog`.\n\nWorkspace and aliased specs (`workspace:*`, `npm:`, `jsr:`) are never catalogized — the manifest gets the original spec and the catalog yaml is left alone. If the package is already in the target catalog, the existing entry is preserved (never overwritten); the manifest then gets `catalog:` only when the existing entry is compatible with the user's range.\n\nConflicts with `--no-save`: catalog mutations write to the workspace yaml, which the `--no-save` restore path doesn't snapshot — combining the two would silently leave an orphaned catalog entry behind."
     }
@@ -92,6 +95,9 @@ cmd add help="Add a dependency" {
     }
     flag --save-peer help="Add as a peer dependency (written to `peerDependencies` in package.json)" {
         long_help "Add as a peer dependency (written to `peerDependencies` in package.json).\n\nBy convention you usually pair this with `--save-dev` so the peer is also installed for local development; that's what pnpm does."
+    }
+    flag --save-workspace-protocol help="Force the manifest specifier into `workspace:` form for this invocation, overriding `saveWorkspaceProtocol` from the workspace yaml / `.npmrc` / env" {
+        long_help "Force the manifest specifier into `workspace:` form for this invocation, overriding `saveWorkspaceProtocol` from the workspace yaml / `.npmrc` / env.\n\nOnly meaningful when `linkWorkspacePackages` (or a workspace sibling already exists for the named package). With this flag the entry written to `package.json` is `workspace:^` (rolling) or `workspace:^<version>` (pinned), depending on the resolved `saveWorkspaceProtocol` value."
     }
     flag "-w --workspace" help="Add the dependency to the workspace root's `package.json`" {
         long_help "Add the dependency to the workspace root's `package.json`.\n\nApplies regardless of the current working directory: walks up from cwd looking for `aube-workspace.yaml`, `pnpm-workspace.yaml`, or a `package.json` with a `workspaces` field and runs the add against that directory."

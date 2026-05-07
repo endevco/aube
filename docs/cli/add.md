@@ -58,6 +58,12 @@ Snapshots `package.json` and the lockfile, links the named packages into `node_m
 
 Handy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest.
 
+### `--no-save-workspace-protocol`
+
+Inverse of `--save-workspace-protocol`.
+
+Forces the manifest specifier into a registry-style spec (`^<version>`) for this invocation, even when `linkWorkspacePackages` matched a local sibling. The install pipeline still prefers the local workspace copy at resolve time — this flag only controls what's written to `package.json`. Mirrors `pnpm add --no-save-workspace-protocol`.
+
 ### `--save-catalog`
 
 Save the new dependency into the workspace's default catalog.
@@ -79,6 +85,12 @@ Writes the entry to `catalogs.<name>` in the workspace yaml and `catalog:<name>`
 Add as a peer dependency (written to `peerDependencies` in package.json).
 
 By convention you usually pair this with `--save-dev` so the peer is also installed for local development; that's what pnpm does.
+
+### `--save-workspace-protocol`
+
+Force the manifest specifier into `workspace:` form for this invocation, overriding `saveWorkspaceProtocol` from the workspace yaml / `.npmrc` / env.
+
+Only meaningful when `linkWorkspacePackages` (or a workspace sibling already exists for the named package). With this flag the entry written to `package.json` is `workspace:^` (rolling) or `workspace:^<version>` (pinned), depending on the resolved `saveWorkspaceProtocol` value.
 
 ### `-w --workspace`
 

@@ -152,6 +152,19 @@
             "global": false
           },
           {
+            "name": "no-save-workspace-protocol",
+            "usage": "--no-save-workspace-protocol",
+            "help": "Inverse of `--save-workspace-protocol`",
+            "help_long": "Inverse of `--save-workspace-protocol`.\n\nForces the manifest specifier into a registry-style spec (`^<version>`) for this invocation, even when `linkWorkspacePackages` matched a local sibling. The install pipeline still prefers the local workspace copy at resolve time — this flag only controls what's written to `package.json`. Mirrors `pnpm add --no-save-workspace-protocol`.",
+            "help_first_line": "Inverse of `--save-workspace-protocol`",
+            "short": [],
+            "long": [
+              "no-save-workspace-protocol"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "save-catalog",
             "usage": "--save-catalog",
             "help": "Save the new dependency into the workspace's default catalog",
@@ -193,6 +206,19 @@
             "short": [],
             "long": [
               "save-peer"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "save-workspace-protocol",
+            "usage": "--save-workspace-protocol",
+            "help": "Force the manifest specifier into `workspace:` form for this invocation, overriding `saveWorkspaceProtocol` from the workspace yaml / `.npmrc` / env",
+            "help_long": "Force the manifest specifier into `workspace:` form for this invocation, overriding `saveWorkspaceProtocol` from the workspace yaml / `.npmrc` / env.\n\nOnly meaningful when `linkWorkspacePackages` (or a workspace sibling already exists for the named package). With this flag the entry written to `package.json` is `workspace:^` (rolling) or `workspace:^<version>` (pinned), depending on the resolved `saveWorkspaceProtocol` value.",
+            "help_first_line": "Force the manifest specifier into `workspace:` form for this invocation, overriding `saveWorkspaceProtocol` from the workspace yaml / `.npmrc` / env",
+            "short": [],
+            "long": [
+              "save-workspace-protocol"
             ],
             "hide": false,
             "global": false

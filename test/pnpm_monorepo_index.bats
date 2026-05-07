@@ -215,3 +215,132 @@ _setup_no_match_workspace() {
 	assert_success
 	assert_output --partial "is-odd"
 }
+
+# Helper: stand up the four-project workspace pnpm uses for the
+# link-workspace-packages tests. Mirrors `preparePackages([{name, version}, …])`
+# from pnpm's test harness — a flat layout under the cwd where each
+# project owns a `package.json` with `name` + `version`.
+_link_workspace_packages_fixture() {
+	cat >package.json <<-'EOF'
+		{"name": "root", "version": "0.0.0", "private": true}
+	EOF
+	mkdir project-1 project-2 project-3 project-4
+	cat >project-1/package.json <<-'EOF'
+		{"name": "project-1", "version": "1.0.0"}
+	EOF
+	cat >project-2/package.json <<-'EOF'
+		{"name": "project-2", "version": "2.0.0"}
+	EOF
+	cat >project-3/package.json <<-'EOF'
+		{"name": "project-3", "version": "3.0.0"}
+	EOF
+	cat >project-4/package.json <<-'EOF'
+		{"name": "project-4", "version": "4.0.0"}
+	EOF
+}
+
+# Ported from pnpm/test/monorepo/index.ts:112
+# ('linking a package inside a monorepo with --link-workspace-packages
+# when installing new dependencies'). Default `saveWorkspaceProtocol`
+# is `rolling` in aube, matching what pnpm's test asserts: bare
+# `aube add project-2` writes `workspace:^` (no version pin), and
+# `--save-optional --no-save-workspace-protocol` opts the manifest
+# back into a registry-style spec while the resolver still picks up
+# the local sibling.
+@test "aube add: --link-workspace-packages writes workspace:^ for siblings" {
+	_link_workspace_packages_fixture
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+	EOF
+
+	cd project-1
+	run aube add project-2
+	assert_success
+	run aube add project-3 --save-dev
+	assert_success
+	run aube add project-4 --save-optional --no-save-workspace-protocol
+	assert_success
+
+	# Manifest assertions: rolling form for the default save and
+	# save-dev flows, registry-style for the explicit opt-out.
+	run grep -F '"project-2": "workspace:^"' package.json
+	assert_success
+	run grep -F '"project-3": "workspace:^"' package.json
+	assert_success
+	run grep -F '"project-4": "^4.0.0"' package.json
+	assert_success
+
+	# Each sibling resolved through the local workspace — node_modules
+	# entries exist regardless of whether the spec form is workspace
+	# or registry style.
+	assert_link_exists node_modules/project-2
+	assert_link_exists node_modules/project-3
+	assert_link_exists node_modules/project-4
+}
+
+# Ported from pnpm/test/monorepo/index.ts:156
+# ('linking a package inside a monorepo with --link-workspace-packages
+# when installing new dependencies and save-workspace-protocol is
+# "rolling"'). Aube's default already matches `rolling`, so this test
+# pins the explicit setting form — `saveWorkspaceProtocol: rolling`
+# in the workspace yaml — and confirms the same outcomes as the
+# default-only port above.
+@test "aube add: --link-workspace-packages with saveWorkspaceProtocol: rolling" {
+	_link_workspace_packages_fixture
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+		saveWorkspaceProtocol: rolling
+	EOF
+
+	cd project-1
+	run aube add project-2
+	assert_success
+	run aube add project-3 --save-dev
+	assert_success
+	run aube add project-4 --save-optional --no-save-workspace-protocol
+	assert_success
+
+	run grep -F '"project-2": "workspace:^"' package.json
+	assert_success
+	run grep -F '"project-3": "workspace:^"' package.json
+	assert_success
+	run grep -F '"project-4": "^4.0.0"' package.json
+	assert_success
+
+	assert_link_exists node_modules/project-2
+	assert_link_exists node_modules/project-3
+	assert_link_exists node_modules/project-4
+}
+
+# Aube-side regression guard for `saveWorkspaceProtocol: true`: the
+# pinned-version form (`workspace:^<version>`) is the third valid
+# manifest shape, and pnpm's docs document it as the historic default
+# even though pnpm's tests have moved to assert the rolling form. The
+# test stays in the aube suite (no pnpm equivalent) because the three
+# saveWorkspaceProtocol variants share one code path and a regression
+# in any one of them would silently slip through the rolling-only
+# ports above.
+@test "aube add: saveWorkspaceProtocol: true pins workspace:^<version>" {
+	_link_workspace_packages_fixture
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+		saveWorkspaceProtocol: true
+	EOF
+
+	cd project-1
+	run aube add project-2
+	assert_success
+
+	run grep -F '"project-2": "workspace:^2.0.0"' package.json
+	assert_success
+	assert_link_exists node_modules/project-2
+}
