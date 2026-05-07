@@ -1990,14 +1990,23 @@ description = "Resolve `aube add <name>` against local workspace siblings before
 type = "bool"
 default = "false"
 docs = """
-When `true` (or `"deep"`), `aube add <name>` (and bare `aube install` for
-unresolved registry deps) checks the workspace for a package whose
-`name` matches the spec. If found, the dep is wired up as a workspace
-link instead of fetched from the registry. The manifest specifier
+When `true`, `aube add <name>` checks the workspace for a package
+whose `name` matches the spec before falling back to the registry.
+A match wires the dep up as a workspace link; the manifest specifier
 written to `package.json` is controlled by `saveWorkspaceProtocol`.
+
+If the user typed an explicit range (`aube add pkg@^1.2.0`), the
+sibling's version must satisfy it — otherwise the spec falls through
+to the registry path so an incompatible local copy isn't silently
+linked.
 
 Off by default to match pnpm 8+ — opt in via `pnpm-workspace.yaml`
 when you want every `aube add` to prefer the local copy of a sibling.
+Aube's resolver already prefers workspace siblings on bare semver
+ranges at install time, so this setting only controls `aube add`'s
+manifest-write path; pnpm's `"deep"` value (which extends the
+preference to transitive deps) is therefore not implemented and
+treating the value as a plain bool is intentional.
 """
 sources.cli = []
 sources.env = [

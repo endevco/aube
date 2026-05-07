@@ -376,3 +376,52 @@ _link_workspace_packages_fixture() {
 	run grep -F '"my-alias": "workspace:' package.json
 	assert_failure
 }
+
+# Regression guard for `aube add project-2@^1.0.0` when project-2
+# is at version 2.0.0 in the workspace: the user's explicit range
+# rules out the local sibling, so the spec must fall through to the
+# registry path rather than silently writing a `workspace:^` link
+# that resolves to an incompatible version. The bats offline
+# registry doesn't host project-2 so the registry path 404s — the
+# success criterion is purely that the manifest does NOT carry a
+# `workspace:` entry for project-2.
+@test "aube add: explicit range mismatching sibling does NOT trigger workspace link" {
+	_link_workspace_packages_fixture
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+	EOF
+
+	cd project-1
+	# project-2 is at 2.0.0 in the fixture; ^1.0.0 doesn't satisfy.
+	run aube add project-2@^1.0.0
+	# Don't assert exit status — registry 404 is the expected
+	# fall-through. The regression guard is the manifest.
+	run grep -F '"project-2": "workspace:' package.json
+	assert_failure
+}
+
+# Companion to the mismatch guard: `aube add project-2@^2.0.0`
+# (which the sibling at 2.0.0 satisfies) MUST trigger the
+# workspace match. This locks the satisfies-true branch so a
+# regression can't silently skip every explicit-range add.
+@test "aube add: explicit range satisfying sibling DOES trigger workspace link" {
+	_link_workspace_packages_fixture
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+	EOF
+
+	cd project-1
+	run aube add project-2@^2.0.0
+	assert_success
+	# Default rolling form, since the user-typed range is `^2.0.0`
+	# (caret) and the eligible sibling matches.
+	run grep -F '"project-2": "workspace:^"' package.json
+	assert_success
+	assert_link_exists node_modules/project-2
+}

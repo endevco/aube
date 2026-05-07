@@ -1102,9 +1102,28 @@ async fn update_manifest_for_add(
             {
                 continue;
             }
-            if let Some(version) = workspace_versions.get(&spec.name) {
-                spec.linked_workspace_version = Some(version.clone());
+            let Some(version) = workspace_versions.get(&spec.name) else {
+                continue;
+            };
+            // When the user typed an explicit range
+            // (`aube add pkg@^1.2.0`), the sibling's version must
+            // satisfy it — otherwise we'd silently link an
+            // incompatible local copy. Fall through to the registry
+            // path on a mismatch (and on unparseable ranges, where
+            // the registry path's error message is more useful than
+            // a workspace mismatch). Bare adds (no `@<range>`) carry
+            // `range = "latest"` from the parser; the implicit
+            // dist-tag never blocks a workspace match.
+            if spec.has_explicit_range
+                && let (Ok(parsed_version), Ok(parsed_range)) = (
+                    node_semver::Version::parse(version),
+                    node_semver::Range::parse(&spec.range),
+                )
+                && !parsed_version.satisfies(&parsed_range)
+            {
+                continue;
             }
+            spec.linked_workspace_version = Some(version.clone());
         }
     }
 
