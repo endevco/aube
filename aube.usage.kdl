@@ -634,8 +634,8 @@ cmd exec help="Execute a locally installed binary" {
     flag --report-summary help="Write a recursive exec summary file" {
         long_help "Write a recursive exec summary file.\n\nParsed for pnpm compatibility."
     }
-    flag --reporter-hide-prefix help="Hide package prefixes in recursive reporter output" {
-        long_help "Hide package prefixes in recursive reporter output.\n\nParsed for pnpm compatibility."
+    flag --reporter-hide-prefix help="Hide the `<package>: ` label on parallel-exec output lines" {
+        long_help "Hide the `<package>: ` label on parallel-exec output lines.\n\nLines are still piped (clean line breaks even with concurrent children) but the source package isn't named on each line. Sequential execs ignore this flag."
     }
     flag --resume-from help="Resume recursive execution starting at this package name" {
         long_help "Resume recursive execution starting at this package name.\n\nPackages before the named one in the post-sort, post-reverse order are skipped. Errors if the name isn't in the matched set."
@@ -1466,13 +1466,13 @@ cmd run help="Run a script defined in package.json" {
         long_help "Disable topological sorting (default is on).\n\nWithout this, recursive runs visit packages in a deps-first order so a `build` script in a shared library finishes before a dependent app's `build` starts. Pass this to fall back to the raw workspace-listing order."
     }
     flag --parallel help="Run the script in every matched workspace package concurrently" {
-        long_help "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated."
+        long_help "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with `--workspace-concurrency=N` to cap the worker count. Single-package runs ignore this flag. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated. Child stdio is piped and lines are emitted with a `<package>: ` prefix; pass `--reporter-hide-prefix` to drop the labels."
     }
     flag --report-summary help="Write a recursive run summary file" {
         long_help "Write a recursive run summary file.\n\nParsed for pnpm compatibility."
     }
-    flag --reporter-hide-prefix help="Hide package prefixes in recursive reporter output" {
-        long_help "Hide package prefixes in recursive reporter output.\n\nParsed for pnpm compatibility."
+    flag --reporter-hide-prefix help="Hide the `<package>: ` label on parallel-run output lines" {
+        long_help "Hide the `<package>: ` label on parallel-run output lines.\n\nLines are still piped through aube (so the line breaks are clean even when many packages run at once), but the source package isn't named on each line. Sequential runs ignore this flag."
     }
     flag --resume-from help="Resume recursive execution starting at this package name" {
         long_help "Resume recursive execution starting at this package name.\n\nAfter the topo sort and `--reverse` are applied, packages before the named one in the resulting order are skipped. Errors if the name isn't in the matched workspace set."

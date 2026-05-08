@@ -3485,9 +3485,9 @@
           {
             "name": "reporter-hide-prefix",
             "usage": "--reporter-hide-prefix",
-            "help": "Hide package prefixes in recursive reporter output",
-            "help_long": "Hide package prefixes in recursive reporter output.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Hide package prefixes in recursive reporter output",
+            "help": "Hide the `<package>: ` label on parallel-exec output lines",
+            "help_long": "Hide the `<package>: ` label on parallel-exec output lines.\n\nLines are still piped (clean line breaks even with concurrent children) but the source package isn't named on each line. Sequential execs ignore this flag.",
+            "help_first_line": "Hide the `<package>: ` label on parallel-exec output lines",
             "short": [],
             "long": [
               "reporter-hide-prefix"
@@ -8435,7 +8435,7 @@
             "name": "parallel",
             "usage": "--parallel",
             "help": "Run the script in every matched workspace package concurrently",
-            "help_long": "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated.",
+            "help_long": "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with `--workspace-concurrency=N` to cap the worker count. Single-package runs ignore this flag. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated. Child stdio is piped and lines are emitted with a `<package>: ` prefix; pass `--reporter-hide-prefix` to drop the labels.",
             "help_first_line": "Run the script in every matched workspace package concurrently",
             "short": [],
             "long": [
@@ -8460,9 +8460,9 @@
           {
             "name": "reporter-hide-prefix",
             "usage": "--reporter-hide-prefix",
-            "help": "Hide package prefixes in recursive reporter output",
-            "help_long": "Hide package prefixes in recursive reporter output.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Hide package prefixes in recursive reporter output",
+            "help": "Hide the `<package>: ` label on parallel-run output lines",
+            "help_long": "Hide the `<package>: ` label on parallel-run output lines.\n\nLines are still piped through aube (so the line breaks are clean even when many packages run at once), but the source package isn't named on each line. Sequential runs ignore this flag.",
+            "help_first_line": "Hide the `<package>: ` label on parallel-run output lines",
             "short": [],
             "long": [
               "reporter-hide-prefix"

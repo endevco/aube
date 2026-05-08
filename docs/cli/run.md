@@ -51,7 +51,7 @@ Without this, recursive runs visit packages in a deps-first order so a `build` s
 
 Run the script in every matched workspace package concurrently.
 
-Unbounded parallelism. Pair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated.
+Unbounded parallelism. Pair with `--workspace-concurrency=N` to cap the worker count. Single-package runs ignore this flag. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated. Child stdio is piped and lines are emitted with a `<package>: ` prefix; pass `--reporter-hide-prefix` to drop the labels.
 
 ### `--report-summary`
 
@@ -61,9 +61,9 @@ Parsed for pnpm compatibility.
 
 ### `--reporter-hide-prefix`
 
-Hide package prefixes in recursive reporter output.
+Hide the `<package>: ` label on parallel-run output lines.
 
-Parsed for pnpm compatibility.
+Lines are still piped through aube (so the line breaks are clean even when many packages run at once), but the source package isn't named on each line. Sequential runs ignore this flag.
 
 ### `--resume-from <PACKAGE>`
 

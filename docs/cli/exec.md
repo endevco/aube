@@ -46,9 +46,9 @@ Parsed for pnpm compatibility.
 
 ### `--reporter-hide-prefix`
 
-Hide package prefixes in recursive reporter output.
+Hide the `<package>: ` label on parallel-exec output lines.
 
-Parsed for pnpm compatibility.
+Lines are still piped (clean line breaks even with concurrent children) but the source package isn't named on each line. Sequential execs ignore this flag.
 
 ### `--resume-from <PACKAGE>`
 
