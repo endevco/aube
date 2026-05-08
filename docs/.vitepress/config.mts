@@ -1,5 +1,5 @@
 import { defineConfig } from "vitepress";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -163,7 +163,9 @@ export default defineConfig({
       {
         name: "aube-version-file",
         closeBundle() {
-          writeFileSync(resolve(configDir, "dist/VERSION"), `${aubeVersion}\n`);
+          const distDir = resolve(configDir, "dist");
+          mkdirSync(distDir, { recursive: true });
+          writeFileSync(resolve(distDir, "VERSION"), `${aubeVersion}\n`);
         },
       },
     ],
