@@ -224,28 +224,6 @@ fn resolve_jail_grant_path(project_dir: &std::path::Path, raw: &str) -> std::pat
     }
 }
 
-/// Resolve the prewarm-shared bits used by both the lockfile and
-/// no-lockfile materializer setup paths: node engine version (for
-/// graph-hash domain split) plus the build-policy decision oracle
-/// (for graph-hash patch fold). Hoisted so both branches compute
-/// identical hashes and link-step-1 fast-paths through pkg_nm_dir.exists().
-/// `_policy_warnings` is dropped because the link phase calls
-/// `build_policy_from_sources` again and re-emits warnings (idempotent).
-pub(super) fn resolve_prewarm_shared(
-    settings_ctx: &aube_settings::ResolveCtx<'_>,
-    manifest: &aube_manifest::PackageJson,
-    workspace_config: &aube_manifest::WorkspaceConfig,
-    dangerously_allow_all_builds: bool,
-) -> (Option<String>, std::sync::Arc<aube_scripts::BuildPolicy>) {
-    let node_version = {
-        let override_ = aube_settings::resolved::node_version(settings_ctx);
-        crate::engines::resolve_node_version(override_.as_deref())
-    };
-    let (policy, _warnings) =
-        build_policy_from_sources(manifest, workspace_config, dangerously_allow_all_builds);
-    (node_version, std::sync::Arc::new(policy))
-}
-
 /// Resolve the link strategy (reflink / hardlink / copy) from CLI
 /// override, `.npmrc` / `pnpm-workspace.yaml`, or filesystem detection.
 /// Shared by the prewarm-GVS materializer (which needs the strategy

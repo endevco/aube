@@ -29,8 +29,8 @@ pub(crate) use lifecycle::{
     run_dep_lifecycle_scripts,
 };
 use lifecycle::{
-    resolve_link_strategy, resolve_prewarm_shared, run_import_on_blocking, run_root_lifecycle,
-    unreviewed_dep_builds, validate_required_scripts,
+    resolve_link_strategy, run_import_on_blocking, run_root_lifecycle, unreviewed_dep_builds,
+    validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
 pub(crate) use settings::{resolve_dependency_policy, resolve_force_metadata_primer};
@@ -330,6 +330,7 @@ impl InstallArgs {
             cli_flags,
             env_snapshot,
             git_prepare_depth: 0,
+            inherited_build_policy: None,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
             // Argumentless `aube install` runs root lifecycle hooks; the
             // chained-call constructor (`with_mode`) is where commands
@@ -421,6 +422,11 @@ pub struct InstallOptions {
     /// Current git dependency prepare nesting depth. Kept in options so
     /// in-process prepare installs do not need cascading environment vars.
     pub git_prepare_depth: u32,
+    /// Dependency build policy inherited by an in-process nested install.
+    /// Used for git dependency `prepare`: the nested install runs in a
+    /// scratch clone, but dependency build approval belongs to the outer
+    /// project that requested the git package.
+    pub inherited_build_policy: Option<std::sync::Arc<aube_scripts::BuildPolicy>>,
     /// Global `--filter` / `--filter-prod` selectors. Resolution and
     /// lockfile writing still happen at the workspace root; these
     /// selectors narrow only the graph passed to the linker. Prod-only
@@ -523,6 +529,7 @@ impl InstallOptions {
             cli_flags: Vec::new(),
             env_snapshot: aube_settings::values::capture_env(),
             git_prepare_depth: 0,
+            inherited_build_policy: None,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
             // pnpm parity: every chained-call site (add / remove / update
             // / dedupe / dlx / patch / ensure_installed / git prepare)
@@ -554,6 +561,7 @@ pub(super) async fn import_local_source(
     client: Option<&std::sync::Arc<aube_registry::client::RegistryClient>>,
     ignore_scripts: bool,
     git_prepare_depth: u32,
+    inherited_build_policy: Option<std::sync::Arc<aube_scripts::BuildPolicy>>,
     git_shallow_hosts: &[String],
     pkg_name: &str,
     pkg_version: &str,
@@ -766,8 +774,14 @@ pub(super) async fn import_local_source(
                 // `ScratchDir` removes the copy on drop, including
                 // on the error path.
                 let scratch = prepare_scratch_copy(&pkg_root, &spec)?;
-                run_git_dep_prepare(scratch.path(), &spec, ignore_scripts, git_prepare_depth)
-                    .await?;
+                run_git_dep_prepare(
+                    scratch.path(),
+                    &spec,
+                    ignore_scripts,
+                    git_prepare_depth,
+                    inherited_build_policy,
+                )
+                .await?;
                 let archive = crate::commands::pack::build_archive(scratch.path())
                     .wrap_err_with(|| format!("failed to pack prepared git dep {spec}{chain}"))?;
                 let index = store
@@ -884,6 +898,7 @@ pub(super) async fn fetch_packages(
         strict_integrity,
         strict_pkg_content_check,
         git_prepare_depth,
+        None,
         git_shallow_hosts,
     )
     .await
@@ -1281,6 +1296,7 @@ pub(super) async fn fetch_packages_with_root<F>(
     strict_integrity: bool,
     strict_pkg_content_check: bool,
     git_prepare_depth: u32,
+    inherited_build_policy: Option<std::sync::Arc<aube_scripts::BuildPolicy>>,
     git_shallow_hosts: Vec<String>,
 ) -> miette::Result<(BTreeMap<String, aube_store::PackageIndex>, usize, usize)>
 where
@@ -1417,6 +1433,7 @@ where
             client_slot.as_ref(),
             ignore_scripts,
             git_prepare_depth,
+            inherited_build_policy.clone(),
             &git_shallow_hosts,
             &pkg.name,
             &pkg.version,
@@ -2292,6 +2309,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         } else {
             vec![(".".to_string(), manifest.clone())]
         };
+    let (mut build_policy, policy_warnings) = build_policy_from_manifest_sources(
+        lifecycle_manifests.iter().map(|(_, manifest)| manifest),
+        &ws_config_shared,
+        opts.dangerously_allow_all_builds,
+    );
+    if let Some(inherited) = opts.inherited_build_policy.as_deref() {
+        build_policy.merge(inherited);
+    }
+    let inherited_build_policy_for_git_prepare = Some(std::sync::Arc::new(build_policy.clone()));
 
     // 1b. Project `preinstall` lifecycle hooks.
     //     Workspace installs run the hook for every physical importer
@@ -2944,12 +2970,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let network_mode = opts.network_mode;
             let cwd_for_client = cwd.clone();
 
-            let (lock_node_version, lock_build_policy) = resolve_prewarm_shared(
-                &settings_ctx,
-                &manifest,
-                &ws_config_shared,
-                opts.dangerously_allow_all_builds,
+            let lock_node_version = crate::engines::resolve_node_version(
+                aube_settings::resolved::node_version(&settings_ctx).as_deref(),
             );
+            let lock_build_policy = std::sync::Arc::new(build_policy.clone());
             let lock_strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
             let (lock_patches, lock_patch_hashes) = crate::patches::load_patches_for_linker(&cwd)?;
             let (lock_materialize_tx, lock_materialize_rx) = materialize_channel();
@@ -2989,6 +3013,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 strict_store_integrity_setting,
                 strict_store_pkg_content_check_setting,
                 opts.git_prepare_depth,
+                inherited_build_policy_for_git_prepare.clone(),
                 resolve_git_shallow_hosts(&settings_ctx),
             )
             .await;
@@ -3024,12 +3049,10 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // await) can compute the same graph hashes the link phase
             // will. Keeping a single source of truth avoids any
             // subdir-name drift between prewarm and link step 1.
-            let (node_version_for_prewarm, build_policy_for_prewarm) = resolve_prewarm_shared(
-                &settings_ctx,
-                &manifest,
-                &ws_config_shared,
-                opts.dangerously_allow_all_builds,
+            let node_version_for_prewarm = crate::engines::resolve_node_version(
+                aube_settings::resolved::node_version(&settings_ctx).as_deref(),
             );
+            let build_policy_for_prewarm = std::sync::Arc::new(build_policy.clone());
             let client =
                 std::sync::Arc::new(make_client(&cwd).with_network_mode(opts.network_mode));
             // Speculative TLS + TCP + HTTP/2 handshake. Fires while the
@@ -3116,6 +3139,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_local_client = tarball_client.clone();
             let fetch_ignore_scripts = opts.ignore_scripts;
             let fetch_git_prepare_depth = opts.git_prepare_depth;
+            let fetch_inherited_build_policy = inherited_build_policy_for_git_prepare.clone();
             let fetch_verify_integrity = verify_store_integrity_setting;
             let fetch_strict_integrity = strict_store_integrity_setting;
             let fetch_strict_pkg_content_check = strict_store_pkg_content_check_setting;
@@ -3239,6 +3263,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             Some(&fetch_local_client),
                             fetch_ignore_scripts,
                             fetch_git_prepare_depth,
+                            fetch_inherited_build_policy.clone(),
                             &fetch_git_shallow_hosts,
                             &pkg.name,
                             &pkg.version,
@@ -3698,6 +3723,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     strict_store_integrity_setting,
                     strict_store_pkg_content_check_setting,
                     opts.git_prepare_depth,
+                    inherited_build_policy_for_git_prepare.clone(),
                     resolve_git_shallow_hosts(&settings_ctx),
                 )
                 .await?;
@@ -3830,11 +3856,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         virtual_store_dir_max_length,
     )?;
 
-    let (build_policy, policy_warnings) = build_policy_from_manifest_sources(
-        lifecycle_manifests.iter().map(|(_, manifest)| manifest),
-        &ws_config_shared,
-        opts.dangerously_allow_all_builds,
-    );
     // Emit policy-config warnings regardless of `--ignore-scripts`.
     // User wants to know about typos in `allowBuilds` even if scripts
     // will not run, otherwise they reenable scripts later and wonder

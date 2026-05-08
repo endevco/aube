@@ -231,6 +231,24 @@ impl BuildPolicy {
     pub fn has_any_allow_rule(&self) -> bool {
         self.allow_all || !self.allowed.is_empty() || !self.allowed_wildcards.is_empty()
     }
+
+    /// Merge another resolved policy into this one. Denies from either
+    /// policy still win at decision time.
+    pub fn merge(&mut self, other: &Self) {
+        self.allow_all |= other.allow_all;
+        self.allowed.extend(other.allowed.iter().cloned());
+        self.denied.extend(other.denied.iter().cloned());
+        merge_unique(&mut self.allowed_wildcards, &other.allowed_wildcards);
+        merge_unique(&mut self.denied_wildcards, &other.denied_wildcards);
+    }
+}
+
+fn merge_unique(target: &mut Vec<String>, source: &[String]) {
+    for value in source {
+        if !target.iter().any(|existing| existing == value) {
+            target.push(value.clone());
+        }
+    }
 }
 
 /// True when a package-pattern entry matches `(name, version)`.
@@ -548,6 +566,23 @@ mod tests {
         let (p, errs) = BuildPolicy::from_config(&map, &[], &never_built, false);
         assert!(errs.is_empty());
         assert_eq!(p.decide("esbuild", "0.19.0"), AllowDecision::Deny);
+    }
+
+    #[test]
+    fn merge_deduplicates_wildcards() {
+        let mut p = policy(&[("@babel/*", true), ("*-internal", false)]);
+        let other = policy(&[
+            ("@babel/*", true),
+            ("@types/*", true),
+            ("*-internal", false),
+        ]);
+        p.merge(&other);
+        p.merge(&other);
+
+        assert_eq!(p.allowed_wildcards, vec!["@babel/*", "@types/*"]);
+        assert_eq!(p.denied_wildcards, vec!["*-internal"]);
+        assert_eq!(p.decide("@types/node", "1.0.0"), AllowDecision::Allow);
+        assert_eq!(p.decide("pkg-internal", "1.0.0"), AllowDecision::Deny);
     }
 
     #[test]

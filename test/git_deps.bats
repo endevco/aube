@@ -102,6 +102,36 @@ EOF
 	(cd "$work" && git rev-parse HEAD)
 }
 
+_make_git_repo_with_prepare_build_dep() {
+	local bare="$1" name="$2" version="$3"
+	local work
+	work="$(temp_make)"
+	(
+		cd "$work" || exit 1
+		git init -q
+		git config commit.gpgsign false
+		cat >package.json <<EOF
+{
+  "name": "$name",
+  "version": "$version",
+  "main": "dist/index.js",
+  "files": ["dist"],
+  "scripts": {
+    "prepare": "mkdir -p dist && printf 'module.exports = true;\\n' > dist/index.js"
+  },
+  "devDependencies": {
+    "aube-test-builds-marker": "^1.0.0"
+  }
+}
+EOF
+		git add -A
+		git commit -q -m "init"
+	)
+	git init -q --bare "$bare"
+	(cd "$work" && git push -q "$bare" HEAD:refs/heads/main)
+	(cd "$work" && git rev-parse HEAD)
+}
+
 @test "aube install handles git+file:// dep" {
 	sha="$(_make_git_repo "$TEST_TEMP_DIR/git-src.git" gitpkg 3.4.5)"
 
@@ -333,6 +363,31 @@ EOF
 	run aube --registry="$AUBE_TEST_REGISTRY" install
 	assert_success
 	assert_file_exists node_modules/gitprepregistry/dist/index.js
+}
+
+@test "git dep prepare nested install inherits top-level allowBuilds" {
+	_make_git_repo_with_prepare_build_dep "$TEST_TEMP_DIR/git-prep-allow-builds.git" gitprepallowbuilds 1.0.0 >/dev/null
+
+	mkdir -p app
+	cd app
+	cat >package.json <<EOF
+{
+  "name": "app",
+  "version": "0.0.0",
+  "dependencies": {
+    "gitprepallowbuilds": "git+file://$TEST_TEMP_DIR/git-prep-allow-builds.git"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "aube-test-builds-marker": true
+    }
+  }
+}
+EOF
+
+	run env AUBE_STRICT_DEP_BUILDS=true aube --registry="$AUBE_TEST_REGISTRY" install
+	assert_success
+	assert_file_exists node_modules/gitprepallowbuilds/dist/index.js
 }
 
 @test "--ignore-scripts reinstall doesn't inherit prior prepare's build artifacts" {
