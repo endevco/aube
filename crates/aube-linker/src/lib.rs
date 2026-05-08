@@ -2331,6 +2331,15 @@ impl Linker {
         // this graph" and the materialize hot path stays unchanged.
         nested_link_targets: Option<&BTreeMap<String, PathBuf>>,
     ) -> Result<(), Error> {
+        let _diag =
+            aube_util::diag::Span::new(aube_util::diag::Category::Linker, "ensure_in_vstore")
+                .with_meta_fn(|| {
+                    format!(
+                        r#"{{"name":{},"files":{}}}"#,
+                        aube_util::diag::jstr(&pkg.name),
+                        index.len()
+                    )
+                });
         // Global-store paths always run through the vstore_key map —
         // when hashes are installed this folds dep-graph + engine
         // state into the leaf name, so concurrent builds of the same
@@ -2730,11 +2739,29 @@ impl Linker {
             store_path: stored.store_path.clone(),
             rel_path: rel_path.to_string(),
         };
+        // Track the realized strategy (may differ from `self.strategy` when
+        // a reflink or hardlink falls back to copy) for diagnostic
+        // attribution. Diag emits a `linker.link_<strategy>` event with
+        // the per-file duration so the analyzer can break down link cost
+        // by realized path: reflink (zero-copy CoW), hardlink (zero-cost
+        // metadata link), copy (full byte transfer), or the
+        // small-file-copy short circuit on macOS.
+        let diag_t0 = aube_util::diag::enabled().then(std::time::Instant::now);
+        let realized: &'static str;
         match self.strategy {
             LinkStrategy::Reflink => {
                 #[cfg(target_os = "macos")]
                 if matches!(stored.size, Some(size) if size <= SMALL_FILE_COPY_MAX) {
                     std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
+                    realized = "macos_small_copy";
+                    if let Some(t0) = diag_t0 {
+                        aube_util::diag::event(
+                            aube_util::diag::Category::Linker,
+                            "link_macos_small_copy",
+                            t0.elapsed(),
+                            None,
+                        );
+                    }
                     return Ok(());
                 }
                 if let Err(e) = reflink_copy::reflink(&stored.store_path, dst) {
@@ -2747,6 +2774,9 @@ impl Linker {
                     // Fall back to copy on cross-filesystem errors
                     trace!("reflink failed, falling back to copy: {e}");
                     std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
+                    realized = "reflink_fallback_copy";
+                } else {
+                    realized = "reflink";
                 }
             }
             LinkStrategy::Hardlink => {
@@ -2757,13 +2787,31 @@ impl Linker {
                     // Fall back to copy on cross-filesystem errors (EXDEV)
                     trace!("hardlink failed, falling back to copy: {e}");
                     std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
+                    realized = "hardlink_fallback_copy";
+                } else {
+                    realized = "hardlink";
                 }
             }
             LinkStrategy::Copy => {
                 std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
+                realized = "copy";
             }
         }
 
+        if let Some(t0) = diag_t0 {
+            // `realized` is one of seven static strings; matching is
+            // O(1) and the static `&str` keeps the JSONL category compact.
+            let name = match realized {
+                "reflink" => "link_reflink",
+                "reflink_fallback_copy" => "link_reflink_fallback",
+                "hardlink" => "link_hardlink",
+                "hardlink_fallback_copy" => "link_hardlink_fallback",
+                "copy" => "link_copy",
+                "macos_small_copy" => "link_macos_small_copy",
+                _ => "link_unknown",
+            };
+            aube_util::diag::event(aube_util::diag::Category::Linker, name, t0.elapsed(), None);
+        }
         Ok(())
     }
 }

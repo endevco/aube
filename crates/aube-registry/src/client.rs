@@ -1245,10 +1245,25 @@ impl RegistryClient {
         }
         let (url, registry_url) = self.packument_url(name);
         let label = format!("packument {name}");
+        let _diag_full =
+            aube_util::diag::Span::new(aube_util::diag::Category::Registry, "fetch_packument")
+                .with_meta_fn(|| format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(name)));
         let max_attempts = self.fetch_policy.retries.saturating_add(1);
         let started = std::time::Instant::now();
         for attempt in 0..max_attempts {
             let is_last = attempt + 1 >= max_attempts;
+            let _diag_attempt = aube_util::diag::Span::new(
+                aube_util::diag::Category::Registry,
+                "packument_http_attempt",
+            )
+            .with_meta_fn(|| {
+                format!(
+                    r#"{{"name":{},"attempt":{}}}"#,
+                    aube_util::diag::jstr(name),
+                    attempt + 1
+                )
+            });
+            let _attempt_send_t0 = std::time::Instant::now();
             match {
                 let req = self
                     .authed_get(&url, registry_url)
@@ -1291,8 +1306,26 @@ impl RegistryClient {
                     return Err(Error::NotFound(name.to_string()));
                 }
                 Ok(resp) => {
+                    aube_util::diag::event_lazy(
+                        aube_util::diag::Category::Registry,
+                        "packument_first_byte",
+                        _attempt_send_t0.elapsed(),
+                        || {
+                            format!(
+                                r#"{{"name":{},"status":{}}}"#,
+                                aube_util::diag::jstr(name),
+                                resp.status().as_u16()
+                            )
+                        },
+                    );
+                    let _diag_parse = aube_util::diag::Span::new(
+                        aube_util::diag::Category::Registry,
+                        "packument_body_parse",
+                    )
+                    .with_meta_fn(|| format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(name)));
                     match parse_full_response::<Packument>(resp.error_for_status()?).await {
                         Ok(packument) => {
+                            drop(_diag_parse);
                             self.maybe_warn_slow_metadata(&label, started);
                             return Ok(packument);
                         }
@@ -1643,6 +1676,16 @@ impl RegistryClient {
         &self,
         url: &str,
     ) -> Result<(bytes::Bytes, [u8; 64]), Error> {
+        let _diag = aube_util::diag::Span::new(
+            aube_util::diag::Category::Registry,
+            "tarball_buffered_with_sha512",
+        )
+        .with_meta_fn(|| {
+            format!(
+                r#"{{"url":{}}}"#,
+                aube_util::diag::jstr(&aube_util::url::redact_url(url))
+            )
+        });
         let safe_url = aube_util::url::redact_url(url);
         let parsed = reqwest::Url::parse(url)
             .map_err(|e| Error::Io(std::io::Error::other(format!("invalid tarball url: {e}"))))?;
@@ -1716,6 +1759,14 @@ impl RegistryClient {
     /// Caller should fall back to fetch_tarball_bytes_streaming_sha512
     /// on error if a retried buffered fetch is desired.
     pub async fn start_tarball_stream(&self, url: &str) -> Result<reqwest::Response, Error> {
+        let _diag =
+            aube_util::diag::Span::new(aube_util::diag::Category::Registry, "tarball_stream_open")
+                .with_meta_fn(|| {
+                    format!(
+                        r#"{{"url":{}}}"#,
+                        aube_util::diag::jstr(&aube_util::url::redact_url(url))
+                    )
+                });
         let safe_url = aube_util::url::redact_url(url);
         let parsed = reqwest::Url::parse(url)
             .map_err(|e| Error::Io(std::io::Error::other(format!("invalid tarball url: {e}"))))?;
@@ -2305,7 +2356,15 @@ async fn parse_full_response<T>(resp: reqwest::Response) -> Result<T, Error>
 where
     T: serde::de::DeserializeOwned,
 {
+    let body_t0 = std::time::Instant::now();
     let bytes = resp.bytes().await?;
+    let body_size = bytes.len();
+    aube_util::diag::event_lazy(
+        aube_util::diag::Category::Registry,
+        "http_body_read",
+        body_t0.elapsed(),
+        || format!(r#"{{"bytes":{}}}"#, body_size),
+    );
     // Reqwest hands us an exclusively-owned `Bytes`, so `try_into_mut`
     // returns `Ok(BytesMut)` without copying. The previous code did a
     // 5-50 MB `to_vec` per packument — on a 200-packument cold install
@@ -2314,11 +2373,19 @@ where
     // weight on the happy path and got us a different error type on
     // the unhappy path. Both errors collapse into the same
     // `Error::Io(InvalidData)` for the user.
+    let parse_t0 = std::time::Instant::now();
     let mut buf = bytes
         .try_into_mut()
         .unwrap_or_else(|b| bytes::BytesMut::from(b.as_ref()));
-    simd_json::serde::from_slice::<T>(&mut buf[..])
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+    let result = simd_json::serde::from_slice::<T>(&mut buf[..])
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)));
+    aube_util::diag::event_lazy(
+        aube_util::diag::Category::Registry,
+        "json_parse_simdjson",
+        parse_t0.elapsed(),
+        || format!(r#"{{"bytes":{}}}"#, body_size),
+    );
+    result
 }
 
 fn read_cached_packument(path: &Path) -> Option<CachedPackument> {

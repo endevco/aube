@@ -335,6 +335,26 @@ pub(crate) struct Cli {
     #[arg(long, global = true, conflicts_with = "no_color")]
     color: bool,
 
+    /// Enable cold-install deep diagnostics. Modes:
+    ///   summary  — sum_ms / mean / max / %wall table at end
+    ///   trace    — summary + critical path + starvation + what-if + lifecycle
+    ///   live     — like trace, plus print every span >= 100ms to stderr live
+    ///   full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)
+    ///
+    /// Quick form: `--diag` with no value defaults to `trace`.
+    /// Output file path can be set via `--diag-file <path>`. Threshold for live
+    /// mode via `--diag-threshold-ms <n>`.
+    #[arg(long, global = true, value_name = "MODE", num_args = 0..=1, default_missing_value = "trace")]
+    diag: Option<String>,
+
+    /// Path for `--diag full` JSONL trace (default: ./aube-diag.jsonl)
+    #[arg(long, global = true, value_name = "PATH")]
+    diag_file: Option<PathBuf>,
+
+    /// Live-mode threshold: only print spans whose duration is >= N ms (default 100).
+    #[arg(long, global = true, value_name = "MS")]
+    diag_threshold_ms: Option<u64>,
+
     /// Error when a workspace selector matches no packages.
     ///
     /// Accepted globally; selected commands already fail on empty matches.
@@ -564,6 +584,8 @@ enum Commands {
     Deprecate(commands::deprecate::DeprecateArgs),
     /// Report deprecated packages in the resolved dependency graph
     Deprecations(commands::deprecations::DeprecationsArgs),
+    /// Diagnostic trace analysis (compare/analyze JSONL traces)
+    Diag(commands::diag::DiagArgs),
     /// Manage package distribution tags on the registry
     #[command(visible_alias = "dist-tags")]
     DistTag(commands::dist_tag::DistTagArgs),
@@ -724,7 +746,19 @@ fn main() {
     // then look up the diagnostic's `code()` against
     // `aube_codes::exit::EXIT_TABLE` to pick a bespoke exit code.
     // Codes outside the table fall through to `EXIT_GENERIC` (1).
-    if let Err(report) = inner_main() {
+    //
+    // Chain a panic hook that flushes the diag buffer before the
+    // default hook prints the panic. Without this, a debug-build panic
+    // (release uses `panic = "abort"` so the hook would not run anyway)
+    // would lose the BufWriter's 64 KiB tail and any unflushed events.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        aube_util::diag::flush();
+        prev_hook(info);
+    }));
+    let result = inner_main();
+    aube_util::diag::flush();
+    if let Err(report) = result {
         eprintln!("{report:?}");
         std::process::exit(report_exit_code(&report));
     }
@@ -898,6 +932,14 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     let settings = load_startup_settings()?;
     let effective_level = resolve_loglevel(&cli, settings.loglevel.as_deref());
     init_logging(&cli, effective_level);
+    // Skip diag init for the `diag` subcommand itself — the analyzer
+    // would otherwise truncate the JSONL file it's about to read.
+    if !matches!(cli.command, Some(Commands::Diag(_))) {
+        match diag_config_from_flag(&cli) {
+            Some(cfg_opt) => aube_util::diag::init_with_config(cfg_opt),
+            None => aube_util::diag::init(),
+        }
+    }
     raise_nofile_limit();
 
     // `--silent` suppresses non-error stderr output from every command,
@@ -960,6 +1002,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
                 return Ok(Some(code));
             }
         }
+        Some(Commands::Diag(args)) => commands::diag::run(args).await?,
         Some(Commands::DistTag(args)) => commands::dist_tag::run(args).await?,
         Some(Commands::Dlx(args)) => commands::dlx::run(args).await?,
         Some(Commands::Doctor(args)) => commands::doctor::run(args).await?,
@@ -1443,6 +1486,52 @@ fn raise_nofile_limit() {
 
 #[cfg(not(unix))]
 fn raise_nofile_limit() {}
+
+/// Build a [`aube_util::diag::DiagConfig`] from the `--diag` flag set, or
+/// `None` to defer to env-var driven init. Returns `Some(None)` when the user
+/// passed an invalid mode (caller still inits, just without diag).
+fn diag_config_from_flag(cli: &Cli) -> Option<Option<aube_util::diag::DiagConfig>> {
+    let mode = cli.diag.as_deref()?;
+    let mode = mode.trim().to_ascii_lowercase();
+    let valid = ["summary", "trace", "live", "full"];
+    if !valid.contains(&mode.as_str()) {
+        eprintln!(
+            "[diag] unknown --diag mode {:?}. Valid: summary | trace | live | full",
+            mode
+        );
+        return Some(None);
+    }
+    let track_events = mode != "summary";
+    let print_stderr = mode == "live";
+    let threshold_ms = if print_stderr {
+        cli.diag_threshold_ms.unwrap_or(100)
+    } else {
+        0
+    };
+    let file = if mode == "full" {
+        Some(
+            cli.diag_file
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("aube-diag.jsonl")),
+        )
+    } else {
+        cli.diag_file.clone()
+    };
+    eprintln!(
+        "[diag] mode={} (summary{}{}{})",
+        mode,
+        if track_events { " + critpath" } else { "" },
+        if print_stderr { " + live" } else { "" },
+        if file.is_some() { " + jsonl" } else { "" }
+    );
+    Some(Some(aube_util::diag::DiagConfig {
+        file,
+        print_stderr,
+        summary: true,
+        track_events,
+        threshold_ms,
+    }))
+}
 
 fn init_logging(cli: &Cli, effective_level: LogLevel) {
     let log_level = effective_level.filter();

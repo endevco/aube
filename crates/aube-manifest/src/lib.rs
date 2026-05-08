@@ -341,6 +341,17 @@ static PACKAGE_JSON_CACHE: aube_util::cache::ProcessCache<PathBuf, PackageJson> 
 
 impl PackageJson {
     pub fn from_path(path: &Path) -> Result<Self, Error> {
+        let _diag = aube_util::diag::Span::new(aube_util::diag::Category::Manifest, "from_path")
+            .with_meta_fn(|| {
+                // Emit only the file name to avoid leaking absolute paths
+                // (and by extension home directory layout / employer-internal
+                // build roots) into traces shared in bug reports.
+                let display = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "package.json".to_string());
+                format!(r#"{{"path":{}}}"#, aube_util::diag::jstr(&display))
+            });
         let content =
             std::fs::read_to_string(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
         Self::parse(path, content)

@@ -453,6 +453,11 @@ pub struct InstallOptions {
 struct InstallPhaseTimings {
     path: Option<std::path::PathBuf>,
     phases_ms: BTreeMap<&'static str, u128>,
+    /// Last kernel snapshot, captured immediately after the previous
+    /// phase recorded. The next [`record`] call diffs against this and
+    /// emits a `kernel.<phase>` event with the per-phase user/sys CPU,
+    /// peak RSS, and page fault deltas.
+    last_kernel_snap: Option<aube_util::diag_kernel::KernelSnapshot>,
 }
 
 impl InstallPhaseTimings {
@@ -460,12 +465,30 @@ impl InstallPhaseTimings {
         Self {
             path: std::env::var_os("AUBE_BENCH_PHASES_FILE").map(std::path::PathBuf::from),
             phases_ms: BTreeMap::new(),
+            last_kernel_snap: aube_util::diag_kernel::snapshot(),
         }
     }
 
     fn record(&mut self, phase: &'static str, elapsed: std::time::Duration) {
         if self.path.is_some() {
             self.phases_ms.insert(phase, elapsed.as_millis());
+        }
+        aube_util::diag::event(
+            aube_util::diag::Category::InstallPhase,
+            phase,
+            elapsed,
+            None,
+        );
+        // When kernel sampling is on, emit a per-phase kernel delta so
+        // user/sys CPU split, page fault counts, and peak RSS land in
+        // the trace alongside the wall-time phase event.
+        if aube_util::diag_kernel::enabled()
+            && let Some(after) = aube_util::diag_kernel::snapshot()
+        {
+            if let Some(before) = self.last_kernel_snap.take() {
+                aube_util::diag_kernel::emit_phase_delta(phase, before, after);
+            }
+            self.last_kernel_snap = Some(after);
         }
     }
 
@@ -944,7 +967,9 @@ pub(super) type MaterializeJoinHandle = tokio::task::JoinHandle<
 /// task spawned later, so the channel creation is split from the
 /// task spawn.
 pub(super) fn materialize_channel() -> MaterializeChannel {
-    tokio::sync::mpsc::channel(MATERIALIZE_CHANNEL_CAPACITY)
+    let (tx, rx) = tokio::sync::mpsc::channel(MATERIALIZE_CHANNEL_CAPACITY);
+    aube_util::diag::register_channel("materialize", &tx, MATERIALIZE_CHANNEL_CAPACITY);
+    (tx, rx)
 }
 
 /// Spawn the GVS-prewarm consumer with the given inputs and rx.
@@ -1010,7 +1035,16 @@ pub(super) async fn run_gvs_prewarm_materializer(
     let build_policy_for_hash = build_policy.clone();
     let engine_for_hash = engine.clone();
     let patch_hashes_for_hash = patch_hashes.clone();
+    aube_util::diag::instant(
+        aube_util::diag::Category::Materialize,
+        "hash_compute_spawn",
+        None,
+    );
     let hash_handle = tokio::task::spawn_blocking(move || {
+        let _diag = aube_util::diag::Span::new(
+            aube_util::diag::Category::Materialize,
+            "graph_hash_compute",
+        );
         let allow = |name: &str, version: &str| {
             matches!(
                 build_policy_for_hash.decide(name, version),
@@ -1055,10 +1089,18 @@ pub(super) async fn run_gvs_prewarm_materializer(
         }
     }
 
+    let _diag_hash_wait =
+        aube_util::diag::Span::new(aube_util::diag::Category::Materialize, "hash_await");
     let graph_hashes = hash_handle
         .await
         .into_diagnostic()
         .wrap_err("graph_hash compute task failed")?;
+    drop(_diag_hash_wait);
+    aube_util::diag::instant(
+        aube_util::diag::Category::Materialize,
+        "drain_rx_begin",
+        None,
+    );
     let graph_hashes_arc = std::sync::Arc::new(graph_hashes);
     let mut linker = probe.with_graph_hashes((*graph_hashes_arc).clone());
     if !patches.is_empty() {
@@ -1098,9 +1140,29 @@ pub(super) async fn run_gvs_prewarm_materializer(
             let index = index.clone();
             let nested_link_targets = nested_link_targets.clone();
             in_flight.push(tokio::spawn(async move {
+                let _diag_pkg =
+                    aube_util::diag::Span::new(aube_util::diag::Category::Materialize, "package")
+                        .with_meta_fn(|| {
+                            format!(r#"{{"dep_path":{}}}"#, aube_util::diag::jstr(&dep_path))
+                        });
+                let _diag_pkg_inflight = aube_util::diag::inflight(aube_util::diag::Slot::Imp);
+                let permit_wait = std::time::Instant::now();
                 let _permit = sem.acquire().await.unwrap();
+                let permit_wait_ms = permit_wait.elapsed();
+                if permit_wait_ms.as_millis() > 1 {
+                    aube_util::diag::event_lazy(
+                        aube_util::diag::Category::Materialize,
+                        "permit_wait",
+                        permit_wait_ms,
+                        || format!(r#"{{"dep_path":{}}}"#, aube_util::diag::jstr(&dep_path)),
+                    );
+                }
                 let dep_path_for_err = dep_path.clone();
                 tokio::task::spawn_blocking(move || -> miette::Result<_> {
+                    let _diag_blk = aube_util::diag::Span::new(
+                        aube_util::diag::Category::Materialize,
+                        "package_blocking",
+                    );
                     let mut stats = aube_linker::LinkStats::default();
                     linker
                         .ensure_in_virtual_store(
@@ -1685,11 +1747,28 @@ where
         while let Some(joined) = handles.join_next().await {
             let (dep_path, index) = joined.into_diagnostic()??;
             if let Some(tx) = materialize_tx.as_ref() {
+                // Time channel send so back-pressure events show up in
+                // the trace. The materialize channel is bounded; if the
+                // consumer falls behind, `send().await` blocks until a
+                // permit frees, which is otherwise invisible in
+                // `fetch.tarball` totals.
+                let send_t0 = aube_util::diag::enabled().then(std::time::Instant::now);
                 tx.send((dep_path.clone(), index.clone()))
                     .await
                     .map_err(|_| {
                         miette!("materializer task exited before fetch_packages finished")
                     })?;
+                if let Some(t0) = send_t0 {
+                    let elapsed = t0.elapsed();
+                    if elapsed.as_millis() >= 1 {
+                        aube_util::diag::event(
+                            aube_util::diag::Category::Channel,
+                            "materialize_send_wait",
+                            elapsed,
+                            None,
+                        );
+                    }
+                }
             }
             indices.insert(dep_path, index);
         }
@@ -1800,6 +1879,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let _lock = super::take_project_lock(&cwd)?;
     let start = std::time::Instant::now();
     let mut phase_timings = InstallPhaseTimings::from_env();
+    aube_util::diag::spawn_concurrency_sampler();
+    aube_util::diag::instant(aube_util::diag::Category::Install, "begin", None);
+    let _diag_install = aube_util::diag::Span::new(aube_util::diag::Category::Install, "total");
 
     // `--force`: wipe the auto-install state file so the freshness
     // check in `ensure_installed` can't short-circuit the next run,
@@ -3336,7 +3418,26 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 
                     handles.spawn(async move {
                         let _row = row;
+                        let _diag_tar = aube_util::diag::Span::new(aube_util::diag::Category::Fetch, "tarball")
+                            .with_meta_fn(|| format!(r#"{{"name":{},"version":{}}}"#,
+                                aube_util::diag::jstr(&pkg.name), aube_util::diag::jstr(&pkg.version)));
+                        let _diag_tar_inflight = aube_util::diag::inflight(aube_util::diag::Slot::Tar);
+                        let permit_wait = std::time::Instant::now();
                         let permit = sem.acquire().await.unwrap();
+                        let permit_wait_ms = permit_wait.elapsed();
+                        let pkg_id_for_diag = format!("{}@{}", pkg.name, pkg.version);
+                        if permit_wait_ms.as_millis() > 1 {
+                            aube_util::diag::event_lazy(aube_util::diag::Category::Fetch, "tarball_permit_wait", permit_wait_ms, || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&pkg.name)));
+                        }
+                        aube_util::diag::attribute_wait(
+                            aube_util::diag::Slot::Tar,
+                            &pkg_id_for_diag,
+                            permit_wait_ms,
+                        );
+                        let _tar_holder = aube_util::diag::register_holder(
+                            aube_util::diag::Slot::Tar,
+                            &pkg_id_for_diag,
+                        );
                         let url = pkg.tarball_url.clone().unwrap_or_else(|| {
                             client.tarball_url(&pkg_registry_name, &pkg.version)
                         });
@@ -3352,6 +3453,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                             && integrity
                                 .as_deref()
                                 .is_none_or(|s| s.starts_with("sha512-"));
+                        aube_util::diag::instant_lazy(aube_util::diag::Category::Fetch, "tarball_path", || format!(r#"{{"streaming":{},"name":{}}}"#, stream_eligible, aube_util::diag::jstr(&pkg.name)));
                         if stream_eligible {
                             let (index, bytes_len) = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
                                 &client,
@@ -3449,6 +3551,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // drifted. `No` mode (`--no-frozen-lockfile`) intentionally
             // stays at `None` so the user gets the fresh resolve they
             // asked for.
+            aube_util::diag::instant(aube_util::diag::Category::Install, "resolve_begin", None);
+            let _diag_resolve =
+                aube_util::diag::Span::new(aube_util::diag::Category::Install, "phase_resolve");
             let resolve_result = if has_workspace {
                 resolver
                     .resolve_workspace(&manifests, existing_for_resolver, &ws_package_versions)
@@ -3504,6 +3609,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             }
             tracing::debug!("phase:resolve (fresh) {:.1?}", phase_start.elapsed());
             phase_timings.record("resolve", phase_start.elapsed());
+            drop(_diag_resolve);
+            aube_util::diag::instant(aube_util::diag::Category::Install, "resolve_end", None);
 
             // fetch_handle streams imported (dep_path, index) tuples
             // into the materializer, which reflinks each into
@@ -3530,6 +3637,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 build_policy: build_policy_for_prewarm.clone(),
                 use_global_virtual_store_override,
             };
+            aube_util::diag::instant(
+                aube_util::diag::Category::Install,
+                "materialize_spawn",
+                None,
+            );
             let materialize_handle = spawn_gvs_prewarm(materialize_inputs, materialize_rx);
 
             // Wait for all fetches to complete. If fetch fails we have
@@ -3537,6 +3649,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // `JoinHandle` only detaches the task, so otherwise the
             // install would return an error while the materializer
             // kept reflinking packages into the GVS in the background.
+            let _diag_fetch_wait =
+                aube_util::diag::Span::new(aube_util::diag::Category::Install, "phase_fetch_await");
             let fetch_phase_start = std::time::Instant::now();
             let fetch_result = match fetch_handle.await.into_diagnostic()? {
                 Ok(v) => v,
@@ -3551,11 +3665,23 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 fetch_phase_start.elapsed()
             );
             phase_timings.record("fetch", fetch_phase_start.elapsed());
+            drop(_diag_fetch_wait);
+            aube_util::diag::instant(aube_util::diag::Category::Install, "fetch_await_end", None);
             // Drain the materializer; its stats get rolled into the
             // final link stats below. Errors abort the install just like
             // a failing link phase would.
+            let _diag_mat_wait = aube_util::diag::Span::new(
+                aube_util::diag::Category::Install,
+                "phase_materialize_await",
+            );
             let (prewarm_stats, prewarm_hashes_from_task) =
                 materialize_handle.await.into_diagnostic()??;
+            drop(_diag_mat_wait);
+            aube_util::diag::instant(
+                aube_util::diag::Category::Install,
+                "materialize_await_end",
+                None,
+            );
             prewarm_graph_hashes = prewarm_hashes_from_task;
             tracing::debug!(
                 "phase:prewarm-gvs {:.1?} ({} packages, {} files)",

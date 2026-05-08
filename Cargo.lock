@@ -406,6 +406,7 @@ name = "aube-scripts"
 version = "1.9.1"
 dependencies = [
  "aube-manifest",
+ "aube-util",
  "landlock",
  "libc",
  "miette",

@@ -683,6 +683,19 @@ pub async fn run_script(
     extra_bin_dirs: &[&Path],
     jail: Option<&ScriptJail>,
 ) -> Result<(), Error> {
+    // Per-script diag span. Tags the package name (when present) and the
+    // script name so the analyzer can attribute postinstall / preinstall /
+    // build cost to the exact lifecycle entry rather than the aggregate
+    // `dep_lifecycle` phase total.
+    let _diag = aube_util::diag::Span::new(aube_util::diag::Category::Script, "run_script")
+        .with_meta_fn(|| {
+            let pkg = manifest.name.as_deref().unwrap_or("(root)");
+            format!(
+                r#"{{"pkg":{},"script":{}}}"#,
+                aube_util::diag::jstr(pkg),
+                aube_util::diag::jstr(script_name)
+            )
+        });
     // PATH prepends (most-local-first): `extra_bin_dirs` in caller
     // order, then the project root's `<modules_dir>/.bin`. For root
     // scripts `script_dir == project_root` and `extra_bin_dirs` is

@@ -490,9 +490,21 @@ impl Store {
     /// exist yet, the `create_new` open will fail with `NotFound`; we
     /// fall back to the slow path for correctness.
     pub fn import_bytes(&self, content: &[u8], executable: bool) -> Result<StoredFile, Error> {
+        let hash_t0 = std::time::Instant::now();
         let hex_hash = blake3_hex(content);
+        if aube_util::diag::enabled() {
+            aube_util::diag::event_lazy(
+                aube_util::diag::Category::Store,
+                "blake3_hash",
+                hash_t0.elapsed(),
+                || format!(r#"{{"size":{}}}"#, content.len()),
+            );
+        }
 
         let store_path = self.file_path_from_hex(&hex_hash);
+        let _diag_write =
+            aube_util::diag::Span::new(aube_util::diag::Category::Store, "import_bytes_write")
+                .with_meta_fn(|| format!(r#"{{"size":{}}}"#, content.len()));
 
         // Fast path: open-with-create-new combines the existence check
         // and the open into a single syscall. On a cold CAS this does
@@ -507,6 +519,19 @@ impl Store {
         // the `AlreadyExisted` branch can produce a torn file (from a
         // crashed predecessor) so the length check runs there only.
         let outcome = Self::create_cas_file(&store_path, Some(content))?;
+        // Surface CAS dedup hit/miss to diag so cold vs warm vs partial
+        // installs can be classified post-hoc. `cas_hit` fires when an
+        // identical-content file already lived in the store; `cas_miss`
+        // fires when we just wrote new bytes.
+        if aube_util::diag::enabled() {
+            let name = match outcome {
+                CasWriteOutcome::Created => "cas_miss",
+                CasWriteOutcome::AlreadyExisted => "cas_hit",
+            };
+            aube_util::diag::instant_lazy(aube_util::diag::Category::Store, name, || {
+                format!(r#"{{"size":{}}}"#, content.len())
+            });
+        }
         if outcome == CasWriteOutcome::AlreadyExisted
             && !cas_file_matches_len(&store_path, content.len() as u64)
         {
@@ -653,6 +678,11 @@ impl Store {
     ) -> Result<PackageIndex, Error> {
         use std::io::Read;
 
+        let _diag =
+            aube_util::diag::Span::new(aube_util::diag::Category::Store, "import_tarball_reader");
+        let _diag_decode = aube_util::diag::inflight(aube_util::diag::Slot::Decode);
+        let extract_t0 = std::time::Instant::now();
+
         // Caps defend against gzip bombs and lying tar headers. The
         // values sit well above any real npm package (largest top
         // 1000 are in the tens of MiB) but low enough to prevent a
@@ -669,6 +699,12 @@ impl Store {
         let mut archive = tar::Archive::new(buffered);
         let mut staged: Vec<(String, Vec<u8>, bool)> = Vec::new();
         let mut entries_seen: usize = 0;
+        let mut total_uncompressed: u64 = 0;
+        // Cumulative time spent inside per-entry read_to_end calls. Since
+        // flate2's GzDecoder is lazy, all decompression happens through
+        // these reads — so this counter approximates total gzip CPU cost
+        // separate from tar header parsing and per-entry alloc.
+        let mut decode_ns: u128 = 0;
 
         for entry in archive.entries().map_err(|e| Error::Tar(e.to_string()))? {
             entries_seen += 1;
@@ -744,10 +780,12 @@ impl Store {
             // MiB reservation before any byte has been read. read_to_end
             // grows the Vec for the rare entry that really is huge.
             let mut content = Vec::with_capacity((declared as usize).min(VEC_PREALLOC_CEILING));
+            let read_t0 = std::time::Instant::now();
             (&mut entry)
                 .take(MAX_TARBALL_ENTRY_BYTES)
                 .read_to_end(&mut content)
                 .map_err(|e| Error::Tar(e.to_string()))?;
+            decode_ns += read_t0.elapsed().as_nanos();
 
             // Reject header that declared 0 bytes but produced a
             // non-empty stream. Synthetic-entry injection: header
@@ -761,11 +799,40 @@ impl Store {
 
             let mode = entry.header().mode().unwrap_or(0o644);
             let executable = mode & 0o111 != 0;
+            total_uncompressed = total_uncompressed.saturating_add(content.len() as u64);
             staged.push((rel_path, content, executable));
+        }
+
+        aube_util::diag::event_lazy(
+            aube_util::diag::Category::Store,
+            "tar_extract_complete",
+            extract_t0.elapsed(),
+            || {
+                format!(
+                    r#"{{"entries":{},"bytes_uncompressed":{}}}"#,
+                    staged.len(),
+                    total_uncompressed
+                )
+            },
+        );
+        // Decompression sub-time is the cumulative duration of every
+        // per-entry `read_to_end` call. Since flate2's `GzDecoder` is
+        // lazy, all gunzip CPU cost is paid through these reads, so this
+        // counter approximates total gzip work separate from tar header
+        // parsing and per-entry allocation.
+        if aube_util::diag::enabled() {
+            aube_util::diag::event_lazy(
+                aube_util::diag::Category::Store,
+                "gzip_decompress",
+                std::time::Duration::from_nanos(decode_ns as u64),
+                || format!(r#"{{"bytes_uncompressed":{total_uncompressed}}}"#),
+            );
         }
 
         let parallel_disabled = std::env::var_os("AUBE_DISABLE_PARALLEL_IMPORT").is_some();
         let mut index = BTreeMap::new();
+        let cas_t0 = std::time::Instant::now();
+        let staged_count = staged.len();
         if parallel_disabled || staged.len() < PARALLEL_IMPORT_THRESHOLD {
             for (rel_path, content, executable) in staged {
                 let stored = self.import_bytes(&content, executable)?;
@@ -792,6 +859,18 @@ impl Store {
             }
         }
 
+        aube_util::diag::event_lazy(
+            aube_util::diag::Category::Store,
+            "cas_import_complete",
+            cas_t0.elapsed(),
+            || {
+                format!(
+                    r#"{{"files":{},"parallel":{}}}"#,
+                    staged_count,
+                    !parallel_disabled && staged_count >= PARALLEL_IMPORT_THRESHOLD
+                )
+            },
+        );
         Ok(index)
     }
 }

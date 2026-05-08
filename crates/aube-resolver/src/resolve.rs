@@ -234,10 +234,37 @@ impl Resolver {
                     let force_metadata_primer = self.force_metadata_primer;
                     let sem = shared_semaphore.clone();
                     in_flight.spawn(async move {
+                        let _diag_span = aube_util::diag::Span::new(
+                            aube_util::diag::Category::Resolver,
+                            "packument_fetch",
+                        )
+                        .with_meta_fn(|| {
+                            format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned))
+                        });
+                        let _diag_inflight = aube_util::diag::inflight(aube_util::diag::Slot::Pack);
+                        let permit_wait = std::time::Instant::now();
                         let _permit = sem
                             .acquire_owned()
                             .await
                             .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+                        let permit_wait_ms = permit_wait.elapsed();
+                        if permit_wait_ms.as_millis() > 1 {
+                            aube_util::diag::event_lazy(
+                                aube_util::diag::Category::Resolver,
+                                "packument_permit_wait",
+                                permit_wait_ms,
+                                || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned)),
+                            );
+                        }
+                        aube_util::diag::attribute_wait(
+                            aube_util::diag::Slot::Pack,
+                            &name_owned,
+                            permit_wait_ms,
+                        );
+                        let _holder_guard = aube_util::diag::register_holder(
+                            aube_util::diag::Slot::Pack,
+                            &name_owned,
+                        );
                         let mut cached = if needs_time {
                             match full_cache_dir.as_ref() {
                                 Some(dir) => client.cached_full_packument_lookup(&name_owned, dir),
@@ -249,6 +276,11 @@ impl Resolver {
                             Default::default()
                         };
                         if let Some(packument) = cached.packument.take() {
+                            aube_util::diag::instant_lazy(
+                                aube_util::diag::Category::Resolver,
+                                "packument_disk_hit",
+                                || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned)),
+                            );
                             return Ok::<_, Error>((name_owned, packument, false));
                         }
                         if use_metadata_primer
@@ -287,6 +319,11 @@ impl Resolver {
                                     false,
                                 );
                             }
+                            aube_util::diag::instant_lazy(
+                                aube_util::diag::Category::Resolver,
+                                "packument_primer_hit",
+                                || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned)),
+                            );
                             return Ok::<_, Error>((name_owned, packument, true));
                         }
                         let packument = if needs_time {
@@ -310,6 +347,11 @@ impl Resolver {
                             client.fetch_packument(&name_owned).await
                         }
                         .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+                        aube_util::diag::instant_lazy(
+                            aube_util::diag::Category::Resolver,
+                            "packument_network_hit",
+                            || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned)),
+                        );
                         Ok::<_, Error>((name_owned, packument, false))
                     });
                 }
@@ -1279,6 +1321,11 @@ impl Resolver {
                 // returns the alias-resolved target (`h3`) on
                 // aliased tasks and `task.name` otherwise.
                 let fetch_name = task.registry_name().to_string();
+                let _diag_task_wait = aube_util::diag::Span::new(
+                    aube_util::diag::Category::Resolver,
+                    "task_wait_packument",
+                )
+                .with_meta_fn(|| format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&fetch_name)));
                 while !self.cache.contains_key(&fetch_name) {
                     ensure_fetch!(&fetch_name);
                     match in_flight.join_next().await {
@@ -2017,6 +2064,17 @@ impl Resolver {
             lockfile_reuse_count,
             resolved.len()
         );
+        // Surface the resolver mix to the diag analyzer so the lockfile
+        // reuse path can be spotted independently of the cold no-lockfile
+        // path. Counts of: total packages resolved, of which N reused
+        // from a prior lockfile and M required a network packument fetch.
+        let resolved_count = resolved.len();
+        aube_util::diag::instant_lazy(aube_util::diag::Category::Resolver, "decision_mix", || {
+            format!(
+                r#"{{"resolved":{},"lockfile_reused":{},"packuments_fetched":{}}}"#,
+                resolved_count, lockfile_reuse_count, packument_fetch_count
+            )
+        });
 
         let resolved_catalogs =
             catalog::materialize_catalog_picks(catalog_picks, &resolved_versions);
@@ -2073,7 +2131,10 @@ impl Resolver {
             resolve_from_workspace_root: self.resolve_peers_from_workspace_root,
             peers_suffix_max_length: self.peers_suffix_max_length,
         };
+        let _diag_peer =
+            aube_util::diag::Span::new(aube_util::diag::Category::Resolver, "peer_context_apply");
         let contextualized = apply_peer_contexts(hoisted, &peer_options)?;
+        drop(_diag_peer);
         tracing::debug!(
             "peer-context pass produced {} contextualized packages",
             contextualized.packages.len()

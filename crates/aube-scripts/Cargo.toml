@@ -18,6 +18,7 @@ include = ["src/**/*.rs"]
 # the dep as unused. Validation that the names exist in `aube-codes`'s
 # registry is a workspace-level concern, not a per-crate one.
 aube-manifest = { workspace = true }
+aube-util = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }

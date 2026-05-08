@@ -228,13 +228,18 @@ fn check_needs_install_inner(
     project_dir: &Path,
     cli_flags: Option<&[(String, String)]>,
 ) -> Option<String> {
+    let _diag =
+        aube_util::diag::Span::new(aube_util::diag::Category::Frozen, "check_needs_install");
     let (modules_dir, state_path) = resolve_paths(project_dir);
 
     // No state directory = never installed (or `rm -rf <modulesDir>` wiped it).
+    let _diag_read =
+        aube_util::diag::Span::new(aube_util::diag::Category::Frozen, "read_state_file");
     let state = match read_or_migrate_fresh_state(&state_path) {
         Some(s) => s,
         None => return Some("install state not found".into()),
     };
+    drop(_diag_read);
 
     // In the default config the state file lives inside `modulesDir` so
     // `rm -rf <modules>` wipes it. But `stateDir` can point elsewhere,
@@ -255,6 +260,7 @@ fn check_needs_install_inner(
     // base lockfile names so a freshly-enabled branch doesn't loop on
     // "no lockfile found" — see `active_lockfile` for the full resolution
     // order.
+    let _diag_lock = aube_util::diag::Span::new(aube_util::diag::Category::Frozen, "lockfile_hash");
     let (lockfile_name, lockfile_path) = active_lockfile(project_dir);
     let mut lockfile_missing = false;
     if let Some(path) = lockfile_path {
@@ -265,10 +271,14 @@ fn check_needs_install_inner(
     } else {
         lockfile_missing = true;
     }
+    drop(_diag_lock);
 
+    let _diag_pjs =
+        aube_util::diag::Span::new(aube_util::diag::Category::Frozen, "package_jsons_stale");
     if let Some(reason) = package_jsons_stale(project_dir, &state) {
         return Some(reason);
     }
+    drop(_diag_pjs);
 
     if state.section_filtered {
         return Some(
@@ -276,11 +286,16 @@ fn check_needs_install_inner(
         );
     }
 
+    let _diag_layout =
+        aube_util::diag::Span::new(aube_util::diag::Category::Frozen, "verify_install_layout");
     if let Some(reason) = verify_install_layout(project_dir, state.layout.as_ref()) {
         return Some(reason);
     }
+    drop(_diag_layout);
 
     if let Some(cli_flags) = cli_flags {
+        let _diag_settings =
+            aube_util::diag::Span::new(aube_util::diag::Category::Frozen, "settings_hash");
         let current_settings_hash = hash_settings(project_dir, cli_flags);
         if current_settings_hash != state.settings_hash {
             return Some(".npmrc or workspace config has changed".into());

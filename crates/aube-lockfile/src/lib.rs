@@ -1762,6 +1762,14 @@ pub fn write_lockfile_as(
     manifest: &aube_manifest::PackageJson,
     kind: LockfileKind,
 ) -> Result<PathBuf, Error> {
+    let _diag = aube_util::diag::Span::new(aube_util::diag::Category::Lockfile, "write")
+        .with_meta_fn(|| {
+            format!(
+                r#"{{"kind":{},"packages":{}}}"#,
+                aube_util::diag::jstr(&format!("{:?}", kind)),
+                graph.packages.len()
+            )
+        });
     let filename = match kind {
         LockfileKind::Aube => aube_lock_filename(project_dir),
         LockfileKind::Pnpm => pnpm_lock_filename(project_dir),
@@ -1993,6 +2001,20 @@ fn parse_one(
     kind: LockfileKind,
     manifest: &aube_manifest::PackageJson,
 ) -> Result<LockfileGraph, Error> {
+    let _diag = aube_util::diag::Span::new(aube_util::diag::Category::Lockfile, "parse_one")
+        .with_meta_fn(|| {
+            // Emit only the file name (e.g. `aube-lock.yaml`) so traces
+            // do not leak absolute project paths.
+            let display = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            format!(
+                r#"{{"kind":{},"path":{}}}"#,
+                aube_util::diag::jstr(&format!("{:?}", kind)),
+                aube_util::diag::jstr(&display)
+            )
+        });
     match kind {
         // `aube-lock.yaml` uses the same on-disk format as pnpm v9 for
         // now — same parser, same writer — so we piggyback on the pnpm

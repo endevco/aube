@@ -2,7 +2,13 @@ pub mod buf;
 pub mod cache;
 pub mod collections;
 pub mod concurrency;
+pub mod diag;
+pub mod diag_kernel;
 pub mod env;
+
+// Convenience re-exports of the diagnostics public API so binaries can
+// reference `aube_util::DiagConfig` instead of `aube_util::diag::DiagConfig`.
+pub use diag::{DiagConfig, Slot, Span, jstr};
 pub mod fs;
 pub mod fs_atomic;
 pub mod hash;
