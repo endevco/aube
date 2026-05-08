@@ -112,6 +112,45 @@ pub fn topological_sort(packages: Vec<SelectedPackage>) -> Vec<SelectedPackage> 
         .collect()
 }
 
+/// For each package in `packages`, the indices of *other* packages in
+/// the same slice it depends on (intra-set edges only). Returned shape:
+/// `out[i]` is the list of prerequisite indices for `packages[i]`.
+///
+/// Used by the bounded-parallel paths to wait for a dependent's
+/// workspace deps to finish before claiming its concurrency slot. The
+/// edge definition matches [`topological_sort`] exactly so a `--sort`
+/// run and a `--workspace-concurrency=N` run see the same intra-workspace
+/// dep graph.
+pub fn compute_prereq_indices(packages: &[SelectedPackage]) -> Vec<Vec<usize>> {
+    let by_name: BTreeMap<&str, usize> = packages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.name.as_deref().map(|n| (n, i)))
+        .collect();
+    packages
+        .iter()
+        .enumerate()
+        .map(|(i, pkg)| {
+            let m = &pkg.manifest;
+            let mut prereqs: BTreeSet<usize> = BTreeSet::new();
+            for dep in m
+                .dependencies
+                .keys()
+                .chain(m.dev_dependencies.keys())
+                .chain(m.optional_dependencies.keys())
+                .chain(m.peer_dependencies.keys())
+            {
+                if let Some(&j) = by_name.get(dep.as_str())
+                    && j != i
+                {
+                    prereqs.insert(j);
+                }
+            }
+            prereqs.into_iter().collect()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +246,32 @@ mod tests {
         assert!(topological_sort(vec![]).is_empty());
         let single = topological_sort(vec![pkg("only", &[])]);
         assert_eq!(names(&single), vec!["only"]);
+    }
+
+    #[test]
+    fn compute_prereq_indices_returns_intra_set_dep_indices() {
+        // app depends on lib + external; lib depends on core; core has none.
+        // Index 0 = app, 1 = lib, 2 = core. External deps don't appear.
+        let pkgs = vec![
+            pkg("app", &["lib", "lodash"]),
+            pkg("lib", &["core"]),
+            pkg("core", &[]),
+        ];
+        let prereqs = compute_prereq_indices(&pkgs);
+        assert_eq!(prereqs[0], vec![1]); // app -> lib
+        assert_eq!(prereqs[1], vec![2]); // lib -> core
+        assert!(prereqs[2].is_empty()); // core has no intra-set deps
+    }
+
+    #[test]
+    fn compute_prereq_indices_dedupes_when_same_dep_in_multiple_sections() {
+        // A package can list the same name in dependencies AND
+        // peerDependencies; we want one prereq edge, not two.
+        let mut a = pkg("a", &["b"]);
+        a.manifest
+            .peer_dependencies
+            .insert("b".to_string(), "*".to_string());
+        let prereqs = compute_prereq_indices(&[a, pkg("b", &[])]);
+        assert_eq!(prereqs[0], vec![1]);
     }
 }

@@ -176,6 +176,16 @@ async fn run_filtered_parallel(
         }
     }
 
+    // Topo barrier: same dep-before-dependent contract as
+    // `run_filtered_parallel` in run.rs. `aube exec -r make` over a
+    // chain of workspace packages needs every dep's `make` to finish
+    // before the dependent's `make` reads its outputs. See that
+    // function's doc for the watch-channel rationale.
+    let prereqs = aube_workspace::topo::compute_prereq_indices(&matched);
+    let completion: Vec<tokio::sync::watch::Sender<bool>> = (0..matched.len())
+        .map(|_| tokio::sync::watch::channel(false).0)
+        .collect();
+
     let sem = Arc::new(Semaphore::new(concurrency));
     let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
         Vec::with_capacity(matched.len());
@@ -190,6 +200,11 @@ async fn run_filtered_parallel(
         } else {
             super::run_output::OutputMode::prefix(pkg.name.as_deref(), index)
         };
+        let prereq_rxs: Vec<tokio::sync::watch::Receiver<bool>> = prereqs[index]
+            .iter()
+            .map(|&j| completion[j].subscribe())
+            .collect();
+        let done_tx = completion[index].clone();
         let bin_path = super::project_modules_dir(&pkg.dir).join(".bin").join(bin);
         let dir = pkg.dir.clone();
         let bin = bin.to_string();
@@ -197,11 +212,21 @@ async fn run_filtered_parallel(
         let sem = Arc::clone(&sem);
         task_names.push(name);
         tasks.push(tokio::spawn(async move {
+            for mut rx in prereq_rxs {
+                while !*rx.borrow_and_update() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
             let _permit = sem
                 .acquire_owned()
                 .await
                 .map_err(|e| miette!("workspace concurrency semaphore closed: {e}"))?;
-            exec_bin_status(&dir, &bin_path, &bin, &args, shell_mode, &output_mode).await
+            let result =
+                exec_bin_status(&dir, &bin_path, &bin, &args, shell_mode, &output_mode).await;
+            let _ = done_tx.send(true);
+            result
         }));
     }
 

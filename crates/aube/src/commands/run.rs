@@ -543,13 +543,17 @@ pub(crate) fn order_matched_packages(
         matched.reverse();
     }
     if let Some(name) = recursive.resume_from.as_deref() {
+        // Used by both `aube run -r` and `aube exec -r`, so the
+        // message intentionally doesn't name a specific subcommand.
+        // Miette already prefixes the diagnostic chain with the
+        // command context.
         let idx = matched
             .iter()
             .position(|p| p.name.as_deref() == Some(name))
             .ok_or_else(|| {
                 miette!(
-                    "aube run: --resume-from package `{name}` is not in the \
-                     matched workspace set"
+                    "--resume-from package `{name}` is not in the matched \
+                     workspace set"
                 )
             })?;
         matched.drain(..idx);
@@ -559,8 +563,12 @@ pub(crate) fn order_matched_packages(
 
 /// Map `--parallel` + `--workspace-concurrency` to a single concurrency
 /// cap. `1` means "use the sequential path" (bail-on-first behavior);
-/// any value `> 1` takes the bounded-parallel path. `usize::MAX` is the
-/// previous unbounded `--parallel` behavior.
+/// any value `> 1` takes the bounded-parallel path. `--parallel` alone
+/// resolves to [`tokio::sync::Semaphore::MAX_PERMITS`] (= `usize::MAX >> 3`),
+/// which is effectively unbounded for any real workspace and avoids
+/// the runtime panic `Semaphore::new(usize::MAX)` triggers on its
+/// internal `MAX_PERMITS` invariant. Any user-supplied cap is also
+/// clamped to that ceiling.
 pub(crate) fn effective_concurrency(parallel: bool, workspace_concurrency: Option<usize>) -> usize {
     match (parallel, workspace_concurrency) {
         // pnpm: `workspace-concurrency=0` means "use available CPUs".
@@ -571,26 +579,33 @@ pub(crate) fn effective_concurrency(parallel: bool, workspace_concurrency: Optio
             .map(|n| n.get())
             .unwrap_or(1)
             .max(1),
-        (_, Some(n)) => n,
+        (_, Some(n)) => n.min(tokio::sync::Semaphore::MAX_PERMITS),
         // `--parallel` with no explicit cap preserves the historical
         // unbounded fanout. Power users on a 200-package workspace who
         // upgrade to a version with default-bounded parallel would be
         // surprised by an apparent slowdown; keep the explicit
         // unbounded request honored.
-        (true, None) => usize::MAX,
+        (true, None) => tokio::sync::Semaphore::MAX_PERMITS,
         (false, None) => 1,
     }
 }
 
-/// Bounded parallel fanout. Spawns a task per matched package and uses
-/// a [`tokio::sync::Semaphore`] to keep at most `concurrency` running at
-/// any moment. Mirrors the original parallel branch's behavior: validate
-/// every package up front (no orphaned children if a script-name lookup
-/// errors mid-spawn), let all started tasks finish so output isn't
-/// truncated by an early bail, and report the first non-zero exit's
-/// code through `std::process::exit`. Output mode per task: prefixed
-/// (`<pkg>: <line>`, color-rotated) by default; unprefixed but still
-/// piped under `--reporter-hide-prefix`.
+/// Bounded parallel fanout with topo-aware ordering.
+///
+/// Each task waits for every intra-workspace dep to finish (success or
+/// failure) before claiming a [`tokio::sync::Semaphore`] permit. With
+/// `concurrency = N`, that gives at most `N` running at once *and* the
+/// dep-before-dependent invariant — without it, a chain `core → lib → app`
+/// at `--workspace-concurrency=2` would let `app` start while `lib` is
+/// still running once `core` released its slot.
+///
+/// Other guarantees preserved from the previous implementation:
+/// validate every package up front (no orphaned children if a
+/// script-name lookup errors mid-spawn), let every started task finish
+/// so output isn't truncated by an early bail, and report the first
+/// non-zero exit's code through `std::process::exit`. Output mode per
+/// task: prefixed (`<pkg>: <line>`, color-rotated) by default;
+/// unprefixed but still piped under `--reporter-hide-prefix`.
 #[allow(clippy::too_many_arguments)]
 async fn run_filtered_parallel(
     script: &str,
@@ -632,6 +647,21 @@ async fn run_filtered_parallel(
         })
         .collect::<miette::Result<Vec<_>>>()?;
 
+    // Compute prereqs against the post-`if_present` filtered set so a
+    // dependent doesn't deadlock waiting on a sibling that was skipped
+    // because it had no matching script.
+    let runnable_pkgs: Vec<aube_workspace::selector::SelectedPackage> =
+        runnable.iter().map(|(p, _)| p.clone()).collect();
+    let prereqs = aube_workspace::topo::compute_prereq_indices(&runnable_pkgs);
+    // One sender per package; dependents subscribe via `subscribe()`
+    // before spawning so the receiver exists when the prereq's task
+    // calls `send`. The initial receiver is dropped immediately —
+    // packages with no dependents have no subscribers, and `send` on
+    // a no-receiver channel is a benign Err we ignore.
+    let completion: Vec<tokio::sync::watch::Sender<bool>> = (0..runnable.len())
+        .map(|_| tokio::sync::watch::channel(false).0)
+        .collect();
+
     let sem = Arc::new(Semaphore::new(concurrency));
     let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
         Vec::with_capacity(runnable.len());
@@ -649,6 +679,11 @@ async fn run_filtered_parallel(
         } else {
             super::run_output::OutputMode::prefix(pkg.name.as_deref(), index)
         };
+        let prereq_rxs: Vec<tokio::sync::watch::Receiver<bool>> = prereqs[index]
+            .iter()
+            .map(|&j| completion[j].subscribe())
+            .collect();
+        let done_tx = completion[index].clone();
         let script = script.to_string();
         let args = args.to_vec();
         let node_args = node_args.to_vec();
@@ -657,6 +692,23 @@ async fn run_filtered_parallel(
         let sem = Arc::clone(&sem);
         task_names.push(name);
         tasks.push(tokio::spawn(async move {
+            // Topo barrier: hold off until every workspace dep has
+            // signaled `true` (= finished, regardless of outcome).
+            // pnpm's default `--no-bail=false` aborts the whole run on
+            // first failure anyway, so the "wait for failed dep too"
+            // case only fires under `--no-bail` (parsed but not yet
+            // wired) and degrades to "dependent runs against possibly
+            // stale dep state" — same as pnpm. A `changed()` Err means
+            // the prereq's sender was dropped without sending (panic
+            // or aborted JoinHandle); break to avoid deadlocking and
+            // let the script itself decide if its dep state is fatal.
+            for mut rx in prereq_rxs {
+                while !*rx.borrow_and_update() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
             // The semaphore close path is unreachable — `sem` is held
             // here via `Arc` and never closed — so `acquire_owned`
             // failing would mean a logic bug. Surface as a miette
@@ -666,7 +718,7 @@ async fn run_filtered_parallel(
                 .acquire_owned()
                 .await
                 .map_err(|e| miette!("workspace concurrency semaphore closed: {e}"))?;
-            if let Some(bin_path) = bin_path {
+            let result = if let Some(bin_path) = bin_path {
                 super::exec::exec_bin_status_with_node_args(
                     &dir,
                     &bin_path,
@@ -688,7 +740,12 @@ async fn run_filtered_parallel(
                     &output_mode,
                 )
                 .await
-            }
+            };
+            // Always signal completion so dependents don't hang on a
+            // `changed()` that never fires. `send` on a watch with no
+            // subscribers returns Err, which we deliberately ignore.
+            let _ = done_tx.send(true);
+            result
         }));
     }
     let mut first_err: Option<miette::Report> = None;
@@ -1030,10 +1087,27 @@ mod tests {
     }
 
     #[test]
-    fn parallel_alone_stays_unbounded() {
+    fn parallel_alone_uses_semaphore_max_permits() {
         // Backward compat: existing scripts that pass `--parallel`
-        // expect the historical unbounded fanout.
-        assert_eq!(effective_concurrency(true, None), usize::MAX);
+        // expect effectively unbounded fanout. Use tokio's own
+        // `MAX_PERMITS` constant — `Semaphore::new(usize::MAX)` panics
+        // because tokio reserves the high bits internally, so this is
+        // the largest value we can hand to `Semaphore::new` without
+        // crashing on construction.
+        assert_eq!(
+            effective_concurrency(true, None),
+            tokio::sync::Semaphore::MAX_PERMITS
+        );
+    }
+
+    #[test]
+    fn explicit_concurrency_above_max_permits_is_clamped() {
+        // A user passing `--workspace-concurrency=usize::MAX` would
+        // otherwise hit the same Semaphore panic. The cap clamps it.
+        assert_eq!(
+            effective_concurrency(true, Some(usize::MAX)),
+            tokio::sync::Semaphore::MAX_PERMITS
+        );
     }
 
     #[test]
