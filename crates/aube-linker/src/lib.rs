@@ -2753,7 +2753,6 @@ impl Linker {
                 #[cfg(target_os = "macos")]
                 if matches!(stored.size, Some(size) if size <= SMALL_FILE_COPY_MAX) {
                     std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
-                    realized = "macos_small_copy";
                     if let Some(t0) = diag_t0 {
                         aube_util::diag::event(
                             aube_util::diag::Category::Linker,
