@@ -33,9 +33,11 @@ pub struct ExecArgs {
     /// Parsed for pnpm compatibility.
     #[arg(long)]
     pub report_summary: bool,
-    /// Hide package prefixes in recursive reporter output.
+    /// Hide the `<package>: ` label on parallel-exec output lines.
     ///
-    /// Parsed for pnpm compatibility.
+    /// Lines are still piped (clean line breaks even with concurrent
+    /// children) but the source package isn't named on each line.
+    /// Sequential execs ignore this flag.
     #[arg(long)]
     pub reporter_hide_prefix: bool,
     /// Resume recursive execution starting at this package name.
@@ -85,7 +87,7 @@ pub async fn run(
         no_bail: _,
         no_sort,
         report_summary: _,
-        reporter_hide_prefix: _,
+        reporter_hide_prefix,
         resume_from,
         reverse,
         shell_mode,
@@ -107,6 +109,7 @@ pub async fn run(
             reverse,
             resume_from,
             workspace_concurrency,
+            reporter_hide_prefix,
         };
         return run_filtered(&cwd, &bin, &args, shell_mode, parallel, &filter, recursive).await;
     }
@@ -129,7 +132,15 @@ async fn run_filtered(
 
     let concurrency = super::run::effective_concurrency(parallel, recursive.workspace_concurrency);
     if concurrency > 1 {
-        return run_filtered_parallel(bin, args, shell_mode, matched, concurrency).await;
+        return run_filtered_parallel(
+            bin,
+            args,
+            shell_mode,
+            matched,
+            concurrency,
+            recursive.reporter_hide_prefix,
+        )
+        .await;
     }
 
     for pkg in matched {
@@ -145,6 +156,7 @@ async fn run_filtered_parallel(
     shell_mode: bool,
     matched: Vec<aube_workspace::selector::SelectedPackage>,
     concurrency: usize,
+    reporter_hide_prefix: bool,
 ) -> miette::Result<()> {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
@@ -168,11 +180,16 @@ async fn run_filtered_parallel(
     let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
         Vec::with_capacity(matched.len());
     let mut task_names = Vec::with_capacity(matched.len());
-    for pkg in matched {
+    for (index, pkg) in matched.into_iter().enumerate() {
         let name = pkg
             .name
             .clone()
             .unwrap_or_else(|| pkg.dir.display().to_string());
+        let output_mode = if reporter_hide_prefix {
+            super::run_output::OutputMode::NoPrefix
+        } else {
+            super::run_output::OutputMode::prefix(pkg.name.as_deref(), index)
+        };
         let bin_path = super::project_modules_dir(&pkg.dir).join(".bin").join(bin);
         let dir = pkg.dir.clone();
         let bin = bin.to_string();
@@ -184,7 +201,7 @@ async fn run_filtered_parallel(
                 .acquire_owned()
                 .await
                 .map_err(|e| miette!("workspace concurrency semaphore closed: {e}"))?;
-            exec_bin_status(&dir, &bin_path, &bin, &args, shell_mode).await
+            exec_bin_status(&dir, &bin_path, &bin, &args, shell_mode, &output_mode).await
         }));
     }
 
@@ -277,10 +294,12 @@ pub(crate) async fn exec_bin_status(
     bin: &str,
     args: &[String],
     shell_mode: bool,
+    output_mode: &super::run_output::OutputMode,
 ) -> miette::Result<std::process::ExitStatus> {
-    exec_bin_status_with_node_args(cwd, bin_path, bin, args, &[], shell_mode).await
+    exec_bin_status_with_node_args(cwd, bin_path, bin, args, &[], shell_mode, output_mode).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn exec_bin_status_with_node_args(
     cwd: &Path,
     bin_path: &Path,
@@ -288,6 +307,7 @@ pub(crate) async fn exec_bin_status_with_node_args(
     args: &[String],
     node_args: &[String],
     shell_mode: bool,
+    output_mode: &super::run_output::OutputMode,
 ) -> miette::Result<std::process::ExitStatus> {
     if !shell_mode && !bin_path.exists() {
         return Err(miette!(
@@ -315,11 +335,8 @@ pub(crate) async fn exec_bin_status_with_node_args(
     };
     command
         .current_dir(cwd)
-        .stderr(aube_scripts::child_stderr())
-        .status()
-        .await
-        .into_diagnostic()
-        .wrap_err("failed to execute binary")
+        .stderr(aube_scripts::child_stderr());
+    super::run_output::run_command(command, output_mode).await
 }
 
 fn node_bin_command(

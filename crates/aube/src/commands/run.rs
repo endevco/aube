@@ -44,10 +44,12 @@ pub struct RunArgs {
     pub no_sort: bool,
     /// Run the script in every matched workspace package concurrently.
     ///
-    /// Unbounded parallelism. Pair with a filter (`-r` / `-F`) —
-    /// single-package runs ignore it. First non-zero exit fails the
-    /// whole run, but siblings are allowed to finish so their output
-    /// isn't truncated.
+    /// Unbounded parallelism. Pair with `--workspace-concurrency=N` to
+    /// cap the worker count. Single-package runs ignore this flag.
+    /// First non-zero exit fails the whole run, but siblings are
+    /// allowed to finish so their output isn't truncated. Child
+    /// stdio is piped and lines are emitted with a `<package>: `
+    /// prefix; pass `--reporter-hide-prefix` to drop the labels.
     #[arg(long)]
     pub parallel: bool,
     /// Write a recursive run summary file.
@@ -55,9 +57,12 @@ pub struct RunArgs {
     /// Parsed for pnpm compatibility.
     #[arg(long)]
     pub report_summary: bool,
-    /// Hide package prefixes in recursive reporter output.
+    /// Hide the `<package>: ` label on parallel-run output lines.
     ///
-    /// Parsed for pnpm compatibility.
+    /// Lines are still piped through aube (so the line breaks are
+    /// clean even when many packages run at once), but the source
+    /// package isn't named on each line. Sequential runs ignore this
+    /// flag.
     #[arg(long)]
     pub reporter_hide_prefix: bool,
     /// Resume recursive execution starting at this package name.
@@ -140,7 +145,7 @@ pub async fn run(
         parallel,
         no_bail: _,
         report_summary: _,
-        reporter_hide_prefix: _,
+        reporter_hide_prefix,
         resume_from,
         reverse,
         silent,
@@ -166,6 +171,7 @@ pub async fn run(
         reverse,
         resume_from,
         workspace_concurrency,
+        reporter_hide_prefix,
     };
     run_script_with(
         &script, &args, &node_args, no_install, if_present, parallel, silent, &filter, recursive,
@@ -194,6 +200,10 @@ pub(crate) struct RecursiveOpts {
     /// where setting workspace-concurrency parallelizes by itself).
     /// `Some(0)` means "use available CPU count".
     pub workspace_concurrency: Option<usize>,
+    /// When set, parallel runs pipe child stdio but emit lines without
+    /// a `<package>: ` prefix. Matches pnpm's `--reporter-hide-prefix`.
+    /// Sequential runs ignore this — they always inherit stdio.
+    pub reporter_hide_prefix: bool,
 }
 
 impl Default for RecursiveOpts {
@@ -203,6 +213,7 @@ impl Default for RecursiveOpts {
             reverse: false,
             resume_from: None,
             workspace_concurrency: None,
+            reporter_hide_prefix: false,
         }
     }
 }
@@ -472,6 +483,7 @@ async fn run_script_filtered(
             enable_pre_post_scripts,
             matched,
             concurrency,
+            recursive.reporter_hide_prefix,
         )
         .await;
     }
@@ -576,7 +588,9 @@ pub(crate) fn effective_concurrency(parallel: bool, workspace_concurrency: Optio
 /// every package up front (no orphaned children if a script-name lookup
 /// errors mid-spawn), let all started tasks finish so output isn't
 /// truncated by an early bail, and report the first non-zero exit's
-/// code through `std::process::exit`.
+/// code through `std::process::exit`. Output mode per task: prefixed
+/// (`<pkg>: <line>`, color-rotated) by default; unprefixed but still
+/// piped under `--reporter-hide-prefix`.
 #[allow(clippy::too_many_arguments)]
 async fn run_filtered_parallel(
     script: &str,
@@ -587,6 +601,7 @@ async fn run_filtered_parallel(
     enable_pre_post_scripts: bool,
     matched: Vec<aube_workspace::selector::SelectedPackage>,
     concurrency: usize,
+    reporter_hide_prefix: bool,
 ) -> miette::Result<()> {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
@@ -621,7 +636,7 @@ async fn run_filtered_parallel(
     let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
         Vec::with_capacity(runnable.len());
     let mut task_names: Vec<String> = Vec::with_capacity(runnable.len());
-    for (pkg, bin_path) in runnable {
+    for (index, (pkg, bin_path)) in runnable.into_iter().enumerate() {
         let name = pkg
             .name
             .clone()
@@ -629,6 +644,11 @@ async fn run_filtered_parallel(
         if !silent {
             tracing::info!("aube run: {name} -> {script} (parallel)");
         }
+        let output_mode = if reporter_hide_prefix {
+            super::run_output::OutputMode::NoPrefix
+        } else {
+            super::run_output::OutputMode::prefix(pkg.name.as_deref(), index)
+        };
         let script = script.to_string();
         let args = args.to_vec();
         let node_args = node_args.to_vec();
@@ -648,7 +668,13 @@ async fn run_filtered_parallel(
                 .map_err(|e| miette!("workspace concurrency semaphore closed: {e}"))?;
             if let Some(bin_path) = bin_path {
                 super::exec::exec_bin_status_with_node_args(
-                    &dir, &bin_path, &script, &args, &node_args, false,
+                    &dir,
+                    &bin_path,
+                    &script,
+                    &args,
+                    &node_args,
+                    false,
+                    &output_mode,
                 )
                 .await
             } else {
@@ -659,6 +685,7 @@ async fn run_filtered_parallel(
                     &args,
                     &node_args,
                     enable_pre_post_scripts,
+                    &output_mode,
                 )
                 .await
             }
@@ -910,8 +937,9 @@ pub(crate) async fn exec_script_status(
     manifest: &PackageJson,
     script: &str,
     args: &[String],
+    output_mode: &super::run_output::OutputMode,
 ) -> miette::Result<std::process::ExitStatus> {
-    exec_script_status_with_node_args(cwd, manifest, script, args, &[]).await
+    exec_script_status_with_node_args(cwd, manifest, script, args, &[], output_mode).await
 }
 
 pub(crate) async fn exec_script_status_chain(
@@ -921,24 +949,27 @@ pub(crate) async fn exec_script_status_chain(
     args: &[String],
     node_args: &[String],
     enable_pre_post_scripts: bool,
+    output_mode: &super::run_output::OutputMode,
 ) -> miette::Result<std::process::ExitStatus> {
     if enable_pre_post_scripts {
         let pre = format!("pre{script}");
         if manifest.scripts.contains_key(&pre) {
-            let status = exec_script_status(cwd, manifest, &pre, &[]).await?;
+            let status = exec_script_status(cwd, manifest, &pre, &[], output_mode).await?;
             if !status.success() {
                 return Ok(status);
             }
         }
     }
-    let status = exec_script_status_with_node_args(cwd, manifest, script, args, node_args).await?;
+    let status =
+        exec_script_status_with_node_args(cwd, manifest, script, args, node_args, output_mode)
+            .await?;
     if !status.success() {
         return Ok(status);
     }
     if enable_pre_post_scripts {
         let post = format!("post{script}");
         if manifest.scripts.contains_key(&post) {
-            return exec_script_status(cwd, manifest, &post, &[]).await;
+            return exec_script_status(cwd, manifest, &post, &[], output_mode).await;
         }
     }
     Ok(status)
@@ -950,17 +981,14 @@ async fn exec_script_status_with_node_args(
     script: &str,
     args: &[String],
     node_args: &[String],
+    output_mode: &super::run_output::OutputMode,
 ) -> miette::Result<std::process::ExitStatus> {
     let cmd = manifest
         .scripts
         .get(script)
         .ok_or_else(|| miette!("script not found: {script}"))?;
-    build_script_command(cwd, manifest, script, cmd, args, node_args)
-        .await?
-        .status()
-        .await
-        .into_diagnostic()
-        .wrap_err("failed to execute script")
+    let command = build_script_command(cwd, manifest, script, cmd, args, node_args).await?;
+    super::run_output::run_command(command, output_mode).await
 }
 
 #[cfg(test)]
@@ -1034,7 +1062,7 @@ mod tests {
             sort: true,
             reverse: true,
             resume_from: Some("lib".to_string()),
-            workspace_concurrency: None,
+            ..RecursiveOpts::default()
         };
         let out = order_matched_packages(
             vec![
@@ -1052,9 +1080,8 @@ mod tests {
     fn order_matched_resume_from_unknown_package_errors() {
         let opts = RecursiveOpts {
             sort: false,
-            reverse: false,
             resume_from: Some("nonexistent".to_string()),
-            workspace_concurrency: None,
+            ..RecursiveOpts::default()
         };
         let err = order_matched_packages(vec![pkg("a", &[])], &opts).unwrap_err();
         assert!(err.to_string().contains("nonexistent"));
@@ -1064,9 +1091,7 @@ mod tests {
     fn order_matched_no_sort_preserves_input_order() {
         let opts = RecursiveOpts {
             sort: false,
-            reverse: false,
-            resume_from: None,
-            workspace_concurrency: None,
+            ..RecursiveOpts::default()
         };
         // Without sort, an app-before-lib input stays that way even
         // though app depends on lib.
