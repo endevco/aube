@@ -118,16 +118,17 @@ pub fn topological_sort(packages: Vec<SelectedPackage>) -> Vec<SelectedPackage> 
 ///
 /// Used by the bounded-parallel paths to wait for a dependent's
 /// workspace deps to finish before claiming its concurrency slot. The
-/// edge definition matches [`topological_sort`] exactly so a `--sort`
-/// run and a `--workspace-concurrency=N` run see the same intra-workspace
-/// dep graph.
+/// edge definition matches [`topological_sort`] for non-cyclic inputs;
+/// when the dep graph contains a cycle, back-edges are dropped so the
+/// returned graph is acyclic. Without that, a parallel run on a cycle
+/// would wedge tasks waiting on each other's `watch::Sender` forever.
 pub fn compute_prereq_indices(packages: &[SelectedPackage]) -> Vec<Vec<usize>> {
     let by_name: BTreeMap<&str, usize> = packages
         .iter()
         .enumerate()
         .filter_map(|(i, p)| p.name.as_deref().map(|n| (n, i)))
         .collect();
-    packages
+    let raw: Vec<Vec<usize>> = packages
         .iter()
         .enumerate()
         .map(|(i, pkg)| {
@@ -148,7 +149,68 @@ pub fn compute_prereq_indices(packages: &[SelectedPackage]) -> Vec<Vec<usize>> {
             }
             prereqs.into_iter().collect()
         })
-        .collect()
+        .collect();
+
+    // DFS each component; an edge u → v where v is on the current
+    // recursion stack (Gray) is a cycle back-edge and gets dropped.
+    // Iterative to avoid blowing the stack on deep workspace graphs.
+    let n = packages.len();
+    let mut state = vec![NodeState::White; n];
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for start in 0..n {
+        if state[start] != NodeState::White {
+            continue;
+        }
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        state[start] = NodeState::Gray;
+        while let Some(&mut (u, ref mut i)) = stack.last_mut() {
+            if let Some(&v) = raw[u].get(*i) {
+                *i += 1;
+                match state[v] {
+                    NodeState::White => {
+                        out[u].push(v);
+                        state[v] = NodeState::Gray;
+                        stack.push((v, 0));
+                    }
+                    NodeState::Black => out[u].push(v),
+                    NodeState::Gray => {} // back-edge: drop
+                }
+            } else {
+                state[u] = NodeState::Black;
+                stack.pop();
+            }
+        }
+    }
+    for edges in &mut out {
+        edges.sort_unstable();
+    }
+    out
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum NodeState {
+    White,
+    Gray,
+    Black,
+}
+
+/// Transpose a prereq adjacency: if `prereqs[i]` lists `j` (i waits on
+/// j), the result has `out[j]` listing `i` (j waits on i). Used by the
+/// bounded-parallel path under `--reverse` so dependents finish before
+/// their deps — the teardown semantics pnpm advertises. Without this,
+/// reversing the slice alone leaves the barrier still enforcing
+/// forward dep order.
+pub fn transpose_prereqs(prereqs: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); prereqs.len()];
+    for (i, deps) in prereqs.iter().enumerate() {
+        for &j in deps {
+            out[j].push(i);
+        }
+    }
+    for edges in &mut out {
+        edges.sort_unstable();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -273,5 +335,51 @@ mod tests {
             .insert("b".to_string(), "*".to_string());
         let prereqs = compute_prereq_indices(&[a, pkg("b", &[])]);
         assert_eq!(prereqs[0], vec![1]);
+    }
+
+    #[test]
+    fn compute_prereq_indices_breaks_cycles() {
+        // a → b → a forms a cycle. Without cycle-breaking, a parallel
+        // run hangs forever waiting on each other's barrier. Exactly
+        // one of the two edges must be dropped (DFS visits index 0
+        // first, so the b → a back-edge is the one removed).
+        let pkgs = vec![pkg("a", &["b"]), pkg("b", &["a"])];
+        let prereqs = compute_prereq_indices(&pkgs);
+        let total_edges: usize = prereqs.iter().map(Vec::len).sum();
+        assert_eq!(total_edges, 1, "cycle back-edge must be dropped");
+    }
+
+    #[test]
+    fn compute_prereq_indices_breaks_three_node_cycle() {
+        // a → b → c → a. Two edges remain after cycle-breaking, no
+        // node waits on a node already on its own DFS stack.
+        let pkgs = vec![pkg("a", &["b"]), pkg("b", &["c"]), pkg("c", &["a"])];
+        let prereqs = compute_prereq_indices(&pkgs);
+        let total_edges: usize = prereqs.iter().map(Vec::len).sum();
+        assert_eq!(total_edges, 2);
+    }
+
+    #[test]
+    fn transpose_prereqs_swaps_edge_direction() {
+        // Forward chain: app → lib → core (i.e. prereqs[0]=[1], [1]=[2]).
+        // Transposed: core → lib → app  (out[2]=[1], out[1]=[0]).
+        let forward = vec![vec![1], vec![2], vec![]];
+        let reversed = transpose_prereqs(&forward);
+        assert_eq!(reversed[0], Vec::<usize>::new());
+        assert_eq!(reversed[1], vec![0]);
+        assert_eq!(reversed[2], vec![1]);
+    }
+
+    #[test]
+    fn transpose_prereqs_handles_diamond() {
+        // app(0) depends on left(1) and right(2); both depend on shared(3).
+        // Forward: [0]=[1,2], [1]=[3], [2]=[3], [3]=[].
+        // Transposed (teardown order): [3]=[1,2], [1]=[0], [2]=[0], [0]=[].
+        let forward = vec![vec![1, 2], vec![3], vec![3], vec![]];
+        let reversed = transpose_prereqs(&forward);
+        assert_eq!(reversed[0], Vec::<usize>::new());
+        assert_eq!(reversed[1], vec![0]);
+        assert_eq!(reversed[2], vec![0]);
+        assert_eq!(reversed[3], vec![1, 2]);
     }
 }

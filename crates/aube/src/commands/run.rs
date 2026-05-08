@@ -484,6 +484,7 @@ async fn run_script_filtered(
             matched,
             concurrency,
             recursive.reporter_hide_prefix,
+            recursive.reverse,
         )
         .await;
     }
@@ -617,6 +618,7 @@ async fn run_filtered_parallel(
     matched: Vec<aube_workspace::selector::SelectedPackage>,
     concurrency: usize,
     reporter_hide_prefix: bool,
+    reverse: bool,
 ) -> miette::Result<()> {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
@@ -649,23 +651,37 @@ async fn run_filtered_parallel(
 
     // Compute prereqs against the post-`if_present` filtered set so a
     // dependent doesn't deadlock waiting on a sibling that was skipped
-    // because it had no matching script.
+    // because it had no matching script. Transpose under `--reverse`
+    // so dependents wait for their dependents (teardown order); just
+    // reversing the slice without flipping the edges is a no-op for
+    // any dep-linked workspace.
     let runnable_pkgs: Vec<aube_workspace::selector::SelectedPackage> =
         runnable.iter().map(|(p, _)| p.clone()).collect();
     let prereqs = aube_workspace::topo::compute_prereq_indices(&runnable_pkgs);
-    // One sender per package; dependents subscribe via `subscribe()`
-    // before spawning so the receiver exists when the prereq's task
-    // calls `send`. The initial receiver is dropped immediately —
-    // packages with no dependents have no subscribers, and `send` on
-    // a no-receiver channel is a benign Err we ignore.
-    let completion: Vec<tokio::sync::watch::Sender<bool>> = (0..runnable.len())
+    let prereqs = if reverse {
+        aube_workspace::topo::transpose_prereqs(&prereqs)
+    } else {
+        prereqs
+    };
+    // One sender per package. Dependents subscribe before we move the
+    // sender into its task. Sender is moved (not cloned) so that when
+    // a task panics before signaling, its sender is the only one and
+    // the channel closes — `rx.changed()` returns Err and dependents
+    // unblock instead of hanging. Cloning would keep the channel alive
+    // via the original copy and make the panic-recovery path unreachable.
+    let senders: Vec<tokio::sync::watch::Sender<bool>> = (0..runnable.len())
         .map(|_| tokio::sync::watch::channel(false).0)
+        .collect();
+    let prereq_rxs_per_task: Vec<Vec<tokio::sync::watch::Receiver<bool>>> = (0..runnable.len())
+        .map(|i| prereqs[i].iter().map(|&j| senders[j].subscribe()).collect())
         .collect();
 
     let sem = Arc::new(Semaphore::new(concurrency));
     let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
         Vec::with_capacity(runnable.len());
     let mut task_names: Vec<String> = Vec::with_capacity(runnable.len());
+    let mut senders_iter = senders.into_iter();
+    let mut prereq_rxs_iter = prereq_rxs_per_task.into_iter();
     for (index, (pkg, bin_path)) in runnable.into_iter().enumerate() {
         let name = pkg
             .name
@@ -679,11 +695,8 @@ async fn run_filtered_parallel(
         } else {
             super::run_output::OutputMode::prefix(pkg.name.as_deref(), index)
         };
-        let prereq_rxs: Vec<tokio::sync::watch::Receiver<bool>> = prereqs[index]
-            .iter()
-            .map(|&j| completion[j].subscribe())
-            .collect();
-        let done_tx = completion[index].clone();
+        let prereq_rxs = prereq_rxs_iter.next().expect("one rx vec per package");
+        let done_tx = senders_iter.next().expect("one sender per package");
         let script = script.to_string();
         let args = args.to_vec();
         let node_args = node_args.to_vec();
@@ -700,8 +713,9 @@ async fn run_filtered_parallel(
             // wired) and degrades to "dependent runs against possibly
             // stale dep state" — same as pnpm. A `changed()` Err means
             // the prereq's sender was dropped without sending (panic
-            // or aborted JoinHandle); break to avoid deadlocking and
-            // let the script itself decide if its dep state is fatal.
+            // or aborted JoinHandle); break so dependents unblock
+            // instead of hanging — only reachable because each task
+            // *owns* (not clones) its sender.
             for mut rx in prereq_rxs {
                 while !*rx.borrow_and_update() {
                     if rx.changed().await.is_err() {

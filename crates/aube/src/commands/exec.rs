@@ -139,6 +139,7 @@ async fn run_filtered(
             matched,
             concurrency,
             recursive.reporter_hide_prefix,
+            recursive.reverse,
         )
         .await;
     }
@@ -150,6 +151,7 @@ async fn run_filtered(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_filtered_parallel(
     bin: &str,
     args: &[String],
@@ -157,6 +159,7 @@ async fn run_filtered_parallel(
     matched: Vec<aube_workspace::selector::SelectedPackage>,
     concurrency: usize,
     reporter_hide_prefix: bool,
+    reverse: bool,
 ) -> miette::Result<()> {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
@@ -177,19 +180,28 @@ async fn run_filtered_parallel(
     }
 
     // Topo barrier: same dep-before-dependent contract as
-    // `run_filtered_parallel` in run.rs. `aube exec -r make` over a
-    // chain of workspace packages needs every dep's `make` to finish
-    // before the dependent's `make` reads its outputs. See that
-    // function's doc for the watch-channel rationale.
+    // `run_filtered_parallel` in run.rs — see that function's doc for
+    // the watch-channel rationale, cycle handling, and reverse-mode
+    // transposition.
     let prereqs = aube_workspace::topo::compute_prereq_indices(&matched);
-    let completion: Vec<tokio::sync::watch::Sender<bool>> = (0..matched.len())
+    let prereqs = if reverse {
+        aube_workspace::topo::transpose_prereqs(&prereqs)
+    } else {
+        prereqs
+    };
+    let senders: Vec<tokio::sync::watch::Sender<bool>> = (0..matched.len())
         .map(|_| tokio::sync::watch::channel(false).0)
+        .collect();
+    let prereq_rxs_per_task: Vec<Vec<tokio::sync::watch::Receiver<bool>>> = (0..matched.len())
+        .map(|i| prereqs[i].iter().map(|&j| senders[j].subscribe()).collect())
         .collect();
 
     let sem = Arc::new(Semaphore::new(concurrency));
     let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
         Vec::with_capacity(matched.len());
     let mut task_names = Vec::with_capacity(matched.len());
+    let mut senders_iter = senders.into_iter();
+    let mut prereq_rxs_iter = prereq_rxs_per_task.into_iter();
     for (index, pkg) in matched.into_iter().enumerate() {
         let name = pkg
             .name
@@ -200,11 +212,8 @@ async fn run_filtered_parallel(
         } else {
             super::run_output::OutputMode::prefix(pkg.name.as_deref(), index)
         };
-        let prereq_rxs: Vec<tokio::sync::watch::Receiver<bool>> = prereqs[index]
-            .iter()
-            .map(|&j| completion[j].subscribe())
-            .collect();
-        let done_tx = completion[index].clone();
+        let prereq_rxs = prereq_rxs_iter.next().expect("one rx vec per package");
+        let done_tx = senders_iter.next().expect("one sender per package");
         let bin_path = super::project_modules_dir(&pkg.dir).join(".bin").join(bin);
         let dir = pkg.dir.clone();
         let bin = bin.to_string();
