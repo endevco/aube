@@ -326,7 +326,17 @@ pub fn init() {
  */
 fn validate_diag_path(path: &std::path::Path) -> Result<(), &'static str> {
     let s = path.to_string_lossy();
-    if s.starts_with(r"\\") || s.starts_with("//") {
+    // `\\…` covers Windows UNC, device (`\\.\…`), and verbatim (`\\?\…`)
+    // namespaces and is rejected on every platform. `//…` is reserved
+    // by POSIX (XBD §4.13) and is the wire form of UNC under MSYS / Git
+    // Bash on Windows; reject it only on Windows so legitimate Unix
+    // paths starting with `//` (POSIX permits any double-slash prefix
+    // to be interpreted by the implementation) are not blocked.
+    if s.starts_with(r"\\") {
+        return Err("UNC and device paths are not permitted");
+    }
+    #[cfg(windows)]
+    if s.starts_with("//") {
         return Err("UNC and device paths are not permitted");
     }
     #[cfg(windows)]
@@ -964,8 +974,16 @@ pub fn attribute_wait(slot: Slot, waiter: &str, wait: Duration) {
             }
             s.push_str(n);
         }
+        // Walk back to a UTF-8 char boundary before truncating so a
+        // multi-byte holder name that straddles byte 200 (e.g. CJK or
+        // emoji in a scoped registry) does not panic. Cap is 200 bytes
+        // of payload + 3 bytes for the trailing ellipsis.
         if s.len() > 200 {
-            s.truncate(200);
+            let mut end = 200;
+            while end > 0 && !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            s.truncate(end);
             s.push('…');
         }
         s
@@ -1121,16 +1139,91 @@ fn extract_pkg_id(meta: &str) -> Option<String> {
 }
 
 /**
- * Read a JSON string field by substring scan. Returns the unescaped
- * value text up to the closing quote, or `None` if the field is absent
- * or the input is malformed.
+ * Read a JSON string field by substring scan and unescape the result.
+ *
+ * Locates the field as `"<field>":"`, then walks bytes until an
+ * unescaped closing `"`. A `"` is considered escaped when an odd
+ * number of `\` precedes it; that handles the `\"` produced by
+ * [`jstr`] and the literal-`\\` boundary case (`\\"` is `\` followed
+ * by an unescaped quote).
+ *
+ * The returned string has the standard JSON escape sequences
+ * (`\"`, `\\`, `\n`, `\r`, `\t`, `\u00XX`) un-escaped so that the
+ * value matches what a real JSON parser would produce.
  */
 fn extract_field(meta: &str, field: &str) -> Option<String> {
     let needle = format!("\"{field}\":\"");
     let i = meta.find(&needle)?;
     let after = &meta[i + needle.len()..];
-    let end = after.find('"')?;
-    Some(after[..end].to_string())
+    let bytes = after.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'"' {
+            // Count consecutive `\` immediately before this quote; an
+            // odd count means the quote is itself escaped (`\"`), an
+            // even count (including zero) means the quote terminates
+            // the field.
+            let mut bs = 0usize;
+            let mut j = idx;
+            while j > 0 && bytes[j - 1] == b'\\' {
+                bs += 1;
+                j -= 1;
+            }
+            if bs.is_multiple_of(2) {
+                return Some(unescape_json_str(&after[..idx]));
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/**
+ * Reverse of [`jstr`]. Decodes the standard JSON escape sequences this
+ * crate emits: `\"`, `\\`, `\n`, `\r`, `\t`, and `\u00XX` for the
+ * control range. Bytes outside those forms pass through unchanged.
+ */
+fn unescape_json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('u') => {
+                // Read exactly four hex digits; on any malformed input
+                // emit the raw `\u` and continue rather than panic.
+                let mut hex = String::with_capacity(4);
+                for _ in 0..4 {
+                    if let Some(h) = chars.next() {
+                        hex.push(h);
+                    }
+                }
+                if let Ok(code) = u32::from_str_radix(&hex, 16)
+                    && let Some(decoded) = char::from_u32(code)
+                {
+                    out.push(decoded);
+                } else {
+                    out.push('\\');
+                    out.push('u');
+                    out.push_str(&hex);
+                }
+            }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /**
@@ -1752,5 +1845,36 @@ mod tests {
         );
         let keys: Vec<&'static str> = ALL_SLOTS.iter().map(|s| s.sample_key()).collect();
         assert_eq!(keys, vec!["pack", "tar", "imp", "link", "decode"]);
+    }
+
+    /// `extract_field` must skip past `\"` produced by [`jstr`]; the
+    /// previous naive parser stopped at the first `"` and silently
+    /// truncated the value.
+    #[test]
+    fn extract_field_handles_escaped_quotes() {
+        let meta = r#"{"name":"foo\"bar","version":"1.0"}"#;
+        assert_eq!(extract_field(meta, "name").as_deref(), Some(r#"foo"bar"#));
+        assert_eq!(extract_field(meta, "version").as_deref(), Some("1.0"));
+        // Round-trip through jstr/extract preserves an arbitrary value.
+        let original = "weird \"name\" with \\ slash and \n newline";
+        let wire = format!("{{\"name\":{}}}", jstr(original));
+        assert_eq!(extract_field(&wire, "name").as_deref(), Some(original));
+    }
+
+    /// `validate_diag_path` rejects Windows-style UNC on every platform
+    /// but accepts POSIX double-slash prefixes on non-Windows targets.
+    #[test]
+    fn validate_diag_path_rejects_unc_only() {
+        use std::path::Path;
+        assert!(validate_diag_path(Path::new(r"\\srv\share\f.jsonl")).is_err());
+        assert!(validate_diag_path(Path::new("./local.jsonl")).is_ok());
+        // POSIX `//foo` should be accepted on Unix; on Windows it is
+        // rejected as the MSYS/Git-Bash UNC wire form.
+        let r = validate_diag_path(Path::new("//tmp/foo.jsonl"));
+        if cfg!(windows) {
+            assert!(r.is_err());
+        } else {
+            assert!(r.is_ok());
+        }
     }
 }

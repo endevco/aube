@@ -138,12 +138,37 @@ fn mann_whitney_z(a: &[f64], b: &[f64]) -> f64 {
     (u1 - mu) / sigma
 }
 
+/**
+ * Parse a JSON string field by linear scan with proper escape handling.
+ *
+ * The previous shape stopped at the first `"` byte regardless of
+ * whether it was escaped. Field values containing a literal quote
+ * (emitted as `\"` by `jstr`) silently mis-parsed. Walks the byte
+ * stream and counts consecutive `\` before each `"`; an odd count
+ * means the quote is escaped, an even count (including zero) means
+ * it terminates the field.
+ */
 fn json_str(line: &str, field: &str) -> Option<String> {
     let needle = format!("\"{field}\":\"");
     let i = line.find(&needle)?;
     let after = &line[i + needle.len()..];
-    let end = after.find('"')?;
-    Some(after[..end].to_string())
+    let bytes = after.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'"' {
+            let mut bs = 0usize;
+            let mut j = idx;
+            while j > 0 && bytes[j - 1] == b'\\' {
+                bs += 1;
+                j -= 1;
+            }
+            if bs.is_multiple_of(2) {
+                return Some(after[..idx].to_string());
+            }
+        }
+        idx += 1;
+    }
+    None
 }
 
 /**
