@@ -339,11 +339,11 @@ pub(crate) struct Cli {
     ///   summary  — sum_ms / mean / max / %wall table at end
     ///   trace    — summary + critical path + starvation + what-if + lifecycle
     ///   live     — like trace, plus print every span >= 100ms to stderr live
-    ///   full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)
+    ///   full     — like trace, plus write JSONL trace to a file (defaults to ./aube-diag.jsonl)
     ///
     /// Quick form: `--diag` with no value defaults to `trace`.
-    /// Output file path can be set via `--diag-file <path>`. Threshold for live
-    /// mode via `--diag-threshold-ms <n>`.
+    /// Output file path can be set via `--diag-file`. Threshold for live
+    /// mode via `--diag-threshold-ms`.
     #[arg(long, global = true, value_name = "MODE", num_args = 0..=1, default_missing_value = "trace")]
     diag: Option<String>,
 
