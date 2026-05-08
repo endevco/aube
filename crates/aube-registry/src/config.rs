@@ -79,6 +79,15 @@ pub struct NpmConfig {
     /// Plumbed into reqwest's `pool_max_idle_per_host`, which is the
     /// closest analogue to npm/pnpm's per-origin socket cap.
     pub max_sockets: Option<usize>,
+    /// Top-level `cafile=...` from `.npmrc`. Applied to every HTTP
+    /// client built from this config (default + per-registry), matching
+    /// npm/pnpm semantics where an unscoped `cafile` augments the trust
+    /// store for all registries. Per-registry `//host/:cafile=...`
+    /// stacks on top via [`AuthConfig::tls`].
+    pub cafile: Option<PathBuf>,
+    /// Top-level inline `ca=...` / `ca[]=...` PEM strings from
+    /// `.npmrc`. Same semantics as [`Self::cafile`].
+    pub ca: Vec<String>,
     /// Value of `.npmrc`'s legacy `proxy=` key, tracked separately
     /// from `https_proxy` / `http_proxy` because pnpm treats it as
     /// the fallback for `httpsProxy` (and secondarily for
@@ -127,6 +136,8 @@ impl Default for NpmConfig {
             strict_ssl: true,
             local_address: None,
             max_sockets: None,
+            cafile: None,
+            ca: Vec::new(),
             npmrc_proxy: None,
         }
     }
@@ -416,6 +427,16 @@ impl NpmConfig {
                         "ignoring invalid maxsockets {value:?}: {e}"
                     ),
                 }
+            } else if matches!(key.as_str(), "cafile" | "caFile") {
+                // Top-level (unscoped) cafile — applies to all registries.
+                // Diverges from the URI-scoped form in the `//` block
+                // below; both can coexist and stack additively.
+                self.cafile = Some(PathBuf::from(value));
+            } else if matches!(key.as_str(), "ca" | "ca[]") {
+                // Top-level inline PEM, single or array form. npm/pnpm
+                // accept repeated `ca[]=...` lines to build up a list;
+                // mirror that by pushing instead of replacing.
+                self.ca.push(pem_value(value));
             } else if let Some(scope) = key.strip_suffix(":registry") {
                 if scope.starts_with('@') {
                     self.scoped_registries
@@ -1851,6 +1872,33 @@ mod tests {
         assert_eq!(tls.cafile.as_deref(), Some(Path::new("corp-ca.pem")));
         assert!(tls.cert.as_deref().unwrap().contains("\nclient\n"));
         assert!(tls.key.as_deref().unwrap().contains("\nkey\n"));
+    }
+
+    #[test]
+    fn top_level_cafile_and_ca_are_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".npmrc"),
+            "cafile=/etc/ssl/corp-bundle.pem\n\
+             ca=-----BEGIN CERTIFICATE-----\\nfirst\\n-----END CERTIFICATE-----\n\
+             ca[]=-----BEGIN CERTIFICATE-----\\nsecond\\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+
+        let config = NpmConfig::load_isolated(dir.path());
+        assert_eq!(
+            config.cafile.as_deref(),
+            Some(Path::new("/etc/ssl/corp-bundle.pem"))
+        );
+        assert_eq!(config.ca.len(), 2);
+        assert!(config.ca[0].contains("\nfirst\n"));
+        assert!(config.ca[1].contains("\nsecond\n"));
+        // Top-level keys must not leak into per-registry config.
+        assert!(
+            config
+                .registry_config_for("https://registry.npmjs.org/")
+                .is_none()
+        );
     }
 
     #[test]

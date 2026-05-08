@@ -1912,6 +1912,48 @@ impl Default for RegistryClient {
     }
 }
 
+/// Add inline PEM strings and a PEM-bundle file to a reqwest client
+/// builder as additional trust roots. Shared between the top-level
+/// (unscoped) and per-registry cert paths so both go through the same
+/// parse + warn pipeline.
+fn apply_extra_root_certs(
+    mut builder: reqwest::ClientBuilder,
+    ca: &[String],
+    cafile: Option<&Path>,
+) -> reqwest::ClientBuilder {
+    for pem in ca {
+        match reqwest::Certificate::from_pem(pem.as_bytes()) {
+            Ok(cert) => builder = builder.add_root_certificate(cert),
+            Err(e) => tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_INVALID_CA,
+                "ignoring invalid ca: {e}"
+            ),
+        }
+    }
+    if let Some(cafile) = cafile {
+        match std::fs::read(cafile) {
+            Ok(bytes) => match reqwest::Certificate::from_pem_bundle(&bytes) {
+                Ok(certs) => {
+                    for cert in certs {
+                        builder = builder.add_root_certificate(cert);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_INVALID_CAFILE,
+                    "ignoring invalid cafile {}: {e}",
+                    cafile.display()
+                ),
+            },
+            Err(e) => tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_UNREADABLE_CAFILE,
+                "ignoring unreadable cafile {}: {e}",
+                cafile.display()
+            ),
+        }
+    }
+    builder
+}
+
 fn build_http_client(
     config: &NpmConfig,
     registry_config: Option<&crate::config::AuthConfig>,
@@ -2045,37 +2087,16 @@ fn build_http_client(
         }
     }
 
+    // Top-level `cafile` / `ca` (unscoped npmrc keys) apply to every
+    // client built from this config, matching npm/pnpm semantics.
+    builder = apply_extra_root_certs(builder, &config.ca, config.cafile.as_deref());
+
     if let Some(registry_config) = registry_config {
-        for ca in &registry_config.tls.ca {
-            match reqwest::Certificate::from_pem(ca.as_bytes()) {
-                Ok(cert) => builder = builder.add_root_certificate(cert),
-                Err(e) => tracing::warn!(
-                    code = aube_codes::warnings::WARN_AUBE_INVALID_CA,
-                    "ignoring invalid per-registry ca: {e}"
-                ),
-            }
-        }
-        if let Some(cafile) = &registry_config.tls.cafile {
-            match std::fs::read(cafile) {
-                Ok(bytes) => match reqwest::Certificate::from_pem_bundle(&bytes) {
-                    Ok(certs) => {
-                        for cert in certs {
-                            builder = builder.add_root_certificate(cert);
-                        }
-                    }
-                    Err(e) => tracing::warn!(
-                        code = aube_codes::warnings::WARN_AUBE_INVALID_CAFILE,
-                        "ignoring invalid cafile {}: {e}",
-                        cafile.display()
-                    ),
-                },
-                Err(e) => tracing::warn!(
-                    code = aube_codes::warnings::WARN_AUBE_UNREADABLE_CAFILE,
-                    "ignoring unreadable cafile {}: {e}",
-                    cafile.display()
-                ),
-            }
-        }
+        builder = apply_extra_root_certs(
+            builder,
+            &registry_config.tls.ca,
+            registry_config.tls.cafile.as_deref(),
+        );
         if let (Some(cert), Some(key)) = (&registry_config.tls.cert, &registry_config.tls.key) {
             let mut pem = Vec::with_capacity(cert.len() + key.len() + 1);
             pem.extend_from_slice(cert.as_bytes());
