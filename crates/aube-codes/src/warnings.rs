@@ -84,6 +84,9 @@ pub const WARN_AUBE_YARN_BERRY_UNSUPPORTED: &str = "WARN_AUBE_YARN_BERRY_UNSUPPO
 // ── progress UI ─────────────────────────────────────────────────────
 pub const WARN_AUBE_PROGRESS_OVERFLOW: &str = "WARN_AUBE_PROGRESS_OVERFLOW";
 
+// ── workspace recursion ─────────────────────────────────────────────
+pub const WARN_AUBE_WORKSPACE_TOPO_CYCLE: &str = "WARN_AUBE_WORKSPACE_TOPO_CYCLE";
+
 /// Stable category labels that group codes in the generated docs.
 /// Public so the docs generator can iterate them deterministically.
 pub mod category {
@@ -99,6 +102,7 @@ pub mod category {
     pub const RESOLVER: &str = "Resolver";
     pub const LOCKFILE: &str = "Lockfile";
     pub const PROGRESS_UI: &str = "Progress UI";
+    pub const WORKSPACE_RECURSION: &str = "Workspace recursion";
 }
 
 /// Registry of every warning code with its category and description.
@@ -427,6 +431,13 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_PROGRESS_OVERFLOW,
         category: category::PROGRESS_UI,
         description: "Install progress numerator exceeded the resolved-package denominator. Display clamps to total; the warning surfaces the bookkeeping mismatch so the underlying race can be diagnosed.",
+        exit_code: None,
+    },
+    // Workspace recursion
+    CodeMeta {
+        name: WARN_AUBE_WORKSPACE_TOPO_CYCLE,
+        category: category::WORKSPACE_RECURSION,
+        description: "Topological sort of `aube run -r` / `aube exec -r` selected packages found a dependency cycle. Cycle members run in workspace-listing order after the rest of the topo-sorted set.",
         exit_code: None,
     },
 ];

@@ -14,10 +14,12 @@ include = ["src/**/*.rs"]
 # `#[diagnostic(code(ERR_AUBE_X))]` below uses code names as macro
 # tokens, not symbol references — cargo-machete correctly sees no
 # usage. Same situation as aube-scripts and aube-store.
+aube-codes = { workspace = true }
 aube-manifest = { workspace = true }
 glob = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

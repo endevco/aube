@@ -34,9 +34,12 @@ pub struct RunArgs {
     /// Skip auto-install check
     #[arg(long)]
     pub no_install: bool,
-    /// Disable topological sorting.
+    /// Disable topological sorting (default is on).
     ///
-    /// Parsed for pnpm compatibility.
+    /// Without this, recursive runs visit packages in a deps-first
+    /// order so a `build` script in a shared library finishes before a
+    /// dependent app's `build` starts. Pass this to fall back to the
+    /// raw workspace-listing order.
     #[arg(long, overrides_with = "sort")]
     pub no_sort: bool,
     /// Run the script in every matched workspace package concurrently.
@@ -57,19 +60,22 @@ pub struct RunArgs {
     /// Parsed for pnpm compatibility.
     #[arg(long)]
     pub reporter_hide_prefix: bool,
-    /// Resume recursive execution from a package name.
+    /// Resume recursive execution starting at this package name.
     ///
-    /// Parsed for pnpm compatibility.
+    /// After the topo sort and `--reverse` are applied, packages
+    /// before the named one in the resulting order are skipped. Errors
+    /// if the name isn't in the matched workspace set.
     #[arg(long, value_name = "PACKAGE")]
     pub resume_from: Option<String>,
-    /// Run recursive packages in reverse order.
+    /// Reverse the recursive execution order (after topo sort).
     ///
-    /// Parsed for pnpm compatibility.
+    /// Useful for teardown-style scripts where dependents must shut
+    /// down before their deps.
     #[arg(long)]
     pub reverse: bool,
-    /// Sort recursive packages topologically.
+    /// Sort recursive packages topologically (this is the default).
     ///
-    /// Parsed for pnpm compatibility.
+    /// Pass to override an earlier `--no-sort` on the same invocation.
     #[arg(long, overrides_with = "no_sort")]
     pub sort: bool,
     /// Suppress aube's wrapper output while still showing script
@@ -80,9 +86,11 @@ pub struct RunArgs {
     /// in clap's dispatch.
     #[arg(short = 's')]
     pub silent: bool,
-    /// Recursive workspace concurrency.
+    /// Cap the number of recursive packages running at once.
     ///
-    /// Parsed for pnpm compatibility.
+    /// Setting this implicitly enables parallel mode at width `N`.
+    /// `0` means "use the available CPU count". Without this flag,
+    /// `--parallel` stays unbounded.
     #[arg(long, value_name = "N")]
     pub workspace_concurrency: Option<usize>,
     #[command(flatten)]
@@ -125,7 +133,7 @@ pub async fn run(
         script,
         args,
         no_install,
-        no_sort: _,
+        no_sort,
         if_present,
         inspect,
         inspect_brk,
@@ -133,11 +141,11 @@ pub async fn run(
         no_bail: _,
         report_summary: _,
         reporter_hide_prefix: _,
-        resume_from: _,
-        reverse: _,
+        resume_from,
+        reverse,
         silent,
         sort: _,
-        workspace_concurrency: _,
+        workspace_concurrency,
         lockfile: _,
         network: _,
         virtual_store: _,
@@ -148,10 +156,55 @@ pub async fn run(
         None => prompt_for_script()?,
     };
     let node_args = node_args_from_run_flags(inspect, inspect_brk);
+    let recursive = RecursiveOpts {
+        // pnpm parity: topo sort is on by default. `--sort` and
+        // `--no-sort` use clap `overrides_with`, so only one can land
+        // as `true`; default-false on both means "use the default",
+        // which is sort=on. We invert `no_sort` rather than reading
+        // `sort` so the absence of both flags maps to the default.
+        sort: !no_sort,
+        reverse,
+        resume_from,
+        workspace_concurrency,
+    };
     run_script_with(
-        &script, &args, &node_args, no_install, if_present, parallel, silent, &filter,
+        &script, &args, &node_args, no_install, if_present, parallel, silent, &filter, recursive,
     )
     .await
+}
+
+/// Recursive-run knobs surfaced by `RunArgs` / `ExecArgs`. Only relevant
+/// when a workspace filter is non-empty (sequential/single-package runs
+/// ignore them entirely). Bundled into one struct so `run_script_with`
+/// doesn't grow yet another arm of positional args.
+#[derive(Debug, Clone)]
+pub(crate) struct RecursiveOpts {
+    /// Topologically sort matched packages so deps run before dependents.
+    /// Default `true` to match pnpm.
+    pub sort: bool,
+    /// Reverse the (post-sort) execution order. Useful for teardown
+    /// scripts where dependents must shut down before their deps.
+    pub reverse: bool,
+    /// Skip ordered packages until this package name appears, then run
+    /// from there onward. Errors if the name isn't in the matched set.
+    pub resume_from: Option<String>,
+    /// Cap on concurrent package executions. `None` means
+    /// "unbounded under `--parallel`, sequential otherwise"; `Some(n)`
+    /// implicitly enables parallel mode at width `n` (matching pnpm,
+    /// where setting workspace-concurrency parallelizes by itself).
+    /// `Some(0)` means "use available CPU count".
+    pub workspace_concurrency: Option<usize>,
+}
+
+impl Default for RecursiveOpts {
+    fn default() -> Self {
+        Self {
+            sort: true,
+            reverse: false,
+            resume_from: None,
+            workspace_concurrency: None,
+        }
+    }
 }
 
 fn node_args_from_run_flags(inspect: Option<String>, inspect_brk: Option<String>) -> Vec<String> {
@@ -265,6 +318,7 @@ pub(crate) async fn run_script(
         false,
         silent,
         filter,
+        RecursiveOpts::default(),
     )
     .await
 }
@@ -279,6 +333,7 @@ pub(crate) async fn run_script_with(
     parallel: bool,
     silent: bool,
     filter: &aube_workspace::selector::EffectiveFilter,
+    recursive: RecursiveOpts,
 ) -> miette::Result<()> {
     let initial_cwd = crate::dirs::cwd()?;
     // Walk upward to the nearest `package.json` so `aube run` from a
@@ -319,6 +374,7 @@ pub(crate) async fn run_script_with(
             silent,
             filter,
             enable_pre_post_scripts,
+            recursive,
         )
         .await;
     }
@@ -363,11 +419,19 @@ pub(crate) async fn run_script_with(
     .await
 }
 
-/// Fan out a script over workspace packages matched by `filter`. Runs
-/// sequentially — packages are visited in directory-discovery order, each
-/// gets its own `ensure_installed` check, and the first non-zero exit
-/// aborts the fanout. Parallel execution is a deliberate follow-up: it
-/// requires output multiplexing that collides with the progress UI.
+/// Fan out a script over workspace packages matched by `filter`.
+///
+/// Ordering: matched packages are sorted topologically by intra-workspace
+/// deps (deps before dependents) when `recursive.sort` is true (default).
+/// `--reverse` flips that order; `--resume-from <name>` skips ahead to
+/// the named package in the post-sort, post-reverse list.
+///
+/// Concurrency: sequential by default (bail on first non-zero exit).
+/// `--parallel` spawns all packages at once and lets siblings finish
+/// before reporting the first failure (preserves output integrity).
+/// `--workspace-concurrency=N` caps that fanout to N workers and
+/// implicitly enables parallel mode if `--parallel` wasn't passed.
+/// `N = 0` means "use available CPU count".
 #[allow(clippy::too_many_arguments)]
 async fn run_script_filtered(
     cwd: &Path,
@@ -380,6 +444,7 @@ async fn run_script_filtered(
     silent: bool,
     filter: &aube_workspace::selector::EffectiveFilter,
     enable_pre_post_scripts: bool,
+    recursive: RecursiveOpts,
 ) -> miette::Result<()> {
     // `cwd` is the nearest ancestor with a `package.json`, which in a
     // monorepo subpackage is the child — not the workspace root. The
@@ -388,115 +453,27 @@ async fn run_script_filtered(
     // subpackage.
     let (_root, matched) = super::select_workspace_packages(cwd, filter, "run")?;
 
+    let matched = order_matched_packages(matched, &recursive)?;
+
     // Install once at the workspace root before fanning out — the
     // isolated linker already materializes every workspace package's
     // deps in a single pass, so per-package reinstalls would just
     // re-check the same lockfile N times.
     ensure_installed(no_install).await?;
 
-    if parallel {
-        // Unbounded parallel fanout. Spawn every matched package at
-        // once and let them all finish so the slowest task's output
-        // isn't clipped by an earlier failure. Use `exec_script_status`
-        // — `exec_script` calls `std::process::exit` on a non-zero
-        // exit, which would kill sibling tasks mid-run and make the
-        // collection loop below unreachable.
-        //
-        // Validate every package *before* spawning anything: an
-        // `Err` return after some handles already exist would drop
-        // them, and tokio does not cancel detached tasks — the
-        // orphaned shell children (`sh -c` on Unix, `cmd.exe /D /S
-        // /C` on Windows) would keep running until
-        // `std::process::exit` tore them down, which can corrupt
-        // partial artifacts mid-write.
-        let runnable: Vec<_> = matched
-            .into_iter()
-            .filter_map(|pkg| {
-                if pkg.manifest.scripts.contains_key(script) {
-                    Some(Ok((pkg, None)))
-                } else {
-                    let bin_path = super::project_modules_dir(&pkg.dir)
-                        .join(".bin")
-                        .join(script);
-                    if bin_path.exists() {
-                        return Some(Ok((pkg, Some(bin_path))));
-                    }
-                    if if_present {
-                        return None;
-                    }
-                    let name = pkg
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| pkg.dir.display().to_string());
-                    Some(Err(miette!(
-                        "aube run: package {name} has no `{script}` script"
-                    )))
-                }
-            })
-            .collect::<miette::Result<Vec<_>>>()?;
-
-        let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
-            Vec::with_capacity(runnable.len());
-        let mut task_names: Vec<String> = Vec::with_capacity(runnable.len());
-        for (pkg, bin_path) in runnable {
-            let name = pkg
-                .name
-                .clone()
-                .unwrap_or_else(|| pkg.dir.display().to_string());
-            if !silent {
-                tracing::info!("aube run: {name} -> {script} (parallel)");
-            }
-            let script = script.to_string();
-            let args = args.to_vec();
-            let node_args = node_args.to_vec();
-            let dir = pkg.dir.clone();
-            let manifest = pkg.manifest.clone();
-            task_names.push(name);
-            tasks.push(tokio::spawn(async move {
-                if let Some(bin_path) = bin_path {
-                    super::exec::exec_bin_status_with_node_args(
-                        &dir, &bin_path, &script, &args, &node_args, false,
-                    )
-                    .await
-                } else {
-                    exec_script_status_chain(
-                        &dir,
-                        &manifest,
-                        &script,
-                        &args,
-                        &node_args,
-                        enable_pre_post_scripts,
-                    )
-                    .await
-                }
-            }));
-        }
-        let mut first_err: Option<miette::Report> = None;
-        let mut first_exit: Option<i32> = None;
-        for (t, name) in tasks.into_iter().zip(task_names) {
-            match t.await {
-                Ok(Ok(status)) => {
-                    if !status.success() && first_exit.is_none() {
-                        let code = aube_scripts::exit_code_from_status(status);
-                        first_exit = Some(code);
-                        first_err = Some(miette!(
-                            "aube run: `{script}` failed in {name} (exit {code})"
-                        ));
-                    }
-                }
-                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
-                Ok(Err(_)) => {}
-                Err(e) if first_err.is_none() => first_err = Some(miette!("task panicked: {e}")),
-                Err(_) => {}
-            }
-        }
-        if let Some(code) = first_exit {
-            std::process::exit(code);
-        }
-        if let Some(e) = first_err {
-            return Err(e);
-        }
-        return Ok(());
+    let concurrency = effective_concurrency(parallel, recursive.workspace_concurrency);
+    if concurrency > 1 {
+        return run_filtered_parallel(
+            script,
+            args,
+            node_args,
+            if_present,
+            silent,
+            enable_pre_post_scripts,
+            matched,
+            concurrency,
+        )
+        .await;
     }
 
     for pkg in &matched {
@@ -535,6 +512,182 @@ async fn run_script_filtered(
             enable_pre_post_scripts,
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Apply topo sort, reverse, and resume-from to a matched-package list.
+/// Pulled out so `aube exec -r` can share the exact same ordering rules
+/// — divergence between run and exec would surprise pnpm-muscle-memory
+/// users on the same monorepo.
+pub(crate) fn order_matched_packages(
+    mut matched: Vec<aube_workspace::selector::SelectedPackage>,
+    recursive: &RecursiveOpts,
+) -> miette::Result<Vec<aube_workspace::selector::SelectedPackage>> {
+    if recursive.sort {
+        matched = aube_workspace::topo::topological_sort(matched);
+    }
+    if recursive.reverse {
+        matched.reverse();
+    }
+    if let Some(name) = recursive.resume_from.as_deref() {
+        let idx = matched
+            .iter()
+            .position(|p| p.name.as_deref() == Some(name))
+            .ok_or_else(|| {
+                miette!(
+                    "aube run: --resume-from package `{name}` is not in the \
+                     matched workspace set"
+                )
+            })?;
+        matched.drain(..idx);
+    }
+    Ok(matched)
+}
+
+/// Map `--parallel` + `--workspace-concurrency` to a single concurrency
+/// cap. `1` means "use the sequential path" (bail-on-first behavior);
+/// any value `> 1` takes the bounded-parallel path. `usize::MAX` is the
+/// previous unbounded `--parallel` behavior.
+pub(crate) fn effective_concurrency(parallel: bool, workspace_concurrency: Option<usize>) -> usize {
+    match (parallel, workspace_concurrency) {
+        // pnpm: `workspace-concurrency=0` means "use available CPUs".
+        // `available_parallelism` is documented to never return 0 — but
+        // saturate to `1` defensively so a future change to that contract
+        // can't silently turn into "sequential" via underflow.
+        (_, Some(0)) => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1),
+        (_, Some(n)) => n,
+        // `--parallel` with no explicit cap preserves the historical
+        // unbounded fanout. Power users on a 200-package workspace who
+        // upgrade to a version with default-bounded parallel would be
+        // surprised by an apparent slowdown; keep the explicit
+        // unbounded request honored.
+        (true, None) => usize::MAX,
+        (false, None) => 1,
+    }
+}
+
+/// Bounded parallel fanout. Spawns a task per matched package and uses
+/// a [`tokio::sync::Semaphore`] to keep at most `concurrency` running at
+/// any moment. Mirrors the original parallel branch's behavior: validate
+/// every package up front (no orphaned children if a script-name lookup
+/// errors mid-spawn), let all started tasks finish so output isn't
+/// truncated by an early bail, and report the first non-zero exit's
+/// code through `std::process::exit`.
+#[allow(clippy::too_many_arguments)]
+async fn run_filtered_parallel(
+    script: &str,
+    args: &[String],
+    node_args: &[String],
+    if_present: bool,
+    silent: bool,
+    enable_pre_post_scripts: bool,
+    matched: Vec<aube_workspace::selector::SelectedPackage>,
+    concurrency: usize,
+) -> miette::Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    let runnable: Vec<_> = matched
+        .into_iter()
+        .filter_map(|pkg| {
+            if pkg.manifest.scripts.contains_key(script) {
+                Some(Ok((pkg, None)))
+            } else {
+                let bin_path = super::project_modules_dir(&pkg.dir)
+                    .join(".bin")
+                    .join(script);
+                if bin_path.exists() {
+                    return Some(Ok((pkg, Some(bin_path))));
+                }
+                if if_present {
+                    return None;
+                }
+                let name = pkg
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| pkg.dir.display().to_string());
+                Some(Err(miette!(
+                    "aube run: package {name} has no `{script}` script"
+                )))
+            }
+        })
+        .collect::<miette::Result<Vec<_>>>()?;
+
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut tasks: Vec<tokio::task::JoinHandle<miette::Result<std::process::ExitStatus>>> =
+        Vec::with_capacity(runnable.len());
+    let mut task_names: Vec<String> = Vec::with_capacity(runnable.len());
+    for (pkg, bin_path) in runnable {
+        let name = pkg
+            .name
+            .clone()
+            .unwrap_or_else(|| pkg.dir.display().to_string());
+        if !silent {
+            tracing::info!("aube run: {name} -> {script} (parallel)");
+        }
+        let script = script.to_string();
+        let args = args.to_vec();
+        let node_args = node_args.to_vec();
+        let dir = pkg.dir.clone();
+        let manifest = pkg.manifest.clone();
+        let sem = Arc::clone(&sem);
+        task_names.push(name);
+        tasks.push(tokio::spawn(async move {
+            // The semaphore close path is unreachable — `sem` is held
+            // here via `Arc` and never closed — so `acquire_owned`
+            // failing would mean a logic bug. Surface as a miette
+            // error rather than panic so a future refactor that
+            // adds explicit closing surfaces gracefully.
+            let _permit = sem
+                .acquire_owned()
+                .await
+                .map_err(|e| miette!("workspace concurrency semaphore closed: {e}"))?;
+            if let Some(bin_path) = bin_path {
+                super::exec::exec_bin_status_with_node_args(
+                    &dir, &bin_path, &script, &args, &node_args, false,
+                )
+                .await
+            } else {
+                exec_script_status_chain(
+                    &dir,
+                    &manifest,
+                    &script,
+                    &args,
+                    &node_args,
+                    enable_pre_post_scripts,
+                )
+                .await
+            }
+        }));
+    }
+    let mut first_err: Option<miette::Report> = None;
+    let mut first_exit: Option<i32> = None;
+    for (t, name) in tasks.into_iter().zip(task_names) {
+        match t.await {
+            Ok(Ok(status)) => {
+                if !status.success() && first_exit.is_none() {
+                    let code = aube_scripts::exit_code_from_status(status);
+                    first_exit = Some(code);
+                    first_err = Some(miette!(
+                        "aube run: `{script}` failed in {name} (exit {code})"
+                    ));
+                }
+            }
+            Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+            Ok(Err(_)) => {}
+            Err(e) if first_err.is_none() => first_err = Some(miette!("task panicked: {e}")),
+            Err(_) => {}
+        }
+    }
+    if let Some(code) = first_exit {
+        std::process::exit(code);
+    }
+    if let Some(e) = first_err {
+        return Err(e);
     }
     Ok(())
 }
@@ -812,7 +965,115 @@ async fn exec_script_status_with_node_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_node_args, node_args_from_run_flags};
+    use super::{
+        RecursiveOpts, effective_concurrency, inject_node_args, node_args_from_run_flags,
+        order_matched_packages,
+    };
+    use aube_manifest::PackageJson;
+    use aube_workspace::selector::SelectedPackage;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn pkg(name: &str, deps: &[&str]) -> SelectedPackage {
+        let manifest = PackageJson {
+            name: Some(name.to_string()),
+            dependencies: deps
+                .iter()
+                .map(|d| ((*d).to_string(), "*".to_string()))
+                .collect::<BTreeMap<_, _>>(),
+            ..PackageJson::default()
+        };
+        SelectedPackage {
+            name: Some(name.to_string()),
+            version: None,
+            private: false,
+            dir: PathBuf::from(name),
+            manifest,
+        }
+    }
+
+    fn order_names(out: &[SelectedPackage]) -> Vec<&str> {
+        out.iter().map(|p| p.name.as_deref().unwrap()).collect()
+    }
+
+    #[test]
+    fn no_parallel_no_concurrency_is_sequential() {
+        assert_eq!(effective_concurrency(false, None), 1);
+    }
+
+    #[test]
+    fn parallel_alone_stays_unbounded() {
+        // Backward compat: existing scripts that pass `--parallel`
+        // expect the historical unbounded fanout.
+        assert_eq!(effective_concurrency(true, None), usize::MAX);
+    }
+
+    #[test]
+    fn concurrency_overrides_unbounded_parallel() {
+        assert_eq!(effective_concurrency(true, Some(4)), 4);
+    }
+
+    #[test]
+    fn concurrency_alone_implies_parallel() {
+        // pnpm parity: setting a concurrency cap parallelizes by
+        // itself, no separate `--parallel` needed.
+        assert_eq!(effective_concurrency(false, Some(3)), 3);
+    }
+
+    #[test]
+    fn concurrency_zero_picks_cpu_count() {
+        let n = effective_concurrency(false, Some(0));
+        assert!(n >= 1, "available_parallelism floor is 1");
+    }
+
+    #[test]
+    fn order_matched_applies_topo_then_reverse_then_resume() {
+        // app -> lib -> core. With sort+reverse, the natural order is
+        // [app, lib, core]; --resume-from=lib drops `app`.
+        let opts = RecursiveOpts {
+            sort: true,
+            reverse: true,
+            resume_from: Some("lib".to_string()),
+            workspace_concurrency: None,
+        };
+        let out = order_matched_packages(
+            vec![
+                pkg("app", &["lib"]),
+                pkg("lib", &["core"]),
+                pkg("core", &[]),
+            ],
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(order_names(&out), vec!["lib", "core"]);
+    }
+
+    #[test]
+    fn order_matched_resume_from_unknown_package_errors() {
+        let opts = RecursiveOpts {
+            sort: false,
+            reverse: false,
+            resume_from: Some("nonexistent".to_string()),
+            workspace_concurrency: None,
+        };
+        let err = order_matched_packages(vec![pkg("a", &[])], &opts).unwrap_err();
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn order_matched_no_sort_preserves_input_order() {
+        let opts = RecursiveOpts {
+            sort: false,
+            reverse: false,
+            resume_from: None,
+            workspace_concurrency: None,
+        };
+        // Without sort, an app-before-lib input stays that way even
+        // though app depends on lib.
+        let out =
+            order_matched_packages(vec![pkg("app", &["lib"]), pkg("lib", &[])], &opts).unwrap();
+        assert_eq!(order_names(&out), vec!["app", "lib"]);
+    }
 
     #[test]
     fn node_args_from_flags_supports_optional_values() {

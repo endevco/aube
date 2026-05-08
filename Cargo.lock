@@ -473,11 +473,13 @@ dependencies = [
 name = "aube-workspace"
 version = "1.9.1"
 dependencies = [
+ "aube-codes",
  "aube-manifest",
  "glob",
  "miette",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

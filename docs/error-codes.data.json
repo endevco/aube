@@ -607,6 +607,12 @@
       "category": "Progress UI",
       "description": "Install progress numerator exceeded the resolved-package denominator. Display clamps to total; the warning surfaces the bookkeeping mismatch so the underlying race can be diagnosed.",
       "exit_code": null
+    },
+    {
+      "name": "WARN_AUBE_WORKSPACE_TOPO_CYCLE",
+      "category": "Workspace recursion",
+      "description": "Topological sort of `aube run -r` / `aube exec -r` selected packages found a dependency cycle. Cycle members run in workspace-listing order after the rest of the topo-sorted set.",
+      "exit_code": null
     }
   ],
   "categories": {
@@ -633,7 +639,8 @@
       "Registry TLS / proxy",
       "Resolver",
       "Lockfile",
-      "Progress UI"
+      "Progress UI",
+      "Workspace recursion"
     ]
   }
 }

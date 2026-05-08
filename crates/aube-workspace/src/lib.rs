@@ -6,6 +6,7 @@
 //! dependencies.
 
 pub mod selector;
+pub mod topo;
 
 use std::path::{Path, PathBuf};
 
