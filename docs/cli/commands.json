@@ -2889,6 +2889,132 @@
         "hidden_aliases": [],
         "examples": []
       },
+      "diag": {
+        "full_cmd": [
+          "diag"
+        ],
+        "usage": "diag <SUBCOMMAND>",
+        "subcommands": {
+          "analyze": {
+            "full_cmd": [
+              "diag",
+              "analyze"
+            ],
+            "usage": "diag analyze <PATH>",
+            "subcommands": {},
+            "args": [
+              {
+                "name": "PATH",
+                "usage": "<PATH>",
+                "help": "Trace JSONL",
+                "help_first_line": "Trace JSONL",
+                "required": true,
+                "double_dash": "Optional",
+                "hide": false
+              }
+            ],
+            "flags": [],
+            "mounts": [],
+            "hide": false,
+            "help": "Show critical path / starvation / per-pkg lifecycle from a saved trace",
+            "name": "analyze",
+            "aliases": [],
+            "hidden_aliases": [],
+            "examples": []
+          },
+          "compare": {
+            "full_cmd": [
+              "diag",
+              "compare"
+            ],
+            "usage": "diag compare [--min-delta-ms <MIN_DELTA_MS>] [--min-pct <MIN_PCT>] <A> <B>",
+            "subcommands": {},
+            "args": [
+              {
+                "name": "A",
+                "usage": "<A>",
+                "help": "Baseline trace",
+                "help_first_line": "Baseline trace",
+                "required": true,
+                "double_dash": "Optional",
+                "hide": false
+              },
+              {
+                "name": "B",
+                "usage": "<B>",
+                "help": "Comparison trace",
+                "help_first_line": "Comparison trace",
+                "required": true,
+                "double_dash": "Optional",
+                "hide": false
+              }
+            ],
+            "flags": [
+              {
+                "name": "min-delta-ms",
+                "usage": "--min-delta-ms <MIN_DELTA_MS>",
+                "help": "Minimum |Δsum_ms| to surface (default 50)",
+                "help_first_line": "Minimum |Δsum_ms| to surface (default 50)",
+                "short": [],
+                "long": [
+                  "min-delta-ms"
+                ],
+                "hide": false,
+                "global": false,
+                "arg": {
+                  "name": "MIN_DELTA_MS",
+                  "usage": "<MIN_DELTA_MS>",
+                  "required": true,
+                  "double_dash": "Optional",
+                  "hide": false
+                },
+                "default": [
+                  "50"
+                ]
+              },
+              {
+                "name": "min-pct",
+                "usage": "--min-pct <MIN_PCT>",
+                "help": "Minimum |%change| to surface (default 10)",
+                "help_first_line": "Minimum |%change| to surface (default 10)",
+                "short": [],
+                "long": [
+                  "min-pct"
+                ],
+                "hide": false,
+                "global": false,
+                "arg": {
+                  "name": "MIN_PCT",
+                  "usage": "<MIN_PCT>",
+                  "required": true,
+                  "double_dash": "Optional",
+                  "hide": false
+                },
+                "default": [
+                  "10"
+                ]
+              }
+            ],
+            "mounts": [],
+            "hide": false,
+            "help": "Diff two diag JSONL traces and surface per-operation regressions",
+            "name": "compare",
+            "aliases": [],
+            "hidden_aliases": [],
+            "examples": []
+          }
+        },
+        "args": [],
+        "flags": [],
+        "mounts": [],
+        "hide": false,
+        "subcommand_required": true,
+        "help": "Diagnostic trace analysis (compare/analyze JSONL traces)",
+        "name": "diag",
+        "aliases": [],
+        "hidden_aliases": [],
+        "examples": []
+      },
       "dist-tag": {
         "full_cmd": [
           "dist-tag"
@@ -11682,6 +11808,64 @@
         ],
         "hide": false,
         "global": true
+      },
+      {
+        "name": "diag",
+        "usage": "--diag <MODE>",
+        "help": "Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)",
+        "help_long": "Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)\n\nQuick form: `--diag` with no value defaults to `trace`. Output file path can be set via `--diag-file <path>`. Threshold for live mode via `--diag-threshold-ms <n>`.",
+        "help_first_line": "Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)",
+        "short": [],
+        "long": [
+          "diag"
+        ],
+        "hide": false,
+        "global": true,
+        "arg": {
+          "name": "MODE",
+          "usage": "<MODE>",
+          "required": true,
+          "double_dash": "Optional",
+          "hide": false
+        }
+      },
+      {
+        "name": "diag-file",
+        "usage": "--diag-file <PATH>",
+        "help": "Path for `--diag full` JSONL trace (default: ./aube-diag.jsonl)",
+        "help_first_line": "Path for `--diag full` JSONL trace (default: ./aube-diag.jsonl)",
+        "short": [],
+        "long": [
+          "diag-file"
+        ],
+        "hide": false,
+        "global": true,
+        "arg": {
+          "name": "PATH",
+          "usage": "<PATH>",
+          "required": true,
+          "double_dash": "Optional",
+          "hide": false
+        }
+      },
+      {
+        "name": "diag-threshold-ms",
+        "usage": "--diag-threshold-ms <MS>",
+        "help": "Live-mode threshold: only print spans whose duration is >= N ms (default 100)",
+        "help_first_line": "Live-mode threshold: only print spans whose duration is >= N ms (default 100)",
+        "short": [],
+        "long": [
+          "diag-threshold-ms"
+        ],
+        "hide": false,
+        "global": true,
+        "arg": {
+          "name": "MS",
+          "usage": "<MS>",
+          "required": true,
+          "double_dash": "Optional",
+          "hide": false
+        }
       },
       {
         "name": "fail-if-no-match",

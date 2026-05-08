@@ -43,6 +43,20 @@ Force colored output even when stderr is not a TTY.
 
 Overrides `NO_COLOR` / `CLICOLOR=0`. Mutually exclusive with `--no-color`.
 
+### `--diag <MODE>`
+
+Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)
+
+Quick form: `--diag` with no value defaults to `trace`. Output file path can be set via `--diag-file <path>`. Threshold for live mode via `--diag-threshold-ms <n>`.
+
+### `--diag-file <PATH>`
+
+Path for `--diag full` JSONL trace (default: ./aube-diag.jsonl)
+
+### `--diag-threshold-ms <MS>`
+
+Live-mode threshold: only print spans whose duration is >= N ms (default 100)
+
 ### `--fail-if-no-match`
 
 Error when a workspace selector matches no packages.
@@ -126,6 +140,9 @@ Run from the workspace root regardless of the current package
 - [`aube deploy [FLAGS] <TARGET>`](/cli/deploy.md)
 - [`aube deprecate [FLAGS] <PACKAGE> <MESSAGE>`](/cli/deprecate.md)
 - [`aube deprecations [FLAGS]`](/cli/deprecations.md)
+- [`aube diag <SUBCOMMAND>`](/cli/diag.md)
+- [`aube diag analyze <PATH>`](/cli/diag/analyze.md)
+- [`aube diag compare [--min-delta-ms <MIN_DELTA_MS>] [--min-pct <MIN_PCT>] <A> <B>`](/cli/diag/compare.md)
 - [`aube dist-tag [FLAGS] <SUBCOMMAND>`](/cli/dist-tag.md)
 - [`aube dist-tag add <SPEC> [TAG]`](/cli/dist-tag/add.md)
 - [`aube dist-tag ls [PACKAGE]`](/cli/dist-tag/ls.md)
