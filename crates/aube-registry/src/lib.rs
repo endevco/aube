@@ -200,6 +200,15 @@ pub struct VersionMetadata {
 /// field check the way `#[serde(alias = ...)]` does. The canonical
 /// spelling wins on merge — keeps parity with what npm renders for the
 /// installed-tree view of the same package.
+///
+/// **Maintenance invariant:** every non-`bundled_dependencies` field
+/// here must mirror its counterpart on [`VersionMetadata`] *byte-for-byte*
+/// in serde attributes (`rename`, `deserialize_with`, `default`, etc.).
+/// The `From` impl below catches missing fields at compile time, but
+/// **attribute drift is silent** — e.g. dropping a `deserialize_with`
+/// here makes the deserialize path strict on shapes the public type
+/// silently tolerates. When adding or modifying a field on
+/// `VersionMetadata`, update this struct in lockstep.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionMetadataRaw {
