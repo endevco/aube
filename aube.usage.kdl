@@ -627,8 +627,8 @@ cmd exec help="Execute a locally installed binary" {
         long_help "Continue recursive execution after a command fails.\n\nParsed for pnpm compatibility; aube currently stops on the first failure."
     }
     flag --no-install help="Skip auto-install check"
-    flag --no-sort help="Disable topological sorting" {
-        long_help "Disable topological sorting.\n\nParsed for pnpm compatibility."
+    flag --no-sort help="Disable topological sorting (default is on)" {
+        long_help "Disable topological sorting (default is on).\n\nWithout this, recursive execs visit packages in a deps-first order. Pass this to fall back to raw workspace-listing order."
     }
     flag --parallel help="Run recursive workspace executions concurrently"
     flag --report-summary help="Write a recursive exec summary file" {
@@ -637,19 +637,17 @@ cmd exec help="Execute a locally installed binary" {
     flag --reporter-hide-prefix help="Hide package prefixes in recursive reporter output" {
         long_help "Hide package prefixes in recursive reporter output.\n\nParsed for pnpm compatibility."
     }
-    flag --resume-from help="Resume recursive execution from a package name" {
-        long_help "Resume recursive execution from a package name.\n\nParsed for pnpm compatibility."
+    flag --resume-from help="Resume recursive execution starting at this package name" {
+        long_help "Resume recursive execution starting at this package name.\n\nPackages before the named one in the post-sort, post-reverse order are skipped. Errors if the name isn't in the matched set."
         arg <PACKAGE>
     }
-    flag --reverse help="Run recursive packages in reverse order" {
-        long_help "Run recursive packages in reverse order.\n\nParsed for pnpm compatibility."
-    }
+    flag --reverse help="Reverse the recursive execution order (after topo sort)"
     flag "-c --shell-mode" help="Run the command through `sh -c`"
-    flag --sort help="Sort recursive packages topologically" {
-        long_help "Sort recursive packages topologically.\n\nParsed for pnpm compatibility."
+    flag --sort help="Sort recursive packages topologically (this is the default)" {
+        long_help "Sort recursive packages topologically (this is the default).\n\nPass to override an earlier `--no-sort` on the same invocation."
     }
-    flag --workspace-concurrency help="Recursive workspace concurrency" {
-        long_help "Recursive workspace concurrency.\n\nParsed for pnpm compatibility."
+    flag --workspace-concurrency help="Cap the number of recursive packages running at once" {
+        long_help "Cap the number of recursive packages running at once.\n\nSetting this implicitly enables parallel mode at width `N`. `0` means \"use the available CPU count\". Without this flag, `--parallel` stays unbounded."
         arg <N>
     }
     flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
@@ -1464,8 +1462,8 @@ cmd run help="Run a script defined in package.json" {
         long_help "Continue recursive execution after a script fails.\n\nParsed for pnpm compatibility; aube's sequential fanout still stops on first failure."
     }
     flag --no-install help="Skip auto-install check"
-    flag --no-sort help="Disable topological sorting" {
-        long_help "Disable topological sorting.\n\nParsed for pnpm compatibility."
+    flag --no-sort help="Disable topological sorting (default is on)" {
+        long_help "Disable topological sorting (default is on).\n\nWithout this, recursive runs visit packages in a deps-first order so a `build` script in a shared library finishes before a dependent app's `build` starts. Pass this to fall back to the raw workspace-listing order."
     }
     flag --parallel help="Run the script in every matched workspace package concurrently" {
         long_help "Run the script in every matched workspace package concurrently.\n\nUnbounded parallelism. Pair with a filter (`-r` / `-F`) — single-package runs ignore it. First non-zero exit fails the whole run, but siblings are allowed to finish so their output isn't truncated."
@@ -1476,21 +1474,21 @@ cmd run help="Run a script defined in package.json" {
     flag --reporter-hide-prefix help="Hide package prefixes in recursive reporter output" {
         long_help "Hide package prefixes in recursive reporter output.\n\nParsed for pnpm compatibility."
     }
-    flag --resume-from help="Resume recursive execution from a package name" {
-        long_help "Resume recursive execution from a package name.\n\nParsed for pnpm compatibility."
+    flag --resume-from help="Resume recursive execution starting at this package name" {
+        long_help "Resume recursive execution starting at this package name.\n\nAfter the topo sort and `--reverse` are applied, packages before the named one in the resulting order are skipped. Errors if the name isn't in the matched workspace set."
         arg <PACKAGE>
     }
-    flag --reverse help="Run recursive packages in reverse order" {
-        long_help "Run recursive packages in reverse order.\n\nParsed for pnpm compatibility."
+    flag --reverse help="Reverse the recursive execution order (after topo sort)" {
+        long_help "Reverse the recursive execution order (after topo sort).\n\nUseful for teardown-style scripts where dependents must shut down before their deps."
     }
-    flag --sort help="Sort recursive packages topologically" {
-        long_help "Sort recursive packages topologically.\n\nParsed for pnpm compatibility."
+    flag --sort help="Sort recursive packages topologically (this is the default)" {
+        long_help "Sort recursive packages topologically (this is the default).\n\nPass to override an earlier `--no-sort` on the same invocation."
     }
     flag -s help="Suppress aube's wrapper output while still showing script stdout/stderr" {
         long_help "Suppress aube's wrapper output while still showing script stdout/stderr.\n\nShort alias for the global `--silent` flag; long form is intentionally omitted to avoid shadowing the global `--silent` in clap's dispatch."
     }
-    flag --workspace-concurrency help="Recursive workspace concurrency" {
-        long_help "Recursive workspace concurrency.\n\nParsed for pnpm compatibility."
+    flag --workspace-concurrency help="Cap the number of recursive packages running at once" {
+        long_help "Cap the number of recursive packages running at once.\n\nSetting this implicitly enables parallel mode at width `N`. `0` means \"use the available CPU count\". Without this flag, `--parallel` stays unbounded."
         arg <N>
     }
     flag --frozen-lockfile help="Error if the lockfile drifts from package.json"

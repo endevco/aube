@@ -3447,9 +3447,9 @@
           {
             "name": "no-sort",
             "usage": "--no-sort",
-            "help": "Disable topological sorting",
-            "help_long": "Disable topological sorting.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Disable topological sorting",
+            "help": "Disable topological sorting (default is on)",
+            "help_long": "Disable topological sorting (default is on).\n\nWithout this, recursive execs visit packages in a deps-first order. Pass this to fall back to raw workspace-listing order.",
+            "help_first_line": "Disable topological sorting (default is on)",
             "short": [],
             "long": [
               "no-sort"
@@ -3498,9 +3498,9 @@
           {
             "name": "resume-from",
             "usage": "--resume-from <PACKAGE>",
-            "help": "Resume recursive execution from a package name",
-            "help_long": "Resume recursive execution from a package name.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Resume recursive execution from a package name",
+            "help": "Resume recursive execution starting at this package name",
+            "help_long": "Resume recursive execution starting at this package name.\n\nPackages before the named one in the post-sort, post-reverse order are skipped. Errors if the name isn't in the matched set.",
+            "help_first_line": "Resume recursive execution starting at this package name",
             "short": [],
             "long": [
               "resume-from"
@@ -3518,9 +3518,8 @@
           {
             "name": "reverse",
             "usage": "--reverse",
-            "help": "Run recursive packages in reverse order",
-            "help_long": "Run recursive packages in reverse order.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Run recursive packages in reverse order",
+            "help": "Reverse the recursive execution order (after topo sort)",
+            "help_first_line": "Reverse the recursive execution order (after topo sort)",
             "short": [],
             "long": [
               "reverse"
@@ -3545,9 +3544,9 @@
           {
             "name": "sort",
             "usage": "--sort",
-            "help": "Sort recursive packages topologically",
-            "help_long": "Sort recursive packages topologically.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Sort recursive packages topologically",
+            "help": "Sort recursive packages topologically (this is the default)",
+            "help_long": "Sort recursive packages topologically (this is the default).\n\nPass to override an earlier `--no-sort` on the same invocation.",
+            "help_first_line": "Sort recursive packages topologically (this is the default)",
             "short": [],
             "long": [
               "sort"
@@ -3558,9 +3557,9 @@
           {
             "name": "workspace-concurrency",
             "usage": "--workspace-concurrency <N>",
-            "help": "Recursive workspace concurrency",
-            "help_long": "Recursive workspace concurrency.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Recursive workspace concurrency",
+            "help": "Cap the number of recursive packages running at once",
+            "help_long": "Cap the number of recursive packages running at once.\n\nSetting this implicitly enables parallel mode at width `N`. `0` means \"use the available CPU count\". Without this flag, `--parallel` stays unbounded.",
+            "help_first_line": "Cap the number of recursive packages running at once",
             "short": [],
             "long": [
               "workspace-concurrency"
@@ -8422,9 +8421,9 @@
           {
             "name": "no-sort",
             "usage": "--no-sort",
-            "help": "Disable topological sorting",
-            "help_long": "Disable topological sorting.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Disable topological sorting",
+            "help": "Disable topological sorting (default is on)",
+            "help_long": "Disable topological sorting (default is on).\n\nWithout this, recursive runs visit packages in a deps-first order so a `build` script in a shared library finishes before a dependent app's `build` starts. Pass this to fall back to the raw workspace-listing order.",
+            "help_first_line": "Disable topological sorting (default is on)",
             "short": [],
             "long": [
               "no-sort"
@@ -8474,9 +8473,9 @@
           {
             "name": "resume-from",
             "usage": "--resume-from <PACKAGE>",
-            "help": "Resume recursive execution from a package name",
-            "help_long": "Resume recursive execution from a package name.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Resume recursive execution from a package name",
+            "help": "Resume recursive execution starting at this package name",
+            "help_long": "Resume recursive execution starting at this package name.\n\nAfter the topo sort and `--reverse` are applied, packages before the named one in the resulting order are skipped. Errors if the name isn't in the matched workspace set.",
+            "help_first_line": "Resume recursive execution starting at this package name",
             "short": [],
             "long": [
               "resume-from"
@@ -8494,9 +8493,9 @@
           {
             "name": "reverse",
             "usage": "--reverse",
-            "help": "Run recursive packages in reverse order",
-            "help_long": "Run recursive packages in reverse order.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Run recursive packages in reverse order",
+            "help": "Reverse the recursive execution order (after topo sort)",
+            "help_long": "Reverse the recursive execution order (after topo sort).\n\nUseful for teardown-style scripts where dependents must shut down before their deps.",
+            "help_first_line": "Reverse the recursive execution order (after topo sort)",
             "short": [],
             "long": [
               "reverse"
@@ -8507,9 +8506,9 @@
           {
             "name": "sort",
             "usage": "--sort",
-            "help": "Sort recursive packages topologically",
-            "help_long": "Sort recursive packages topologically.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Sort recursive packages topologically",
+            "help": "Sort recursive packages topologically (this is the default)",
+            "help_long": "Sort recursive packages topologically (this is the default).\n\nPass to override an earlier `--no-sort` on the same invocation.",
+            "help_first_line": "Sort recursive packages topologically (this is the default)",
             "short": [],
             "long": [
               "sort"
@@ -8533,9 +8532,9 @@
           {
             "name": "workspace-concurrency",
             "usage": "--workspace-concurrency <N>",
-            "help": "Recursive workspace concurrency",
-            "help_long": "Recursive workspace concurrency.\n\nParsed for pnpm compatibility.",
-            "help_first_line": "Recursive workspace concurrency",
+            "help": "Cap the number of recursive packages running at once",
+            "help_long": "Cap the number of recursive packages running at once.\n\nSetting this implicitly enables parallel mode at width `N`. `0` means \"use the available CPU count\". Without this flag, `--parallel` stays unbounded.",
+            "help_first_line": "Cap the number of recursive packages running at once",
             "short": [],
             "long": [
               "workspace-concurrency"
