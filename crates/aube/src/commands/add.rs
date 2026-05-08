@@ -82,6 +82,16 @@ pub struct AddArgs {
     /// manifest.
     #[arg(long, conflicts_with = "global")]
     pub no_save: bool,
+    /// Inverse of `--save-workspace-protocol`.
+    ///
+    /// Forces the manifest specifier into a registry-style spec
+    /// (`^<version>`) for this invocation, even when
+    /// `linkWorkspacePackages` matched a local sibling. The install
+    /// pipeline still prefers the local workspace copy at resolve
+    /// time — this flag only controls what's written to
+    /// `package.json`. Mirrors `pnpm add --no-save-workspace-protocol`.
+    #[arg(long, overrides_with = "save_workspace_protocol")]
+    pub no_save_workspace_protocol: bool,
     /// Save the new dependency into the workspace's default catalog.
     ///
     /// Writes `catalog:` into `package.json` and seeds/upserts the
@@ -117,6 +127,17 @@ pub struct AddArgs {
     /// does.
     #[arg(long, conflicts_with = "save_optional")]
     pub save_peer: bool,
+    /// Force the manifest specifier into `workspace:` form for this
+    /// invocation, overriding `saveWorkspaceProtocol` from the
+    /// workspace yaml / `.npmrc` / env.
+    ///
+    /// Only meaningful when `linkWorkspacePackages` (or a workspace
+    /// sibling already exists for the named package). With this flag
+    /// the entry written to `package.json` is `workspace:^` (rolling)
+    /// or `workspace:^<version>` (pinned), depending on the resolved
+    /// `saveWorkspaceProtocol` value.
+    #[arg(long, overrides_with = "no_save_workspace_protocol")]
+    pub save_workspace_protocol: bool,
     /// Add the dependency to the workspace root's `package.json`.
     ///
     /// Applies regardless of the current working directory: walks up
@@ -176,6 +197,16 @@ struct ParsedPkgSpec {
     /// skip the packument fetch, write the verbatim string into
     /// `package.json`, and let the resolver dispatch the local path.
     local_spec: Option<String>,
+    /// Set when `linkWorkspacePackages=true` matched a local sibling
+    /// for this spec. The string is the sibling's `package.json#version`
+    /// (or `"0.0.0"` when the sibling has no version). The packument
+    /// fetch is skipped and the manifest-write path branches on
+    /// `saveWorkspaceProtocol` to choose between rolling
+    /// (`workspace:^`), pinned (`workspace:^<version>`), or
+    /// registry-style (`^<version>`) — the resolver picks up the
+    /// sibling either way because aube already prefers workspace
+    /// matches on bare semver ranges.
+    linked_workspace_version: Option<String>,
 }
 
 /// Parse a package spec into its components.
@@ -449,6 +480,7 @@ fn parse_git_pkg_spec(verbatim: &str, alias: Option<String>) -> miette::Result<P
         has_explicit_range: true,
         git_spec: Some(verbatim.to_string()),
         local_spec: None,
+        linked_workspace_version: None,
     })
 }
 
@@ -489,6 +521,7 @@ fn parse_local_pkg_spec(input: &str, alias: Option<String>) -> miette::Result<Pa
         has_explicit_range: true,
         git_spec: None,
         local_spec: Some(verbatim),
+        linked_workspace_version: None,
     })
 }
 
@@ -547,6 +580,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
                     has_explicit_range: true,
                     git_spec: None,
                     local_spec: None,
+                    linked_workspace_version: None,
                 };
             }
         }
@@ -558,6 +592,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             has_explicit_range: false,
             git_spec: None,
             local_spec: None,
+            linked_workspace_version: None,
         };
     }
 
@@ -571,6 +606,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             has_explicit_range: true,
             git_spec: None,
             local_spec: None,
+            linked_workspace_version: None,
         }
     } else {
         ParsedPkgSpec {
@@ -581,6 +617,7 @@ fn parse_name_range(s: &str, alias: Option<String>) -> ParsedPkgSpec {
             has_explicit_range: false,
             git_spec: None,
             local_spec: None,
+            linked_workspace_version: None,
         }
     }
 }
@@ -613,6 +650,7 @@ fn parse_jsr_name_range(s: &str, alias: Option<String>) -> miette::Result<Parsed
         has_explicit_range: inner.has_explicit_range,
         git_spec: None,
         local_spec: None,
+        linked_workspace_version: None,
     })
 }
 
@@ -634,6 +672,8 @@ pub async fn run(
         save_optional,
         save_exact,
         save_peer,
+        save_workspace_protocol,
+        no_save_workspace_protocol,
         workspace,
         ignore_scripts: _,
         no_save,
@@ -789,6 +829,10 @@ pub async fn run(
             save_optional,
             save_peer,
             save_catalog: save_catalog_target,
+            workspace_protocol_override: workspace_protocol_override_from_flags(
+                save_workspace_protocol,
+                no_save_workspace_protocol,
+            ),
         },
         !no_save,
     )
@@ -894,6 +938,13 @@ struct AddManifestOptions {
     /// left untouched. `Some("default")` is `--save-catalog`;
     /// `Some(other)` is `--save-catalog-name=<other>`.
     save_catalog: Option<String>,
+    /// `--save-workspace-protocol` / `--no-save-workspace-protocol`
+    /// per-invocation override. `None` defers to the resolved
+    /// `saveWorkspaceProtocol` setting; `Some(true)` forces the
+    /// `workspace:` form regardless of the setting; `Some(false)`
+    /// forces a registry-style spec even when `linkWorkspacePackages`
+    /// matched a sibling.
+    workspace_protocol_override: Option<bool>,
 }
 
 impl AddManifestOptions {
@@ -910,7 +961,28 @@ impl AddManifestOptions {
                     None
                 }
             }),
+            workspace_protocol_override: workspace_protocol_override_from_flags(
+                args.save_workspace_protocol,
+                args.no_save_workspace_protocol,
+            ),
         }
+    }
+}
+
+/// Map the paired `--save-workspace-protocol` / `--no-save-workspace-protocol`
+/// flags to a tri-state. `clap`'s `overrides_with` ensures only the
+/// last-typed flag survives, so at most one of the two is `true` at a
+/// time and we don't need to disambiguate. Takes the two flag bools
+/// directly so the call site in `run()` (which destructures `AddArgs`
+/// into locals) and `from_args` can share the logic without going
+/// back through the struct.
+fn workspace_protocol_override_from_flags(save: bool, no_save: bool) -> Option<bool> {
+    if save {
+        Some(true)
+    } else if no_save {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -920,10 +992,21 @@ async fn update_manifest_for_add(
     opts: AddManifestOptions,
     print_updated: bool,
 ) -> miette::Result<()> {
-    // Resolve settings (savePrefix, tag, catalogMode) from .npmrc /
-    // workspace yaml. `catalog_mode` decides whether a newly-added dep
-    // that already lives in the default workspace catalog gets rewritten
-    // to `catalog:` (see `commands::catalogs::decide_add_rewrite`).
+    // Resolve settings (savePrefix, tag, catalogMode, link/save
+    // workspace protocol) from .npmrc / workspace yaml. `catalog_mode`
+    // decides whether a newly-added dep that already lives in the
+    // default workspace catalog gets rewritten to `catalog:` (see
+    // `commands::catalogs::decide_add_rewrite`).
+    //
+    // The two settings the workspace yaml owns end-to-end
+    // (`linkWorkspacePackages`, `saveWorkspaceProtocol`) read from
+    // the workspace yaml root so a sub-project's `aube add` honors
+    // the workspace-wide policy declared in
+    // `pnpm-workspace.yaml`/`aube-workspace.yaml`. Everything else
+    // (`tag`, `savePrefix`, `catalogMode`) reads from the project's
+    // own dir so a sub-project's `.npmrc` still wins — switching the
+    // entire context to the workspace root would silently drop those
+    // overrides, since `load_npmrc_entries` doesn't walk up.
     let (default_tag, default_prefix, catalog_mode) = super::with_settings_ctx(cwd, |ctx| {
         let tag = aube_settings::resolved::tag(ctx);
         let prefix = if opts.save_exact {
@@ -945,6 +1028,16 @@ async fn update_manifest_for_add(
         let catalog_mode = aube_settings::resolved::catalog_mode(ctx);
         (tag, prefix, catalog_mode)
     });
+    let workspace_settings_cwd = crate::dirs::find_workspace_yaml_root(cwd)
+        .or_else(|| crate::dirs::find_workspace_root(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let (link_workspace_packages, save_workspace_protocol_setting) =
+        super::with_settings_ctx(&workspace_settings_cwd, |ctx| {
+            (
+                aube_settings::resolved::link_workspace_packages(ctx),
+                aube_settings::resolved::save_workspace_protocol(ctx),
+            )
+        });
     // Load the workspace catalog map up front — the resolver needs it
     // later, but `catalogMode` consults the default catalog while we
     // build the specifier below. Pass the same map to the resolver to
@@ -963,7 +1056,7 @@ async fn update_manifest_for_add(
 
     // Parse all specs and fetch packuments concurrently.
     let client = std::sync::Arc::new(super::make_client(cwd));
-    let parsed: Vec<_> = packages
+    let mut parsed: Vec<_> = packages
         .iter()
         .map(|s| {
             let mut spec = parse_pkg_spec(s)?;
@@ -978,18 +1071,78 @@ async fn update_manifest_for_add(
         })
         .collect::<miette::Result<Vec<_>>>()?;
 
+    // `linkWorkspacePackages=true` (or the `--save-workspace-protocol`
+    // flag) makes `aube add <name>` look the package up in the local
+    // workspace before falling back to the registry. Build the
+    // (name → version) map once for this invocation and tag any
+    // matching specs so the packument-fetch loop skips them and the
+    // manifest-write path branches into the workspace formatter.
+    if link_workspace_packages || matches!(opts.workspace_protocol_override, Some(true)) {
+        let workspace_versions = collect_workspace_versions(cwd);
+        for spec in &mut parsed {
+            if spec.linked_workspace_version.is_some() {
+                continue;
+            }
+            // Only registry-shaped, non-aliased specs are eligible:
+            // workspace/git/local/jsr/npm-aliased specs already have
+            // their own routing and the user typed them on purpose.
+            // Aliased specs (`my-alias@project-2`) need to skip the
+            // workspace path too — `workspace:` resolves by manifest
+            // key, so writing `"my-alias": "workspace:^"` would point
+            // the resolver at a sibling named `my-alias` (which
+            // doesn't exist) and 404 on the registry fallback.
+            if aube_util::pkg::is_workspace_spec(&spec.range)
+                || aube_util::pkg::is_catalog_spec(&spec.range)
+                || aube_util::pkg::is_npm_spec(&spec.range)
+                || aube_util::pkg::is_jsr_spec(&spec.range)
+                || spec.git_spec.is_some()
+                || spec.local_spec.is_some()
+                || spec.jsr_name.is_some()
+                || spec.alias.is_some()
+            {
+                continue;
+            }
+            let Some(version) = workspace_versions.get(&spec.name) else {
+                continue;
+            };
+            // When the user typed an explicit range
+            // (`aube add pkg@^1.2.0`), the sibling's version must
+            // satisfy it — otherwise we'd silently link an
+            // incompatible local copy. Fall through to the registry
+            // path on a mismatch (and on unparseable ranges, where
+            // the registry path's error message is more useful than
+            // a workspace mismatch). Bare adds (no `@<range>`) carry
+            // `range = "latest"` from the parser; the implicit
+            // dist-tag never blocks a workspace match.
+            if spec.has_explicit_range
+                && let (Ok(parsed_version), Ok(parsed_range)) = (
+                    node_semver::Version::parse(version),
+                    node_semver::Range::parse(&spec.range),
+                )
+                && !parsed_version.satisfies(&parsed_range)
+            {
+                continue;
+            }
+            spec.linked_workspace_version = Some(version.clone());
+        }
+    }
+
     // Skip packument fetches for `workspace:*` / `workspace:^` /
     // `workspace:<range>` specs — they resolve against the local
     // workspace, not the registry. Same skip applies to git specs
     // (`kevva/is-negative`, `github:user/repo`, …) and `file:` /
     // `link:` local-path specs which the resolver dispatches via the
-    // git or local branch respectively. Without these guards the
-    // parallel fetch below would 404 on the non-registry name.
+    // git or local branch respectively. Specs that the
+    // `linkWorkspacePackages` pass tagged with a sibling version
+    // also bypass the registry — the workspace is the source of
+    // truth for those names. Without these guards the parallel
+    // fetch below would 404 on the non-registry name.
     let mut handles = Vec::new();
     for spec in &parsed {
         if aube_util::pkg::is_workspace_spec(&spec.range)
             || spec.git_spec.is_some()
             || spec.local_spec.is_some()
+            || spec.linked_workspace_version.is_some()
         {
             continue;
         }
@@ -1046,6 +1199,26 @@ async fn update_manifest_for_add(
         // resolver dispatch the local branch on next install.
         if let Some(verbatim) = spec.local_spec.as_deref() {
             apply_local_spec_to_manifest(&mut manifest, pkg_name_for_manifest, verbatim, &opts);
+            continue;
+        }
+
+        // `linkWorkspacePackages=true` matched a sibling for this
+        // spec. Write either a workspace-form specifier (rolling /
+        // pinned) or a registry-form specifier per the resolved
+        // `saveWorkspaceProtocol` setting and the per-invocation
+        // override; the resolver picks the local copy regardless of
+        // the form because it already prefers workspace siblings on
+        // bare semver ranges.
+        if let Some(version) = spec.linked_workspace_version.as_deref() {
+            apply_linked_workspace_to_manifest(
+                &mut manifest,
+                pkg_name_for_manifest,
+                version,
+                save_workspace_protocol_setting,
+                opts.workspace_protocol_override,
+                &default_prefix,
+                &opts,
+            );
             continue;
         }
 
@@ -1370,6 +1543,118 @@ fn apply_workspace_spec_to_manifest(
         manifest.dependencies.insert(dep_name, specifier);
     }
     Ok(())
+}
+
+/// Walk the workspace from `cwd` and build a `name → version` map of
+/// every workspace package. Returns an empty map outside a workspace
+/// or when discovery fails — `aube add` falls back to the registry
+/// path in that case, so a partial workspace shouldn't error here.
+fn collect_workspace_versions(cwd: &Path) -> std::collections::HashMap<String, String> {
+    let workspace_root = match crate::dirs::find_workspace_yaml_root(cwd)
+        .or_else(|| crate::dirs::find_workspace_root(cwd))
+    {
+        Some(root) => root,
+        None => return std::collections::HashMap::new(),
+    };
+    let mut out = std::collections::HashMap::new();
+    let dirs = match aube_workspace::find_workspace_packages(&workspace_root) {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    for dir in dirs {
+        let Ok(pkg) = aube_manifest::PackageJson::from_path(&dir.join("package.json")) else {
+            continue;
+        };
+        if let Some(name) = pkg.name {
+            out.insert(name, pkg.version.unwrap_or_else(|| "0.0.0".to_string()));
+        }
+    }
+    out
+}
+
+/// Write the manifest entry for a `linkWorkspacePackages` match. The
+/// resolved `saveWorkspaceProtocol` and the per-invocation
+/// `--save-workspace-protocol` / `--no-save-workspace-protocol`
+/// override pick the form:
+///
+/// - rolling: `workspace:^` (or `~`/`*` per `savePrefix`)
+/// - true: `workspace:<prefix><version>` (e.g. `workspace:^1.2.3`)
+/// - false: `<prefix><version>` (e.g. `^1.2.3`) — the manifest looks
+///   like a registry dep but the resolver still links the local copy
+///   because aube prefers workspace siblings on bare semver ranges.
+///
+/// Mirrors the duplicate-section scrub from the registry path so a
+/// follow-up `aube add` after a previous `--save-dev` add overwrites
+/// the old entry rather than duplicating across sections.
+#[allow(clippy::too_many_arguments)]
+fn apply_linked_workspace_to_manifest(
+    manifest: &mut aube_manifest::PackageJson,
+    pkg_name_for_manifest: &str,
+    workspace_version: &str,
+    save_workspace_protocol: aube_settings::resolved::SaveWorkspaceProtocol,
+    workspace_protocol_override: Option<bool>,
+    save_prefix: &str,
+    opts: &AddManifestOptions,
+) {
+    use aube_settings::resolved::SaveWorkspaceProtocol;
+    // `--no-save-workspace-protocol` forces registry-style; explicit
+    // `--save-workspace-protocol` keeps the configured workspace form
+    // (defaulting to `rolling` when nothing else picks); otherwise
+    // defer to the resolved setting.
+    let effective = match workspace_protocol_override {
+        Some(false) => SaveWorkspaceProtocol::False,
+        Some(true) if matches!(save_workspace_protocol, SaveWorkspaceProtocol::False) => {
+            SaveWorkspaceProtocol::Rolling
+        }
+        _ => save_workspace_protocol,
+    };
+    let specifier = match effective {
+        SaveWorkspaceProtocol::Rolling => {
+            // Rolling form drops the version: `workspace:^`. Empty
+            // `savePrefix` (`--save-exact`) collapses to
+            // `workspace:*` so the rolling sigil still resolves the
+            // sibling regardless of its version.
+            let sigil = if save_prefix.is_empty() {
+                "*"
+            } else {
+                save_prefix
+            };
+            format!("workspace:{sigil}")
+        }
+        SaveWorkspaceProtocol::True => {
+            format!("workspace:{save_prefix}{workspace_version}")
+        }
+        SaveWorkspaceProtocol::False => {
+            format!("{save_prefix}{workspace_version}")
+        }
+    };
+
+    eprintln!("  + {pkg_name_for_manifest}@{workspace_version} (specifier: {specifier})");
+
+    manifest.dependencies.remove(pkg_name_for_manifest);
+    manifest.optional_dependencies.remove(pkg_name_for_manifest);
+    if !opts.save_peer {
+        manifest.peer_dependencies.remove(pkg_name_for_manifest);
+    }
+    if !(opts.save_peer && opts.save_dev) {
+        manifest.dev_dependencies.remove(pkg_name_for_manifest);
+    }
+
+    let dep_name = pkg_name_for_manifest.to_string();
+    if opts.save_peer {
+        manifest
+            .peer_dependencies
+            .insert(dep_name.clone(), specifier.clone());
+        if opts.save_dev {
+            manifest.dev_dependencies.insert(dep_name, specifier);
+        }
+    } else if opts.save_dev {
+        manifest.dev_dependencies.insert(dep_name, specifier);
+    } else if opts.save_optional {
+        manifest.optional_dependencies.insert(dep_name, specifier);
+    } else {
+        manifest.dependencies.insert(dep_name, specifier);
+    }
 }
 
 /// Write a git-form spec verbatim into the manifest. Mirrors the
@@ -1899,6 +2184,8 @@ async fn run_global_inner(
         ignore_scripts: false,
         no_save: false,
         save_peer: false,
+        save_workspace_protocol: false,
+        no_save_workspace_protocol: false,
         // The throwaway install dir is never a workspace root, but
         // `run_global_inner` is the one place in aube that chdirs
         // after startup — if a future refactor reads `dirs::cwd()`

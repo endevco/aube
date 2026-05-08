@@ -1985,6 +1985,69 @@ sources.env = ["npm_config_save_prefix", "NPM_CONFIG_SAVE_PREFIX", "AUBE_SAVE_PR
 sources.npmrc = ["save-prefix", "savePrefix"]
 examples = []
 
+[linkWorkspacePackages]
+description = "Resolve `aube add <name>` against local workspace siblings before falling back to the registry."
+type = "bool"
+default = "false"
+docs = """
+When `true`, `aube add <name>` checks the workspace for a package
+whose `name` matches the spec before falling back to the registry.
+A match wires the dep up as a workspace link; the manifest specifier
+written to `package.json` is controlled by `saveWorkspaceProtocol`.
+
+If the user typed an explicit range (`aube add pkg@^1.2.0`), the
+sibling's version must satisfy it — otherwise the spec falls through
+to the registry path so an incompatible local copy isn't silently
+linked.
+
+Off by default to match pnpm 8+ — opt in via `pnpm-workspace.yaml`
+when you want every `aube add` to prefer the local copy of a sibling.
+Aube's resolver already prefers workspace siblings on bare semver
+ranges at install time, so this setting only controls `aube add`'s
+manifest-write path; pnpm's `"deep"` value (which extends the
+preference to transitive deps) is therefore not implemented and
+treating the value as a plain bool is intentional.
+"""
+sources.cli = []
+sources.env = [
+    "npm_config_link_workspace_packages",
+    "NPM_CONFIG_LINK_WORKSPACE_PACKAGES",
+    "AUBE_LINK_WORKSPACE_PACKAGES",
+]
+sources.npmrc = ["link-workspace-packages", "linkWorkspacePackages"]
+sources.workspaceYaml = ["linkWorkspacePackages"]
+examples = []
+
+[saveWorkspaceProtocol]
+description = "Spec form written to `package.json` when `aube add` resolves against a workspace sibling."
+type = '"true" | "false" | "rolling"'
+default = "\"rolling\""
+docs = """
+- `"true"` writes a version-pinned workspace spec (`workspace:^1.0.0`,
+  honoring `savePrefix`). The exact lockfile entry never moves
+  without an explicit `aube update`.
+- `"rolling"` (default) writes the rolling form `workspace:^`
+  (or `workspace:~` / `workspace:*` per `savePrefix`). Sibling
+  version bumps flow into dependents on the next install without
+  re-running `aube add`.
+- `"false"` writes a plain registry-style spec (`^1.0.0`). The dep
+  is still linked locally on install (controlled by
+  `linkWorkspacePackages`), but the manifest looks identical to a
+  registry dep.
+
+The `--save-workspace-protocol` / `--no-save-workspace-protocol` CLI
+flags on `aube add` override this setting per-invocation.
+"""
+sources.cli = []
+sources.env = [
+    "npm_config_save_workspace_protocol",
+    "NPM_CONFIG_SAVE_WORKSPACE_PROTOCOL",
+    "AUBE_SAVE_WORKSPACE_PROTOCOL",
+]
+sources.npmrc = ["save-workspace-protocol", "saveWorkspaceProtocol"]
+sources.workspaceYaml = ["saveWorkspaceProtocol"]
+examples = []
+
 [tag]
 description = "Default dist-tag used by `aube add` without a version."
 type = "string"
