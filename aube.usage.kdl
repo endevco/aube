@@ -23,8 +23,8 @@ flag --aggregate-output help="Group workspace command output after each package 
 flag --color help="Force colored output even when stderr is not a TTY" global=#true {
     long_help "Force colored output even when stderr is not a TTY.\n\nOverrides `NO_COLOR` / `CLICOLOR=0`. Mutually exclusive with `--no-color`."
 }
-flag --diag help="Enable cold-install deep diagnostics. Modes: summary, trace, live, full" global=#true {
-    long_help "Enable cold-install deep diagnostics.\n\nModes: `summary` (sum_ms / mean / max / %wall table at end), `trace` (summary + critical path + starvation + what-if + lifecycle), `live` (like trace, plus print every span >= 100ms to stderr), `full` (like trace, plus write JSONL trace to a file, defaults to `./aube-diag.jsonl`).\n\nQuick form: `--diag` with no value defaults to `trace`. Output file path can be set via `--diag-file`. Threshold for live mode via `--diag-threshold-ms`."
+flag --diag help="Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)" global=#true {
+    long_help "Enable cold-install deep diagnostics. Modes: summary  — sum_ms / mean / max / %wall table at end trace    — summary + critical path + starvation + what-if + lifecycle live     — like trace, plus print every span >= 100ms to stderr live full     — like trace, plus write JSONL trace to <file> (defaults to ./aube-diag.jsonl)\n\nQuick form: `--diag` with no value defaults to `trace`. Output file path can be set via `--diag-file <path>`. Threshold for live mode via `--diag-threshold-ms <n>`."
     arg <MODE>
 }
 flag --diag-file help="Path for `--diag full` JSONL trace (default: ./aube-diag.jsonl)" global=#true {
