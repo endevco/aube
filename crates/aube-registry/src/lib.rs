@@ -96,8 +96,15 @@ pub struct Packument {
 }
 
 /// Metadata for a specific version of a package.
+///
+/// Deserializes via [`VersionMetadataRaw`] (`#[serde(from = ...)]`) so
+/// that publishes carrying *both* `bundledDependencies` (canonical) and
+/// `bundleDependencies` (deprecated alias) parse cleanly. serde's plain
+/// `#[serde(alias = ...)]` rejects that as a duplicate field, which
+/// blocks installs of every version of every package that ships both
+/// keys (e.g. `@lingui/message-utils@>=5.2.0`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "VersionMetadataRaw")]
 pub struct VersionMetadata {
     pub name: String,
     pub version: String,
@@ -115,9 +122,9 @@ pub struct VersionMetadata {
     /// names or `true` (meaning "bundle every `dependencies` entry").
     /// Packages listed here are shipped inside the parent tarball, so
     /// the resolver must not recurse into them. npm serializes this
-    /// under both `bundledDependencies` and `bundleDependencies`; we
-    /// accept either via alias.
-    #[serde(default, alias = "bundleDependencies")]
+    /// under both `bundledDependencies` and `bundleDependencies`; on
+    /// deserialize we accept either, and prefer the canonical when both
+    /// are present (handled in [`VersionMetadataRaw`]).
     pub bundled_dependencies: Option<BundledDependencies>,
     pub dist: Option<Dist>,
     #[serde(default, deserialize_with = "aube_util::string_or_seq")]
@@ -184,6 +191,81 @@ pub struct VersionMetadata {
     /// degrades to `None` instead of failing the whole packument.
     #[serde(default, rename = "_npmUser", deserialize_with = "npm_user_tolerant")]
     pub npm_user: Option<NpmUser>,
+}
+
+/// Deserialize-only mirror of [`VersionMetadata`] that splits the
+/// `bundled_dependencies` field into two name-distinct slots so a
+/// payload carrying *both* `bundledDependencies` and `bundleDependencies`
+/// (e.g. `@lingui/message-utils@5.2.0`+) doesn't trip serde's duplicate
+/// field check the way `#[serde(alias = ...)]` does. The canonical
+/// spelling wins on merge — keeps parity with what npm renders for the
+/// installed-tree view of the same package.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionMetadataRaw {
+    name: String,
+    version: String,
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    dependencies: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    dev_dependencies: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    peer_dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    peer_dependencies_meta: BTreeMap<String, PeerDepMeta>,
+    #[serde(default, deserialize_with = "non_string_tolerant_map")]
+    optional_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "bundledDependencies")]
+    bundled_dependencies: Option<BundledDependencies>,
+    #[serde(default, rename = "bundleDependencies")]
+    bundle_dependencies_alias: Option<BundledDependencies>,
+    dist: Option<Dist>,
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
+    os: Vec<String>,
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
+    cpu: Vec<String>,
+    #[serde(default, deserialize_with = "aube_util::string_or_seq")]
+    libc: Vec<String>,
+    #[serde(default, deserialize_with = "aube_manifest::engines_tolerant")]
+    engines: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "license_string")]
+    license: Option<String>,
+    #[serde(default, rename = "funding", deserialize_with = "funding_url")]
+    funding_url: Option<String>,
+    #[serde(default, rename = "bin", deserialize_with = "bin_map")]
+    bin: BTreeMap<String, String>,
+    #[serde(default)]
+    has_install_script: bool,
+    #[serde(default, deserialize_with = "deprecated_string")]
+    deprecated: Option<String>,
+    #[serde(default, rename = "_npmUser", deserialize_with = "npm_user_tolerant")]
+    npm_user: Option<NpmUser>,
+}
+
+impl From<VersionMetadataRaw> for VersionMetadata {
+    fn from(raw: VersionMetadataRaw) -> Self {
+        Self {
+            name: raw.name,
+            version: raw.version,
+            dependencies: raw.dependencies,
+            dev_dependencies: raw.dev_dependencies,
+            peer_dependencies: raw.peer_dependencies,
+            peer_dependencies_meta: raw.peer_dependencies_meta,
+            optional_dependencies: raw.optional_dependencies,
+            bundled_dependencies: raw.bundled_dependencies.or(raw.bundle_dependencies_alias),
+            dist: raw.dist,
+            os: raw.os,
+            cpu: raw.cpu,
+            libc: raw.libc,
+            engines: raw.engines,
+            license: raw.license,
+            funding_url: raw.funding_url,
+            bin: raw.bin,
+            has_install_script: raw.has_install_script,
+            deprecated: raw.deprecated,
+            npm_user: raw.npm_user,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -710,5 +792,32 @@ mod tests {
     fn engines_null_is_empty() {
         let v = parse(r#"{"name":"x","version":"1.0.0","engines":null}"#);
         assert!(v.engines.is_empty());
+    }
+
+    /// Regression: `@lingui/message-utils@5.2.0`+ ships the full
+    /// packument with both `bundledDependencies` (canonical) and
+    /// `bundleDependencies` (deprecated alias) carrying the same value.
+    /// serde's `#[serde(alias)]` rejects that as a duplicate field,
+    /// which used to fail the packument parse and abort install.
+    #[test]
+    fn bundled_deps_accepts_both_canonical_and_alias() {
+        let v = parse(
+            r#"{
+                "name":"x","version":"1.0.0",
+                "bundledDependencies":["canonical"],
+                "bundleDependencies":["legacy"]
+            }"#,
+        );
+        let deps = BTreeMap::new();
+        let names = v.bundled_dependencies.as_ref().unwrap().names(&deps);
+        assert_eq!(names, vec!["canonical"]);
+    }
+
+    #[test]
+    fn bundled_deps_falls_back_to_alias_only() {
+        let v = parse(r#"{"name":"x","version":"1.0.0","bundleDependencies":["legacy"]}"#);
+        let deps = BTreeMap::new();
+        let names = v.bundled_dependencies.as_ref().unwrap().names(&deps);
+        assert_eq!(names, vec!["legacy"]);
     }
 }

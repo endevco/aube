@@ -112,8 +112,15 @@ pub struct UpdateConfig {
     pub ignore_dependencies: Vec<String>,
 }
 
+/// Parsed `package.json`.
+///
+/// Deserializes via [`PackageJsonRaw`] (`#[serde(from = ...)]`) so a
+/// manifest carrying *both* `bundledDependencies` and the deprecated
+/// `bundleDependencies` alias parses without tripping serde's duplicate
+/// field check. Some real-world publishes (e.g. `@lingui/message-utils`)
+/// ship both.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "PackageJsonRaw")]
 pub struct PackageJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -145,16 +152,14 @@ pub struct PackageJson {
     pub optional_dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_config: Option<UpdateConfig>,
-    /// `bundledDependencies` (or the alias `bundleDependencies`) from
-    /// package.json. Names listed here are shipped *inside* the package
-    /// tarball itself, under the package's own `node_modules/`. The
-    /// resolver must not recurse into them, and Node's directory walk
-    /// serves them straight out of the extracted tree.
-    #[serde(
-        default,
-        alias = "bundleDependencies",
-        skip_serializing_if = "Option::is_none"
-    )]
+    /// `bundledDependencies` from package.json. Names listed here are
+    /// shipped *inside* the package tarball itself, under the package's
+    /// own `node_modules/`. The resolver must not recurse into them, and
+    /// Node's directory walk serves them straight out of the extracted
+    /// tree. On deserialize we also accept the deprecated
+    /// `bundleDependencies` spelling and prefer the canonical when both
+    /// are present (handled in [`PackageJsonRaw`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundled_dependencies: Option<BundledDependencies>,
     #[serde(
         default,
@@ -177,6 +182,59 @@ pub struct PackageJson {
     pub workspaces: Option<Workspaces>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Deserialize-only mirror of [`PackageJson`] that splits the
+/// `bundled_dependencies` field into two name-distinct slots so a
+/// manifest carrying *both* `bundledDependencies` and `bundleDependencies`
+/// doesn't trip serde's duplicate field check the way `#[serde(alias)]`
+/// does. The canonical spelling wins on merge.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PackageJsonRaw {
+    name: Option<String>,
+    version: Option<String>,
+    #[serde(default, deserialize_with = "deps_tolerant")]
+    dependencies: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "deps_tolerant")]
+    dev_dependencies: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "deps_tolerant")]
+    peer_dependencies: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "deps_tolerant")]
+    optional_dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    update_config: Option<UpdateConfig>,
+    #[serde(default, rename = "bundledDependencies")]
+    bundled_dependencies: Option<BundledDependencies>,
+    #[serde(default, rename = "bundleDependencies")]
+    bundle_dependencies_alias: Option<BundledDependencies>,
+    #[serde(default, deserialize_with = "scripts_tolerant")]
+    scripts: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "engines_tolerant")]
+    engines: BTreeMap<String, String>,
+    #[serde(default)]
+    workspaces: Option<Workspaces>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl From<PackageJsonRaw> for PackageJson {
+    fn from(raw: PackageJsonRaw) -> Self {
+        Self {
+            name: raw.name,
+            version: raw.version,
+            dependencies: raw.dependencies,
+            dev_dependencies: raw.dev_dependencies,
+            peer_dependencies: raw.peer_dependencies,
+            optional_dependencies: raw.optional_dependencies,
+            update_config: raw.update_config,
+            bundled_dependencies: raw.bundled_dependencies.or(raw.bundle_dependencies_alias),
+            scripts: raw.scripts,
+            engines: raw.engines,
+            workspaces: raw.workspaces,
+            extra: raw.extra,
+        }
+    }
 }
 
 /// `bundledDependencies` shape from package.json. npm/pnpm accept
@@ -1463,6 +1521,34 @@ mod tests {
             p.bundled_dependencies,
             Some(BundledDependencies::List(_))
         ));
+    }
+
+    /// Regression: some publishes (e.g. `@lingui/message-utils@5.2.0`+)
+    /// ship both `bundledDependencies` and the deprecated
+    /// `bundleDependencies` alias in the same object. serde's default
+    /// `alias` rejects that as a duplicate field; we accept it and
+    /// prefer the canonical spelling.
+    #[test]
+    fn accepts_both_bundle_and_bundled_dependencies() {
+        let p = parse(
+            r#"{"name":"x","bundledDependencies":["canonical"],"bundleDependencies":["legacy"]}"#,
+        );
+        let deps = BTreeMap::new();
+        let names = p.bundled_dependencies.as_ref().unwrap().names(&deps);
+        assert_eq!(names, vec!["canonical"]);
+    }
+
+    /// Same regression with the keys in the other order, since serde
+    /// field-collection is order-sensitive when alias collisions are
+    /// involved.
+    #[test]
+    fn accepts_both_bundle_and_bundled_dependencies_reverse_order() {
+        let p = parse(
+            r#"{"name":"x","bundleDependencies":["legacy"],"bundledDependencies":["canonical"]}"#,
+        );
+        let deps = BTreeMap::new();
+        let names = p.bundled_dependencies.as_ref().unwrap().names(&deps);
+        assert_eq!(names, vec!["canonical"]);
     }
 
     #[test]
