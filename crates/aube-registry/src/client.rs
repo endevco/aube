@@ -1920,13 +1920,14 @@ fn apply_extra_root_certs(
     mut builder: reqwest::ClientBuilder,
     ca: &[String],
     cafile: Option<&Path>,
+    scope: &str,
 ) -> reqwest::ClientBuilder {
     for pem in ca {
         match reqwest::Certificate::from_pem(pem.as_bytes()) {
             Ok(cert) => builder = builder.add_root_certificate(cert),
             Err(e) => tracing::warn!(
                 code = aube_codes::warnings::WARN_AUBE_INVALID_CA,
-                "ignoring invalid ca: {e}"
+                "ignoring invalid {scope} ca: {e}"
             ),
         }
     }
@@ -1940,13 +1941,13 @@ fn apply_extra_root_certs(
                 }
                 Err(e) => tracing::warn!(
                     code = aube_codes::warnings::WARN_AUBE_INVALID_CAFILE,
-                    "ignoring invalid cafile {}: {e}",
+                    "ignoring invalid {scope} cafile {}: {e}",
                     cafile.display()
                 ),
             },
             Err(e) => tracing::warn!(
                 code = aube_codes::warnings::WARN_AUBE_UNREADABLE_CAFILE,
-                "ignoring unreadable cafile {}: {e}",
+                "ignoring unreadable {scope} cafile {}: {e}",
                 cafile.display()
             ),
         }
@@ -2089,13 +2090,14 @@ fn build_http_client(
 
     // Top-level `cafile` / `ca` (unscoped npmrc keys) apply to every
     // client built from this config, matching npm/pnpm semantics.
-    builder = apply_extra_root_certs(builder, &config.ca, config.cafile.as_deref());
+    builder = apply_extra_root_certs(builder, &config.ca, config.cafile.as_deref(), "top-level");
 
     if let Some(registry_config) = registry_config {
         builder = apply_extra_root_certs(
             builder,
             &registry_config.tls.ca,
             registry_config.tls.cafile.as_deref(),
+            "per-registry",
         );
         if let (Some(cert), Some(key)) = (&registry_config.tls.cert, &registry_config.tls.key) {
             let mut pem = Vec::with_capacity(cert.len() + key.len() + 1);
