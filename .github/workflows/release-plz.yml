@@ -178,13 +178,18 @@ jobs:
           TAG: ${{ needs.release-plz-release.outputs.tag }}
         run: |
           body="$(gh release view "$TAG" --json body --jq .body)"
-          if grep -Fqx '## 💚 Sponsor aube' <<<"$body"; then
-            echo "Release notes already include the sponsor blurb; leaving them unchanged."
-            exit 0
-          fi
+          # Strip any pre-existing sponsor section (the canonical heading,
+          # the no-emoji variant communique sometimes emits, or a leftover
+          # from a prior workflow run) plus trailing blank lines, then
+          # append the canonical block. Idempotent regardless of input.
+          trimmed="$(printf '%s\n' "$body" | awk '
+            /^## .*Sponsor aube[[:space:]]*$/ { exit }
+            /^[[:space:]]*$/ { blanks++; next }
+            { while (blanks-- > 0) print ""; blanks = 0; print }
+          ')"
 
           {
-            printf '%s\n' "$body"
+            printf '%s\n' "$trimmed"
             cat <<'EOF'
 
           ## 💚 Sponsor aube
