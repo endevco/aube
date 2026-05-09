@@ -664,23 +664,33 @@ pub fn child_stderr() -> std::process::Stdio {
 /// silently swallowed in `--silent --parallel` mode. Routes through the
 /// saved real-stderr fd when silent mode is active, fd 2 otherwise.
 ///
-/// Issues a single `write` syscall with `<line>\n` so the kernel's
-/// `PIPE_BUF` (= 4096 on Linux) atomicity keeps lines from concurrent
-/// pump tasks intact without explicit locking.
+/// `write_all` of a pre-built `<line>\n` buffer issues a single short
+/// write to the kernel; on TTYs and pipes the kernel's `PIPE_BUF`
+/// (= 4096+ on every supported unix) atomicity keeps lines from
+/// concurrent pump tasks intact without explicit locking. The dup
+/// happens per line so we don't share a long-lived `File` handle that
+/// would need its own lock — a duplicate `write` syscall pair is
+/// cheaper than an `Arc<Mutex<File>>` and correct under concurrency.
 #[cfg(unix)]
 pub fn write_line_to_real_stderr(line: &str) {
+    use std::io::Write;
     let saved = SAVED_STDERR_FD.load(std::sync::atomic::Ordering::SeqCst);
     let fd = if saved >= 0 { saved } else { 2 };
+    // SAFETY: `fd` is either the saved real-stderr fd (kept live by
+    // `SilentStderrGuard` for the duration of main) or fd 2 (always
+    // open). `BorrowedFd` only borrows; ownership stays with the
+    // saved-fd / std-stream side and `try_clone_to_owned` issues a
+    // `dup` so dropping the resulting `File` does not close fd 2 or
+    // the saved fd.
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    let Ok(owned) = borrowed.try_clone_to_owned() else {
+        return;
+    };
+    let mut file = std::fs::File::from(owned);
     let mut buf = String::with_capacity(line.len() + 1);
     buf.push_str(line);
     buf.push('\n');
-    // SAFETY: `fd` is either the saved real-stderr fd (kept live by
-    // `SilentStderrGuard` for the duration of main) or fd 2 (always
-    // open). A short / failed write is best-effort; the prior
-    // `eprintln!` swallowed errors the same way.
-    unsafe {
-        libc::write(fd, buf.as_ptr().cast(), buf.len());
-    }
+    let _ = file.write_all(buf.as_bytes());
 }
 
 #[cfg(not(unix))]
