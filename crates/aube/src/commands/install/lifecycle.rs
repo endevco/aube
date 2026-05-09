@@ -930,8 +930,8 @@ pub(super) async fn fetch_and_import_tarball_streaming(
             // Streaming path can't fall back to re-hash with another
             // algo (no buffered bytes), so non-SHA-512 SRI bails and
             // the caller falls back to the buffered path.
-            let matched = aube_store::verify_precomputed_sha512(&sha512, expected)
-                .map_err(|e| {
+            let matched =
+                aube_store::verify_precomputed_sha512(&sha512, expected).map_err(|e| {
                     local(miette!(
                         "{display_name}@{version}: {e}{}",
                         crate::dep_chain::format_chain_for(registry_name, version)
