@@ -911,10 +911,16 @@ pub(super) async fn fetch_and_import_tarball_streaming(
 
     let import_result = import_handle.await.into_diagnostic().map_err(local)?;
     if let Some(e) = stream_err {
+        // Stash the Display rendering before `net` consumes `e`
+        // for `is_throttle()` — the user-facing diagnostic must
+        // still name the underlying cause (timeout, status 503,
+        // connection reset). Dropping it would leave triage with
+        // a bare "stream error for foo@1.2.3".
+        let cause = e.to_string();
         return Err(net(
             e,
             miette!(
-                "stream error for {display_name}@{version}{}",
+                "stream error for {display_name}@{version}: {cause}{}",
                 crate::dep_chain::format_chain_for(registry_name, version)
             ),
         ));
