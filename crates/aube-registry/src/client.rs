@@ -149,6 +149,13 @@ fn parse_cache_control_max_age(resp: &reqwest::Response) -> Option<u64> {
 pub struct RegistryClient {
     http: reqwest::Client,
     http_by_uri: BTreeMap<String, reqwest::Client>,
+    /// HTTP/1.1-only client used for tarball body downloads. See
+    /// [`build_http_tarball_client`] for the rationale (h2 stream
+    /// queueing on a single connection vs h1's parallel TCP per
+    /// request). All metadata (packument, dist-tag, deprecate)
+    /// stays on `http` so h2 multiplexing + header compression
+    /// still apply where they help.
+    http_tarball: reqwest::Client,
     token_helper_cache: Mutex<BTreeMap<String, Option<String>>>,
     /// Memoized result of `registry_auth_token_for(url)`. Without this,
     /// every authed request walks `auth_by_uri` for a longest-prefix
@@ -200,6 +207,7 @@ impl RegistryClient {
     /// chain before calling in.
     pub fn from_config_with_policy(config: NpmConfig, fetch_policy: FetchPolicy) -> Self {
         let http = build_http_client(&config, None, &fetch_policy);
+        let http_tarball = build_http_tarball_client(&config, None, &fetch_policy);
         let mut http_by_uri = BTreeMap::new();
         for (uri, registry) in &config.auth_by_uri {
             if registry.tls.ca.is_empty()
@@ -218,6 +226,7 @@ impl RegistryClient {
         Self {
             http,
             http_by_uri,
+            http_tarball,
             token_helper_cache: Mutex::new(BTreeMap::new()),
             auth_token_by_url: Mutex::new(BTreeMap::new()),
             config,
@@ -555,6 +564,29 @@ impl RegistryClient {
     fn http_for(&self, registry_url: &str) -> &reqwest::Client {
         let uri_key = crate::config::registry_uri_key_pub(registry_url);
         crate::config::lookup_by_uri_prefix(&self.http_by_uri, &uri_key).unwrap_or(&self.http)
+    }
+
+    /// Pick the right HTTP client for tarball body downloads. The
+    /// default registry uses the dedicated h1 client. Per-uri
+    /// authed registries (corporate Artifactory, GitHub Packages)
+    /// fall through to their h2 client because they're rare and
+    /// keeping a parallel h1 map for them is not worth the
+    /// complexity until measurement shows it matters.
+    fn http_tarball_for(&self, registry_url: &str) -> &reqwest::Client {
+        let uri_key = crate::config::registry_uri_key_pub(registry_url);
+        crate::config::lookup_by_uri_prefix(&self.http_by_uri, &uri_key)
+            .unwrap_or(&self.http_tarball)
+    }
+
+    /// Authed RequestBuilder routed through the tarball-specific
+    /// client. Mirrors [`Self::authed_get`] but picks
+    /// [`Self::http_tarball_for`] instead of [`Self::http_for`].
+    fn authed_tarball_get(&self, url: &str, registry_url: &str) -> reqwest::RequestBuilder {
+        self.authed(
+            self.http_tarball_for(registry_url)
+                .request(reqwest::Method::GET, url),
+            registry_url,
+        )
     }
 
     /// Same as [`Self::send_with_retry`] but also returns wall-clock
@@ -1646,7 +1678,7 @@ impl RegistryClient {
         // [`Self::send_with_retry`].
         let (bytes, body_elapsed) = self
             .retry_bytes_body_read(url, self.fetch_policy.tarball_max_bytes, || {
-                self.authed_get(url, url)
+                self.authed_tarball_get(url, url)
                     .header(reqwest::header::ACCEPT_ENCODING, "identity")
             })
             .await?;
@@ -1705,7 +1737,7 @@ impl RegistryClient {
                 url,
                 self.fetch_policy.tarball_max_bytes,
                 || {
-                    self.authed_get(url, url)
+                    self.authed_tarball_get(url, url)
                         .header(reqwest::header::ACCEPT_ENCODING, "identity")
                 },
             )
@@ -1782,7 +1814,7 @@ impl RegistryClient {
             return Err(Error::Offline(format!("tarball {safe_url}")));
         }
         let resp = self
-            .authed_get(url, url)
+            .authed_tarball_get(url, url)
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .send()
             .await?;
@@ -2011,6 +2043,42 @@ fn build_http_client(
     registry_config: Option<&crate::config::AuthConfig>,
     fetch_policy: &FetchPolicy,
 ) -> reqwest::Client {
+    build_http_client_inner(config, registry_config, fetch_policy, false)
+}
+
+/// HTTP/1.1-only variant for tarball downloads. Tarballs are large
+/// opaque blobs where h2 multiplexing buys nothing: there are no
+/// compressible headers, and a single slow tarball stream causes
+/// head-of-line blocking for every other in-flight tarball on the
+/// same h2 connection. npm's CDN advertises
+/// `SETTINGS_MAX_CONCURRENT_STREAMS` ≈ 100-128, so a 256-permit
+/// tarball semaphore over a single h2 connection queues 128+
+/// requests inside hyper waiting for streams. A diag-trace cold
+/// install observed `tarball_stream_open` mean 565ms (n=1230,
+/// 3242ms on critical path) — that's server-side h2 stream
+/// queueing, not TLS or network.
+///
+/// Switching to h1 lets reqwest's connection pool open as many
+/// parallel TCP connections to `registry.npmjs.org` as we have
+/// in-flight tarball requests (capped by `pool_max_idle_per_host`),
+/// matching what npm/pnpm/yarn already do for the same reason.
+/// Packument requests stay on the h2 client because gzip+brotli
+/// header compression and request multiplexing are real wins for
+/// thousands of small JSON payloads.
+fn build_http_tarball_client(
+    config: &NpmConfig,
+    registry_config: Option<&crate::config::AuthConfig>,
+    fetch_policy: &FetchPolicy,
+) -> reqwest::Client {
+    build_http_client_inner(config, registry_config, fetch_policy, true)
+}
+
+fn build_http_client_inner(
+    config: &NpmConfig,
+    registry_config: Option<&crate::config::AuthConfig>,
+    fetch_policy: &FetchPolicy,
+    for_tarball: bool,
+) -> reqwest::Client {
     // `maxsockets` (when set) overrides the default pool size. pnpm
     // documents this as "concurrent connections per origin"; reqwest
     // doesn't expose a hard cap, but `pool_max_idle_per_host` is the
@@ -2050,14 +2118,24 @@ fn build_http_client(
         // requests over a single connection so this mostly matters for fallback HTTP/1.1.
         .pool_max_idle_per_host(pool_max_idle)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
-        .http2_keep_alive_interval(std::time::Duration::from_secs(30))
-        .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
-        .http2_keep_alive_while_idle(true)
-        .http2_adaptive_window(true)
-        .http2_initial_stream_window_size(Some(16 * 1024 * 1024))
-        .http2_initial_connection_window_size(Some(16 * 1024 * 1024))
-        .http2_max_frame_size(Some(16 * 1024 * 1024 - 1))
         .tcp_nodelay(true)
+        // Apply h2 transport tuning only for non-tarball clients.
+        // Tarball client gates below to h1; the h2 setters would be
+        // accepted but never exercised, so we skip them entirely.
+    ;
+    if !for_tarball {
+        builder = builder
+            .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
+            .http2_keep_alive_while_idle(true)
+            .http2_adaptive_window(true)
+            .http2_initial_stream_window_size(Some(16 * 1024 * 1024))
+            .http2_initial_connection_window_size(Some(16 * 1024 * 1024))
+            .http2_max_frame_size(Some(16 * 1024 * 1024 - 1));
+    } else {
+        builder = builder.http1_only();
+    }
+    builder = builder
         .tcp_keepalive(std::time::Duration::from_secs(60))
         // In-process DNS caching via hickory-dns. The system resolver
         // does not cache and uses a thread pool for `getaddrinfo`,
