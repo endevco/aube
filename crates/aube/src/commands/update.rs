@@ -2,6 +2,7 @@ use super::install;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::IsTerminal;
 
 #[derive(Debug, Clone, Args)]
 pub struct UpdateArgs {
@@ -108,7 +109,7 @@ pub async fn run(
     args.lockfile.install_overrides();
     args.virtual_store.install_overrides();
     let _ = args.ignore_scripts; // parity no-op: dep scripts already gated by allowBuilds
-    let _ = (args.global, args.workspace, args.interactive);
+    let _ = (args.global, args.workspace);
     if let Some(depth) = args.depth.as_deref() {
         // pnpm's `--depth Infinity` is the only useful value; the
         // intermediate ones (`--depth 1`, `--depth 2`) have semantics
@@ -216,18 +217,8 @@ pub async fn run(
         .map(String::as_str)
         .collect();
 
-    let resolve_real_name = |manifest_key: &str| -> String {
-        if let Some(specifier) = all_specifiers.get(manifest_key)
-            && let Some(rest) = specifier.strip_prefix("npm:")
-        {
-            // "npm:real-pkg@^2.0.0" -> "real-pkg"
-            if let Some(at_idx) = rest.rfind('@') {
-                return rest[..at_idx].to_string();
-            }
-            return rest.to_string();
-        }
-        manifest_key.to_string()
-    };
+    let resolve_real_name =
+        |manifest_key: &str| real_name_from_spec(manifest_key, all_specifiers.get(manifest_key));
 
     // Determine which packages to update.
     //
@@ -274,7 +265,7 @@ pub async fn run(
             indirect_arg_names.insert(name.clone());
         }
     }
-    let manifest_keys_to_update: Vec<String> = if update_all {
+    let mut manifest_keys_to_update: Vec<String> = if update_all {
         all_specifiers
             .keys()
             .filter(|name| !ignored_updates.contains(name.as_str()))
@@ -295,6 +286,19 @@ pub async fn run(
             .cloned()
             .collect()
     };
+    if args.interactive && !manifest_keys_to_update.is_empty() {
+        let selected = pick_update_interactively(
+            &manifest_keys_to_update,
+            &manifest,
+            &all_specifiers,
+            existing.as_ref(),
+        )?;
+        if selected.is_empty() && indirect_arg_names.is_empty() {
+            eprintln!("No packages selected.");
+            return Ok(());
+        }
+        manifest_keys_to_update.retain(|key| selected.contains(key));
+    }
 
     let real_names_to_update: std::collections::HashSet<String> = manifest_keys_to_update
         .iter()
@@ -399,7 +403,10 @@ pub async fn run(
             }
             let real_name = resolve_real_name(key);
             let original = all_specifiers.get(key).map(String::as_str).unwrap_or("");
-            if aube_util::pkg::is_workspace_spec(original) || preserve_pin.contains(key) {
+            if aube_util::pkg::is_workspace_spec(original)
+                || aube_util::pkg::is_catalog_spec(original)
+                || preserve_pin.contains(key)
+            {
                 continue;
             }
             if aube_lockfile::parse_git_spec(original).is_some() {
@@ -539,15 +546,6 @@ pub async fn run(
     // `pkg.alias_of == Some("real")`, so the version-lookup match has to
     // accept either the manifest key (the alias) or the real name —
     // matching only on `real_name` would miss aliased entries.
-    fn lookup_pkg<'a>(
-        g: &'a aube_lockfile::LockfileGraph,
-        manifest_key: &str,
-        real_name: &str,
-    ) -> Option<&'a aube_lockfile::LockedPackage> {
-        g.packages
-            .values()
-            .find(|p| p.name == real_name || p.name == manifest_key)
-    }
     for manifest_key in &manifest_keys_to_update {
         let real_name = resolve_real_name(manifest_key);
 
@@ -598,7 +596,9 @@ pub async fn run(
             }
             let real_name = resolve_real_name(key);
             let original = all_specifiers.get(key).cloned().unwrap_or_default();
-            if aube_util::pkg::is_workspace_spec(&original) {
+            if aube_util::pkg::is_workspace_spec(&original)
+                || aube_util::pkg::is_catalog_spec(&original)
+            {
                 continue;
             }
             if aube_lockfile::parse_git_spec(&original).is_some() {
@@ -690,6 +690,77 @@ fn workspace_package_versions(cwd: &std::path::Path) -> miette::Result<HashMap<S
         }
     }
     Ok(versions)
+}
+
+fn pick_update_interactively(
+    keys: &[String],
+    manifest: &aube_manifest::PackageJson,
+    specifiers: &BTreeMap<String, String>,
+    existing: Option<&aube_lockfile::LockfileGraph>,
+) -> miette::Result<BTreeSet<String>> {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Err(miette!(
+            "`aube update --interactive` requires stdin and stderr to be TTYs; pass package names explicitly to update non-interactively"
+        ));
+    }
+
+    let mut picker = demand::MultiSelect::new("Choose which dependencies to update")
+        .description("Space to toggle, Enter to confirm")
+        .filterable(true);
+    for key in keys {
+        let spec = specifiers.get(key).map(String::as_str).unwrap_or("");
+        let real_name = real_name_from_spec(key, specifiers.get(key));
+        let current = existing
+            .and_then(|g| lookup_pkg(g, key, &real_name))
+            .map(|p| p.version.as_str())
+            .unwrap_or("not locked");
+        let label = format!("{} {} {} ({current})", dep_bucket(manifest, key), key, spec);
+        picker = picker.option(demand::DemandOption::new(key.clone()).label(&label));
+    }
+
+    let picked: Vec<String> = match picker.run() {
+        Ok(picked) => picked,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => std::process::exit(130),
+        Err(e) => {
+            return Err(e)
+                .into_diagnostic()
+                .wrap_err("failed to read update selection");
+        }
+    };
+    Ok(picked.into_iter().collect())
+}
+
+fn dep_bucket(manifest: &aube_manifest::PackageJson, key: &str) -> &'static str {
+    if manifest.dependencies.contains_key(key) {
+        "dependencies"
+    } else if manifest.dev_dependencies.contains_key(key) {
+        "devDependencies"
+    } else {
+        "optionalDependencies"
+    }
+}
+
+fn real_name_from_spec(manifest_key: &str, specifier: Option<&String>) -> String {
+    if let Some(specifier) = specifier
+        && let Some(rest) = specifier.strip_prefix("npm:")
+    {
+        // "npm:real-pkg@^2.0.0" -> "real-pkg"
+        if let Some(at_idx) = rest.rfind('@') {
+            return rest[..at_idx].to_string();
+        }
+        return rest.to_string();
+    }
+    manifest_key.to_string()
+}
+
+fn lookup_pkg<'a>(
+    g: &'a aube_lockfile::LockfileGraph,
+    manifest_key: &str,
+    real_name: &str,
+) -> Option<&'a aube_lockfile::LockedPackage> {
+    g.packages
+        .values()
+        .find(|p| p.name == real_name || p.name == manifest_key)
 }
 
 struct UpdateSettings {

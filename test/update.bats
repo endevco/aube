@@ -88,6 +88,19 @@ EOF
 	assert_success
 }
 
+@test "aube update --interactive: requires a TTY instead of updating everything" {
+	_setup_outdated_project
+
+	run aube update --interactive --latest
+	assert_failure
+	assert_output --partial "requires stdin and stderr to be TTYs"
+
+	run grep 'is-odd@0.1.2' aube-lock.yaml
+	assert_success
+	run grep '>=0.1.0' package.json
+	assert_success
+}
+
 @test "aube update: skips registry for package.json workspace deps" {
 	cat >package.json <<'EOF'
 {"workspaces":["sub"],"dependencies":{"happy-sunny-hippo":"workspace:"}}
@@ -101,6 +114,32 @@ EOF
 	assert_success
 	refute_output --partial "package not found"
 	assert_file_exists node_modules/happy-sunny-hippo/package.json
+}
+
+@test "aube update --latest: preserves catalog manifest specifiers" {
+	cat >package.json <<'EOF'
+{
+  "name": "test-update-catalog",
+  "version": "0.0.0",
+  "dependencies": {
+    "is-odd": "catalog:"
+  }
+}
+EOF
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - "."
+catalog:
+  is-odd: ^3.0.1
+EOF
+
+	run aube update --latest
+	assert_success
+
+	run grep '"is-odd": "catalog:"' package.json
+	assert_success
+	run grep "specifier: 'catalog:'" aube-lock.yaml
+	assert_success
 }
 
 @test "aube update: updateConfig.ignoreDependencies skips all-deps updates" {
