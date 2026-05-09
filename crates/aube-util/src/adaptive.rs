@@ -11,11 +11,6 @@
  * sustained rising latency. Replaces every static
  * `Semaphore::new(N)` site.
  *
- * [`AdaptiveBuffer`] is a channel and mpsc capacity advisor. Tracks
- * producer / consumer skew. Recommends bounded queue sizes that keep
- * high water under target without exhausting memory. Replaces every
- * `mpsc::channel(MAGIC)` decision.
- *
  * [`RegimeDetector`] is a CUSUM cumulative sum change point detector.
  * Distinguishes transient jitter from sustained distribution shift on
  * a streaming signal. Two atomic counters of state.
@@ -729,145 +724,6 @@ mod tests {
 }
 
 /**
- * Producer / consumer skew tracker that recommends a bounded channel
- * capacity from observed traffic. Replaces static
- * `mpsc::channel(N)` sizing decisions with a number that follows
- * actual high water demand. Cheap to use. Callers invoke
- * `record_push` on send and `record_pop` on receive. The advisor
- * tracks the running high water mark of pending items and adjusts a
- * recommended target upward when the channel approaches saturation.
- *
- * Unlike [`AdaptiveLimit`], this is advisory. Tokio's `mpsc` cap is
- * fixed at construction. The advisor's role is twofold. It feeds
- * the "should I grow the next channel I open" decision in long
- * running processes that periodically tear down and re open the
- * channel. It also feeds observability ("the materialize channel
- * high water hit 87% capacity for 4 s, consider raising the cap").
- *
- * # Algorithm
- *
- * `pushed` and `popped` are monotonic counters. Their difference
- * gives `pending`. `peak_pending` ratchets up only.
- * `recommended` is bounded by `[min_cap, max_cap]` and updated on
- * each push. When `peak_pending` exceeds 80% of `recommended`, the
- * advisor scales `recommended` by 1.5x. When `peak_pending` stays
- * below 30% of `recommended` for `STABLE_POPS_BEFORE_SHRINK`
- * consecutive pops, the advisor scales by 0.8x. Both bounded by
- * max and min.
- *
- * The hysteresis band of 0.3 to 0.8 avoids oscillation under bursty
- * traffic. `STABLE_POPS_BEFORE_SHRINK` of 64 corresponds to roughly
- * 1 to 2 seconds at typical install rates. Fast enough to react to
- * a regime change. Slow enough to ignore single quiet pops.
- */
-pub struct AdaptiveBuffer {
-    pushed: AtomicU64,
-    popped: AtomicU64,
-    peak_pending: AtomicU64,
-    recommended: AtomicU64,
-    stable_pops: AtomicU64,
-    min_cap: u64,
-    max_cap: u64,
-}
-
-impl std::fmt::Debug for AdaptiveBuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdaptiveBuffer")
-            .field("recommended", &self.recommended.load(Ordering::Relaxed))
-            .field("peak_pending", &self.peak_pending.load(Ordering::Relaxed))
-            .field("pushed", &self.pushed.load(Ordering::Relaxed))
-            .field("popped", &self.popped.load(Ordering::Relaxed))
-            .field("min_cap", &self.min_cap)
-            .field("max_cap", &self.max_cap)
-            .finish()
-    }
-}
-
-const STABLE_POPS_BEFORE_SHRINK: u64 = 64;
-const HIGH_WATER_GROW: f64 = 0.8;
-const LOW_WATER_SHRINK: f64 = 0.3;
-const GROW_FACTOR_NUM: u64 = 3;
-const GROW_FACTOR_DEN: u64 = 2;
-const BUFFER_SHRINK_FACTOR_NUM: u64 = 4;
-const BUFFER_SHRINK_FACTOR_DEN: u64 = 5;
-
-impl AdaptiveBuffer {
-    pub fn new(initial: usize, min_cap: usize, max_cap: usize) -> Arc<Self> {
-        assert!(min_cap >= 1, "min_cap must be at least 1");
-        assert!(min_cap <= max_cap, "min_cap must be <= max_cap");
-        let initial = initial.clamp(min_cap, max_cap) as u64;
-        Arc::new(Self {
-            pushed: AtomicU64::new(0),
-            popped: AtomicU64::new(0),
-            peak_pending: AtomicU64::new(0),
-            recommended: AtomicU64::new(initial),
-            stable_pops: AtomicU64::new(0),
-            min_cap: min_cap as u64,
-            max_cap: max_cap as u64,
-        })
-    }
-
-    pub fn recommended(&self) -> usize {
-        self.recommended.load(Ordering::Relaxed) as usize
-    }
-
-    pub fn record_push(&self) {
-        let pushed = self.pushed.fetch_add(1, Ordering::Relaxed) + 1;
-        let popped = self.popped.load(Ordering::Relaxed);
-        let pending = pushed.saturating_sub(popped);
-        let mut peak = self.peak_pending.load(Ordering::Relaxed);
-        while pending > peak {
-            match self.peak_pending.compare_exchange_weak(
-                peak,
-                pending,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => peak = observed,
-            }
-        }
-        let rec = self.recommended.load(Ordering::Relaxed);
-        let high = (rec as f64 * HIGH_WATER_GROW) as u64;
-        if pending > high {
-            let next =
-                ((rec * GROW_FACTOR_NUM) / GROW_FACTOR_DEN).clamp(self.min_cap, self.max_cap);
-            self.recommended.store(next, Ordering::Relaxed);
-            self.stable_pops.store(0, Ordering::Relaxed);
-        }
-    }
-
-    pub fn record_pop(&self) {
-        let popped = self.popped.fetch_add(1, Ordering::Relaxed) + 1;
-        let pushed = self.pushed.load(Ordering::Relaxed);
-        let pending = pushed.saturating_sub(popped);
-        let rec = self.recommended.load(Ordering::Relaxed);
-        let low = (rec as f64 * LOW_WATER_SHRINK) as u64;
-        if pending < low {
-            let stable = self.stable_pops.fetch_add(1, Ordering::Relaxed) + 1;
-            if stable >= STABLE_POPS_BEFORE_SHRINK {
-                let next = ((rec * BUFFER_SHRINK_FACTOR_NUM) / BUFFER_SHRINK_FACTOR_DEN)
-                    .clamp(self.min_cap, self.max_cap);
-                self.recommended.store(next, Ordering::Relaxed);
-                self.stable_pops.store(0, Ordering::Relaxed);
-            }
-        } else {
-            self.stable_pops.store(0, Ordering::Relaxed);
-        }
-    }
-
-    pub fn pending(&self) -> u64 {
-        let pushed = self.pushed.load(Ordering::Relaxed);
-        let popped = self.popped.load(Ordering::Relaxed);
-        pushed.saturating_sub(popped)
-    }
-
-    pub fn peak_pending(&self) -> u64 {
-        self.peak_pending.load(Ordering::Relaxed)
-    }
-}
-
-/**
  * Cumulative sum (CUSUM) change point detector for streaming
  * signals. Computes the cumulative deviation from a running
  * baseline. When the sum exceeds a threshold (positive or
@@ -1187,45 +1043,6 @@ pub fn global_persistent_state() -> Option<Arc<PersistentState>> {
 #[cfg(test)]
 mod additional_tests {
     use super::*;
-
-    #[test]
-    fn buffer_grows_under_high_water() {
-        let buf = AdaptiveBuffer::new(8, 4, 64);
-        for _ in 0..7 {
-            buf.record_push();
-        }
-        assert!(
-            buf.recommended() > 8,
-            "expected grow, got {}",
-            buf.recommended()
-        );
-    }
-
-    #[test]
-    fn buffer_shrinks_after_sustained_low_water() {
-        let buf = AdaptiveBuffer::new(32, 4, 64);
-        for _ in 0..1 {
-            buf.record_push();
-            buf.record_pop();
-        }
-        for _ in 0..STABLE_POPS_BEFORE_SHRINK + 1 {
-            buf.record_pop();
-        }
-        assert!(
-            buf.recommended() < 32,
-            "expected shrink, got {}",
-            buf.recommended()
-        );
-    }
-
-    #[test]
-    fn buffer_clamps_at_max() {
-        let buf = AdaptiveBuffer::new(8, 4, 16);
-        for _ in 0..200 {
-            buf.record_push();
-        }
-        assert!(buf.recommended() <= 16);
-    }
 
     #[test]
     fn cusum_detects_rising_shift() {

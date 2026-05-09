@@ -944,11 +944,17 @@ pub(super) struct GvsPrewarmInputs {
     pub use_global_virtual_store_override: Option<bool>,
 }
 
-/// Default initial capacity for the (canonical_key, PackageIndex)
-/// channel that feeds the GVS-prewarm materializer. Used as the seed
-/// when no persisted observation exists. Real cap is sized via
-/// [`aube_util::adaptive::AdaptiveBuffer`] which carries the
-/// converged value across process boundaries.
+/// Initial capacity for the (canonical_key, PackageIndex) channel
+/// that feeds the GVS-prewarm materializer. Bounded so RSS on a
+/// huge graph stays sane while a slow filesystem (Defender,
+/// network share) backs up the materializer; backpressure only
+/// kicks in under real producer/consumer skew.
+///
+/// Tokio mpsc capacity is fixed at construction, so a bigger
+/// learned-from-prior-run value couldn't be applied to the
+/// current channel anyway. A static cap keeps the construction
+/// path obvious without dragging cross-run telemetry through the
+/// hot send/recv loops for marginal gain.
 pub(super) const MATERIALIZE_CHANNEL_CAPACITY: usize = 2048;
 
 pub(super) type MaterializeChannel = (
@@ -963,34 +969,10 @@ pub(super) type MaterializeJoinHandle = tokio::task::JoinHandle<
     )>,
 >;
 
-/**
- * Construct the materialize channel sized from the cross run learned
- * recommendation if available, otherwise from
- * [`MATERIALIZE_CHANNEL_CAPACITY`]. Tokio's `mpsc::channel` cap is
- * fixed at construction so the only knob we can turn here is the
- * initial size for this process. The advisor returned here lets the
- * fetch path call `record_push` and the materializer call
- * `record_pop` so the next process learns from the high water mark.
- * Bounds 256 to 16384 cap RAM and floor progress.
- */
-pub(super) fn materialize_channel_with_advisor() -> (
-    MaterializeChannel,
-    std::sync::Arc<aube_util::adaptive::AdaptiveBuffer>,
-) {
-    let persistent = aube_util::adaptive::global_persistent_state();
-    let cap = persistent
-        .as_ref()
-        .map(|state| state.load_seed("materialize_channel:default", MATERIALIZE_CHANNEL_CAPACITY))
-        .unwrap_or(MATERIALIZE_CHANNEL_CAPACITY)
-        .clamp(256, 16384);
-    let (tx, rx) = tokio::sync::mpsc::channel(cap);
-    aube_util::diag::register_channel("materialize", &tx, cap);
-    let advisor = aube_util::adaptive::AdaptiveBuffer::new(cap, 256, 16384);
-    ((tx, rx), advisor)
-}
-
 pub(super) fn materialize_channel() -> MaterializeChannel {
-    materialize_channel_with_advisor().0
+    let (tx, rx) = tokio::sync::mpsc::channel(MATERIALIZE_CHANNEL_CAPACITY);
+    aube_util::diag::register_channel("materialize", &tx, MATERIALIZE_CHANNEL_CAPACITY);
+    (tx, rx)
 }
 
 /// Spawn the GVS-prewarm consumer with the given inputs and rx.
