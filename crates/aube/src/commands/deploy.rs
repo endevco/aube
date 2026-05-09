@@ -138,13 +138,13 @@ pub async fn run(
     }
 
     // Build (name -> (path, version)) for every workspace package.
-    let mut ws_index: BTreeMap<String, (PathBuf, String)> = BTreeMap::new();
+    let mut ws_index: BTreeMap<String, (PathBuf, Option<String>)> = BTreeMap::new();
     for dir in &workspace_pkgs {
         let Ok(m) = PackageJson::from_path(&dir.join("package.json")) else {
             continue;
         };
-        if let (Some(n), Some(v)) = (m.name, m.version) {
-            ws_index.insert(n, (dir.clone(), v));
+        if let Some(n) = m.name {
+            ws_index.insert(n, (dir.clone(), m.version));
         }
     }
 
@@ -154,7 +154,6 @@ pub async fn run(
     let mut matches: Vec<(String, PathBuf)> = selected
         .into_iter()
         .filter_map(|pkg| pkg.name.map(|name| (name, pkg.dir)))
-        .filter(|(name, _)| ws_index.contains_key(name))
         .collect();
     matches.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -455,7 +454,7 @@ fn seed_target_lockfile(
 fn stage_one(
     source_pkg_dir: &Path,
     target: &Path,
-    ws_index: &BTreeMap<String, (PathBuf, String)>,
+    ws_index: &BTreeMap<String, (PathBuf, Option<String>)>,
     args: &DeployArgs,
     deploy_all_files: bool,
 ) -> miette::Result<StagedDeploy> {
@@ -594,7 +593,7 @@ type InjectionPlan = BTreeMap<PathBuf, Injection>;
 fn plan_injections(
     deployed_pkg_dir: &Path,
     target_root: &Path,
-    ws_index: &BTreeMap<String, (PathBuf, String)>,
+    ws_index: &BTreeMap<String, (PathBuf, Option<String>)>,
     args: &DeployArgs,
 ) -> miette::Result<InjectionPlan> {
     let injected_root = target_root.join(".aube-deploy-injected");
@@ -802,7 +801,7 @@ fn resolve_workspace_spec(spec: &str, concrete_version: &str) -> String {
 /// caller opted in); tarball sources copy the archive bytes verbatim.
 fn materialize_injections(
     plan: &InjectionPlan,
-    ws_index: &BTreeMap<String, (PathBuf, String)>,
+    ws_index: &BTreeMap<String, (PathBuf, Option<String>)>,
     deploy_all_files: bool,
 ) -> miette::Result<()> {
     for inj in plan.values() {
@@ -1082,7 +1081,7 @@ fn rewrite_local_refs(
     manifest_path: &Path,
     source_pkg_dir: &Path,
     manifest_dir: &Path,
-    ws_index: &BTreeMap<String, (PathBuf, String)>,
+    ws_index: &BTreeMap<String, (PathBuf, Option<String>)>,
     plan: &InjectionPlan,
     strip: StripFields,
     root: DeployRoot<'_>,
@@ -1150,6 +1149,12 @@ fn rewrite_local_refs(
                     // it; leaving raw `workspace:*` would hard-fail when
                     // the deploy target has no workspace context.
                     if *field == "peerDependencies" {
+                        let Some(sibling_version) = sibling_version else {
+                            return Err(miette!(
+                                "aube deploy: workspace package {name:?} has no `version` field, required to rewrite `{name}: {spec}` in {}",
+                                manifest_path.display()
+                            ));
+                        };
                         *spec_val = serde_json::Value::String(resolve_workspace_spec(
                             spec,
                             sibling_version,
@@ -1248,10 +1253,15 @@ fn file_spec_to_dir(manifest_dir: &Path, target: &Path) -> String {
 mod tests {
     use super::*;
 
-    fn ws_index(entries: &[(&str, &str)]) -> BTreeMap<String, (PathBuf, String)> {
+    fn ws_index(entries: &[(&str, &str)]) -> BTreeMap<String, (PathBuf, Option<String>)> {
         entries
             .iter()
-            .map(|(n, v)| ((*n).to_string(), (PathBuf::from("/tmp"), (*v).to_string())))
+            .map(|(n, v)| {
+                (
+                    (*n).to_string(),
+                    (PathBuf::from("/tmp"), Some((*v).to_string())),
+                )
+            })
             .collect()
     }
 
@@ -1432,7 +1442,7 @@ mod tests {
         let mut idx = BTreeMap::new();
         idx.insert(
             "@test/lib".to_string(),
-            (sibling_dir.clone(), "1.2.3".to_string()),
+            (sibling_dir.clone(), Some("1.2.3".to_string())),
         );
         let mut plan = InjectionPlan::new();
         plan.insert(
@@ -1500,7 +1510,10 @@ mod tests {
             "@test/lib-tilde",
             "@test/lib-literal",
         ] {
-            idx.insert(n.to_string(), (sibling_dir.clone(), "1.2.3".to_string()));
+            idx.insert(
+                n.to_string(),
+                (sibling_dir.clone(), Some("1.2.3".to_string())),
+            );
         }
         let stub = PathBuf::from("/nonexistent-deployed");
         rewrite_local_refs(
@@ -1551,7 +1564,7 @@ mod tests {
         let mut idx = BTreeMap::new();
         idx.insert(
             "@deployed/pkg".to_string(),
-            (deployed_canonical.clone(), "9.9.9".to_string()),
+            (deployed_canonical.clone(), Some("9.9.9".to_string())),
         );
         rewrite_local_refs(
             &sibling_manifest,

@@ -101,6 +101,16 @@ _setup_workspace_fixture() {
 	assert_output --partial "did not match"
 }
 
+@test "aube deploy: matched workspace package without version reports metadata error" {
+	mkdir -p psl
+	printf "packages:\n  - psl\n" >aube-workspace.yaml
+	printf '{"name":"psl"}\n' >psl/package.json
+
+	run aube deploy --filter psl ./out
+	assert_failure
+	assert_output --partial "pack: package.json has no \`version\` field"
+}
+
 @test "aube deploy: refuses to deploy into a non-empty target" {
 	_setup_workspace_fixture
 	mkdir -p out
