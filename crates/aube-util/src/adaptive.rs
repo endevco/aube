@@ -819,6 +819,23 @@ impl RegimeDetector {
                             self.neg.store(0, Ordering::Relaxed);
                             return RegimeSignal::Rising;
                         }
+                        Err(observed) if observed < current => {
+                            // Winner already cleared the accumulator and
+                            // fired `Rising` for this crossing event. Our
+                            // sample is part of the same event — folding
+                            // its delta in via `fetch_add` on the post-
+                            // clear base means the next genuine crossing
+                            // sees correct state, while we return
+                            // `Stable` so the limiter does not double-
+                            // shrink. Without this guard, a single
+                            // sample whose `abs_dev >= threshold` would
+                            // re-enter the threshold arm on retry,
+                            // CAS(0, 0) would succeed, and the loser
+                            // would also fire `Rising`.
+                            self.pos.fetch_add(abs_dev, Ordering::Relaxed);
+                            self.neg.store(0, Ordering::Relaxed);
+                            return RegimeSignal::Stable;
+                        }
                         Err(observed) => {
                             current = observed;
                             continue;
@@ -849,6 +866,13 @@ impl RegimeDetector {
                         Ok(_) => {
                             self.pos.store(0, Ordering::Relaxed);
                             return RegimeSignal::Falling;
+                        }
+                        Err(observed) if observed < current => {
+                            // Mirror of the `Rising` post-winner-clear
+                            // guard above.
+                            self.neg.fetch_add(abs_dev, Ordering::Relaxed);
+                            self.pos.store(0, Ordering::Relaxed);
+                            return RegimeSignal::Stable;
                         }
                         Err(observed) => {
                             current = observed;
