@@ -472,8 +472,7 @@ async fn run_script_filtered(
     // re-check the same lockfile N times.
     ensure_installed(no_install).await?;
 
-    let concurrency = effective_concurrency(parallel, recursive.workspace_concurrency);
-    if concurrency > 1 {
+    if let Some(concurrency) = effective_concurrency(parallel, recursive.workspace_concurrency) {
         return run_filtered_parallel(
             script,
             args,
@@ -562,32 +561,42 @@ pub(crate) fn order_matched_packages(
     Ok(matched)
 }
 
-/// Map `--parallel` + `--workspace-concurrency` to a single concurrency
-/// cap. `1` means "use the sequential path" (bail-on-first behavior);
-/// any value `> 1` takes the bounded-parallel path. `--parallel` alone
-/// resolves to [`tokio::sync::Semaphore::MAX_PERMITS`] (= `usize::MAX >> 3`),
-/// which is effectively unbounded for any real workspace and avoids
-/// the runtime panic `Semaphore::new(usize::MAX)` triggers on its
-/// internal `MAX_PERMITS` invariant. Any user-supplied cap is also
-/// clamped to that ceiling.
-pub(crate) fn effective_concurrency(parallel: bool, workspace_concurrency: Option<usize>) -> usize {
+/// Map `--parallel` + `--workspace-concurrency` to a parallel-mode
+/// decision: `None` is the default sequential path (no flags, inherit
+/// stdio, bail on first failure); `Some(n)` takes the bounded-parallel
+/// path (piped/prefixed output, all-tasks-finish, semaphore-capped
+/// fanout) at width `n`. `Some(1)` is intentional pnpm parity — an
+/// explicit `--workspace-concurrency=1` opts into parallel-path
+/// semantics with width 1, even though no two tasks ever run at once.
+///
+/// `--parallel` alone resolves to [`tokio::sync::Semaphore::MAX_PERMITS`]
+/// (= `usize::MAX >> 3`), which is effectively unbounded for any real
+/// workspace and avoids the runtime panic `Semaphore::new(usize::MAX)`
+/// triggers on its internal `MAX_PERMITS` invariant. Any user-supplied
+/// cap is also clamped to that ceiling.
+pub(crate) fn effective_concurrency(
+    parallel: bool,
+    workspace_concurrency: Option<usize>,
+) -> Option<usize> {
     match (parallel, workspace_concurrency) {
         // pnpm: `workspace-concurrency=0` means "use available CPUs".
         // `available_parallelism` is documented to never return 0 — but
         // saturate to `1` defensively so a future change to that contract
         // can't silently turn into "sequential" via underflow.
-        (_, Some(0)) => std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .max(1),
-        (_, Some(n)) => n.min(tokio::sync::Semaphore::MAX_PERMITS),
+        (_, Some(0)) => Some(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .max(1),
+        ),
+        (_, Some(n)) => Some(n.min(tokio::sync::Semaphore::MAX_PERMITS)),
         // `--parallel` with no explicit cap preserves the historical
         // unbounded fanout. Power users on a 200-package workspace who
         // upgrade to a version with default-bounded parallel would be
         // surprised by an apparent slowdown; keep the explicit
         // unbounded request honored.
-        (true, None) => tokio::sync::Semaphore::MAX_PERMITS,
-        (false, None) => 1,
+        (true, None) => Some(tokio::sync::Semaphore::MAX_PERMITS),
+        (false, None) => None,
     }
 }
 
@@ -1097,7 +1106,7 @@ mod tests {
 
     #[test]
     fn no_parallel_no_concurrency_is_sequential() {
-        assert_eq!(effective_concurrency(false, None), 1);
+        assert_eq!(effective_concurrency(false, None), None);
     }
 
     #[test]
@@ -1110,7 +1119,7 @@ mod tests {
         // crashing on construction.
         assert_eq!(
             effective_concurrency(true, None),
-            tokio::sync::Semaphore::MAX_PERMITS
+            Some(tokio::sync::Semaphore::MAX_PERMITS)
         );
     }
 
@@ -1120,25 +1129,36 @@ mod tests {
         // otherwise hit the same Semaphore panic. The cap clamps it.
         assert_eq!(
             effective_concurrency(true, Some(usize::MAX)),
-            tokio::sync::Semaphore::MAX_PERMITS
+            Some(tokio::sync::Semaphore::MAX_PERMITS)
         );
     }
 
     #[test]
     fn concurrency_overrides_unbounded_parallel() {
-        assert_eq!(effective_concurrency(true, Some(4)), 4);
+        assert_eq!(effective_concurrency(true, Some(4)), Some(4));
     }
 
     #[test]
     fn concurrency_alone_implies_parallel() {
         // pnpm parity: setting a concurrency cap parallelizes by
         // itself, no separate `--parallel` needed.
-        assert_eq!(effective_concurrency(false, Some(3)), 3);
+        assert_eq!(effective_concurrency(false, Some(3)), Some(3));
+    }
+
+    #[test]
+    fn concurrency_one_explicit_takes_parallel_path() {
+        // pnpm parity: `--workspace-concurrency=1` is documented as
+        // "implicitly enables parallel mode at width N". Width 1 means
+        // tasks serialize, but the user still gets piped/prefixed
+        // output and all-tasks-finish semantics rather than the
+        // sequential default's inherited stdio + bail-on-first.
+        assert_eq!(effective_concurrency(false, Some(1)), Some(1));
+        assert_eq!(effective_concurrency(true, Some(1)), Some(1));
     }
 
     #[test]
     fn concurrency_zero_picks_cpu_count() {
-        let n = effective_concurrency(false, Some(0));
+        let n = effective_concurrency(false, Some(0)).expect("Some on explicit cap");
         assert!(n >= 1, "available_parallelism floor is 1");
     }
 

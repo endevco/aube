@@ -100,9 +100,16 @@ pub(crate) async fn run_command(
         .take()
         .expect("stderr was piped above; take() must succeed");
 
-    let line_prefix = format_line_prefix(mode);
-    let stdout_pump = tokio::spawn(pump_lines(stdout, line_prefix.clone(), false));
-    let stderr_pump = tokio::spawn(pump_lines(stderr, line_prefix, true));
+    // Compute color gating per stream — stdout and stderr can have
+    // different TTY/redirection state (e.g. `aube run -r --parallel
+    // build 2>errors.log` keeps stdout on a TTY while stderr is a
+    // file). Using a single prefix would either color a non-TTY file
+    // or skip color on a real TTY for one of the streams.
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    let stdout_prefix = format_line_prefix(mode, std::io::stdout().is_terminal() && !no_color);
+    let stderr_prefix = format_line_prefix(mode, std::io::stderr().is_terminal() && !no_color);
+    let stdout_pump = tokio::spawn(pump_lines(stdout, stdout_prefix, false));
+    let stderr_pump = tokio::spawn(pump_lines(stderr, stderr_prefix, true));
 
     let status = child
         .wait()
@@ -127,12 +134,14 @@ pub(crate) async fn run_command(
 }
 
 /// Build the per-line prefix string up front so we don't re-format it
-/// on every line. Empty for [`OutputMode::NoPrefix`].
-fn format_line_prefix(mode: &OutputMode) -> String {
+/// on every line. Empty for [`OutputMode::NoPrefix`]. `color` is taken
+/// as a parameter rather than queried inside so callers can gate it
+/// per stream (stdout and stderr can have independent TTY state).
+fn format_line_prefix(mode: &OutputMode, color: bool) -> String {
     match mode {
         OutputMode::NoPrefix => String::new(),
         OutputMode::Prefix { name, color_index } => {
-            if std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+            if color {
                 let code = PALETTE[*color_index];
                 format!("\x1b[{code}m{name}\x1b[0m: ")
             } else {
@@ -230,30 +239,30 @@ mod tests {
     }
 
     #[test]
-    fn format_line_prefix_skips_color_when_no_color_env_set() {
-        // We can't easily flip `is_terminal()` in a test, but
-        // `NO_COLOR` is the gate that doesn't require a real TTY.
-        // Set it and observe that the formatted prefix stays plain.
-        // Use a guard to restore state even if the assertion fails.
-        struct EnvGuard {
-            had_value: Option<std::ffi::OsString>,
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match self.had_value.take() {
-                    Some(v) => unsafe { std::env::set_var("NO_COLOR", v) },
-                    None => unsafe { std::env::remove_var("NO_COLOR") },
-                }
-            }
-        }
-        let _guard = EnvGuard {
-            had_value: std::env::var_os("NO_COLOR"),
-        };
-        unsafe { std::env::set_var("NO_COLOR", "1") };
-        let p = format_line_prefix(&OutputMode::Prefix {
-            name: "demo".to_string(),
-            color_index: 0,
-        });
+    fn format_line_prefix_skips_color_when_disabled() {
+        // The TTY/NO_COLOR resolution lives in the caller (per-stream),
+        // so the formatter only needs to react to a `color` flag. Pass
+        // `false` directly — no need to mutate process-global env state
+        // and race other tests on the same harness.
+        let p = format_line_prefix(
+            &OutputMode::Prefix {
+                name: "demo".to_string(),
+                color_index: 0,
+            },
+            false,
+        );
         assert_eq!(p, "demo: ");
+    }
+
+    #[test]
+    fn format_line_prefix_emits_ansi_when_color_enabled() {
+        let p = format_line_prefix(
+            &OutputMode::Prefix {
+                name: "demo".to_string(),
+                color_index: 0,
+            },
+            true,
+        );
+        assert_eq!(p, "\x1b[31mdemo\x1b[0m: ");
     }
 }

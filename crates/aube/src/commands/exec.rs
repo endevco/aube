@@ -130,8 +130,9 @@ async fn run_filtered(
     let (_root, matched) = super::select_workspace_packages(cwd, filter, "exec")?;
     let matched = super::run::order_matched_packages(matched, &recursive)?;
 
-    let concurrency = super::run::effective_concurrency(parallel, recursive.workspace_concurrency);
-    if concurrency > 1 {
+    if let Some(concurrency) =
+        super::run::effective_concurrency(parallel, recursive.workspace_concurrency)
+    {
         return run_filtered_parallel(
             bin,
             args,
@@ -367,9 +368,7 @@ pub(crate) async fn exec_bin_status_with_node_args(
         cmd.args(args);
         cmd
     };
-    command
-        .current_dir(cwd)
-        .stderr(aube_scripts::child_stderr());
+    command.current_dir(cwd);
     super::run_output::run_command(command, output_mode).await
 }
 
