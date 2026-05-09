@@ -1153,11 +1153,11 @@ pub(super) async fn run_gvs_prewarm_materializer(
         Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
             state,
             "linker_prewarm:default",
-            permit_seed.max(16).min(48),
+            permit_seed.clamp(16, 48),
             8,
             64,
         ),
-        None => aube_util::adaptive::AdaptiveLimit::new(permit_seed.max(16).min(48), 8, 64),
+        None => aube_util::adaptive::AdaptiveLimit::new(permit_seed.clamp(16, 48), 8, 64),
     };
     sem.disable_cusum_shrink();
     let linker_sem_for_persist = std::sync::Arc::clone(&sem);
@@ -1314,11 +1314,11 @@ async fn run_aube_dir_materializer(
         Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
             state,
             "linker_per_project:default",
-            permit_seed.max(16).min(48),
+            permit_seed.clamp(16, 48),
             8,
             64,
         ),
-        None => aube_util::adaptive::AdaptiveLimit::new(permit_seed.max(16).min(48), 8, 64),
+        None => aube_util::adaptive::AdaptiveLimit::new(permit_seed.clamp(16, 48), 8, 64),
     };
     sem.disable_cusum_shrink();
     let perproj_sem_for_persist = std::sync::Arc::clone(&sem);
@@ -1692,11 +1692,11 @@ where
             Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
                 state,
                 "tarball:default",
-                sem_seed.max(64).min(128),
+                sem_seed.clamp(64, 128),
                 4,
                 256,
             ),
-            None => aube_util::adaptive::AdaptiveLimit::new(sem_seed.max(64).min(128), 4, 256),
+            None => aube_util::adaptive::AdaptiveLimit::new(sem_seed.clamp(64, 128), 4, 256),
         };
         if let Some(state) = lockfile_persistent.clone() {
             lockfile_persist_handle = Some((state, std::sync::Arc::clone(&semaphore)));
