@@ -391,10 +391,9 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             let version = entry.version.clone().ok_or_else(|| {
                 Error::parse(path, format!("package '{install_name}' has no version"))
             })?;
-            let local_source = entry
-                .resolved
-                .as_deref()
-                .and_then(local_git_source_from_resolved);
+            let local_source = entry.resolved.as_deref().and_then(|r| {
+                local_git_source_from_resolved(r).or_else(|| local_file_source_from_resolved(r))
+            });
             let dep_path = local_source.as_ref().map_or_else(
                 || format!("{install_name}@{version}"),
                 |l| l.dep_path(&install_name),
@@ -730,6 +729,29 @@ fn local_git_source_from_resolved(resolved: &str) -> Option<LocalSource> {
         resolved,
         subpath,
     }))
+}
+
+/// Convert a `file:<path>` value in a non-`link:true` entry's
+/// `resolved` field to the matching local source. npm writes this
+/// shape for `npm install file:../foo-1.0.0.tgz` (local tarballs)
+/// and for some directory deps that pre-date the modern `link: true`
+/// emission. Without recognizing it, the entry parses as a plain
+/// registry package; lockfile-reuse then matches by name+version and
+/// the fetcher 404s on the literal package name.
+///
+/// Tarball vs. Directory is decided purely by the `.tgz`/`.tar.gz`
+/// suffix: the lockfile path is authoritative, and we don't have the
+/// project root here to stat the target. False classification is
+/// recoverable on the next install — `LocalSource::parse` from the
+/// manifest re-runs the FS-aware check.
+fn local_file_source_from_resolved(resolved: &str) -> Option<LocalSource> {
+    let rest = resolved.strip_prefix("file:")?;
+    let path = PathBuf::from(rest);
+    if LocalSource::path_looks_like_tarball(&path) {
+        Some(LocalSource::Tarball(path))
+    } else {
+        Some(LocalSource::Directory(path))
+    }
 }
 
 fn npm_resolved_field(pkg: &LockedPackage) -> Option<String> {
@@ -1756,6 +1778,77 @@ mod tests {
 
         let body = std::fs::read_to_string(out.path()).unwrap();
         assert!(!body.contains("\"node_modules/local-dir\""));
+    }
+
+    #[test]
+    fn test_parse_file_resolved_without_link() {
+        // npm writes `resolved: "file:..."` without `link: true` for
+        // local tarball deps (`npm install file:../foo-1.0.0.tgz`) and
+        // for some directory deps. Both shapes must surface as a
+        // LocalSource so the resolver dispatches the local-source
+        // branch and doesn't fall through to a registry fetch.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+            "lockfileVersion": 3,
+            "packages": {
+                "": {
+                    "dependencies": {
+                        "tar-dep": "file:../utils/tar-dep-1.0.0.tgz",
+                        "dir-dep": "file:../utils"
+                    }
+                },
+                "node_modules/tar-dep": {
+                    "version": "1.0.0",
+                    "resolved": "file:../utils/tar-dep-1.0.0.tgz",
+                    "integrity": "sha512-aaa"
+                },
+                "node_modules/dir-dep": {
+                    "version": "1.0.0",
+                    "resolved": "file:../utils"
+                }
+            }
+        }"#;
+        std::fs::write(tmp.path(), content).unwrap();
+
+        let graph = parse(tmp.path()).unwrap();
+
+        let tar_pkg = graph
+            .packages
+            .values()
+            .find(|p| p.name == "tar-dep")
+            .expect("tar-dep entry");
+        assert!(
+            matches!(&tar_pkg.local_source, Some(LocalSource::Tarball(p)) if p == Path::new("../utils/tar-dep-1.0.0.tgz")),
+            "expected Tarball source, got {:?}",
+            tar_pkg.local_source,
+        );
+        assert!(
+            tar_pkg.dep_path.starts_with("tar-dep@file+"),
+            "tarball dep_path should be local-source-keyed, got {}",
+            tar_pkg.dep_path,
+        );
+
+        let dir_pkg = graph
+            .packages
+            .values()
+            .find(|p| p.name == "dir-dep")
+            .expect("dir-dep entry");
+        assert!(
+            matches!(&dir_pkg.local_source, Some(LocalSource::Directory(p)) if p == Path::new("../utils")),
+            "expected Directory source, got {:?}",
+            dir_pkg.local_source,
+        );
+        assert!(
+            dir_pkg.dep_path.starts_with("dir-dep@file+"),
+            "directory dep_path should be local-source-keyed, got {}",
+            dir_pkg.dep_path,
+        );
+
+        let root = graph.importers.get(".").unwrap();
+        let tar_direct = root.iter().find(|d| d.name == "tar-dep").unwrap();
+        assert_eq!(tar_direct.dep_path, tar_pkg.dep_path);
+        let dir_direct = root.iter().find(|d| d.name == "dir-dep").unwrap();
+        assert_eq!(dir_direct.dep_path, dir_pkg.dep_path);
     }
 
     #[test]
