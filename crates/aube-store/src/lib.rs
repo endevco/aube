@@ -861,11 +861,7 @@ impl Store {
             aube_util::diag::Category::Store,
             "tar_extract_complete",
             extract_t0.elapsed(),
-            || {
-                format!(
-                    r#"{{"entries":{staged_count},"bytes_uncompressed":{total_uncompressed}}}"#
-                )
-            },
+            || format!(r#"{{"entries":{staged_count},"bytes_uncompressed":{total_uncompressed}}}"#),
         );
         if aube_util::diag::enabled() {
             aube_util::diag::event_lazy(
@@ -886,8 +882,7 @@ impl Store {
             std::time::Duration::from_nanos(cas_ns as u64),
             || {
                 let pipelined = !pipelined_disabled;
-                let parallel =
-                    !parallel_disabled && staged_count >= PARALLEL_IMPORT_THRESHOLD;
+                let parallel = !parallel_disabled && staged_count >= PARALLEL_IMPORT_THRESHOLD;
                 format!(
                     r#"{{"files":{staged_count},"parallel":{parallel},"pipelined":{pipelined}}}"#
                 )

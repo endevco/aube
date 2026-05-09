@@ -973,8 +973,10 @@ pub(super) type MaterializeJoinHandle = tokio::task::JoinHandle<
  * `record_pop` so the next process learns from the high water mark.
  * Bounds 256 to 16384 cap RAM and floor progress.
  */
-pub(super) fn materialize_channel_with_advisor()
--> (MaterializeChannel, std::sync::Arc<aube_util::adaptive::AdaptiveBuffer>) {
+pub(super) fn materialize_channel_with_advisor() -> (
+    MaterializeChannel,
+    std::sync::Arc<aube_util::adaptive::AdaptiveBuffer>,
+) {
     let persistent = aube_util::adaptive::global_persistent_state();
     let cap = persistent
         .as_ref()

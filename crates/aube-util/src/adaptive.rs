@@ -295,7 +295,9 @@ impl AdaptiveLimit {
      * See [`ColdState::cusum_shrink_disabled`] for rationale.
      */
     pub fn disable_cusum_shrink(&self) {
-        self.cold.cusum_shrink_disabled.store(true, Ordering::Relaxed);
+        self.cold
+            .cusum_shrink_disabled
+            .store(true, Ordering::Relaxed);
     }
 
     pub fn current_limit(&self) -> usize {
@@ -429,12 +431,8 @@ impl AdaptiveLimit {
     fn ratchet_min(slot: &AtomicU64, sample: u64) {
         let mut current = slot.load(Ordering::Relaxed);
         while sample < current {
-            match slot.compare_exchange_weak(
-                current,
-                sample,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
+            match slot.compare_exchange_weak(current, sample, Ordering::Relaxed, Ordering::Relaxed)
+            {
                 Ok(_) => return,
                 Err(observed) => current = observed,
             }
@@ -452,12 +450,7 @@ impl AdaptiveLimit {
                 let step = diff >> shift;
                 ((current as i128).saturating_add(step)).max(1) as u64
             };
-            match slot.compare_exchange_weak(
-                current,
-                next,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
+            match slot.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => return next,
                 Err(observed) => current = observed,
             }
@@ -1064,9 +1057,7 @@ impl PersistentState {
     pub fn save_observed(&self, key: &str, value: usize) {
         let mut snapshot = self.snapshot();
         snapshot.version = PERSISTED_SCHEMA_VERSION;
-        snapshot
-            .values
-            .insert(key.to_string(), value as u64);
+        snapshot.values.insert(key.to_string(), value as u64);
         if let Ok(mut cached) = self.cache.lock() {
             *cached = Some(snapshot.clone());
         }
@@ -1120,10 +1111,10 @@ fn read_snapshot(path: &Path) -> Option<PersistedSnapshot> {
  * `%LOCALAPPDATA%\aube\adaptive-state.json` on Windows.
  */
 pub fn default_persistent_state_path() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("aube").join("adaptive-state.json"));
-        }
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("aube").join("adaptive-state.json"));
     }
     if cfg!(windows) {
         std::env::var("LOCALAPPDATA")
@@ -1139,9 +1130,12 @@ pub fn default_persistent_state_path() -> Option<PathBuf> {
                 .join("adaptive-state.json")
         })
     } else {
-        std::env::var("HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join(".cache").join("aube").join("adaptive-state.json"))
+        std::env::var("HOME").ok().map(|h| {
+            PathBuf::from(h)
+                .join(".cache")
+                .join("aube")
+                .join("adaptive-state.json")
+        })
     }
 }
 
@@ -1151,7 +1145,8 @@ pub fn default_persistent_state_path() -> Option<PathBuf> {
  * different path for testing can construct their own
  * [`PersistentState`] directly.
  */
-static GLOBAL_PERSISTENT_STATE: std::sync::OnceLock<Arc<PersistentState>> = std::sync::OnceLock::new();
+static GLOBAL_PERSISTENT_STATE: std::sync::OnceLock<Arc<PersistentState>> =
+    std::sync::OnceLock::new();
 
 pub fn global_persistent_state() -> Option<Arc<PersistentState>> {
     let path = default_persistent_state_path()?;
