@@ -151,10 +151,13 @@ fn format_line_prefix(mode: &OutputMode, color: bool) -> String {
     }
 }
 
-/// Drain `reader` line-by-line, emitting each line through `print!` /
-/// `eprint!` with `prefix` prepended. `is_stderr` selects which stream
-/// to write to so child stderr stays distinguishable for callers
-/// piping aube's own stderr separately.
+/// Drain `reader` line-by-line, emitting each line with `prefix`
+/// prepended. `is_stderr` selects the destination stream so child
+/// stderr stays distinguishable for callers piping aube's own stderr
+/// separately. Stderr lines route through `aube_scripts` so the
+/// `SilentStderrGuard`'s saved real-stderr fd is honored — under
+/// `--silent` aube redirects fd 2 to `/dev/null`, and `eprintln!` would
+/// silently drop child stderr in `--silent --parallel` mode.
 ///
 /// Uses `read_line` (UTF-8) rather than `read_until(b'\n')` because
 /// npm-style script output is always text. A child that emits invalid
@@ -174,7 +177,7 @@ where
         }
         let trimmed = line.trim_end_matches(['\n', '\r']);
         if is_stderr {
-            eprintln!("{prefix}{trimmed}");
+            aube_scripts::write_line_to_real_stderr(&format!("{prefix}{trimmed}"));
         } else {
             println!("{prefix}{trimmed}");
         }

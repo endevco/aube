@@ -656,6 +656,38 @@ pub fn child_stderr() -> std::process::Stdio {
     std::process::Stdio::inherit()
 }
 
+/// Write `line` plus a newline to the parent's real stderr. Used by
+/// the recursive-run output multiplexer, which pipes child stderr
+/// through aube and re-emits each line with a `<package>: ` prefix —
+/// `eprintln!` writes to fd 2, which `SilentStderrGuard` has redirected
+/// to `/dev/null` under `--silent`, so child stderr would otherwise be
+/// silently swallowed in `--silent --parallel` mode. Routes through the
+/// saved real-stderr fd when silent mode is active, fd 2 otherwise.
+///
+/// Issues a single `write` syscall with `<line>\n` so the kernel's
+/// `PIPE_BUF` (= 4096 on Linux) atomicity keeps lines from concurrent
+/// pump tasks intact without explicit locking.
+#[cfg(unix)]
+pub fn write_line_to_real_stderr(line: &str) {
+    let saved = SAVED_STDERR_FD.load(std::sync::atomic::Ordering::SeqCst);
+    let fd = if saved >= 0 { saved } else { 2 };
+    let mut buf = String::with_capacity(line.len() + 1);
+    buf.push_str(line);
+    buf.push('\n');
+    // SAFETY: `fd` is either the saved real-stderr fd (kept live by
+    // `SilentStderrGuard` for the duration of main) or fd 2 (always
+    // open). A short / failed write is best-effort; the prior
+    // `eprintln!` swallowed errors the same way.
+    unsafe {
+        libc::write(fd, buf.as_ptr().cast(), buf.len());
+    }
+}
+
+#[cfg(not(unix))]
+pub fn write_line_to_real_stderr(line: &str) {
+    eprintln!("{line}");
+}
+
 /// Run a single npm-style script line through `sh -c` with the usual
 /// environment (`$PATH` extended with `node_modules/.bin`, `INIT_CWD`,
 /// `npm_lifecycle_event`, `npm_package_name`, `npm_package_version`).
