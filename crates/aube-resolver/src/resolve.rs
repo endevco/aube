@@ -136,9 +136,32 @@ impl Resolver {
         // speculatively at every enqueue site, by the time a task is
         // popped its packument is usually already cached, so the
         // wait is short.
-        let shared_semaphore = Arc::new(tokio::sync::Semaphore::new(
-            self.packument_network_concurrency.unwrap_or(64),
-        ));
+        /*
+         * Adaptive packument concurrency. Loaded from the cross run
+         * persistent store when available so the limiter resumes
+         * the converged operating point of the previous run instead
+         * of cold ramping. Falls back to seed 256 (h2 stream cap)
+         * on a fresh install. The CUSUM gated AIMD controller in
+         * `aube_util::adaptive` shrinks on real back pressure
+         * (HTTP 429 / 503 / timeout) and on sustained latency
+         * regime rise. Floor 4 keeps progress under continuous
+         * throttling.
+         */
+        let _ = self.packument_network_concurrency;
+        let persistent = aube_util::adaptive::global_persistent_state();
+        let shared_semaphore = match persistent.as_ref() {
+            Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
+                state,
+                "packument:default",
+                256,
+                4,
+                256,
+            ),
+            None => aube_util::adaptive::AdaptiveLimit::new(256, 4, 256),
+        };
+        let packument_persist_handle = persistent
+            .as_ref()
+            .map(|p| (Arc::clone(p), Arc::clone(&shared_semaphore)));
         // Time-based mode and `minimumReleaseAge` both need the
         // packument's `time:` map. The abbreviated (corgi) response
         // omits `time` by default, so we normally fall back to the
@@ -243,10 +266,7 @@ impl Resolver {
                         });
                         let _diag_inflight = aube_util::diag::inflight(aube_util::diag::Slot::Pack);
                         let permit_wait = std::time::Instant::now();
-                        let _permit = sem
-                            .acquire_owned()
-                            .await
-                            .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+                        let permit = sem.acquire().await;
                         let permit_wait_ms = permit_wait.elapsed();
                         if permit_wait_ms.as_millis() > 1 {
                             aube_util::diag::event_lazy(
@@ -281,6 +301,7 @@ impl Resolver {
                                 "packument_disk_hit",
                                 || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned)),
                             );
+                            permit.record_cancelled();
                             return Ok::<_, Error>((name_owned, packument, false));
                         }
                         if use_metadata_primer
@@ -324,9 +345,10 @@ impl Resolver {
                                 "packument_primer_hit",
                                 || format!(r#"{{"name":{}}}"#, aube_util::diag::jstr(&name_owned)),
                             );
+                            permit.record_cancelled();
                             return Ok::<_, Error>((name_owned, packument, true));
                         }
-                        let packument = if needs_time {
+                        let fetch_outcome = if needs_time {
                             match full_cache_dir.as_ref() {
                                 Some(dir) => {
                                     client
@@ -345,8 +367,17 @@ impl Resolver {
                                 .await
                         } else {
                             client.fetch_packument(&name_owned).await
-                        }
-                        .map_err(|e| Error::Registry(name_owned.clone(), e.to_string()))?;
+                        };
+                        let packument = match fetch_outcome {
+                            Ok(p) => {
+                                permit.record_success();
+                                p
+                            }
+                            Err(e) => {
+                                permit.record_cancelled();
+                                return Err(Error::Registry(name_owned.clone(), e.to_string()));
+                            }
+                        };
                         aube_util::diag::instant_lazy(
                             aube_util::diag::Category::Resolver,
                             "packument_network_hit",
@@ -2139,6 +2170,9 @@ impl Resolver {
             "peer-context pass produced {} contextualized packages",
             contextualized.packages.len()
         );
+        if let Some((state, sem)) = packument_persist_handle {
+            sem.persist(&state, "packument:default");
+        }
         Ok(contextualized)
     }
 }

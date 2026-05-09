@@ -697,14 +697,62 @@ impl Store {
         let capped = CappedReader::new(gz, MAX_TARBALL_DECOMPRESSED_BYTES);
         let buffered = std::io::BufReader::with_capacity(256 * 1024, capped);
         let mut archive = tar::Archive::new(buffered);
+        /*
+         * Chunked staged pipeline. Read N entries, flush them to CAS
+         * via rayon parallel writes, repeat. Keeps the existing
+         * rayon global pool warm across chunks and partially
+         * overlaps tar parsing with file writes within a single
+         * tarball. No new threads spawned (per-call thread::scope
+         * was tried and live locked at 80 s, see git history if
+         * curious). Chunk size of 64 is roughly the median npm
+         * package's file count, so most tarballs flush at most
+         * once or twice; fat native bindings (next, sharp, swc)
+         * with 1k+ files chunk through 16+ flushes. The legacy
+         * "stage everything then flush" path remains under
+         * `AUBE_DISABLE_PIPELINED_IMPORT=1` for byte-identity
+         * regression debugging.
+         */
+        const PIPELINE_CHUNK_SIZE: usize = 64;
+        let pipelined_disabled = std::env::var_os("AUBE_DISABLE_PIPELINED_IMPORT").is_some();
+        let parallel_disabled = std::env::var_os("AUBE_DISABLE_PARALLEL_IMPORT").is_some();
         let mut staged: Vec<(String, Vec<u8>, bool)> = Vec::new();
         let mut entries_seen: usize = 0;
         let mut total_uncompressed: u64 = 0;
-        // Cumulative time spent inside per-entry read_to_end calls. Since
-        // flate2's GzDecoder is lazy, all decompression happens through
-        // these reads — so this counter approximates total gzip CPU cost
-        // separate from tar header parsing and per-entry alloc.
         let mut decode_ns: u128 = 0;
+        let mut cas_ns: u128 = 0;
+        let mut index = BTreeMap::new();
+        let mut staged_count: usize = 0;
+
+        let flush_chunk = |chunk: Vec<(String, Vec<u8>, bool)>,
+                           index: &mut BTreeMap<String, StoredFile>,
+                           cas_ns: &mut u128|
+         -> Result<(), Error> {
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            let chunk_t0 = std::time::Instant::now();
+            if parallel_disabled || chunk.len() < PARALLEL_IMPORT_THRESHOLD {
+                for (rel_path, content, executable) in chunk {
+                    let stored = self.import_bytes(&content, executable)?;
+                    index.insert(rel_path, stored);
+                }
+            } else {
+                use rayon::iter::{IntoParallelIterator, ParallelIterator};
+                let results: Vec<Result<(String, StoredFile), Error>> = chunk
+                    .into_par_iter()
+                    .map(|(rel_path, content, executable)| {
+                        self.import_bytes(&content, executable)
+                            .map(|stored| (rel_path, stored))
+                    })
+                    .collect();
+                for r in results {
+                    let (rel_path, stored) = r?;
+                    index.insert(rel_path, stored);
+                }
+            }
+            *cas_ns += chunk_t0.elapsed().as_nanos();
+            Ok(())
+        };
 
         for entry in archive.entries().map_err(|e| Error::Tar(e.to_string()))? {
             entries_seen += 1;
@@ -801,6 +849,12 @@ impl Store {
             let executable = mode & 0o111 != 0;
             total_uncompressed = total_uncompressed.saturating_add(content.len() as u64);
             staged.push((rel_path, content, executable));
+            staged_count += 1;
+
+            if !pipelined_disabled && staged.len() >= PIPELINE_CHUNK_SIZE {
+                let chunk = std::mem::take(&mut staged);
+                flush_chunk(chunk, &mut index, &mut cas_ns)?;
+            }
         }
 
         aube_util::diag::event_lazy(
@@ -809,17 +863,10 @@ impl Store {
             extract_t0.elapsed(),
             || {
                 format!(
-                    r#"{{"entries":{},"bytes_uncompressed":{}}}"#,
-                    staged.len(),
-                    total_uncompressed
+                    r#"{{"entries":{staged_count},"bytes_uncompressed":{total_uncompressed}}}"#
                 )
             },
         );
-        // Decompression sub-time is the cumulative duration of every
-        // per-entry `read_to_end` call. Since flate2's `GzDecoder` is
-        // lazy, all gunzip CPU cost is paid through these reads, so this
-        // counter approximates total gzip work separate from tar header
-        // parsing and per-entry allocation.
         if aube_util::diag::enabled() {
             aube_util::diag::event_lazy(
                 aube_util::diag::Category::Store,
@@ -829,45 +876,20 @@ impl Store {
             );
         }
 
-        let parallel_disabled = std::env::var_os("AUBE_DISABLE_PARALLEL_IMPORT").is_some();
-        let mut index = BTreeMap::new();
-        let cas_t0 = std::time::Instant::now();
-        let staged_count = staged.len();
-        if parallel_disabled || staged.len() < PARALLEL_IMPORT_THRESHOLD {
-            for (rel_path, content, executable) in staged {
-                let stored = self.import_bytes(&content, executable)?;
-                index.insert(rel_path, stored);
-            }
-        } else {
-            use rayon::iter::{IntoParallelIterator, ParallelIterator};
-            // par_iter the CAS writes. Each `import_bytes` call is
-            // fully reentrant (`&self`, `O_CREAT|O_EXCL`, no shared
-            // mutable state), so rayon's work-stealing is safe. The
-            // returned vector preserves input order via `collect()`,
-            // so the BTreeMap insertion order matches the serial
-            // path's bytes-on-disk for the byte-identity gate.
-            let results: Vec<Result<(String, StoredFile), Error>> = staged
-                .into_par_iter()
-                .map(|(rel_path, content, executable)| {
-                    self.import_bytes(&content, executable)
-                        .map(|stored| (rel_path, stored))
-                })
-                .collect();
-            for r in results {
-                let (rel_path, stored) = r?;
-                index.insert(rel_path, stored);
-            }
+        if !staged.is_empty() {
+            let chunk = std::mem::take(&mut staged);
+            flush_chunk(chunk, &mut index, &mut cas_ns)?;
         }
-
         aube_util::diag::event_lazy(
             aube_util::diag::Category::Store,
             "cas_import_complete",
-            cas_t0.elapsed(),
+            std::time::Duration::from_nanos(cas_ns as u64),
             || {
+                let pipelined = !pipelined_disabled;
+                let parallel =
+                    !parallel_disabled && staged_count >= PARALLEL_IMPORT_THRESHOLD;
                 format!(
-                    r#"{{"files":{},"parallel":{}}}"#,
-                    staged_count,
-                    !parallel_disabled && staged_count >= PARALLEL_IMPORT_THRESHOLD
+                    r#"{{"files":{staged_count},"parallel":{parallel},"pipelined":{pipelined}}}"#
                 )
             },
         );

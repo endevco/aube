@@ -1,3 +1,4 @@
+pub mod adaptive;
 pub mod buf;
 pub mod cache;
 pub mod collections;

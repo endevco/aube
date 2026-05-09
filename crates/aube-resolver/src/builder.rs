@@ -10,7 +10,17 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 impl Resolver {
-    const DEFAULT_STREAM_CAPACITY: usize = 64;
+    /// Stream-channel capacity between resolver and fetch coordinator.
+    ///
+    /// Was 64 (matched fetch concurrency). Bumped to 1024 because the
+    /// channel is just a backpressure-bounded mpsc — its job is to
+    /// absorb resolver bursts so the BFS loop never blocks on
+    /// `send().await` while the fetch coordinator is mid-tarball. Each
+    /// `ResolvedPackage` is ~200 bytes, so 1024 = ~200 KiB worst-case.
+    /// Real install graphs sustain 5–10 in-flight packages per fetch
+    /// permit, so 1024 covers ~20 000-pkg installs without backpressure
+    /// while still bounding heap on a runaway producer.
+    const DEFAULT_STREAM_CAPACITY: usize = 1024;
 
     pub fn new(client: Arc<RegistryClient>) -> Self {
         Self {

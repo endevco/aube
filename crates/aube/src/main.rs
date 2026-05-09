@@ -860,12 +860,22 @@ fn inner_main() -> miette::Result<()> {
         }
     }
 
-    // High-core boxes don't need 64-128 worker threads for an I/O
-    // pipeline. Default worker_threads = num_cpus and
-    // max_blocking_threads = 512 are both wasteful. Cap workers at 8
-    // (install semaphore already gates network), blocking at 64
-    // (covers tarball decode plus linker fan-out on a 16-core box).
-    // AUBE_TOKIO_WORKERS / AUBE_TOKIO_BLOCKING for benchmarking.
+    /*
+     * High core boxes don't need 64-128 worker threads for an I/O
+     * pipeline. Default worker_threads = num_cpus and
+     * max_blocking_threads = 512 are both wasteful. Cap workers at
+     * 8 (install semaphore already gates network).
+     *
+     * Blocking pool sits at 128, raised from 64 after diag traces
+     * showed AdaptiveLimit running 100+ concurrent tarball imports
+     * (each holding a blocking slot for gzip + tar + CAS write)
+     * while the linker is also fanning out hardlinks on the same
+     * pool. 64 was saturating, queueing late tarballs behind
+     * earlier finishers. 128 covers worst case fat tarball
+     * pipeline plus linker plus side effects.
+     *
+     * AUBE_TOKIO_WORKERS / AUBE_TOKIO_BLOCKING for benchmarking.
+     */
     let parse_env = |key: &str, default: usize| -> usize {
         std::env::var(key)
             .ok()
@@ -877,7 +887,7 @@ fn inner_main() -> miette::Result<()> {
         .map(|n| n.get())
         .unwrap_or(4);
     let workers = parse_env("AUBE_TOKIO_WORKERS", cpu_count.min(8));
-    let blocking = parse_env("AUBE_TOKIO_BLOCKING", 64);
+    let blocking = parse_env("AUBE_TOKIO_BLOCKING", 128);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .max_blocking_threads(blocking)

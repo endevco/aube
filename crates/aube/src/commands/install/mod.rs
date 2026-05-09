@@ -944,10 +944,11 @@ pub(super) struct GvsPrewarmInputs {
     pub use_global_virtual_store_override: Option<bool>,
 }
 
-/// Backpressure on the (canonical_key, PackageIndex) channel that
-/// feeds the GVS-prewarm materializer. 2048 ~= 2x big-monorepo
-/// median so backpressure only fires under genuine producer/consumer
-/// skew (slow FS, Defender).
+/// Default initial capacity for the (canonical_key, PackageIndex)
+/// channel that feeds the GVS-prewarm materializer. Used as the seed
+/// when no persisted observation exists. Real cap is sized via
+/// [`aube_util::adaptive::AdaptiveBuffer`] which carries the
+/// converged value across process boundaries.
 pub(super) const MATERIALIZE_CHANNEL_CAPACITY: usize = 2048;
 
 pub(super) type MaterializeChannel = (
@@ -962,14 +963,32 @@ pub(super) type MaterializeJoinHandle = tokio::task::JoinHandle<
     )>,
 >;
 
-/// New (tx, rx) sized to MATERIALIZE_CHANNEL_CAPACITY. Both fetch
-/// branches need to hold tx for streaming and rx for the consumer
-/// task spawned later, so the channel creation is split from the
-/// task spawn.
+/**
+ * Construct the materialize channel sized from the cross run learned
+ * recommendation if available, otherwise from
+ * [`MATERIALIZE_CHANNEL_CAPACITY`]. Tokio's `mpsc::channel` cap is
+ * fixed at construction so the only knob we can turn here is the
+ * initial size for this process. The advisor returned here lets the
+ * fetch path call `record_push` and the materializer call
+ * `record_pop` so the next process learns from the high water mark.
+ * Bounds 256 to 16384 cap RAM and floor progress.
+ */
+pub(super) fn materialize_channel_with_advisor()
+-> (MaterializeChannel, std::sync::Arc<aube_util::adaptive::AdaptiveBuffer>) {
+    let persistent = aube_util::adaptive::global_persistent_state();
+    let cap = persistent
+        .as_ref()
+        .map(|state| state.load_seed("materialize_channel:default", MATERIALIZE_CHANNEL_CAPACITY))
+        .unwrap_or(MATERIALIZE_CHANNEL_CAPACITY)
+        .clamp(256, 16384);
+    let (tx, rx) = tokio::sync::mpsc::channel(cap);
+    aube_util::diag::register_channel("materialize", &tx, cap);
+    let advisor = aube_util::adaptive::AdaptiveBuffer::new(cap, 256, 16384);
+    ((tx, rx), advisor)
+}
+
 pub(super) fn materialize_channel() -> MaterializeChannel {
-    let (tx, rx) = tokio::sync::mpsc::channel(MATERIALIZE_CHANNEL_CAPACITY);
-    aube_util::diag::register_channel("materialize", &tx, MATERIALIZE_CHANNEL_CAPACITY);
-    (tx, rx)
+    materialize_channel_with_advisor().0
 }
 
 /// Spawn the GVS-prewarm consumer with the given inputs and rx.
@@ -1108,8 +1127,39 @@ pub(super) async fn run_gvs_prewarm_materializer(
     }
     let linker = std::sync::Arc::new(linker);
 
-    let permits = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
+    /*
+     * Adaptive linker parallelism. The signal is the same as the
+     * network limiter for ceiling/throttle behavior, but with
+     * CUSUM-driven shrink disabled. Per-package
+     * `ensure_in_virtual_store` wall on storage-bound workloads
+     * has high intrinsic variance (Defender scans, NTFS
+     * cold-cache, COW reflink fall-through to copy) that has no
+     * upstream queue to relieve — treating rising RTT as
+     * backpressure was observed to collapse the limit from seed
+     * 16 down to 12 on Windows, queueing 1195 packages behind a
+     * 12-permit cap (mean 2456ms permit_wait).
+     *
+     * `record_throttle` shrink remains active for real IO errors.
+     * `link_concurrency` setting is a *seed* (when set); default
+     * seed clamps `default_linker_parallelism()` into [16, 48].
+     * Floor 8 prevents pathological collapse under throttle
+     * cascades; ceiling 64 caps concurrent open file descriptors.
+     */
+    let permit_seed = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
+    let linker_persistent = aube_util::adaptive::global_persistent_state();
+    let sem = match linker_persistent.as_ref() {
+        Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
+            state,
+            "linker_prewarm:default",
+            permit_seed.max(16).min(48),
+            8,
+            64,
+        ),
+        None => aube_util::adaptive::AdaptiveLimit::new(permit_seed.max(16).min(48), 8, 64),
+    };
+    sem.disable_cusum_shrink();
+    let linker_sem_for_persist = std::sync::Arc::clone(&sem);
+    let linker_persistent_for_save = linker_persistent.clone();
     let mut in_flight: Vec<tokio::task::JoinHandle<miette::Result<aube_linker::LinkStats>>> =
         Vec::new();
     let mut rx = materialize_rx;
@@ -1147,7 +1197,7 @@ pub(super) async fn run_gvs_prewarm_materializer(
                         });
                 let _diag_pkg_inflight = aube_util::diag::inflight(aube_util::diag::Slot::Imp);
                 let permit_wait = std::time::Instant::now();
-                let _permit = sem.acquire().await.unwrap();
+                let permit = sem.acquire().await;
                 let permit_wait_ms = permit_wait.elapsed();
                 if permit_wait_ms.as_millis() > 1 {
                     aube_util::diag::event_lazy(
@@ -1158,7 +1208,7 @@ pub(super) async fn run_gvs_prewarm_materializer(
                     );
                 }
                 let dep_path_for_err = dep_path.clone();
-                tokio::task::spawn_blocking(move || -> miette::Result<_> {
+                let outcome = tokio::task::spawn_blocking(move || -> miette::Result<_> {
                     let _diag_blk = aube_util::diag::Span::new(
                         aube_util::diag::Category::Materialize,
                         "package_blocking",
@@ -1176,7 +1226,12 @@ pub(super) async fn run_gvs_prewarm_materializer(
                     Ok(stats)
                 })
                 .await
-                .into_diagnostic()?
+                .into_diagnostic()?;
+                match &outcome {
+                    Ok(_) => permit.record_success(),
+                    Err(_) => permit.record_cancelled(),
+                }
+                outcome
             }));
         }
     }
@@ -1186,6 +1241,9 @@ pub(super) async fn run_gvs_prewarm_materializer(
         total.packages_linked += s.packages_linked;
         total.packages_cached += s.packages_cached;
         total.files_linked += s.files_linked;
+    }
+    if let Some(state) = linker_persistent_for_save.as_ref() {
+        linker_sem_for_persist.persist(state, "linker_prewarm:default");
     }
     Ok((total, Some(graph_hashes_arc)))
 }
@@ -1236,8 +1294,33 @@ async fn run_aube_dir_materializer(
     }
 
     let linker = std::sync::Arc::new(linker);
-    let permits = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
+    /*
+     * Adaptive per-project materialize parallelism. Same gradient
+     * controller as the prewarm path, with CUSUM-driven shrink
+     * disabled for the same reason: per-package `ensure_in_aube_dir`
+     * wall is filesystem-bound (Defender, NTFS cold-cache, COW
+     * fall-through) and rising RTT here is intrinsic noise rather
+     * than upstream backpressure. `record_throttle` shrink remains
+     * active for real IO errors. Floor 8 prevents pathological
+     * collapse under throttle cascades; persisted under
+     * `linker_per_project:default` so the next process resumes
+     * the converged operating point.
+     */
+    let permit_seed = link_concurrency.unwrap_or_else(aube_linker::default_linker_parallelism);
+    let perproj_persistent = aube_util::adaptive::global_persistent_state();
+    let sem = match perproj_persistent.as_ref() {
+        Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
+            state,
+            "linker_per_project:default",
+            permit_seed.max(16).min(48),
+            8,
+            64,
+        ),
+        None => aube_util::adaptive::AdaptiveLimit::new(permit_seed.max(16).min(48), 8, 64),
+    };
+    sem.disable_cusum_shrink();
+    let perproj_sem_for_persist = std::sync::Arc::clone(&sem);
+    let perproj_persistent_for_save = perproj_persistent.clone();
     // JoinSet aborts in-flight tasks if we early-return on error,
     // so a failed materialize doesn't leave orphan tasks racing
     // disk writes against the install driver's cleanup.
@@ -1276,12 +1359,9 @@ async fn run_aube_dir_materializer(
             let aube_dir = aube_dir.clone();
             let nested_link_targets = nested_link_targets.clone();
             in_flight.spawn(async move {
-                let _permit = sem
-                    .acquire()
-                    .await
-                    .map_err(|e| miette!("materializer semaphore closed: {e}"))?;
+                let permit = sem.acquire().await;
                 let dep_path_for_err = dep_path.clone();
-                tokio::task::spawn_blocking(move || -> miette::Result<_> {
+                let outcome = tokio::task::spawn_blocking(move || -> miette::Result<_> {
                     let mut stats = aube_linker::LinkStats::default();
                     linker
                         .ensure_in_aube_dir(
@@ -1296,7 +1376,12 @@ async fn run_aube_dir_materializer(
                     Ok(stats)
                 })
                 .await
-                .into_diagnostic()?
+                .into_diagnostic()?;
+                match &outcome {
+                    Ok(_) => permit.record_success(),
+                    Err(_) => permit.record_cancelled(),
+                }
+                outcome
             });
         }
     }
@@ -1305,6 +1390,9 @@ async fn run_aube_dir_materializer(
         total.packages_linked += s.packages_linked;
         total.packages_cached += s.packages_cached;
         total.files_linked += s.files_linked;
+    }
+    if let Some(state) = perproj_persistent_for_save.as_ref() {
+        perproj_sem_for_persist.persist(state, "linker_per_project:default");
     }
     Ok((total, None))
 }
@@ -1571,6 +1659,11 @@ where
     }
     let fetch_count = to_fetch.len();
 
+    let mut lockfile_persist_handle: Option<(
+        std::sync::Arc<aube_util::adaptive::PersistentState>,
+        std::sync::Arc<aube_util::adaptive::AdaptiveLimit>,
+    )> = None;
+
     if !to_fetch.is_empty() {
         // Only build the reqwest+TLS client now that we know we
         // actually need to fetch tarballs. On a warm no-op install
@@ -1582,21 +1675,30 @@ where
             Some(c) => c,
             None => (client_builder.take().unwrap())(),
         };
-        // Cap concurrent tarball downloads. Linux handles 128 well;
-        // APFS gets syscall-bound above the mid-20s, so macOS uses a
-        // lower default unless the user explicitly overrides it.
-        // 128 is deliberately above
-        // typical HTTP/1.1 per-origin limits (6–8) — reqwest upgrades
-        // to HTTP/2 when the server advertises it, multiplexing all
-        // streams over a single TCP connection, and falls back to
-        // HTTP/1.1 keep-alive otherwise (where reqwest pools
-        // connections internally). 256 went further in isolated
-        // tests but triggered registry-side rate-limiting variance
-        // against real npmjs; 128 is the stable sweet spot and still
-        // shaves ~300 ms off the medium benchmark's cold-fetch wall
-        // time vs the previous 64.
-        let sem_permits = network_concurrency.unwrap_or_else(default_lockfile_network_concurrency);
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(sem_permits));
+        /*
+         * Adaptive concurrency on the lockfile driven fetch path
+         * (frozen / fetch / ci / matched lockfile). Same gradient
+         * controller as the streaming resolver fetch path.
+         * `networkConcurrency` setting acts as the seed when set.
+         * Cross run persisted under `tarball:default` so this path
+         * shares its converged operating point with the streaming
+         * tarball path.
+         */
+        let sem_seed = network_concurrency.unwrap_or_else(default_lockfile_network_concurrency);
+        let lockfile_persistent = aube_util::adaptive::global_persistent_state();
+        let semaphore = match lockfile_persistent.as_ref() {
+            Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
+                state,
+                "tarball:default",
+                sem_seed.max(64).min(128),
+                4,
+                256,
+            ),
+            None => aube_util::adaptive::AdaptiveLimit::new(sem_seed.max(64).min(128), 4, 256),
+        };
+        if let Some(state) = lockfile_persistent.clone() {
+            lockfile_persist_handle = Some((state, std::sync::Arc::clone(&semaphore)));
+        }
         // Hoist env-driven flags out of the per-tarball closure so
         // the libc lock fires once instead of N times on a 1000-pkg
         // install.
@@ -1621,7 +1723,7 @@ where
             handles.spawn(async move {
                 let _row = row;
                 let task_start = std::time::Instant::now();
-                let permit = sem.acquire().await.unwrap();
+                let permit = sem.acquire().await;
                 let wait_time = task_start.elapsed();
                 // Aliased entries (`"h3-v2": "npm:h3@..."`) carry the
                 // resolved tarball URL verbatim from the lockfile so
@@ -1643,7 +1745,7 @@ where
                         .as_deref()
                         .is_none_or(|s| s.starts_with("sha512-"));
                 if stream_eligible {
-                    let (index, bytes_len) = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
+                    let streamed = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
                         &client,
                         &store,
                         &url,
@@ -1655,7 +1757,17 @@ where
                         strict_integrity,
                         strict_pkg_content_check,
                     )
-                    .await?;
+                    .await;
+                    let (index, bytes_len) = match streamed {
+                        Ok(v) => {
+                            permit.record_success();
+                            v
+                        }
+                        Err(e) => {
+                            permit.record_cancelled();
+                            return Err(e);
+                        }
+                    };
                     let dl_time = dl_start.elapsed();
                     if let Some(p) = bytes_progress.as_ref() {
                         p.inc_downloaded_bytes(bytes_len);
@@ -1666,7 +1778,6 @@ where
                         dl_time,
                         bytes_len
                     );
-                    drop(permit);
                     return Ok::<_, miette::Report>((dep_path, index));
                 }
 
@@ -1675,25 +1786,34 @@ where
                 // skips its hash pass and compares directly.
                 // AUBE_DISABLE_STREAMING_SHA512=1 reverts to the
                 // buffered-then-hash path.
-                let (bytes, streamed_digest) = if streaming_sha512_enabled {
-                    let (bytes, digest) = client
+                let fetch_outcome = if streaming_sha512_enabled {
+                    client
                         .fetch_tarball_bytes_streaming_sha512(&url)
                         .await
+                        .map(|(b, d)| (b, Some(d)))
                         .map_err(|e| {
                             miette!(
                                 "failed to fetch {display_name}@{version}: {e}{}",
                                 crate::dep_chain::format_chain_for(&display_name, &version)
                             )
-                        })?;
-                    (bytes, Some(digest))
+                        })
                 } else {
-                    let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
+                    client.fetch_tarball_bytes(&url).await.map(|b| (b, None)).map_err(|e| {
                         miette!(
                             "failed to fetch {display_name}@{version}: {e}{}",
                             crate::dep_chain::format_chain_for(&display_name, &version)
                         )
-                    })?;
-                    (bytes, None)
+                    })
+                };
+                let (bytes, streamed_digest) = match fetch_outcome {
+                    Ok(v) => {
+                        permit.record_success();
+                        v
+                    }
+                    Err(e) => {
+                        permit.record_cancelled();
+                        return Err(e);
+                    }
                 };
                 let dl_time = dl_start.elapsed();
 
@@ -1738,7 +1858,6 @@ where
                     bytes_len,
                     import_time
                 );
-                drop(permit);
 
                 Ok::<_, miette::Report>((dep_path, index))
             });
@@ -1776,6 +1895,10 @@ where
 
     // Without explicit drop, consumer's rx.recv() loop hangs.
     drop(materialize_tx);
+
+    if let Some((state, sem)) = lockfile_persist_handle {
+        sem.persist(&state, "tarball:default");
+    }
 
     Ok((indices, cached_count, fetch_count))
 }
@@ -3160,8 +3283,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let fetch_network_concurrency = env_concurrency
                 .or(network_concurrency_setting)
                 .unwrap_or_else(default_streaming_network_concurrency);
+            // Channel capacity is decoupled from fetch concurrency: the
+            // mpsc just buffers ResolvedPackage handoffs so the BFS
+            // never blocks on send() while the fetch coordinator is
+            // mid-tarball. Sized to absorb deep-tree bursts without
+            // backpressure on graphs into the tens of thousands of
+            // packages; fetch parallelism is still gated by
+            // `fetch_network_concurrency` downstream.
+            let stream_capacity = fetch_network_concurrency.saturating_mul(16).max(1024);
             let (resolver, mut resolved_rx) =
-                aube_resolver::Resolver::with_stream_capacity(client, fetch_network_concurrency);
+                aube_resolver::Resolver::with_stream_capacity(client, stream_capacity);
             let pnpmfile_paths = if opts.ignore_pnpmfile {
                 Vec::new()
             } else {
@@ -3249,18 +3380,44 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             };
             // Each imported (dep_path, index) feeds the GVS-prewarm
             // materializer running concurrently with the rest of fetch.
-            // Bounded(2048) caps RSS on huge graphs when the
-            // materializer falls behind on a slow FS (Windows Defender,
-            // network share). Backpressure only triggers under real
-            // producer/consumer skew.
+            /*
+             * Materialize channel sized from the cross run learned
+             * recommendation when available, falling back to the
+             * static default. Tokio mpsc cap is fixed at
+             * construction so the only knob we can turn here is
+             * the initial size for this process. Bounds 256 to
+             * 16384 cap RAM and floor progress.
+             */
             let (materialize_tx, materialize_rx) = materialize_channel();
             // Clone the shared deprecations accumulator into the
             // spawned task. The install command reads it back after
             // `filter_graph` prunes the post-resolve graph.
             let fetch_deprecations_tx = deprecations.clone();
             let fetch_handle = tokio::spawn(async move {
-                let semaphore =
-                    std::sync::Arc::new(tokio::sync::Semaphore::new(fetch_network_concurrency));
+                /*
+                 * Adaptive tarball concurrency. Loaded from the
+                 * cross run persistent store when available so the
+                 * limiter starts where a previous run converged
+                 * instead of cold ramping from the ceiling. Falls
+                 * back to seed 256 (h2 stream cap) on first ever
+                 * run. Floor 4 keeps progress under continuous
+                 * 429 / 503. Persisted back at end of fetch phase
+                 * so the next invocation benefits.
+                 */
+                let persistent = aube_util::adaptive::global_persistent_state();
+                let semaphore = match persistent.as_ref() {
+                    Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
+                        state,
+                        "tarball:default",
+                        256,
+                        4,
+                        256,
+                    ),
+                    None => aube_util::adaptive::AdaptiveLimit::new(256, 4, 256),
+                };
+                let semaphore_for_persist = std::sync::Arc::clone(&semaphore);
+                let persistent_for_save = persistent.clone();
+                let _ = fetch_network_concurrency;
                 // Hoist env-driven flags out of the per-tarball loop.
                 let streaming_sha512_enabled =
                     std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
@@ -3423,7 +3580,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 aube_util::diag::jstr(&pkg.name), aube_util::diag::jstr(&pkg.version)));
                         let _diag_tar_inflight = aube_util::diag::inflight(aube_util::diag::Slot::Tar);
                         let permit_wait = std::time::Instant::now();
-                        let permit = sem.acquire().await.unwrap();
+                        let permit = sem.acquire().await;
                         let permit_wait_ms = permit_wait.elapsed();
                         let pkg_id_for_diag = format!("{}@{}", pkg.name, pkg.version);
                         if permit_wait_ms.as_millis() > 1 {
@@ -3455,7 +3612,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 .is_none_or(|s| s.starts_with("sha512-"));
                         aube_util::diag::instant_lazy(aube_util::diag::Category::Fetch, "tarball_path", || format!(r#"{{"streaming":{},"name":{}}}"#, stream_eligible, aube_util::diag::jstr(&pkg.name)));
                         if stream_eligible {
-                            let (index, bytes_len) = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
+                            let streamed = crate::commands::install::lifecycle::fetch_and_import_tarball_streaming(
                                 &client,
                                 &store,
                                 &url,
@@ -3467,18 +3624,28 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 fetch_strict_integrity,
                                 fetch_strict_pkg_content_check,
                             )
-                            .await?;
+                            .await;
+                            let (index, bytes_len) = match streamed {
+                                Ok(v) => {
+                                    permit.record_success();
+                                    v
+                                }
+                                Err(e) => {
+                                    permit.record_cancelled();
+                                    return Err(e);
+                                }
+                            };
                             if let Some(p) = bytes_progress.as_ref() {
                                 p.inc_downloaded_bytes(bytes_len);
                             }
-                            drop(permit);
                             return Ok::<_, miette::Report>((dep_path, index));
                         }
 
-                        let (bytes, streamed_digest) = if streaming_sha512_enabled {
-                            let (bytes, digest) = client
+                        let fetch_outcome = if streaming_sha512_enabled {
+                            client
                                 .fetch_tarball_bytes_streaming_sha512(&url)
                                 .await
+                                .map(|(b, d)| (b, Some(d)))
                                 .map_err(|e| {
                                     miette!(
                                         "failed to fetch {}@{}: {e}{}",
@@ -3486,27 +3653,30 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                         pkg.version,
                                         crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
                                     )
-                                })?;
-                            (bytes, Some(digest))
+                                })
                         } else {
-                            let bytes = client.fetch_tarball_bytes(&url).await.map_err(|e| {
+                            client.fetch_tarball_bytes(&url).await.map(|b| (b, None)).map_err(|e| {
                                 miette!(
                                     "failed to fetch {}@{}: {e}{}",
                                     pkg.name,
                                     pkg.version,
                                     crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
                                 )
-                            })?;
-                            (bytes, None)
+                            })
+                        };
+                        let (bytes, streamed_digest) = match fetch_outcome {
+                            Ok(v) => {
+                                permit.record_success();
+                                v
+                            }
+                            Err(e) => {
+                                permit.record_cancelled();
+                                return Err(e);
+                            }
                         };
                         if let Some(p) = bytes_progress.as_ref() {
                             p.inc_downloaded_bytes(bytes.len() as u64);
                         }
-
-                        // Release download permit before CPU-bound
-                        // import. Without this drop, --network-concurrency
-                        // would cap downloads AND extractions at N.
-                        drop(permit);
 
                         let (index, _) = run_import_on_blocking(
                             store,
@@ -3541,6 +3711,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 // materializer consumer sees the channel close and
                 // exits its receive loop.
                 drop(materialize_tx);
+                if let Some(state) = persistent_for_save.as_ref() {
+                    semaphore_for_persist.persist(state, "tarball:default");
+                }
                 Ok::<_, miette::Report>((indices, cached_count, fetch_count))
             });
 
