@@ -2599,7 +2599,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                  enableGlobalVirtualStore false --location project` — or set \
                  `disableGlobalVirtualStoreForPackages=[]` to opt out of this \
                  auto-detection entirely. \
-                 Details: https://aube.en.dev/package-manager/node-modules#global-virtual-store"
+                 Details: https://aube.en.dev/package-manager/global-virtual-store"
             );
             Some(false)
         } else {

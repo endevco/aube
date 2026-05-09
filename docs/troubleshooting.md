@@ -21,7 +21,7 @@ Symptoms that usually point here:
 - `ERR_INVALID_PACKAGE_TARGET` or exports-resolution failures for a
   package that resolves fine under pnpm/npm
 
-See [Global virtual store](/package-manager/node-modules#global-virtual-store)
+See [Global virtual store](/package-manager/global-virtual-store)
 for what this changes.
 
 ## A package is missing from `node_modules`

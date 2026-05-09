@@ -11,8 +11,11 @@ to time each scenario under identical conditions.
 
 ::: tip Methodology
 Every scenario assumes a committed lockfile is present. The main axis is
-how warm the tool's cache/store is before the command runs; the CI rows
-also disable aube's global virtual store for CI parity. *Warm* clears
+how warm the tool's cache/store is before the command runs; the local
+install rows use each tool's default install model, which means aube's
+[global virtual store](/package-manager/global-virtual-store) is enabled
+and pnpm's comparable feature is left at pnpm's default of off. The CI
+rows disable aube's global virtual store for CI parity. *Warm* clears
 `node_modules` but keeps each tool's store/cache populated; *cold* wipes
 the store and cache too. The fixture, scripts, and raw
 hyperfine output live at
@@ -35,10 +38,13 @@ defaults.
 
 ## Why it's faster
 
-aube uses the same on-disk model as pnpm — a global content-addressable
-store plus an isolated symlink layout — but the install pipeline is
-written in a faster, natively-threaded language instead of JavaScript.
-Same layout, quicker engine.
+aube starts from pnpm's isolated symlink model — a global
+content-addressable store plus a per-project virtual store — and enables a
+[global virtual store](/package-manager/global-virtual-store) by default
+for local installs. pnpm supports a similar global virtual store, but
+leaves it off by default, so the main benchmark rows compare the tools as
+users get them out of the box. The CI rows turn aube's global virtual
+store off and measure the shared per-project model.
 
 ## Scenarios
 

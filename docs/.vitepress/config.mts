@@ -108,6 +108,7 @@ export default defineConfig({
           { text: "Workspaces", link: "/package-manager/workspaces" },
           { text: "Lockfiles", link: "/package-manager/lockfiles" },
           { text: "node_modules layout", link: "/package-manager/node-modules" },
+          { text: "Global virtual store", link: "/package-manager/global-virtual-store" },
           { text: "Lifecycle scripts", link: "/package-manager/lifecycle-scripts" },
           { text: "Jailed builds", link: "/package-manager/jailed-builds" },
           { text: "Configuration", link: "/package-manager/configuration" },
