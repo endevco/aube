@@ -16,7 +16,7 @@
 //! edges, skipping `devDependencies` and everything reachable solely
 //! through them — matching pnpm's `--filter-prod` semantics.
 
-use aube_manifest::PackageJson;
+use aube_manifest::{PackageJson, WorkspaceConfig};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -272,11 +272,13 @@ pub fn select_workspace_packages(
         included.remove(&idx);
     }
 
-    Ok(packages
+    let mut selected: Vec<_> = packages
         .into_iter()
         .enumerate()
         .filter_map(|(idx, pkg)| included.contains(&idx).then_some(pkg.selected))
-        .collect())
+        .collect();
+    include_workspace_root(workspace_root, filter, &mut selected)?;
+    Ok(selected)
 }
 
 fn index_packages(workspace_pkgs: &[PathBuf]) -> Vec<IndexedPackage> {
@@ -315,6 +317,39 @@ fn index_packages(workspace_pkgs: &[PathBuf]) -> Vec<IndexedPackage> {
         });
     }
     packages
+}
+
+fn include_workspace_root(
+    workspace_root: &Path,
+    filter: &EffectiveFilter,
+    selected: &mut Vec<SelectedPackage>,
+) -> Result<(), SelectError> {
+    let include_workspace_root = filter.include_workspace_root
+        || WorkspaceConfig::load(workspace_root)
+            .map_err(SelectError::WorkspaceConfig)?
+            .include_workspace_root
+            .unwrap_or(false);
+    if !include_workspace_root || !workspace_root.join("package.json").is_file() {
+        return Ok(());
+    }
+    if selected.iter().any(|pkg| pkg.dir == workspace_root) {
+        return Ok(());
+    }
+
+    let manifest = PackageJson::from_path(&workspace_root.join("package.json"))
+        .map_err(SelectError::Manifest)?;
+    selected.push(SelectedPackage {
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        private: manifest
+            .extra
+            .get("private")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        dir: workspace_root.to_path_buf(),
+        manifest,
+    });
+    Ok(())
 }
 
 fn expand_selector(
@@ -496,6 +531,10 @@ pub enum SelectError {
     #[error("{0}")]
     #[diagnostic(transparent)]
     Parse(#[from] ParseError),
+    #[error("failed to load workspace config: {0}")]
+    WorkspaceConfig(#[source] aube_manifest::Error),
+    #[error("failed to read workspace root package.json: {0}")]
+    Manifest(#[source] aube_manifest::Error),
     #[error("failed to run git for [ref] filter: {0}")]
     #[diagnostic(code(ERR_AUBE_FILTER_GIT_IO))]
     GitIo(std::io::Error),
@@ -724,6 +763,66 @@ mod tests {
             dir: &dir,
             workspace_root: root,
         }));
+    }
+
+    #[test]
+    fn include_workspace_root_adds_root_even_when_filter_matches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"root","version":"0.0.0","private":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - packages/*\nincludeWorkspaceRoot: true\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("packages/app")).unwrap();
+        std::fs::write(
+            dir.path().join("packages/app/package.json"),
+            r#"{"name":"app","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let selected = select_workspace_packages(
+            dir.path(),
+            &[dir.path().join("packages/app")],
+            &EffectiveFilter::from_filters(["missing"]),
+        )
+        .unwrap();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].name.as_deref(), Some("root"));
+        assert_eq!(selected[0].dir, dir.path());
+    }
+
+    #[test]
+    fn include_workspace_root_flag_adds_root_to_regular_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"root","version":"0.0.0","private":true}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("packages/app")).unwrap();
+        std::fs::write(
+            dir.path().join("packages/app/package.json"),
+            r#"{"name":"app","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let mut filter = EffectiveFilter::from_filters(["app"]);
+        filter.include_workspace_root = true;
+
+        let selected =
+            select_workspace_packages(dir.path(), &[dir.path().join("packages/app")], &filter)
+                .unwrap();
+        let names: Vec<_> = selected
+            .iter()
+            .filter_map(|pkg| pkg.name.as_deref())
+            .collect();
+
+        assert_eq!(names, vec!["app", "root"]);
     }
 
     #[test]

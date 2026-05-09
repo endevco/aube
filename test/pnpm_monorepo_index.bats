@@ -280,6 +280,35 @@ _setup_no_match_workspace() {
 	assert_file_exists project/project-ran
 }
 
+@test "aube list --filter=<no-match> --workspace-root: can return the root only" {
+	# Regression guard for callers that use the lower-level workspace
+	# selector directly. Root inclusion must happen before empty-match
+	# handling, so the root can be the whole selected set.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "packages/*"
+	EOF
+	mkdir -p packages/project
+	cat >packages/project/package.json <<-'EOF'
+		{"name": "project", "version": "1.0.0"}
+	EOF
+	run aube install --lockfile-only
+	assert_success
+
+	run aube list --filter=missing --workspace-root --parseable --depth=-1
+	assert_success
+	assert_output "$PWD"
+	refute_output --partial "No projects matched"
+	refute_output --partial "packages/project"
+}
+
 # Helper: stand up the four-project workspace pnpm uses for the
 # link-workspace-packages tests. Mirrors `preparePackages([{name, version}, …])`
 # from pnpm's test harness — a flat layout under the cwd where each

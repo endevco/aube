@@ -1098,31 +1098,6 @@ pub(crate) fn select_workspace_packages(
             "aube {command}: filter {filter:?} did not match any workspace package"
         ));
     }
-    let include_workspace_root = filter.include_workspace_root
-        || aube_manifest::WorkspaceConfig::load(&root)
-            .ok()
-            .and_then(|cfg| cfg.include_workspace_root)
-            .unwrap_or(false);
-    let mut matched = matched;
-    if include_workspace_root && root.join("package.json").is_file() {
-        let manifest = aube_manifest::PackageJson::from_path(&root.join("package.json"))
-            .map_err(miette::Report::new)
-            .wrap_err("failed to read workspace root package.json")?;
-        let root_already_selected = matched.iter().any(|pkg| pkg.dir == root);
-        if !root_already_selected {
-            matched.push(aube_workspace::selector::SelectedPackage {
-                name: manifest.name.clone(),
-                version: manifest.version.clone(),
-                private: manifest
-                    .extra
-                    .get("private")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                dir: root.clone(),
-                manifest,
-            });
-        }
-    }
     Ok((root, matched))
 }
 
