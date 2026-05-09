@@ -216,6 +216,70 @@ _setup_no_match_workspace() {
 	assert_output --partial "is-odd"
 }
 
+@test "aube --filter=<pkg> --workspace-root run: includes the workspace root" {
+	# Ported from pnpm/test/monorepo/index.ts:1581.
+	# pnpm names the command `test`; aube routes the same lifecycle
+	# script through `run test` so the assertion stays about workspace
+	# selection, not lifecycle shortcut parsing.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('root-ran','')\"" }
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+	EOF
+	mkdir project
+	cat >project/package.json <<-'EOF'
+		{
+		  "name": "project",
+		  "version": "1.0.0",
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('project-ran','')\"" }
+		}
+	EOF
+
+	run aube --filter=project --workspace-root run test --no-install
+	assert_success
+	assert_file_exists root-ran
+	assert_file_exists project/project-ran
+}
+
+@test "includeWorkspaceRoot=true: recursive run includes the workspace root" {
+	# Ported from pnpm/test/monorepo/index.ts:1613.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('root-ran','')\"" }
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		includeWorkspaceRoot: true
+	EOF
+	mkdir project
+	cat >project/package.json <<-'EOF'
+		{
+		  "name": "project",
+		  "version": "1.0.0",
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('project-ran','')\"" }
+		}
+	EOF
+
+	run aube -r run test --no-install
+	assert_success
+	assert_file_exists root-ran
+	assert_file_exists project/project-ran
+}
+
 # Helper: stand up the four-project workspace pnpm uses for the
 # link-workspace-packages tests. Mirrors `preparePackages([{name, version}, …])`
 # from pnpm's test harness — a flat layout under the cwd where each

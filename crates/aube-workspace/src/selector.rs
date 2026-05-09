@@ -37,6 +37,8 @@ pub struct EffectiveFilter {
     /// to a hard error. pnpm's default is to warn and exit 0; this flag
     /// (mirrored) opts into the strict behavior for CI use.
     pub fail_if_no_match: bool,
+    /// Include the workspace root alongside the selected workspace packages.
+    pub include_workspace_root: bool,
 }
 
 impl EffectiveFilter {
@@ -55,6 +57,7 @@ impl EffectiveFilter {
             filters: filters.into_iter().map(Into::into).collect(),
             filter_prods: Vec::new(),
             fail_if_no_match: false,
+            include_workspace_root: false,
         }
     }
 }

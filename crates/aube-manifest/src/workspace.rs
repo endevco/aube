@@ -39,6 +39,10 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub packages: Vec<String>,
 
+    /// Include the root manifest in recursive/filter workspace operations.
+    #[serde(default)]
+    pub include_workspace_root: Option<bool>,
+
     /// Default catalog for dependency version pinning.
     #[serde(default)]
     pub catalog: BTreeMap<String, String>,
