@@ -341,23 +341,32 @@ impl AdaptiveLimit {
             tokio::pin!(waiter);
             let s = self.hot.state.load(Ordering::Acquire);
             let (inflight, limit) = unpack(s);
-            if inflight < limit
-                && self
-                    .hot
-                    .state
-                    .compare_exchange_weak(
-                        s,
-                        pack(inflight + 1, limit),
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_ok()
-            {
-                return AdaptivePermit {
-                    limiter: Arc::clone(self),
-                    started: Instant::now(),
-                    consumed: false,
-                };
+            if inflight < limit {
+                // `compare_exchange` (strong) instead of weak: a
+                // spurious failure here would drop us into
+                // `waiter.as_mut().await` even though a permit
+                // slot was available. If no `release()` has fired
+                // since we registered the waiter, the await sleeps
+                // until the next release — which can be the full
+                // duration of an in-flight request. Strong CAS
+                // pays a tiny extra cost on the contended path
+                // (LL/SC archs may retry internally) in exchange
+                // for not gambling latency on a CPU mispredict.
+                match self.hot.state.compare_exchange(
+                    s,
+                    pack(inflight + 1, limit),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        return AdaptivePermit {
+                            limiter: Arc::clone(self),
+                            started: Instant::now(),
+                            consumed: false,
+                        };
+                    }
+                    Err(_) => continue,
+                }
             }
             waiter.as_mut().await;
         }
@@ -439,6 +448,24 @@ impl AdaptiveLimit {
         }
     }
 
+    /// Lock-free EWMA update with relaxed concurrency semantics.
+    ///
+    /// When two threads land here at the same time, both read the
+    /// same `current`, both compute their own `next`, and only one
+    /// wins the CAS. The loser retries against the winner's value
+    /// as the new base, so a single sample can effectively be
+    /// "applied twice" (winner's value + loser's new step from
+    /// it) while a different sample never gets folded in. For a
+    /// statistical smoother fed thousands of samples per install
+    /// this is a negligible bias — the EWMA still tracks the
+    /// underlying RTT distribution. CUSUM downstream re-centers
+    /// on its own slow EWMA, so a momentarily inflated sample
+    /// gets damped before it reaches the shrink decision.
+    ///
+    /// We accept this trade because the alternative — a Mutex —
+    /// would introduce contention on every successful request,
+    /// which dominates the workload. "Lock-free" here means no
+    /// blocking primitives, not exact serialization.
     #[inline]
     fn ewma_update(slot: &AtomicU64, sample: u64, shift: u32) -> u64 {
         let mut current = slot.load(Ordering::Relaxed);

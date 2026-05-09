@@ -1766,8 +1766,12 @@ where
                             v
                         }
                         Err(e) => {
-                            permit.record_cancelled();
-                            return Err(e);
+                            if e.is_throttle {
+                                permit.record_throttle();
+                            } else {
+                                permit.record_cancelled();
+                            }
+                            return Err(e.into());
                         }
                     };
                     let dl_time = dl_start.elapsed();
@@ -1794,16 +1798,24 @@ where
                         .await
                         .map(|(b, d)| (b, Some(d)))
                         .map_err(|e| {
-                            miette!(
-                                "failed to fetch {display_name}@{version}: {e}{}",
-                                crate::dep_chain::format_chain_for(&display_name, &version)
+                            let throttled = e.is_throttle();
+                            (
+                                miette!(
+                                    "failed to fetch {display_name}@{version}: {e}{}",
+                                    crate::dep_chain::format_chain_for(&display_name, &version)
+                                ),
+                                throttled,
                             )
                         })
                 } else {
                     client.fetch_tarball_bytes(&url).await.map(|b| (b, None)).map_err(|e| {
-                        miette!(
-                            "failed to fetch {display_name}@{version}: {e}{}",
-                            crate::dep_chain::format_chain_for(&display_name, &version)
+                        let throttled = e.is_throttle();
+                        (
+                            miette!(
+                                "failed to fetch {display_name}@{version}: {e}{}",
+                                crate::dep_chain::format_chain_for(&display_name, &version)
+                            ),
+                            throttled,
                         )
                     })
                 };
@@ -1812,9 +1824,13 @@ where
                         permit.record_success();
                         v
                     }
-                    Err(e) => {
-                        permit.record_cancelled();
-                        return Err(e);
+                    Err((report, throttled)) => {
+                        if throttled {
+                            permit.record_throttle();
+                        } else {
+                            permit.record_cancelled();
+                        }
+                        return Err(report);
                     }
                 };
                 let dl_time = dl_start.elapsed();
@@ -3406,20 +3422,26 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                  * 429 / 503. Persisted back at end of fetch phase
                  * so the next invocation benefits.
                  */
+                // Honor user-configured `networkConcurrency` (or
+                // `AUBE_NETWORK_CONCURRENCY` env override) as the
+                // seed. Adaptive grow/shrink still operate around
+                // it. Floor 4 keeps progress under continuous
+                // throttling regardless of seed.
+                let tarball_seed = fetch_network_concurrency.max(4);
+                let tarball_max = tarball_seed.max(256);
                 let persistent = aube_util::adaptive::global_persistent_state();
                 let semaphore = match persistent.as_ref() {
                     Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
                         state,
                         "tarball:default",
-                        256,
+                        tarball_seed,
                         4,
-                        256,
+                        tarball_max,
                     ),
-                    None => aube_util::adaptive::AdaptiveLimit::new(256, 4, 256),
+                    None => aube_util::adaptive::AdaptiveLimit::new(tarball_seed, 4, tarball_max),
                 };
                 let semaphore_for_persist = std::sync::Arc::clone(&semaphore);
                 let persistent_for_save = persistent.clone();
-                let _ = fetch_network_concurrency;
                 // Hoist env-driven flags out of the per-tarball loop.
                 let streaming_sha512_enabled =
                     std::env::var_os("AUBE_DISABLE_STREAMING_SHA512").is_none();
@@ -3633,8 +3655,12 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                     v
                                 }
                                 Err(e) => {
-                                    permit.record_cancelled();
-                                    return Err(e);
+                                    if e.is_throttle {
+                                        permit.record_throttle();
+                                    } else {
+                                        permit.record_cancelled();
+                                    }
+                                    return Err(e.into());
                                 }
                             };
                             if let Some(p) = bytes_progress.as_ref() {
@@ -3649,20 +3675,28 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 .await
                                 .map(|(b, d)| (b, Some(d)))
                                 .map_err(|e| {
+                                    let throttled = e.is_throttle();
+                                    (
+                                        miette!(
+                                            "failed to fetch {}@{}: {e}{}",
+                                            pkg.name,
+                                            pkg.version,
+                                            crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
+                                        ),
+                                        throttled,
+                                    )
+                                })
+                        } else {
+                            client.fetch_tarball_bytes(&url).await.map(|b| (b, None)).map_err(|e| {
+                                let throttled = e.is_throttle();
+                                (
                                     miette!(
                                         "failed to fetch {}@{}: {e}{}",
                                         pkg.name,
                                         pkg.version,
                                         crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
-                                    )
-                                })
-                        } else {
-                            client.fetch_tarball_bytes(&url).await.map(|b| (b, None)).map_err(|e| {
-                                miette!(
-                                    "failed to fetch {}@{}: {e}{}",
-                                    pkg.name,
-                                    pkg.version,
-                                    crate::dep_chain::format_chain_for(&pkg.name, &pkg.version)
+                                    ),
+                                    throttled,
                                 )
                             })
                         };
@@ -3671,9 +3705,13 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 permit.record_success();
                                 v
                             }
-                            Err(e) => {
-                                permit.record_cancelled();
-                                return Err(e);
+                            Err((report, throttled)) => {
+                                if throttled {
+                                    permit.record_throttle();
+                                } else {
+                                    permit.record_cancelled();
+                                }
+                                return Err(report);
                             }
                         };
                         if let Some(p) = bytes_progress.as_ref() {

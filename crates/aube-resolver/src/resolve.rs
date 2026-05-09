@@ -147,17 +147,25 @@ impl Resolver {
          * regime rise. Floor 4 keeps progress under continuous
          * throttling.
          */
-        let _ = self.packument_network_concurrency;
+        // User-configured `networkConcurrency` (or `env_concurrency`)
+        // is honored as the seed: it's the operating cap they
+        // explicitly chose for their environment (constrained CI
+        // runner, private registry rate-limit, fat residential
+        // pipe). Adaptive shrink/grow still kicks in around it.
+        // Floor stays at 4 so even an over-aggressive user value
+        // can't deadlock progress on continuous throttling.
+        let packument_seed = self.packument_network_concurrency.unwrap_or(256).max(4);
+        let packument_max = packument_seed.max(256);
         let persistent = aube_util::adaptive::global_persistent_state();
         let shared_semaphore = match persistent.as_ref() {
             Some(state) => aube_util::adaptive::AdaptiveLimit::from_persistent(
                 state,
                 "packument:default",
-                256,
+                packument_seed,
                 4,
-                256,
+                packument_max,
             ),
-            None => aube_util::adaptive::AdaptiveLimit::new(256, 4, 256),
+            None => aube_util::adaptive::AdaptiveLimit::new(packument_seed, 4, packument_max),
         };
         let packument_persist_handle = persistent
             .as_ref()
@@ -374,7 +382,11 @@ impl Resolver {
                                 p
                             }
                             Err(e) => {
-                                permit.record_cancelled();
+                                if e.is_throttle() {
+                                    permit.record_throttle();
+                                } else {
+                                    permit.record_cancelled();
+                                }
                                 return Err(Error::Registry(name_owned.clone(), e.to_string()));
                             }
                         };

@@ -781,6 +781,26 @@ pub(super) fn import_verified_tarball_streamed(
 /// path. Non-SHA-512 SRI auto-falls-back since streaming verify can't
 /// re-hash with another algo.
 #[allow(clippy::too_many_arguments)]
+/// Error from [`fetch_and_import_tarball_streaming`] that
+/// preserves whether the underlying registry call hit upstream
+/// backpressure (HTTP 429/502/503/504/timeout). Callers feed
+/// `is_throttle` into
+/// [`aube_util::adaptive::AdaptivePermit::record_throttle`] so the
+/// AIMD halving path actually fires when registries push back.
+/// `From<TarballStreamErr> for miette::Report` lets `?` keep
+/// working at sites that don't care about the distinction.
+pub(super) struct TarballStreamErr {
+    pub report: miette::Report,
+    pub is_throttle: bool,
+}
+
+impl From<TarballStreamErr> for miette::Report {
+    fn from(e: TarballStreamErr) -> Self {
+        e.report
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn fetch_and_import_tarball_streaming(
     client: &aube_registry::client::RegistryClient,
     store: &std::sync::Arc<aube_store::Store>,
@@ -792,14 +812,35 @@ pub(super) async fn fetch_and_import_tarball_streaming(
     verify_integrity: bool,
     strict_integrity: bool,
     strict_pkg_content_check: bool,
-) -> miette::Result<(aube_store::PackageIndex, u64)> {
+) -> Result<(aube_store::PackageIndex, u64), TarballStreamErr> {
     use sha2::Digest;
 
+    // Local-error helper. Anything we observe past the response
+    // headers (chunk read errors are an exception, see below) is
+    // either local IO, hash mismatch, or content validation —
+    // none of which respond to backing off the registry, so they
+    // should not trip the AIMD throttle path.
+    let local = |report: miette::Report| TarballStreamErr {
+        report,
+        is_throttle: false,
+    };
+    // Network-error helper, used for chunk read errors during
+    // body streaming. Connection resets and read timeouts mid-
+    // body are the same kind of upstream signal as a 503 reply.
+    let net = |e: aube_registry::Error, ctx: miette::Report| TarballStreamErr {
+        is_throttle: e.is_throttle(),
+        report: ctx,
+    };
+
     let mut resp = client.start_tarball_stream(url).await.map_err(|e| {
-        miette!(
-            "failed to fetch {display_name}@{version}: {e}{}",
-            crate::dep_chain::format_chain_for(registry_name, version)
-        )
+        let is_throttle = e.is_throttle();
+        TarballStreamErr {
+            report: miette!(
+                "failed to fetch {display_name}@{version}: {e}{}",
+                crate::dep_chain::format_chain_for(registry_name, version)
+            ),
+            is_throttle,
+        }
     })?;
 
     let cap = client.tarball_max_bytes();
@@ -868,14 +909,17 @@ pub(super) async fn fetch_and_import_tarball_streaming(
     };
     drop(chunk_tx);
 
-    let import_result = import_handle.await.into_diagnostic()?;
+    let import_result = import_handle.await.into_diagnostic().map_err(local)?;
     if let Some(e) = stream_err {
-        return Err(miette!(
-            "stream error for {display_name}@{version}: {e}{}",
-            crate::dep_chain::format_chain_for(registry_name, version)
+        return Err(net(
+            e,
+            miette!(
+                "stream error for {display_name}@{version}{}",
+                crate::dep_chain::format_chain_for(registry_name, version)
+            ),
         ));
     }
-    let index = import_result?;
+    let index = import_result.map_err(local)?;
 
     let mut sha512 = [0u8; 64];
     sha512.copy_from_slice(&hasher.finalize()[..]);
@@ -886,24 +930,24 @@ pub(super) async fn fetch_and_import_tarball_streaming(
             // Streaming path can't fall back to re-hash with another
             // algo (no buffered bytes), so non-SHA-512 SRI bails and
             // the caller falls back to the buffered path.
-            let matched =
-                aube_store::verify_precomputed_sha512(&sha512, expected).map_err(|e| {
-                    miette!(
+            let matched = aube_store::verify_precomputed_sha512(&sha512, expected)
+                .map_err(|e| {
+                    local(miette!(
                         "{display_name}@{version}: {e}{}",
                         crate::dep_chain::format_chain_for(registry_name, version)
-                    )
+                    ))
                 })?;
             if !matched {
-                return Err(miette!(
+                return Err(local(miette!(
                     "{display_name}@{version}: SRI uses non-SHA-512 algo, streaming path cannot re-hash. Set AUBE_DISABLE_TARBALL_STREAM=1 to force buffered fetch{}",
                     crate::dep_chain::format_chain_for(registry_name, version)
-                ));
+                )));
             }
         } else if strict_integrity {
-            return Err(miette!(
+            return Err(local(miette!(
                 "{display_name}@{version}: registry response has no `dist.integrity` and `strict-store-integrity` is on. Refusing to import unverified bytes.{}",
                 crate::dep_chain::format_chain_for(registry_name, version)
-            ));
+            )));
         } else {
             tracing::warn!(
                 code = aube_codes::warnings::WARN_AUBE_MISSING_INTEGRITY,
@@ -914,10 +958,10 @@ pub(super) async fn fetch_and_import_tarball_streaming(
 
     if strict_pkg_content_check {
         aube_store::validate_pkg_content(&index, registry_name, version).map_err(|e| {
-            miette!(
+            local(miette!(
                 "{display_name}@{version}: {e}{}",
                 crate::dep_chain::format_chain_for(registry_name, version)
-            )
+            ))
         })?;
     }
 

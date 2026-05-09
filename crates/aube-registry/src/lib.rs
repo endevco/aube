@@ -470,6 +470,31 @@ pub enum Error {
     InvalidName(String),
 }
 
+impl Error {
+    /// True when the error represents an upstream backpressure
+    /// signal worth feeding into [`aube_util::adaptive::AdaptiveLimit::record_throttle`].
+    /// HTTP 429 / 502 / 503 / 504 and request timeouts qualify.
+    /// Plain 4xx (NotFound, Unauthorized, ValidationError) and IO
+    /// errors don't — shrinking the concurrency cap won't help
+    /// those, and would over-react to transient hostile-input
+    /// failures (a typo'd package name shouldn't halve the limit).
+    pub fn is_throttle(&self) -> bool {
+        match self {
+            Error::Http(e) => {
+                if e.is_timeout() {
+                    return true;
+                }
+                matches!(
+                    e.status().map(|s| s.as_u16()),
+                    Some(429) | Some(502) | Some(503) | Some(504)
+                )
+            }
+            Error::RegistryWrite { status, .. } => matches!(*status, 429 | 502 | 503 | 504),
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

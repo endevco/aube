@@ -879,7 +879,12 @@ impl Store {
         aube_util::diag::event_lazy(
             aube_util::diag::Category::Store,
             "cas_import_complete",
-            std::time::Duration::from_nanos(cas_ns as u64),
+            // Saturating cast: u128 cas_ns won't realistically
+            // exceed u64::MAX (~584 years in nanoseconds), but a
+            // bug or runaway accumulator should clamp to the diag
+            // ceiling rather than silently truncate the high bits
+            // and emit a misleadingly small duration.
+            std::time::Duration::from_nanos(u64::try_from(cas_ns).unwrap_or(u64::MAX)),
             || {
                 let pipelined = !pipelined_disabled;
                 let parallel = !parallel_disabled && staged_count >= PARALLEL_IMPORT_THRESHOLD;
