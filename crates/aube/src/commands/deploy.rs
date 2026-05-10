@@ -1189,12 +1189,13 @@ fn rewrite_local_refs(
             // `workspace:` / `file:` spec — pnpm allows that).
             let resolved_owned;
             let spec: &str = if aube_util::pkg::is_catalog_spec(raw_spec) {
-                let resolved =
+                // `resolve_catalog_for_rewrite` rejects chained
+                // `catalog:` -> `catalog:` values, so the resolved
+                // string always differs from `raw_spec` — write
+                // unconditionally.
+                resolved_owned =
                     resolve_catalog_for_rewrite(catalogs, name, raw_spec, manifest_path)?;
-                if resolved.as_str() != raw_spec {
-                    *spec_val = serde_json::Value::String(resolved.clone());
-                }
-                resolved_owned = resolved;
+                *spec_val = serde_json::Value::String(resolved_owned.clone());
                 resolved_owned.as_str()
             } else {
                 raw_spec

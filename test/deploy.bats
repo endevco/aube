@@ -505,5 +505,9 @@ EOF
 	run aube deploy --filter @test/lib ./out
 	assert_failure
 	assert_output --partial "ERR_AUBE_UNKNOWN_CATALOG"
-	assert_output --partial "is-odd"
+	# Miette wraps narrow terminals, splitting `is-odd` across
+	# `is-\nodd` on Linux CI — match on the catalog name + spec
+	# (which sit on their own lines after wrap) instead.
+	assert_output --partial "catalog \`default\`"
+	assert_output --partial "catalog:"
 }
