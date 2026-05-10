@@ -212,8 +212,8 @@ watch(progressBarEl, (el, previousEl) => {
         <h1 id="aube-hero-title">Never forget <em>to install.</em></h1>
         <p class="aube-lede">
           Aube installs automatically when you run a script. The tightest
-          security defaults of any package manager - and the only one with
-          a lifecycle-script jail. Drops into existing projects.
+          security defaults of any Node.js package manager - and the only
+          one with a lifecycle-script jail. Drops into existing projects.
         </p>
         <div class="aube-actions" aria-label="Primary links">
           <a class="aube-button aube-button-primary" href="/guide/">
