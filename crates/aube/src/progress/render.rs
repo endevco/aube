@@ -46,9 +46,11 @@ pub(super) fn progress_line(snap: Snap, term_width: usize, bar_width: usize) -> 
     format!("{bar} {label}")
 }
 
-/// The fixed-width left-aligned bar. Filled portion is green, empty
-/// portion is dim. During resolving the bar is empty (the work hasn't
-/// started yet); during linking it's effectively full.
+/// The fixed-width left-aligned bar. Empty portion is dim throughout;
+/// the filled portion takes its color from the current phase
+/// (resolving = yellow, fetching = cyan, linking/done = green) so the
+/// bar visually tracks the same phase progression that the right-side
+/// label spells out in words.
 pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
     let (numerator, denominator) = if snap.phase == 1 {
         (0, 1)
@@ -64,33 +66,45 @@ pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
     let empty = width - filled;
     let fill = "█".repeat(filled);
     let empty = "░".repeat(empty);
-    format!("{}{}", style::egreen(fill), style::edim(empty))
+    let styled_fill = match snap.phase {
+        1 => style::eyellow(fill).to_string(),
+        2 => style::ecyan(fill).to_string(),
+        _ => style::egreen(fill).to_string(),
+    };
+    format!("{}{}", styled_fill, style::edim(empty))
 }
 
 /// Phase-specific label content. Format:
 ///
-/// * resolving: `N pkgs · resolving · ETA …`
-/// * fetching:  `cur/total pkgs · 4.2 MB / ~13.8 MB · 1.4 MB/s · ETA 5s`
-/// * linking:   `cur/total pkgs · 13.8 MB · linking`
+/// * resolving: `   N pkgs · resolving`
+/// * fetching:  `  cur/total pkgs · 4.2 MB / ~13.8 MB · 1.4 MB/s · ETA 5s`
+/// * linking:   ` cur/total pkgs · linking · 13.8 MB`
+///
+/// Numbers are right-padded to a min-width-4 column so the right edge
+/// of the count stays put across heartbeats — without it, the visible
+/// digits jump left every time `snap.resolved` crosses a power of ten
+/// during streaming resolve. The ETA segment is omitted entirely when
+/// we don't yet have enough fetch-window data to extrapolate, instead
+/// of showing a flapping `ETA …` placeholder.
 fn label_for(snap: Snap, completed: usize) -> String {
+    let dot = format!(" {} ", style::edim("·"));
     match snap.phase {
         1 => {
-            // No bar to fill yet — show the running resolved count and
-            // a placeholder ETA. `…` reads as "still figuring it out"
-            // instead of blank.
-            format!(
-                "{} pkgs · {} · {}",
-                style::ebold(snap.resolved),
-                style::eyellow("resolving"),
-                style::edim("ETA …"),
-            )
+            let count = pad_count(snap.resolved, snap.resolved);
+            let parts = [
+                format!("{} {}", style::ecyan(count).bold(), style::edim("pkgs")),
+                style::eyellow("resolving").bold().to_string(),
+            ];
+            parts.join(&dot)
         }
         2 => {
+            let cur = pad_count(completed, snap.resolved);
             let mut parts = Vec::with_capacity(4);
             parts.push(format!(
-                "{}/{} pkgs",
-                style::ebold(completed),
-                style::ebold(snap.resolved),
+                "{}/{} {}",
+                style::ecyan(cur).bold(),
+                style::ecyan(snap.resolved).bold(),
+                style::edim("pkgs"),
             ));
             // Skip the bytes segment when nothing has landed and no
             // unpackedSize estimate is available — older publishes
@@ -104,25 +118,41 @@ fn label_for(snap: Snap, completed: usize) -> String {
             if let Some(rate) = transfer_rate(snap) {
                 parts.push(style::edim(format!("{}/s", format_bytes(rate))).to_string());
             }
-            parts.push(eta_segment(snap, completed));
-            parts.join(&format!(" {} ", style::edim("·")))
+            let eta = eta_segment(snap, completed);
+            if !eta.is_empty() {
+                parts.push(eta);
+            }
+            parts.join(&dot)
         }
         3 => {
             // Suppress the bytes segment when nothing was downloaded
-            // (fully warm cache) — `0 B` would be visual noise.
+            // (fully warm cache) — `0 B` would be visual noise. Order
+            // is `linking · bytes` so the active phase word reads first
+            // and the static byte total trails it.
+            let cur = pad_count(completed, snap.resolved);
             let mut parts = vec![format!(
-                "{}/{} pkgs",
-                style::ebold(completed),
-                style::ebold(snap.resolved),
+                "{}/{} {}",
+                style::ecyan(cur).bold(),
+                style::ecyan(snap.resolved).bold(),
+                style::edim("pkgs"),
             )];
+            parts.push(style::ecyan("linking").bold().to_string());
             if snap.bytes > 0 {
                 parts.push(style::edim(format_bytes(snap.bytes)).to_string());
             }
-            parts.push(style::ecyan("linking").to_string());
-            parts.join(&format!(" {} ", style::edim("·")))
+            parts.join(&dot)
         }
         _ => String::new(),
     }
+}
+
+/// Right-align `count` to a column at least 4 wide and at least as
+/// wide as `total`'s digit count. The min-4 floor keeps the column
+/// stable for installs up to 9999 packages even before the total is
+/// known (resolving phase passes `count == total == snap.resolved`).
+fn pad_count(count: usize, total: usize) -> String {
+    let width = total.to_string().len().max(4);
+    format!("{count:>width$}")
 }
 
 /// `4.2 MB` running, optionally `4.2 MB / ~13.8 MB` when the
@@ -165,23 +195,23 @@ pub(super) fn estimated_download_bytes(unpacked: u64) -> u64 {
     (unpacked as f64 * TARBALL_COMPRESSION_RATIO) as u64
 }
 
-/// `ETA 5s` once we have enough data to extrapolate; `ETA …`
-/// otherwise. Uses *fetch-window* throughput (completions since
-/// `set_phase("fetching")` divided by `fetch_elapsed_ms`) so the
-/// estimate reflects per-package work-rate during fetching, not the
-/// inflated install-elapsed denominator that would include lockfile
-/// parse and resolve time. Falls back to `ETA …` until enough fetch-
-/// window data has accrued for a non-flapping number.
+/// `ETA 5s` once we have enough fetch-window data to extrapolate;
+/// empty string while we don't (the caller drops the segment so the
+/// label doesn't carry a flapping `ETA …` placeholder). Uses
+/// *fetch-window* throughput (completions since `set_phase("fetching")`
+/// divided by `fetch_elapsed_ms`) so the estimate reflects per-package
+/// work-rate during fetching, not the inflated install-elapsed
+/// denominator that would include lockfile parse and resolve time.
 fn eta_segment(snap: Snap, completed: usize) -> String {
     if completed >= snap.resolved {
-        return style::edim("ETA …").to_string();
+        return String::new();
     }
     let Some(baseline) = snap.completed_at_fetch_start else {
-        return style::edim("ETA …").to_string();
+        return String::new();
     };
     let fetch_completed = completed.saturating_sub(baseline);
     if fetch_completed == 0 || snap.fetch_elapsed_ms == 0 {
-        return style::edim("ETA …").to_string();
+        return String::new();
     }
     let remaining = snap.resolved - completed;
     let eta_ms = snap.fetch_elapsed_ms.saturating_mul(remaining as u64) / fetch_completed as u64;
@@ -294,11 +324,40 @@ mod tests {
     }
 
     #[test]
-    fn resolving_phase_shows_count_and_eta_placeholder() {
+    fn resolving_phase_shows_count_without_eta_placeholder() {
         let line = strip_ansi(&progress_line(snap(1, 89, 0, 0, 0), 80, 15));
         assert!(line.contains("89 pkgs"), "got: {line}");
         assert!(line.contains("resolving"), "got: {line}");
-        assert!(line.contains("ETA …"), "got: {line}");
+        assert!(
+            !line.contains("ETA"),
+            "no ETA placeholder in resolving: {line}"
+        );
+    }
+
+    #[test]
+    fn resolving_phase_pads_count_for_stable_column() {
+        let small = strip_ansi(&progress_line(snap(1, 5, 0, 0, 0), 80, 15));
+        let big = strip_ansi(&progress_line(snap(1, 1237, 0, 0, 0), 80, 15));
+        // Both lines should align "pkgs" at the same column (min-width-4
+        // pad). Exact substring match catches a regression where
+        // padding gets applied to only one of the two.
+        assert!(small.contains("   5 pkgs"), "got: {small}");
+        assert!(big.contains("1237 pkgs"), "got: {big}");
+    }
+
+    #[test]
+    fn linking_phase_orders_linking_before_bytes() {
+        let line = strip_ansi(&progress_line(
+            snap(3, 142, 142, 13_800_000, 13_800_000),
+            80,
+            15,
+        ));
+        let linking_pos = line.find("linking").expect("linking present");
+        let mb_pos = line.find("13.8 MB").expect("byte total present");
+        assert!(
+            linking_pos < mb_pos,
+            "linking should precede byte total: {line}"
+        );
     }
 
     #[test]
