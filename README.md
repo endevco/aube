@@ -7,7 +7,11 @@
 <h1 align="center">aube</h1>
 
 <p align="center">
-  A fast Node.js package manager that drops into existing projects.
+  <strong>Never forget to install.</strong>
+</p>
+
+<p align="center">
+  A drop-in Node.js package manager that keeps <code>node_modules</code> in sync with your lockfile, sandboxes lifecycle scripts by default, and reads whatever lockfile you already have.
 </p>
 
 <p align="center">

@@ -211,8 +211,9 @@ watch(progressBarEl, (el, previousEl) => {
         <p class="aube-pronunciation">aube /ob/ - pronounced "ohb"</p>
         <h1 id="aube-hero-title">A new dawn <em>for node installs.</em></h1>
         <p class="aube-lede">
-          Aube is a fast Node.js package manager that drops into existing
-          JavaScript and TypeScript projects - no lockfile migration required.
+          Never forget to install. Aube keeps <code>node_modules</code> in
+          sync with your lockfile, sandboxes lifecycle scripts by default,
+          and drops into existing projects - no lockfile migration required.
         </p>
         <div class="aube-actions" aria-label="Primary links">
           <a class="aube-button aube-button-primary" href="/guide/">
