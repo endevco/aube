@@ -397,7 +397,7 @@ pub fn apply_peer_contexts(
     // are stable, and before `dedupe_peer_suffixes` so the latter's
     // `(name@version)` → `(version)` collapse acts on the propagated
     // form too.
-    let current = propagate_peer_suffixes_to_ancestors(current);
+    let current = propagate_peer_suffixes_to_ancestors(current, options);
     // `dedupe-peers=true` rewrites the parenthesized peer suffix to
     // drop the `name@` prefix. Done as a post-pass rather than inline
     // so cycle detection during the fixed-point loop keeps the full
@@ -965,7 +965,10 @@ fn peer_names_in_segments_recursive(segments: &[&str]) -> BTreeSet<String> {
 ///  5. Build a rewrite map `old_key → new_key` and apply to package
 ///     keys, dep edges (each dep's stored tail), and importer
 ///     dep_paths.
-fn propagate_peer_suffixes_to_ancestors(graph: LockfileGraph) -> LockfileGraph {
+fn propagate_peer_suffixes_to_ancestors(
+    graph: LockfileGraph,
+    options: &PeerContextOptions,
+) -> LockfileGraph {
     // Forward dep map. Edges that don't resolve to a present package
     // (e.g. an unresolved peer that `detect_unmet_peers` will warn
     // about) are dropped — they can't contribute cumulative peers.
@@ -1103,14 +1106,39 @@ fn propagate_peer_suffixes_to_ancestors(graph: LockfileGraph) -> LockfileGraph {
     // already produces for self segments, so when a package's
     // cumulative is identical to its self set the rewrite is a no-op
     // and we skip it.
+    //
+    // Hashed-suffix keys (`name@version_<10hex>`, produced when a
+    // package's own peer suffix exceeded `peersSuffixMaxLength`) are
+    // left untouched. The hash form discards the textual peer set
+    // by design — `outer_paren_segments` can't recover its
+    // contribution, so any rewrite we built for it would either drop
+    // the hash entirely (losing identity) or merge an incomplete
+    // descendant set with the hashed self. Preserving the original
+    // form is the conservative choice; pnpm's parity gap in that
+    // regime is bounded by the hash collision space anyway.
+    //
+    // If the propagated suffix itself exceeds the cap, hash it the
+    // same way `visit_peer_context` does for self suffixes — keeps
+    // dep_path keys bounded across the whole graph.
     let mut rewrite: BTreeMap<String, String> = BTreeMap::new();
     for key in &pkg_keys {
         let Some(segments) = cumulative.get(key) else {
             continue;
         };
-        let canonical = canonical_tail(key);
+        let original_tail = canonical_tail(key);
+        let canonical = strip_hashed_peer_suffix(original_tail);
+        if canonical.len() != original_tail.len() {
+            // Original key already has the hashed marker. Skip — see
+            // comment above.
+            continue;
+        }
         let suffix: String = segments.values().cloned().collect();
-        let new_key = format!("{canonical}{suffix}");
+        let effective_suffix = if suffix.len() > options.peers_suffix_max_length {
+            hash_peer_suffix(&suffix)
+        } else {
+            suffix
+        };
+        let new_key = format!("{canonical}{effective_suffix}");
         if new_key != *key {
             rewrite.insert(key.clone(), new_key);
         }
