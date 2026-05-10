@@ -10871,6 +10871,19 @@
             "global": false
           },
           {
+            "name": "lockfile-only",
+            "usage": "--lockfile-only",
+            "help": "Refresh the lockfile without populating `node_modules`",
+            "help_long": "Refresh the lockfile without populating `node_modules`.\n\nRe-resolves the full graph (direct + transitive) and writes `aube-lock.yaml`, then skips the linker so `node_modules` is left untouched. Mirrors `npm update --package-lock-only`.",
+            "help_first_line": "Refresh the lockfile without populating `node_modules`",
+            "short": [],
+            "long": [
+              "lockfile-only"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "no-optional",
             "usage": "--no-optional",
             "help": "Skip optionalDependencies",

@@ -71,6 +71,12 @@ Skip lifecycle scripts.
 
 Accepted for pnpm parity — dep scripts are already gated by `allowBuilds`, so the flag is currently a no-op, but scripts that wrap `pnpm update --ignore-scripts` keep working without complaint.
 
+### `--lockfile-only`
+
+Refresh the lockfile without populating `node_modules`.
+
+Re-resolves the full graph (direct + transitive) and writes `aube-lock.yaml`, then skips the linker so `node_modules` is left untouched. Mirrors `npm update --package-lock-only`.
+
 ### `--no-optional`
 
 Skip optionalDependencies

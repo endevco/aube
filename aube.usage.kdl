@@ -1884,6 +1884,9 @@ cmd update help="Update dependencies" {
     flag --ignore-scripts help="Skip lifecycle scripts" {
         long_help "Skip lifecycle scripts.\n\nAccepted for pnpm parity — dep scripts are already gated by `allowBuilds`, so the flag is currently a no-op, but scripts that wrap `pnpm update --ignore-scripts` keep working without complaint."
     }
+    flag --lockfile-only help="Refresh the lockfile without populating `node_modules`" {
+        long_help "Refresh the lockfile without populating `node_modules`.\n\nRe-resolves the full graph (direct + transitive) and writes `aube-lock.yaml`, then skips the linker so `node_modules` is left untouched. Mirrors `npm update --package-lock-only`."
+    }
     flag --no-optional help="Skip optionalDependencies"
     flag --no-save help="Refresh the lockfile without rewriting `package.json` ranges" {
         long_help "Refresh the lockfile without rewriting `package.json` ranges.\n\nPair with `--latest` to pull a newer resolved version into the lockfile while leaving the manifest's caret/tilde ranges untouched. Without `--latest` this flag is a no-op (plain `update` already doesn't touch the manifest). Mirrors `pnpm update --no-save`."
