@@ -520,3 +520,69 @@ _link_workspace_packages_fixture() {
 	assert_success
 	assert_link_exists node_modules/project-2
 }
+
+# Phase 3 batch 2 — workspace: protocol edge cases
+#
+# Ported from pnpm/test/monorepo/index.ts:1317
+# ('linking the package's bin to another workspace package in a
+# monorepo'). The pnpm test uses `manifestFormat: 'YAML'` to write
+# package.yaml; aube reads package.json only (intentional divergence,
+# see PNPM_TEST_IMPORT.md "Won't fix"), so the port uses package.json.
+#
+# The bin-link-on-fresh-install half is already covered by
+# test/workspace.bats:530. The unique regression guard ported here is
+# the frozen-lockfile branch: after wiping every node_modules tree and
+# rerunning install with --frozen-lockfile, the workspace:* sibling's
+# bin shim must reappear in the dependent's .bin/ — i.e. the linker
+# rebuilds workspace bin shims off the lockfile alone, without
+# re-resolving from manifests.
+@test "aube install --frozen-lockfile: workspace:* bin shim is rematerialized" {
+	cat >package.json <<-'EOF'
+		{"name": "root", "version": "0.0.0", "private": true}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+	EOF
+	mkdir hello main
+	cat >hello/package.json <<-'EOF'
+		{
+		  "name": "hello",
+		  "version": "1.0.0",
+		  "bin": "index.js"
+		}
+	EOF
+	# pnpm's fixture writes a non-executable shebang-only file; the
+	# bin shim aube creates is what makes it runnable, so the
+	# inner script body doesn't matter for the regression guard.
+	printf '#!/usr/bin/env node\n' >hello/index.js
+	cat >main/package.json <<-'EOF'
+		{
+		  "name": "main",
+		  "version": "2.0.0",
+		  "dependencies": {"hello": "workspace:*"}
+		}
+	EOF
+
+	run aube install
+	assert_success
+	# Sanity: the bin shim landed under main/node_modules/.bin.
+	# The single-bin string form (`"bin": "index.js"`) is the edge
+	# case under test — pnpm and aube derive the shim name from
+	# the package name when the bin field is a bare string.
+	run test -e main/node_modules/.bin/hello
+	assert_success
+	[ -d main/node_modules ]
+
+	# Wipe every node_modules tree the way pnpm's test does and
+	# reinstall via --frozen-lockfile. The lockfile must encode
+	# enough information for the linker to rematerialize the bin
+	# shim without re-reading hello's manifest fresh.
+	rm -rf main/node_modules node_modules
+
+	run aube install --frozen-lockfile
+	assert_success
+	run test -e main/node_modules/.bin/hello
+	assert_success
+}
