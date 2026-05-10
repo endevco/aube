@@ -1070,7 +1070,7 @@ impl RegistryClient {
     /// fetch for both the `aube view`-style full JSON and the time map.
     ///
     /// Hot path on warm cache: reads the cache file once and uses
-    /// `simd_json` to deserialize the wrapper directly into the typed
+    /// `sonic-rs` to deserialize the wrapper directly into the typed
     /// [`Packument`] shape in a single pass. This avoids the older
     /// `serde_json::Value` + `serde_json::from_value` round-trip, which
     /// walked the cached JSON twice on every resolver read.
@@ -2448,23 +2448,20 @@ where
         body_t0.elapsed(),
         || format!(r#"{{"bytes":{}}}"#, body_size),
     );
-    // Reqwest hands us an exclusively-owned `Bytes`, so `try_into_mut`
-    // returns `Ok(BytesMut)` without copying. The previous code did a
-    // 5-50 MB `to_vec` per packument — on a 200-packument cold install
-    // that was ~1-3 s of pure memcpy. simd-json is a strict superset of
-    // RFC 8259 for valid JSON; the prior serde_json fallback was dead
-    // weight on the happy path and got us a different error type on
-    // the unhappy path. Both errors collapse into the same
-    // `Error::Io(InvalidData)` for the user.
+    // sonic-rs takes an immutable `&[u8]`, so we don't need to convert
+    // `Bytes` into `BytesMut` (which previously cost a 5-50 MB to_vec
+    // when the buffer wasn't exclusively owned). `Bytes::deref` is
+    // already `&[u8]`, zero-copy regardless of refcount state.
+    // sonic-rs is a strict superset of RFC 8259 for valid JSON; the
+    // earlier serde_json fallback was dead weight on the happy path
+    // and only collapsed into the same `Error::Io(InvalidData)` for
+    // the user, so we keep the single-parser shape.
     let parse_t0 = std::time::Instant::now();
-    let mut buf = bytes
-        .try_into_mut()
-        .unwrap_or_else(|b| bytes::BytesMut::from(b.as_ref()));
-    let result = simd_json::serde::from_slice::<T>(&mut buf[..])
+    let result = sonic_rs::from_slice::<T>(&bytes)
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)));
     aube_util::diag::event_lazy(
         aube_util::diag::Category::Registry,
-        "json_parse_simdjson",
+        "json_parse_sonic_rs",
         parse_t0.elapsed(),
         || format!(r#"{{"bytes":{}}}"#, body_size),
     );
@@ -2472,14 +2469,19 @@ where
 }
 
 fn read_cached_packument(path: &Path) -> Option<CachedPackument> {
-    // simd-json is 2-3x faster than serde_json on large JSON payloads.
-    // It mutates the input buffer in-place to do zero-copy parsing where possible.
-    let mut content = std::fs::read(path).ok()?;
-    simd_json::serde::from_slice(&mut content).ok()
+    // sonic-rs is faster than serde_json on packument-shape JSON and,
+    // unlike simd-json, takes an immutable `&[u8]` so the file content
+    // doesn't need to be kept mutable for the parse to be zero-copy.
+    let content = std::fs::read(path).ok()?;
+    sonic_rs::from_slice(&content).ok()
 }
 
 fn write_cached_packument(path: &Path, cached: &CachedPackument) -> std::io::Result<()> {
-    let json = serde_json::to_vec(cached).map_err(std::io::Error::other)?;
+    // sonic-rs serializer for symmetry with the read path; output
+    // format doesn't need to match anything external (cache file we
+    // own), so we trade serde_json's stable formatting for a small
+    // throughput win on the cold-install metadata phase.
+    let json = sonic_rs::to_vec(cached).map_err(std::io::Error::other)?;
     aube_util::fs_atomic::atomic_write(path, &json)
 }
 
@@ -2490,12 +2492,12 @@ fn packument_full_cache_path(cache_dir: &Path, name: &str, registry_url: &str) -
 }
 
 fn read_cached_full_packument(path: &Path) -> Option<CachedFullPackument> {
-    let mut content = std::fs::read(path).ok()?;
-    simd_json::serde::from_slice(&mut content).ok()
+    let content = std::fs::read(path).ok()?;
+    sonic_rs::from_slice(&content).ok()
 }
 
 /// Typed fast-path read used by `fetch_packument_with_time_cached`
-/// in the warm-cache branch. Reads the file once and uses `simd_json`
+/// in the warm-cache branch. Reads the file once and uses `sonic-rs`
 /// to deserialize the cached wrapper directly into a tiny typed struct
 /// holding `fetched_at` plus a fully-typed [`Packument`].
 ///
@@ -2516,10 +2518,10 @@ fn read_cached_full_packument_typed_lookup(
         packument: Packument,
     }
 
-    let Ok(mut content) = std::fs::read(path) else {
+    let Ok(content) = std::fs::read(path) else {
         return CachedPackumentLookup::default();
     };
-    let Ok(typed) = simd_json::serde::from_slice::<Typed>(&mut content) else {
+    let Ok(typed) = sonic_rs::from_slice::<Typed>(&content) else {
         return CachedPackumentLookup::default();
     };
     let typed = CachedFullPackumentTyped {
@@ -2568,7 +2570,7 @@ fn write_cached_full_packument(
         max_age_secs: Option<u64>,
         packument: &'a serde_json::Value,
     }
-    let json = serde_json::to_vec(&CachedFullPackumentRef {
+    let json = sonic_rs::to_vec(&CachedFullPackumentRef {
         etag,
         last_modified,
         fetched_at,

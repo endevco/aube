@@ -131,11 +131,9 @@ pub(crate) fn read_local_manifest(
         }
     };
 
-    let pj: aube_manifest::PackageJson = {
-        let mut buf = content.clone();
-        simd_json::serde::from_slice(&mut buf).or_else(|_| serde_json::from_slice(&content))
-    }
-    .map_err(|e| Error::Registry(local.specifier(), e.to_string()))?;
+    let pj: aube_manifest::PackageJson = sonic_rs::from_slice(&content)
+        .or_else(|_| serde_json::from_slice(&content))
+        .map_err(|e| Error::Registry(local.specifier(), e.to_string()))?;
     Ok((
         pj.name.unwrap_or_default(),
         pj.version.unwrap_or_else(|| "0.0.0".to_string()),

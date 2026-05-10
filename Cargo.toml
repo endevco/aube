@@ -43,7 +43,7 @@ yaml_serde = "0.10.4"
 yamlpatch = "1.24"
 yamlpath = "1.24"
 serde_yaml = "0.9"
-simd-json = "0.17"
+sonic-rs = "0.5"
 toml = "0.8"
 rkyv = "0.8"
 

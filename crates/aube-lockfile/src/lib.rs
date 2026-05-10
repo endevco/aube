@@ -2118,15 +2118,9 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     path: &std::path::Path,
     content: String,
 ) -> Result<T, Error> {
-    // simd-json mutates the input buffer in place to unflatten
-    // escape sequences. On parse failure that mutation has already
-    // happened, so the diagnostic must run on the ORIGINAL bytes,
-    // not the simd-json buffer. Keeping `content` and feeding a
-    // clone to simd-json preserves both: zero-alloc happy path on
-    // simd-json success (one clone, dropped immediately), correct
-    // diagnostic on failure (uses untouched `content`).
-    let mut buf = content.clone().into_bytes();
-    match simd_json::serde::from_slice(&mut buf) {
+    // sonic-rs takes an immutable &[u8], so the original `content`
+    // bytes stay intact for the serde_json fallback's diagnostic.
+    match sonic_rs::from_slice(content.as_bytes()) {
         Ok(v) => Ok(v),
         Err(_) => match serde_json::from_str(&content) {
             Ok(v) => Ok(v),

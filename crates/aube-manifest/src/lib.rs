@@ -1045,8 +1045,7 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(
     } else {
         content
     };
-    let mut buf = content.clone().into_bytes();
-    if let Ok(v) = simd_json::serde::from_slice(&mut buf) {
+    if let Ok(v) = sonic_rs::from_slice(content.as_bytes()) {
         return Ok(v);
     }
     match serde_json::from_str(&content) {

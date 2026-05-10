@@ -20,7 +20,7 @@ miette = { workspace = true }
 node-semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-simd-json = { workspace = true }
+sonic-rs = { workspace = true }
 yaml_serde = { workspace = true }
 sha2 = { workspace = true }
 blake3 = { workspace = true }

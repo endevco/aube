@@ -249,8 +249,8 @@ impl Store {
         verify_files: bool,
     ) -> Option<PackageIndex> {
         let index_path = self.index_path(name, version, integrity)?;
-        let mut buf = xx::file::read(&index_path).ok()?;
-        let index: PackageIndex = simd_json::serde::from_slice(&mut buf).ok()?;
+        let buf = xx::file::read(&index_path).ok()?;
+        let index: PackageIndex = sonic_rs::from_slice(&buf).ok()?;
         if !index_files_match_metadata(&index, verify_files) {
             trace!("cache stale: {name}@{version}");
             let _ = xx::file::remove_file(&index_path);
@@ -1541,12 +1541,9 @@ pub fn validate_pkg_content(
         .ok_or_else(|| Error::Tar("package.json missing from tarball".to_string()))?;
     let bytes =
         std::fs::read(&stored.store_path).map_err(|e| Error::Io(stored.store_path.clone(), e))?;
-    let v: serde_json::Value = {
-        let mut buf = bytes.clone();
-        simd_json::serde::from_slice(&mut buf)
-            .or_else(|_| serde_json::from_slice(&bytes))
-            .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?
-    };
+    let v: serde_json::Value = sonic_rs::from_slice(&bytes)
+        .or_else(|_| serde_json::from_slice(&bytes))
+        .map_err(|e| Error::Tar(format!("invalid package.json: {e}")))?;
     let actual_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let actual_version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
     // Tolerate a leading `v` on the tarball's version (e.g. "v2.0.8").

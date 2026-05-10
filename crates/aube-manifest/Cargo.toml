@@ -16,7 +16,7 @@ aube-util = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-simd-json = { workspace = true }
+sonic-rs = { workspace = true }
 yaml_serde = { workspace = true }
 yamlpatch = { workspace = true }
 yamlpath = { workspace = true }

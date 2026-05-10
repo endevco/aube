@@ -26,7 +26,7 @@ rayon = { workspace = true }
 tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-simd-json = { workspace = true }
+sonic-rs = { workspace = true }
 xx = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
