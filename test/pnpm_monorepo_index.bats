@@ -976,7 +976,13 @@ _link_workspace_packages_fixture() {
 	assert_output "is-negative"
 
 	# project3 never declared is-positive — `aube -r remove` silently
-	# skipped it (no error, manifest untouched).
+	# skipped it (no error, manifest untouched). Stronger guard than
+	# checking just `.name`: assert no `dependencies` key was added,
+	# so a regression where the skip pre-check misfires and `run` runs
+	# anyway can't slip through by leaving an empty `dependencies: {}`.
+	run jq -r 'has("dependencies") | not' project3/package.json
+	assert_success
+	assert_output "true"
 	run jq -r '.name' project3/package.json
 	assert_success
 	assert_output "project3"
@@ -991,4 +997,111 @@ _link_workspace_packages_fixture() {
 	# is-negative survives in the lockfile (project2 still owns it).
 	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -F 'is-negative@1.0.0:'"
 	assert_success
+}
+
+@test "shared-workspace-lockfile: removing every workspace package still prunes the lockfile" {
+	# Boundary case for the stale-importer pass: when the workspace
+	# loses its LAST sub-package (every directory removed, glob narrowed
+	# to nothing), `manifests` collapses to `[(".", root)]` — same
+	# shape as a non-workspace install. Without the explicit
+	# `is_workspace_install` flag, the gate would mistake this for a
+	# non-workspace install and skip the prune. Locks the contract
+	# that the orphan importer + snapshot drop out as soon as the
+	# workspace yaml's glob no longer matches the on-disk directory.
+	cat >package.json <<-'JSON'
+		{ "name": "ws-root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "!store/**"
+	YAML
+	mkdir -p package-1
+	cat >package-1/package.json <<-'JSON'
+		{ "name": "package-1", "version": "1.0.0", "dependencies": { "is-positive": "1.0.0" } }
+	JSON
+
+	run aube install
+	assert_success
+	importers="$(awk '/^importers:/,/^packages:/' aube-lock.yaml)"
+	echo "$importers" | grep -qE "^  package-1:"
+
+	# Wipe the only sub-package. Workspace yaml still exists, so this
+	# remains a workspace install — but `find_workspace_packages`
+	# returns empty and `manifests` collapses to just `.`.
+	rm -rf package-1
+
+	run aube install
+	assert_success
+	importers_after="$(awk '/^importers:/,/^packages:/' aube-lock.yaml)"
+	# package-1's importer entry must be gone.
+	if echo "$importers_after" | grep -qE "^  package-1:"; then
+		echo "regression: package-1 importer still present after rm -rf" >&2
+		echo "$importers_after" >&2
+		false
+	fi
+	# Its lone transitive (is-positive) must drop out of the top-level
+	# packages: map too.
+	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -F 'is-positive@1.0.0:'"
+	assert_failure
+}
+
+@test "aube -r remove: partial overlap (project has some named pkgs, not all) succeeds cleanly" {
+	# Regression for the `.any()` pre-check semantic gap: when one
+	# project declares only a subset of the named packages, the prior
+	# pre-check passed and `run` then hard-failed on the first
+	# missing package — leaving manifest writes half-applied. The fix
+	# narrows the package list per-project so each `run` invocation
+	# only sees packages actually present.
+	cat >package.json <<-'JSON'
+		{ "name": "ws-root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "!store/**"
+	YAML
+	mkdir -p only-a both-a-b only-b
+	# project A declares only is-odd; B declares both; C declares only is-even.
+	cat >only-a/package.json <<-'JSON'
+		{
+		  "name": "only-a",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1" }
+		}
+	JSON
+	cat >both-a-b/package.json <<-'JSON'
+		{
+		  "name": "both-a-b",
+		  "version": "1.0.0",
+		  "dependencies": { "is-odd": "3.0.1", "is-even": "1.0.0" }
+		}
+	JSON
+	cat >only-b/package.json <<-'JSON'
+		{
+		  "name": "only-b",
+		  "version": "1.0.0",
+		  "dependencies": { "is-even": "1.0.0" }
+		}
+	JSON
+
+	run aube -r install
+	assert_success
+
+	# Remove both packages recursively. Each project sees a different
+	# subset of the names — pre-fix this would error on whichever
+	# project was processed first that lacked one of the names.
+	run aube -r remove is-odd is-even
+	assert_success
+
+	# Every project's `dependencies` map is now empty (or absent).
+	for proj in only-a both-a-b only-b; do
+		run jq -r '.dependencies // {} | keys | length' "$proj/package.json"
+		assert_success
+		assert_output "0"
+	done
+
+	# Both transitives dropped from the shared lockfile's packages: map.
+	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -E 'is-odd@|is-even@'"
+	assert_failure
 }
