@@ -7,7 +7,11 @@
 <h1 align="center">aube</h1>
 
 <p align="center">
-  A fast Node.js package manager that drops into existing projects.
+  <strong>Never forget to install.</strong>
+</p>
+
+<p align="center">
+  Aube installs automatically when you run a script. The tightest security defaults of any Node.js package manager - and the only one with a lifecycle-script jail. Drops into existing projects using existing lockfiles.
 </p>
 
 <p align="center">
