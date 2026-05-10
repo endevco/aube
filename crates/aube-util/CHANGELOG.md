@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/aube-util-v1.10.0...aube-util-v1.11.0) - 2026-05-10
+
+### Other
+
+- refresh benchmarks for v1.10.0 ([#571](https://github.com/endevco/aube/pull/571))
+- *(registry)* drop deep clone and fsync from packument cache writes ([#568](https://github.com/endevco/aube/pull/568))
+- refresh benchmarks for v1.10.0 ([#566](https://github.com/endevco/aube/pull/566))
+
 ## [1.10.0](https://github.com/endevco/aube/compare/aube-util-v1.9.1...aube-util-v1.10.0) - 2026-05-10
 
 ### Added

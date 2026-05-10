@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/v1.10.0...v1.11.0) - 2026-05-10
+
+### Added
+
+- *(install)* flag deprecated + outdated direct deps in summary ([#575](https://github.com/endevco/aube/pull/575))
+
+### Fixed
+
+- *(deploy)* resolve catalog: refs and accept versionless packages ([#574](https://github.com/endevco/aube/pull/574))
+- *(install)* pad pkg counts and drop ETA placeholder in progress UI ([#570](https://github.com/endevco/aube/pull/570))
+
+### Other
+
+- refresh benchmarks for v1.10.0 ([#571](https://github.com/endevco/aube/pull/571))
+- refresh benchmarks for v1.10.0 ([#566](https://github.com/endevco/aube/pull/566))
+
 ## [1.10.0](https://github.com/endevco/aube/compare/v1.9.1...v1.10.0) - 2026-05-10
 
 ### Added
