@@ -336,11 +336,14 @@ impl CiState {
         let mut summary = format!(
             "{} resolved {} · reused {}",
             style::egreen("✓").bold(),
-            style::ebold(snap.resolved),
-            style::ebold(snap.reused),
+            style::ecyan(snap.resolved).bold(),
+            style::ecyan(snap.reused).bold(),
         );
         if snap.downloaded > 0 || snap.bytes > 0 {
-            summary.push_str(&format!(" · downloaded {}", style::ebold(snap.downloaded)));
+            summary.push_str(&format!(
+                " · downloaded {}",
+                style::ecyan(snap.downloaded).bold()
+            ));
             if snap.bytes > 0 {
                 summary.push_str(&format!(
                     " ({})",

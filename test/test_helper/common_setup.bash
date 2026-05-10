@@ -52,6 +52,16 @@ _common_setup() {
 	# DNS/timeout round-trip for no benefit.
 	export AUBE_NO_UPDATE_CHECK=1
 
+	# Force plain-text output across all bats invocations. GitHub
+	# Actions and other CI runners auto-enable ANSI on aube even
+	# without a TTY (the log viewer renders escape codes correctly),
+	# but `assert_output --partial "..."` asserts on raw bytes — so
+	# any styled label/value that splits ANSI mid-substring stops
+	# matching once color is on. Tests that exercise color logic
+	# (color.bats, guardrails.bats, settings.bats) `unset NO_COLOR`
+	# locally before running aube, so this default is non-disruptive.
+	export NO_COLOR=1
+
 	# Point to local Verdaccio registry if running
 	if [ -n "${AUBE_TEST_REGISTRY:-}" ]; then
 		echo "registry=${AUBE_TEST_REGISTRY}" >"$TEST_TEMP_DIR/.npmrc"

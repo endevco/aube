@@ -5123,6 +5123,7 @@ fn print_direct_dependency_summary(
     graph: &aube_lockfile::LockfileGraph,
     manifests: &[(String, aube_manifest::PackageJson)],
 ) {
+    use clx::style;
     let importers: Vec<(&String, &Vec<aube_lockfile::DirectDep>)> = graph
         .importers
         .iter()
@@ -5137,7 +5138,8 @@ fn print_direct_dependency_summary(
             eprintln!();
         }
         if show_importer_headers {
-            eprintln!("{}:", direct_dependency_importer_label(importer, manifests));
+            let label = direct_dependency_importer_label(importer, manifests);
+            eprintln!("{}{}", style::ebold(&label), style::edim(":"));
         }
         print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Production);
         print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Optional);
@@ -5167,6 +5169,7 @@ fn print_direct_dependency_section(
     deps: &[aube_lockfile::DirectDep],
     dep_type: aube_lockfile::DepType,
 ) {
+    use clx::style;
     let mut deps: Vec<&aube_lockfile::DirectDep> =
         deps.iter().filter(|dep| dep.dep_type == dep_type).collect();
     if deps.is_empty() {
@@ -5178,13 +5181,18 @@ fn print_direct_dependency_section(
         aube_lockfile::DepType::Optional => "optionalDependencies",
         aube_lockfile::DepType::Dev => "devDependencies",
     };
-    eprintln!("{label}:");
+    eprintln!("{}{}", style::ebold(label), style::edim(":"));
     for dep in deps {
         let version = graph
             .get_package(&dep.dep_path)
             .map(|pkg| pkg.version.as_str())
             .unwrap_or("?");
-        eprintln!("+ {}@{version}", dep.name);
+        eprintln!(
+            "{} {}{}",
+            style::egreen("+").bold(),
+            dep.name,
+            style::edim(format!("@{version}")),
+        );
     }
 }
 
