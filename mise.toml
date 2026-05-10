@@ -46,7 +46,7 @@ dir = "{{config_root}}"
 env = { BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms" }
 run = [
   "cargo build --release",
-  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
+  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:yarn@4 bun@latest deno@latest npm:vlt@latest node@24 -- bash benchmarks/bench.sh",
 ]
 
 [tasks."bench:pr"]
@@ -70,7 +70,7 @@ dir = "{{config_root}}"
 env = { RUNS = "10", WARMUP = "3", RESULTS_JSON = "{{config_root}}/benchmarks/results.json", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms" }
 run = [
   "cargo build --release",
-  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:yarn@1 bun@latest node@24 -- bash benchmarks/bench.sh",
+  "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:yarn@4 bun@latest deno@latest npm:vlt@latest node@24 -- bash benchmarks/bench.sh",
   "node benchmarks/update-readme.mjs",
 ]
 

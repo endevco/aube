@@ -57,7 +57,10 @@ BENCH_VERDACCIO_PORT="${BENCH_VERDACCIO_PORT:-4874}"
 BENCH_PROXY_PORT="${BENCH_PROXY_PORT:-4875}"
 
 HERMETIC_STORAGE="$BENCH_HERMETIC_CACHE/storage"
-HERMETIC_WARMED_SENTINEL="$BENCH_HERMETIC_CACHE/.warmed"
+# Sentinel name carries a generation tag so adding/removing PMs in the
+# default warm set automatically invalidates an existing warmed cache.
+# Bump when the default BENCH_TOOLS set changes.
+HERMETIC_WARMED_SENTINEL="$BENCH_HERMETIC_CACHE/.warmed.v2"
 HERMETIC_LOG="$BENCH_HERMETIC_CACHE/verdaccio.log"
 HERMETIC_CONFIG_WARM="$HERMETIC_DIR/registry/config.warm.yaml"
 HERMETIC_CONFIG_COLD="$HERMETIC_DIR/registry/config.yaml"
@@ -127,21 +130,21 @@ _hermetic_stop_verdaccio() {
 # via the `.warmed` sentinel. Running the warm step requires network;
 # subsequent benchmark runs are fully offline.
 #
-# Warming runs one install per PM (aube, bun, pnpm, npm, yarn) so the
-# cache is the *union* of every tool's resolution set — each resolver
-# picks its preferred versions independently (e.g. aube may pick
-# `get-intrinsic@1.3.1` which drags in `async-function` / `async-
-# generator-function` while pnpm picks an earlier version without
-# those deps). A single-PM warm leaves 404-holes the no-uplink bench
-# then falls into. Individual tool failures during warm are logged and
-# tolerated; the later per-tool populate in bench.sh is authoritative
-# about what each tool actually needs.
+# Warming runs one install per PM (aube, bun, pnpm, npm, yarn, deno,
+# vlt) so the cache is the *union* of every tool's resolution set —
+# each resolver picks its preferred versions independently (e.g. aube
+# may pick `get-intrinsic@1.3.1` which drags in `async-function` /
+# `async-generator-function` while pnpm picks an earlier version
+# without those deps). A single-PM warm leaves 404-holes the no-uplink
+# bench then falls into. Individual tool failures during warm are
+# logged and tolerated; the later per-tool populate in bench.sh is
+# authoritative about what each tool actually needs.
 #
 # aube is skipped when `$AUBE_BIN` isn't built yet, so warming is still
 # bootstrap-safe for CI flows that warm before compiling aube.
 _hermetic_warm() {
 	local warm_sentinel="$HERMETIC_WARMED_SENTINEL"
-	if [ "${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn}" != "aube,bun,pnpm,npm,yarn" ]; then
+	if [ "${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno,vlt}" != "aube,bun,pnpm,npm,yarn,deno,vlt" ]; then
 		warm_sentinel="$HERMETIC_STORAGE/.warmed.${BENCH_TOOLS//[^A-Za-z0-9_.-]/_}"
 	fi
 
@@ -190,14 +193,28 @@ _hermetic_warm() {
 		cp "$warm_root/base-package.json" "$pm_dir/package.json"
 		# Pin registry via both `.npmrc` (project + home) and
 		# `npm_config_registry` — aube reads `.npmrc` and does not
-		# honor the env var, while yarn/npm honor either. Without the
-		# `.npmrc` files aube's warm install silently hits npmjs
-		# directly and leaves holes in the Verdaccio cache.
+		# honor the env var, while npm honors either. Yarn 4 ignores
+		# `.npmrc` entirely and reads the registry from
+		# `.yarnrc.yml`, so the yarn warm step drops one alongside.
+		# Without the `.npmrc` files aube's warm install silently hits
+		# npmjs directly and leaves holes in the Verdaccio cache.
 		printf 'registry=%s\n' "$reg" >"$pm_dir/.npmrc"
 		printf 'registry=%s\n' "$reg" >"$pm_dir/home/.npmrc"
+		if [ "$pm" = "yarn" ]; then
+			{
+				printf 'nodeLinker: node-modules\n'
+				printf 'enableTelemetry: false\n'
+				printf 'enableScripts: false\n'
+				printf 'enableGlobalCache: false\n'
+				printf 'cacheFolder: "%s/yarn-cache"\n' "$pm_dir/home"
+				printf 'npmRegistryServer: "%s"\n' "$reg"
+				printf 'unsafeHttpWhitelist:\n  - 127.0.0.1\n  - localhost\n'
+			} >"$pm_dir/.yarnrc.yml"
+		fi
 		if ! (cd "$pm_dir" && HOME="$pm_dir/home" \
 			npm_config_registry="$reg" \
-			YARN_CACHE_FOLDER="$pm_dir/home/.yarn" \
+			npm_config_cache="$pm_dir/home/.npm-cache" \
+			DENO_DIR="$pm_dir/home/.deno" \
 			BUN_INSTALL="$pm_dir/home/.bun" \
 			"$@" >"$pm_dir/warm.log" 2>&1); then
 			echo "  WARN: warm with $pm failed (continuing — see $pm_dir/warm.log)" >&2
@@ -212,7 +229,9 @@ _hermetic_warm() {
 	_warm_one bun "$(command -v bun || echo)" bun install --ignore-scripts --no-summary
 	_warm_one pnpm "$(command -v pnpm || echo)" pnpm install --ignore-scripts --no-frozen-lockfile
 	_warm_one npm "$(command -v npm || echo)" npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps
-	_warm_one yarn "$(command -v yarn || echo)" yarn install --ignore-scripts --ignore-engines --no-progress
+	_warm_one yarn "$(command -v yarn || echo)" yarn install
+	_warm_one deno "$(command -v deno || echo)" deno install --quiet
+	_warm_one vlt "$(command -v vlt || echo)" vlt install
 
 	unset -f _warm_one
 	rm -rf "$warm_root"

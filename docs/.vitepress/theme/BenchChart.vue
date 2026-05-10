@@ -21,6 +21,10 @@ const COLORS: Record<string, string> = {
   // background, so use a darker tan that stays on-brand but is
   // actually readable.
   bun: "#c9a36a",
+  // Deno's wordmark is black on light backgrounds; the seafoam green
+  // from the brand kit reads better next to the other tools' chips.
+  deno: "#70c7a9",
+  vlt: "#5b4eef",
   aube: "#7c3aed",
 };
 

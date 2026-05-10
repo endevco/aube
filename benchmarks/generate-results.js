@@ -12,7 +12,8 @@
 // Usage:
 //   node generate-results.js <benchDir> <outputMarkdown>
 // Optional env:
-//   BENCH_TOOLS=aube,pnpm,yarn,npm  comma-separated tool order
+//   BENCH_TOOLS=aube,bun,pnpm,npm,yarn,deno,vlt
+//                                   comma-separated tool order
 //                                   (defaults to aube + pnpm)
 //   RESULTS_JSON=<path>             override the JSON output path
 

@@ -10,13 +10,13 @@ type BenchmarkRow = {
   values: Record<string, number>;
 };
 
-const chartTools = ["aube", "bun", "pnpm", "npm", "yarn"] as const;
+const chartTools = ["aube", "bun", "deno", "pnpm", "npm"] as const;
 const chartLabels: Record<(typeof chartTools)[number], string> = {
   aube: "aube",
   bun: "bun",
+  deno: "deno",
   pnpm: "pnpm",
   npm: "npm",
-  yarn: "yarn v1",
 };
 const warmInstallBenchmark = (benchmarkResults.rows as BenchmarkRow[]).find(
   (row) => row.key === "gvs-warm",

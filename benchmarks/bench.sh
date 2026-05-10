@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Benchmark script comparing aube, pnpm, yarn, npm, and bun install
-# performance.
+# Benchmark script comparing aube, pnpm, yarn (berry), npm, bun, deno,
+# and vlt install performance.
 #
 # Prerequisites:
 #   - aube built in release mode: cargo build --release
@@ -16,15 +16,16 @@ set -euo pipefail
 # Environment variables:
 #   WARMUP       — warmup runs before timing (default: 1)
 #   RUNS         — timed runs per benchmark (default: 10). Applies to
-#                  the fast tools (aube, bun). Slower tools default to
-#                  fewer runs so the matrix doesn't take forever:
-#                  pnpm = ceil(RUNS/2), npm = yarn = ceil(RUNS/3).
-#   RUNS_PNPM, RUNS_NPM, RUNS_YARN, RUNS_BUN, RUNS_AUBE — override the
-#                  per-tool run count individually. Falls back to the
-#                  defaults above when unset.
+#                  the fast tools (aube, bun, deno). Slower tools
+#                  default to fewer runs so the matrix doesn't take
+#                  forever: pnpm = vlt = ceil(RUNS/2),
+#                  npm = yarn = ceil(RUNS/3).
+#   RUNS_PNPM, RUNS_NPM, RUNS_YARN, RUNS_BUN, RUNS_AUBE, RUNS_DENO,
+#   RUNS_VLT     — override the per-tool run count individually. Falls
+#                  back to the defaults above when unset.
 #   RESULTS_JSON — override the structured JSON output path
 #   BENCH_TOOLS  — comma-separated tools to include
-#                  (default: aube,bun,pnpm,npm,yarn)
+#                  (default: aube,bun,pnpm,npm,yarn,deno,vlt)
 #   BENCH_SCENARIOS — comma-separated scenario keys to run
 #                     (default: all)
 #   BENCH_PHASES — set to 0 to skip aube phase timing samples
@@ -50,6 +51,8 @@ PNPM_BIN="$(command -v pnpm || true)"
 YARN_BIN="$(command -v yarn || true)"
 NPM_BIN="$(command -v npm || true)"
 BUN_BIN="$(command -v bun || true)"
+DENO_BIN="$(command -v deno || true)"
+VLT_BIN="$(command -v vlt || true)"
 
 BENCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aube-bench.XXXXXX")"
 WARMUP="${WARMUP:-1}"
@@ -58,10 +61,12 @@ RUNS="${RUNS:-10}"
 # pnpm to half the run count and npm/yarn to a third. Each is overridable.
 RUNS_AUBE="${RUNS_AUBE:-$RUNS}"
 RUNS_BUN="${RUNS_BUN:-$RUNS}"
+RUNS_DENO="${RUNS_DENO:-$RUNS}"
 RUNS_PNPM="${RUNS_PNPM:-$(((RUNS + 1) / 2))}"
+RUNS_VLT="${RUNS_VLT:-$(((RUNS + 1) / 2))}"
 RUNS_NPM="${RUNS_NPM:-$(((RUNS + 2) / 3))}"
 RUNS_YARN="${RUNS_YARN:-$(((RUNS + 2) / 3))}"
-BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn}"
+BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno,vlt}"
 BENCH_SCENARIOS="${BENCH_SCENARIOS:-gvs-warm,gvs-cold,ci-warm,ci-cold,install-test,add}"
 BENCH_PHASES="${BENCH_PHASES:-1}"
 
@@ -140,9 +145,11 @@ run_scenario() {
 # headline comparison is prominent and the rest follow alphabetically.
 register_tool "aube" "$AUBE_BIN"
 register_tool "bun" "$BUN_BIN"
+register_tool "deno" "$DENO_BIN"
 register_tool "pnpm" "$PNPM_BIN"
 register_tool "npm" "$NPM_BIN"
 register_tool "yarn" "$YARN_BIN"
+register_tool "vlt" "$VLT_BIN"
 
 echo "workdir: $BENCH_DIR"
 # Capture each tool's reported --version string so generate-results.js
@@ -173,9 +180,11 @@ runs_for_tool() {
 	case "$1" in
 	aube) echo "$RUNS_AUBE" ;;
 	bun) echo "$RUNS_BUN" ;;
+	deno) echo "$RUNS_DENO" ;;
 	pnpm) echo "$RUNS_PNPM" ;;
 	npm) echo "$RUNS_NPM" ;;
 	yarn) echo "$RUNS_YARN" ;;
+	vlt) echo "$RUNS_VLT" ;;
 	*) echo "$RUNS" ;;
 	esac
 }
@@ -188,9 +197,11 @@ lockfile_name_for() {
 	case "$1" in
 	aube) echo "aube-lock.yaml" ;;
 	bun) echo "bun.lock" ;;
+	deno) echo "deno.lock" ;;
 	npm) echo "package-lock.json" ;;
 	pnpm) echo "pnpm-lock.yaml" ;;
 	yarn) echo "yarn.lock" ;;
+	vlt) echo "vlt-lock.json" ;;
 	*) echo "unknown" ;;
 	esac
 }
@@ -211,16 +222,38 @@ for i in "${!TOOLS[@]}"; do
 		printf "storeDir: %s\ncacheDir: %s\n" "${TOOL_STORES[$i]}" "${TOOL_CACHES[$i]}" >"$dir/pnpm-workspace.yaml"
 	fi
 
+	# Yarn 4 ignores .npmrc for registry and only ships a PnP linker by
+	# default. Drop a .yarnrc.yml that pins node-modules layout (so the
+	# scenarios mirror what npm/pnpm/bun produce), routes the cache to
+	# the isolated dir, disables telemetry, and turns off lifecycle
+	# scripts so it matches the --ignore-scripts behavior we ask from
+	# the other tools. The hermetic registry URL gets injected lower
+	# down once we know BENCH_REGISTRY_URL.
+	if [ "$tool" = "yarn" ]; then
+		{
+			printf "nodeLinker: node-modules\n"
+			printf "cacheFolder: %s\n" "${TOOL_CACHES[$i]}"
+			printf "enableGlobalCache: false\n"
+			printf "enableTelemetry: false\n"
+			printf "enableScripts: false\n"
+		} >"$dir/.yarnrc.yml"
+	fi
+
 	# Hermetic mode: drop a .npmrc into both the project dir and the
 	# isolated HOME so every PM resolves packages through the local
 	# Verdaccio (or the throttle proxy in front of it) instead of
-	# npmjs. Project-level .npmrc is honored by all five tools and
-	# wins over HOME; HOME is a belt-and-suspenders fallback for any
-	# command (like `aube add` after chdir) that might look there
-	# first.
+	# npmjs. Project-level .npmrc is honored by aube/pnpm/npm/bun/
+	# deno/vlt and wins over HOME; HOME is a belt-and-suspenders
+	# fallback for any command (like `aube add` after chdir) that
+	# might look there first. Yarn 4 ignores .npmrc and reads the
+	# registry from .yarnrc.yml instead, so we append it there.
 	if [ -n "$BENCH_REGISTRY_URL" ]; then
 		printf "registry=%s\n" "$BENCH_REGISTRY_URL" >"$dir/.npmrc"
 		printf "registry=%s\n" "$BENCH_REGISTRY_URL" >"$home/.npmrc"
+		if [ "$tool" = "yarn" ]; then
+			printf "npmRegistryServer: \"%s\"\nunsafeHttpWhitelist:\n  - 127.0.0.1\n  - localhost\n" \
+				"$BENCH_REGISTRY_URL" >>"$dir/.yarnrc.yml"
+		fi
 	fi
 done
 
@@ -251,7 +284,9 @@ for i in "${!TOOLS[@]}"; do
 		"$dir/package-lock.json" \
 		"$dir/yarn.lock" \
 		"$dir/bun.lock" \
-		"$dir/bun.lockb"
+		"$dir/bun.lockb" \
+		"$dir/deno.lock" \
+		"$dir/vlt-lock.json"
 
 	case "$tool" in
 	aube)
@@ -272,8 +307,10 @@ for i in "${!TOOLS[@]}"; do
 		cd "$dir" && HOME="$home" "$bin" install --ignore-scripts --no-frozen-lockfile
 		;;
 	yarn)
-		cd "$dir" && HOME="$home" YARN_CACHE_FOLDER="$cache" "$bin" install \
-			--ignore-scripts --ignore-engines --no-progress
+		# Yarn 4 (berry). enableScripts/cacheFolder/nodeLinker are
+		# already pinned in .yarnrc.yml, so we only need to ask for
+		# a fresh install here.
+		cd "$dir" && HOME="$home" "$bin" install
 		;;
 	bun)
 		# Bun takes `--cache-dir` as a CLI flag and `BUN_INSTALL` as
@@ -281,6 +318,19 @@ for i in "${!TOOLS[@]}"; do
 		# to keep it from touching `~/.bun`.
 		cd "$dir" && HOME="$home" BUN_INSTALL="$home/.bun" "$bin" install \
 			--cache-dir "$cache" --ignore-scripts --no-summary --force
+		;;
+	deno)
+		# Deno 2 reads package.json and writes deno.lock + populates
+		# node_modules. DENO_DIR is the per-tool cache and global
+		# install location. Lifecycle scripts are skipped by default
+		# (Deno requires explicit --allow-scripts to opt in).
+		cd "$dir" && HOME="$home" DENO_DIR="$cache" "$bin" install --quiet
+		;;
+	vlt)
+		# vlt respects npm_config_cache for its package cache and
+		# reads .npmrc for the registry. Skips lifecycle scripts by
+		# default unless an allowlist is configured.
+		cd "$dir" && HOME="$home" npm_config_cache="$cache" "$bin" install
 		;;
 	esac
 
@@ -369,14 +419,23 @@ cmd_template() {
 	gvs-warm:pnpm | gvs-cold:pnpm | ci-warm:pnpm | ci-cold:pnpm)
 		echo "cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 		;;
-	gvs-warm:yarn | ci-warm:yarn)
-		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1"
+	gvs-warm:yarn | gvs-cold:yarn | ci-warm:yarn | ci-cold:yarn)
+		# Yarn 4: --immutable replaces --frozen-lockfile and aborts
+		# if the lockfile or cache would change. Scripts/cache/linker
+		# settings are already pinned in .yarnrc.yml.
+		echo "cd {project} && HOME={home} {bin} install --immutable >/dev/null 2>&1"
+		;;
+	gvs-warm:deno | gvs-cold:deno | ci-warm:deno | ci-cold:deno)
+		# Deno 2: --frozen errors out if the lockfile would change,
+		# the equivalent of --frozen-lockfile elsewhere. Lifecycle
+		# scripts are off unless --allow-scripts is passed.
+		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} install --frozen --quiet >/dev/null 2>&1"
+		;;
+	gvs-warm:vlt | gvs-cold:vlt | ci-warm:vlt | ci-cold:vlt)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install >/dev/null 2>&1"
 		;;
 	gvs-cold:npm | ci-cold:npm)
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
-		;;
-	gvs-cold:yarn | ci-cold:yarn)
-		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
 		;;
 	ci-warm:aube | ci-cold:aube)
 		echo "cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
@@ -394,7 +453,13 @@ cmd_template() {
 		echo "cd {project} && HOME={home} {bin} install-test --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
 		;;
 	install-test:yarn)
-		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} install --frozen-lockfile --ignore-scripts --ignore-engines --no-progress --prefer-offline >/dev/null 2>&1 && HOME={home} YARN_CACHE_FOLDER={cache} {bin} test >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} {bin} install --immutable >/dev/null 2>&1 && HOME={home} {bin} test >/dev/null 2>&1"
+		;;
+	install-test:deno)
+		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} install --frozen --quiet >/dev/null 2>&1 && HOME={home} DENO_DIR={cache} {bin} task --quiet test >/dev/null 2>&1"
+		;;
+	install-test:vlt)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install >/dev/null 2>&1 && HOME={home} npm_config_cache={cache} {bin} run test >/dev/null 2>&1"
 		;;
 	add:aube)
 		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
@@ -409,7 +474,13 @@ cmd_template() {
 		echo "cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
 		;;
 	add:yarn)
-		echo "cd {project} && HOME={home} YARN_CACHE_FOLDER={cache} {bin} add is-odd --ignore-scripts --ignore-engines --no-progress >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} {bin} add is-odd >/dev/null 2>&1"
+		;;
+	add:deno)
+		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} add --quiet npm:is-odd >/dev/null 2>&1"
+		;;
+	add:vlt)
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install is-odd >/dev/null 2>&1"
 		;;
 	esac
 }
@@ -561,13 +632,13 @@ run_aube_phase_bench() {
 # Directories to wipe in cold scenarios. Each pm has its own cache /
 # store layout, so we reset everything we know about to guarantee
 # a fresh download on every iteration.
-COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.local/share/aube {home}/.npm {home}/.yarn {home}/.bun {home}/.cache/aube {home}/.cache/yarn {home}/.cache/bun'
+COLD_WIPE='{store} {cache} {home}/.pnpm-store {home}/.local/share/aube {home}/.npm {home}/.yarn {home}/.bun {home}/.cache/aube {home}/.cache/yarn {home}/.cache/bun {home}/.cache/deno {home}/.cache/vlt {home}/.config/vlt {home}/Library/Caches/deno'
 
 # Warm-cache lockfile restore: wipe the project-local state (lockfile
 # + node_modules) and drop the saved lockfile back. Uses the per-tool
 # `lockfile_dest` placeholder so each pm gets its native filename.
-WARM_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb && cp {lockfile} {lockfile_dest}"
-COLD_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
+WARM_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb {project}/deno.lock {project}/vlt-lock.json && cp {lockfile} {lockfile_dest}"
+COLD_PREP="rm -rf {project}/node_modules {project}/pnpm-lock.yaml {project}/aube-lock.yaml {project}/package-lock.json {project}/yarn.lock {project}/bun.lock {project}/bun.lockb {project}/deno.lock {project}/vlt-lock.json $COLD_WIPE && mkdir -p {home} && cp {lockfile} {lockfile_dest}"
 
 # ── Benchmark 1: Fresh install, warm cache ─────────────────────────────────
 # Lockfile present, node_modules deleted, store and cache warm.
