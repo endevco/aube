@@ -1511,9 +1511,21 @@ impl Linker {
             // planner shouldn't try to copy their contents. Filter
             // them out of the seed set — we'll symlink them in a
             // post-pass below.
+            //
+            // Same gating as the isolated mode below: the resolver
+            // omits a `LockedPackage` for workspace-resolved siblings,
+            // so a name match plus a missing package entry is the
+            // signal that the resolver picked the sibling. When the
+            // resolved package IS in `graph.packages`, the resolver
+            // pinned a registry version and the dep should follow the
+            // normal hoisted-placement path (otherwise the post-pass
+            // would silently substitute the local copy).
             let planner_deps: Vec<aube_lockfile::DirectDep> = deps
                 .iter()
-                .filter(|d| !workspace_dirs.contains_key(&d.name))
+                .filter(|d| {
+                    !workspace_dirs.contains_key(&d.name)
+                        || graph.packages.contains_key(&d.dep_path)
+                })
                 .cloned()
                 .collect();
             hoisted::link_hoisted_importer(
@@ -1535,6 +1547,11 @@ impl Linker {
                 let Some(ws_dir) = workspace_dirs.get(&dep.name) else {
                     continue;
                 };
+                // See planner_deps gating above: skip deps the
+                // resolver actually pinned to a registry version.
+                if graph.packages.contains_key(&dep.dep_path) {
+                    continue;
+                }
                 let link_path = nm.join(&dep.name);
                 if let Some(parent) = link_path.parent() {
                     mkdirp(parent)?;
@@ -1964,9 +1981,30 @@ impl Linker {
 
                     let link_path = nm.join(&dep.name);
 
-                    // Workspace dep (`workspace:` protocol): link
-                    // straight into the sibling package dir.
-                    if let Some(ws_dir) = workspace_dirs.get(&dep.name) {
+                    // Workspace dep (`workspace:` protocol or bare
+                    // semver that satisfies the sibling's version):
+                    // link straight into the sibling package dir.
+                    //
+                    // Gate on the resolver's decision, not just the
+                    // name match. The resolver omits a `LockedPackage`
+                    // entry for workspace-resolved siblings (the
+                    // `workspace_packages` branch in resolve.rs only
+                    // pushes a `DirectDep`, never inserts into
+                    // `resolved`), so a `dep_path` with no package
+                    // entry means "resolver picked the sibling". When
+                    // the package IS in `graph.packages`, the resolver
+                    // pinned a registry version — even if a sibling
+                    // shares the name, the user's spec didn't
+                    // satisfy it (e.g. `is-positive: "2.0.0"` with a
+                    // workspace sibling at `3.0.0`). Falling through
+                    // to the registry branch in that case prevents the
+                    // linker from silently substituting an
+                    // incompatible local copy for the resolved
+                    // version recorded in the lockfile.
+                    if workspace_dirs.contains_key(&dep.name)
+                        && !graph.packages.contains_key(&dep.dep_path)
+                    {
+                        let ws_dir = &workspace_dirs[&dep.name];
                         if !self.hoist_workspace_packages {
                             return Ok(false);
                         }
