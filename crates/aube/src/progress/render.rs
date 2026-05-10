@@ -47,10 +47,11 @@ pub(super) fn progress_line(snap: Snap, term_width: usize, bar_width: usize) -> 
 }
 
 /// The fixed-width left-aligned bar. Empty portion is dim throughout;
-/// the filled portion takes its color from the current phase
-/// (resolving = yellow, fetching = cyan, linking/done = green) so the
-/// bar visually tracks the same phase progression that the right-side
-/// label spells out in words.
+/// the filled portion takes its color from the current phase (cyan
+/// while fetching, green for linking/done) so the bar visually tracks
+/// the same phase progression that the right-side label spells out
+/// in words. Resolving has no fill — phase 1 always renders an empty
+/// bar — so it doesn't need its own arm here.
 pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
     let (numerator, denominator) = if snap.phase == 1 {
         (0, 1)
@@ -66,10 +67,10 @@ pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
     let empty = width - filled;
     let fill = "█".repeat(filled);
     let empty = "░".repeat(empty);
-    let styled_fill = match snap.phase {
-        1 => style::eyellow(fill).to_string(),
-        2 => style::ecyan(fill).to_string(),
-        _ => style::egreen(fill).to_string(),
+    let styled_fill = if snap.phase == 2 {
+        style::ecyan(fill).to_string()
+    } else {
+        style::egreen(fill).to_string()
     };
     format!("{}{}", styled_fill, style::edim(empty))
 }
@@ -80,7 +81,7 @@ pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
 /// * fetching:  `  cur/total pkgs · 4.2 MB / ~13.8 MB · 1.4 MB/s · ETA 5s`
 /// * linking:   ` cur/total pkgs · linking · 13.8 MB`
 ///
-/// Numbers are right-padded to a min-width-4 column so the right edge
+/// Numbers are right-aligned to a min-width-4 column so the right edge
 /// of the count stays put across heartbeats — without it, the visible
 /// digits jump left every time `snap.resolved` crosses a power of ten
 /// during streaming resolve. The ETA segment is omitted entirely when
