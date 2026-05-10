@@ -432,7 +432,11 @@ cmd_template() {
 		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} install --frozen --quiet >/dev/null 2>&1"
 		;;
 	gvs-warm:vlt | gvs-cold:vlt | ci-warm:vlt | ci-cold:vlt)
-		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install >/dev/null 2>&1"
+		# vlt's --frozen-lockfile mirrors pnpm/npm/aube semantics: refuse
+		# to re-resolve and error out if vlt-lock.json would change.
+		# Without it vlt would silently treat the install as a fresh
+		# resolve, which is not what the other tools measure here.
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --frozen-lockfile >/dev/null 2>&1"
 		;;
 	gvs-cold:npm | ci-cold:npm)
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps >/dev/null 2>&1"
@@ -459,7 +463,7 @@ cmd_template() {
 		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} install --frozen --quiet >/dev/null 2>&1 && HOME={home} DENO_DIR={cache} {bin} task --quiet test >/dev/null 2>&1"
 		;;
 	install-test:vlt)
-		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install >/dev/null 2>&1 && HOME={home} npm_config_cache={cache} {bin} run test >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --frozen-lockfile >/dev/null 2>&1 && HOME={home} npm_config_cache={cache} {bin} run test >/dev/null 2>&1"
 		;;
 	add:aube)
 		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
