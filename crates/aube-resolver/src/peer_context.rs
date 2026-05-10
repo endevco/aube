@@ -1161,18 +1161,15 @@ fn propagate_peer_suffixes_to_ancestors(graph: LockfileGraph) -> LockfileGraph {
             *tail = rewrite_tail(name, tail);
         }
         pkg.dep_path = new_key.clone();
-        // Two old keys mapping to one new key: prefer the lex-smaller
-        // surviving body (deterministic). Bodies are equal in the
-        // common case (same canonical_base + same cumulative ⇒ same
-        // dep tree), so the choice is effectively cosmetic.
-        new_packages
-            .entry(new_key)
-            .and_modify(|existing| {
-                if pkg.dep_path < existing.dep_path {
-                    *existing = pkg.clone();
-                }
-            })
-            .or_insert(pkg);
+        // Two old keys mapping to one new key: the lex-smaller old key
+        // wins. Because `packages` is a `BTreeMap` we iterate
+        // `(old_key, pkg)` pairs in lex order — the first insertion
+        // for any given `new_key` is therefore the one whose old_key
+        // sorts lowest, and `or_insert` makes every subsequent
+        // collision a no-op. Bodies are equal in the common case
+        // anyway (same canonical_base + same cumulative ⇒ same dep
+        // tree), so this is effectively cosmetic determinism.
+        new_packages.entry(new_key).or_insert(pkg);
     }
 
     let new_importers: BTreeMap<String, Vec<DirectDep>> = importers
