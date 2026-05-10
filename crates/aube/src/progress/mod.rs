@@ -2,24 +2,22 @@
 //!
 //! Two modes live behind one API so call sites in `install::run` stay the same:
 //!
-//! * **TTY** — an animated clx bar: a root row with overall counts plus
-//!   transient child rows for in-flight tarball fetches. Children auto-hide
-//!   on completion via `ProgressJobDoneBehavior::Hide`, so the display stays
-//!   bounded even though the pipeline resolves → fetches → links concurrently.
-//! * **CI** — append-only lines safe for GitHub Actions / plain pipes: a
-//!   single repeating pnpm-style `Progress:` line emitted on a ~2s
-//!   heartbeat, showing `resolved` / `reused` / `downloaded` plus the
-//!   byte total for the downloaded set. The heartbeat only prints when
-//!   something actually advanced, so a fast install stays quiet and a
-//!   slow one shows exactly *why* it's slow (network-bound vs
-//!   linker-bound). No phase noise, no child rows, no redraws.
+//! * **TTY** — an animated clx bar, kept as an internal fallback for callers
+//!   that explicitly opt into an in-place display. It redraws by moving the
+//!   cursor and clearing the previous frame.
+//! * **Append-only** — lines safe for terminals, GitHub Actions, and plain
+//!   pipes: a single repeating pnpm-style `Progress:` line emitted on a ~2s
+//!   heartbeat, showing `resolved` / `reused` / `downloaded` plus the byte
+//!   total for the downloaded set. The heartbeat only prints when something
+//!   actually advanced, so a fast install stays quiet and a slow one shows
+//!   exactly *why* it's slow (network-bound vs linker-bound). No phase noise,
+//!   no child rows, no redraws.
 //!
-//! `try_new` picks the mode: TTY on an interactive stderr, CI on a pipe,
-//! or CI when `is_ci::cached()` detects a known CI environment (Buildkite,
-//! GitHub Actions, etc.) even if stderr looks like a TTY — those systems
-//! allocate a PTY so tools emit colors, but their log capturers strip
-//! cursor-control escapes and each animation frame lands as its own log
-//! line. CI mode's ~2s heartbeat is the right shape for that.
+//! `try_new` picks the append-only mode by default. The clx TTY renderer
+//! clears the previous frame on every redraw; that makes installs look like
+//! the screen is blinking right before the post-install package summary lands.
+//! Set `AUBE_TTY_PROGRESS=1` to use the in-place renderer while it remains
+//! useful for local debugging.
 //! It returns `None` only when clx has been forced into text mode
 //! (`--silent`, `-v`, `--reporter=append-only|ndjson`) — those modes own
 //! their own output and we stay out of the way.
@@ -34,7 +32,7 @@ use clx::progress::{
 use clx::style;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -48,6 +46,15 @@ const TTY_MAX_VISIBLE_FETCH_ROWS: usize = 5;
 fn overflow_fetch_label(count: usize) -> String {
     let word = pluralizer::pluralize("package", count as isize, false);
     format!("{count} more {word}…")
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
 }
 
 /// Build the standard `aube VERSION by en.dev · <msg>` one-line
@@ -83,6 +90,9 @@ pub struct InstallProgress {
 enum Mode {
     Tty {
         root: Arc<ProgressJob>,
+        /// Set after explicit finish so Drop does not later clear the
+        /// terminal rows that the success path intentionally preserved.
+        finished: Arc<AtomicBool>,
         /// Our own mirror of the denominator so `inc_total` can atomically
         /// fetch-add without racing a concurrent reader/writer through clx's
         /// separate `overall_progress()` / `progress_total()` calls.
@@ -159,16 +169,12 @@ impl InstallProgress {
         if clx::progress::output() == ProgressOutput::Text {
             return None;
         }
-        // Prefer CI mode whenever we're in a known CI environment
-        // (`is_ci` checks `CI`, `BUILDKITE`, `GITHUB_ACTIONS`, and friends),
-        // even when stderr looks like a TTY. Most CI runners allocate a
-        // PTY so child processes emit colors, which makes
-        // `is_terminal()` return true — but the log capturer then strips
-        // cursor-control escapes and each animation frame becomes its
-        // own log line, flooding the build log with thousands of
-        // near-duplicate spinner rows. CI mode's 2s heartbeat is the
-        // right shape there.
-        if std::io::stderr().is_terminal() && !is_ci::cached() {
+        // The animated TTY renderer redraws via cursor movement plus
+        // clear-to-end-of-screen. That is fine for a standalone progress bar,
+        // but it looks like a screen wipe when followed by the post-install
+        // dependency summary. Default to append-only progress everywhere and
+        // leave the in-place renderer behind an explicit debugging opt-in.
+        if std::io::stderr().is_terminal() && !is_ci::cached() && env_truthy("AUBE_TTY_PROGRESS") {
             Some(Self::new_tty())
         } else {
             Some(Self::new_ci())
@@ -204,11 +210,12 @@ impl InstallProgress {
             .prop("eta", "")
             .progress_current(0)
             .progress_total(0)
-            .on_done(ProgressJobDoneBehavior::Hide)
+            .on_done(ProgressJobDoneBehavior::Collapse)
             .start();
         Self {
             mode: Mode::Tty {
                 root,
+                finished: Arc::new(AtomicBool::new(false)),
                 total: Arc::new(AtomicUsize::new(0)),
                 reused: Arc::new(AtomicUsize::new(0)),
                 downloaded: Arc::new(AtomicUsize::new(0)),
@@ -671,8 +678,9 @@ impl InstallProgress {
         }
     }
 
-    /// Finalize and clear the progress display. TTY mode leaves no output
-    /// behind. CI mode blocks until the heartbeat thread has actually
+    /// Finalize the progress display. TTY mode leaves the collapsed final
+    /// root row behind so the terminal does not visibly blink/clear right
+    /// before the install summary. CI mode blocks until the heartbeat thread has actually
     /// stopped so no stray tick can appear after this returns, and
     /// optionally writes the final framed `[ ✓ … ]` status line.
     /// Idempotent.
@@ -684,9 +692,10 @@ impl InstallProgress {
     /// want the framed summary to remain the end of CI log output.
     pub fn finish(&self, print_ci_summary: bool) {
         match &self.mode {
-            Mode::Tty { root, .. } => {
+            Mode::Tty { root, finished, .. } => {
                 root.set_status(ProgressStatus::Done);
-                clx::progress::stop_clear();
+                finished.store(true, Ordering::Relaxed);
+                clx::progress::stop();
             }
             Mode::Ci(s) => s.stop(print_ci_summary),
         }
@@ -712,9 +721,8 @@ impl InstallProgress {
     /// **Safety:** must be called *after* [`InstallProgress::finish`]. The
     /// write goes straight to stderr without routing through
     /// `PausingWriter` or `with_terminal_lock`, which is only safe once
-    /// `finish()` has synchronously stopped the render loop via
-    /// `stop_clear()`. A new call site placed before `finish()` would
-    /// silently race the animated display.
+    /// `finish()` has synchronously stopped the render loop. A new call site
+    /// placed before `finish()` would silently race the animated display.
     pub fn print_install_summary(
         &self,
         linked: usize,
@@ -785,8 +793,8 @@ impl Drop for InstallProgress {
     /// — the heartbeat still gets joined so no stray tick escapes.
     fn drop(&mut self) {
         match &self.mode {
-            Mode::Tty { root, .. } => {
-                if Arc::strong_count(root) == 1 {
+            Mode::Tty { root, finished, .. } => {
+                if Arc::strong_count(root) == 1 && !finished.load(Ordering::Relaxed) {
                     root.set_status(ProgressStatus::Done);
                     clx::progress::stop_clear();
                 }

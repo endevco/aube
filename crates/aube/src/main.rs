@@ -903,6 +903,7 @@ async fn async_main(cli: Cli) -> miette::Result<Option<i32>> {
     let effective_filter = compute_effective_filter(&cli);
 
     commands::set_global_output_flags(commands::GlobalOutputFlags {
+        ndjson: matches!(cli.reporter, Some(ReporterType::Ndjson)),
         silent: matches!(effective_level, LogLevel::Silent),
     });
 

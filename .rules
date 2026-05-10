@@ -122,9 +122,10 @@ commits:
   types[12]: fix, feat, refactor, chore, docs, style, test, perf, build, ci, revert, security
   scope_optional: true (omit for repo-wide changes like `chore: release v1.2.0`)
   scope_enforcement: advisory — the lint workflow only validates `type`, not `scope`. lists below are the conventional set, but new crates/features can introduce new scopes without a workflow change. release-plz keys off `type` only
-  scopes_crates[10]: cli, resolver, registry, lockfile, store, linker, manifest, scripts, workspace, settings
+  scopes_crates[9]: resolver, registry, lockfile, store, linker, manifest, scripts, workspace, settings
   scopes_features[12]: install, add, publish, dlx, audit, login, logout, deprecate, unpublish, fetch, import, catalog
   scopes_infra[5]: bench, packaging, release, deps, release-plz
+  scope_rule: never use `cli` as a scope. user-visible command behavior belongs to the command/feature scope (`install`, `add`, `dlx`, etc.); cross-command CLI plumbing should use the narrowest affected command scope or omit the scope when truly repo-wide.
   breaking: append `!` after type/scope (e.g. `feat(resolver)!: drop yarn classic`) or include `BREAKING CHANGE:` footer in body. release-plz will cut a major bump
   body_rules: reserve body for breaking changes, security fixes, benchmark tables, non-obvious WHY. wrap 72, use - not *
   pr_numbers: never type (#NN) yourself, GitHub squash-merge appends them automatically
@@ -134,7 +135,7 @@ commits:
     - emoji in commit subject
   trailers_accepted: Co-authored-by (agents + bots are normal aube history, 50+ commits use them)
   examples[7]:
-    - feat(cli): add aubr/aubx multicall shims for run and dlx
+    - feat(dlx): add aubx multicall shim
     - fix(resolver): preserve npm-alias as folder name on fresh resolve
     - refactor(store): swap CAS hash from SHA-512 to BLAKE3
     - feat(lockfile): add yarn berry (v2+) parse + write support

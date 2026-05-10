@@ -55,6 +55,107 @@ teardown() {
 	refute_output --partial "Already up to date"
 }
 
+@test "aube install prints grouped direct dependencies after real work" {
+	cat >package.json <<'JSON'
+{
+  "name": "install-summary",
+  "version": "1.0.0",
+  "dependencies": {
+    "is-odd": "3.0.1"
+  },
+  "devDependencies": {
+    "kind-of": "6.0.3"
+  },
+  "optionalDependencies": {
+    "is-number": "7.0.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	assert_output --partial "dependencies:"
+	assert_output --partial "+ is-odd@3.0.1"
+	assert_output --partial "optionalDependencies:"
+	assert_output --partial "+ is-number@7.0.0"
+	assert_output --partial "devDependencies:"
+	assert_output --partial "+ kind-of@6.0.3"
+
+	run aube install
+	assert_success
+	assert_output --partial "Already up to date"
+	refute_output --partial "+ is-odd@3.0.1"
+}
+
+@test "aube install prints direct dependency summary in append-only text mode" {
+	cat >package.json <<'JSON'
+{
+  "name": "install-summary-text",
+  "version": "1.0.0",
+  "dependencies": {
+    "kind-of": "6.0.3"
+  }
+}
+JSON
+
+	run aube --reporter=append-only install
+	assert_success
+	assert_output --partial "dependencies:"
+	assert_output --partial "+ kind-of@6.0.3"
+}
+
+@test "aube install does not print human dependency summary in ndjson mode" {
+	cat >package.json <<'JSON'
+{
+  "name": "install-summary-ndjson",
+  "version": "1.0.0",
+  "dependencies": {
+    "kind-of": "6.0.3"
+  }
+}
+JSON
+
+	run aube --reporter=ndjson install
+	assert_success
+	refute_output --partial "dependencies:"
+	refute_output --partial "+ kind-of@6.0.3"
+}
+
+@test "aube install labels workspace dependency summaries by package name" {
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "kind-of": "6.0.3"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/app
+	cat >packages/app/package.json <<'JSON'
+{
+  "name": "workspace-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "is-number": "7.0.0"
+  }
+}
+JSON
+
+	run aube --reporter=append-only install
+	assert_success
+	assert_output --partial "workspace-root:"
+	assert_output --partial "+ kind-of@6.0.3"
+	assert_output --partial "workspace-app:"
+	assert_output --partial "+ is-number@7.0.0"
+	refute_output --partial ".:"
+}
+
 @test "aube install --dev installs only devDependencies" {
 	cat >package.json <<'JSON'
 {

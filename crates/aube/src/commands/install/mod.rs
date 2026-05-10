@@ -4295,14 +4295,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         }
     }
 
-    // Final summary. When linking did real work this is the green
-    // `✓ installed N packages in Xs` line (TTY only; CI mode prints
-    // its own framed `✓` from the heartbeat's stop tick). When
-    // nothing needed linking we emit `Already up to date` in both TTY
-    // and CI modes so cache-only runs still confirm the no-op — text /
-    // silent / ndjson modes stay quiet because prog_ref is None. Emitted
-    // after every post-link lifecycle script has finished so the line
-    // lands as the very last thing on stderr.
+    // Final user-facing output. When linking did real work, print the
+    // direct deps that now exist at the top level before the green
+    // `✓ installed N packages in Xs` line. Text modes such as `-v` and
+    // `--reporter=append-only` skip the progress object but still get the
+    // dependency summary; silent and ndjson stay machine-clean.
+    if !install_is_noop && should_print_human_install_summary() {
+        print_direct_dependency_summary(&graph_for_link, &manifests);
+    }
     if let Some(p) = prog_ref {
         p.print_install_summary(
             stats.packages_linked,
@@ -4505,6 +4505,75 @@ fn print_already_up_to_date() {
     );
     let line = crate::progress::aube_prefix_line(&msg);
     let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+fn print_direct_dependency_summary(
+    graph: &aube_lockfile::LockfileGraph,
+    manifests: &[(String, aube_manifest::PackageJson)],
+) {
+    let importers: Vec<(&String, &Vec<aube_lockfile::DirectDep>)> = graph
+        .importers
+        .iter()
+        .filter(|(_, deps)| !deps.is_empty())
+        .collect();
+    if importers.is_empty() {
+        return;
+    }
+    let show_importer_headers = importers.len() > 1;
+    for (idx, (importer, deps)) in importers.iter().enumerate() {
+        if idx > 0 {
+            eprintln!();
+        }
+        if show_importer_headers {
+            eprintln!("{}:", direct_dependency_importer_label(importer, manifests));
+        }
+        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Production);
+        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Optional);
+        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Dev);
+    }
+    eprintln!();
+}
+
+fn direct_dependency_importer_label(
+    importer: &str,
+    manifests: &[(String, aube_manifest::PackageJson)],
+) -> String {
+    manifests
+        .iter()
+        .find(|(path, _)| path == importer)
+        .and_then(|(_, manifest)| manifest.name.clone())
+        .unwrap_or_else(|| importer.to_string())
+}
+
+fn should_print_human_install_summary() -> bool {
+    let flags = super::global_output_flags();
+    !flags.silent && !flags.ndjson
+}
+
+fn print_direct_dependency_section(
+    graph: &aube_lockfile::LockfileGraph,
+    deps: &[aube_lockfile::DirectDep],
+    dep_type: aube_lockfile::DepType,
+) {
+    let mut deps: Vec<&aube_lockfile::DirectDep> =
+        deps.iter().filter(|dep| dep.dep_type == dep_type).collect();
+    if deps.is_empty() {
+        return;
+    }
+    deps.sort_by(|a, b| a.name.cmp(&b.name));
+    let label = match dep_type {
+        aube_lockfile::DepType::Production => "dependencies",
+        aube_lockfile::DepType::Optional => "optionalDependencies",
+        aube_lockfile::DepType::Dev => "devDependencies",
+    };
+    eprintln!("{label}:");
+    for dep in deps {
+        let version = graph
+            .get_package(&dep.dep_path)
+            .map(|pkg| pkg.version.as_str())
+            .unwrap_or("?");
+        eprintln!("+ {}@{version}", dep.name);
+    }
 }
 
 fn invalidate_changed_aube_entries(

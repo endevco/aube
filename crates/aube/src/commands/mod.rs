@@ -96,6 +96,7 @@ static FETCH_CLI_OVERRIDES: OnceLock<Vec<(String, String)>> = OnceLock::new();
 
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct GlobalOutputFlags {
+    pub ndjson: bool,
     pub silent: bool,
 }
 
