@@ -57,6 +57,20 @@ function run(cmd, args, opts = {}) {
     }
 }
 
+// Returns true when <pkg>@<version> is already on the registry, so a
+// re-run after a partial publish (or a re-tag) skips instead of erroring
+// with "cannot publish over the previously published versions".
+function isVersionPublished(pkgName, version) {
+    const result = spawnSync('npm', ['view', `${pkgName}@${version}`, 'version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+    });
+    if (result.status === 0) return result.stdout.trim() === version;
+    const stderr = result.stderr || '';
+    if (/E404|code E404|not found/i.test(stderr)) return false;
+    throw new Error(`npm view ${pkgName}@${version} failed: ${stderr.trim() || result.status}`);
+}
+
 function assertEnv(name) {
     const v = process.env[name];
     if (!v) throw new Error(`${name} env var is required`);
@@ -175,9 +189,15 @@ async function main() {
     if (!skipPlatforms) {
         for (const target of TARGETS) {
             console.log(`\n[publish] --- ${target.os}-${target.cpu} (${target.triple}) ---`);
-            const { pkgName, stageDir } = await buildPlatformPackage(repo, tag, version, target);
-            console.log(`[publish] staged ${pkgName} at ${stageDir}`);
-            npmPublish(stageDir, npmTag, dryRun);
+            const suffix = target.libc === 'musl' ? '-musl' : '';
+            const pkgName = `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
+            if (!dryRun && isVersionPublished(pkgName, version)) {
+                console.log(`[publish] ${pkgName}@${version} already published, skipping`);
+                continue;
+            }
+            const built = await buildPlatformPackage(repo, tag, version, target);
+            console.log(`[publish] staged ${built.pkgName} at ${built.stageDir}`);
+            npmPublish(built.stageDir, npmTag, dryRun);
         }
     }
 
@@ -186,6 +206,10 @@ async function main() {
         const rootPkgPath = resolve(npmDir, 'package.json');
         const rootPkg = JSON.parse(readFileSync(rootPkgPath, 'utf8'));
         rootPkg.version = version;
+        if (!dryRun && isVersionPublished(rootPkg.name, version)) {
+            console.log(`[publish] ${rootPkg.name}@${version} already published, skipping`);
+            return;
+        }
         writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + '\n');
         // `npm pack` doesn't follow symlinks, so stage a real README
         // copy next to package.json rather than linking ../README.md.
