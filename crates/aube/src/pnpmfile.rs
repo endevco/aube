@@ -635,7 +635,15 @@ async function main() {
       let result = req.pkg;
       if (typeof readPackage === 'function') {
         const out = await readPackage(req.pkg, ctx);
-        if (out && typeof out === 'object') result = out;
+        // Match pnpm: a defined hook must return the (possibly mutated)
+        // manifest. Silently passing through req.pkg on a missing return
+        // hides the common bug of forgetting `return pkg` in an else branch.
+        if (!out || typeof out !== 'object') {
+          const name = (req.pkg && req.pkg.name) || '<unknown>';
+          const version = (req.pkg && req.pkg.version) || '<unknown>';
+          throw new Error('hook did not return a package manifest object (called with ' + name + '@' + version + ')');
+        }
+        result = out;
       }
       process.stdout.write(JSON.stringify({ id, pkg: result }) + '\n');
     } catch (err) {

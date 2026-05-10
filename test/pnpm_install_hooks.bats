@@ -308,10 +308,9 @@ EOF
 }
 
 @test "pnpmfile: readPackage that returns undefined fails the install" {
-	skip "aube divergence: aube continues with the original manifest when readPackage returns undefined; pnpm fails the install. File a Discussion before un-skipping."
 	# Ported from pnpm/test/install/hooks.ts:68 ('readPackage hook makes
 	# installation fail if it does not return the modified package
-	# manifests'). Skipped pending https://github.com/endevco/aube/discussions
+	# manifests').
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-hooks-undef-return",
@@ -331,6 +330,8 @@ EOF
 
 	run aube install
 	assert_failure
+	assert_output --partial 'package manifest object'
+	assert_output --partial 'is-even@1.0.0'
 }
 
 @test "pnpmfile: readPackage hook can mutate the root project's dependencies" {
