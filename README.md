@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  Aube installs automatically when you run a script. The tightest security defaults of any Node.js package manager - and the only one with a lifecycle-script jail. Drops into existing projects.
+  Aube installs automatically when you run a script. The tightest security defaults of any Node.js package manager - and the only one with a lifecycle-script jail. Drops into existing projects using existing lockfiles.
 </p>
 
 <p align="center">
