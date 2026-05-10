@@ -1446,7 +1446,7 @@ fn print_starvation(events: &[EventRec], _total_ms: f64) {
             }
         }
         let mut blamers: Vec<(String, u32)> = blame_count.into_iter().collect();
-        blamers.sort_by(|a, b| b.1.cmp(&a.1));
+        blamers.sort_by_key(|b| std::cmp::Reverse(b.1));
         let top: String = blamers
             .iter()
             .take(3)
@@ -1619,7 +1619,7 @@ fn print_summary(r: &Recorder, total_ms: f64) {
     let agg = r.aggregates.lock().unwrap_or_else(|e| e.into_inner());
     let mut rows: Vec<(AggKey, AggVal)> = agg.iter().map(|(k, v)| (*k, *v)).collect();
     drop(agg);
-    rows.sort_by(|a, b| b.1.sum_ns.cmp(&a.1.sum_ns));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.1.sum_ns));
 
     eprintln!("diag total {:.1}ms", total_ms);
     eprintln!(

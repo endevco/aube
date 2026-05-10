@@ -216,6 +216,101 @@ _setup_no_match_workspace() {
 	assert_output --partial "is-odd"
 }
 
+@test "aube --filter=<pkg> --workspace-root run: includes the workspace root" {
+	# Ported from pnpm/test/monorepo/index.ts:1581.
+	# pnpm names the command `test`; aube routes the same lifecycle
+	# script through `run test` so the assertion stays about workspace
+	# selection, not lifecycle shortcut parsing.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('root-ran','')\"" }
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+	EOF
+	mkdir project
+	cat >project/package.json <<-'EOF'
+		{
+		  "name": "project",
+		  "version": "1.0.0",
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('project-ran','')\"" }
+		}
+	EOF
+
+	run aube --filter=project --workspace-root run test --no-install
+	assert_success
+	assert_file_exists root-ran
+	assert_file_exists project/project-ran
+}
+
+@test "includeWorkspaceRoot=true: recursive run includes the workspace root" {
+	# Ported from pnpm/test/monorepo/index.ts:1613.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true,
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('root-ran','')\"" }
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "**"
+		  - "!store/**"
+		includeWorkspaceRoot: true
+	EOF
+	mkdir project
+	cat >project/package.json <<-'EOF'
+		{
+		  "name": "project",
+		  "version": "1.0.0",
+		  "scripts": { "test": "node -e \"require('fs').writeFileSync('project-ran','')\"" }
+		}
+	EOF
+
+	run aube -r run test --no-install
+	assert_success
+	assert_file_exists root-ran
+	assert_file_exists project/project-ran
+}
+
+@test "aube list --filter=<no-match> --workspace-root: can return the root only" {
+	# Regression guard for callers that use the lower-level workspace
+	# selector directly. Root inclusion must happen before empty-match
+	# handling, so the root can be the whole selected set.
+	cat >package.json <<-'EOF'
+		{
+		  "name": "root",
+		  "version": "0.0.0",
+		  "private": true
+		}
+	EOF
+	cat >pnpm-workspace.yaml <<-'EOF'
+		packages:
+		  - "packages/*"
+	EOF
+	mkdir -p packages/project
+	cat >packages/project/package.json <<-'EOF'
+		{"name": "project", "version": "1.0.0"}
+	EOF
+	run aube install --lockfile-only
+	assert_success
+
+	run aube list --filter=missing --workspace-root --parseable --depth=-1
+	assert_success
+	# pwd -P resolves the macOS /var -> /private/var symlink so the
+	# expected path matches aube's canonicalized workspace root.
+	assert_output "$(pwd -P)"
+	refute_output --partial "No projects matched"
+	refute_output --partial "packages/project"
+}
+
 # Helper: stand up the four-project workspace pnpm uses for the
 # link-workspace-packages tests. Mirrors `preparePackages([{name, version}, …])`
 # from pnpm's test harness — a flat layout under the cwd where each

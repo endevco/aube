@@ -1764,6 +1764,7 @@ fn compute_effective_filter(cli: &Cli) -> aube_workspace::selector::EffectiveFil
         filters,
         filter_prods: cli.filter_prod.clone(),
         fail_if_no_match: cli.fail_if_no_match,
+        include_workspace_root: cli.include_workspace_root || cli.workspace_root,
     }
 }
 
