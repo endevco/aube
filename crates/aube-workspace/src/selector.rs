@@ -250,7 +250,9 @@ pub fn select_workspace_packages(
     let selectors = parse_effective(filter).map_err(SelectError::Parse)?;
     let packages = index_packages(workspace_pkgs);
     if selectors.is_empty() {
-        return Ok(packages.into_iter().map(|p| p.selected).collect());
+        let mut selected: Vec<_> = packages.into_iter().map(|p| p.selected).collect();
+        include_workspace_root(workspace_root, filter, &mut selected)?;
+        return Ok(selected);
     }
 
     let has_positive = selectors.iter().any(|s| !s.exclude);
@@ -795,6 +797,43 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].name.as_deref(), Some("root"));
         assert_eq!(selected[0].dir, dir.path());
+    }
+
+    #[test]
+    fn include_workspace_root_yaml_applies_with_no_selectors() {
+        // Regression: when both `filters` and `filter_prods` are empty,
+        // `select_workspace_packages` short-circuits — root inclusion
+        // (CLI flag or YAML) must still apply on that path.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"root","version":"0.0.0","private":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - packages/*\nincludeWorkspaceRoot: true\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("packages/app")).unwrap();
+        std::fs::write(
+            dir.path().join("packages/app/package.json"),
+            r#"{"name":"app","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let selected = select_workspace_packages(
+            dir.path(),
+            &[dir.path().join("packages/app")],
+            &EffectiveFilter::default(),
+        )
+        .unwrap();
+
+        let names: Vec<_> = selected
+            .iter()
+            .filter_map(|pkg| pkg.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["app", "root"]);
     }
 
     #[test]

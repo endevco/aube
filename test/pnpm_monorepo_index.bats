@@ -304,7 +304,9 @@ _setup_no_match_workspace() {
 
 	run aube list --filter=missing --workspace-root --parseable --depth=-1
 	assert_success
-	assert_output "$PWD"
+	# pwd -P resolves the macOS /var -> /private/var symlink so the
+	# expected path matches aube's canonicalized workspace root.
+	assert_output "$(pwd -P)"
 	refute_output --partial "No projects matched"
 	refute_output --partial "packages/project"
 }
