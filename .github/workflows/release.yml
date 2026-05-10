@@ -169,11 +169,11 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+            runner: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
             build-tool: cross
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+            runner: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
             build-tool: cross
           - target: aarch64-apple-darwin
             os: macos-latest
