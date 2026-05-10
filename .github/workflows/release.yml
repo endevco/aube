@@ -198,9 +198,9 @@ jobs:
         if: ${{ matrix.build-tool == 'cross' }}
         shell: bash
         run: cargo install cross --locked
-      - name: Install verdaccio
-        shell: bash
-        run: npm install --global verdaccio@6
+      # verdaccio is installed lazily by hermetic.bash's
+      # _hermetic_ensure_verdaccio (called from pgo.bash via hermetic_start),
+      # so no explicit install step is needed here.
       - name: Import codesign certs
         if: startsWith(matrix.os, 'macos')
         uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3

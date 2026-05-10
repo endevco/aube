@@ -117,6 +117,13 @@ trap cleanup EXIT
 
 AUBE_BIN="$INSTRUMENTED_BIN" hermetic_start
 
+# hermetic_start runs _hermetic_warm on the first invocation against a
+# given cache dir, which executes the instrumented binary against npmjs
+# uplink. In CI that warm step fires every run (no persisted cache) and
+# would otherwise contribute non-representative profraw covering the
+# uplink path. Drop those before the real training runs land.
+rm -f "$PGO_PROFRAW_DIR"/*.profraw
+
 # 3 cold + 3 warm. Cold runs each get a fresh dir so the resolver,
 # registry, store, and linker hot paths all run end-to-end. Warm runs
 # reuse the last cold dir so the frozen-lockfile fast path is also
@@ -167,5 +174,9 @@ echo ">>> Rebuilding with -Cprofile-use"
 RUSTFLAGS="-Cprofile-use=$PGO_MERGED -Cllvm-args=-pgo-warn-missing-function" \
 	"$PGO_BUILD_TOOL" build --profile="$PGO_PROFILE" $target_arg -p aube
 
-echo ">>> PGO build complete: $INSTRUMENTED_BIN"
-ls -lh "$INSTRUMENTED_BIN"
+# Phase 3b wrote to the same path as phase 1, so the file at
+# $INSTRUMENTED_BIN is now the PGO-optimized build, not the instrumented
+# one. Alias for clarity in the success log.
+PGO_FINAL_BIN="$INSTRUMENTED_BIN"
+echo ">>> PGO build complete: $PGO_FINAL_BIN"
+ls -lh "$PGO_FINAL_BIN"
