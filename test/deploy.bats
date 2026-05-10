@@ -101,14 +101,19 @@ _setup_workspace_fixture() {
 	assert_output --partial "did not match"
 }
 
-@test "aube deploy: matched workspace package without version reports metadata error" {
+@test "aube deploy: workspace package without a version still deploys" {
+	# Workspace-internal packages often have no `version` (nothing
+	# publishes them). pnpm deploy accepts this; aube must match. The
+	# deploy success log falls back to `0.0.0` so the format stays
+	# uniform.
 	mkdir -p psl
 	printf "packages:\n  - psl\n" >aube-workspace.yaml
 	printf '{"name":"psl"}\n' >psl/package.json
 
 	run aube deploy --filter psl ./out
-	assert_failure
-	assert_output --partial "pack: package.json has no \`version\` field"
+	assert_success
+	assert_output --partial "deployed psl@0.0.0"
+	assert_file_exists out/package.json
 }
 
 @test "aube deploy: refuses to deploy into a non-empty target" {
@@ -411,4 +416,94 @@ EOF
 	[ ! -e out/scripts-alias ]
 	# The real directory was walked directly, so its content is there.
 	assert_file_exists out/scripts/run.sh
+}
+
+@test "aube deploy: resolves catalog: refs in the deployed manifest" {
+	# Regression for #573: the deployed manifest carried `catalog:`
+	# specifiers, but deploy didn't copy any workspace yaml into the
+	# target. The install rooted at the target found no catalog
+	# definitions and hard-failed with ERR_AUBE_UNKNOWN_CATALOG.
+	# Deploy now rewrites `catalog:` to the concrete range from the
+	# source workspace, so the artifact is self-contained.
+	_setup_workspace_fixture
+	# Define a default catalog and switch @test/lib's is-odd dep to a
+	# bare `catalog:` reference. Use a `catalogs:` named block too so
+	# both code paths in `discover_catalogs` are exercised.
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - packages/*
+catalog:
+  is-odd: ^3.0.1
+catalogs:
+  test:
+    is-odd: 3.0.1
+EOF
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "is-odd": "catalog:"
+  }
+}
+EOF
+
+	run aube deploy --filter @test/lib ./out
+	assert_success
+
+	# `catalog:` was rewritten to the resolved range — no `catalog:`
+	# leaked into the deployed manifest.
+	run node -e "console.log(require('./out/package.json').dependencies['is-odd'])"
+	assert_success
+	assert_output "^3.0.1"
+	# Install ran successfully against the rewritten manifest.
+	assert_dir_exists out/node_modules/is-odd
+}
+
+@test "aube deploy: catalog rewrite uses named catalog when referenced" {
+	_setup_workspace_fixture
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - packages/*
+catalogs:
+  evens:
+    is-odd: ^3.0.1
+EOF
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "is-odd": "catalog:evens"
+  }
+}
+EOF
+
+	run aube deploy --filter @test/lib ./out
+	assert_success
+	run node -e "console.log(require('./out/package.json').dependencies['is-odd'])"
+	assert_success
+	assert_output "^3.0.1"
+}
+
+@test "aube deploy: undefined catalog reference errors with ERR_AUBE_UNKNOWN_CATALOG" {
+	_setup_workspace_fixture
+	# No catalog block at all — `is-odd: catalog:` cannot resolve.
+	cat >packages/lib/package.json <<'EOF'
+{
+  "name": "@test/lib",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "is-odd": "catalog:"
+  }
+}
+EOF
+
+	run aube deploy --filter @test/lib ./out
+	assert_failure
+	assert_output --partial "ERR_AUBE_UNKNOWN_CATALOG"
+	assert_output --partial "is-odd"
 }

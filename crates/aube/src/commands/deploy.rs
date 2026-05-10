@@ -41,8 +41,9 @@
 //!
 //! Deferred: `--legacy`.
 
+use crate::commands::CatalogMap;
 use crate::commands::install::{self, FrozenMode, InstallOptions};
-use crate::commands::pack::{build_archive, collect_package_files};
+use crate::commands::pack::collect_package_files;
 use aube_manifest::PackageJson;
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
@@ -126,6 +127,14 @@ pub async fn run(
         cli: &[],
     };
     let deploy_all_files = aube_settings::resolved::deploy_all_files(&settings_ctx);
+
+    // Discover catalog entries from the source workspace before any
+    // chdir. The deploy target has no workspace yaml, so any `catalog:`
+    // spec left in the deployed manifest would hit
+    // `ERR_AUBE_UNKNOWN_CATALOG` during install — we resolve them up
+    // front and rewrite to the concrete range, making the artifact
+    // self-contained (same shape as pnpm deploy).
+    let catalogs = super::discover_catalogs(&source_root)?;
 
     let workspace_pkgs = aube_workspace::find_workspace_packages(&source_root)
         .map_err(|e| miette!("failed to discover workspace packages: {e}"))?;
@@ -222,6 +231,7 @@ pub async fn run(
             source_pkg_dir,
             target,
             &ws_index,
+            &catalogs,
             &args,
             deploy_all_files,
         )?);
@@ -455,6 +465,7 @@ fn stage_one(
     source_pkg_dir: &Path,
     target: &Path,
     ws_index: &BTreeMap<String, (PathBuf, Option<String>)>,
+    catalogs: &CatalogMap,
     args: &DeployArgs,
     deploy_all_files: bool,
 ) -> miette::Result<StagedDeploy> {
@@ -463,33 +474,27 @@ fn stage_one(
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to create {}", target.display()))?;
 
-    let (name, version, files) = if deploy_all_files {
-        // `deployAllFiles=true`: ignore pack's selection entirely and
-        // copy every file in the source tree (minus `node_modules/`,
-        // `.git/`, and the target itself when nested). Read the
-        // manifest directly to reuse `name`/`version` for the final
-        // println without building a throwaway tarball.
-        let manifest = super::load_manifest(&source_pkg_dir.join("package.json"))?;
-        let name = manifest
-            .name
-            .ok_or_else(|| miette!("deploy: package.json has no `name` field"))?;
-        let version = manifest
-            .version
-            .ok_or_else(|| miette!("deploy: package.json has no `version` field"))?;
-        let files = collect_all_files(source_pkg_dir, target)?;
-        (name, version, files)
+    // Deploy reuses pack's file selection (the same set of files
+    // publish would ship) but, unlike pack, has no use for a real
+    // tarball or a `version` field — the deployed artifact isn't going
+    // to a registry. Loading the manifest directly + calling
+    // `collect_package_files` keeps the file selection identical while
+    // letting workspace-internal packages without a `version` deploy.
+    // Falls back to a placeholder version string purely for the
+    // "deployed X@Y to Z" success log.
+    let manifest = super::load_manifest(&source_pkg_dir.join("package.json"))?;
+    let name = manifest
+        .name
+        .clone()
+        .ok_or_else(|| miette!("deploy: package.json has no `name` field"))?;
+    let version = manifest
+        .version
+        .clone()
+        .unwrap_or_else(|| "0.0.0".to_string());
+    let files = if deploy_all_files {
+        collect_all_files(source_pkg_dir, target)?
     } else {
-        // Default: reuse pack's file selection so deploy ships exactly
-        // what publish would. Throws away the tarball bytes — only
-        // `files` is load-bearing — but building it in memory is cheap
-        // and keeps the logic single-source.
-        let archive = build_archive(source_pkg_dir)?;
-        let files = archive
-            .files
-            .into_iter()
-            .map(|rel| (source_pkg_dir.join(&rel), rel))
-            .collect();
-        (archive.name, archive.version, files)
+        collect_package_files(source_pkg_dir, &manifest)?
     };
 
     for (src, rel) in &files {
@@ -524,6 +529,7 @@ fn stage_one(
         source_pkg_dir,
         target,
         ws_index,
+        catalogs,
         &plan,
         StripFields::for_args(args),
         root,
@@ -542,6 +548,7 @@ fn stage_one(
             &inj.source_dir,
             &inj.target_dir,
             ws_index,
+            catalogs,
             &plan,
             bundled_strip,
             root,
@@ -1077,11 +1084,61 @@ struct DeployRoot<'a> {
     target_root: &'a Path,
 }
 
+/// Look up `spec` (a `catalog:` / `catalog:<name>` reference) in the
+/// source workspace's catalog map and return the concrete range. Mirrors
+/// the resolver's [`resolve_catalog_spec`](aube_resolver) precedence:
+/// bare `catalog:` maps to `default`; unknown catalog or missing entry
+/// is a hard error; a catalog value that itself is another `catalog:`
+/// ref errors (catalogs cannot chain).
+fn resolve_catalog_for_rewrite(
+    catalogs: &CatalogMap,
+    pkg_name: &str,
+    spec: &str,
+    manifest_path: &Path,
+) -> miette::Result<String> {
+    let catalog_name = spec
+        .strip_prefix("catalog:")
+        .map(|n| if n.is_empty() { "default" } else { n })
+        .ok_or_else(|| {
+            miette!(
+                "aube deploy: internal error — resolve_catalog_for_rewrite called on non-catalog spec {spec:?}"
+            )
+        })?;
+    let Some(catalog) = catalogs.get(catalog_name) else {
+        return Err(miette!(
+            code = aube_codes::errors::ERR_AUBE_UNKNOWN_CATALOG,
+            help = "define the catalog in `pnpm-workspace.yaml` or under `pnpm.catalog` / `workspaces.catalog` in `package.json`",
+            "aube deploy: {} declares `{pkg_name}: {spec}` but catalog `{catalog_name}` is not defined in the source workspace",
+            manifest_path.display(),
+        ));
+    };
+    let Some(value) = catalog.get(pkg_name) else {
+        return Err(miette!(
+            code = aube_codes::errors::ERR_AUBE_UNKNOWN_CATALOG_ENTRY,
+            "aube deploy: {} declares `{pkg_name}: {spec}` but catalog `{catalog_name}` has no entry for {pkg_name:?}",
+            manifest_path.display(),
+        ));
+    };
+    if aube_util::pkg::is_catalog_spec(value) {
+        return Err(miette!(
+            code = aube_codes::errors::ERR_AUBE_UNKNOWN_CATALOG_ENTRY,
+            "aube deploy: catalog `{catalog_name}` entry for {pkg_name:?} is itself a catalog reference ({value:?}); catalogs cannot chain",
+        ));
+    }
+    Ok(value.clone())
+}
+
+// 8 arguments: each is a distinct piece of context the rewriter needs.
+// Bundling them into a struct would just shift the names off the
+// signature without simplifying the call sites — every test already
+// builds each value explicitly.
+#[allow(clippy::too_many_arguments)]
 fn rewrite_local_refs(
     manifest_path: &Path,
     source_pkg_dir: &Path,
     manifest_dir: &Path,
     ws_index: &BTreeMap<String, (PathBuf, Option<String>)>,
+    catalogs: &CatalogMap,
     plan: &InjectionPlan,
     strip: StripFields,
     root: DeployRoot<'_>,
@@ -1119,8 +1176,28 @@ fn rewrite_local_refs(
             continue;
         };
         for (name, spec_val) in deps.iter_mut() {
-            let Some(spec) = spec_val.as_str() else {
+            let Some(raw_spec) = spec_val.as_str() else {
                 continue;
+            };
+            // Resolve `catalog:` first. The deploy target has no
+            // workspace yaml, so any `catalog:` reference left in the
+            // manifest would hit `ERR_AUBE_UNKNOWN_CATALOG` at install
+            // time. We swap in the concrete range from the source
+            // workspace's catalog map and re-bind `spec` so the
+            // workspace/file/link branches below see the resolved
+            // value (matters when a catalog entry points at a
+            // `workspace:` / `file:` spec — pnpm allows that).
+            let resolved_owned;
+            let spec: &str = if aube_util::pkg::is_catalog_spec(raw_spec) {
+                let resolved =
+                    resolve_catalog_for_rewrite(catalogs, name, raw_spec, manifest_path)?;
+                if resolved.as_str() != raw_spec {
+                    *spec_val = serde_json::Value::String(resolved.clone());
+                }
+                resolved_owned = resolved;
+                resolved_owned.as_str()
+            } else {
+                raw_spec
             };
             if aube_util::pkg::is_workspace_spec(spec) {
                 let Some((sibling_dir, sibling_version)) = ws_index.get(name) else {
@@ -1404,6 +1481,7 @@ mod tests {
             tmp.path(),
             tmp.path(),
             &idx,
+            &CatalogMap::new(),
             &plan,
             StripFields {
                 dependencies: false,
@@ -1460,6 +1538,7 @@ mod tests {
             manifest_dir,
             manifest_dir,
             &idx,
+            &CatalogMap::new(),
             &plan,
             StripFields::default(),
             DeployRoot {
@@ -1521,6 +1600,7 @@ mod tests {
             manifest_dir,
             manifest_dir,
             &idx,
+            &CatalogMap::new(),
             &InjectionPlan::new(),
             StripFields::default(),
             DeployRoot {
@@ -1571,6 +1651,7 @@ mod tests {
             &deployed_canonical,
             &sibling_target,
             &idx,
+            &CatalogMap::new(),
             &InjectionPlan::new(),
             StripFields::default(),
             DeployRoot {
@@ -1613,6 +1694,7 @@ mod tests {
             &deployed_canonical,
             &sibling_target,
             &BTreeMap::new(),
+            &CatalogMap::new(),
             &InjectionPlan::new(),
             StripFields::default(),
             DeployRoot {
@@ -1645,6 +1727,7 @@ mod tests {
             tmp.path(),
             tmp.path(),
             &BTreeMap::new(),
+            &CatalogMap::new(),
             &InjectionPlan::new(),
             StripFields::default(),
             DeployRoot {
@@ -1675,6 +1758,7 @@ mod tests {
             tmp.path(),
             tmp.path(),
             &idx,
+            &CatalogMap::new(),
             &plan,
             StripFields::default(),
             DeployRoot {
@@ -1684,6 +1768,248 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("@test/missing"));
+    }
+
+    /// Build a catalog map matching what `discover_catalogs` would return —
+    /// the outer key is the catalog name (`"default"` for the unnamed
+    /// catalog), the inner map goes package → range.
+    fn catalog_map(entries: &[(&str, &[(&str, &str)])]) -> CatalogMap {
+        let mut m = CatalogMap::new();
+        for (cat_name, pkgs) in entries {
+            let mut inner = BTreeMap::new();
+            for (pkg, range) in *pkgs {
+                inner.insert((*pkg).to_string(), (*range).to_string());
+            }
+            m.insert((*cat_name).to_string(), inner);
+        }
+        m
+    }
+
+    #[test]
+    fn rewrite_local_refs_resolves_catalog_default() {
+        // Bare `catalog:` and explicit `catalog:default` both resolve from
+        // the source workspace's `default` catalog. The deployed manifest
+        // becomes self-contained — no workspace yaml needed at install
+        // time.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "name":"x","version":"1.0.0",
+                "dependencies":{
+                    "drizzle-orm":"catalog:",
+                    "zod":"catalog:default"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let cats = catalog_map(&[(
+            "default",
+            &[("drizzle-orm", "1.0.0-rc.1"), ("zod", "4.4.2")],
+        )]);
+        let stub = PathBuf::from("/nonexistent-deployed");
+        rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+            &cats,
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(out["dependencies"]["drizzle-orm"], "1.0.0-rc.1");
+        assert_eq!(out["dependencies"]["zod"], "4.4.2");
+    }
+
+    #[test]
+    fn rewrite_local_refs_resolves_named_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","dependencies":{"react":"catalog:evens"}}"#,
+        )
+        .unwrap();
+
+        let cats = catalog_map(&[("evens", &[("react", "18.2.0")])]);
+        let stub = PathBuf::from("/nonexistent-deployed");
+        rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+            &cats,
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(out["dependencies"]["react"], "18.2.0");
+    }
+
+    #[test]
+    fn rewrite_local_refs_errors_on_unknown_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","dependencies":{"drizzle-orm":"catalog:"}}"#,
+        )
+        .unwrap();
+        let stub = PathBuf::from("/nonexistent-deployed");
+        let err = rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+            &CatalogMap::new(),
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("catalog `default`"), "msg was: {msg}");
+        assert!(msg.contains("drizzle-orm"), "msg was: {msg}");
+    }
+
+    #[test]
+    fn rewrite_local_refs_errors_on_missing_catalog_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","dependencies":{"drizzle-orm":"catalog:"}}"#,
+        )
+        .unwrap();
+        let cats = catalog_map(&[("default", &[("zod", "4.4.2")])]);
+        let stub = PathBuf::from("/nonexistent-deployed");
+        let err = rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+            &cats,
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("has no entry"), "msg was: {msg}");
+        assert!(msg.contains("drizzle-orm"), "msg was: {msg}");
+    }
+
+    #[test]
+    fn rewrite_local_refs_errors_on_chained_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","dependencies":{"react":"catalog:"}}"#,
+        )
+        .unwrap();
+        // Catalog entry whose value is itself another catalog reference —
+        // pnpm rejects this; we mirror the behavior.
+        let cats = catalog_map(&[("default", &[("react", "catalog:other")])]);
+        let stub = PathBuf::from("/nonexistent-deployed");
+        let err = rewrite_local_refs(
+            &path,
+            tmp.path(),
+            tmp.path(),
+            &BTreeMap::new(),
+            &cats,
+            &InjectionPlan::new(),
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: tmp.path(),
+            },
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("catalogs cannot chain"), "msg was: {msg}");
+    }
+
+    #[test]
+    fn rewrite_local_refs_catalog_resolves_to_workspace_then_to_file_ref() {
+        // A catalog entry can point at a `workspace:` spec — pnpm allows
+        // this. After catalog resolution the workspace branch should
+        // then rewrite to a `file:` pointer at the bundled sibling.
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_dir = tmp.path();
+        let sibling_dir = tmp.path().join("packages/lib");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        let injected_dir = manifest_dir.join(".aube-deploy-injected").join("lib");
+        std::fs::create_dir_all(&injected_dir).unwrap();
+
+        let path = manifest_dir.join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"x","version":"1.0.0","dependencies":{"@test/lib":"catalog:"}}"#,
+        )
+        .unwrap();
+
+        let mut idx = BTreeMap::new();
+        idx.insert(
+            "@test/lib".to_string(),
+            (sibling_dir.clone(), Some("1.2.3".to_string())),
+        );
+        let mut plan = InjectionPlan::new();
+        plan.insert(
+            canonicalize(&sibling_dir),
+            Injection {
+                source_dir: sibling_dir.clone(),
+                is_tarball: false,
+                target_dir: injected_dir.clone(),
+                tarball_filename: String::new(),
+            },
+        );
+        let cats = catalog_map(&[("default", &[("@test/lib", "workspace:*")])]);
+        let stub = PathBuf::from("/nonexistent-deployed");
+        rewrite_local_refs(
+            &path,
+            manifest_dir,
+            manifest_dir,
+            &idx,
+            &cats,
+            &plan,
+            StripFields::default(),
+            DeployRoot {
+                deployed_canonical: &stub,
+                target_root: manifest_dir,
+            },
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            out["dependencies"]["@test/lib"],
+            "file:./.aube-deploy-injected/lib"
+        );
     }
 
     #[test]
