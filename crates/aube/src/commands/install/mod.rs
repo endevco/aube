@@ -3078,6 +3078,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         std::sync::Mutex<Vec<crate::deprecations::DeprecationRecord>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
+    // Per-direct-dep packument snapshot rendered inline by the install
+    // summary printer (`+ name@version  deprecated · latest …`). Only
+    // populated by the resolve-from-packuments branch — the frozen
+    // lockfile reuse path has no cache to read from, so badges silently
+    // degrade to empty rather than triggering extra network.
+    let mut direct_dep_info: std::collections::HashMap<String, aube_resolver::DirectDepInfo> =
+        std::collections::HashMap::new();
+
     // Captures the prewarm task's `compute_graph_hashes` output so the
     // link phase can reuse it instead of recomputing the same 4-pass
     // BLAKE3 walk over `graph.packages`. Populated by the no-lockfile
@@ -3781,6 +3789,11 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 return resolve_result.map(|_| unreachable!());
             }
             let mut graph = resolve_result.unwrap();
+            // Snapshot per-direct-dep packument facts before dropping the
+            // resolver — its `cache` field owns the only copy and the
+            // install summary printer runs much later, well after the
+            // channel-closing drop below.
+            direct_dep_info = resolver.direct_dep_info(&graph);
             // Drop the resolver to close the channel, signaling the fetch
             // coordinator to finish, then drain the readPackage stderr
             // forwarders so every `ctx.log` record from resolve flushes
@@ -4913,7 +4926,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // `--reporter=append-only` skip the progress object but still get the
     // dependency summary; silent and ndjson stay machine-clean.
     if !install_is_noop && should_print_human_install_summary() {
-        print_direct_dependency_summary(&graph_for_link, &manifests);
+        print_direct_dependency_summary(&graph_for_link, &manifests, &direct_dep_info);
     }
     if let Some(p) = prog_ref {
         p.print_install_summary(
@@ -5122,6 +5135,7 @@ fn print_already_up_to_date() {
 fn print_direct_dependency_summary(
     graph: &aube_lockfile::LockfileGraph,
     manifests: &[(String, aube_manifest::PackageJson)],
+    direct_dep_info: &std::collections::HashMap<String, aube_resolver::DirectDepInfo>,
 ) {
     use clx::style;
     let importers: Vec<(&String, &Vec<aube_lockfile::DirectDep>)> = graph
@@ -5141,9 +5155,19 @@ fn print_direct_dependency_summary(
             let label = direct_dependency_importer_label(importer, manifests);
             eprintln!("{}{}", style::ebold(&label), style::edim(":"));
         }
-        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Production);
-        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Optional);
-        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Dev);
+        print_direct_dependency_section(
+            graph,
+            deps,
+            aube_lockfile::DepType::Production,
+            direct_dep_info,
+        );
+        print_direct_dependency_section(
+            graph,
+            deps,
+            aube_lockfile::DepType::Optional,
+            direct_dep_info,
+        );
+        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Dev, direct_dep_info);
     }
     eprintln!();
 }
@@ -5168,6 +5192,7 @@ fn print_direct_dependency_section(
     graph: &aube_lockfile::LockfileGraph,
     deps: &[aube_lockfile::DirectDep],
     dep_type: aube_lockfile::DepType,
+    direct_dep_info: &std::collections::HashMap<String, aube_resolver::DirectDepInfo>,
 ) {
     use clx::style;
     let mut deps: Vec<&aube_lockfile::DirectDep> =
@@ -5187,13 +5212,37 @@ fn print_direct_dependency_section(
             .get_package(&dep.dep_path)
             .map(|pkg| pkg.version.as_str())
             .unwrap_or("?");
+        let badges = render_direct_dep_badges(direct_dep_info.get(&dep.dep_path));
         eprintln!(
-            "{} {}{}",
+            "{} {}{}{}",
             style::egreen("+").bold(),
             dep.name,
             style::edim(format!("@{version}")),
+            badges,
         );
     }
+}
+
+/// Render the trailing badge column for a direct-dep line. Empty string
+/// when there's nothing to flag, otherwise a leading two-space gap and
+/// one or more dim-separated tags (`deprecated`, `latest 2.0.0`).
+fn render_direct_dep_badges(info: Option<&aube_resolver::DirectDepInfo>) -> String {
+    use clx::style;
+    let Some(info) = info else {
+        return String::new();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if info.deprecated.is_some() {
+        parts.push(style::eyellow("deprecated").to_string());
+    }
+    if let Some(latest) = &info.latest {
+        parts.push(style::eyellow(format!("latest {latest}")).to_string());
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    let sep = style::edim(" · ").to_string();
+    format!("  {}", parts.join(&sep))
 }
 
 fn invalidate_changed_aube_entries(

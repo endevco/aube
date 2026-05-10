@@ -3521,3 +3521,136 @@ fn peer_suffix_propagation_dedupes_nested_self_segments() {
         "propagation must not double-emit a peer name already covered transitively in the self suffix"
     );
 }
+
+// ---------------------------------------------------------------------------
+// direct_dep_info
+// ---------------------------------------------------------------------------
+
+fn direct_dep_info_resolver() -> Resolver {
+    let client = Arc::new(aube_registry::client::RegistryClient::new(
+        "http://127.0.0.1:0",
+    ));
+    Resolver::new(client)
+}
+
+fn direct_dep_info_graph(
+    direct: &[(&str, &str, &str)],
+    packages: &[LockedPackage],
+) -> LockfileGraph {
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        direct
+            .iter()
+            .map(|(name, dep_path, spec)| DirectDep {
+                name: (*name).to_string(),
+                dep_path: (*dep_path).to_string(),
+                dep_type: DepType::Production,
+                specifier: Some((*spec).to_string()),
+            })
+            .collect(),
+    );
+    let mut pkg_map = BTreeMap::new();
+    for pkg in packages {
+        pkg_map.insert(pkg.dep_path.clone(), pkg.clone());
+    }
+    LockfileGraph {
+        importers,
+        packages: pkg_map,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn direct_dep_info_flags_deprecated_resolved_version() {
+    let mut packument = make_packument("foo", &["1.0.0", "1.0.1"], "1.0.1");
+    packument.versions.get_mut("1.0.0").unwrap().deprecated = Some("use 1.0.1 instead".to_string());
+
+    let mut resolver = direct_dep_info_resolver();
+    resolver.cache.insert("foo".to_string(), packument);
+
+    let pkg = mk_locked("foo", "1.0.0", &[], &[]);
+    let graph = direct_dep_info_graph(&[("foo", "foo@1.0.0", "^1")], &[pkg]);
+
+    let info = resolver.direct_dep_info(&graph);
+    let entry = info.get("foo@1.0.0").expect("foo@1.0.0 should have info");
+    assert_eq!(entry.deprecated.as_deref(), Some("use 1.0.1 instead"));
+    assert_eq!(entry.latest.as_deref(), Some("1.0.1"));
+}
+
+#[test]
+fn direct_dep_info_omits_latest_when_already_on_latest() {
+    let packument = make_packument("bar", &["2.0.0"], "2.0.0");
+    let mut resolver = direct_dep_info_resolver();
+    resolver.cache.insert("bar".to_string(), packument);
+
+    let pkg = mk_locked("bar", "2.0.0", &[], &[]);
+    let graph = direct_dep_info_graph(&[("bar", "bar@2.0.0", "^2")], &[pkg]);
+
+    let info = resolver.direct_dep_info(&graph);
+    // No deprecated and latest == current → no entry at all.
+    assert!(
+        !info.contains_key("bar@2.0.0"),
+        "got unexpected entry: {info:?}"
+    );
+}
+
+#[test]
+fn direct_dep_info_skips_local_source_deps() {
+    // file: / link: / git: deps don't have packuments and shouldn't be
+    // probed for "latest" even if a same-name packument happens to be
+    // cached (e.g. a transitive registry sibling). Local-source deps
+    // get no badge.
+    let packument = make_packument("baz", &["9.9.9"], "9.9.9");
+    let mut resolver = direct_dep_info_resolver();
+    resolver.cache.insert("baz".to_string(), packument);
+
+    let mut pkg = mk_locked("baz", "0.0.0", &[], &[]);
+    pkg.local_source = Some(LocalSource::Directory(std::path::PathBuf::from(
+        "./vendor/baz",
+    )));
+    let graph = direct_dep_info_graph(&[("baz", "baz@0.0.0", "file:./vendor/baz")], &[pkg]);
+
+    let info = resolver.direct_dep_info(&graph);
+    assert!(
+        info.is_empty(),
+        "local-source dep should be skipped: {info:?}"
+    );
+}
+
+#[test]
+fn direct_dep_info_uses_registry_name_for_aliased_dep() {
+    // `"h3-v2": "npm:h3@2.0.1-rc.20"` — the manifest alias is `h3-v2`
+    // and the packument lives under the registry name `h3`. The
+    // resolver's cache is keyed by registry name, so direct_dep_info
+    // must follow `LockedPackage::registry_name()` (not `name`) to
+    // find the packument.
+    let mut packument = make_packument("h3", &["2.0.0", "2.0.1"], "2.0.1");
+    packument.versions.get_mut("2.0.0").unwrap().deprecated = Some("rc only".to_string());
+    let mut resolver = direct_dep_info_resolver();
+    resolver.cache.insert("h3".to_string(), packument);
+
+    let mut pkg = mk_locked("h3-v2", "2.0.0", &[], &[]);
+    pkg.alias_of = Some("h3".to_string());
+    pkg.dep_path = "h3-v2@2.0.0".to_string();
+    let graph = direct_dep_info_graph(&[("h3-v2", "h3-v2@2.0.0", "npm:h3@2.0.0")], &[pkg]);
+
+    let info = resolver.direct_dep_info(&graph);
+    let entry = info
+        .get("h3-v2@2.0.0")
+        .expect("aliased entry should resolve via registry_name");
+    assert_eq!(entry.deprecated.as_deref(), Some("rc only"));
+    assert_eq!(entry.latest.as_deref(), Some("2.0.1"));
+}
+
+#[test]
+fn direct_dep_info_empty_when_no_packument_cached() {
+    // Frozen-lockfile reuse: the resolver never fetches packuments, so
+    // direct_dep_info should produce no entries rather than blowing up.
+    let resolver = direct_dep_info_resolver();
+    let pkg = mk_locked("ghost", "1.0.0", &[], &[]);
+    let graph = direct_dep_info_graph(&[("ghost", "ghost@1.0.0", "^1")], &[pkg]);
+
+    let info = resolver.direct_dep_info(&graph);
+    assert!(info.is_empty(), "no packument cached → empty map");
+}

@@ -1,5 +1,6 @@
 mod builder;
 mod catalog;
+mod direct_dep_info;
 mod error;
 mod local_source;
 pub mod override_rule;
@@ -12,6 +13,7 @@ mod semver_util;
 mod trust;
 mod types;
 
+pub use direct_dep_info::DirectDepInfo;
 pub use error::{AgeGateDetails, CatalogDetails, Error, ExoticSubdepDetails, NoMatchDetails};
 pub use package_ext::is_deprecation_allowed;
 pub use peer_context::{
