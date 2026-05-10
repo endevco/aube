@@ -587,3 +587,341 @@ _link_workspace_packages_fixture() {
 	run test -e main/node_modules/.bin/hello
 	assert_success
 }
+
+# Phase 3 batch 3 — shared-workspace-lockfile behavior
+#
+# Aube's `sharedWorkspaceLockfile` defaults to `true` (matching pnpm):
+# the workspace records every importer's resolved graph in one root
+# lockfile. Per-project lockfiles (`sharedWorkspaceLockfile: false`)
+# are covered alongside the shared default in [test/workspace.bats:624]
+# and [test/pnpm_savecatalog.bats:104]; this batch focuses on the
+# default `true` shape — importer key layout, removal handling, and
+# the no-packages workspace-yaml edge case.
+
+@test "workspace: registry version wins when sibling does not satisfy the spec" {
+	# Ported from pnpm/test/monorepo/index.ts:610 (the registry-fallback
+	# half of 'shared-workspace-lockfile: installation with
+	# --link-workspace-packages links packages even if they were
+	# previously installed from registry'). The pnpm-side full flow
+	# also relinks after a sibling's manifest version changes; the
+	# more important regression aube needed first was that an
+	# incompatible local sibling does NOT silently override the
+	# registry-resolved version. Aube-side fix: the linker now gates
+	# the workspace-link branch on whether the resolver actually
+	# picked the sibling (no `LockedPackage` for the dep_path means
+	# "workspace pick"); a resolved registry version takes the
+	# registry-link branch even when a sibling shares the name.
+	cat >package.json <<-'JSON'
+		{ "name": "root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "!store/**"
+		linkWorkspacePackages: true
+	YAML
+	mkdir is-positive project
+	cat >is-positive/package.json <<-'JSON'
+		{ "name": "is-positive", "version": "3.0.0" }
+	JSON
+	# Pin to 2.0.0 — sibling at 3.0.0 does NOT satisfy. Aube must
+	# fall back to the registry instead of silently linking the
+	# incompatible local copy.
+	cat >project/package.json <<-'JSON'
+		{
+		  "name": "project",
+		  "version": "1.0.0",
+		  "dependencies": { "is-positive": "2.0.0" }
+		}
+	JSON
+
+	run aube install
+	assert_success
+
+	# project's is-positive must resolve to 2.0.0 (registry), not
+	# 3.0.0 (the sibling). The symlink target shape distinguishes
+	# the two: a registry pick goes through `node_modules/.aube/`,
+	# a workspace pick goes straight up to the sibling directory.
+	resolved="$(readlink project/node_modules/is-positive 2>/dev/null)"
+	[[ "$resolved" == *"node_modules/.aube/is-positive@2.0.0/"* ]]
+	run node -e "console.log(require('./project/node_modules/is-positive/package.json').version)"
+	assert_success
+	assert_output "2.0.0"
+
+	# Lockfile recorded the registry version too — the project
+	# importer's is-positive entry resolves to the registry version
+	# `2.0.0` (not `link:../is-positive` which would point at the
+	# 3.0.0 sibling). Inner awk extracts just the project block.
+	run bash -c "awk '/^  project:\$/{flag=1; next} /^  [^ ]/{flag=0} flag' aube-lock.yaml"
+	assert_output --partial "version: 2.0.0"
+	refute_output --partial "link:../is-positive"
+}
+
+@test "workspace: bare semver satisfying the sibling still links it" {
+	# Companion to the mismatch test above. Locks the satisfies-true
+	# branch of the resolver/linker so a regression of the version-
+	# satisfaction gate doesn't silently fall through to the registry
+	# for every workspace dep. Aube already routed `workspace:*` /
+	# `workspace:^` siblings through the linker correctly; this guards
+	# the bare-semver path that the resolver promotes to a workspace
+	# link when the version satisfies.
+	cat >package.json <<-'JSON'
+		{ "name": "root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "!store/**"
+	YAML
+	mkdir is-positive project
+	cat >is-positive/package.json <<-'JSON'
+		{ "name": "is-positive", "version": "3.0.0" }
+	JSON
+	cat >project/package.json <<-'JSON'
+		{
+		  "name": "project",
+		  "version": "1.0.0",
+		  "dependencies": { "is-positive": "3.0.0" }
+		}
+	JSON
+
+	run aube install
+	assert_success
+
+	# 3.0.0 satisfies the sibling — link target is the sibling dir,
+	# not the virtual store.
+	resolved="$(readlink project/node_modules/is-positive 2>/dev/null)"
+	[[ "$resolved" != *"node_modules/.aube/"* ]]
+	run node -e "console.log(require('./project/node_modules/is-positive/package.json').version)"
+	assert_success
+	assert_output "3.0.0"
+}
+
+@test "shared-workspace-lockfile: install inside a single-project workspace creates shared lockfile format" {
+	# Ported from pnpm/test/monorepo/index.ts:901 ('shared-workspace-lockfile:
+	# create shared lockfile format when installation is inside workspace').
+	# Covers https://github.com/pnpm/pnpm/issues/1437. The workspace yaml
+	# resolves the cwd as the only importer, and the lockfile must use
+	# the shared format — `importers:` keyed by the importer's relative
+	# path (`.`), plus the standard top-level `packages:` / `snapshots:`
+	# blocks. Pnpm's redundant `'project'` entry in the packages glob is
+	# preserved verbatim to keep the test isomorphic.
+	cat >package.json <<-'JSON'
+		{
+		  "name": "project",
+		  "version": "0.0.0",
+		  "private": true,
+		  "dependencies": { "is-positive": "1.0.0" }
+		}
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "project"
+		  - "!store/**"
+		sharedWorkspaceLockfile: true
+	YAML
+
+	run aube install
+	assert_success
+	assert_file_exists aube-lock.yaml
+
+	# Shared lockfile shape: top-level `importers:` / `packages:` /
+	# `snapshots:` map plus a `lockfileVersion:` line. The `.` importer
+	# carries the resolved spec for the root project's only dep.
+	run grep -F "lockfileVersion:" aube-lock.yaml
+	assert_success
+	importers="$(awk '/^importers:/,/^packages:/' aube-lock.yaml)"
+	echo "$importers" | grep -qE "^  \.:"
+	echo "$importers" | grep -qF "is-positive"
+	echo "$importers" | grep -qF "specifier: 1.0.0"
+
+	# Top-level `packages:` map carries the resolved registry tarball.
+	run grep -F "is-positive@1.0.0:" aube-lock.yaml
+	assert_success
+	# Symlink under .aube confirms the install actually completed
+	# (lockfile shape alone wouldn't catch a no-op write).
+	assert_link_exists node_modules/is-positive
+}
+
+@test "shared-workspace-lockfile: -r install handles relative ../** packages glob" {
+	# Ported from pnpm/test/monorepo/index.ts:996 ('shared-workspace-lockfile:
+	# install dependencies in projects that are relative to the workspace
+	# directory'). pnpm walks the `../**` glob from the workspace yaml's
+	# directory and treats the resulting parent-tree packages as importers.
+	# Aube does not — the workspace root is the directory holding the
+	# yaml, and the package walker doesn't traverse into the parent
+	# tree. Documented divergence; skip until the workspace selector
+	# learns to climb parent globs.
+	skip "aube divergence: pnpm-workspace.yaml#packages does not support parent-relative ../** globs"
+}
+
+@test "shared-workspace-lockfile: removed-on-disk project drops out of shared lockfile" {
+	# Ported from pnpm/test/monorepo/index.ts:1108 ('shared-workspace-lockfile:
+	# entries of removed projects should be removed from shared lockfile').
+	# Two-project workspace; after deleting one project's directory and
+	# re-running install, the importer entry for the deleted project
+	# must vanish and its previously-locked transitive (is-negative)
+	# must drop out of the top-level packages: map too.
+	#
+	# Aube-side fix: `LockfileGraph::check_drift_workspace` now flags
+	# a stale importer (lockfile key with no current manifest) as
+	# `Stale`, so the warm-path short-circuit re-runs the resolver and
+	# the rewritten lockfile drops the orphan importer + snapshot.
+	cat >package.json <<-'JSON'
+		{ "name": "ws-root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "!store/**"
+	YAML
+	mkdir -p package-1 package-2
+	cat >package-1/package.json <<-'JSON'
+		{ "name": "package-1", "version": "1.0.0", "dependencies": { "is-positive": "1.0.0" } }
+	JSON
+	cat >package-2/package.json <<-'JSON'
+		{ "name": "package-2", "version": "1.0.0", "dependencies": { "is-negative": "1.0.0" } }
+	JSON
+
+	run aube -r install
+	assert_success
+	assert_file_exists aube-lock.yaml
+	importers="$(awk '/^importers:/,/^packages:/' aube-lock.yaml)"
+	echo "$importers" | grep -qE "^  package-1:"
+	echo "$importers" | grep -qE "^  package-2:"
+
+	# Wipe package-2's directory entirely so the workspace glob no
+	# longer matches it, then reinstall.
+	rm -rf package-2
+
+	run aube install
+	assert_success
+	importers_after="$(awk '/^importers:/,/^packages:/' aube-lock.yaml)"
+	echo "$importers_after" | grep -qE "^  package-1:"
+	# package-2's importer entry must be gone.
+	if echo "$importers_after" | grep -qE "^  package-2:"; then
+		echo "regression: package-2 importer still present after rm -rf" >&2
+		echo "$importers_after" >&2
+		false
+	fi
+	# Its lone transitive (is-negative) must drop out of the top-level
+	# packages: map too — no other importer pulled it in. Scope the
+	# grep to the packages: block so we don't false-positive on
+	# importer-side specifier strings.
+	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -F 'is-negative@1.0.0:'"
+	assert_failure
+	# is-positive (package-1's dep) survived the cleanup.
+	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -F 'is-positive@1.0.0:'"
+	assert_success
+}
+
+@test "shared-workspace-lockfile: pnpm-workspace.yaml without packages doesn't break a single-project install" {
+	# Ported from pnpm/test/monorepo/index.ts:1148
+	# ('shared-workspace-lockfile config is ignored if no
+	# pnpm-workspace.yaml is found'). Pnpm's title is misleading —
+	# the test actually creates a pnpm-workspace.yaml that contains
+	# *only* `sharedWorkspaceLockfile: true` and no `packages:` glob,
+	# then asserts that the regular single-project install still works.
+	# Covers https://github.com/pnpm/pnpm/issues/1482. The aube-side
+	# regression guard: presence of a config-only workspace yaml must
+	# not trip the workspace-mode install path or refuse to write a
+	# project lockfile.
+	cat >package.json <<-'JSON'
+		{
+		  "name": "project",
+		  "version": "0.0.0",
+		  "private": true,
+		  "dependencies": { "is-positive": "1.0.0" }
+		}
+	JSON
+	# Workspace yaml carries only the setting — no `packages:` glob.
+	cat >pnpm-workspace.yaml <<-'YAML'
+		sharedWorkspaceLockfile: true
+	YAML
+
+	run aube install
+	assert_success
+	assert_link_exists node_modules/is-positive
+	# Lockfile lands next to package.json — same as a non-workspace
+	# install. Either shape (importer `.` only, or no importers block)
+	# is acceptable; the regression guard is that the install worked
+	# and the dep is reachable.
+	assert_file_exists aube-lock.yaml
+}
+
+@test "shared-workspace-lockfile: aube -r remove drops the dep from every project + the lockfile" {
+	# Ported from pnpm/test/monorepo/index.ts:1162
+	# ('shared-workspace-lockfile: removing a package recursively').
+	# `aube -r remove is-positive` strips the dep from every project
+	# that declared it (project1, project2), silently skips the third
+	# project that never had it, and prunes is-positive from the
+	# shared lockfile.
+	#
+	# Aube-side fix: `remove::run_filtered` now pre-checks each
+	# selected workspace project's manifest and skips ones with no
+	# overlap, matching pnpm's recursive-remove tolerance — the prior
+	# behavior hard-failed on the first project missing the dep.
+	cat >package.json <<-'JSON'
+		{ "name": "ws-root", "version": "0.0.0", "private": true }
+	JSON
+	cat >pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "**"
+		  - "!store/**"
+		sharedWorkspaceLockfile: true
+		linkWorkspacePackages: true
+	YAML
+	mkdir -p project1 project2 project3
+	cat >project1/package.json <<-'JSON'
+		{
+		  "name": "project1",
+		  "version": "1.0.0",
+		  "dependencies": { "is-positive": "2.0.0" }
+		}
+	JSON
+	cat >project2/package.json <<-'JSON'
+		{
+		  "name": "project2",
+		  "version": "1.0.0",
+		  "dependencies": { "is-negative": "1.0.0", "is-positive": "1.0.0" }
+		}
+	JSON
+	cat >project3/package.json <<-'JSON'
+		{ "name": "project3", "version": "1.0.0" }
+	JSON
+
+	run aube -r install
+	assert_success
+
+	run aube -r remove is-positive
+	assert_success
+
+	# project1 had only is-positive — its dependencies map should be
+	# empty (or absent) after the remove.
+	run jq -r '.dependencies // {} | keys | length' project1/package.json
+	assert_success
+	assert_output "0"
+
+	# project2 keeps is-negative, loses is-positive.
+	run jq -r '.dependencies | keys | sort | join(",")' project2/package.json
+	assert_success
+	assert_output "is-negative"
+
+	# project3 never declared is-positive — `aube -r remove` silently
+	# skipped it (no error, manifest untouched).
+	run jq -r '.name' project3/package.json
+	assert_success
+	assert_output "project3"
+
+	# Shared lockfile dropped the is-positive snapshot — the only
+	# importers that referenced it are gone (project1 had only
+	# is-positive; project2's is-positive at 1.0.0 is also removed).
+	# Scope to the top-level packages: map so we don't false-positive
+	# on importer-side specifier strings that mention is-positive.
+	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -F 'is-positive@'"
+	assert_failure
+	# is-negative survives in the lockfile (project2 still owns it).
+	run bash -c "awk '/^packages:/,/^snapshots:/' aube-lock.yaml | grep -F 'is-negative@1.0.0:'"
+	assert_success
+}
