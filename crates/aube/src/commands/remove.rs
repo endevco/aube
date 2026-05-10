@@ -184,8 +184,17 @@ async fn run_filtered(
 ) -> miette::Result<()> {
     let cwd = crate::dirs::cwd()?;
     let (_root, matched) = super::select_workspace_packages(&cwd, filter, "remove")?;
+    let packages = args.packages.clone();
     let result = async {
         for pkg in matched {
+            // Match pnpm's recursive-remove semantics: silently skip
+            // projects that don't declare any of the named packages.
+            // The single-project (`aube remove`) path keeps the strict
+            // "package is not a dependency" error so an isolated typo
+            // in one shell still fails fast.
+            if !manifest_has_any_dep(&pkg.manifest, &packages, args.save_dev) {
+                continue;
+            }
             super::retarget_cwd(&pkg.dir)?;
             Box::pin(run(
                 args.clone(),
@@ -197,6 +206,23 @@ async fn run_filtered(
     }
     .await;
     super::finish_filtered_workspace(&cwd, result)
+}
+
+fn manifest_has_any_dep(
+    manifest: &aube_manifest::PackageJson,
+    packages: &[String],
+    save_dev: bool,
+) -> bool {
+    packages.iter().any(|name| {
+        if save_dev {
+            manifest.dev_dependencies.contains_key(name)
+        } else {
+            manifest.dependencies.contains_key(name)
+                || manifest.dev_dependencies.contains_key(name)
+                || manifest.optional_dependencies.contains_key(name)
+                || manifest.peer_dependencies.contains_key(name)
+        }
+    })
 }
 
 /// `aube remove -g <pkg>...` — delete globally-installed packages and
