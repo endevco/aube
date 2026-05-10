@@ -401,14 +401,16 @@ impl RegistryClient {
         let Ok(packument) = serde_json::to_value(packument) else {
             return;
         };
-        let cached = CachedFullPackument {
-            etag: etag.map(str::to_owned),
-            last_modified: last_modified.map(str::to_owned),
-            fetched_at: if fresh { now_secs() } else { 0 },
-            max_age_secs: (!fresh).then_some(0),
-            packument,
-        };
-        if let Err(e) = write_cached_full_packument(&cache_path, &cached) {
+        let fetched_at = if fresh { now_secs() } else { 0 };
+        let max_age_secs = (!fresh).then_some(0);
+        if let Err(e) = write_cached_full_packument(
+            &cache_path,
+            etag,
+            last_modified,
+            fetched_at,
+            max_age_secs,
+            &packument,
+        ) {
             tracing::debug!(
                 "failed to seed full packument cache {} from bundled primer: {e}",
                 cache_path.display()
@@ -984,14 +986,14 @@ impl RegistryClient {
                     {
                         let revalidated_max_age =
                             parse_cache_control_max_age(&resp).or(c.max_age_secs);
-                        let to_cache = CachedFullPackument {
-                            etag: c.etag.clone(),
-                            last_modified: c.last_modified.clone(),
-                            fetched_at: now_secs(),
-                            max_age_secs: revalidated_max_age,
-                            packument: c.packument.clone(),
-                        };
-                        if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                        if let Err(e) = write_cached_full_packument(
+                            &cache_path,
+                            c.etag.as_deref(),
+                            c.last_modified.as_deref(),
+                            now_secs(),
+                            revalidated_max_age,
+                            &c.packument,
+                        ) {
                             tracing::warn!(
                                 code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                 "failed to write packument cache {}: {e}",
@@ -1008,14 +1010,14 @@ impl RegistryClient {
                     check_body_cap(&resp, self.fetch_policy.packument_max_bytes, &label)?;
                     match parse_full_response::<serde_json::Value>(resp).await {
                         Ok(packument) => {
-                            let to_cache = CachedFullPackument {
-                                etag,
-                                last_modified,
-                                fetched_at: now_secs(),
+                            if let Err(e) = write_cached_full_packument(
+                                &cache_path,
+                                etag.as_deref(),
+                                last_modified.as_deref(),
+                                now_secs(),
                                 max_age_secs,
-                                packument: packument.clone(),
-                            };
-                            if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                                &packument,
+                            ) {
                                 tracing::warn!(
                                     code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                     "failed to write packument cache {}: {e}",
@@ -1176,9 +1178,7 @@ impl RegistryClient {
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
                     let revalidated_max_age =
                         parse_cache_control_max_age(&resp).or(cached.max_age_secs);
-                    let mut to_cache = if let Some(to_cache) =
-                        read_cached_full_packument(&cache_path)
-                    {
+                    let to_cache = if let Some(to_cache) = read_cached_full_packument(&cache_path) {
                         to_cache
                     } else {
                         let packument = serde_json::to_value(&cached.packument).map_err(|e| {
@@ -1192,9 +1192,14 @@ impl RegistryClient {
                             packument,
                         }
                     };
-                    to_cache.fetched_at = now_secs();
-                    to_cache.max_age_secs = revalidated_max_age;
-                    if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                    if let Err(e) = write_cached_full_packument(
+                        &cache_path,
+                        to_cache.etag.as_deref(),
+                        to_cache.last_modified.as_deref(),
+                        now_secs(),
+                        revalidated_max_age,
+                        &to_cache.packument,
+                    ) {
                         tracing::warn!(
                             code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                             "failed to write packument cache {}: {e}",
@@ -1211,14 +1216,14 @@ impl RegistryClient {
                     check_body_cap(&resp, self.fetch_policy.packument_max_bytes, &label)?;
                     match parse_full_response::<serde_json::Value>(resp).await {
                         Ok(value) => {
-                            let to_cache = CachedFullPackument {
-                                etag,
-                                last_modified,
-                                fetched_at: now_secs(),
+                            if let Err(e) = write_cached_full_packument(
+                                &cache_path,
+                                etag.as_deref(),
+                                last_modified.as_deref(),
+                                now_secs(),
                                 max_age_secs,
-                                packument: value.clone(),
-                            };
-                            if let Err(e) = write_cached_full_packument(&cache_path, &to_cache) {
+                                &value,
+                            ) {
                                 tracing::warn!(
                                     code = aube_codes::warnings::WARN_AUBE_PACKUMENT_CACHE_WRITE,
                                     "failed to write packument cache {}: {e}",
@@ -2542,8 +2547,35 @@ fn read_cached_full_packument_typed(path: &Path, force_cache: bool) -> Option<Pa
     read_cached_full_packument_typed_lookup(path, force_cache).packument
 }
 
-fn write_cached_full_packument(path: &Path, cached: &CachedFullPackument) -> std::io::Result<()> {
-    let json = serde_json::to_vec(cached).map_err(std::io::Error::other)?;
+fn write_cached_full_packument(
+    path: &Path,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    fetched_at: u64,
+    max_age_secs: Option<u64>,
+    packument: &serde_json::Value,
+) -> std::io::Result<()> {
+    // Serialize through a borrow struct so popular packuments don't pay
+    // a multi-MB `serde_json::Value::clone` per write. The owned
+    // `CachedFullPackument` is still used by the read path; the writer
+    // just doesn't need ownership.
+    #[derive(Serialize)]
+    struct CachedFullPackumentRef<'a> {
+        etag: Option<&'a str>,
+        last_modified: Option<&'a str>,
+        fetched_at: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_age_secs: Option<u64>,
+        packument: &'a serde_json::Value,
+    }
+    let json = serde_json::to_vec(&CachedFullPackumentRef {
+        etag,
+        last_modified,
+        fetched_at,
+        max_age_secs,
+        packument,
+    })
+    .map_err(std::io::Error::other)?;
     aube_util::fs_atomic::atomic_write(path, &json)
 }
 

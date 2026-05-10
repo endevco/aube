@@ -65,7 +65,15 @@ pub fn atomic_write(final_path: &Path, bytes: &[u8]) -> io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
-        let _ = f.sync_all();
+        // No fsync: every aube caller writes content that is either
+        // regenerable from network/manifest (packument cache, install
+        // state, version-check cache) or paired with explicit user
+        // intent that can be retried (patches, `aube config set`).
+        // The atomic rename below still gives us "all or nothing"
+        // visibility — without fsync we just trade a narrow crash-
+        // window where the renamed file can read back as zero bytes
+        // for a measurable cold-install win (~1.6% of CPU was in
+        // sync_all on the packument cache writers).
     }
     match rename_with_retry(&tmp, final_path) {
         Ok(()) => Ok(()),
