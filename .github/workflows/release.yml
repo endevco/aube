@@ -58,9 +58,11 @@ jobs:
           name: metadata-primer
           path: crates/aube-resolver/data/primer-top${{ env.AUBE_PRIMER_TOP }}-v${{ env.AUBE_PRIMER_VERSION_CAP }}.rkyv.json
 
-  # Non-PGO targets: aarch64 Linux (cross-compiled, can't easily train
-  # under QEMU) and Windows (untested PGO toolchain). Built via taiki-e
-  # straight from the release profile.
+  # Non-PGO targets: aarch64 musl Linux (cross-compiled, no native musl
+  # runner), Windows (untested PGO toolchain), and macOS arm64 (the PGO
+  # instrumented binary segfaults during training on macOS arm64 — see
+  # the v1.10.1 release run; revisit once we can reproduce locally).
+  # Built via taiki-e straight from the release profile.
   upload-assets:
     needs: generate-primer
     runs-on: ${{ matrix.runner }}
@@ -69,14 +71,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
-            build-tool: cross
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
             build-tool: cross
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            runner: namespace-profile-endev-macos-arm64
+            build-tool: cargo
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             runner: windows-latest
@@ -150,15 +152,19 @@ jobs:
         with:
           subject-path: ${{ steps.archive.outputs.path }}
 
-  # PGO-optimized targets: x86_64 Linux GNU/musl + macOS arm64 (the three
-  # native-built artifacts that cover the bulk of downloads). Each builds
+  # PGO-optimized targets: x86_64 Linux GNU/musl (cross-built on amd64)
+  # plus native aarch64 Linux GNU (the bulk of downloads). Each builds
   # via benchmarks/pgo.bash — instrument under release-pgo, train against
-  # the hermetic Verdaccio registry, rebuild with -Cprofile-use. Linux
-  # targets keep build-tool=cross so the resulting binary preserves the
-  # current glibc baseline; the cross-built instrumented binary runs on
-  # the host for training (cross's older glibc is forward-compatible
-  # with the runner's). Cross.toml passes RUSTFLAGS through to the
-  # container so phase 1 / 3b RUSTFLAGS reach cargo inside cross.
+  # the hermetic Verdaccio registry, rebuild with -Cprofile-use. The
+  # x86_64 Linux targets use build-tool=cross so the resulting binary
+  # preserves the current glibc baseline; the cross-built instrumented
+  # binary runs on the host for training (cross's older glibc is
+  # forward-compatible with the runner's). Cross.toml passes RUSTFLAGS
+  # through to the container so phase 1 / 3b RUSTFLAGS reach cargo
+  # inside cross. The aarch64 Linux row runs natively on
+  # `namespace-profile-endev-linux-arm64-large` (32 GB) so the same
+  # fat-LTO + profile-generate headroom argument from
+  # acdf415 applies, and we don't need QEMU to train.
   upload-assets-pgo:
     needs: generate-primer
     runs-on: ${{ matrix.runner }}
@@ -175,9 +181,9 @@ jobs:
             os: ubuntu-latest
             runner: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
             build-tool: cross
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            runner: namespace-profile-endev-macos-arm64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            runner: namespace-profile-endev-linux-arm64-large;overrides.cache-tag=aube-rust-linux-arm64
             build-tool: cargo
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
