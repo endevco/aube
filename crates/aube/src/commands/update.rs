@@ -74,6 +74,13 @@ pub struct UpdateArgs {
     /// complaint.
     #[arg(long)]
     pub ignore_scripts: bool,
+    /// Refresh the lockfile without populating `node_modules`.
+    ///
+    /// Re-resolves the full graph (direct + transitive) and writes
+    /// `aube-lock.yaml`, then skips the linker so `node_modules` is
+    /// left untouched. Mirrors `npm update --package-lock-only`.
+    #[arg(long, conflicts_with = "frozen_lockfile")]
+    pub lockfile_only: bool,
     /// Skip optionalDependencies.
     #[arg(long)]
     pub no_optional: bool,
@@ -663,6 +670,11 @@ pub async fn run(
     chained.ignore_pnpmfile = args.ignore_pnpmfile;
     chained.pnpmfile = args.pnpmfile.clone();
     chained.global_pnpmfile = args.global_pnpmfile.clone();
+    // `--lockfile-only`: lockfile is already written above; tell the
+    // chained install to skip linking `node_modules` so the on-disk
+    // tree stays as-is. Mirrors `aube install --lockfile-only` and
+    // closes the gap with `npm update --package-lock-only`.
+    chained.lockfile_only = args.lockfile_only;
     install::run(chained).await?;
 
     Ok(())

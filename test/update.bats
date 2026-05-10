@@ -251,3 +251,40 @@ EOF
 	run grep -c 'is-odd@3' aube-lock.yaml
 	assert_success
 }
+
+@test "aube update --lockfile-only: refreshes lockfile without populating node_modules" {
+	_setup_outdated_project
+
+	run aube update --lockfile-only is-odd
+	assert_success
+
+	# Lockfile picks up a newer is-odd than the seeded 0.1.2 pin.
+	run grep 'is-odd@3' aube-lock.yaml
+	assert_success
+
+	# node_modules is not materialized.
+	assert [ ! -e node_modules ]
+}
+
+@test "aube update --lockfile-only --latest: bumps direct deps without linking" {
+	_setup_outdated_project
+
+	run aube update --lockfile-only --latest is-odd
+	assert_success
+
+	# package.json gets the manifest rewrite (--latest flag).
+	run grep '"is-odd"' package.json
+	assert_success
+	refute_output --partial '>=0.1.0'
+
+	# Lockfile is fresh, but no node_modules.
+	run grep 'is-odd@3' aube-lock.yaml
+	assert_success
+	assert [ ! -e node_modules ]
+}
+
+@test "aube update --lockfile-only conflicts with --frozen-lockfile" {
+	_setup_outdated_project
+	run aube update --lockfile-only --frozen-lockfile
+	assert_failure
+}
