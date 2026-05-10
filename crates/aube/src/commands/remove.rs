@@ -184,20 +184,27 @@ async fn run_filtered(
 ) -> miette::Result<()> {
     let cwd = crate::dirs::cwd()?;
     let (_root, matched) = super::select_workspace_packages(&cwd, filter, "remove")?;
-    let packages = args.packages.clone();
     let result = async {
         for pkg in matched {
             // Match pnpm's recursive-remove semantics: silently skip
-            // projects that don't declare any of the named packages.
-            // The single-project (`aube remove`) path keeps the strict
-            // "package is not a dependency" error so an isolated typo
-            // in one shell still fails fast.
-            if !manifest_has_any_dep(&pkg.manifest, &packages, args.save_dev) {
+            // projects that don't declare any of the named packages,
+            // and per-project narrow the package list to just the
+            // ones present so a partial overlap (e.g. `aube -r remove
+            // pkg1 pkg2` against a project that only declares `pkg1`)
+            // doesn't trip the strict "package is not a dependency"
+            // error in `run` after the first mutation has already
+            // landed. The single-project (`aube remove`) path keeps
+            // the strict per-package error so an isolated typo in
+            // one shell still fails fast.
+            let present = manifest_present_deps(&pkg.manifest, &args.packages, args.save_dev);
+            if present.is_empty() {
                 continue;
             }
             super::retarget_cwd(&pkg.dir)?;
+            let mut narrowed = args.clone();
+            narrowed.packages = present;
             Box::pin(run(
-                args.clone(),
+                narrowed,
                 aube_workspace::selector::EffectiveFilter::default(),
             ))
             .await?;
@@ -208,21 +215,25 @@ async fn run_filtered(
     super::finish_filtered_workspace(&cwd, result)
 }
 
-fn manifest_has_any_dep(
+fn manifest_present_deps(
     manifest: &aube_manifest::PackageJson,
     packages: &[String],
     save_dev: bool,
-) -> bool {
-    packages.iter().any(|name| {
-        if save_dev {
-            manifest.dev_dependencies.contains_key(name)
-        } else {
-            manifest.dependencies.contains_key(name)
-                || manifest.dev_dependencies.contains_key(name)
-                || manifest.optional_dependencies.contains_key(name)
-                || manifest.peer_dependencies.contains_key(name)
-        }
-    })
+) -> Vec<String> {
+    packages
+        .iter()
+        .filter(|name| {
+            if save_dev {
+                manifest.dev_dependencies.contains_key(*name)
+            } else {
+                manifest.dependencies.contains_key(*name)
+                    || manifest.dev_dependencies.contains_key(*name)
+                    || manifest.optional_dependencies.contains_key(*name)
+                    || manifest.peer_dependencies.contains_key(*name)
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 /// `aube remove -g <pkg>...` — delete globally-installed packages and
