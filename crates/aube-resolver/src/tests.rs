@@ -3356,3 +3356,168 @@ fn cve_audit_protocol_dist_tag_hijack_blocked() {
     assert_protocol_hijack_blocked("Workspace:*");
     assert_protocol_hijack_blocked("GIT+FILE:/local");
 }
+
+// pnpm-parity: a non-peer-declaring package between an importer and a
+// peer-declaring descendant must carry the descendant's
+// `(peer@version)` suffix on its own dep_path, AND on the importer
+// row's `version:` field. Aube's `propagate_peer_suffixes_to_ancestors`
+// post-pass closes the gap that previously only tagged the
+// peer-declarer itself. Mirrors the assertion at
+// `pnpm/test/monorepo/dedupePeers.test.ts:191`.
+#[test]
+fn peer_suffix_propagates_through_non_peer_intermediary() {
+    // parent (no peers) -> leaf (peers on `peer-a`).
+    let parent = mk_locked("parent", "1.0.0", &[("leaf", "1.0.0")], &[]);
+    let leaf = mk_locked("leaf", "1.0.0", &[("peer-a", "1.0.0")], &[("peer-a", "^1")]);
+    let peer_a = mk_locked("peer-a", "1.0.0", &[], &[]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("parent@1.0.0".to_string(), parent);
+    packages.insert("leaf@1.0.0".to_string(), leaf);
+    packages.insert("peer-a@1.0.0".to_string(), peer_a);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "parent".to_string(),
+            dep_path: "parent@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
+
+    let parent_key = "parent@1.0.0(peer-a@1.0.0)";
+    assert!(
+        out.packages.contains_key(parent_key),
+        "parent's snapshot key must propagate the descendant peer suffix; got {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    let leaf_key = "leaf@1.0.0(peer-a@1.0.0)";
+    assert!(
+        out.packages.contains_key(leaf_key),
+        "leaf keeps its self-peer suffix; got {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    let importer_dep_path = &out.importers["."][0].dep_path;
+    assert_eq!(
+        importer_dep_path, parent_key,
+        "importer DirectDep.dep_path tracks the propagated parent key"
+    );
+}
+
+// Mutual peer cycle (a -> peer b, b -> peer a). The propagation post-
+// pass must NOT lift `(a@…)` onto a's own dep_path — a node listing
+// itself as a peer is not valid pnpm shape. The cycle break suppresses
+// the package's own canonical name from cumulative additions.
+#[test]
+fn peer_suffix_propagation_skips_self_in_mutual_cycle() {
+    let a = mk_locked("a", "1.0.0", &[("b", "1.0.0")], &[("b", "^1")]);
+    let b = mk_locked("b", "1.0.0", &[("a", "1.0.0")], &[("a", "^1")]);
+
+    let mut packages = BTreeMap::new();
+    packages.insert("a@1.0.0".to_string(), a);
+    packages.insert("b@1.0.0".to_string(), b);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "a".to_string(),
+            dep_path: "a@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
+
+    // No `(a@…)` self-reference on a, no `(b@…)` self-reference on b.
+    assert!(
+        out.packages.contains_key("a@1.0.0(b@1.0.0)"),
+        "a keeps its existing (b@…) suffix only; got {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !out.packages.contains_key("a@1.0.0(a@1.0.0)(b@1.0.0)"),
+        "propagation must NOT lift a's name back onto itself"
+    );
+    assert!(
+        out.packages.contains_key("b@1.0.0(a@1.0.0)"),
+        "b keeps its existing (a@…) suffix only"
+    );
+    assert!(
+        !out.packages.contains_key("b@1.0.0(a@1.0.0)(b@1.0.0)"),
+        "propagation must NOT lift b's name back onto itself"
+    );
+}
+
+// Nested self-suffix: when a package's own peer suffix already encodes
+// a peer name transitively (e.g. `consumer@1(helper@1(core@1))`), the
+// propagation must not double-emit `(core@…)` as a separate flat
+// segment. `peer_names_in_segments_recursive` covers names at any
+// depth in the self set.
+#[test]
+fn peer_suffix_propagation_dedupes_nested_self_segments() {
+    // consumer peers on helper. helper peers on core. consumer's
+    // suffix nests as `(helper@1(core@1))`; we must NOT add a flat
+    // `(core@1)` from the descendant scan.
+    let mut consumer = mk_locked("consumer", "1.0.0", &[], &[("helper", "^1")]);
+    consumer.dep_path = "consumer@1.0.0".to_string();
+    let mut helper = mk_locked("helper", "1.0.0", &[("core", "1.0.0")], &[("core", "^1")]);
+    helper.dep_path = "helper@1.0.0(core@1.0.0)".to_string();
+    let mut core = mk_locked("core", "1.0.0", &[], &[]);
+    core.dep_path = "core@1.0.0".to_string();
+
+    let mut packages = BTreeMap::new();
+    packages.insert("consumer@1.0.0".to_string(), consumer);
+    packages.insert("helper@1.0.0(core@1.0.0)".to_string(), helper);
+    packages.insert("core@1.0.0".to_string(), core);
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![DirectDep {
+            name: "consumer".to_string(),
+            dep_path: "consumer@1.0.0".to_string(),
+            dep_type: DepType::Production,
+            specifier: Some("^1".to_string()),
+        }],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let out = apply_peer_contexts(graph, &PeerContextOptions::default())
+        .expect("test graph should converge");
+
+    // Consumer's nested self-suffix is preserved exactly — no flat
+    // `(core@1.0.0)` is appended.
+    assert!(
+        out.packages
+            .contains_key("consumer@1.0.0(helper@1.0.0(core@1.0.0))"),
+        "consumer's nested self-suffix is preserved; got {:?}",
+        out.packages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !out.packages
+            .contains_key("consumer@1.0.0(core@1.0.0)(helper@1.0.0(core@1.0.0))"),
+        "propagation must not double-emit a peer name already covered transitively in the self suffix"
+    );
+}
