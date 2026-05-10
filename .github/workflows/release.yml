@@ -126,7 +126,7 @@ jobs:
           token: ${{ secrets.AUBE_GH_TOKEN }}
           codesign: "Developer ID Application: Jeffrey Dickey (4993Y37DX6)"
           codesign_prefix: dev.jdx.
-          dry-run: ${{ inputs.dry_run == true }}
+          dry-run: ${{ fromJSON(inputs.dry_run || 'false') }}
       - name: Upload binary (non-macOS)
         id: upload-non-macos
         if: ${{ !startsWith(matrix.os, 'macos') }}
@@ -138,7 +138,7 @@ jobs:
           build-tool: ${{ matrix.build-tool }}
           ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           token: ${{ secrets.AUBE_GH_TOKEN }}
-          dry-run: ${{ inputs.dry_run == true }}
+          dry-run: ${{ fromJSON(inputs.dry_run || 'false') }}
       - name: Resolve uploaded archive
         id: archive
         shell: bash
@@ -154,13 +154,13 @@ jobs:
           fi
           echo "path=$archive" >> "$GITHUB_OUTPUT"
       - name: Upload archive as workflow artifact (dry run)
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ fromJSON(inputs.dry_run || 'false') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: aube-${{ inputs.tag }}-${{ matrix.target }}
           path: ${{ steps.archive.outputs.path }}
       - name: Attest release archive
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ !fromJSON(inputs.dry_run || 'false') }}
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: ${{ steps.archive.outputs.path }}
@@ -264,7 +264,7 @@ jobs:
           tar -czf "$archive" -C "target/${TARGET}/release-pgo" aube aubr aubx
           echo "path=$archive" >> "$GITHUB_OUTPUT"
       - name: Upload archive to release
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ !fromJSON(inputs.dry_run || 'false') }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
@@ -272,13 +272,13 @@ jobs:
           ARCHIVE: ${{ steps.archive.outputs.path }}
         run: gh release upload "$TAG" "$ARCHIVE" --clobber
       - name: Upload archive as workflow artifact (dry run)
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ fromJSON(inputs.dry_run || 'false') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: aube-${{ inputs.tag }}-${{ matrix.target }}
           path: ${{ steps.archive.outputs.path }}
       - name: Attest release archive
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ !fromJSON(inputs.dry_run || 'false') }}
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: ${{ steps.archive.outputs.path }}
