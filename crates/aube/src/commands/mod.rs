@@ -1375,9 +1375,14 @@ pub(crate) fn workspace_importer_path(
     workspace_root: &std::path::Path,
     dir: &std::path::Path,
 ) -> miette::Result<String> {
-    let rel = dir.strip_prefix(workspace_root).map_err(|_| {
+    // `pathdiff` produces parent-relative keys (`../sibling`) for
+    // workspaces whose `pnpm-workspace.yaml#packages` reaches above
+    // the yaml's directory via `../**`. The shared lockfile records
+    // the same `..`-prefixed key, so the linker and drift check
+    // line up with what `find_workspace_packages` returns.
+    let rel = pathdiff::diff_paths(dir, workspace_root).ok_or_else(|| {
         miette!(
-            "workspace package {} is outside {}",
+            "could not compute path of workspace package {} relative to {}",
             dir.display(),
             workspace_root.display()
         )

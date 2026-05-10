@@ -72,7 +72,14 @@ pub fn find_workspace_packages(project_dir: &Path) -> Result<Vec<PathBuf>, Error
     let mut packages = Vec::new();
     for pattern in &positives {
         for pkg_dir in expand_workspace_pattern(project_dir, pattern)? {
-            let rel = pkg_dir.strip_prefix(project_dir).unwrap_or(&pkg_dir);
+            // `pathdiff` produces the as-written-from-`project_dir`
+            // form (`../sibling` for parent-tree matches), which is
+            // what the negation matcher was compiled against. Falling
+            // back to the absolute path for unrelated trees is fine
+            // since the matchers are anchored against the relative
+            // form and won't match an absolute path.
+            let rel_owned = pathdiff::diff_paths(&pkg_dir, project_dir);
+            let rel = rel_owned.as_deref().unwrap_or(&pkg_dir);
             if neg_matchers.iter().any(|m| m.matches_path(rel)) {
                 continue;
             }
@@ -94,6 +101,7 @@ fn expand_workspace_pattern(project_dir: &Path, pattern: &str) -> Result<Vec<Pat
     }
 
     let mut packages = Vec::new();
+    let mut visited = std::collections::HashSet::new();
     let mut stack = vec![workspace_pattern_root(project_dir, pattern)];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -110,11 +118,31 @@ fn expand_workspace_pattern(project_dir: &Path, pattern: &str) -> Result<Vec<Pat
             if entry.file_name() == "node_modules" {
                 continue;
             }
+            // Parent-relative globs (`../**`) anchor the walk above
+            // `project_dir`, so the recursion can sweep back into the
+            // project itself via `parent/our-project`. Dedupe by
+            // canonical path to guarantee each directory is visited
+            // once even when symlinks or `..` rejoin it under a new
+            // name. Failing to canonicalize (race / permissions)
+            // falls back to the raw path — losing dedupe but not
+            // correctness.
+            let dedupe_key = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !visited.insert(dedupe_key) {
+                continue;
+            }
             stack.push(path.clone());
-            let Ok(rel_path) = path.strip_prefix(project_dir) else {
+            // Render the path "as written from `project_dir`": a
+            // sibling visited via `../**` reads as `../sibling`,
+            // which is the form the matcher (compiled against the
+            // raw pattern) needs to see. `pathdiff` is lexical, so
+            // both inputs must agree on whether they're absolute —
+            // which they do here because `project_dir` is the
+            // user-supplied (or resolver-supplied) workspace root
+            // and `path` came out of `read_dir` walking from it.
+            let Some(rel_path) = pathdiff::diff_paths(&path, project_dir) else {
                 continue;
             };
-            if matcher.matches_path(rel_path) && path.join("package.json").is_file() {
+            if matcher.matches_path(&rel_path) && path.join("package.json").is_file() {
                 packages.push(path);
             }
         }
@@ -130,9 +158,7 @@ fn glob_workspace_pattern(project_dir: &Path, pattern: &str) -> Vec<PathBuf> {
             if entry.components().any(|c| c.as_os_str() == "node_modules") {
                 continue;
             }
-            if let Some(parent) = entry.parent()
-                && is_under_project(project_dir, parent)
-            {
+            if let Some(parent) = entry.parent() {
                 packages.push(parent.to_path_buf());
             }
         }
@@ -140,30 +166,42 @@ fn glob_workspace_pattern(project_dir: &Path, pattern: &str) -> Vec<PathBuf> {
     packages
 }
 
-/// Check that `candidate` resolves underneath `project_dir`. Patterns
-/// containing `..` (e.g. `../sibling`) lexically still start with the
-/// project prefix but escape the root via parent components. pnpm
-/// rejects these and so do we. Falls back to lexical compare when
-/// canonicalization fails (permission error, mid-walk race) so a path
-/// the glob already returned still gets a containment check.
-fn is_under_project(project_dir: &Path, candidate: &Path) -> bool {
-    if let (Ok(root), Ok(child)) = (project_dir.canonicalize(), candidate.canonicalize()) {
-        return child.starts_with(root);
-    }
-    let no_parent_dir = candidate
-        .components()
-        .all(|c| !matches!(c, std::path::Component::ParentDir));
-    no_parent_dir && candidate.starts_with(project_dir)
-}
-
 fn workspace_pattern_root(project_dir: &Path, pattern: &str) -> PathBuf {
     let wildcard_idx = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
     let literal_prefix = &pattern[..wildcard_idx];
-    let root = literal_prefix
-        .trim_end_matches('/')
-        .rsplit_once('/')
-        .map_or("", |(parent, _)| parent);
-    project_dir.join(root)
+    // Take only the dir portion before the wildcard — e.g.
+    // `packages/prefix-*/**/*` → `packages/`, not `packages/prefix-`,
+    // because `prefix-` is an incomplete name segment that would
+    // break `read_dir`. For `../**` the dir portion is `../`. For
+    // `packages/**` it's `packages/`. For `**` it's empty.
+    let dir_prefix = literal_prefix
+        .rfind('/')
+        .map_or("", |idx| &literal_prefix[..idx]);
+    // Lexically apply the dir prefix to `project_dir` so a
+    // parent-relative pattern (`../packages/**`) anchors the walk
+    // above the workspace root instead of starting from it. Without
+    // this the recursion would never see the parent tree's siblings
+    // and `../**` patterns would silently match nothing. Lexical
+    // (not canonicalized) so symlinked workspace setups behave the
+    // same way they do for in-tree patterns.
+    let mut anchor = PathBuf::from(project_dir);
+    for component in Path::new(dir_prefix).components() {
+        use std::path::Component;
+        match component {
+            Component::ParentDir => {
+                anchor.pop();
+            }
+            Component::CurDir => {}
+            Component::Normal(name) => anchor.push(name),
+            // Absolute / prefix components in a workspace pattern
+            // would be a user error (`pnpm-workspace.yaml#packages`
+            // is documented as project-relative); leave them as-is
+            // so the read_dir below fails cleanly rather than
+            // silently rerooting the walk.
+            other => anchor.push(other.as_os_str()),
+        }
+    }
+    anchor
 }
 
 /// Read the `workspaces` field from `<project_dir>/package.json`. Returns
@@ -504,6 +542,80 @@ mod tests {
         assert_eq!(
             names(found),
             ["app", "pkg"].iter().map(|s| s.to_string()).collect()
+        );
+    }
+
+    #[test]
+    fn parent_relative_recursive_glob_finds_siblings() {
+        // pnpm/test/monorepo/index.ts:996 — `pnpm-workspace.yaml`
+        // sits in `monorepo/workspace/` and `packages: ['../**']`
+        // sweeps every sibling under `monorepo/`. Aube anchors the
+        // walker via the literal prefix so the recursion drops out
+        // to the parent dir and `pathdiff` renders the relative
+        // import key correctly.
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("monorepo/workspace");
+        write(&workspace_root.join("package.json"), "{}");
+        write(
+            &workspace_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '../**'\n  - '!../store/**'\n",
+        );
+        write(
+            &dir.path().join("monorepo/package-1/package.json"),
+            r#"{"name":"package-1"}"#,
+        );
+        write(
+            &dir.path().join("monorepo/package-2/package.json"),
+            r#"{"name":"package-2"}"#,
+        );
+        write(
+            &dir.path().join("monorepo/store/excluded/package.json"),
+            r#"{"name":"excluded"}"#,
+        );
+
+        let found = find_workspace_packages(&workspace_root).unwrap();
+        let canonical: BTreeSet<PathBuf> = found
+            .iter()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+            .collect();
+        let monorepo = dir.path().join("monorepo").canonicalize().unwrap();
+        // Both siblings discovered, `store/excluded` pruned by the
+        // negation pattern. The workspace dir itself (`..`/workspace)
+        // is also visited by the walker but `install/mod.rs` skips
+        // the empty-rel-path importer when it builds `manifests`,
+        // so we just assert it doesn't break the discovery.
+        assert!(canonical.contains(&monorepo.join("package-1")));
+        assert!(canonical.contains(&monorepo.join("package-2")));
+        assert!(!canonical.contains(&monorepo.join("store/excluded")));
+    }
+
+    #[test]
+    fn parent_relative_glob_does_not_loop_on_self_visit() {
+        // The walker re-encounters `monorepo/workspace` while
+        // recursing under the parent dir. The visited set keys on
+        // canonical paths so the second visit terminates instead
+        // of re-walking the workspace root in an unbounded loop.
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("ws");
+        write(&workspace_root.join("package.json"), "{}");
+        write(
+            &workspace_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '../**'\n",
+        );
+        // Many siblings — without dedupe the workspace dir would
+        // be re-walked from inside the parent recursion and the
+        // visited set would balloon. Cap the assertion at a sane
+        // upper bound rather than guessing the exact count, since
+        // tempdir layout (e.g. macOS `/private/var` symlink) can
+        // affect whether the workspace itself ends up in the set.
+        for i in 0..20 {
+            write(&dir.path().join(format!("sib-{i}/package.json")), "{}");
+        }
+        let found = find_workspace_packages(&workspace_root).unwrap();
+        assert!(
+            (20..=21).contains(&found.len()),
+            "expected 20 or 21 packages (siblings + optional self), got {}",
+            found.len()
         );
     }
 }

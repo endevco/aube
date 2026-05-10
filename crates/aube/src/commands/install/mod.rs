@@ -2467,9 +2467,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // and silently drop the importer from `--filter` installs.
             // Second risk: Linux CI reading a Windows-written lockfile
             // sees unknown keys and forces a re-resolve drift.
-            let rel_path = pkg_dir
-                .strip_prefix(&cwd)
-                .unwrap_or(pkg_dir)
+            //
+            // `pathdiff` is used (rather than `strip_prefix`) so a
+            // workspace whose `pnpm-workspace.yaml#packages` glob
+            // reaches into the parent tree (`../**`) writes the
+            // importer key as `../sibling` instead of an absolute
+            // path. The lockfile and the linker both read these keys
+            // back through `workspace_importer_path`, which uses the
+            // same relative form.
+            let rel_path = pathdiff::diff_paths(pkg_dir, &cwd)
+                .unwrap_or_else(|| pkg_dir.clone())
                 .to_string_lossy()
                 .replace('\\', "/");
 
@@ -5371,7 +5378,14 @@ fn importer_project_dir(
     if importer_path == "." {
         workspace_root.to_path_buf()
     } else {
-        workspace_root.join(importer_path)
+        // Lexically collapse `..` from the join so a parent-relative
+        // importer key (`../sibling`, written by `find_workspace_packages`
+        // when `pnpm-workspace.yaml#packages` uses `../**`) lands at
+        // the actual sibling directory rather than `<root>/../sibling`.
+        // Downstream consumers — `pathdiff` for symlink targets and
+        // `strip_prefix` for ancestor checks — give wrong results
+        // against an unnormalized path with embedded `..` segments.
+        aube_util::path::normalize_lexical(&workspace_root.join(importer_path))
     }
 }
 

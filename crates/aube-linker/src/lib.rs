@@ -1504,7 +1504,12 @@ impl Linker {
             let importer_dir = if importer_path == "." {
                 root_dir.to_path_buf()
             } else {
-                root_dir.join(importer_path)
+                // Collapse `..` segments lexically — a parent-relative
+                // importer key (`../sibling`, possible when
+                // `pnpm-workspace.yaml#packages` uses `../**`) needs
+                // to land at the actual sibling dir before
+                // `pathdiff`/`strip_prefix` see it.
+                aube_util::path::normalize_lexical(&root_dir.join(importer_path))
             };
             // Workspace deps resolve through `workspace_dirs` rather
             // than going through the placement tree, so the hoisted
@@ -1896,7 +1901,15 @@ impl Linker {
             let nm = if importer_path == "." {
                 root_nm.clone()
             } else {
-                root_dir.join(importer_path).join(&self.modules_dir_name)
+                // Same lexical-normalization rationale as the hoisted
+                // path above: a `../sibling` importer key has to land
+                // at the actual sibling's `node_modules` rather than
+                // `<root>/../sibling/node_modules`, otherwise
+                // `pathdiff` produces a symlink target with the wrong
+                // depth (one extra `..` per uncollapsed segment).
+                aube_util::path::normalize_lexical(
+                    &root_dir.join(importer_path).join(&self.modules_dir_name),
+                )
             };
             if importer_path != "." {
                 mkdirp(&nm)?;
@@ -1946,7 +1959,13 @@ impl Linker {
                 let nm = if importer_path == "." {
                     root_nm.clone()
                 } else {
-                    root_dir.join(importer_path).join(&self.modules_dir_name)
+                    // Same lexical-normalization rationale as
+                    // `link_workspace_hoisted` above: parent-relative
+                    // importer keys must collapse before `pathdiff`
+                    // computes the top-level symlink target.
+                    aube_util::path::normalize_lexical(
+                        &root_dir.join(importer_path).join(&self.modules_dir_name),
+                    )
                 };
                 deps.iter().map(move |dep| Step2Task {
                     importer_path: importer_path.as_str(),

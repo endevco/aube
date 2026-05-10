@@ -18,6 +18,12 @@ aube-codes = { workspace = true }
 aube-manifest = { workspace = true }
 glob = { workspace = true }
 miette = { workspace = true }
+# Lexical relative-path computation. Used to render parent-relative
+# importer keys (`../package-1`) when `pnpm-workspace.yaml#packages`
+# uses a `../**` glob — the walker resolves the literal anchor
+# absolutely, then `diff_paths` produces the as-written-from-the-yaml
+# importer key the lockfile/linker expects.
+pathdiff = "0.2"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
