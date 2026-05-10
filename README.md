@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  A drop-in Node.js package manager that keeps <code>node_modules</code> in sync with your lockfile, sandboxes lifecycle scripts by default, and reads whatever lockfile you already have.
+  Aube installs automatically when you run a script. The tightest security defaults of any Node.js package manager - and the only one with a lifecycle-script jail. Drops into existing projects.
 </p>
 
 <p align="center">
