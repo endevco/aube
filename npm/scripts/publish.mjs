@@ -57,6 +57,13 @@ function run(cmd, args, opts = {}) {
     }
 }
 
+// musl gets a `-musl` name suffix; glibc keeps the historical name
+// so existing installers upgrade in place without a rename.
+function platformPkgName(target) {
+    const suffix = target.libc === 'musl' ? '-musl' : '';
+    return `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
+}
+
 // Returns true when <pkg>@<version> is already on the registry, so a
 // re-run after a partial publish (or a re-tag) skips instead of erroring
 // with "cannot publish over the previously published versions".
@@ -65,10 +72,14 @@ function isVersionPublished(pkgName, version) {
         stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8',
     });
+    // spawn itself failed (e.g. `npm` not on PATH) — surface ENOENT/EACCES
+    // instead of letting it dissolve into "failed: null" downstream.
+    if (result.error) throw result.error;
     if (result.status === 0) return result.stdout.trim() === version;
-    const stderr = result.stderr || '';
-    if (/E404|code E404|not found/i.test(stderr)) return false;
-    throw new Error(`npm view ${pkgName}@${version} failed: ${stderr.trim() || result.status}`);
+    // Match only the canonical npm 404 code; broader patterns like
+    // "not found" would also swallow ENOTFOUND DNS failures.
+    if (/E404/.test(result.stderr || '')) return false;
+    throw new Error(`npm view ${pkgName}@${version} failed: ${(result.stderr || '').trim() || result.status}`);
 }
 
 function assertEnv(name) {
@@ -120,10 +131,8 @@ function extractArchive(archivePath, target, destDir) {
 }
 
 async function buildPlatformPackage(repo, tag, version, target) {
-    // musl gets a `-musl` name suffix; glibc keeps the historical name
-    // so existing installers upgrade in place without a rename.
+    const pkgName = platformPkgName(target);
     const suffix = target.libc === 'musl' ? '-musl' : '';
-    const pkgName = `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
     const stageDir = resolve(stageRoot, `${target.os}-${target.cpu}${suffix}`);
     rmSync(stageDir, { recursive: true, force: true });
     const binDir = resolve(stageDir, 'bin');
@@ -189,8 +198,7 @@ async function main() {
     if (!skipPlatforms) {
         for (const target of TARGETS) {
             console.log(`\n[publish] --- ${target.os}-${target.cpu} (${target.triple}) ---`);
-            const suffix = target.libc === 'musl' ? '-musl' : '';
-            const pkgName = `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
+            const pkgName = platformPkgName(target);
             if (!dryRun && isVersionPublished(pkgName, version)) {
                 console.log(`[publish] ${pkgName}@${version} already published, skipping`);
                 continue;
