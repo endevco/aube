@@ -57,6 +57,31 @@ function run(cmd, args, opts = {}) {
     }
 }
 
+// musl gets a `-musl` name suffix; glibc keeps the historical name
+// so existing installers upgrade in place without a rename.
+function platformPkgName(target) {
+    const suffix = target.libc === 'musl' ? '-musl' : '';
+    return `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
+}
+
+// Returns true when <pkg>@<version> is already on the registry, so a
+// re-run after a partial publish (or a re-tag) skips instead of erroring
+// with "cannot publish over the previously published versions".
+function isVersionPublished(pkgName, version) {
+    const result = spawnSync('npm', ['view', `${pkgName}@${version}`, 'version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+    });
+    // spawn itself failed (e.g. `npm` not on PATH) — surface ENOENT/EACCES
+    // instead of letting it dissolve into "failed: null" downstream.
+    if (result.error) throw result.error;
+    if (result.status === 0) return result.stdout.trim() === version;
+    // Match only the canonical npm 404 code; broader patterns like
+    // "not found" would also swallow ENOTFOUND DNS failures.
+    if (/E404/.test(result.stderr || '')) return false;
+    throw new Error(`npm view ${pkgName}@${version} failed: ${(result.stderr || '').trim() || result.status}`);
+}
+
 function assertEnv(name) {
     const v = process.env[name];
     if (!v) throw new Error(`${name} env var is required`);
@@ -106,10 +131,8 @@ function extractArchive(archivePath, target, destDir) {
 }
 
 async function buildPlatformPackage(repo, tag, version, target) {
-    // musl gets a `-musl` name suffix; glibc keeps the historical name
-    // so existing installers upgrade in place without a rename.
+    const pkgName = platformPkgName(target);
     const suffix = target.libc === 'musl' ? '-musl' : '';
-    const pkgName = `@endevco/aube-${target.os}-${target.cpu}${suffix}`;
     const stageDir = resolve(stageRoot, `${target.os}-${target.cpu}${suffix}`);
     rmSync(stageDir, { recursive: true, force: true });
     const binDir = resolve(stageDir, 'bin');
@@ -175,9 +198,14 @@ async function main() {
     if (!skipPlatforms) {
         for (const target of TARGETS) {
             console.log(`\n[publish] --- ${target.os}-${target.cpu} (${target.triple}) ---`);
-            const { pkgName, stageDir } = await buildPlatformPackage(repo, tag, version, target);
-            console.log(`[publish] staged ${pkgName} at ${stageDir}`);
-            npmPublish(stageDir, npmTag, dryRun);
+            const pkgName = platformPkgName(target);
+            if (!dryRun && isVersionPublished(pkgName, version)) {
+                console.log(`[publish] ${pkgName}@${version} already published, skipping`);
+                continue;
+            }
+            const built = await buildPlatformPackage(repo, tag, version, target);
+            console.log(`[publish] staged ${built.pkgName} at ${built.stageDir}`);
+            npmPublish(built.stageDir, npmTag, dryRun);
         }
     }
 
@@ -186,6 +214,10 @@ async function main() {
         const rootPkgPath = resolve(npmDir, 'package.json');
         const rootPkg = JSON.parse(readFileSync(rootPkgPath, 'utf8'));
         rootPkg.version = version;
+        if (!dryRun && isVersionPublished(rootPkg.name, version)) {
+            console.log(`[publish] ${rootPkg.name}@${version} already published, skipping`);
+            return;
+        }
         writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + '\n');
         // `npm pack` doesn't follow symlinks, so stage a real README
         // copy next to package.json rather than linking ../README.md.
