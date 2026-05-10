@@ -3574,7 +3574,7 @@ fn direct_dep_info_flags_deprecated_resolved_version() {
 
     let info = resolver.direct_dep_info(&graph);
     let entry = info.get("foo@1.0.0").expect("foo@1.0.0 should have info");
-    assert_eq!(entry.deprecated.as_deref(), Some("use 1.0.1 instead"));
+    assert!(entry.deprecated, "resolved version is deprecated");
     assert_eq!(entry.latest.as_deref(), Some("1.0.1"));
 }
 
@@ -3639,7 +3639,7 @@ fn direct_dep_info_uses_registry_name_for_aliased_dep() {
     let entry = info
         .get("h3-v2@2.0.0")
         .expect("aliased entry should resolve via registry_name");
-    assert_eq!(entry.deprecated.as_deref(), Some("rc only"));
+    assert!(entry.deprecated, "aliased resolved version is deprecated");
     assert_eq!(entry.latest.as_deref(), Some("2.0.1"));
 }
 

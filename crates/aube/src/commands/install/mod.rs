@@ -5225,21 +5225,21 @@ fn print_direct_dependency_section(
 
 /// Render the trailing badge column for a direct-dep line. Empty string
 /// when there's nothing to flag, otherwise a leading two-space gap and
-/// one or more dim-separated tags (`deprecated`, `latest 2.0.0`).
+/// one or more dim-separated tags (`deprecated`, `latest 2.0.0`). The
+/// caller passes `direct_dep_info.get(dep_path)`, and `direct_dep_info`
+/// only carries entries with at least one signal set — so when `info`
+/// is `Some(...)`, `parts` is guaranteed non-empty.
 fn render_direct_dep_badges(info: Option<&aube_resolver::DirectDepInfo>) -> String {
     use clx::style;
     let Some(info) = info else {
         return String::new();
     };
     let mut parts: Vec<String> = Vec::new();
-    if info.deprecated.is_some() {
+    if info.deprecated {
         parts.push(style::eyellow("deprecated").to_string());
     }
     if let Some(latest) = &info.latest {
         parts.push(style::eyellow(format!("latest {latest}")).to_string());
-    }
-    if parts.is_empty() {
-        return String::new();
     }
     let sep = style::edim(" · ").to_string();
     format!("  {}", parts.join(&sep))

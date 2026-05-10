@@ -12,12 +12,20 @@ use std::collections::HashMap;
 /// render next to a direct-dependency line. Returned only for direct
 /// deps where at least one signal is set — the printer skips the badge
 /// column when [`Resolver::direct_dep_info`]'s map has no entry.
+///
+/// Deprecation is a bare flag (not the message string) by design: the
+/// full per-version `deprecated` text already surfaces via the WARN
+/// pipeline in [`crate::deprecations`][crate-deprecations] above the
+/// summary, so the badge column just signals "this direct dep is one
+/// of the WARN lines you saw" without duplicating the message.
+///
+/// [crate-deprecations]: https://github.com/endevco/aube/blob/main/crates/aube/src/deprecations.rs
 #[derive(Debug, Clone, Default)]
 pub struct DirectDepInfo {
-    /// Deprecation message published for the *resolved* version of this
-    /// direct dep (i.e. the packument's per-version `deprecated` field).
-    /// `None` for healthy versions.
-    pub deprecated: Option<String>,
+    /// True when the packument marks the *resolved* version as
+    /// deprecated. The actual message is intentionally not carried
+    /// here — see the struct docs.
+    pub deprecated: bool,
     /// The registry's `dist-tags.latest` for this package, but only
     /// when it differs from the resolved version. `None` when latest
     /// matches the resolved version, when the registry omits `latest`
@@ -54,13 +62,13 @@ impl Resolver {
                 let deprecated = packument
                     .versions
                     .get(&pkg.version)
-                    .and_then(|v| v.deprecated.clone());
+                    .is_some_and(|v| v.deprecated.is_some());
                 let latest = packument
                     .dist_tags
                     .get("latest")
                     .filter(|l| l.as_str() != pkg.version.as_str())
                     .cloned();
-                if deprecated.is_some() || latest.is_some() {
+                if deprecated || latest.is_some() {
                     out.insert(dep.dep_path.clone(), DirectDepInfo { deprecated, latest });
                 }
             }
