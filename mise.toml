@@ -74,6 +74,10 @@ run = [
   "node benchmarks/update-readme.mjs",
 ]
 
+[tasks."build:pgo"]
+dir = "{{config_root}}"
+run = "bash benchmarks/pgo.bash"
+
 [tasks.render]
 depends = ["build"]
 run = [
