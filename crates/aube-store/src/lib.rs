@@ -1176,8 +1176,14 @@ const MAX_TARBALL_ENTRIES: usize = 64;
 // directly (does not set errno). Caller decides how to handle the
 // error. Existing call site uses `let _ = ...` to ignore EOPNOTSUPP /
 // ENOSYS / EINVAL on filesystems where pre-allocation is a no-op.
+//
+// `len` is `libc::off_t` because that's the type the underlying glibc
+// signature uses, and it varies per target: `i64` on 64-bit Linux and
+// on 32-bit Linux when the libc bindings opt into _FILE_OFFSET_BITS=64,
+// `i32` on 32-bit Linux otherwise (e.g. Debian/Ubuntu's armhf packaging
+// build env). Taking it directly keeps the call-site cast in one place.
 #[cfg(target_os = "linux")]
-fn posix_fallocate(file: &std::fs::File, len: i64) -> std::io::Result<()> {
+fn posix_fallocate(file: &std::fs::File, len: libc::off_t) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     if len <= 0 {
         return Ok(());
@@ -1246,7 +1252,7 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
     // Best-effort fallocate so the kernel allocates contiguous extents
     // up front. Skips ext4 fragmentation churn on the next write.
     // EOPNOTSUPP and ENOSYS are fine, regular write_all handles them.
-    let _ = posix_fallocate(&file, bytes.len() as i64);
+    let _ = posix_fallocate(&file, bytes.len() as libc::off_t);
     file.write_all(bytes)
         .map_err(|e| OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), e)))?;
     // No sync_data: contradicts the no-fsync CAS policy. Crash window
