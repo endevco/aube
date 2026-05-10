@@ -58,6 +58,9 @@ jobs:
           name: metadata-primer
           path: crates/aube-resolver/data/primer-top${{ env.AUBE_PRIMER_TOP }}-v${{ env.AUBE_PRIMER_VERSION_CAP }}.rkyv.json
 
+  # Non-PGO targets: aarch64 Linux (cross-compiled, can't easily train
+  # under QEMU) and Windows (untested PGO toolchain). Built via taiki-e
+  # straight from the release profile.
   upload-assets:
     needs: generate-primer
     runs-on: ${{ matrix.runner }}
@@ -66,19 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            runner: namespace-profile-endev-macos-arm64
-            build-tool: cargo
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
-            build-tool: cross
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
-            build-tool: cross
-          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
             build-tool: cross
@@ -154,6 +145,103 @@ jobs:
             exit 1
           fi
           echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.archive.outputs.path }}
+
+  # PGO-optimized targets: x86_64 Linux GNU/musl + macOS arm64 (the three
+  # native-built artifacts that cover the bulk of downloads). Each builds
+  # via benchmarks/pgo.bash — instrument under release-pgo, train against
+  # the hermetic Verdaccio registry, rebuild with -Cprofile-use. Linux
+  # targets keep build-tool=cross so the resulting binary preserves the
+  # current glibc baseline; the cross-built instrumented binary runs on
+  # the host for training (cross's older glibc is forward-compatible
+  # with the runner's). Cross.toml passes RUSTFLAGS through to the
+  # container so phase 1 / 3b RUSTFLAGS reach cargo inside cross.
+  upload-assets-pgo:
+    needs: generate-primer
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+            build-tool: cross
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+            build-tool: cross
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            runner: namespace-profile-endev-macos-arm64
+            build-tool: cargo
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          submodules: recursive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: metadata-primer
+          path: crates/aube-resolver/data
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Install rustup llvm-tools-preview
+        shell: bash
+        run: rustup component add llvm-tools-preview
+      - name: Install cross
+        if: ${{ matrix.build-tool == 'cross' }}
+        shell: bash
+        run: cargo install cross --locked
+      - name: Install verdaccio
+        shell: bash
+        run: npm install --global verdaccio@6
+      - name: Import codesign certs
+        if: startsWith(matrix.os, 'macos')
+        uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
+        with:
+          p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
+          p12-password: ${{ secrets.CERTIFICATES_P12_PASS }}
+      - name: PGO build (instrument + train + optimize)
+        shell: bash
+        env:
+          AUBE_PGO_NO_LOCK: "1"
+          AUBE_PGO_BUILD_TOOL: ${{ matrix.build-tool }}
+          AUBE_PGO_TARGET: ${{ matrix.target }}
+        run: bash benchmarks/pgo.bash
+      - name: Codesign macOS binaries
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          IDENTITY: "Developer ID Application: Jeffrey Dickey (4993Y37DX6)"
+          BIN_DIR: target/${{ matrix.target }}/release-pgo
+        run: |
+          for bin in aube aubr aubx; do
+            codesign --sign "$IDENTITY" --options runtime --timestamp \
+              --prefix dev.jdx. "$BIN_DIR/$bin"
+          done
+      - name: Archive PGO binaries
+        id: archive
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          archive="aube-${TAG}-${TARGET}.tar.gz"
+          tar -czf "$archive" -C "target/${TARGET}/release-pgo" aube aubr aubx
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - name: Upload archive to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          ARCHIVE: ${{ steps.archive.outputs.path }}
+        run: gh release upload "$TAG" "$ARCHIVE" --clobber
       - name: Attest release archive
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:

@@ -91,6 +91,7 @@ error_codes:
 
 commands:
   build: cargo build
+  build_pgo: mise run build:pgo (instrument -> train on hermetic registry -> optimize; outputs target/release-pgo/aube; holds /tmp/aube-bench.lock; needs `rustup component add llvm-tools-preview`)
   test_unit: cargo test
   clippy: cargo clippy --all-targets -- -D warnings
   fmt_check: cargo fmt --check
@@ -106,10 +107,11 @@ release_profile:
 when_to_use_release:
   default: debug. `cargo build` / `cargo clippy` already produce the `target/debug/aube` binary that bats and local smoke tests exercise
   bats_binary: test/test_helper/common_setup.bash prepends `target/debug` to PATH. never `cargo build --release` to debug a bats failure — rebuild debug, which is already warm from clippy
-  allowed_release_uses[3]:
+  allowed_release_uses[4]:
     - profiling (samply, flamegraph, hyperfine) — optimizer-off numbers are meaningless
     - reproducing a perf bug only observable in release
     - benchmarks (mise run bench* always builds release via its own manifest)
+    - PGO build (mise run build:pgo uses release-pgo profile + hermetic-registry training; portable binary, no -Ctarget-cpu=native, see benchmarks/pgo.bash)
   forbidden[3]:
     - rebuilding release "just to be safe" during iterative debug (1+ min cost vs 5s incremental debug)
     - shipping release-only asserts that don't exist in debug — keep invariants consistent across profiles
