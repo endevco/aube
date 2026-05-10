@@ -784,6 +784,24 @@ fn resolve_update_settings(
     cwd: &std::path::Path,
     manifest: &aube_manifest::PackageJson,
 ) -> miette::Result<UpdateSettings> {
+    let mut ignored: BTreeSet<String> = manifest.update_ignore_dependencies().into_iter().collect();
+    let rewrites_specifier = with_update_settings_ctx(cwd, |ctx| {
+        if let Some(from_settings) = aube_settings::resolved::update_config_ignore_dependencies(ctx)
+        {
+            ignored.extend(from_settings);
+        }
+        aube_settings::resolved::update_rewrites_specifier(ctx)
+    })?;
+    Ok(UpdateSettings {
+        ignored,
+        rewrites_specifier,
+    })
+}
+
+fn with_update_settings_ctx<T>(
+    cwd: &std::path::Path,
+    f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,
+) -> miette::Result<T> {
     let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
     let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
     let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(cwd)
@@ -797,16 +815,7 @@ fn resolve_update_settings(
         env,
         cli: &[],
     };
-
-    let mut ignored: BTreeSet<String> = manifest.update_ignore_dependencies().into_iter().collect();
-    if let Some(from_settings) = aube_settings::resolved::update_config_ignore_dependencies(&ctx) {
-        ignored.extend(from_settings);
-    }
-    let rewrites_specifier = aube_settings::resolved::update_rewrites_specifier(&ctx);
-    Ok(UpdateSettings {
-        ignored,
-        rewrites_specifier,
-    })
+    Ok(f(&ctx))
 }
 
 async fn run_filtered(
@@ -815,9 +824,20 @@ async fn run_filtered(
 ) -> miette::Result<()> {
     reject_unsupported_pkg_specs(&args.packages)?;
     let cwd = crate::dirs::cwd()?;
-    let (_root, matched) = super::select_workspace_packages(&cwd, filter, "update")?;
+    let (root, matched) = super::select_workspace_packages(&cwd, filter, "update")?;
+    let shared_workspace_lockfile = resolve_shared_workspace_lockfile(&root)?;
+    let root_manifest = if shared_workspace_lockfile {
+        Some(super::load_manifest_or_default(&root)?)
+    } else {
+        None
+    };
     let result = async {
         for pkg in matched {
+            let root_graph = if let Some(root_manifest) = root_manifest.as_ref() {
+                Some(read_workspace_lockfile(&root, root_manifest)?)
+            } else {
+                None
+            };
             super::retarget_cwd(&pkg.dir)?;
             // pnpm's recursive update silently skips packages that aren't
             // declared in a given project's manifest — only updates the
@@ -928,11 +948,108 @@ async fn run_filtered(
                 aube_workspace::selector::EffectiveFilter::default(),
             ))
             .await?;
+            if let (Some(root_manifest), Some(root_graph)) = (root_manifest.as_ref(), root_graph) {
+                merge_filtered_update_lockfile(
+                    &root,
+                    &pkg.dir,
+                    &pkg.manifest,
+                    root_manifest,
+                    root_graph,
+                )?;
+            }
         }
         Ok(())
     }
     .await;
     super::finish_filtered_workspace(&cwd, result)
+}
+
+fn resolve_shared_workspace_lockfile(cwd: &std::path::Path) -> miette::Result<bool> {
+    with_update_settings_ctx(cwd, aube_settings::resolved::shared_workspace_lockfile)
+}
+
+fn merge_filtered_update_lockfile(
+    workspace_root: &std::path::Path,
+    pkg_dir: &std::path::Path,
+    pkg_manifest: &aube_manifest::PackageJson,
+    root_manifest: &aube_manifest::PackageJson,
+    mut root_graph: aube_lockfile::LockfileGraph,
+) -> miette::Result<()> {
+    let importer_path = super::workspace_importer_path(workspace_root, pkg_dir)?;
+    let remove_pkg_lockfile = importer_path != ".";
+    let pkg_lockfile = pkg_dir.join(aube_lockfile::LockfileKind::Aube.filename());
+    if !pkg_lockfile.exists() {
+        return Ok(());
+    }
+
+    let mut pkg_graph = aube_lockfile::parse_lockfile(pkg_dir, pkg_manifest)
+        .map_err(miette::Report::new)
+        .wrap_err_with(|| format!("failed to parse {}", pkg_lockfile.display()))?;
+    let pkg_deps = pkg_graph.importers.remove(".").ok_or_else(|| {
+        miette!(
+            "filtered update wrote {} without a root importer",
+            pkg_lockfile.display()
+        )
+    })?;
+    let pkg_skipped_optional = pkg_graph.skipped_optional_dependencies.remove(".");
+
+    root_graph.importers.insert(importer_path.clone(), pkg_deps);
+    if let Some(skipped) = pkg_skipped_optional {
+        root_graph
+            .skipped_optional_dependencies
+            .insert(importer_path, skipped);
+    } else {
+        root_graph
+            .skipped_optional_dependencies
+            .remove(&importer_path);
+    }
+    root_graph.packages.extend(pkg_graph.packages);
+    root_graph.times.extend(pkg_graph.times);
+    root_graph.catalogs.extend(pkg_graph.catalogs);
+    root_graph
+        .patched_dependencies
+        .extend(pkg_graph.patched_dependencies);
+    for trusted in pkg_graph.trusted_dependencies {
+        if !root_graph.trusted_dependencies.contains(&trusted) {
+            root_graph.trusted_dependencies.push(trusted);
+        }
+    }
+    root_graph.extra_fields.extend(pkg_graph.extra_fields);
+
+    let mut root_graph = root_graph.filter_deps(|_| true);
+    retain_package_times(&mut root_graph);
+    super::write_and_log_lockfile(workspace_root, &root_graph, root_manifest)?;
+    if remove_pkg_lockfile {
+        std::fs::remove_file(&pkg_lockfile)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to remove {}", pkg_lockfile.display()))?;
+    }
+    Ok(())
+}
+
+fn retain_package_times(graph: &mut aube_lockfile::LockfileGraph) {
+    let live_specs: BTreeSet<String> = graph
+        .packages
+        .values()
+        .flat_map(|pkg| {
+            [
+                pkg.spec_key(),
+                format!("{}@{}", pkg.registry_name(), pkg.version),
+            ]
+        })
+        .collect();
+    graph.times.retain(|spec, _| live_specs.contains(spec));
+}
+
+fn read_workspace_lockfile(
+    workspace_root: &std::path::Path,
+    root_manifest: &aube_manifest::PackageJson,
+) -> miette::Result<aube_lockfile::LockfileGraph> {
+    match aube_lockfile::parse_lockfile(workspace_root, root_manifest) {
+        Ok(graph) => Ok(graph),
+        Err(aube_lockfile::Error::NotFound(_)) => Ok(aube_lockfile::LockfileGraph::default()),
+        Err(e) => Err(miette::Report::new(e)).wrap_err("failed to parse workspace lockfile"),
+    }
 }
 
 /// Split a `<pkg>@<spec>` arg into a bare name and an optional spec.
@@ -1061,4 +1178,58 @@ fn exact_pin_version(spec: &str) -> Option<&str> {
         .unwrap_or(stripped);
     let trimmed = after_name.trim_start_matches('=').trim();
     looks_like_exact_version(trimmed).then_some(trimmed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locked(name: &str, version: &str) -> aube_lockfile::LockedPackage {
+        aube_lockfile::LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            dep_path: format!("{name}@{version}"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn retain_package_times_drops_versions_no_longer_in_graph() {
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph
+            .packages
+            .insert("foo@100.1.0".to_string(), locked("foo", "100.1.0"));
+        graph.times.insert(
+            "foo@100.0.0".to_string(),
+            "2026-01-01T00:00:00.000Z".to_string(),
+        );
+        graph.times.insert(
+            "foo@100.1.0".to_string(),
+            "2026-01-02T00:00:00.000Z".to_string(),
+        );
+
+        retain_package_times(&mut graph);
+
+        assert_eq!(
+            graph.times.keys().cloned().collect::<Vec<_>>(),
+            vec!["foo@100.1.0"]
+        );
+    }
+
+    #[test]
+    fn retain_package_times_accepts_alias_registry_key() {
+        let mut pkg = locked("foo-alias", "1.0.0");
+        pkg.alias_of = Some("foo".to_string());
+
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph.packages.insert(pkg.dep_path.clone(), pkg);
+        graph.times.insert(
+            "foo@1.0.0".to_string(),
+            "2026-01-01T00:00:00.000Z".to_string(),
+        );
+
+        retain_package_times(&mut graph);
+
+        assert!(graph.times.contains_key("foo@1.0.0"));
+    }
 }

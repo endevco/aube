@@ -215,11 +215,8 @@ JSON
 
 @test "aube update -r --no-save: refreshes a workspace lockfile, leaves manifests alone" {
 	# Ported from pnpm/test/update.ts:72 ('recursive update --no-save').
-	# pnpm writes the lockfile at the workspace root via
-	# shared-workspace-lockfile=true; aube's `update -r` fans out per
-	# project and writes per-project lockfiles regardless of the
-	# `sharedWorkspaceLockfile` setting (a divergence — see
-	# PNPM_TEST_IMPORT.md). Assert the per-project lockfile shape.
+	# sharedWorkspaceLockfile=true writes the refreshed importer back
+	# into the workspace root lockfile.
 	_require_registry
 
 	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
@@ -242,9 +239,11 @@ YAML
 	run aube update -r --no-save
 	assert_success
 
-	# Per-project lockfile carries the bumped version.
-	run grep '@pnpm.e2e/foo@100.1.0' project/aube-lock.yaml
+	# Workspace lockfile carries the bumped version; the filtered
+	# project does not keep its own lockfile.
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
 	assert_success
+	assert_file_not_exists project/aube-lock.yaml
 
 	# Project manifest range unchanged.
 	run grep '"\^100.0.0"' project/package.json
@@ -299,11 +298,8 @@ EOF
 
 @test "aube update -r --latest: bumps every workspace project's manifest" {
 	# Ported from pnpm/test/update.ts:426 ('recursive update --latest on
-	# projects with a shared a lockfile'). aube fans out per project
-	# (per-project lockfiles); the shared-lockfile assertion at
-	# pnpm/test/update.ts:471-475 is dropped — aube divergence noted in
-	# PNPM_TEST_IMPORT.md. The `@pnpm.e2e/qar` alias dep is omitted (no
-	# fixture mirrored yet).
+	# projects with a shared a lockfile'). The `@pnpm.e2e/qar` alias dep
+	# is omitted (no fixture mirrored yet).
 	_require_registry
 
 	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
@@ -350,22 +346,115 @@ YAML
 	run grep '"@pnpm.e2e/foo": "100.1.0"' project-2/package.json
 	assert_success
 
-	# Per-project lockfiles each carry the bumped versions.
-	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' project-1/aube-lock.yaml
+	# The shared workspace lockfile carries both bumped importers.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
 	assert_success
-	run grep '@pnpm.e2e/foo@100.1.0' project-1/aube-lock.yaml
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
 	assert_success
-	run grep '@pnpm.e2e/bar@100.1.0' project-2/aube-lock.yaml
+	run grep '@pnpm.e2e/bar@100.1.0' aube-lock.yaml
 	assert_success
-	run grep '@pnpm.e2e/foo@100.1.0' project-2/aube-lock.yaml
+	assert_file_not_exists project-1/aube-lock.yaml
+	assert_file_not_exists project-2/aube-lock.yaml
+}
+
+@test "aube update -F writes the workspace root lockfile" {
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+
+	mkdir project-1 project-2
+	cat >project-1/package.json <<'JSON'
+{
+  "name": "project-1",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+	cat >project-2/package.json <<'JSON'
+{
+  "name": "project-2",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/bar": "^100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project-1
+  - project-2
+YAML
+
+	run aube install
 	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update -F project-1 --latest '@pnpm.e2e/foo'
+	assert_success
+
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_success
+	run grep 'project-2:' aube-lock.yaml
+	assert_success
+	assert_file_not_exists project-1/aube-lock.yaml
+	assert_file_not_exists project-2/aube-lock.yaml
+}
+
+@test "aube update -F keeps the root lockfile when the workspace root is matched" {
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.0.0
+	add_dist_tag '@pnpm.e2e/bar' latest 100.0.0
+
+	mkdir project
+	cat >package.json <<'JSON'
+{
+  "name": "workspace-root",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/foo": "^100.0.0"
+  }
+}
+JSON
+	cat >project/package.json <<'JSON'
+{
+  "name": "project",
+  "version": "1.0.0",
+  "dependencies": {
+    "@pnpm.e2e/bar": "^100.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - project
+includeWorkspaceRoot: true
+YAML
+
+	run aube install
+	assert_success
+
+	add_dist_tag '@pnpm.e2e/foo' latest 100.1.0
+
+	run aube update -F workspace-root --latest '@pnpm.e2e/foo'
+	assert_success
+
+	assert_file_exists aube-lock.yaml
+	run grep '@pnpm.e2e/foo@100.1.0' aube-lock.yaml
+	assert_success
+	run grep 'project:' aube-lock.yaml
+	assert_success
+	assert_file_not_exists project/aube-lock.yaml
 }
 
 @test "aube update -r --latest --prod: skips devDeps in workspace fanout" {
 	# Ported from pnpm/test/update.ts:478 ('recursive update --latest
 	# --prod on projects with a shared a lockfile'). Verifies the
-	# prod/dev split survives the recursive fanout. Same shared-lockfile
-	# divergence as the previous test — assertions are per-project.
+	# prod/dev split survives the recursive fanout.
 	_require_registry
 
 	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
@@ -657,15 +746,11 @@ YAML
 	assert_success
 }
 
-@test "aube update -r --latest <name>: same shape as no-shared (per-project)" {
+@test "aube update -r --latest <name>: writes shared workspace lockfile" {
 	# Ported from pnpm/test/update.ts:543 ('recursive update --latest
-	# specific dependency on projects with a shared a lockfile'). pnpm
-	# differentiates this from misc.ts:369 by writing a single shared
-	# lockfile at the workspace root; aube's `update -r` always writes
-	# per-project lockfiles (divergence noted in PNPM_TEST_IMPORT.md), so
-	# the assertions are scoped to per-project manifests. The package
-	# layout here uses exact pins instead of caret ranges (matching the
-	# pnpm fixture at :551-571).
+	# specific dependency on projects with a shared a lockfile'). The
+	# package layout here uses exact pins instead of caret ranges
+	# (matching the pnpm fixture at :551-571).
 	_require_registry
 
 	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 100.0.0
@@ -827,8 +912,8 @@ JSON
 	# workspace (outdated, updated, prerelease, outdated)'). Four
 	# projects pinned at different versions; only the one already on
 	# 3.0.0-rc.0 stays put — the rest bump to the 2.0.0 latest dist-tag.
-	# Per-project lockfile assertions (see shared-lockfile divergence
-	# noted in PNPM_TEST_IMPORT.md).
+	# Manifest assertions cover the recursive prerelease-preservation
+	# behavior; shared lockfile placement is covered above.
 	_require_registry
 
 	add_dist_tag '@pnpm.e2e/has-prerelease' latest 2.0.0
@@ -1114,17 +1199,17 @@ YAML
 	run aube update -r '@pnpm.e2e/dep-of-pkg-with-1-dep@latest'
 	assert_success
 
-	# Both projects' (newly-written) per-project lockfiles bumped the
-	# transitive dep; this would have stayed at 100.0.0 under the old
-	# silent-skip behavior.
-	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' project-1/aube-lock.yaml
+	# The shared lockfile bumped the transitive dep for both projects;
+	# this would have stayed at 100.0.0 under the old silent-skip
+	# behavior.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' aube-lock.yaml
 	assert_success
-	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.1.0' project-2/aube-lock.yaml
-	assert_success
+	assert_file_not_exists project-1/aube-lock.yaml
+	assert_file_not_exists project-2/aube-lock.yaml
 
 	# Direct dep (the parent) stays at its locked version — only the
 	# named indirect arg should bump.
-	run grep '@pnpm.e2e/pkg-with-1-dep@100.0.0' project-1/aube-lock.yaml
+	run grep '@pnpm.e2e/pkg-with-1-dep@100.0.0' aube-lock.yaml
 	assert_success
 
 	# Manifests untouched — indirect deps have no manifest entry.
