@@ -747,13 +747,80 @@ _link_workspace_packages_fixture() {
 @test "shared-workspace-lockfile: -r install handles relative ../** packages glob" {
 	# Ported from pnpm/test/monorepo/index.ts:996 ('shared-workspace-lockfile:
 	# install dependencies in projects that are relative to the workspace
-	# directory'). pnpm walks the `../**` glob from the workspace yaml's
-	# directory and treats the resulting parent-tree packages as importers.
-	# Aube does not — the workspace root is the directory holding the
-	# yaml, and the package walker doesn't traverse into the parent
-	# tree. Documented divergence; skip until the workspace selector
-	# learns to climb parent globs.
-	skip "aube divergence: pnpm-workspace.yaml#packages does not support parent-relative ../** globs"
+	# directory'). The pnpm-workspace.yaml lives in monorepo/workspace/
+	# and references siblings via `../**`, so the importer keys in the
+	# shared lockfile end up as relative `../package-1` / `../package-2`
+	# rather than the more common `package-1`. Locks the contract that
+	# aube preserves the relative path verbatim in the lockfile and
+	# resolves the deps through the workspace link.
+	#
+	# Aube-side fix: `aube_workspace::expand_workspace_pattern` now
+	# anchors the walk via lexical resolution of the literal prefix
+	# (so `../**` starts from the parent dir), and uses `pathdiff`
+	# rather than `strip_prefix` to render the importer key — both for
+	# the matcher comparison inside the walker and for the install
+	# pipeline's `manifests` builder. Without these, the parent-tree
+	# siblings either weren't visited or the importer key landed as
+	# an absolute path that the lockfile + linker couldn't agree on.
+	mkdir -p monorepo/workspace monorepo/package-1 monorepo/package-2
+	cat >monorepo/workspace/package.json <<-'JSON'
+		{
+		  "name": "root-package",
+		  "version": "1.0.0",
+		  "dependencies": {
+		    "package-1": "1.0.0",
+		    "package-2": "1.0.0"
+		  }
+		}
+	JSON
+	cat >monorepo/package-1/package.json <<-'JSON'
+		{
+		  "name": "package-1",
+		  "version": "1.0.0",
+		  "dependencies": {
+		    "is-positive": "1.0.0",
+		    "package-2": "1.0.0"
+		  }
+		}
+	JSON
+	cat >monorepo/package-2/package.json <<-'JSON'
+		{
+		  "name": "package-2",
+		  "version": "1.0.0",
+		  "dependencies": { "is-negative": "1.0.0" }
+		}
+	JSON
+	cat >monorepo/workspace/pnpm-workspace.yaml <<-'YAML'
+		packages:
+		  - "../**"
+		  - "!../store/**"
+	YAML
+
+	cd monorepo/workspace
+	run aube -r install
+	assert_success
+
+	# Shared lockfile lands at the workspace dir (cwd), not at any
+	# sibling. Importer keys carry the workspace-relative path
+	# verbatim — including the leading `..` for siblings reached via
+	# the parent-tree glob.
+	assert_file_exists aube-lock.yaml
+	importers="$(awk '/^importers:/,/^packages:/' aube-lock.yaml)"
+	echo "$importers" | grep -qE "^  \.:"
+	echo "$importers" | grep -qF "../package-1"
+	echo "$importers" | grep -qF "../package-2"
+
+	# Top-level deps from each importer materialize as symlinks into
+	# the sibling working trees — package-1 and package-2 each get
+	# their transitive deps wired up under their own node_modules/.
+	# package-1 sees package-2 as a sibling via the workspace link.
+	assert_link_exists ../package-1/node_modules/is-positive
+	assert_link_exists ../package-1/node_modules/package-2
+	assert_link_exists ../package-2/node_modules/is-negative
+	# package-1's package-2 link reaches the sibling source dir, not
+	# the virtual store.
+	resolved_p2="$(readlink -f ../package-1/node_modules/package-2)"
+	[ "$resolved_p2" = "$(cd ../package-2 && pwd -P)" ]
 }
 
 @test "shared-workspace-lockfile: removed-on-disk project drops out of shared lockfile" {
