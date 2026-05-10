@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/endevco/aube/compare/aube-codes-v1.9.1...aube-codes-v1.10.0) - 2026-05-10
+
+### Added
+
+- *(cli)* finish recursive-run flags and parallel output ([#545](https://github.com/endevco/aube/pull/545))
+
+### Other
+
+- refresh benchmarks for v1.9.1 ([#555](https://github.com/endevco/aube/pull/555))
+- lead hero with auto-install promise over speed ([#557](https://github.com/endevco/aube/pull/557))
+- refresh benchmarks for v1.9.1 ([#534](https://github.com/endevco/aube/pull/534))
+- refresh benchmarks for v1.9.0 ([#532](https://github.com/endevco/aube/pull/532))
+
 ## [1.9.1](https://github.com/endevco/aube/compare/aube-codes-v1.9.0...aube-codes-v1.9.1) - 2026-05-06
 
 ### Fixed

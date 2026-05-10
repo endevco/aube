@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/endevco/aube/compare/v1.9.1...v1.10.0) - 2026-05-10
+
+### Added
+
+- *(install)* show post-install dependency summary ([#559](https://github.com/endevco/aube/pull/559))
+- *(update)* add --lockfile-only flag ([#560](https://github.com/endevco/aube/pull/560))
+- *(cli)* finish recursive-run flags and parallel output ([#545](https://github.com/endevco/aube/pull/545))
+- *(diag)* instrument install and add aube diag subcommand ([#547](https://github.com/endevco/aube/pull/547))
+- *(add)* linkWorkspacePackages + saveWorkspaceProtocol ([#539](https://github.com/endevco/aube/pull/539))
+
+### Fixed
+
+- *(workspace)* three workspace install correctness fixes from pnpm test port ([#564](https://github.com/endevco/aube/pull/564))
+- *(update)* keep filtered workspace lockfile at root ([#558](https://github.com/endevco/aube/pull/558))
+- *(pnpmfile)* fail install when readPackage returns non-object ([#562](https://github.com/endevco/aube/pull/562))
+- *(workspace)* include root in filtered runs ([#556](https://github.com/endevco/aube/pull/556))
+- *(update)* add interactive picker ([#552](https://github.com/endevco/aube/pull/552))
+- *(deploy)* preserve filtered packages missing version ([#549](https://github.com/endevco/aube/pull/549))
+- *(install)* inherit build approvals for git prepare ([#546](https://github.com/endevco/aube/pull/546))
+- *(cli)* skip verify-deps inside lifecycle scripts ([#538](https://github.com/endevco/aube/pull/538))
+- *(install)* require approve-builds selection ([#537](https://github.com/endevco/aube/pull/537))
+
+### Other
+
+- refresh benchmarks for v1.9.1 ([#555](https://github.com/endevco/aube/pull/555))
+- lead hero with auto-install promise over speed ([#557](https://github.com/endevco/aube/pull/557))
+- add global virtual store page ([#550](https://github.com/endevco/aube/pull/550))
+- *(install)* adaptive limiter + tarball http1 split ([#548](https://github.com/endevco/aube/pull/548))
+- refresh benchmarks for v1.9.1 ([#534](https://github.com/endevco/aube/pull/534))
+- refresh benchmarks for v1.9.0 ([#532](https://github.com/endevco/aube/pull/532))
+
 ## [1.9.1](https://github.com/endevco/aube/compare/v1.9.0...v1.9.1) - 2026-05-06
 
 ### Added

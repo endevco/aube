@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/endevco/aube/compare/aube-util-v1.9.1...aube-util-v1.10.0) - 2026-05-10
+
+### Added
+
+- *(diag)* instrument install and add aube diag subcommand ([#547](https://github.com/endevco/aube/pull/547))
+
+### Fixed
+
+- *(workspace)* include root in filtered runs ([#556](https://github.com/endevco/aube/pull/556))
+
+### Other
+
+- refresh benchmarks for v1.9.1 ([#555](https://github.com/endevco/aube/pull/555))
+- lead hero with auto-install promise over speed ([#557](https://github.com/endevco/aube/pull/557))
+- *(install)* adaptive limiter + tarball http1 split ([#548](https://github.com/endevco/aube/pull/548))
+- refresh benchmarks for v1.9.1 ([#534](https://github.com/endevco/aube/pull/534))
+- refresh benchmarks for v1.9.0 ([#532](https://github.com/endevco/aube/pull/532))
+
 ## [1.9.1](https://github.com/endevco/aube/compare/aube-util-v1.9.0...aube-util-v1.9.1) - 2026-05-06
 
 ### Added

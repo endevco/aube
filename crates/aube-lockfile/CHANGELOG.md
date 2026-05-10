@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.9.1...aube-lockfile-v1.10.0) - 2026-05-10
+
+### Added
+
+- *(diag)* instrument install and add aube diag subcommand ([#547](https://github.com/endevco/aube/pull/547))
+
+### Fixed
+
+- *(workspace)* three workspace install correctness fixes from pnpm test port ([#564](https://github.com/endevco/aube/pull/564))
+- *(lockfile)* recognize file: resolved field in npm package-lock ([#553](https://github.com/endevco/aube/pull/553))
+- *(lockfile)* preserve imported workspace links ([#535](https://github.com/endevco/aube/pull/535))
+
+### Other
+
+- refresh benchmarks for v1.9.1 ([#555](https://github.com/endevco/aube/pull/555))
+- lead hero with auto-install promise over speed ([#557](https://github.com/endevco/aube/pull/557))
+- refresh benchmarks for v1.9.1 ([#534](https://github.com/endevco/aube/pull/534))
+- refresh benchmarks for v1.9.0 ([#532](https://github.com/endevco/aube/pull/532))
+
 ## [1.9.1](https://github.com/endevco/aube/compare/aube-lockfile-v1.9.0...aube-lockfile-v1.9.1) - 2026-05-06
 
 ### Other
