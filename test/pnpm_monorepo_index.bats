@@ -573,13 +573,14 @@ _link_workspace_packages_fixture() {
 	# the package name when the bin field is a bare string.
 	run test -e main/node_modules/.bin/hello
 	assert_success
-	[ -d main/node_modules ]
 
 	# Wipe every node_modules tree the way pnpm's test does and
-	# reinstall via --frozen-lockfile. The lockfile must encode
-	# enough information for the linker to rematerialize the bin
-	# shim without re-reading hello's manifest fresh.
-	rm -rf main/node_modules node_modules
+	# reinstall via --frozen-lockfile. Include hello/node_modules
+	# in the wipe so the linker can't fall back to a surviving
+	# sibling tree as a shortcut — the lockfile must encode enough
+	# information to rematerialize the bin shim without re-reading
+	# hello's manifest fresh.
+	rm -rf hello/node_modules main/node_modules node_modules
 
 	run aube install --frozen-lockfile
 	assert_success
