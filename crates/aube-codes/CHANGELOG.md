@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.3](https://github.com/endevco/aube/compare/aube-codes-v1.10.2...aube-codes-v1.10.3) - 2026-05-10
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [1.10.1](https://github.com/endevco/aube/compare/aube-codes-v1.10.0...aube-codes-v1.10.1) - 2026-05-10
 
 ### Other
