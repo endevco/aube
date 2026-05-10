@@ -13,6 +13,34 @@ use std::path::{Path, PathBuf};
 pub use aube_manifest::workspace::WorkspaceConfig;
 pub use selector::{Selector, WorkspacePkg};
 
+/// Whether `project_dir` is the root of a workspace project — i.e.
+/// the user has set up workspace mode via `aube-workspace.yaml` /
+/// `pnpm-workspace.yaml` or `package.json#workspaces`, regardless of
+/// whether the current `packages:` glob actually matches any
+/// directories on disk.
+///
+/// Distinct from [`find_workspace_packages`] returning a non-empty
+/// list: a workspace whose only sub-package was just `rm -rf`ed
+/// still counts as a workspace project (the yaml is still on disk),
+/// but `find_workspace_packages` would return an empty vec.
+/// Callers that need to drive workspace-shaped behavior on the
+/// "all packages currently absent" boundary (lockfile importer
+/// pruning, workspace-yaml-only validation) need this stronger
+/// signal.
+pub fn is_workspace_project_root(project_dir: &Path) -> bool {
+    if WORKSPACE_YAML_NAMES
+        .iter()
+        .any(|name| project_dir.join(name).is_file())
+    {
+        return true;
+    }
+    package_json_workspace_patterns(project_dir)
+        .map(|patterns| !patterns.is_empty())
+        .unwrap_or(false)
+}
+
+const WORKSPACE_YAML_NAMES: &[&str] = &["aube-workspace.yaml", "pnpm-workspace.yaml"];
+
 /// Discover workspace package directories.
 ///
 /// Precedence:
@@ -617,5 +645,41 @@ mod tests {
             "expected 20 or 21 packages (siblings + optional self), got {}",
             found.len()
         );
+    }
+
+    #[test]
+    fn is_workspace_project_root_detects_yaml_only() {
+        // pnpm-workspace.yaml present, packages: empty (or matches
+        // nothing on disk). `find_workspace_packages` returns [] —
+        // but the project IS still a workspace, and downstream
+        // workspace-shaped behavior (lockfile importer pruning,
+        // workspace yaml-only validation) needs to know.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'absent/*'\n",
+        );
+        assert!(is_workspace_project_root(dir.path()));
+        assert!(find_workspace_packages(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn is_workspace_project_root_detects_package_json_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        assert!(is_workspace_project_root(dir.path()));
+    }
+
+    #[test]
+    fn is_workspace_project_root_returns_false_when_neither_marker_present() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("package.json"),
+            r#"{"name":"single","version":"1.0.0"}"#,
+        );
+        assert!(!is_workspace_project_root(dir.path()));
     }
 }

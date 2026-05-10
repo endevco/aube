@@ -1267,6 +1267,7 @@ impl LockfileGraph {
         workspace_overrides: &BTreeMap<String, String>,
         workspace_ignored_optional: &[String],
         workspace_catalogs: &BTreeMap<String, BTreeMap<String, String>>,
+        is_workspace_install: bool,
     ) -> DriftStatus {
         // Override drift is checked once at the workspace level, against
         // the root manifest. Workspace-package manifests may declare
@@ -1310,25 +1311,25 @@ impl LockfileGraph {
                 stale => return stale,
             }
         }
-        // Stale-importer pass: when this install IS in workspace mode
-        // (manifests carries at least one non-`.` entry, i.e. a real
-        // workspace member was discovered), lockfile importer entries
-        // for workspace projects that no longer exist on disk must
-        // invalidate the lockfile. Without this guard, the warm-path
-        // short-circuit and drift check both report fresh and the
-        // next install carries the orphan importer/snapshot pair
-        // forward in the shared lockfile until a user explicitly
-        // runs `--no-frozen-lockfile`.
+        // Stale-importer pass: in a workspace install, lockfile
+        // importer entries for workspace projects that no longer
+        // exist on disk must invalidate the lockfile. Without this
+        // guard, the warm-path short-circuit and drift check both
+        // report fresh and the next install carries the orphan
+        // importer/snapshot pair forward in the shared lockfile
+        // until a user explicitly runs `--no-frozen-lockfile`.
         //
-        // Skipped on non-workspace installs because the npm parser
-        // synthesizes an importer entry for every `file:` link it
-        // sees in `package-lock.json`'s `packages:` block (each one
-        // gets its own dependencies map for the linker to walk). The
-        // call-side `manifests` only carries the root project, so
-        // every `file:` dep would falsely look "stale" and trip
-        // `aube ci` on legitimate non-workspace lockfiles.
-        let in_workspace_mode = manifests.iter().any(|(p, _)| p != ".");
-        if in_workspace_mode {
+        // Gated on the caller-supplied `is_workspace_install` flag
+        // (true when `pnpm-workspace.yaml` exists or `package.json`
+        // declares `workspaces`) — the manifests array can collapse
+        // to `[(".", root)]` even in a workspace install when the
+        // last sub-package is removed, so a manifest-shape check
+        // would miss the all-packages-gone case. The flag is also
+        // what tells us we're not in the npm `package-lock.json`
+        // path, where the parser synthesizes importer entries for
+        // every `file:` link and a manifest-shape gate would
+        // false-positive on legitimate single-package installs.
+        if is_workspace_install {
             let current_importers: std::collections::HashSet<&str> =
                 manifests.iter().map(|(p, _)| p.as_str()).collect();
             for importer_path in self.importers.keys() {
@@ -2863,6 +2864,7 @@ mod drift_tests {
                 &BTreeMap::new(),
                 &[],
                 &BTreeMap::new(),
+                true,
             ),
             DriftStatus::Fresh
         );
@@ -3303,6 +3305,7 @@ mod drift_tests {
             &BTreeMap::new(),
             &[],
             &BTreeMap::new(),
+            true,
         ) {
             DriftStatus::Stale { reason } => {
                 assert!(reason.contains("packages/app"));
@@ -3733,7 +3736,8 @@ mod drift_tests {
                 &workspace_manifests,
                 &BTreeMap::new(),
                 &[],
-                &BTreeMap::new()
+                &BTreeMap::new(),
+                true,
             ),
             DriftStatus::Fresh
         );

@@ -2442,6 +2442,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         .wrap_err("failed to discover workspace packages")?;
     let recursive_install = aube_settings::resolved::recursive_install(&settings_ctx);
     let has_workspace = !workspace_packages.is_empty();
+    // Distinct from `has_workspace`: `is_workspace_project` stays
+    // true when every workspace sub-package was just removed from
+    // disk but the workspace yaml / `workspaces` field is still in
+    // place. The lockfile drift check needs this stronger signal so
+    // it still prunes orphan importer entries on the all-packages-
+    // gone boundary, where `manifests` collapses to `[(".", root)]`
+    // and looks indistinguishable from a non-workspace install.
+    let is_workspace_project = aube_workspace::is_workspace_project_root(&cwd);
     let link_all_workspace_importers =
         has_workspace && (recursive_install || !opts.workspace_filter.is_empty());
 
@@ -2746,7 +2754,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 parsed,
                 Ok((g, _))
                     if matches!(
-                        g.check_drift_workspace(&manifests, &ws_config_shared.overrides, &ws_config_shared.ignored_optional_dependencies, &workspace_catalogs),
+                        g.check_drift_workspace(&manifests, &ws_config_shared.overrides, &ws_config_shared.ignored_optional_dependencies, &workspace_catalogs, is_workspace_project),
                         DriftStatus::Fresh,
                     )
                         && matches!(g.check_catalogs_drift(&workspace_catalogs), DriftStatus::Fresh)
@@ -3011,6 +3019,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                         &ws_config_shared.overrides,
                         &ws_config_shared.ignored_optional_dependencies,
                         &workspace_catalogs,
+                        is_workspace_project,
                     ) {
                         return Err(miette!(
                             "lockfile is out of date with package.json: {reason}\n\
@@ -3043,6 +3052,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                                 &ws_config_shared.overrides,
                                 &ws_config_shared.ignored_optional_dependencies,
                                 &workspace_catalogs,
+                                is_workspace_project,
                             ) {
                                 DriftStatus::Fresh => Ok((graph.clone(), *kind)),
                                 DriftStatus::Stale { reason } => {
