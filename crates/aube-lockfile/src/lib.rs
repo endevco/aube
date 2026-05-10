@@ -1310,6 +1310,37 @@ impl LockfileGraph {
                 stale => return stale,
             }
         }
+        // Stale-importer pass: when this install IS in workspace mode
+        // (manifests carries at least one non-`.` entry, i.e. a real
+        // workspace member was discovered), lockfile importer entries
+        // for workspace projects that no longer exist on disk must
+        // invalidate the lockfile. Without this guard, the warm-path
+        // short-circuit and drift check both report fresh and the
+        // next install carries the orphan importer/snapshot pair
+        // forward in the shared lockfile until a user explicitly
+        // runs `--no-frozen-lockfile`.
+        //
+        // Skipped on non-workspace installs because the npm parser
+        // synthesizes an importer entry for every `file:` link it
+        // sees in `package-lock.json`'s `packages:` block (each one
+        // gets its own dependencies map for the linker to walk). The
+        // call-side `manifests` only carries the root project, so
+        // every `file:` dep would falsely look "stale" and trip
+        // `aube ci` on legitimate non-workspace lockfiles.
+        let in_workspace_mode = manifests.iter().any(|(p, _)| p != ".");
+        if in_workspace_mode {
+            let current_importers: std::collections::HashSet<&str> =
+                manifests.iter().map(|(p, _)| p.as_str()).collect();
+            for importer_path in self.importers.keys() {
+                if !current_importers.contains(importer_path.as_str()) {
+                    return DriftStatus::Stale {
+                        reason: format!(
+                            "workspace importer {importer_path} is in the lockfile but not in the workspace"
+                        ),
+                    };
+                }
+            }
+        }
         DriftStatus::Fresh
     }
 
