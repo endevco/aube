@@ -124,6 +124,19 @@ AUBE_BIN="$INSTRUMENTED_BIN" hermetic_start
 # uplink path. Drop those before the real training runs land.
 rm -f "$PGO_PROFRAW_DIR"/*.profraw
 
+# Force the instrumented binary to write profraw to a host path we
+# control, regardless of what `-Cprofile-generate=<dir>` baked in at
+# compile time. With AUBE_PGO_BUILD_TOOL=cross the rustc compile runs
+# inside a container where the project may be mounted under a path
+# that differs from the host (cross's default MOUNT_FINDER puts the
+# workspace at `/project`). The host path embedded in the binary then
+# doesn't resolve at runtime, profraw goes nowhere, and llvm-profdata
+# silently produces no merged output. Setting LLVM_PROFILE_FILE at
+# runtime sidesteps the path-translation question entirely. %m
+# disambiguates per module signature; %p per process — together they
+# keep the 6 training runs from colliding on the same file.
+PROFRAW_PATTERN="$PGO_PROFRAW_DIR/aube-%m-%p.profraw"
+
 # 3 cold + 3 warm. Cold runs each get a fresh dir so the resolver,
 # registry, store, and linker hot paths all run end-to-end. Warm runs
 # reuse the last cold dir so the frozen-lockfile fast path is also
@@ -136,13 +149,13 @@ cold_run() {
 	printf 'registry=%s\n' "$BENCH_REGISTRY_URL" >"$run_dir/.npmrc"
 	printf 'registry=%s\n' "$BENCH_REGISTRY_URL" >"$run_dir/home/.npmrc"
 	echo "  train: cold install ($i)"
-	(cd "$run_dir" && HOME="$run_dir/home" "$INSTRUMENTED_BIN" install --ignore-scripts >/dev/null)
+	(cd "$run_dir" && HOME="$run_dir/home" LLVM_PROFILE_FILE="$PROFRAW_PATTERN" "$INSTRUMENTED_BIN" install --ignore-scripts >/dev/null)
 }
 
 warm_run() {
 	local run_dir=$1 i=$2
 	echo "  train: warm install ($i)"
-	(cd "$run_dir" && HOME="$run_dir/home" "$INSTRUMENTED_BIN" install --ignore-scripts >/dev/null)
+	(cd "$run_dir" && HOME="$run_dir/home" LLVM_PROFILE_FILE="$PROFRAW_PATTERN" "$INSTRUMENTED_BIN" install --ignore-scripts >/dev/null)
 }
 
 for i in 1 2 3; do
@@ -153,6 +166,19 @@ for i in 1 2 3; do
 done
 
 hermetic_stop
+
+# Sanity check: confirm training actually wrote profraw. Without
+# LLVM_PROFILE_FILE this silently produced zero files on cross-built
+# targets — llvm-profdata then merged nothing and phase 3b failed with
+# "file ... merged.profdata does not exist". Fail loudly here instead.
+profraw_count=$(find "$PGO_PROFRAW_DIR" -maxdepth 1 -name '*.profraw' -type f | wc -l | tr -d ' ')
+if [ "$profraw_count" -eq 0 ]; then
+	echo "ERROR: no .profraw files written to $PGO_PROFRAW_DIR after training" >&2
+	echo "  Training ran but the instrumented binary did not record profile data." >&2
+	echo "  Check LLVM_PROFILE_FILE handling and the cross host/container mount." >&2
+	exit 1
+fi
+echo ">>> $profraw_count .profraw files collected"
 
 # ---------- Phase 3a: merge ----------
 echo ">>> [3/3] Merging profile data"
