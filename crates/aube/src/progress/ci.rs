@@ -323,7 +323,14 @@ impl CiState {
         // One snapshot for both the final bar and the summary stats —
         // taking two separate snapshots would let a concurrent
         // `FetchRow::drop` land between them and desync the numbers.
-        let snap = self.snapshot();
+        let mut snap = self.snapshot();
+        // Promote to the terminal "done" phase so the final bar
+        // renders at 100% and drops the linking-phase label. The
+        // mid-work 95% cap is about not lying while linking is in
+        // flight; by the time we reach `stop()` the install is fully
+        // complete and the bar should reflect that before the summary
+        // line lands.
+        snap.phase = 4;
         // Emit one final bar so CI logs end on a complete snapshot
         // even when the last heartbeat was skipped (fast fetch+link
         // between ticks). Skipped if it would duplicate the previous

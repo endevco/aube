@@ -98,9 +98,13 @@ pub(super) fn unified_progress(snap: Snap, completed: usize) -> f64 {
         }
         // Linking has no per-package signal; hold at the fetch-end
         // edge so the bar doesn't claim 100% during the linking window.
-        // `finish()` retires the display before the user sees a full
-        // bar — the summary line is the completion cue.
         3 => fetch_end,
+        // Install complete. The install pipeline has finished every
+        // resolve/fetch/link/script step by the time the caller
+        // promotes the phase to this terminal state, so the bar can
+        // honestly read 100%. Used by `finish()` / `stop()` for one
+        // final repaint right before the summary line lands.
+        4 => 1.0,
         _ => 0.0,
     }
 }
@@ -142,7 +146,7 @@ pub(super) fn count_segment(snap: Snap, completed: usize) -> String {
             let count = pad_count(snap.resolved, snap.resolved);
             format!("{} {}", style::ebold(count), style::edim("pkgs"))
         }
-        2 | 3 => {
+        2..=4 => {
             let cur = pad_count(completed, snap.resolved);
             format!(
                 "{}/{} {}",
@@ -209,6 +213,10 @@ fn label_for(snap: Snap, completed: usize) -> String {
             ];
             parts.join(&dot)
         }
+        // Done. Just the count — the `✓ resolved …` summary line that
+        // immediately follows owns the success cue, no need for a
+        // phase word here.
+        4 => count_segment(snap, completed),
         _ => String::new(),
     }
 }
@@ -448,6 +456,28 @@ mod tests {
         // padding gets applied to only one of the two.
         assert!(small.contains("   5 pkgs"), "got: {small}");
         assert!(big.contains("1237 pkgs"), "got: {big}");
+    }
+
+    #[test]
+    fn done_phase_fills_bar_and_drops_phase_word() {
+        // After `finish()` / `stop()` the bar should paint at full
+        // width — the install is genuinely complete. The phase word
+        // drops because the `✓ resolved …` summary line that follows
+        // owns the success cue.
+        let mut s = snap(2, 1230, 1230, 56_000_000, 0);
+        s.phase = 4;
+        s.reused = 0;
+        s.downloaded = 1230;
+        let bar = strip_ansi(&bar_only(s, 15, 1230));
+        assert_eq!(
+            bar.matches('\u{2588}').count(),
+            15,
+            "done phase must fill the bar: {bar}"
+        );
+        let line = strip_ansi(&progress_line(s, 80, 15));
+        assert!(line.contains("1230/1230 pkgs"), "got: {line}");
+        assert!(!line.contains("linking"), "no phase word at done: {line}");
+        assert!(!line.contains("fetching"), "no phase word at done: {line}");
     }
 
     #[test]

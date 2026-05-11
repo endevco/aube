@@ -823,7 +823,33 @@ impl InstallProgress {
     /// want the framed summary to remain the end of CI log output.
     pub fn finish(&self, print_ci_summary: bool) {
         match &self.mode {
-            Mode::Tty { root, finished, .. } => {
+            Mode::Tty {
+                root,
+                finished,
+                total,
+                target_total,
+                reused,
+                downloaded,
+                phase_num,
+                ..
+            } => {
+                // Promote to the "done" phase and repaint at 100%
+                // before retiring the display. The mid-work 95% cap
+                // is about not lying while linking is in flight; at
+                // `finish()` the install is fully complete and the
+                // last frame the user sees should match that. Clear
+                // the phase word so the header reads cleanly without
+                // a stale "— linking" trailing the full bar.
+                phase_num.store(4, Ordering::Relaxed);
+                root.prop("phase", "");
+                refresh_tty_bar_from_atomics(
+                    root,
+                    total,
+                    target_total,
+                    reused,
+                    downloaded,
+                    phase_num,
+                );
                 root.set_status(ProgressStatus::Done);
                 finished.store(true, Ordering::Relaxed);
                 clx::progress::stop();
