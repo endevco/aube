@@ -509,61 +509,74 @@ impl Store {
                         .and_then(|s| s.to_str())
                         .and_then(|s| u8::from_str_radix(s, 16).ok())
                         .map(|b| b as usize);
-                    let _shard_guard = shard_idx.map(|i| {
+                    // Every path produced by `file_path_from_hex` lives
+                    // under a 2-char hex shard, so this is the contract
+                    // every fast-path caller satisfies today. The assert
+                    // pins the invariant; if a future caller hands in a
+                    // non-CAS path, release builds skip the fast path
+                    // (falling through to the safe tempfile branch)
+                    // rather than do an unsynchronized write that could
+                    // race with another thread on the same hash.
+                    debug_assert!(
+                        shard_idx.is_some(),
+                        "fast-path CAS write to path without a valid hex shard parent: {}",
+                        path.display()
+                    );
+                    if let Some(i) = shard_idx {
                         // Mutex poisoning is impossible here — the guard
                         // is dropped at end of scope without us panicking
                         // inside, so we either return cleanly or propagate
                         // an `Err` while still releasing the lock. If a
                         // future caller panics inside, `unwrap_or_else`
                         // recovers the guard anyway.
-                        FAST_PATH_SHARD_LOCKS[i]
+                        let _shard_guard = FAST_PATH_SHARD_LOCKS[i]
                             .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                    });
+                            .unwrap_or_else(|p| p.into_inner());
 
-                    let open_result = std::fs::OpenOptions::new()
-                        .mode(0o644)
-                        .create_new(true)
-                        .write(true)
-                        .open(path);
-                    match open_result {
-                        Ok(mut f) => {
-                            f.write_all(bytes)
-                                .map_err(|e| Error::Io(path.to_path_buf(), e))?;
-                            return Ok(CasWriteOutcome::Created);
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                            // Holding the shard lock, so any in-process
-                            // writer for this hash already finished. If
-                            // the file size matches, it's a genuine
-                            // dedupe. If not, it's a crashed-predecessor
-                            // remnant — unlink and rewrite inline.
-                            if cas_file_matches_len(path, bytes.len() as u64) {
-                                return Ok(CasWriteOutcome::AlreadyExisted);
+                        let open_result = std::fs::OpenOptions::new()
+                            .mode(0o644)
+                            .create_new(true)
+                            .write(true)
+                            .open(path);
+                        match open_result {
+                            Ok(mut f) => {
+                                f.write_all(bytes)
+                                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                                return Ok(CasWriteOutcome::Created);
                             }
-                            let _ = xx::file::remove_file(path);
-                            match std::fs::OpenOptions::new()
-                                .mode(0o644)
-                                .create_new(true)
-                                .write(true)
-                                .open(path)
-                            {
-                                Ok(mut f) => {
-                                    f.write_all(bytes)
-                                        .map_err(|e| Error::Io(path.to_path_buf(), e))?;
-                                    return Ok(CasWriteOutcome::Created);
+                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                                // Holding the shard lock, so any in-process
+                                // writer for this hash already finished. If
+                                // the file size matches, it's a genuine
+                                // dedupe. If not, it's a crashed-predecessor
+                                // remnant — unlink and rewrite inline.
+                                if cas_file_matches_len(path, bytes.len() as u64) {
+                                    return Ok(CasWriteOutcome::AlreadyExisted);
                                 }
-                                Err(e) => {
-                                    return Err(Error::Io(path.to_path_buf(), e));
+                                let _ = xx::file::remove_file(path);
+                                match std::fs::OpenOptions::new()
+                                    .mode(0o644)
+                                    .create_new(true)
+                                    .write(true)
+                                    .open(path)
+                                {
+                                    Ok(mut f) => {
+                                        f.write_all(bytes)
+                                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                                        return Ok(CasWriteOutcome::Created);
+                                    }
+                                    Err(e) => {
+                                        return Err(Error::Io(path.to_path_buf(), e));
+                                    }
                                 }
                             }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                // Shard dir missing — fall through to the slow
+                                // path; the outer wrapper will create_dir_all
+                                // and retry once.
+                            }
+                            Err(e) => return Err(Error::Io(path.to_path_buf(), e)),
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            // Shard dir missing — fall through to the slow
-                            // path; the outer wrapper will create_dir_all
-                            // and retry once.
-                        }
-                        Err(e) => return Err(Error::Io(path.to_path_buf(), e)),
                     }
                 }
 
