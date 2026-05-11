@@ -109,6 +109,16 @@ enum Mode {
         /// fetch-add without racing a concurrent reader/writer through clx's
         /// separate `overall_progress()` / `progress_total()` calls.
         total: Arc<AtomicUsize>,
+        /// Resolving-phase denominator hint. Seeded from any lockfile
+        /// on disk before resolution starts and raised by the
+        /// resolver's BFS-frontier signal during resolution.
+        /// `fetch_max` semantics keep it from ever shrinking, so a
+        /// transient frontier dip can't snap the displayed total
+        /// backward. Distinct from `total` because the
+        /// post-`filter_graph` `set_total` reset would otherwise
+        /// clobber the resolving-phase estimate at the fetching-phase
+        /// transition.
+        target_total: Arc<AtomicUsize>,
         /// Mirror of cumulative reused-package count so the TTY bar can
         /// recompute the live numerator without taking a round-trip
         /// through clx's progress accessors.
@@ -229,6 +239,7 @@ impl InstallProgress {
                 root,
                 finished: Arc::new(AtomicBool::new(false)),
                 total: Arc::new(AtomicUsize::new(0)),
+                target_total: Arc::new(AtomicUsize::new(0)),
                 reused: Arc::new(AtomicUsize::new(0)),
                 downloaded: Arc::new(AtomicUsize::new(0)),
                 phase_num: Arc::new(AtomicUsize::new(0)),
@@ -257,6 +268,25 @@ impl InstallProgress {
         Self {
             mode: Mode::Ci(state),
             unpacked_sizes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Raise the resolving-phase denominator floor. Only ever
+    /// increases the displayed total — a smaller `n` is silently
+    /// ignored. Used by the install command to seed the resolving bar
+    /// from any lockfile on disk and to surface the resolver's
+    /// BFS-frontier high-water mark while resolution is in flight,
+    /// so phase 1 renders a real bar instead of the empty-bar
+    /// placeholder. No-op once resolution finishes — phase 2+ reads
+    /// the actual count via `total` (set by [`set_total`]).
+    pub fn set_total_floor(&self, n: usize) {
+        match &self.mode {
+            Mode::Tty { target_total, .. } => {
+                target_total.fetch_max(n, Ordering::Relaxed);
+            }
+            Mode::Ci(s) => {
+                s.target_total.fetch_max(n, Ordering::Relaxed);
+            }
         }
     }
 

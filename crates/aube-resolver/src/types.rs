@@ -188,6 +188,17 @@ pub struct ResolvedPackage {
     /// when the packument doesn't carry the field (older publishes,
     /// `file:`/`link:` deps, JSR packages without npm metadata).
     pub unpacked_size: Option<u64>,
+    /// Resolver's view of remaining work at the moment this package
+    /// was sent: the size of the BFS queue plus any packument fetches
+    /// still in flight plus transitives deferred behind a time-based
+    /// cutoff. `received_count + pending` is a non-strict lower bound
+    /// on the final resolved-package count, used by the install
+    /// progress UI to render a real bar during the resolving phase
+    /// instead of an empty placeholder. Approximate by construction —
+    /// a packument fetch completing without enqueueing children can
+    /// transiently shrink the frontier, so the install side raises
+    /// the displayed denominator with `fetch_max` semantics.
+    pub pending: usize,
 }
 
 impl ResolvedPackage {

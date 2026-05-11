@@ -46,24 +46,50 @@ pub(super) fn progress_line(snap: Snap, term_width: usize, bar_width: usize) -> 
     format!("{bar} {label}")
 }
 
+/// Share of the install bar assigned to the resolving phase. The
+/// resolver typically accounts for a small fraction of wall time on a
+/// network-bound install; reserving ~20% leaves the dominant 80% for
+/// the fetching/linking stretch. The bar fills 0 → `RESOLVE_BAR_WEIGHT`
+/// during resolving, then continues 1:1 through fetching until it
+/// reaches the right edge.
+const RESOLVE_BAR_WEIGHT: f64 = 0.20;
+/// Share of the install bar assigned to fetching. Linking shares the
+/// fetching segment's right edge: by the time the linker runs every
+/// package is already in the CAS (or reflinked via the GVS prewarm
+/// pipeline), so there's no separate "linking" fill to track —
+/// the phase word in the label is the cue for that final stretch.
+const FETCH_BAR_WEIGHT: f64 = 1.0 - RESOLVE_BAR_WEIGHT;
+
 /// The fixed-width left-aligned bar. Empty portion is dim throughout;
 /// the filled portion takes its color from the current phase (cyan
 /// while fetching, green for linking/done) so the bar visually tracks
 /// the same phase progression that the right-side label spells out
-/// in words. Resolving has no fill — phase 1 always renders an empty
-/// bar — so it doesn't need its own arm here.
+/// in words. One unified bar across the whole install: resolving
+/// fills the leftmost `RESOLVE_BAR_WEIGHT` slice, fetching extends
+/// from there to the right edge, linking holds at 100%. Without a
+/// resolving-phase estimate the resolving slice stays empty and
+/// fetching fills the full bar — the user-facing fallback when no
+/// lockfile and no BFS-frontier signal are available.
 pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
-    let (numerator, denominator) = if snap.phase == 1 {
-        (0, 1)
-    } else {
-        let denom = snap.resolved.max(1);
-        (completed, denom)
+    let progress: f64 = match snap.phase {
+        1 if snap.target_total > 0 => {
+            let estimate = snap.target_total.max(snap.resolved).max(1) as f64;
+            RESOLVE_BAR_WEIGHT * (snap.resolved as f64 / estimate).min(1.0)
+        }
+        2 => {
+            let total = snap.resolved.max(1) as f64;
+            let fetch_progress = (completed as f64 / total).min(1.0);
+            // Offset by the resolving slice so the bar continues
+            // monotonically from where phase 1 left off. The mild
+            // jump at the boundary (when `target_total` undershoots
+            // or overshoots reality) is bounded by `RESOLVE_BAR_WEIGHT`
+            // and resolves within the first few fetch completions.
+            RESOLVE_BAR_WEIGHT + FETCH_BAR_WEIGHT * fetch_progress
+        }
+        3 => 1.0,
+        _ => 0.0,
     };
-    let filled = numerator
-        .checked_mul(width)
-        .and_then(|v| v.checked_div(denominator))
-        .unwrap_or(0)
-        .min(width);
+    let filled = ((progress * width as f64).round() as usize).min(width);
     let empty = width - filled;
     let fill = "█".repeat(filled);
     let empty = "░".repeat(empty);
@@ -91,9 +117,24 @@ fn label_for(snap: Snap, completed: usize) -> String {
     let dot = format!(" {} ", style::edim("·"));
     match snap.phase {
         1 => {
-            let count = pad_count(snap.resolved, snap.resolved);
+            // Phase 1 numerator: count resolved so far. When we have a
+            // denominator estimate from the lockfile peek or the
+            // BFS-frontier signal, render as `cur/total`; otherwise
+            // fall back to the bare running count.
+            let count_segment = if snap.target_total > snap.resolved {
+                let cur = pad_count(snap.resolved, snap.target_total);
+                format!(
+                    "{}/{} {}",
+                    style::ecyan(cur).bold(),
+                    style::ecyan(snap.target_total).bold(),
+                    style::edim("pkgs"),
+                )
+            } else {
+                let count = pad_count(snap.resolved, snap.resolved);
+                format!("{} {}", style::ecyan(count).bold(), style::edim("pkgs"))
+            };
             let parts = [
-                format!("{} {}", style::ecyan(count).bold(), style::edim("pkgs")),
+                count_segment,
                 style::eyellow("resolving").bold().to_string(),
             ];
             parts.join(&dot)
@@ -292,6 +333,7 @@ mod tests {
         Snap {
             phase,
             resolved,
+            target_total: 0,
             reused: completed,
             downloaded: 0,
             bytes,
@@ -401,6 +443,83 @@ mod tests {
         assert!(line.contains("linking"), "got: {line}");
         assert!(!line.contains("MB/s"), "rate must drop in linking: {line}");
         assert!(!line.contains("ETA"), "eta must drop in linking: {line}");
+    }
+
+    #[test]
+    fn resolving_with_target_total_shows_cur_total_and_filled_bar() {
+        let mut s = snap(1, 500, 0, 0, 0);
+        s.target_total = 1230;
+        let line = strip_ansi(&progress_line(s, 80, 15));
+        assert!(line.contains("500/1230 pkgs"), "got: {line}");
+        assert!(line.contains("resolving"), "got: {line}");
+        // Bar should have at least one filled cell once
+        // target_total > resolved > 0.
+        assert!(line.contains('\u{2588}'), "expected filled fill: {line}");
+        assert!(line.contains('\u{2591}'), "expected empty fill: {line}");
+    }
+
+    #[test]
+    fn resolving_without_target_total_keeps_bare_count() {
+        let line = strip_ansi(&progress_line(snap(1, 500, 0, 0, 0), 80, 15));
+        // No target_total → fall back to original "N pkgs" shape
+        // with an empty bar so we don't fake a denominator.
+        assert!(line.contains("500 pkgs"), "got: {line}");
+        assert!(!line.contains("/"), "no cur/total without estimate: {line}");
+        assert!(
+            !line.contains('\u{2588}'),
+            "no fill without estimate: {line}"
+        );
+    }
+
+    #[test]
+    fn resolving_target_total_undershoot_caps_at_resolve_weight() {
+        // Resolved already exceeded a stale estimate (e.g. lockfile
+        // undershot because the user added a big new subtree). The
+        // bar's resolving slice caps at `RESOLVE_BAR_WEIGHT`; phase 2
+        // takes over for the remaining fill. Label shows the bare
+        // count rather than `cur/total` with cur > total.
+        let mut s = snap(1, 1300, 0, 0, 0);
+        s.target_total = 1230;
+        let line = strip_ansi(&progress_line(s, 80, 15));
+        assert!(line.contains("1300 pkgs"), "got: {line}");
+        // Bar is in resolving phase — at most ~RESOLVE_BAR_WEIGHT (~20%)
+        // of the 15-cell bar can be filled, so the empty portion is
+        // still present.
+        assert!(
+            line.contains('\u{2591}'),
+            "resolving bar must not extend past its slice: {line}"
+        );
+    }
+
+    #[test]
+    fn unified_bar_continues_from_resolve_into_fetch() {
+        // End of resolving with a 1:1 estimate hits the resolve-slice
+        // edge; phase 2 starts at the same fill level and grows from
+        // there, so the bar progresses monotonically across phases.
+        let mut end_resolve = snap(1, 1230, 0, 0, 0);
+        end_resolve.target_total = 1230;
+        let resolve_bar = strip_ansi(&bar_only(end_resolve, 15, 0));
+        let resolve_filled = resolve_bar.matches('\u{2588}').count();
+
+        let start_fetch = snap(2, 1230, 0, 0, 0);
+        let fetch_bar = strip_ansi(&bar_only(start_fetch, 15, 0));
+        let fetch_filled = fetch_bar.matches('\u{2588}').count();
+
+        // Phase 2 at completed=0 starts at exactly the resolving
+        // slice's edge (or one cell higher from rounding), never
+        // backs up.
+        assert!(
+            fetch_filled >= resolve_filled,
+            "fetch start ({fetch_filled}) must not regress below resolve end ({resolve_filled})"
+        );
+        // And fetch end (completed = total) reaches the full width.
+        let end_fetch = snap(2, 1230, 1230, 0, 0);
+        let end_fetch_bar = strip_ansi(&bar_only(end_fetch, 15, 1230));
+        assert_eq!(
+            end_fetch_bar.matches('\u{2588}').count(),
+            15,
+            "got: {end_fetch_bar}"
+        );
     }
 
     #[test]

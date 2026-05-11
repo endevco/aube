@@ -957,6 +957,8 @@ impl Resolver {
                             },
                         );
                         if let Some(ref tx) = self.resolved_tx {
+                            let pending =
+                                queue.len() + in_flight.len() + deferred_transitives.len();
                             let _ = tx
                                 .send(ResolvedPackage {
                                     dep_path: dep_path.clone(),
@@ -980,6 +982,7 @@ impl Resolver {
                                     libc: aube_lockfile::PlatformList::new(),
                                     deprecated: None,
                                     unpacked_size: None,
+                                    pending,
                                 })
                                 .await;
                         }
@@ -1223,6 +1226,8 @@ impl Resolver {
                             }
 
                             if let Some(ref tx) = self.resolved_tx {
+                                let pending =
+                                    queue.len() + in_flight.len() + deferred_transitives.len();
                                 let _ = tx
                                     .send(ResolvedPackage {
                                         dep_path: dep_path.clone(),
@@ -1258,6 +1263,7 @@ impl Resolver {
                                         // a running download total instead
                                         // when the estimate is unavailable.
                                         unpacked_size: None,
+                                        pending,
                                     })
                                     .await;
                             }
@@ -1781,6 +1787,7 @@ impl Resolver {
                 // for aliased packages where `name` alone (`h3-v2`)
                 // would 404.
                 if let Some(ref tx) = self.resolved_tx {
+                    let pending = queue.len() + in_flight.len() + deferred_transitives.len();
                     let _ = tx
                         .send(ResolvedPackage {
                             dep_path: dep_path.clone(),
@@ -1795,6 +1802,7 @@ impl Resolver {
                             libc: version_meta.libc.iter().cloned().collect(),
                             deprecated: deprecated_msg.clone(),
                             unpacked_size: version_meta.dist.as_ref().and_then(|d| d.unpacked_size),
+                            pending,
                         })
                         .await;
                 }
