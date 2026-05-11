@@ -273,6 +273,58 @@ teardown() {
 	assert_output "true"
 }
 
+@test "config set --location project writes to existing workspace yaml when one is present" {
+	# When a pnpm-workspace.yaml (or aube-workspace.yaml) already
+	# lives in the project, project-scope aube settings land there
+	# instead of creating a new `.config/aube/config.toml`. Keeps the
+	# project's config story to a single file when possible.
+	echo "packages:" >pnpm-workspace.yaml
+	echo "  - 'apps/*'" >>pnpm-workspace.yaml
+	run aube config set autoInstallPeers false --location project
+	assert_success
+	run cat pnpm-workspace.yaml
+	assert_output --partial "autoInstallPeers: false"
+	# Existing entries are preserved.
+	assert_output --partial "packages:"
+	# No new config.toml created.
+	assert [ ! -f ".config/aube/config.toml" ]
+	# Round-trip through `aube config get`.
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "false"
+}
+
+@test "config set --location project falls back to config.toml for settings without workspace yaml support" {
+	# `scriptShell` is not a workspace-yaml source per settings.toml,
+	# so the project write lands in `<cwd>/.config/aube/config.toml`
+	# even though a workspace yaml exists.
+	echo "packages:" >pnpm-workspace.yaml
+	echo "  - 'apps/*'" >>pnpm-workspace.yaml
+	run aube config set scriptShell /bin/zsh --location project
+	assert_success
+	assert [ -f ".config/aube/config.toml" ]
+	run cat ".config/aube/config.toml"
+	assert_output --partial 'scriptShell = "/bin/zsh"'
+	run cat pnpm-workspace.yaml
+	refute_output --partial "scriptShell"
+}
+
+@test "config delete --location project removes the key from workspace yaml" {
+	# Symmetric with set: delete removes from the workspace yaml
+	# when the value lives there.
+	cat >pnpm-workspace.yaml <<EOF
+packages:
+  - 'apps/*'
+autoInstallPeers: false
+EOF
+	run aube config delete autoInstallPeers --location project
+	assert_success
+	run cat pnpm-workspace.yaml
+	refute_output --partial "autoInstallPeers"
+	# Unrelated entries are preserved.
+	assert_output --partial "packages:"
+}
+
 @test "config get prefers project npmrc over user config.toml" {
 	# Scope locality: project `.npmrc` outranks user `config.toml`.
 	mkdir proj

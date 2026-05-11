@@ -84,9 +84,10 @@ pub fn run(args: ListArgs) -> miette::Result<()> {
             entries
         }
         ListLocation::Project => {
-            // Project-scope aube config outranks project `.npmrc`, same
-            // authority principle as the user-scope pair.
-            let mut entries = read_single(&cwd.join(".npmrc"))?;
+            // Project-scope precedence (low → high): workspace yaml,
+            // project `.npmrc`, project `config.toml`.
+            let mut entries = super::read_workspace_yaml_flat(&cwd);
+            entries.extend(read_single(&cwd.join(".npmrc"))?);
             entries.extend(super::aube_config::load_project_entries(&cwd));
             entries
         }

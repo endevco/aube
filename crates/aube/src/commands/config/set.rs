@@ -44,6 +44,22 @@ pub(super) fn set_value(
     report: bool,
 ) -> miette::Result<()> {
     if let Some(meta) = aube_config::is_aube_config_key(key) {
+        // Project-scope writes prefer an existing workspace yaml so we
+        // don't proliferate config files. Settings with no workspace
+        // yaml source fall back to project `config.toml`. User-scope
+        // writes always land in `~/.config/aube/config.toml`.
+        if matches!(location, Location::Project)
+            && let Some(yaml_path) = aube_manifest::workspace::workspace_yaml_existing(
+                &crate::dirs::project_root_or_cwd()?,
+            )
+            && let Some(yaml_key) = aube_config::preferred_workspace_yaml_key(meta)
+        {
+            aube_config::set_workspace_yaml_value(&yaml_path, meta, yaml_key, value)?;
+            if report {
+                eprintln!("set {}={} ({})", yaml_key, value, yaml_path.display());
+            }
+            return Ok(());
+        }
         let path = match location {
             Location::User | Location::Global => aube_config::user_aube_config_path()?,
             Location::Project => {

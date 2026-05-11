@@ -1,6 +1,7 @@
 use super::{literal_aliases, setting_for_key, settings_meta};
 use miette::{Context, IntoDiagnostic, miette};
 use std::path::{Path, PathBuf};
+use yaml_serde::Value as YamlValue;
 
 pub(super) struct AubeConfigEdit {
     table: toml::map::Map<String, toml::Value>,
@@ -112,6 +113,89 @@ fn load_entries_at(path: &Path) -> Vec<(String, String)> {
 pub(super) fn is_aube_config_key(key: &str) -> Option<&'static settings_meta::SettingMeta> {
     let meta = setting_for_key(key)?;
     is_aube_config_setting(meta).then_some(meta)
+}
+
+/// Pick the workspace-yaml key to write under for this setting, or
+/// `None` if the setting has no top-level workspace-yaml source.
+/// Nested keys (e.g. `updateConfig.ignoreDependencies`) are skipped —
+/// they require sub-mapping edits beyond the scope of a generic
+/// `config set`.
+pub(super) fn preferred_workspace_yaml_key(
+    meta: &settings_meta::SettingMeta,
+) -> Option<&'static str> {
+    meta.workspace_yaml_keys
+        .iter()
+        .copied()
+        .find(|k| !k.contains('.'))
+}
+
+/// Write `raw` to `key` in the workspace yaml at `path`, preserving
+/// surrounding comments and unrelated keys via
+/// [`aube_manifest::workspace::edit_workspace_yaml`].
+pub(super) fn set_workspace_yaml_value(
+    path: &Path,
+    meta: &settings_meta::SettingMeta,
+    key: &str,
+    raw: &str,
+) -> miette::Result<()> {
+    let value = raw_to_yaml_value(meta, raw)?;
+    aube_manifest::workspace::edit_workspace_yaml(path, |map| {
+        map.insert(YamlValue::String(key.to_string()), value);
+        Ok(())
+    })
+    .map_err(|e| miette!("failed to write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Remove every alias of `meta` from the workspace yaml at `path`.
+/// Returns `true` if at least one key was found and removed.
+pub(super) fn remove_workspace_yaml_aliases(
+    path: &Path,
+    meta: &settings_meta::SettingMeta,
+) -> miette::Result<bool> {
+    let aliases: Vec<&'static str> = meta
+        .workspace_yaml_keys
+        .iter()
+        .copied()
+        .filter(|k| !k.contains('.'))
+        .collect();
+    if aliases.is_empty() {
+        return Ok(false);
+    }
+    let mut removed = false;
+    aube_manifest::workspace::edit_workspace_yaml(path, |map| {
+        for alias in &aliases {
+            if map
+                .shift_remove(YamlValue::String((*alias).to_string()))
+                .is_some()
+            {
+                removed = true;
+            }
+        }
+        Ok(())
+    })
+    .map_err(|e| miette!("failed to write {}: {e}", path.display()))?;
+    Ok(removed)
+}
+
+fn raw_to_yaml_value(meta: &settings_meta::SettingMeta, raw: &str) -> miette::Result<YamlValue> {
+    match meta.type_ {
+        "bool" => aube_settings::parse_bool(raw)
+            .map(YamlValue::Bool)
+            .ok_or_else(|| miette!("{} expects a boolean value", meta.name)),
+        "int" => raw
+            .trim()
+            .parse::<i64>()
+            .map(|n| YamlValue::Number(n.into()))
+            .map_err(|_| miette!("{} expects an integer value", meta.name)),
+        "list<string>" => Ok(YamlValue::Sequence(
+            parse_string_list(raw)
+                .into_iter()
+                .map(YamlValue::String)
+                .collect(),
+        )),
+        _ => Ok(YamlValue::String(raw.to_string())),
+    }
 }
 
 fn is_aube_config_setting(meta: &settings_meta::SettingMeta) -> bool {

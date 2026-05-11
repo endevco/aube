@@ -276,9 +276,14 @@ fn search_text_matches(haystack: &str, term: &str) -> bool {
 /// Walk every config source in low-to-high precedence order so a later
 /// duplicate wins. Mirrors the chain the install pipeline applies via
 /// [`aube_settings::resolved`]:
-/// `userNpmrc < userAubeConfig < projectNpmrc < projectAubeConfig`.
+/// `workspaceYaml < userNpmrc < userAubeConfig < projectNpmrc <
+/// projectAubeConfig`. Per-setting `precedence` overrides in
+/// `settings.toml` can reorder file sources (e.g. `minimumReleaseAge`
+/// puts `workspaceYaml` first); `aube config get` shows the
+/// default-precedence view, which is accurate for the common cases.
 pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
+    out.extend(read_workspace_yaml_flat(cwd));
     if let Ok(user) = user_npmrc_path() {
         out.extend(read_single(&user)?);
     }
@@ -286,6 +291,34 @@ pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     out.extend(read_single(&cwd.join(".npmrc"))?);
     out.extend(aube_config::load_project_entries(cwd));
     Ok(out)
+}
+
+/// Surface flat scalar entries from the project's workspace yaml so
+/// `aube config get/list` can report values aube actually reads from
+/// there (`autoInstallPeers`, `nodeLinker`, `minimumReleaseAge`, …).
+/// Nested mappings (`updateConfig.ignoreDependencies`, `catalog`,
+/// `allowBuilds`) are skipped — they don't round-trip through a simple
+/// `(key, raw)` view and aren't what `config get <bare-key>` asks for.
+pub(super) fn read_workspace_yaml_flat(cwd: &Path) -> Vec<(String, String)> {
+    let Ok(map) = aube_manifest::workspace::load_raw(cwd) else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(k, v)| yaml_scalar_string(v).map(|raw| (k.clone(), raw)))
+        .collect()
+}
+
+fn yaml_scalar_string(value: &yaml_serde::Value) -> Option<String> {
+    match value {
+        yaml_serde::Value::String(s) => Some(s.clone()),
+        yaml_serde::Value::Number(n) => Some(n.to_string()),
+        yaml_serde::Value::Bool(b) => Some(b.to_string()),
+        yaml_serde::Value::Sequence(items) => {
+            let parts: Vec<String> = items.iter().filter_map(yaml_scalar_string).collect();
+            (!parts.is_empty()).then(|| parts.join(","))
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn read_single(path: &std::path::Path) -> miette::Result<Vec<(String, String)>> {

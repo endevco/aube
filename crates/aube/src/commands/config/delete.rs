@@ -6,8 +6,19 @@ pub type DeleteArgs = KeyArgs;
 
 pub fn run(args: DeleteArgs) -> miette::Result<()> {
     let aliases = resolve_aliases(&args.key);
-    if aube_config::is_aube_config_key(&args.key).is_some() {
+    if let Some(meta) = aube_config::is_aube_config_key(&args.key) {
         let location = args.effective_location();
+        // Mirror `set --location project`: if the value lives in an
+        // existing workspace yaml, remove it from there.
+        if matches!(location, Location::Project)
+            && let Some(yaml_path) = aube_manifest::workspace::workspace_yaml_existing(
+                &crate::dirs::project_root_or_cwd()?,
+            )
+            && aube_config::remove_workspace_yaml_aliases(&yaml_path, meta)?
+        {
+            eprintln!("deleted {} ({})", args.key, yaml_path.display());
+            return Ok(());
+        }
         let path = match location {
             Location::User | Location::Global => aube_config::user_aube_config_path()?,
             Location::Project => {
