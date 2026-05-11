@@ -3204,7 +3204,9 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // would double-suffix every key.
             if matches!(
                 kind,
-                aube_lockfile::LockfileKind::Npm | aube_lockfile::LockfileKind::NpmShrinkwrap
+                aube_lockfile::LockfileKind::Npm
+                    | aube_lockfile::LockfileKind::NpmShrinkwrap
+                    | aube_lockfile::LockfileKind::Bun
             ) {
                 let peer_pass_start = std::time::Instant::now();
                 let pkgs_before = graph.packages.len();

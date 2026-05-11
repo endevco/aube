@@ -94,6 +94,27 @@ teardown() {
 	assert_dir_exists "node_modules/@sindresorhus/is"
 }
 
+@test "aube install applies peer-context suffixes when importing from bun.lock" {
+	# Regression for the bun.lock importer skipping
+	# `apply_peer_contexts`. Without the pass, `fdir` lands in the
+	# virtual store as `fdir@6.5.0/` with no peer-qualified sibling
+	# link, so any consumer that runs from inside the isolated dir
+	# can't find `picomatch` and falls through to whatever copy is
+	# hoisted in `.aube/node_modules/`.
+	cp "$PROJECT_ROOT/fixtures/import-bun-peer/package.json" .
+	cp "$PROJECT_ROOT/fixtures/import-bun-peer/bun.lock" .
+
+	run aube install
+	assert_success
+
+	# Peer-qualified virtual-store directory now exists.
+	run sh -c 'ls node_modules/.aube/ | grep "^fdir@6.5.0_picomatch@4.0.4"'
+	assert_success
+
+	# And the sibling peer link is wired inside that directory.
+	assert_link_exists "node_modules/.aube/$(ls node_modules/.aube/ | grep '^fdir@6.5.0_picomatch@4.0.4')/node_modules/picomatch"
+}
+
 @test "aube install smoke installs messy bun.lock fixture and doesn't change lockfile" {
 	cp -R "$PROJECT_ROOT/fixtures/import-bun-messy/." .
 	cp bun.lock bun.lock.before
