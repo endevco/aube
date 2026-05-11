@@ -80,11 +80,22 @@ pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
             let total = snap.resolved.max(1) as f64;
             let fetch_progress = (completed as f64 / total).min(1.0);
             // Offset by the resolving slice so the bar continues
-            // monotonically from where phase 1 left off. The mild
-            // jump at the boundary (when `target_total` undershoots
-            // or overshoots reality) is bounded by `RESOLVE_BAR_WEIGHT`
-            // and resolves within the first few fetch completions.
-            RESOLVE_BAR_WEIGHT + FETCH_BAR_WEIGHT * fetch_progress
+            // monotonically from where phase 1 left off — but only
+            // when a resolving estimate was actually in play. Without
+            // one (true first install, no lockfile and no streamed
+            // BFS-frontier signal), phase 1 rendered an empty bar,
+            // and anchoring fetching at 20% would snap the bar
+            // upward at the phase boundary. Fall back to the
+            // pre-PR full-range fill in that case. The mild
+            // boundary jump that survives — when `target_total`
+            // under- or overshoots reality — is bounded by
+            // `RESOLVE_BAR_WEIGHT` and resolves within the first
+            // few fetch completions.
+            if snap.target_total > 0 {
+                RESOLVE_BAR_WEIGHT + FETCH_BAR_WEIGHT * fetch_progress
+            } else {
+                fetch_progress
+            }
         }
         3 => 1.0,
         _ => 0.0,
@@ -492,16 +503,53 @@ mod tests {
     }
 
     #[test]
+    fn fetch_start_without_estimate_does_not_jump_to_resolve_offset() {
+        // No estimate was ever provided (no lockfile, BFS-frontier
+        // signal never raised the floor): resolving rendered empty,
+        // and fetching at completed=0 must also start empty rather
+        // than snap up to RESOLVE_BAR_WEIGHT.
+        let empty_resolve = snap(1, 0, 0, 0, 0);
+        let resolve_bar = strip_ansi(&bar_only(empty_resolve, 15, 0));
+        assert_eq!(
+            resolve_bar.matches('\u{2588}').count(),
+            0,
+            "resolving without estimate must render empty: {resolve_bar}"
+        );
+
+        let fetch_start = snap(2, 142, 0, 0, 0);
+        let fetch_bar = strip_ansi(&bar_only(fetch_start, 15, 0));
+        assert_eq!(
+            fetch_bar.matches('\u{2588}').count(),
+            0,
+            "fetch start without estimate must not snap to RESOLVE_BAR_WEIGHT: {fetch_bar}"
+        );
+
+        // And fetching still fills the full bar by completion, same
+        // as the pre-PR behavior on the no-estimate path.
+        let fetch_end = snap(2, 142, 142, 0, 0);
+        let end_bar = strip_ansi(&bar_only(fetch_end, 15, 142));
+        assert_eq!(
+            end_bar.matches('\u{2588}').count(),
+            15,
+            "fetch end without estimate must fill: {end_bar}"
+        );
+    }
+
+    #[test]
     fn unified_bar_continues_from_resolve_into_fetch() {
         // End of resolving with a 1:1 estimate hits the resolve-slice
         // edge; phase 2 starts at the same fill level and grows from
         // there, so the bar progresses monotonically across phases.
+        // target_total carries forward through the phase change — the
+        // atomic isn't cleared at the boundary — so phase 2 picks up
+        // the offset.
         let mut end_resolve = snap(1, 1230, 0, 0, 0);
         end_resolve.target_total = 1230;
         let resolve_bar = strip_ansi(&bar_only(end_resolve, 15, 0));
         let resolve_filled = resolve_bar.matches('\u{2588}').count();
 
-        let start_fetch = snap(2, 1230, 0, 0, 0);
+        let mut start_fetch = snap(2, 1230, 0, 0, 0);
+        start_fetch.target_total = 1230;
         let fetch_bar = strip_ansi(&bar_only(start_fetch, 15, 0));
         let fetch_filled = fetch_bar.matches('\u{2588}').count();
 
@@ -513,7 +561,8 @@ mod tests {
             "fetch start ({fetch_filled}) must not regress below resolve end ({resolve_filled})"
         );
         // And fetch end (completed = total) reaches the full width.
-        let end_fetch = snap(2, 1230, 1230, 0, 0);
+        let mut end_fetch = snap(2, 1230, 1230, 0, 0);
+        end_fetch.target_total = 1230;
         let end_fetch_bar = strip_ansi(&bar_only(end_fetch, 15, 1230));
         assert_eq!(
             end_fetch_bar.matches('\u{2588}').count(),
