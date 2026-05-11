@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const SHA512_INTEGRITY_PREFIX: &str = "sha512-";
 
@@ -59,6 +61,24 @@ thread_local! {
     static SHA512_HASHER: RefCell<Sha512> = RefCell::new(Sha512::new());
 }
 
+/// Per-shard mutex array used by the macOS CAS fast path to serialize
+/// concurrent writers within a single process. Indexed by the first
+/// byte of the file's BLAKE3 hash (matching the on-disk 2-char shard
+/// layout), so two threads writing the same hash always collide; threads
+/// writing different hashes typically don't. The array is process-global
+/// rather than per-`Store` because there is at most one active store
+/// per install, and a static avoids carrying 256 mutexes in every cheap
+/// `Store::clone()` along the fetch pipeline.
+///
+/// macOS-gated rather than `not(linux)` because the fast-path block
+/// itself uses `OpenOptionsExt::mode`, which only exists on Unix —
+/// Windows would fail to compile under `not(linux)`. Linux already has
+/// `O_TMPFILE + linkat` (atomic-by-construction, faster than either
+/// alternative); Windows keeps the tempfile + persist_noclobber path.
+#[cfg(target_os = "macos")]
+static FAST_PATH_SHARD_LOCKS: [std::sync::Mutex<()>; 256] =
+    [const { std::sync::Mutex::new(()) }; 256];
+
 fn blake3_hex(content: &[u8]) -> String {
     B3_HASHER.with(|cell| {
         let mut h = cell.borrow_mut();
@@ -79,6 +99,13 @@ fn blake3_hex(content: &[u8]) -> String {
 pub struct Store {
     root: PathBuf,
     cache_dir: PathBuf,
+    /// When set, `create_cas_file` writes directly to the final
+    /// content-addressed path on non-Linux platforms instead of the
+    /// tempfile-then-rename dance. Caller must guarantee no concurrent
+    /// installer is writing into this store — typically via an exclusive
+    /// file lock taken at install start. Linux is unaffected because the
+    /// O_TMPFILE+linkat path is already atomic-by-construction.
+    fast_path: Arc<AtomicBool>,
 }
 
 /// Metadata about a file stored in the CAS.
@@ -138,7 +165,11 @@ impl Store {
     pub fn default_location() -> Result<Self, Error> {
         let root = dirs::store_dir().ok_or(Error::NoHome)?;
         let cache_dir = dirs::cache_dir().ok_or(Error::NoHome)?;
-        Ok(Self { root, cache_dir })
+        Ok(Self {
+            root,
+            cache_dir,
+            fast_path: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// Open the store with an explicit root, keeping the default
@@ -148,7 +179,11 @@ impl Store {
     /// rest of aube expects them.
     pub fn with_root(root: PathBuf) -> Result<Self, Error> {
         let cache_dir = dirs::cache_dir().ok_or(Error::NoHome)?;
-        Ok(Self { root, cache_dir })
+        Ok(Self {
+            root,
+            cache_dir,
+            fast_path: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// Open the store at a specific path (cache dir derived from store root).
@@ -156,7 +191,31 @@ impl Store {
     /// should prefer `default_location` or `with_root`.
     pub fn at(root: PathBuf) -> Self {
         let cache_dir = root.parent().unwrap_or(&root).join(CACHE_DIR_NAME);
-        Self { root, cache_dir }
+        Self {
+            root,
+            cache_dir,
+            fast_path: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Enable the macOS direct-write fast path for CAS imports. Bypasses
+    /// the tempfile + persist_noclobber pattern and writes straight to
+    /// the final content-addressed path, saving ~80µs/file on APFS. The
+    /// caller MUST hold an exclusive lock against the store for the
+    /// duration any thread might invoke `import_bytes`; otherwise a
+    /// concurrent installer can observe a partial file and the
+    /// `AlreadyExisted` recovery dance can clobber an in-flight write.
+    ///
+    /// macOS-gated rather than just declared inert on other platforms.
+    /// On Linux the `O_TMPFILE+linkat` path has no inline length-check
+    /// recovery — that recovery only lives inside the macOS fast-path
+    /// branch — so the outer skip in `import_bytes` (also macOS-gated
+    /// via `cfg!`) must never see the flag set on Linux. Removing the
+    /// method on non-macOS platforms makes that mismatch a build error
+    /// rather than a silent acceptance of torn CAS files.
+    #[cfg(target_os = "macos")]
+    pub fn enable_fast_path(&self) {
+        self.fast_path.store(true, Ordering::Release);
     }
 
     pub fn root(&self) -> &Path {
@@ -391,8 +450,13 @@ impl Store {
     /// `NotFound` means a concurrent prune or a missed `ensure_shards_exist`
     /// removed the parent shard; recreate it and retry exactly once before
     /// surfacing.
-    fn create_cas_file(path: &Path, content: Option<&[u8]>) -> Result<CasWriteOutcome, Error> {
+    fn create_cas_file(
+        &self,
+        path: &Path,
+        content: Option<&[u8]>,
+    ) -> Result<CasWriteOutcome, Error> {
         fn do_create_and_write(
+            this: &Store,
             path: &Path,
             content: Option<&[u8]>,
         ) -> Result<CasWriteOutcome, Error> {
@@ -417,6 +481,127 @@ impl Store {
                     }
                 }
 
+                // macOS fast path: direct O_CREAT|O_EXCL at the final
+                // content-addressed path, no tempfile dance. Caller (the
+                // install command) flips `fast_path` on only after
+                // acquiring an exclusive store-level lock against other
+                // aube processes. We additionally serialize writers
+                // *within* this process per shard: two threads importing
+                // the same hash (a CAS-dedupe across packages, 35% of
+                // files on dep-heavy graphs like MUI/CodeMirror) would
+                // otherwise both attempt create_new — the loser sees an
+                // EEXIST against the winner's still-empty fd and the
+                // caller's size-mismatch recovery in `import_bytes` would
+                // unlink the file out from under the still-writing
+                // winner. The shard mutex sequences the open+write so the
+                // loser only observes the file at its final size.
+                //
+                // Crashed-predecessor recovery (the unlink+rewrite path
+                // that the slow path defers to `import_bytes`) runs here
+                // while the mutex is still held, so the caller's recovery
+                // can safely no-op for fast-path writes.
+                //
+                // On APFS the fast path is ~2.25x faster than
+                // tempfile+chmod+persist (~64µs/file vs ~145µs/file in
+                // isolation). macOS-gated rather than `not(linux)`
+                // because `OpenOptionsExt::mode` is unix-only — Windows
+                // keeps the tempfile path.
+                #[cfg(target_os = "macos")]
+                if this.fast_path.load(Ordering::Acquire) {
+                    use std::io::Write;
+                    use std::os::unix::fs::OpenOptionsExt;
+
+                    let shard_idx = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .and_then(|s| u8::from_str_radix(s, 16).ok())
+                        .map(|b| b as usize);
+                    // Every path produced by `file_path_from_hex` lives
+                    // under a 2-char hex shard, so this is the contract
+                    // every fast-path caller satisfies today. The assert
+                    // pins the invariant; if a future caller hands in a
+                    // non-CAS path, release builds skip the fast path
+                    // (falling through to the safe tempfile branch)
+                    // rather than do an unsynchronized write that could
+                    // race with another thread on the same hash.
+                    debug_assert!(
+                        shard_idx.is_some(),
+                        "fast-path CAS write to path without a valid hex shard parent: {}",
+                        path.display()
+                    );
+                    if let Some(i) = shard_idx {
+                        // Mutex poisoning is impossible here — the guard
+                        // is dropped at end of scope without us panicking
+                        // inside, so we either return cleanly or propagate
+                        // an `Err` while still releasing the lock. If a
+                        // future caller panics inside, `unwrap_or_else`
+                        // recovers the guard anyway.
+                        let _shard_guard = FAST_PATH_SHARD_LOCKS[i]
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+
+                        // `OpenOptionsExt::mode(0o644)` is masked by the
+                        // process umask, so a non-default umask (e.g.
+                        // 0o077) would give CAS files 0o600. The
+                        // tempfile path uses `fchmod`, which ignores
+                        // umask. Match it with an explicit
+                        // `set_permissions` so the same store can't end
+                        // up with mixed-mode files depending on which
+                        // path wrote each entry.
+                        use std::os::unix::fs::PermissionsExt;
+                        let force_mode = std::fs::Permissions::from_mode(0o644);
+                        let open_result = std::fs::OpenOptions::new()
+                            .mode(0o644)
+                            .create_new(true)
+                            .write(true)
+                            .open(path);
+                        match open_result {
+                            Ok(mut f) => {
+                                f.set_permissions(force_mode.clone())
+                                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                                f.write_all(bytes)
+                                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                                return Ok(CasWriteOutcome::Created);
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                                // Holding the shard lock, so any in-process
+                                // writer for this hash already finished. If
+                                // the file size matches, it's a genuine
+                                // dedupe. If not, it's a crashed-predecessor
+                                // remnant — unlink and rewrite inline.
+                                if cas_file_matches_len(path, bytes.len() as u64) {
+                                    return Ok(CasWriteOutcome::AlreadyExisted);
+                                }
+                                let _ = xx::file::remove_file(path);
+                                match std::fs::OpenOptions::new()
+                                    .mode(0o644)
+                                    .create_new(true)
+                                    .write(true)
+                                    .open(path)
+                                {
+                                    Ok(mut f) => {
+                                        f.set_permissions(force_mode)
+                                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                                        f.write_all(bytes)
+                                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+                                        return Ok(CasWriteOutcome::Created);
+                                    }
+                                    Err(e) => {
+                                        return Err(Error::Io(path.to_path_buf(), e));
+                                    }
+                                }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                // Shard dir missing — fall through to the slow
+                                // path; the outer wrapper will create_dir_all
+                                // and retry once.
+                            }
+                            Err(e) => return Err(Error::Io(path.to_path_buf(), e)),
+                        }
+                    }
+                }
+
                 // Tempfile + persist_noclobber gives atomic crash
                 // semantics: a partial write on `tmp` is dropped by
                 // tempfile's Drop impl, so the final path either
@@ -425,7 +610,10 @@ impl Store {
                 // tried (faster path, ~3 syscalls per file) but
                 // raced with concurrent installs in CI where two
                 // processes saw the same partial file in different
-                // orders and clobbered each other's recovery.
+                // orders and clobbered each other's recovery. The
+                // fast-path branch above re-enables it under an
+                // exclusive store lock.
+                let _ = this; // suppress unused warning on Linux
                 let parent = path.parent().ok_or_else(|| {
                     Error::Io(path.to_path_buf(), std::io::ErrorKind::NotFound.into())
                 })?;
@@ -465,7 +653,7 @@ impl Store {
             }
         }
 
-        match do_create_and_write(path, content) {
+        match do_create_and_write(self, path, content) {
             Ok(outcome) => Ok(outcome),
             Err(Error::Io(_, ref ioe)) if ioe.kind() == std::io::ErrorKind::NotFound => {
                 // Shard dir missing. `ensure_shards_exist` normally
@@ -476,7 +664,7 @@ impl Store {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| Error::Io(parent.to_path_buf(), e))?;
                 }
-                do_create_and_write(path, content)
+                do_create_and_write(self, path, content)
             }
             Err(e) => Err(e),
         }
@@ -518,7 +706,7 @@ impl Store {
         // `content.len()` by construction, no need to re-stat. Only
         // the `AlreadyExisted` branch can produce a torn file (from a
         // crashed predecessor) so the length check runs there only.
-        let outcome = Self::create_cas_file(&store_path, Some(content))?;
+        let outcome = self.create_cas_file(&store_path, Some(content))?;
         // Surface CAS dedup hit/miss to diag so cold vs warm vs partial
         // installs can be classified post-hoc. `cas_hit` fires when an
         // identical-content file already lived in the store; `cas_miss`
@@ -532,23 +720,58 @@ impl Store {
                 format!(r#"{{"size":{}}}"#, content.len())
             });
         }
-        if outcome == CasWriteOutcome::AlreadyExisted
-            && !cas_file_matches_len(&store_path, content.len() as u64)
-        {
-            let _ = xx::file::remove_file(&store_path);
-            Self::create_cas_file(&store_path, Some(content))?;
+        // The macOS fast path verifies the file size inline under its
+        // shard mutex before returning `AlreadyExisted`, so this
+        // recovery only needs to run when we took the tempfile path.
+        // Skipping it there also prevents a race where the recovery
+        // unlinks a file that another in-process thread is concurrently
+        // re-creating after observing the same crashed-predecessor.
+        //
+        // `cfg!(target_os = "macos")` matches the cfg gate on the only
+        // code path that flips `fast_path` to true (and on the inline
+        // recovery inside `create_cas_file`). Without the cfg!, a future
+        // caller setting the flag on Linux would silently disable this
+        // recovery — the Linux O_TMPFILE branch has no inline
+        // length-check substitute, so torn CAS files would be accepted.
+        let fast_path_handled_recovery =
+            cfg!(target_os = "macos") && self.fast_path.load(Ordering::Acquire);
+        if outcome == CasWriteOutcome::AlreadyExisted && !fast_path_handled_recovery {
+            // A length mismatch from this branch can mean either
+            //   (a) a crashed predecessor left a torn file (the recovery
+            //       case this code was originally written for), or
+            //   (b) on macOS, another *process* is currently writing to
+            //       the same path via the fast path (no atomic publish
+            //       at the final path, so its in-progress fd is visible
+            //       by name to other writers).
+            // Burning the file in case (b) would unlink the active
+            // writer's inode and trigger a cascading recovery race. Wait
+            // briefly (50ms is dozens of typical small-file writes) for
+            // the partial file to settle. If it stays mismatched past
+            // the deadline, treat it as (a) and recover.
             if !cas_file_matches_len(&store_path, content.len() as u64) {
-                let actual_len = store_path.metadata().map(|metadata| metadata.len()).ok();
-                return Err(Error::Io(
-                    store_path.clone(),
-                    std::io::Error::other(format!(
-                        "CAS entry has wrong size after import: expected {} bytes, got {}",
-                        content.len(),
-                        actual_len
-                            .map(|len| format!("{len} bytes"))
-                            .unwrap_or_else(|| "missing file".to_owned())
-                    )),
-                ));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+                while !cas_file_matches_len(&store_path, content.len() as u64)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_micros(250));
+                }
+            }
+            if !cas_file_matches_len(&store_path, content.len() as u64) {
+                let _ = xx::file::remove_file(&store_path);
+                self.create_cas_file(&store_path, Some(content))?;
+                if !cas_file_matches_len(&store_path, content.len() as u64) {
+                    let actual_len = store_path.metadata().map(|metadata| metadata.len()).ok();
+                    return Err(Error::Io(
+                        store_path.clone(),
+                        std::io::Error::other(format!(
+                            "CAS entry has wrong size after import: expected {} bytes, got {}",
+                            content.len(),
+                            actual_len
+                                .map(|len| format!("{len} bytes"))
+                                .unwrap_or_else(|| "missing file".to_owned())
+                        )),
+                    ));
+                }
             }
         }
 
@@ -573,7 +796,7 @@ impl Store {
             // through the `PackageIndex` and the linker. So flipping
             // a marker-absent-to-present for a shared hash is safe.
             let exec_marker = PathBuf::from(format!("{}-exec", store_path.display()));
-            Self::create_cas_file(&exec_marker, None)?;
+            self.create_cas_file(&exec_marker, None)?;
         }
 
         Ok(StoredFile {
