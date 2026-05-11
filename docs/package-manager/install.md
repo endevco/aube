@@ -66,13 +66,11 @@ that need legacy `node_modules` assumptions. `pnp` is not supported.
 aube install --package-import-method=auto
 aube install --package-import-method=hardlink
 aube install --package-import-method=copy
+aube install --package-import-method=clone-or-copy
 ```
 
-`auto` probes the filesystem and uses `hardlink`, falling back to
-`copy` on cross-filesystem boundaries. `clone` and `clone-or-copy`
-are accepted for npm/pnpm compatibility but emit a deprecation warning
-and resolve to `hardlink` — the reflink path was removed because it
-was measurably slower than hardlink on every benchmarked target.
+`auto` probes the filesystem and chooses the fastest available strategy:
+reflink, hardlink, then copy.
 
 ## References
 

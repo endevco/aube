@@ -542,19 +542,10 @@ fn with_link_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
 /// Strategy for linking files from the store to node_modules.
 #[derive(Debug, Clone, Copy)]
 pub enum LinkStrategy {
-    /// Copy-on-write reflink (APFS clonefile, btrfs reflink).
-    ///
-    /// **Deprecated**: reflink was measurably slower than `Hardlink`
-    /// on every modern target we benchmarked (macOS APFS, Linux
-    /// btrfs/xfs reflink); the variant is retained for API
-    /// compatibility but is treated identically to [`Hardlink`] at
-    /// the materialize step. The accompanying `packageImportMethod`
-    /// values (`clone`, `clone-or-copy`) emit a deprecation warning
-    /// and resolve to `Hardlink` as well.
-    #[deprecated(
-        note = "reflink path was removed; behaves identically to LinkStrategy::Hardlink. \
-                Will be removed in the next breaking release."
-    )]
+    /// Copy-on-write (APFS clonefile, btrfs reflink). Selected by
+    /// explicit `packageImportMethod = clone` / `clone-or-copy`;
+    /// `auto` picks [`Hardlink`] because hardlink is measurably
+    /// faster on every benchmarked target.
     Reflink,
     /// Hard link (ext4, NTFS)
     Hardlink,
@@ -954,6 +945,12 @@ impl Linker {
     /// real link call crosses an FS boundary and hits EXDEV. Runtime
     /// falls back to `fs::copy` per file silently, thousands of
     /// wasted syscalls, user thinks they got hardlinks.
+    ///
+    /// Returns `Hardlink` when the probe succeeds, `Copy` otherwise.
+    /// Reflink is reachable only through explicit
+    /// `packageImportMethod = clone` / `clone-or-copy`; `auto` resolves
+    /// to `Hardlink` because hardlink benchmarks faster across every
+    /// target reflink supports (APFS clonefile, btrfs/xfs FICLONE).
     pub fn detect_strategy(path: &Path) -> LinkStrategy {
         Self::detect_strategy_cross(path, path)
     }
@@ -962,12 +959,7 @@ impl Linker {
     /// store FS), dst is the project modules dir (or any dir on the
     /// destination FS). Probe creates a real cross-mount src file
     /// and tries to hardlink into dst, which catches EXDEV up front.
-    ///
     /// Returns `Hardlink` when the probe succeeds, `Copy` otherwise.
-    /// Reflink is no longer probed — it was measurably slower than
-    /// hardlink on every modern filesystem we benchmarked, so the
-    /// strategy is always one of `Hardlink` or `Copy` regardless of
-    /// reflink availability.
     pub fn detect_strategy_cross(src_dir: &Path, dst_dir: &Path) -> LinkStrategy {
         // Memoize per (src_dir, dst_dir) for the process lifetime.
         // The probe writes a real test file and tries hardlink,
@@ -2381,7 +2373,7 @@ impl Linker {
     ///
     /// Exposed so the install driver can pipeline GVS population into
     /// the fetch phase: as each tarball finishes importing into the
-    /// CAS, the driver calls this to hardlink the package into its
+    /// CAS, the driver calls this to reflink the package into its
     /// `~/.cache/aube/virtual-store/<subdir>` entry. Link step 1 then
     /// hits the `pkg_nm_dir.exists()` fast path and only creates the
     /// per-project `.aube/<dep_path>` symlink.
@@ -2646,9 +2638,10 @@ impl Linker {
                 // `create_cas_file` writes every CAS entry as 0o644
                 // unconditionally; the only place a CAS entry's
                 // shared inode gets the +x bit is the very first
-                // `make_executable` call against a hardlinked target
-                // — that `chmod` upgrades the shared inode for every
-                // later linker that points at it. Skipping the call (an earlier optimization)
+                // `make_executable` call against a hardlinked or
+                // reflinked target — that `chmod` upgrades the
+                // shared inode for every later linker that points
+                // at it. Skipping the call (an earlier optimization)
                 // produced 0o644 binaries on cold installs and
                 // broke every CLI shipped via npm.
                 #[cfg(unix)]
@@ -2798,26 +2791,53 @@ impl Linker {
         rel_path: &str,
         dst: &Path,
     ) -> Result<(), Error> {
+        #[cfg(target_os = "macos")]
+        const SMALL_FILE_COPY_MAX: u64 = 16 * 1024;
         let map_io = |e: std::io::Error| classify_link_error(stored, rel_path, dst, e);
         let missing_source = || Error::MissingStoreFile {
             store_path: stored.store_path.clone(),
             rel_path: rel_path.to_string(),
         };
-        // Track the realized strategy (may differ from `self.strategy`
-        // when a hardlink falls back to copy on EXDEV) for diagnostic
+        // Track the realized strategy (may differ from `self.strategy` when
+        // a reflink or hardlink falls back to copy) for diagnostic
         // attribution. Diag emits a `linker.link_<strategy>` event with
         // the per-file duration so the analyzer can break down link cost
-        // by realized path: hardlink (zero-cost metadata link),
-        // hardlink_fallback_copy (EXDEV → byte copy), or copy.
+        // by realized path: reflink (zero-copy CoW), hardlink (zero-cost
+        // metadata link), copy (full byte transfer), or the
+        // small-file-copy short circuit on macOS.
         let diag_t0 = aube_util::diag::enabled().then(std::time::Instant::now);
         let realized: &'static str;
-        // `LinkStrategy::Reflink` is `#[deprecated]` and folded into
-        // the Hardlink branch — reflink was measurably slower than
-        // hardlink on every benchmarked target, so external callers
-        // that still construct `Reflink` get the faster behavior.
-        #[allow(deprecated)]
         match self.strategy {
-            LinkStrategy::Hardlink | LinkStrategy::Reflink => {
+            LinkStrategy::Reflink => {
+                #[cfg(target_os = "macos")]
+                if matches!(stored.size, Some(size) if size <= SMALL_FILE_COPY_MAX) {
+                    std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
+                    if let Some(t0) = diag_t0 {
+                        aube_util::diag::event(
+                            aube_util::diag::Category::Linker,
+                            "link_macos_small_copy",
+                            t0.elapsed(),
+                            None,
+                        );
+                    }
+                    return Ok(());
+                }
+                if let Err(e) = reflink_copy::reflink(&stored.store_path, dst) {
+                    // Source-missing short-circuit avoids the misleading
+                    // "fell back to copy" trace and the redundant copy
+                    // attempt that would just ENOENT for the same reason.
+                    if !stored.store_path.exists() {
+                        return Err(missing_source());
+                    }
+                    // Fall back to copy on cross-filesystem errors
+                    trace!("reflink failed, falling back to copy: {e}");
+                    std::fs::copy(&stored.store_path, dst).map_err(map_io)?;
+                    realized = "reflink_fallback_copy";
+                } else {
+                    realized = "reflink";
+                }
+            }
+            LinkStrategy::Hardlink => {
                 if let Err(e) = std::fs::hard_link(&stored.store_path, dst) {
                     if !stored.store_path.exists() {
                         return Err(missing_source());
@@ -2837,12 +2857,15 @@ impl Linker {
         }
 
         if let Some(t0) = diag_t0 {
-            // `realized` is one of three static strings; matching is
+            // `realized` is one of seven static strings; matching is
             // O(1) and the static `&str` keeps the JSONL category compact.
             let name = match realized {
+                "reflink" => "link_reflink",
+                "reflink_fallback_copy" => "link_reflink_fallback",
                 "hardlink" => "link_hardlink",
                 "hardlink_fallback_copy" => "link_hardlink_fallback",
                 "copy" => "link_copy",
+                "macos_small_copy" => "link_macos_small_copy",
                 _ => "link_unknown",
             };
             aube_util::diag::event(aube_util::diag::Category::Linker, name, t0.elapsed(), None);
@@ -3211,8 +3234,8 @@ fn wipe_changed_patched_entries(
 /// The patch text is split on `diff --git ` boundaries; each section
 /// is parsed as a single-file unified diff and applied to the matching
 /// file under `pkg_dir`. We deliberately unlink the destination
-/// before writing, because the linker materializes files via hardlink
-/// — modifying the file in place would corrupt the global
+/// before writing, because the linker materializes files via reflink
+/// or hardlink — modifying the file in place would corrupt the global
 /// content-addressed store the linked file points to.
 fn is_safe_rel_component(rel: &str) -> bool {
     if rel.is_empty() || rel.contains('\0') || rel.contains('\\') {
@@ -3337,12 +3360,12 @@ fn apply_multi_file_patch(pkg_dir: &Path, patch_text: &str) -> Result<(), String
         } else {
             patched_lf
         };
-        // Break any hardlink to the global store before writing the
-        // patched bytes — otherwise we'd silently mutate every other
-        // project sharing this CAS file. Stage the write through a
-        // sibling tempfile and `rename` into place so a crash or
-        // Ctrl-C mid-patch cannot leave the package with the original
-        // file unlinked and no replacement written.
+        // Break any reflink/hardlink to the global store before
+        // writing the patched bytes — otherwise we'd silently mutate
+        // every other project sharing this CAS file. Stage the write
+        // through a sibling tempfile and `rename` into place so a
+        // crash or Ctrl-C mid-patch cannot leave the package with
+        // the original file unlinked and no replacement written.
         // POSIX `rename(2)` atomically replaces the destination, so
         // no pre-removal is needed and removing first would create
         // the exact TOCTOU window the rename is supposed to close.
@@ -3903,14 +3926,12 @@ mod tests {
     fn test_detect_strategy() {
         let dir = tempfile::tempdir().unwrap();
         let strategy = Linker::detect_strategy(dir.path());
-        // Should detect hardlink on most systems, never panic.
-        // `Reflink` is never returned anymore (variant kept for API
-        // compatibility but probe was removed), so the match arm
-        // covers only the two live variants.
-        #[allow(deprecated)]
+        // Probe returns `Hardlink` or `Copy`; `Reflink` is only
+        // reachable through explicit `packageImportMethod =
+        // clone`/`clone-or-copy`, so the match guards that contract.
         match strategy {
             LinkStrategy::Hardlink | LinkStrategy::Copy => {}
-            LinkStrategy::Reflink => panic!("detect_strategy must never return Reflink"),
+            LinkStrategy::Reflink => panic!("detect_strategy must not return Reflink"),
         }
     }
 

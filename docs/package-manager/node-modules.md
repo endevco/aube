@@ -40,9 +40,9 @@ $XDG_DATA_HOME/aube/store/v1/files/
 This defaults to `~/.local/share/aube/store/v1/files/` when
 `$XDG_DATA_HOME` is unset.
 
-aube imports files from that store into the virtual store with
-hardlinks, falling back to copy on cross-filesystem boundaries.
-`package-import-method` accepts an explicit override.
+aube imports files from that store into the virtual store with reflinks,
+hardlinks, or copies depending on filesystem support and
+`package-import-method`.
 
 ## Global virtual store
 

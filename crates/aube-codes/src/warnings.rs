@@ -168,7 +168,7 @@ pub const ALL: &[CodeMeta] = &[
     CodeMeta {
         name: WARN_AUBE_CLONE_STRATEGY_FALLBACK,
         category: category::INSTALL_LIFECYCLE,
-        description: "`packageImportMethod` was set to `clone` or `clone-or-copy`. Reflink was removed because it was measurably slower than hardlink; the setting is honored as `hardlink` and the values are deprecated.",
+        description: "`package-import-method=clone` will silently fall back to copy if the filesystem doesn't support reflinks.",
         exit_code: None,
     },
     CodeMeta {

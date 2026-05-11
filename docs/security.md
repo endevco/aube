@@ -163,7 +163,7 @@ installs reverify on every fetch.
 
 The content-addressable store itself uses BLAKE3 for the on-disk index — fast
 to compute and immune to length-extension. Linked `node_modules` files are
-hardlinks (or copies on cross-filesystem boundaries); neither path can
+reflinks (APFS/btrfs), hardlinks (ext4), or copies; none of those paths can
 modify the canonical store entry.
 
 ## Auth tokens

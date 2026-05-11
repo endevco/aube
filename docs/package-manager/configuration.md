@@ -9,7 +9,7 @@ CLI flags. Existing `pnpm-workspace.yaml` files are migration inputs.
 | Area | Default | Why it matters |
 | --- | --- | --- |
 | Linker | `nodeLinker=isolated` | Keeps transitive dependencies scoped to the packages that declared them. |
-| Package imports | `packageImportMethod=auto` | Hardlinks files from the store, falling back to copy on cross-filesystem boundaries. |
+| Package imports | `packageImportMethod=auto` | Hardlinks files from the store, falling back to copy on cross-filesystem boundaries. Opt into reflink with `clone` or `clone-or-copy`. |
 | New releases | `minimumReleaseAge=1440` | Avoids installing versions published in the last 24 hours by default. |
 | Exotic transitive deps | `blockExoticSubdeps=true` | Blocks transitive git and tarball dependencies unless you opt out. |
 | Dependency scripts | approval required | Build scripts in dependencies stay skipped until approved. |
