@@ -218,11 +218,14 @@ fi
 # ---------- Phase 3b: optimize ----------
 echo ">>> Rebuilding with -Cprofile-use"
 
-# -Cllvm-args=-pgo-warn-missing-function: informational only —
-# functions the training run didn't exercise stay un-PGO'd, which is
-# fine, but the warning surfaces unexpectedly cold paths.
+# -Cllvm-args=-pgo-warn-missing-function=false: silence LLVM's per-symbol
+# "no profile data available for function …" notes during phase 3b.
+# Coverage gaps are expected — the training run can't exercise every
+# code path — and emitting a warning per uncovered symbol drowns the CI
+# build log without surfacing actionable signal. The functions still
+# get compiled, just without PGO data, which is the documented fallback.
 # shellcheck disable=SC2086 # intentional word-splitting on $target_arg
-RUSTFLAGS="-Cprofile-use=$PGO_MERGED -Cllvm-args=-pgo-warn-missing-function" \
+RUSTFLAGS="-Cprofile-use=$PGO_MERGED -Cllvm-args=-pgo-warn-missing-function=false" \
 	"$PGO_BUILD_TOOL" build --profile="$PGO_PROFILE" $target_arg -p aube
 
 # Phase 3b wrote to the same path as phase 1, so the file at
