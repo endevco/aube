@@ -52,7 +52,9 @@
 #                               from the environment.
 #   AUBE_PGO_BOLT=1             append a BOLT post-link rewrite pass
 #                               after phase 3b. Requires `llvm-bolt`
-#                               and `merge-fdata` on PATH. Linux-only;
+#                               and `merge-fdata` from a `bolt-NN`
+#                               package — either on PATH or installed
+#                               at /usr/lib/llvm-NN/bin/. Linux-only;
 #                               BOLT's macOS support is not in tree.
 #                               Uses BOLT's instrumentation mode (no
 #                               `perf` needed), which works without
@@ -94,11 +96,22 @@ if [ -n "$PGO_BOLT" ]; then
 		echo "  Install via apt.llvm.org: bolt-18 (or newer)" >&2
 		exit 1
 	fi
-	if ! command -v merge-fdata >/dev/null 2>&1; then
-		echo "ERROR: AUBE_PGO_BOLT=1 but merge-fdata is not on PATH" >&2
+	# Resolve `merge-fdata` next to `llvm-bolt` so a versioned
+	# bolt-18 install works without its directory being on PATH
+	# (e.g. local runs without the workflow's GITHUB_PATH append).
+	# Fall back to PATH only if no sibling exists.
+	bolt_bindir=$(dirname "$LLVM_BOLT")
+	if [ -x "$bolt_bindir/merge-fdata" ]; then
+		MERGE_FDATA="$bolt_bindir/merge-fdata"
+	else
+		MERGE_FDATA=$(command -v merge-fdata || true)
+	fi
+	if [ -z "$MERGE_FDATA" ]; then
+		echo "ERROR: AUBE_PGO_BOLT=1 but merge-fdata is not installed" >&2
+		echo "  Expected next to llvm-bolt at $bolt_bindir/merge-fdata" >&2
 		exit 1
 	fi
-	echo ">>> BOLT toolchain: $LLVM_BOLT"
+	echo ">>> BOLT toolchain: $LLVM_BOLT ($MERGE_FDATA)"
 fi
 
 # target_arg stays unquoted at expansion sites: empty string disappears,
@@ -360,7 +373,7 @@ fi
 echo ">>> ${#fdata_files[@]} fdata files collected"
 
 echo ">>> [4c/4] Merging fdata"
-merge-fdata "${fdata_files[@]}" -o "$BOLT_FDATA"
+"$MERGE_FDATA" "${fdata_files[@]}" -o "$BOLT_FDATA"
 
 # llvm-bolt flags:
 #   reorder-blocks=ext-tsp     — extended TSP block layout, the
