@@ -83,6 +83,16 @@ pub struct DeployArgs {
     /// `--prod` and `--dev`.
     #[arg(long, conflicts_with_all = ["prod", "dev"])]
     pub no_prod: bool,
+    /// Fail if any metadata or tarball isn't already in the local cache.
+    ///
+    /// Never hits the network. Useful in multi-stage Dockerfiles where
+    /// an earlier `aube install` already populated the store: deploy
+    /// then reproduces a prod-only tree without re-fetching anything.
+    #[arg(long, conflicts_with = "prefer_offline")]
+    pub offline: bool,
+    /// Prefer cached metadata over revalidation; only hit the network on a miss.
+    #[arg(long, conflicts_with = "offline")]
+    pub prefer_offline: bool,
     #[command(flatten)]
     pub lockfile: crate::cli_args::LockfileArgs,
     #[command(flatten)]
@@ -278,6 +288,13 @@ pub async fn run(
         } else {
             FrozenMode::No
         };
+        let network_mode = if args.offline {
+            aube_registry::NetworkMode::Offline
+        } else if args.prefer_offline {
+            aube_registry::NetworkMode::PreferOffline
+        } else {
+            aube_registry::NetworkMode::Online
+        };
         let opts = InstallOptions {
             project_dir: Some(s.target.clone()),
             mode,
@@ -289,7 +306,7 @@ pub async fn run(
             lockfile_only: false,
             merge_git_branch_lockfiles: false,
             dangerously_allow_all_builds: false,
-            network_mode: aube_registry::NetworkMode::Online,
+            network_mode,
             minimum_release_age_override: None,
             strict_no_lockfile: false,
             force: false,
@@ -1350,6 +1367,8 @@ mod tests {
             no_optional: false,
             prod: false,
             no_prod: false,
+            offline: false,
+            prefer_offline: false,
             lockfile: crate::cli_args::LockfileArgs::default(),
             network: crate::cli_args::NetworkArgs::default(),
             virtual_store: crate::cli_args::VirtualStoreArgs::default(),

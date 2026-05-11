@@ -92,6 +92,35 @@ _setup_workspace_fixture() {
 	assert_dir_exists out/node_modules/@test/lib
 }
 
+@test "aube deploy: --offline reuses the store warmed by an earlier install" {
+	_setup_workspace_fixture
+
+	# Mirrors the multi-stage Dockerfile pattern: an earlier
+	# `aube install` populates ~/.local/share/aube/store + the packument
+	# cache, then `aube deploy --offline` reproduces a prod-only tree
+	# without touching the network.
+	run aube install
+	assert_success
+
+	# Force the registry URL to a host that doesn't resolve. If deploy
+	# secretly hits the network despite --offline, the install pass
+	# fails with a DNS error and this assertion catches it.
+	echo "registry=http://aube-deploy-offline.invalid/" >.npmrc
+
+	run aube deploy --filter @test/lib --offline ./out
+	assert_success
+	assert_output --partial "deployed @test/lib@1.0.0"
+	assert_dir_exists out/node_modules/is-odd
+}
+
+@test "aube deploy: --offline and --prefer-offline conflict" {
+	_setup_workspace_fixture
+
+	run aube deploy --filter @test/lib --offline --prefer-offline ./out
+	assert_failure
+	assert_output --partial "cannot be used with"
+}
+
 @test "aube deploy: errors when --filter does not match a workspace package" {
 	_setup_workspace_fixture
 
