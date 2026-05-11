@@ -135,6 +135,21 @@ teardown() {
 	assert_failure
 }
 
+@test "config delete points at stale ~/.npmrc when an aube-known key lives only there" {
+	# Migration case: an older aube wrote aube-known keys to ~/.npmrc.
+	# After upgrading, `aube config delete <key>` should not silently
+	# touch ~/.npmrc (it's shared with npm/pnpm/yarn) — but the error
+	# must tell the user where the value actually is.
+	echo "autoInstallPeers=false" >"$HOME/.npmrc"
+	run aube config delete autoInstallPeers
+	assert_failure
+	assert_output --partial ".npmrc"
+	assert_output --partial "stale entry"
+	# Confirm the .npmrc line is preserved.
+	run cat "$HOME/.npmrc"
+	assert_output --partial "autoInstallPeers=false"
+}
+
 @test "config list prints merged entries" {
 	# Project dir must be separate from HOME so user vs project .npmrc
 	# don't alias to the same file.
