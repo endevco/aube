@@ -256,45 +256,55 @@ pub(super) fn resolve_link_strategy(
     //     the project FS, so probe against `cwd` to catch the cross-
     //     FS case before every file `fs::copy` silently falls back.
     let auto_probe = || {
-        let store_dir = super::super::open_store(cwd)
-            .map(|s| s.root().to_path_buf())
-            .ok();
+        // Open the store once and derive both paths from the same
+        // handle. `open_store` performs lockfile + IO work; a second
+        // call to fetch `virtual_store_dir` would repeat that on the
+        // hot path of every `auto`-mode install.
+        let store = super::super::open_store(cwd).ok();
+        let store_dir = store.as_ref().map(|s| s.root().to_path_buf());
+        // Probe against the GVS dir when GVS is on. The GVS dir won't
+        // exist yet on a cold install, so create it before the probe
+        // writes its test file. If creation fails (permission, ENOSPC,
+        // …) `gvs_dir` falls back to `None` so the probe targets `cwd`
+        // — better to under-probe than to probe a non-existent dir and
+        // get a spurious `Copy` verdict.
         let gvs_dir = planned_gvs
-            .then(|| {
-                super::super::open_store(cwd)
-                    .map(|s| s.virtual_store_dir())
-                    .ok()
-            })
-            .flatten();
-        // Probe against the GVS dir when GVS is on; that dir won't
-        // exist yet on a cold install, so make sure its parent
-        // chain is present before the probe writes its test file.
-        if let Some(gvs) = gvs_dir.as_deref() {
-            let _ = std::fs::create_dir_all(gvs);
-        }
+            .then(|| store.as_ref().map(|s| s.virtual_store_dir()))
+            .flatten()
+            .filter(|gvs| std::fs::create_dir_all(gvs).is_ok());
         let probe_dst = gvs_dir.as_deref().unwrap_or(cwd);
         let strategy = match store_dir.as_deref() {
             Some(sd) => aube_linker::Linker::detect_strategy_cross(sd, probe_dst),
             None => aube_linker::Linker::detect_strategy(probe_dst),
         };
-        // With GVS off, a cross-volume install hits Copy fallback
-        // because hardlink and reflink can't cross device boundaries.
-        // aube still outperforms other PMs in this regime, so just log
-        // at debug for diagnosis without spamming WARN at every
-        // invocation. With GVS on, the probe targets the GVS dir
-        // (always same FS as the store), so Copy here means the *cache
-        // store* itself is on a different volume than the chosen GVS
-        // dir — a real misconfiguration the user should hear about.
+        // Two distinct cross-volume regimes, two different messages.
+        // With GVS on, the probe targets the GVS dir (always same FS
+        // as the store in a sane setup), so Copy here means the user
+        // pointed `storeDir` and `XDG_CACHE_HOME` at different volumes
+        // — a real misconfiguration that costs per-file copies. Warn.
+        // With GVS off, the probe targets `cwd`; a cross-volume verdict
+        // there is the documented "project lives on an external mount"
+        // regime where aube still outperforms other PMs, so log at
+        // debug to keep the warning out of normal install output.
         if matches!(strategy, aube_linker::LinkStrategy::Copy)
             && let Some(sd) = store_dir.as_deref()
             && aube_util::fs::cross_volume(sd, probe_dst)
         {
-            tracing::debug!(
-                store = %sd.display(),
-                project = %cwd.display(),
-                probe_dst = %probe_dst.display(),
-                "cross-volume install, using per-file copy. set `storeDir` to a path on the project volume for hardlink fast path."
-            );
+            if gvs_dir.is_some() {
+                tracing::warn!(
+                    store = %sd.display(),
+                    gvs_dir = %probe_dst.display(),
+                    "global virtual store dir is on a different volume than `storeDir`; \
+                     install will fall back to per-file copy. Move `XDG_CACHE_HOME` \
+                     (or `storeDir`) so both live on the same volume."
+                );
+            } else {
+                tracing::debug!(
+                    store = %sd.display(),
+                    project = %cwd.display(),
+                    "cross-volume install, using per-file copy. set `storeDir` to a path on the project volume for hardlink fast path."
+                );
+            }
         }
         strategy
     };
