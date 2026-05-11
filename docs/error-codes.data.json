@@ -521,7 +521,7 @@
     {
       "name": "WARN_AUBE_SLOW_METADATA",
       "category": "Registry caching / perf",
-      "description": "One or more packument fetches exceeded `fetchWarnTimeoutMs`; emitted as a debounced group warning — a window opens on the first event and drains after a short delay, carrying the count and the slowest example. Multiple windows may fire during a single install when latency persists.",
+      "description": "One or more packument fetches exceeded `fetchWarnTimeoutMs`. Emitted as a grouped summary so a burst of slow fetches produces one warning, not one per fetch.",
       "exit_code": null
     },
     {
