@@ -133,21 +133,21 @@ pub(super) fn count_segment(snap: Snap, completed: usize) -> String {
             let cur = pad_count(snap.resolved, snap.target_total);
             format!(
                 "{}/{} {}",
-                style::ecyan(cur).bold(),
-                style::ecyan(snap.target_total).bold(),
+                style::ebold(cur),
+                style::ebold(snap.target_total),
                 style::edim("pkgs"),
             )
         }
         1 => {
             let count = pad_count(snap.resolved, snap.resolved);
-            format!("{} {}", style::ecyan(count).bold(), style::edim("pkgs"))
+            format!("{} {}", style::ebold(count), style::edim("pkgs"))
         }
         2 | 3 => {
             let cur = pad_count(completed, snap.resolved);
             format!(
                 "{}/{} {}",
-                style::ecyan(cur).bold(),
-                style::ecyan(snap.resolved).bold(),
+                style::ebold(cur),
+                style::ebold(snap.resolved),
                 style::edim("pkgs"),
             )
         }
