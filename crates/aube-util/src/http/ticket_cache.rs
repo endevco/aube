@@ -244,19 +244,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Acquire the crate-shared env lock for the duration of a test
-    /// that constructs a [`TicketCache`]. Every `open()` call reads
-    /// `is_disabled()` (which touches the process env), so a
-    /// concurrent `killswitch_short_circuits` mid-`setenv` window
-    /// would otherwise flake non-killswitch tests on parallel-test
-    /// platforms — Windows surfaced this first, but the race exists
-    /// everywhere setenv isn't atomic.
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_env::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
     fn entry(label: u8) -> TicketEntry {
         TicketEntry {
             ticket: vec![label, label + 1, label + 2],
@@ -267,7 +254,6 @@ mod tests {
 
     #[test]
     fn roundtrip_persists_across_open() {
-        let _g = env_guard();
         let dir = tempdir().unwrap();
         let path = dir.path().join("tickets.json");
         {
@@ -283,7 +269,6 @@ mod tests {
 
     #[test]
     fn host_port_lowercases() {
-        // Pure value type; no env / cache construction → no lock needed.
         let a = HostPort::new("Registry.NPMJS.ORG", 443);
         let b = HostPort::new("registry.npmjs.org", 443);
         assert_eq!(a, b);
@@ -291,7 +276,6 @@ mod tests {
 
     #[test]
     fn invalidate_removes_all_for_host() {
-        let _g = env_guard();
         let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         cache.put("a.example", 443, entry(1));
@@ -303,7 +287,6 @@ mod tests {
 
     #[test]
     fn max_per_host_evicts_oldest() {
-        let _g = env_guard();
         let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         for i in 0..6u8 {
@@ -317,7 +300,6 @@ mod tests {
 
     #[test]
     fn stale_entries_filtered_at_load() {
-        let _g = env_guard();
         let dir = tempdir().unwrap();
         let path = dir.path().join("tickets.json");
         {
@@ -332,26 +314,25 @@ mod tests {
     }
 
     /// Panic-safe cleanup so a failed assertion inside the killswitch
-    /// test doesn't leave `AUBE_DISABLE_TLS_TICKET_CACHE=1` set, which
-    /// would poison every subsequent test even with the env lock.
+    /// test doesn't leave `AUBE_DISABLE_TLS_TICKET_CACHE=1` set —
+    /// `RUST_TEST_THREADS=1` serializes the suite but doesn't reset
+    /// process env between tests, so a leaked killswitch would still
+    /// poison subsequent tests in the same binary.
     struct EnvVarGuard {
         key: &'static str,
     }
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
-            // SAFETY: the caller of [`set_killswitch`] holds
-            // `ENV_LOCK` for the lifetime of this guard, so no other
-            // thread is mid-setenv here.
+            // SAFETY: tests run serially via RUST_TEST_THREADS=1; no
+            // other thread is mid-setenv when this guard drops.
             unsafe { std::env::remove_var(self.key) };
         }
     }
 
     #[test]
     fn killswitch_short_circuits() {
-        let _g = env_guard();
-        // SAFETY: `ENV_LOCK` (held via `_g`) serializes every test in
-        // this crate that constructs a `TicketCache`, so no other
-        // thread is reading the env while we mutate it.
+        // SAFETY: tests run serially via RUST_TEST_THREADS=1; no
+        // other thread is reading the env while we mutate it.
         unsafe { std::env::set_var("AUBE_DISABLE_TLS_TICKET_CACHE", "1") };
         let _cleanup = EnvVarGuard {
             key: "AUBE_DISABLE_TLS_TICKET_CACHE",
@@ -364,7 +345,6 @@ mod tests {
 
     #[test]
     fn missing_file_loads_empty() {
-        let _g = env_guard();
         let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("nonexistent.json"));
         assert!(cache.is_empty());
@@ -372,7 +352,6 @@ mod tests {
 
     #[test]
     fn corrupt_magic_loads_empty() {
-        let _g = env_guard();
         let dir = tempdir().unwrap();
         let path = dir.path().join("tickets.json");
         std::fs::write(&path, br#"{"magic":"wrong","entries":[]}"#).unwrap();
