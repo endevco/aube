@@ -287,26 +287,30 @@ jobs:
         if: ${{ matrix.build-tool == 'cross' }}
         shell: bash
         run: cargo install cross --locked
-      # BOLT (post-link layout optimizer) runs after PGO phase 3b on the
-      # x86_64 Linux rows. perf is the LBR sampler that feeds perf2bolt;
-      # linux-tools-generic pulls the binary that matches the running
-      # kernel. perf_event_paranoid is bumped down so the cycles:u
-      # event with branch-stack sampling can fire — Namespace runners
-      # default to 4 which would otherwise produce an empty perf.data
-      # and a confusing perf2bolt error.
+      # BOLT (post-link layout optimizer) runs after PGO phase 3b on
+      # the Linux PGO rows. We pull it from apt.llvm.org rather than
+      # Ubuntu's archive because the noble `llvm-bolt`/`bolt-18`
+      # packages are amd64-only; apt.llvm.org publishes the same
+      # source for both amd64 and arm64. pgo.bash phase 4 uses BOLT's
+      # instrumentation mode, so no `perf` install or
+      # `kernel.perf_event_paranoid` tweaks are needed.
       - name: Install BOLT toolchain
         if: ${{ matrix.bolt }}
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-bolt linux-tools-common linux-tools-generic
-          if ! command -v llvm-bolt >/dev/null; then
-            echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
-            export PATH=/usr/lib/llvm-18/bin:$PATH
-          fi
-          llvm-bolt --version | head -2
-          perf2bolt --version 2>&1 | head -2 || true
-          sudo sysctl -w kernel.perf_event_paranoid=1 || true
+          sudo apt-get install -y --no-install-recommends wget gnupg ca-certificates
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/llvm.gpg
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-18 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-toolchain-18.list
+          sudo apt-get update
+          sudo apt-get install -y bolt-18
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          /usr/lib/llvm-18/bin/llvm-bolt --version | head -2
+          /usr/lib/llvm-18/bin/merge-fdata --help | head -2 || true
       # verdaccio is installed lazily by hermetic.bash's
       # _hermetic_ensure_verdaccio (called from pgo.bash via hermetic_start),
       # so no explicit install step is needed here.

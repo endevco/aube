@@ -46,10 +46,13 @@
 #                               picks up RUSTFLAGS+CARGO_PROFILE_RELEASE_LTO
 #                               from the environment.
 #   AUBE_PGO_BOLT=1             append a BOLT post-link rewrite pass
-#                               after phase 3b. Requires `llvm-bolt`,
-#                               `perf2bolt`, and `perf` (with branch
-#                               sampling) on the host. Linux-only;
+#                               after phase 3b. Requires `llvm-bolt`
+#                               and `merge-fdata` on PATH. Linux-only;
 #                               BOLT's macOS support is not in tree.
+#                               Uses BOLT's instrumentation mode (no
+#                               `perf` needed), which works without
+#                               LBR/BRBE branch sampling and without
+#                               privileged kernel knobs.
 
 set -euo pipefail
 
@@ -65,13 +68,32 @@ PGO_BUILD_TOOL="${AUBE_PGO_BUILD_TOOL:-cargo}"
 PGO_BOLT="${AUBE_PGO_BOLT:-}"
 
 if [ -n "$PGO_BOLT" ]; then
-	for tool in llvm-bolt perf2bolt perf; do
-		if ! command -v "$tool" >/dev/null 2>&1; then
-			echo "ERROR: AUBE_PGO_BOLT=1 but '$tool' is not on PATH" >&2
-			echo "  Install on Debian/Ubuntu: sudo apt install llvm-bolt linux-tools-generic" >&2
-			exit 1
+	# Prefer `/usr/lib/llvm-NN/bin/llvm-bolt` over the unversioned
+	# `/usr/bin/llvm-bolt`. BOLT derives its runtime-lib search dir
+	# from `dirname(dirname(argv[0]))/lib`, so the versioned path
+	# resolves to `/usr/lib/llvm-NN/lib/libbolt_rt_instr.a` (where
+	# Debian/Ubuntu actually ship the static archive). The
+	# unversioned path looks in `/usr/lib/` and fails.
+	LLVM_BOLT=""
+	for candidate in /usr/lib/llvm-18/bin/llvm-bolt /usr/lib/llvm-19/bin/llvm-bolt /usr/lib/llvm-20/bin/llvm-bolt; do
+		if [ -x "$candidate" ]; then
+			LLVM_BOLT="$candidate"
+			break
 		fi
 	done
+	if [ -z "$LLVM_BOLT" ]; then
+		LLVM_BOLT=$(command -v llvm-bolt || true)
+	fi
+	if [ -z "$LLVM_BOLT" ]; then
+		echo "ERROR: AUBE_PGO_BOLT=1 but llvm-bolt is not installed" >&2
+		echo "  Install via apt.llvm.org: bolt-18 (or newer)" >&2
+		exit 1
+	fi
+	if ! command -v merge-fdata >/dev/null 2>&1; then
+		echo "ERROR: AUBE_PGO_BOLT=1 but merge-fdata is not on PATH" >&2
+		exit 1
+	fi
+	echo ">>> BOLT toolchain: $LLVM_BOLT"
 fi
 
 # target_arg stays unquoted at expansion sites: empty string disappears,
@@ -280,70 +302,77 @@ if [ -z "$PGO_BOLT" ]; then
 	exit 0
 fi
 
-# ---------- Phase 4: BOLT post-link rewrite ----------
-echo ">>> [4/4] BOLT post-link rewrite"
+# ---------- Phase 4: BOLT post-link rewrite (instrumentation mode) ----------
+# Why instrumentation rather than the more common `perf record + perf2bolt`
+# LBR flow:
+#   - `perf record -j any,u` needs `kernel.perf_event_paranoid <= 1` —
+#     the Namespace runners we use for PGO default to 2 and don't
+#     honor `sudo sysctl -w` from a workflow step.
+#   - aarch64 hosts without ARM v9.2 BRBE can't do LBR sampling at all,
+#     so the perf flow would silently miss profile data on the
+#     aarch64-linux PGO row even if paranoid were 0.
+# Instrumentation sidesteps both: BOLT injects counters into the binary,
+# the instrumented binary writes one fdata file per process at exit,
+# and `merge-fdata` rolls them up into a single profile. Slower training
+# (instrumented binary is ~5× slower than native) but the workload is
+# small enough that the wall cost is well under a minute.
+echo ">>> [4/4] BOLT post-link rewrite (instrumentation mode)"
 
-BOLT_PERF_DATA="$PGO_DATA_DIR/bolt-perf.data"
+BOLT_INSTR_BIN="$PGO_DATA_DIR/aube.instr"
+BOLT_FDATA_PREFIX="$PGO_DATA_DIR/bolt"
 BOLT_FDATA="$PGO_DATA_DIR/aube.fdata"
-rm -f "$BOLT_PERF_DATA" "$BOLT_FDATA"
+rm -f "$BOLT_INSTR_BIN" "$BOLT_FDATA"
+find "$PGO_DATA_DIR" -maxdepth 1 -name 'bolt.*.fdata' -delete 2>/dev/null || true
 
-# Restart hermetic so phase 4 trains against the same registry as
-# phase 2. The optimized binary doesn't emit profraw (no
-# -Cprofile-generate), so no per-process profile pattern is needed —
-# perf record samples cycles + branches across the whole training run.
-AUBE_BIN="$PGO_FINAL_BIN" hermetic_start
+echo ">>> [4a/4] Building instrumented binary"
+"$LLVM_BOLT" "$PGO_FINAL_BIN" \
+	--instrument \
+	--instrumentation-file="$BOLT_FDATA_PREFIX" \
+	--instrumentation-file-append-pid \
+	-o "$BOLT_INSTR_BIN"
 
-# -j any,u captures user-space taken branches via LBR (kernel
-# samples discarded). A successful capture needs
-# `kernel.perf_event_paranoid <= 1` — checked here so the failure
-# is one line of helpful diagnostic instead of an empty perf.data
-# 30 seconds later.
-paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 4)
-if [ "$paranoid" -gt 1 ]; then
-	echo "ERROR: kernel.perf_event_paranoid=$paranoid (need <= 1 for BOLT)" >&2
-	echo "  Temporarily: sudo sysctl -w kernel.perf_event_paranoid=1" >&2
-	exit 1
-fi
+# Replay the same 3 cold + 3 warm training workload as phase 2, this
+# time against the instrumented PGO binary. Each invocation writes
+# bolt.<pid>.fdata on exit. The hermetic registry was stopped at end
+# of phase 2; restart it here.
+AUBE_BIN="$BOLT_INSTR_BIN" hermetic_start
 
-echo ">>> [4a/4] perf record around training workload"
-perf record -e cycles:u -j any,u -o "$BOLT_PERF_DATA" -- bash -c "
-	set -euo pipefail
-	$(declare -f cold_run warm_run)
-	train_dir='$train_dir'
-	BENCH_REGISTRY_URL='$BENCH_REGISTRY_URL'
-	SCRIPT_DIR='$SCRIPT_DIR'
-	for i in 1 2 3; do cold_run '$PGO_FINAL_BIN' \"\$i\" bolt; done
-	for i in 1 2 3; do warm_run '$PGO_FINAL_BIN' '$train_dir/bolt.3' \"\$i\"; done
-"
+echo ">>> [4b/4] Training instrumented binary"
+for i in 1 2 3; do cold_run "$BOLT_INSTR_BIN" "$i" bolt; done
+for i in 1 2 3; do warm_run "$BOLT_INSTR_BIN" "$train_dir/bolt.3" "$i"; done
 
 hermetic_stop
 
-echo ">>> [4b/4] perf2bolt — converting LBR samples to fdata"
-perf2bolt -p "$BOLT_PERF_DATA" -o "$BOLT_FDATA" "$PGO_FINAL_BIN"
+# Sanity check: instrumentation writes on `_exit`. If the binary
+# crashed mid-run, no fdata. Without this we'd fall through to
+# llvm-bolt with an empty profile.
+fdata_files=("$PGO_DATA_DIR"/bolt.*.fdata)
+if [ ! -e "${fdata_files[0]}" ]; then
+	echo "ERROR: no bolt.*.fdata files written to $PGO_DATA_DIR" >&2
+	echo "  Instrumented binary may have crashed before exit." >&2
+	exit 1
+fi
+echo ">>> ${#fdata_files[@]} fdata files collected"
+
+echo ">>> [4c/4] Merging fdata"
+merge-fdata "${fdata_files[@]}" -o "$BOLT_FDATA"
 
 # llvm-bolt flags:
 #   reorder-blocks=ext-tsp     — extended TSP block layout, the
-#                                strongest available; recommended by
-#                                upstream for any non-trivial binary.
-#   reorder-functions=cdsort   — function reordering using the cdsort
-#                                algorithm (call-density sort), the
-#                                current default on LLVM ≥ 17. Hot
-#                                functions cluster together so the
-#                                kernel can map them out of the same
-#                                pages.
+#                                strongest available.
+#   reorder-functions=cdsort   — call-density sort. Hot functions
+#                                cluster so the kernel maps them
+#                                out of the same pages.
 #   split-functions            — split each function into hot/cold so
 #                                the cold parts don't waste i-cache.
-#   split-all-cold             — aggressive: split even functions BOLT
-#                                isn't 100% sure about. Costs a few
-#                                kbytes; pays back in icache.
-#   split-eh                   — split exception-handling paths too;
-#                                aube's hot install path raises ~zero
-#                                so all of those are cold.
-#   use-gnu-stack              — emit a PT_GNU_STACK header; required
-#                                by recent toolchains to keep the
-#                                stack non-executable.
-echo ">>> [4c/4] llvm-bolt — rewriting binary"
-llvm-bolt "$PGO_FINAL_BIN" \
+#   split-all-cold             — aggressive: split even functions
+#                                BOLT isn't 100% sure about.
+#   split-eh                   — split exception-handling paths;
+#                                aube's hot install path raises ~zero.
+#   use-gnu-stack              — emit a PT_GNU_STACK header so the
+#                                kernel keeps the stack non-executable.
+echo ">>> [4d/4] Rewriting binary"
+"$LLVM_BOLT" "$PGO_FINAL_BIN" \
 	-o "$PGO_FINAL_BIN.bolt" \
 	-data="$BOLT_FDATA" \
 	-reorder-blocks=ext-tsp \
