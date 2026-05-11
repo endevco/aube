@@ -541,6 +541,16 @@ impl Store {
                             .lock()
                             .unwrap_or_else(|p| p.into_inner());
 
+                        // `OpenOptionsExt::mode(0o644)` is masked by the
+                        // process umask, so a non-default umask (e.g.
+                        // 0o077) would give CAS files 0o600. The
+                        // tempfile path uses `fchmod`, which ignores
+                        // umask. Match it with an explicit
+                        // `set_permissions` so the same store can't end
+                        // up with mixed-mode files depending on which
+                        // path wrote each entry.
+                        use std::os::unix::fs::PermissionsExt;
+                        let force_mode = std::fs::Permissions::from_mode(0o644);
                         let open_result = std::fs::OpenOptions::new()
                             .mode(0o644)
                             .create_new(true)
@@ -548,6 +558,8 @@ impl Store {
                             .open(path);
                         match open_result {
                             Ok(mut f) => {
+                                f.set_permissions(force_mode.clone())
+                                    .map_err(|e| Error::Io(path.to_path_buf(), e))?;
                                 f.write_all(bytes)
                                     .map_err(|e| Error::Io(path.to_path_buf(), e))?;
                                 return Ok(CasWriteOutcome::Created);
@@ -569,6 +581,8 @@ impl Store {
                                     .open(path)
                                 {
                                     Ok(mut f) => {
+                                        f.set_permissions(force_mode)
+                                            .map_err(|e| Error::Io(path.to_path_buf(), e))?;
                                         f.write_all(bytes)
                                             .map_err(|e| Error::Io(path.to_path_buf(), e))?;
                                         return Ok(CasWriteOutcome::Created);
@@ -721,24 +735,43 @@ impl Store {
         // length-check substitute, so torn CAS files would be accepted.
         let fast_path_handled_recovery =
             cfg!(target_os = "macos") && self.fast_path.load(Ordering::Acquire);
-        if outcome == CasWriteOutcome::AlreadyExisted
-            && !fast_path_handled_recovery
-            && !cas_file_matches_len(&store_path, content.len() as u64)
-        {
-            let _ = xx::file::remove_file(&store_path);
-            self.create_cas_file(&store_path, Some(content))?;
+        if outcome == CasWriteOutcome::AlreadyExisted && !fast_path_handled_recovery {
+            // A length mismatch from this branch can mean either
+            //   (a) a crashed predecessor left a torn file (the recovery
+            //       case this code was originally written for), or
+            //   (b) on macOS, another *process* is currently writing to
+            //       the same path via the fast path (no atomic publish
+            //       at the final path, so its in-progress fd is visible
+            //       by name to other writers).
+            // Burning the file in case (b) would unlink the active
+            // writer's inode and trigger a cascading recovery race. Wait
+            // briefly (50ms is dozens of typical small-file writes) for
+            // the partial file to settle. If it stays mismatched past
+            // the deadline, treat it as (a) and recover.
             if !cas_file_matches_len(&store_path, content.len() as u64) {
-                let actual_len = store_path.metadata().map(|metadata| metadata.len()).ok();
-                return Err(Error::Io(
-                    store_path.clone(),
-                    std::io::Error::other(format!(
-                        "CAS entry has wrong size after import: expected {} bytes, got {}",
-                        content.len(),
-                        actual_len
-                            .map(|len| format!("{len} bytes"))
-                            .unwrap_or_else(|| "missing file".to_owned())
-                    )),
-                ));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+                while !cas_file_matches_len(&store_path, content.len() as u64)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_micros(250));
+                }
+            }
+            if !cas_file_matches_len(&store_path, content.len() as u64) {
+                let _ = xx::file::remove_file(&store_path);
+                self.create_cas_file(&store_path, Some(content))?;
+                if !cas_file_matches_len(&store_path, content.len() as u64) {
+                    let actual_len = store_path.metadata().map(|metadata| metadata.len()).ok();
+                    return Err(Error::Io(
+                        store_path.clone(),
+                        std::io::Error::other(format!(
+                            "CAS entry has wrong size after import: expected {} bytes, got {}",
+                            content.len(),
+                            actual_len
+                                .map(|len| format!("{len} bytes"))
+                                .unwrap_or_else(|| "missing file".to_owned())
+                        )),
+                    ));
+                }
             }
         }
 
