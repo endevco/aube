@@ -48,6 +48,18 @@ fn overflow_fetch_label(count: usize) -> String {
     format!("{count} more {word}…")
 }
 
+/// Trim `reused` so `reused + downloaded <= total`. No-op when the
+/// counters already fit. Called from `set_total` after a downward
+/// rebase (post-`filter_graph`) so streamed-then-pruned credits don't
+/// leave the numerator above the new denominator.
+fn clamp_reused_to(reused: &AtomicUsize, downloaded: &AtomicUsize, total: usize) {
+    let dl = downloaded.load(Ordering::Relaxed);
+    let cap = total.saturating_sub(dl);
+    let _ = reused.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+        (cur > cap).then_some(cap)
+    });
+}
+
 fn env_truthy(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| {
         !matches!(
@@ -249,15 +261,34 @@ impl InstallProgress {
     }
 
     /// Set the total (`resolved`) package count. Safe to call repeatedly.
+    ///
+    /// When this lowers the denominator (e.g. `filter_graph` just
+    /// pruned platform-mismatched optionals after the streaming fetch
+    /// already credited some of them), trim the `reused` numerator down
+    /// so `reused + downloaded <= total`. Without this the final
+    /// summary reports `reused N > resolved M` and the CI heartbeat
+    /// trips `WARN_AUBE_PROGRESS_OVERFLOW` on a purely cosmetic
+    /// inconsistency. Reused is the one trimmed (not downloaded)
+    /// because registry tarballs are deferred at stream-time, so only
+    /// the local-source / cached path can overshoot; downloaded
+    /// reflects real network work and stays untouched.
     pub fn set_total(&self, total: usize) {
         match &self.mode {
-            Mode::Tty { root, total: t, .. } => {
+            Mode::Tty {
+                root,
+                total: t,
+                reused,
+                downloaded,
+                ..
+            } => {
                 t.store(total, Ordering::Relaxed);
                 root.progress_total(total);
+                clamp_reused_to(reused, downloaded, total);
                 self.refresh_eta();
             }
             Mode::Ci(s) => {
                 s.resolved.store(total, Ordering::Relaxed);
+                clamp_reused_to(&s.reused, &s.downloaded, total);
             }
         }
     }
@@ -1039,5 +1070,53 @@ mod tests {
     fn overflow_fetch_label_pluralizes_count() {
         assert_eq!(overflow_fetch_label(1), "1 more package…");
         assert_eq!(overflow_fetch_label(2), "2 more packages…");
+    }
+
+    #[test]
+    fn clamp_reused_trims_overshoot_after_downward_rebase() {
+        // Streamed-then-pruned scenario: resolver bumped reused for
+        // local sources that filter_graph later GC'd as unreachable
+        // through dropped optional edges. set_total(graph.packages.len())
+        // then has to trim the numerator so it doesn't exceed the new
+        // denominator.
+        let reused = AtomicUsize::new(229);
+        let downloaded = AtomicUsize::new(0);
+        clamp_reused_to(&reused, &downloaded, 226);
+        assert_eq!(reused.load(Ordering::Relaxed), 226);
+        assert_eq!(downloaded.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn clamp_reused_preserves_downloaded() {
+        // Trim reused (cosmetic over-credit from streaming) but never
+        // touch downloaded — that count reflects real network work and
+        // registry tarballs are deferred at stream-time, so it can't
+        // overshoot on its own.
+        let reused = AtomicUsize::new(50);
+        let downloaded = AtomicUsize::new(80);
+        clamp_reused_to(&reused, &downloaded, 100);
+        assert_eq!(reused.load(Ordering::Relaxed), 20);
+        assert_eq!(downloaded.load(Ordering::Relaxed), 80);
+    }
+
+    #[test]
+    fn clamp_reused_is_noop_when_within_cap() {
+        let reused = AtomicUsize::new(40);
+        let downloaded = AtomicUsize::new(30);
+        clamp_reused_to(&reused, &downloaded, 100);
+        assert_eq!(reused.load(Ordering::Relaxed), 40);
+        assert_eq!(downloaded.load(Ordering::Relaxed), 30);
+    }
+
+    #[test]
+    fn clamp_reused_floors_at_zero_when_downloaded_exceeds_total() {
+        // Defensive: if downloaded somehow exceeds total (shouldn't
+        // happen in practice — deferral prevents it), still cap reused
+        // at zero rather than wrapping.
+        let reused = AtomicUsize::new(5);
+        let downloaded = AtomicUsize::new(110);
+        clamp_reused_to(&reused, &downloaded, 100);
+        assert_eq!(reused.load(Ordering::Relaxed), 0);
+        assert_eq!(downloaded.load(Ordering::Relaxed), 110);
     }
 }
