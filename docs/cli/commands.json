@@ -6664,6 +6664,22 @@
             "global": false
           },
           {
+            "name": "workspace-root",
+            "usage": "-w --workspace-root",
+            "help": "Operate on the workspace root regardless of cwd",
+            "help_long": "Operate on the workspace root regardless of cwd.\n\nMirrors pnpm's `-w/--workspace-root`: from a sub-package, `aube outdated -w` reports the root manifest's deps instead of the sub-package's. No-op when paired with `-r` / `--filter` (those already drive workspace selection from the root).",
+            "help_first_line": "Operate on the workspace root regardless of cwd",
+            "short": [
+              "w"
+            ],
+            "long": [
+              "workspace-root",
+              "workspace"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "fetch-retries",
             "usage": "--fetch-retries <N>",
             "help": "Number of retry attempts for failed registry fetches",

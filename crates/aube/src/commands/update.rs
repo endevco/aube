@@ -116,7 +116,7 @@ pub async fn run(
     args.lockfile.install_overrides();
     args.virtual_store.install_overrides();
     let _ = args.ignore_scripts; // parity no-op: dep scripts already gated by allowBuilds
-    let _ = (args.global, args.workspace);
+    let _ = args.global;
     if let Some(depth) = args.depth.as_deref() {
         // pnpm's `--depth Infinity` is the only useful value; the
         // intermediate ones (`--depth 1`, `--depth 2`) have semantics
@@ -164,7 +164,18 @@ pub async fn run(
     // into a per-key predicate so the same code path serves both.
     let effective_latest = latest || !explicit_latest_keys.is_empty();
     let should_rewrite_key = |key: &str| -> bool { latest || explicit_latest_keys.contains(key) };
-    let cwd = crate::dirs::project_root()?;
+    let mut cwd = crate::dirs::project_root()?;
+    // `-w/--workspace-root`: act on the workspace root manifest
+    // regardless of which sub-package the user ran from. Mirrors
+    // `pnpm -w update`. Falls back to the original project root when
+    // there's no workspace above (single-project install) so the
+    // flag stays safe in shell aliases. Must run before the project
+    // lock is acquired so we lock the right directory.
+    if args.workspace
+        && let Some(root) = crate::dirs::find_workspace_root(&cwd)
+    {
+        cwd = root;
+    }
     let _lock = super::take_project_lock(&cwd)?;
     let manifest_path = cwd.join("package.json");
 
@@ -947,6 +958,15 @@ async fn run_filtered(
             // clear it on the per-pkg clone so the recursive call doesn't
             // re-warn once per matched workspace package.
             per_pkg.depth = None;
+            // `-w` retargets cwd at the workspace root inside `run`. Each
+            // per-package iteration here already retargets via
+            // `retarget_cwd(&pkg.dir)`; if the flag survived the clone,
+            // the inner `run` would re-retarget every iteration to the
+            // workspace root and lock/rewrite the root manifest for every
+            // package, leaving the per-package merge step with nothing to
+            // pick up. `-r` plus `-w` is documented as a no-op precisely
+            // because `-r` already includes the root in its sweep.
+            per_pkg.workspace = false;
             if !args.packages.is_empty() {
                 let manifest_path = pkg.dir.join("package.json");
                 let project_manifest = aube_manifest::PackageJson::from_path(&manifest_path)

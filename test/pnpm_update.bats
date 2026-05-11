@@ -1430,3 +1430,73 @@ JSON
 	run grep '"is-even": *"1.0.0"' packages/a/package.json
 	assert_success
 }
+
+@test "aube update -w retargets at the workspace root from a sub-package" {
+	# Mirrors `pnpm -w update`: from a sub-package, `update -w` must
+	# rewrite the root manifest (not the sub-package's). Without `-w`,
+	# the in-package run resolves the sub-package's lockfile / writes
+	# the sub-package's manifest.
+	cat >package.json <<'JSON'
+{"name":"root","version":"0.0.0","private":true,"dependencies":{"is-odd":"0.1.2"}}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/api
+	cat >packages/api/package.json <<'JSON'
+{"name":"api","version":"1.0.0","dependencies":{"is-even":"0.1.0"}}
+JSON
+
+	run aube install
+	assert_success
+
+	cd packages/api
+	run aube update -w --latest
+	assert_success
+
+	# Root manifest's is-odd moved off the 0.1.2 pin (avoid hardcoding
+	# the registry's current `latest` so the test survives future
+	# fixture additions); sub-package's is-even must stay frozen
+	# because we never targeted it.
+	run grep -E '"is-odd": *"[^0]\.' ../../package.json
+	assert_success
+	run grep '"is-even": *"0.1.0"' package.json
+	assert_success
+}
+
+@test "aube update -r -w: -r keeps per-package retargeting (regression)" {
+	# `-w` retargets cwd at the workspace root inside `run`. `-r`
+	# fans out to every workspace package and retargets cwd per
+	# package via `retarget_cwd`; if `-w` survived the inner clone,
+	# every iteration would re-retarget to the workspace root, lock
+	# + rewrite the root manifest in a loop, and the per-package
+	# lockfile merge would have nothing to pick up. `-r` plus `-w`
+	# must be equivalent to plain `-r` (which already includes the
+	# root in its sweep).
+	cat >package.json <<'JSON'
+{"name":"root","version":"0.0.0","private":true,"dependencies":{"is-odd":"0.1.2"}}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+YAML
+	mkdir -p packages/api
+	cat >packages/api/package.json <<'JSON'
+{"name":"api","version":"1.0.0","dependencies":{"is-even":"0.1.0"}}
+JSON
+
+	run aube install
+	assert_success
+
+	run aube update -r -w --latest
+	assert_success
+
+	# Both manifests bumped past their pins — the per-package fanout
+	# updated `api` correctly instead of being clobbered by the
+	# workspace-root retarget on every iteration.
+	run grep -E '"is-odd": *"[^0]\.' package.json
+	assert_success
+	run grep -E '"is-even": *"[^0]\.' packages/api/package.json
+	assert_success
+}
