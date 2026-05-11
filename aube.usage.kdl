@@ -453,6 +453,10 @@ cmd deploy help="Deploy a workspace package into a target directory with deps in
     flag --no-prod help="Deploy every dependency kind (production + dev + optional)" {
         long_help "Deploy every dependency kind (production + dev + optional).\n\nOpts out of the implicit `--prod` deploy default. Useful when a deployed package needs its devDependencies at runtime (test harnesses, build-step deploys). Combine with `--no-optional` to drop optionals while keeping prod + dev. Mutually exclusive with `--prod` and `--dev`."
     }
+    flag --offline help="Fail if any metadata or tarball isn't already in the local cache" {
+        long_help "Fail if any metadata or tarball isn't already in the local cache.\n\nNever hits the network. Useful in multi-stage Dockerfiles where an earlier `aube install` already populated the store: deploy then reproduces a prod-only tree without re-fetching anything."
+    }
+    flag --prefer-offline help="Prefer cached metadata over revalidation; only hit the network on a miss"
     flag --frozen-lockfile help="Error if the lockfile drifts from package.json"
     flag --no-frozen-lockfile help="Always re-resolve, even if the lockfile is up to date"
     flag --prefer-frozen-lockfile help="Use the lockfile when fresh, re-resolve when stale"

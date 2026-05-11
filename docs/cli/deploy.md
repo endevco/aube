@@ -37,6 +37,16 @@ Deploy every dependency kind (production + dev + optional).
 
 Opts out of the implicit `--prod` deploy default. Useful when a deployed package needs its devDependencies at runtime (test harnesses, build-step deploys). Combine with `--no-optional` to drop optionals while keeping prod + dev. Mutually exclusive with `--prod` and `--dev`.
 
+### `--offline`
+
+Fail if any metadata or tarball isn't already in the local cache.
+
+Never hits the network. Useful in multi-stage Dockerfiles where an earlier `aube install` already populated the store: deploy then reproduces a prod-only tree without re-fetching anything.
+
+### `--prefer-offline`
+
+Prefer cached metadata over revalidation; only hit the network on a miss
+
 ### `--frozen-lockfile`
 
 Error if the lockfile drifts from package.json

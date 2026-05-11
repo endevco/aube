@@ -2335,6 +2335,31 @@
             "global": false
           },
           {
+            "name": "offline",
+            "usage": "--offline",
+            "help": "Fail if any metadata or tarball isn't already in the local cache",
+            "help_long": "Fail if any metadata or tarball isn't already in the local cache.\n\nNever hits the network. Useful in multi-stage Dockerfiles where an earlier `aube install` already populated the store: deploy then reproduces a prod-only tree without re-fetching anything.",
+            "help_first_line": "Fail if any metadata or tarball isn't already in the local cache",
+            "short": [],
+            "long": [
+              "offline"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
+            "name": "prefer-offline",
+            "usage": "--prefer-offline",
+            "help": "Prefer cached metadata over revalidation; only hit the network on a miss",
+            "help_first_line": "Prefer cached metadata over revalidation; only hit the network on a miss",
+            "short": [],
+            "long": [
+              "prefer-offline"
+            ],
+            "hide": false,
+            "global": false
+          },
+          {
             "name": "frozen-lockfile",
             "usage": "--frozen-lockfile",
             "help": "Error if the lockfile drifts from package.json",
