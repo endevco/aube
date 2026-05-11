@@ -110,7 +110,7 @@ pub struct UpdateArgs {
 
 pub async fn run(
     args: UpdateArgs,
-    filter: aube_workspace::selector::EffectiveFilter,
+    mut filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     args.network.install_overrides();
     args.lockfile.install_overrides();
@@ -129,6 +129,12 @@ pub async fn run(
         );
     }
     if !filter.is_empty() {
+        // Discussion #602: `aube update -r` is expected to bump the
+        // workspace root's deps too — pnpm leaves that off by default
+        // (`include-workspace-root: false`), but for `update`/`outdated`
+        // omitting the root makes the recursive run feel broken when
+        // the project keeps shared dev tooling at the root.
+        filter.include_workspace_root = true;
         return run_filtered(args, &filter).await;
     }
     reject_unsupported_pkg_specs(&args.packages)?;
@@ -299,7 +305,10 @@ pub async fn run(
             &manifest,
             &all_specifiers,
             existing.as_ref(),
-        )?;
+            &cwd,
+            latest,
+        )
+        .await?;
         if selected.is_empty() && indirect_arg_names.is_empty() {
             eprintln!("No packages selected.");
             return Ok(());
@@ -704,11 +713,13 @@ fn workspace_package_versions(cwd: &std::path::Path) -> miette::Result<HashMap<S
     Ok(versions)
 }
 
-fn pick_update_interactively(
+async fn pick_update_interactively(
     keys: &[String],
     manifest: &aube_manifest::PackageJson,
     specifiers: &BTreeMap<String, String>,
     existing: Option<&aube_lockfile::LockfileGraph>,
+    cwd: &std::path::Path,
+    latest: bool,
 ) -> miette::Result<BTreeSet<String>> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Err(miette!(
@@ -716,18 +727,102 @@ fn pick_update_interactively(
         ));
     }
 
+    // Discussion #602: filter the picker to deps that have actual
+    // drift, drop sibling-workspace and local-link entries (no
+    // registry version to bump them to), and show `current → target`
+    // so the user can tell at a glance what each toggle would change.
+    // Workspace-protocol specs land in the manifest as `workspace:*`
+    // / `workspace:^` / `workspace:~`, and `link:` / `file:` deps
+    // carry a path; none of them are registry-resolvable. The
+    // pre-fetch is the same packument round-trip `aube outdated`
+    // makes, just gated on the `-i` path.
+    let registry_keys: Vec<&String> = keys
+        .iter()
+        .filter(|key| {
+            let spec = specifiers.get(*key).map(String::as_str).unwrap_or("");
+            !aube_util::pkg::is_workspace_spec(spec)
+                && !spec.starts_with("link:")
+                && !spec.starts_with("file:")
+        })
+        .collect();
+    if registry_keys.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let client = std::sync::Arc::new(super::make_client(cwd));
+    let cache_dir = super::packument_cache_dir();
+    let mut set = tokio::task::JoinSet::new();
+    for key in &registry_keys {
+        let real_name = real_name_from_spec(key, specifiers.get(key.as_str()));
+        let key_owned = (*key).clone();
+        let client = client.clone();
+        let cache_dir = cache_dir.clone();
+        set.spawn(async move {
+            let result = client.fetch_packument_cached(&real_name, &cache_dir).await;
+            (key_owned, result)
+        });
+    }
+    let mut packuments: HashMap<String, aube_registry::Packument> =
+        HashMap::with_capacity(registry_keys.len());
+    while let Some(joined) = set.join_next().await {
+        let (key, result) = joined
+            .into_diagnostic()
+            .wrap_err("packument fetch panicked")?;
+        match result {
+            Ok(p) => {
+                packuments.insert(key, p);
+            }
+            Err(e) => {
+                tracing::warn!("failed to fetch packument for {key}: {e}");
+            }
+        }
+    }
+
     let mut picker = demand::MultiSelect::new("Choose which dependencies to update")
         .description("Space to toggle, Enter to confirm")
         .filterable(true);
-    for key in keys {
-        let spec = specifiers.get(key).map(String::as_str).unwrap_or("");
-        let real_name = real_name_from_spec(key, specifiers.get(key));
+    let mut shown = 0usize;
+    for key in &registry_keys {
+        let spec = specifiers
+            .get(key.as_str())
+            .map(String::as_str)
+            .unwrap_or("");
+        let real_name = real_name_from_spec(key, specifiers.get(key.as_str()));
+        let Some(packument) = packuments.get(key.as_str()) else {
+            continue;
+        };
         let current = existing
             .and_then(|g| lookup_pkg(g, key, &real_name))
-            .map(|p| p.version.as_str())
-            .unwrap_or("not locked");
-        let label = format!("{} {} {} ({current})", dep_bucket(manifest, key), key, spec);
-        picker = picker.option(demand::DemandOption::new(key.clone()).label(&label));
+            .map(|p| p.version.as_str());
+        let registry_latest = packument.dist_tags.get("latest").map(String::as_str);
+        let wanted =
+            super::max_satisfying_version(packument, spec).or_else(|| current.map(str::to_owned));
+        // `--latest` rewrites past the manifest range, so the picker
+        // shows the dist-tag latest as the target. Without `--latest`
+        // we only refresh inside the range, so target = wanted.
+        let target = if latest {
+            registry_latest
+                .map(str::to_owned)
+                .or_else(|| wanted.clone())
+        } else {
+            wanted.clone()
+        };
+        let (Some(current), Some(target)) = (current, target.as_deref()) else {
+            continue;
+        };
+        if current == target {
+            continue;
+        }
+        let label = format!("{} {key} {current} → {target}", dep_bucket(manifest, key),);
+        picker = picker.option(
+            demand::DemandOption::new((*key).clone())
+                .label(&label)
+                .selected(true),
+        );
+        shown += 1;
+    }
+    if shown == 0 {
+        return Ok(BTreeSet::new());
     }
 
     let picked: Vec<String> = match picker.run() {
@@ -803,7 +898,15 @@ fn with_update_settings_ctx<T>(
     f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,
 ) -> miette::Result<T> {
     let files = crate::commands::FileSources::load(cwd);
-    let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(cwd)
+    // `pnpm-workspace.yaml` lives at the workspace root, not in
+    // sub-packages. Filtered runs (`update -r`) call us with the
+    // sub-package as cwd, so an unwalked load returns an empty map and
+    // `updateConfig.ignoreDependencies` silently drops every entry.
+    // Discussion #602: zod was in the ignore list yet appeared in the
+    // recursive picker because of this miss. Fall back to cwd if no
+    // workspace root is found (single-project case).
+    let yaml_root = crate::dirs::find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(&yaml_root)
         .into_diagnostic()
         .wrap_err("failed to read workspace config")?;
     let env = aube_settings::values::process_env();

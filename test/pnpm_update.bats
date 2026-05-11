@@ -1387,3 +1387,46 @@ YAML
 	run grep '"@pnpm.e2e/foo": "\^100.1.0"' project-2/package.json
 	assert_success
 }
+
+@test "aube update -r --latest: honors workspace-root updateConfig.ignoreDependencies" {
+	# Discussion #602: per-project `cwd` made the ignoreDependencies
+	# lookup miss `pnpm-workspace.yaml` (which lives at the workspace
+	# root), so an entry like `is-odd` would still get bumped past
+	# its pin during recursive updates. Walking up to the workspace
+	# root before reading the yaml fixes it.
+	mkdir -p packages/a packages/b
+	cat >package.json <<'JSON'
+{"name":"root","version":"0.0.0","private":true}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - packages/*
+updateConfig:
+  ignoreDependencies:
+    - is-odd
+YAML
+	cat >packages/a/package.json <<'JSON'
+{"name":"a","version":"1.0.0","dependencies":{"is-odd":"0.1.2","is-even":"0.1.0"}}
+JSON
+	cat >packages/b/package.json <<'JSON'
+{"name":"b","version":"1.0.0","dependencies":{"is-odd":"0.1.2"}}
+JSON
+
+	run aube install
+	assert_success
+
+	run aube update -r --latest
+	assert_success
+
+	# is-odd was on the workspace ignore list — its pin must survive
+	# both per-project manifests untouched. `b` is left in its
+	# original compact-JSON form because aube never rewrites it; `a`
+	# gets pretty-printed because the is-even bump touches it.
+	run grep '"is-odd": *"0.1.2"' packages/a/package.json
+	assert_success
+	run grep '"is-odd": *"0.1.2"' packages/b/package.json
+	assert_success
+	# is-even isn't ignored, so it gets bumped past the pin.
+	run grep '"is-even": *"1.0.0"' packages/a/package.json
+	assert_success
+}

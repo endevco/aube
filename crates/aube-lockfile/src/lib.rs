@@ -174,6 +174,19 @@ pub enum DepType {
     Optional,
 }
 
+/// Render a `DepType` as the matching `package.json` field name
+/// (`dependencies` / `devDependencies` / `optionalDependencies`).
+/// Single source of truth so drift diagnostics, install summaries,
+/// the `outdated` / `why` / `deprecations` renderers, and the
+/// `outdated --json` shape all agree on the spelling.
+pub fn dep_type_label(dt: DepType) -> &'static str {
+    match dt {
+        DepType::Production => "dependencies",
+        DepType::Dev => "devDependencies",
+        DepType::Optional => "optionalDependencies",
+    }
+}
+
 /// Non-registry source for a locked package.
 ///
 /// When a package comes from a local path (via `file:` or `link:` in
@@ -1539,6 +1552,46 @@ impl LockfileGraph {
             }
         }
 
+        // Detect dep-type drift: a name kept in the manifest but moved
+        // between sections (e.g. `dependencies` → `devDependencies`)
+        // keeps the same specifier, so the spec-only checks above
+        // report Fresh and the warm path short-circuits without
+        // rewriting the lockfile. The resolver's priority is
+        // `dependencies` > `devDependencies` > `optionalDependencies`,
+        // matching `seed_direct_deps` in aube-resolver.
+        let mut manifest_dep_types: BTreeMap<&str, DepType> = BTreeMap::new();
+        for name in manifest.dependencies.keys() {
+            manifest_dep_types.insert(name.as_str(), DepType::Production);
+        }
+        for name in manifest.dev_dependencies.keys() {
+            manifest_dep_types
+                .entry(name.as_str())
+                .or_insert(DepType::Dev);
+        }
+        for name in manifest.optional_dependencies.keys() {
+            if ignored.contains(name.as_str()) {
+                continue;
+            }
+            manifest_dep_types
+                .entry(name.as_str())
+                .or_insert(DepType::Optional);
+        }
+        for dep in importer_deps {
+            let Some(expected) = manifest_dep_types.get(dep.name.as_str()) else {
+                continue;
+            };
+            if *expected != dep.dep_type {
+                return DriftStatus::Stale {
+                    reason: format!(
+                        "{label}{}: manifest section is {}, lockfile section is {}",
+                        dep.name,
+                        dep_type_label(*expected),
+                        dep_type_label(dep.dep_type),
+                    ),
+                };
+            }
+        }
+
         // Anything in the lockfile but missing from the manifest is stale
         // — UNLESS it was auto-hoisted as a peer by the resolver. pnpm-style
         // `auto-install-peers=true` puts peers into the importer's
@@ -2683,6 +2736,32 @@ mod drift_tests {
             importers,
             packages: BTreeMap::new(),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn stale_when_dep_moves_between_sections() {
+        // Discussion #602: moving a dep between `dependencies` and
+        // `devDependencies` keeps the same specifier, so the spec-only
+        // checks reported Fresh and the warm path short-circuited
+        // without rewriting the lockfile.
+        let mut manifest = make_manifest(&[]);
+        manifest
+            .dev_dependencies
+            .insert("msw".into(), "catalog:".into());
+        let mut graph = make_graph(&[("msw", "catalog:", "msw@2.14.4")]);
+        graph
+            .importers
+            .get_mut(".")
+            .unwrap()
+            .iter_mut()
+            .for_each(|d| d.dep_type = DepType::Production);
+        match graph.check_drift(&manifest, &BTreeMap::new(), &[], &BTreeMap::new()) {
+            DriftStatus::Stale { reason } => {
+                assert!(reason.contains("msw"), "reason: {reason}");
+                assert!(reason.contains("devDependencies"), "reason: {reason}");
+            }
+            DriftStatus::Fresh => panic!("expected Stale"),
         }
     }
 
