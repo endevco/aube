@@ -3187,9 +3187,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // branch above — error wrappers in `dep_chain` now know
             // each package's ancestor path.
             crate::dep_chain::set_active(&graph);
-            aube_registry::slow_metadata::flush_summary(
-                aube_settings::resolved::fetch_warn_timeout_ms(&settings_ctx),
-            );
+            aube_registry::slow_metadata::flush_summary();
 
             // Check index cache, fetch missing tarballs. Tarball client
             // is lazy because eager construction costs ~20ms even when
@@ -3832,9 +3830,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // `crate::dep_chain::format_chain_for` now sees a
             // chain back to the importer.
             crate::dep_chain::set_active(&graph);
-            aube_registry::slow_metadata::flush_summary(
-                aube_settings::resolved::fetch_warn_timeout_ms(&settings_ctx),
-            );
+            aube_registry::slow_metadata::flush_summary();
             if let Some(p) = prog_ref {
                 p.set_phase("fetching");
             }

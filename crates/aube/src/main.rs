@@ -758,6 +758,13 @@ fn main() {
     }));
     let result = inner_main();
     aube_util::diag::flush();
+    // Drain any in-flight slow-metadata group whose debounce window
+    // hasn't fired yet. install pipelines also flush at end-of-resolve
+    // (for in-progress UX), but non-install commands — `aube add`,
+    // `aube audit`, `aube deprecate`, `aube deprecations`, `aube view`,
+    // etc. — never hit that path and would otherwise silently lose
+    // their slow-fetch warnings to the accumulator.
+    aube_registry::slow_metadata::flush_summary();
     if let Err(report) = result {
         eprintln!("{report:?}");
         std::process::exit(report_exit_code(&report));
