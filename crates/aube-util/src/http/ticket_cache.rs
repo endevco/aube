@@ -100,6 +100,14 @@ pub struct TicketCache {
     /// in the same process; cross-process is best-effort (last-writer
     /// wins, idempotent payload).
     file_lock: Mutex<()>,
+    /// `AUBE_DISABLE_TLS_TICKET_CACHE` state captured at [`open`]
+    /// time. Reading the env on every `get`/`put`/`save` raced with
+    /// the killswitch test's `setenv`/`removevar` under parallel
+    /// `cargo test` on Windows — sibling tests observed the
+    /// killswitch test's transient `"1"` mid-write and short-circuited
+    /// (see #592 Windows CI failure). Snapshot once at construction so
+    /// the runtime path doesn't touch the process environment.
+    disabled: bool,
 }
 
 impl TicketCache {
@@ -108,7 +116,8 @@ impl TicketCache {
     /// `XDG_CACHE_HOME` resolution; pass an explicit path here.
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let inner = if is_disabled() {
+        let disabled = is_disabled();
+        let inner = if disabled {
             HashMap::new()
         } else {
             load_from_disk(&path).unwrap_or_default()
@@ -117,6 +126,7 @@ impl TicketCache {
             path,
             inner: RwLock::new(inner),
             file_lock: Mutex::new(()),
+            disabled,
         }
     }
 
@@ -124,7 +134,7 @@ impl TicketCache {
     /// `MAX_AGE` are filtered transparently; callers receive only
     /// fresh tickets.
     pub fn get(&self, host: &str, port: u16) -> Vec<TicketEntry> {
-        if is_disabled() {
+        if self.disabled {
             return Vec::new();
         }
         let key = HostPort::new(host, port);
@@ -146,7 +156,7 @@ impl TicketCache {
     /// origin are kept (rustls servers typically issue 2 per
     /// handshake); `prune_max_per_host` caps the queue.
     pub fn put(&self, host: &str, port: u16, entry: TicketEntry) {
-        if is_disabled() {
+        if self.disabled {
             return;
         }
         const MAX_PER_HOST: usize = 4;
@@ -173,7 +183,7 @@ impl TicketCache {
     /// Persist the in-memory cache to disk. Atomic via
     /// `aube_util::fs_atomic::atomic_write`.
     pub fn save(&self) -> std::io::Result<()> {
-        if is_disabled() {
+        if self.disabled {
             return Ok(());
         }
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -244,6 +254,19 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Acquire the crate-shared env lock for the duration of a test
+    /// that constructs a [`TicketCache`]. Every `open()` call reads
+    /// `is_disabled()` (which touches the process env), so a
+    /// concurrent `killswitch_short_circuits` mid-`setenv` window
+    /// would otherwise flake non-killswitch tests on parallel-test
+    /// platforms — Windows surfaced this first, but the race exists
+    /// everywhere setenv isn't atomic.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     fn entry(label: u8) -> TicketEntry {
         TicketEntry {
             ticket: vec![label, label + 1, label + 2],
@@ -254,6 +277,7 @@ mod tests {
 
     #[test]
     fn roundtrip_persists_across_open() {
+        let _g = env_guard();
         let dir = tempdir().unwrap();
         let path = dir.path().join("tickets.json");
         {
@@ -269,6 +293,7 @@ mod tests {
 
     #[test]
     fn host_port_lowercases() {
+        // Pure value type; no env / cache construction → no lock needed.
         let a = HostPort::new("Registry.NPMJS.ORG", 443);
         let b = HostPort::new("registry.npmjs.org", 443);
         assert_eq!(a, b);
@@ -276,6 +301,7 @@ mod tests {
 
     #[test]
     fn invalidate_removes_all_for_host() {
+        let _g = env_guard();
         let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         cache.put("a.example", 443, entry(1));
@@ -287,6 +313,7 @@ mod tests {
 
     #[test]
     fn max_per_host_evicts_oldest() {
+        let _g = env_guard();
         let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         for i in 0..6u8 {
@@ -300,6 +327,7 @@ mod tests {
 
     #[test]
     fn stale_entries_filtered_at_load() {
+        let _g = env_guard();
         let dir = tempdir().unwrap();
         let path = dir.path().join("tickets.json");
         {
@@ -313,24 +341,40 @@ mod tests {
         assert!(reopened.get("a.example", 443).is_empty());
     }
 
+    /// Panic-safe cleanup so a failed assertion inside the killswitch
+    /// test doesn't leave `AUBE_DISABLE_TLS_TICKET_CACHE=1` set, which
+    /// would poison every subsequent test even with the env lock.
+    struct EnvVarGuard {
+        key: &'static str,
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: the caller of [`set_killswitch`] holds
+            // `ENV_LOCK` for the lifetime of this guard, so no other
+            // thread is mid-setenv here.
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+
     #[test]
     fn killswitch_short_circuits() {
-        // Acquire the crate-shared env lock so concurrent tests in
-        // other modules (e.g. concurrency) can't race setenv/getenv.
-        let _g = crate::test_env::ENV_LOCK.lock().unwrap();
-        let dir = tempdir().unwrap();
-        // SAFETY: ENV_LOCK serializes every env-mutating test in this
-        // crate; no other thread touches the process environment
-        // while this guard is held.
+        let _g = env_guard();
+        // SAFETY: `ENV_LOCK` (held via `_g`) serializes every test in
+        // this crate that constructs a `TicketCache`, so no other
+        // thread is reading the env while we mutate it.
         unsafe { std::env::set_var("AUBE_DISABLE_TLS_TICKET_CACHE", "1") };
+        let _cleanup = EnvVarGuard {
+            key: "AUBE_DISABLE_TLS_TICKET_CACHE",
+        };
+        let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         cache.put("a.example", 443, entry(1));
         assert!(cache.get("a.example", 443).is_empty());
-        unsafe { std::env::remove_var("AUBE_DISABLE_TLS_TICKET_CACHE") };
     }
 
     #[test]
     fn missing_file_loads_empty() {
+        let _g = env_guard();
         let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("nonexistent.json"));
         assert!(cache.is_empty());
@@ -338,6 +382,7 @@ mod tests {
 
     #[test]
     fn corrupt_magic_loads_empty() {
+        let _g = env_guard();
         let dir = tempdir().unwrap();
         let path = dir.path().join("tickets.json");
         std::fs::write(&path, br#"{"magic":"wrong","entries":[]}"#).unwrap();
