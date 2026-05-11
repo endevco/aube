@@ -276,18 +276,20 @@ fn search_text_matches(haystack: &str, term: &str) -> bool {
 /// Walk every config source in low-to-high precedence order so a later
 /// duplicate wins. Mirrors the chain the install pipeline applies via
 /// [`aube_settings::resolved`]:
-/// `workspaceYaml < userNpmrc < userAubeConfig < projectNpmrc <
-/// projectAubeConfig`. Per-setting `precedence` overrides in
-/// `settings.toml` can reorder file sources (e.g. `minimumReleaseAge`
-/// puts `workspaceYaml` first); `aube config get` shows the
-/// default-precedence view, which is accurate for the common cases.
+/// `userNpmrc < userAubeConfig < workspaceYaml < projectNpmrc <
+/// projectAubeConfig`. `workspaceYaml` sits above user-scope sources
+/// because it lives at the project root (scope locality). Per-setting
+/// `precedence` overrides in `settings.toml` can reorder file sources
+/// (e.g. `minimumReleaseAge` puts `workspaceYaml` first); `aube config
+/// get` shows the default-precedence view, which is accurate for the
+/// common cases.
 pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
-    out.extend(read_workspace_yaml_flat(cwd));
     if let Ok(user) = user_npmrc_path() {
         out.extend(read_single(&user)?);
     }
     out.extend(aube_config::load_user_entries());
+    out.extend(read_workspace_yaml_flat(cwd));
     out.extend(read_single(&cwd.join(".npmrc"))?);
     out.extend(aube_config::load_project_entries(cwd));
     Ok(out)

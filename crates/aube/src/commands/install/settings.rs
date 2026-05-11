@@ -37,12 +37,12 @@ fn resolve_resolution_mode(ctx: &aube_settings::ResolveCtx<'_>) -> aube_resolver
         })
         .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.project_npmrc))
         .or_else(|| {
+            aube_settings::values::string_from_workspace_yaml("resolutionMode", ctx.workspace_yaml)
+        })
+        .or_else(|| {
             aube_settings::values::string_from_npmrc("resolutionMode", ctx.user_aube_config)
         })
-        .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.user_npmrc))
-        .or_else(|| {
-            aube_settings::values::string_from_workspace_yaml("resolutionMode", ctx.workspace_yaml)
-        });
+        .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.user_npmrc));
     if let Some(raw) = raw
         && let Some(m) = parse_resolution_mode(&raw)
     {
@@ -458,18 +458,22 @@ fn merge_json_object_setting(
 ) {
     // Walk file sources in low-to-high precedence order so later
     // `.extend` calls overwrite earlier ones for shared keys.
+    // `workspace_yaml` sits between user-scope and project-scope —
+    // it's project-scope locality.
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.user_npmrc) {
+        out.extend(value);
+    }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.user_aube_config) {
+        out.extend(value);
+    }
     if let Some(value) = object_setting_from_workspace_yaml(setting, ctx.workspace_yaml) {
         out.extend(value);
     }
-    for entries in [
-        ctx.user_npmrc,
-        ctx.user_aube_config,
-        ctx.project_npmrc,
-        ctx.project_aube_config,
-    ] {
-        if let Some(value) = object_setting_from_npmrc(setting, entries) {
-            out.extend(value);
-        }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.project_npmrc) {
+        out.extend(value);
+    }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.project_aube_config) {
+        out.extend(value);
     }
     if let Some(value) = object_setting_from_env(setting, ctx.env) {
         out.extend(value);
@@ -481,18 +485,20 @@ fn merge_string_map_setting(
     setting: &str,
     out: &mut BTreeMap<String, String>,
 ) {
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.user_npmrc) {
+        out.extend(json_string_map(value));
+    }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.user_aube_config) {
+        out.extend(json_string_map(value));
+    }
     if let Some(value) = object_setting_from_workspace_yaml(setting, ctx.workspace_yaml) {
         out.extend(json_string_map(value));
     }
-    for entries in [
-        ctx.user_npmrc,
-        ctx.user_aube_config,
-        ctx.project_npmrc,
-        ctx.project_aube_config,
-    ] {
-        if let Some(value) = object_setting_from_npmrc(setting, entries) {
-            out.extend(json_string_map(value));
-        }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.project_npmrc) {
+        out.extend(json_string_map(value));
+    }
+    if let Some(value) = object_setting_from_npmrc(setting, ctx.project_aube_config) {
+        out.extend(json_string_map(value));
     }
     if let Some(value) = object_setting_from_env(setting, ctx.env) {
         out.extend(json_string_map(value));

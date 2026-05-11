@@ -309,6 +309,30 @@ teardown() {
 	refute_output --partial "scriptShell"
 }
 
+@test "config set --location project to workspace yaml beats user-scope settings" {
+	# Project-scope writes routed to workspace yaml must not be
+	# silently shadowed by anything in ~/.npmrc or
+	# ~/.config/aube/config.toml. Scope locality: project beats user,
+	# and `pnpm-workspace.yaml` is project-scope.
+	#
+	# `proj/` is separate from $HOME so user-scope and project-scope
+	# config files don't collide.
+	mkdir proj
+	echo "autoInstallPeers=true" >"$HOME/.npmrc"
+	mkdir -p "$XDG_CONFIG_HOME/aube"
+	echo "autoInstallPeers = true" >"$XDG_CONFIG_HOME/aube/config.toml"
+	echo "packages:" >proj/pnpm-workspace.yaml
+	cd proj
+	run aube config set autoInstallPeers false --location project
+	assert_success
+	run cat pnpm-workspace.yaml
+	assert_output --partial "autoInstallPeers: false"
+	# Round-trip: get returns the project value, not user defaults.
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "false"
+}
+
 @test "config set --location project stays in config.toml once it exists" {
 	# If a project already adopted `.config/aube/config.toml`, later
 	# `set` calls keep landing there even after a `pnpm-workspace.yaml`

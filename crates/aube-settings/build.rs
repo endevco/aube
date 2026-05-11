@@ -48,7 +48,7 @@ struct SettingDef {
     /// (project + user, project first) and `"aubeConfig"` (project +
     /// user, project first). Unspecified sources are appended in the
     /// default order (`["projectAubeConfig", "projectNpmrc",
-    /// "userAubeConfig", "userNpmrc", "workspaceYaml"]`) so a partial
+    /// "workspaceYaml", "userAubeConfig", "userNpmrc"]`) so a partial
     /// override still falls back on every source. Settings that pnpm v11 reads
     /// primarily from `pnpm-workspace.yaml` (e.g.
     /// `minimumReleaseAge`) override this to
@@ -261,7 +261,7 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
 
         // Emit source lookups in the declared precedence order. The
         // default order is `[projectAubeConfig, projectNpmrc,
-        // userAubeConfig, userNpmrc, workspaceYaml]`; a setting whose
+        // workspaceYaml, userAubeConfig, userNpmrc]`; a setting whose
         // `precedence` field names only one source gets the rest
         // appended after it. Unknown source names panic loudly at
         // build time — cheaper to catch a typo here than in a user
@@ -546,12 +546,17 @@ fn resolve_precedence(declared: &[String]) -> Vec<String> {
     // The default file order encodes two principles: scope locality
     // (project > user) and aube authority within a scope (aubeConfig >
     // npmrc).
+    // `workspaceYaml` lives at the project root (`pnpm-workspace.yaml`
+    // / `aube-workspace.yaml`), so it's project-scope and outranks
+    // every user-scope source. Within project scope, aube's own
+    // `config.toml` and project `.npmrc` keep their lead — workspace
+    // yaml sits at the bottom of project-scope but above user-scope.
     let file_default = [
         "projectAubeConfig",
         "projectNpmrc",
+        "workspaceYaml",
         "userAubeConfig",
         "userNpmrc",
-        "workspaceYaml",
     ];
     let mut files: Vec<String> = Vec::with_capacity(file_default.len());
     for src in declared {

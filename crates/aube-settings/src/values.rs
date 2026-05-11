@@ -157,14 +157,16 @@ pub fn process_env() -> &'static [(String, String)] {
 /// cli > env
 ///     > project_aube_config (<cwd>/.config/aube/config.toml)
 ///     > project_npmrc       (<cwd>/.npmrc + npmrcAuthFile)
+///     > workspace_yaml      (pnpm-workspace.yaml / aube-workspace.yaml)
 ///     > user_aube_config    (~/.config/aube/config.toml)
 ///     > user_npmrc          (~/.npmrc + pnpm auth.ini)
-///     > workspace_yaml      (pnpm-workspace.yaml / aube-workspace.yaml)
 /// ```
 ///
 /// Two principles drive the file-source ordering:
 ///
 /// - **Scope locality**: project-scope entries beat user-scope entries.
+///   `workspace_yaml` lives at the project root, so it ranks above
+///   every user-scope source.
 /// - **Aube authority**: within a scope, aube's own config file beats
 ///   `.npmrc`. Values aube writes via `aube config set` are not
 ///   silently shadowed by leftover entries in a `.npmrc` that other
@@ -1080,6 +1082,32 @@ mod tests {
         assert!(
             resolved::auto_install_peers(&ctx),
             "project aube_config=true should win over project npmrc=false"
+        );
+    }
+
+    #[test]
+    fn workspace_yaml_wins_over_user_sources_by_default() {
+        // `pnpm-workspace.yaml` / `aube-workspace.yaml` live at the
+        // project root, so by the scope-locality principle they must
+        // outrank both user `.npmrc` and user `config.toml`. Without
+        // this, project-scope writes routed to the workspace yaml
+        // would be silently shadowed by anything the user has at
+        // `~/.config/aube/config.toml` or `~/.npmrc`.
+        let user_npmrc = entries(&[("auto-install-peers", "true")]);
+        let user_aube_config = entries(&[("autoInstallPeers", "true")]);
+        let ws = raw_yaml("autoInstallPeers: false\n");
+        let ctx = ResolveCtx {
+            project_aube_config: &[],
+            project_npmrc: &[],
+            user_aube_config: &user_aube_config,
+            user_npmrc: &user_npmrc,
+            workspace_yaml: &ws,
+            env: &[],
+            cli: &[],
+        };
+        assert!(
+            !resolved::auto_install_peers(&ctx),
+            "workspace yaml should win over user-scope sources"
         );
     }
 
