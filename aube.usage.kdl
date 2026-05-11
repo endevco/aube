@@ -1181,6 +1181,9 @@ cmd outdated help="Report dependencies whose installed version lags behind the r
     flag --json help="Emit a JSON object keyed by package name instead of the default table"
     flag --long help="Also show deps whose `wanted` version matches the installed version"
     flag "-P --prod --production" help="Show only production dependencies (skip devDependencies)"
+    flag "-w --workspace-root --workspace" help="Operate on the workspace root regardless of cwd" {
+        long_help "Operate on the workspace root regardless of cwd.\n\nMirrors pnpm's `-w/--workspace-root`: from a sub-package, `aube outdated -w` reports the root manifest's deps instead of the sub-package's. No-op when paired with `-r` / `--filter` (those already drive workspace selection from the root)."
+    }
     flag --fetch-retries help="Number of retry attempts for failed registry fetches" {
         long_help "Number of retry attempts for failed registry fetches.\n\nOverrides `fetchRetries` / `fetch-retries` from `.npmrc` / `aube-workspace.yaml` when set. Pair with `--fetch-timeout` to fail fast in scripted test runs."
         arg <N>

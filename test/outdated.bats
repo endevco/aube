@@ -179,6 +179,36 @@ EOF
 	assert_output --partial "is-odd"
 }
 
+@test "aube outdated -w retargets at the workspace root from a sub-package" {
+	# Mirrors `pnpm -w outdated`: from a sub-package, `-w` must report
+	# the root manifest's deps (not the sub-package's) regardless of
+	# cwd. Without `-w`, the outdated check resolves the sub-package's
+	# lockfile, which doesn't exist in shared-lockfile workspaces and
+	# would emit "No lockfile found".
+	cat >package.json <<'EOF'
+{"name":"root","version":"0.0.0","private":true,"dependencies":{"is-odd":"0.1.2"}}
+EOF
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - packages/*
+EOF
+	mkdir -p packages/api
+	cat >packages/api/package.json <<'EOF'
+{"name":"api","version":"1.0.0","dependencies":{"is-even":"0.1.0"}}
+EOF
+
+	run aube install
+	assert_success
+
+	cd packages/api
+	run aube outdated -w
+	assert_failure
+	# Root's `is-odd` shows as outdated; the sub-package's `is-even`
+	# must not appear because we're targeting the root manifest.
+	assert_output --partial "is-odd"
+	refute_output --partial "is-even"
+}
+
 @test "aube outdated --filter limits workspace importers" {
 	cat >package.json <<'EOF'
 {"name":"root","version":"0.0.0","private":true}

@@ -78,6 +78,14 @@ pub struct OutdatedArgs {
         visible_alias = "production"
     )]
     pub prod: bool,
+    /// Operate on the workspace root regardless of cwd.
+    ///
+    /// Mirrors pnpm's `-w/--workspace-root`: from a sub-package,
+    /// `aube outdated -w` reports the root manifest's deps instead
+    /// of the sub-package's. No-op when paired with `-r` / `--filter`
+    /// (those already drive workspace selection from the root).
+    #[arg(short = 'w', long = "workspace-root", visible_alias = "workspace")]
+    pub workspace_root: bool,
     #[command(flatten)]
     pub network: crate::cli_args::NetworkArgs,
 }
@@ -116,7 +124,7 @@ pub async fn run(
     mut filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     args.network.install_overrides();
-    let cwd = crate::dirs::project_root()?;
+    let mut cwd = crate::dirs::project_root()?;
     if !filter.is_empty() {
         // Discussion #602: include the workspace root in `outdated -r`
         // by default. pnpm parity here is strict (root is opt-in via
@@ -125,6 +133,16 @@ pub async fn run(
         // parity concern.
         filter.include_workspace_root = true;
         return run_filtered(&cwd, args, &filter).await;
+    }
+    // `-w/--workspace-root`: retarget the report at the workspace
+    // root manifest, regardless of which sub-package the user ran
+    // from. Mirrors `pnpm -w outdated`. No-op when no workspace root
+    // exists above cwd (single-project install) so the flag is safe
+    // to leave in shell aliases.
+    if args.workspace_root
+        && let Some(root) = crate::dirs::find_workspace_root(&cwd)
+    {
+        cwd = root;
     }
     run_one(&cwd, args, None).await?;
     Ok(())
@@ -347,6 +365,7 @@ impl OutdatedArgs {
             json: self.json,
             long: self.long,
             prod: self.prod,
+            workspace_root: self.workspace_root,
             network: self.network.clone(),
         }
     }

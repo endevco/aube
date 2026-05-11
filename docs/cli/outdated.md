@@ -29,6 +29,12 @@ Also show deps whose `wanted` version matches the installed version
 
 Show only production dependencies (skip devDependencies)
 
+### `-w --workspace-root`
+
+Operate on the workspace root regardless of cwd.
+
+Mirrors pnpm's `-w/--workspace-root`: from a sub-package, `aube outdated -w` reports the root manifest's deps instead of the sub-package's. No-op when paired with `-r` / `--filter` (those already drive workspace selection from the root).
+
 ### `--fetch-retries <N>`
 
 Number of retry attempts for failed registry fetches.
