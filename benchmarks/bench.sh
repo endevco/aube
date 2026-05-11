@@ -236,6 +236,12 @@ for i in "${!TOOLS[@]}"; do
 			printf "enableGlobalCache: false\n"
 			printf "enableTelemetry: false\n"
 			printf "enableScripts: false\n"
+			# Yarn 4 auto-enables immutable installs when it detects
+			# `CI=true`, which makes the warm step refuse to create
+			# the initial lockfile (YN0028) and crashes bench-refresh.
+			# Pin the flag off so the warm install can populate the
+			# lockfile + cache + store the same way it does locally.
+			printf "enableImmutableInstalls: false\n"
 		} >"$dir/.yarnrc.yml"
 	fi
 
