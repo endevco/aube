@@ -61,15 +61,21 @@ thread_local! {
     static SHA512_HASHER: RefCell<Sha512> = RefCell::new(Sha512::new());
 }
 
-/// Per-shard mutex array used by the non-Linux CAS fast path to
-/// serialize concurrent writers within a single process. Indexed by the
-/// first byte of the file's BLAKE3 hash (matching the on-disk 2-char
-/// shard layout), so two threads writing the same hash always collide;
-/// threads writing different hashes typically don't. The array is
-/// process-global rather than per-`Store` because there is at most one
-/// active store per install, and a static avoids carrying 256 mutexes
-/// in every cheap `Store::clone()` along the fetch pipeline.
-#[cfg(not(target_os = "linux"))]
+/// Per-shard mutex array used by the macOS CAS fast path to serialize
+/// concurrent writers within a single process. Indexed by the first
+/// byte of the file's BLAKE3 hash (matching the on-disk 2-char shard
+/// layout), so two threads writing the same hash always collide; threads
+/// writing different hashes typically don't. The array is process-global
+/// rather than per-`Store` because there is at most one active store
+/// per install, and a static avoids carrying 256 mutexes in every cheap
+/// `Store::clone()` along the fetch pipeline.
+///
+/// macOS-gated rather than `not(linux)` because the fast-path block
+/// itself uses `OpenOptionsExt::mode`, which only exists on Unix —
+/// Windows would fail to compile under `not(linux)`. Linux already has
+/// `O_TMPFILE + linkat` (atomic-by-construction, faster than either
+/// alternative); Windows keeps the tempfile + persist_noclobber path.
+#[cfg(target_os = "macos")]
 static FAST_PATH_SHARD_LOCKS: [std::sync::Mutex<()>; 256] =
     [const { std::sync::Mutex::new(()) }; 256];
 
@@ -467,7 +473,7 @@ impl Store {
                     }
                 }
 
-                // Non-Linux fast path: direct O_CREAT|O_EXCL at the final
+                // macOS fast path: direct O_CREAT|O_EXCL at the final
                 // content-addressed path, no tempfile dance. Caller (the
                 // install command) flips `fast_path` on only after
                 // acquiring an exclusive store-level lock against other
@@ -489,8 +495,10 @@ impl Store {
                 //
                 // On APFS the fast path is ~2.25x faster than
                 // tempfile+chmod+persist (~64µs/file vs ~145µs/file in
-                // isolation).
-                #[cfg(not(target_os = "linux"))]
+                // isolation). macOS-gated rather than `not(linux)`
+                // because `OpenOptionsExt::mode` is unix-only — Windows
+                // keeps the tempfile path.
+                #[cfg(target_os = "macos")]
                 if this.fast_path.load(Ordering::Acquire) {
                     use std::io::Write;
                     use std::os::unix::fs::OpenOptionsExt;
