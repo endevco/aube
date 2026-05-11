@@ -130,13 +130,17 @@ pub fn process_env() -> &'static [(String, String)] {
 /// returns `bool`, `store_dir` returns `Option<String>`, and
 /// calling either on the wrong type is a compile error.
 ///
-/// Precedence is `cli > env > npmrc > aubeConfig > workspaceYaml`. The
-/// per-setting `precedence` override in `settings.toml` reorders the
-/// file-based sources (`npmrc`, `aubeConfig`, `workspaceYaml`) but cannot demote
-/// `cli` or `env` off the top — CLI flags and environment variables
-/// always win. Settings with concrete parseable defaults return the
-/// defaulted value directly; settings whose default is undefined or
-/// contextual still return `Option<T>`.
+/// Precedence is `cli > env > aubeConfig > npmrc > workspaceYaml`. Aube's
+/// own user config (`~/.config/aube/config.toml`) wins over `~/.npmrc` so
+/// that `aube config set` is authoritative — values aube writes are not
+/// silently shadowed by leftover entries in a shared `.npmrc` that other
+/// tools (npm, pnpm, yarn) also read. The per-setting `precedence`
+/// override in `settings.toml` reorders the file-based sources
+/// (`aubeConfig`, `npmrc`, `workspaceYaml`) but cannot demote `cli` or
+/// `env` off the top — CLI flags and environment variables always win.
+/// Settings with concrete parseable defaults return the defaulted value
+/// directly; settings whose default is undefined or contextual still
+/// return `Option<T>`.
 pub mod resolved {
     use super::ResolveCtx;
     include!(concat!(env!("OUT_DIR"), "/settings_resolved.rs"));
@@ -891,9 +895,10 @@ mod tests {
 
     #[test]
     fn cli_beats_env_beats_npmrc_beats_workspace_yaml() {
-        // Precedence order is cli > env > npmrc > workspaceYaml. This
-        // test hits every layer by setting a unique value at each and
-        // asserting the generated accessor returns the CLI value.
+        // Precedence order is cli > env > aubeConfig > npmrc >
+        // workspaceYaml. This test hits the cli/env/npmrc/ws layers by
+        // setting a unique value at each and asserting the generated
+        // accessor returns the CLI value.
         let npmrc = entries(&[("auto-install-peers", "false")]);
         let ws = raw_yaml("autoInstallPeers: false\n");
         let env = vec![(
@@ -931,7 +936,12 @@ mod tests {
     }
 
     #[test]
-    fn generated_accessor_reads_aube_config_between_npmrc_and_workspace_yaml() {
+    fn minimum_release_age_honors_per_setting_precedence_override() {
+        // `minimumReleaseAge` overrides the default file precedence to
+        // `["workspaceYaml", "npmrc"]`. With `aubeConfig` appended at
+        // the tail, the effective order is workspaceYaml > npmrc >
+        // aubeConfig — workspace YAML wins when present, and
+        // `config.toml` is consulted only as a last resort.
         let npmrc = Vec::new();
         let aube_config = entries(&[("minimumReleaseAge", "2880")]);
         let ws = raw_yaml("minimumReleaseAge: 1440\n");
@@ -953,6 +963,30 @@ mod tests {
             cli: &[],
         };
         assert_eq!(resolved::minimum_release_age(&ctx), 2880);
+    }
+
+    #[test]
+    fn aube_config_wins_over_npmrc_by_default() {
+        // Default file precedence is `[aubeConfig, npmrc, workspaceYaml]`
+        // so values aube wrote to `~/.config/aube/config.toml` via
+        // `aube config set` are authoritative — a leftover entry in
+        // `~/.npmrc` (which other tools like npm/pnpm/yarn also read)
+        // does not silently shadow them. `autoInstallPeers` has no
+        // per-setting precedence override, so it follows the default.
+        let npmrc = entries(&[("auto-install-peers", "false")]);
+        let aube_config = entries(&[("autoInstallPeers", "true")]);
+        let ws = BTreeMap::new();
+        let ctx = ResolveCtx {
+            npmrc: &npmrc,
+            aube_config: &aube_config,
+            workspace_yaml: &ws,
+            env: &[],
+            cli: &[],
+        };
+        assert!(
+            resolved::auto_install_peers(&ctx),
+            "aube_config=true should win over npmrc=false"
+        );
     }
 
     #[test]

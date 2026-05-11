@@ -258,9 +258,10 @@ pub(crate) fn ensure_registry_auth(
 static LOCK_HELD: AtomicBool = AtomicBool::new(false);
 
 /// Whether the project-level advisory lock is disabled. Resolves the
-/// `aubeNoLock` setting through the full cli > env > npmrc >
-/// workspace.yaml chain so `.npmrc` and `aube-workspace.yaml` entries
-/// participate alongside the canonical `AUBE_NO_LOCK` env var.
+/// `aubeNoLock` setting through the full cli > env > aubeConfig >
+/// npmrc > workspace.yaml chain so `.npmrc`, `~/.config/aube/config.toml`,
+/// and `aube-workspace.yaml` entries participate alongside the canonical
+/// `AUBE_NO_LOCK` env var.
 fn aube_no_lock_enabled(cwd: &std::path::Path) -> bool {
     with_settings_ctx(cwd, aube_settings::resolved::aube_no_lock)
 }
@@ -426,8 +427,8 @@ pub(crate) fn with_settings_ctx<T>(
 /// Build a registry client configured from .npmrc files in the project directory.
 ///
 /// Also resolves the `fetch*` settings (timeout + retries + backoff)
-/// from the full cli > env > npmrc > workspace precedence chain and
-/// threads the resulting [`aube_registry::config::FetchPolicy`] into
+/// from the full cli > env > aubeConfig > npmrc > workspace precedence
+/// chain and threads the resulting [`aube_registry::config::FetchPolicy`] into
 /// the client. The CLI bag comes from [`fetch_cli_overrides`], which
 /// `async_main` populates from the global `--fetch-timeout`,
 /// `--fetch-retries`, and `--fetch-retry-{factor,mintimeout,maxtimeout}`

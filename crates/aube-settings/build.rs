@@ -44,7 +44,7 @@ struct SettingDef {
     /// Source precedence for the generated accessor, high-to-low.
     /// Valid entries: `"npmrc"`, `"aubeConfig"`, `"workspaceYaml"`.
     /// Unspecified sources are appended in the default order
-    /// (`["npmrc", "aubeConfig", "workspaceYaml"]`) so a partial
+    /// (`["aubeConfig", "npmrc", "workspaceYaml"]`) so a partial
     /// override still falls back on every source. Settings that pnpm v11 reads
     /// primarily from `pnpm-workspace.yaml` (e.g.
     /// `minimumReleaseAge`) override this to
@@ -148,7 +148,8 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
          // One typed accessor per supported scalar setting (`bool`,\n\
          // `string`, `path`, `url`, `int`, `list<string>`, and\n\
          // enum-style string unions). The accessor walks sources in\n\
-         // precedence order (cli/env first, then npmrc / workspace.yaml).\n\
+         // precedence order (cli/env first, then aube config.toml /\n\
+         // npmrc / workspace.yaml).\n\
          // Settings with parseable concrete defaults return `T`; settings\n\
          // whose default is undefined or contextual return `Option<T>`.\n\n",
     );
@@ -255,7 +256,7 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
         };
 
         // Emit source lookups in the declared precedence order. The
-        // default order is `[npmrc, aubeConfig, workspaceYaml]`; a setting whose
+        // default order is `[aubeConfig, npmrc, workspaceYaml]`; a setting whose
         // `precedence` field names only one source gets the rest
         // appended after it. Unknown source names panic loudly at
         // build time — cheaper to catch a typo here than in a user
@@ -535,7 +536,7 @@ fn resolve_precedence(declared: &[String]) -> Vec<String> {
     // sources (`npmrc`, `aubeConfig`, `workspaceYaml`). Anyone who declares `cli`
     // or `env` in their precedence list gets it silently dropped
     // below because it's already pinned on top.
-    let file_default = ["npmrc", "aubeConfig", "workspaceYaml"];
+    let file_default = ["aubeConfig", "npmrc", "workspaceYaml"];
     let mut files: Vec<String> = Vec::with_capacity(file_default.len());
     for src in declared {
         match src.as_str() {

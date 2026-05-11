@@ -1,4 +1,4 @@
-use super::{Location, NpmrcEdit, aube_config, resolve_aliases, user_npmrc_path};
+use super::{Location, NpmrcEdit, aube_config, resolve_aliases};
 use clap::Args;
 
 #[derive(Debug, Args)]
@@ -49,7 +49,6 @@ pub(super) fn set_value(
         let mut edit = aube_config::AubeConfigEdit::load(&path)?;
         edit.set(meta, value)?;
         edit.save(&path)?;
-        remove_stale_user_npmrc_aliases(key)?;
         if report {
             eprintln!("set {}={} ({})", meta.name, value, path.display());
         }
@@ -69,24 +68,6 @@ pub(super) fn set_value(
     edit.save(&path)?;
     if report {
         eprintln!("set {}={} ({})", write_key, value, path.display());
-    }
-    Ok(())
-}
-
-fn remove_stale_user_npmrc_aliases(key: &str) -> miette::Result<()> {
-    let Ok(path) = user_npmrc_path() else {
-        return Ok(());
-    };
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut edit = NpmrcEdit::load(&path)?;
-    let mut removed = false;
-    for alias in resolve_aliases(key) {
-        removed |= edit.remove(&alias);
-    }
-    if removed {
-        edit.save(&path)?;
     }
     Ok(())
 }

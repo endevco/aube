@@ -571,8 +571,8 @@ impl Default for FetchPolicy {
 
 impl FetchPolicy {
     /// Resolve every field from a settings [`ResolveCtx`]. Walks the
-    /// full cli > env > npmrc > workspaceYaml precedence chain via the
-    /// generated accessors, so env-var overrides like
+    /// full cli > env > aubeConfig > npmrc > workspaceYaml precedence
+    /// chain via the generated accessors, so env-var overrides like
     /// `NPM_CONFIG_FETCH_TIMEOUT` Just Work without bespoke parsing.
     pub fn from_ctx(ctx: &aube_settings::ResolveCtx<'_>) -> Self {
         Self {

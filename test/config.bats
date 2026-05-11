@@ -35,17 +35,21 @@ teardown() {
 	assert_output "true"
 }
 
-@test "config get and list prefer user .npmrc over user config.toml" {
+@test "config get and list prefer user config.toml over user .npmrc" {
+	# Aube's own user config wins over ~/.npmrc so values aube wrote
+	# via `aube config set` are authoritative — they are not silently
+	# shadowed by leftover entries in a shared .npmrc that other tools
+	# (npm, pnpm, yarn) also read.
 	mkdir -p "$XDG_CONFIG_HOME/aube"
 	echo "autoInstallPeers = true" >"$XDG_CONFIG_HOME/aube/config.toml"
 	echo "autoInstallPeers=false" >"$HOME/.npmrc"
 	run aube config get autoInstallPeers
 	assert_success
-	assert_output "false"
+	assert_output "true"
 	run aube config list --location user
 	assert_success
-	assert_line "auto-install-peers=false"
-	refute_line "auto-install-peers=true"
+	assert_line "auto-install-peers=true"
+	refute_line "auto-install-peers=false"
 }
 
 @test "config get --location project only reads project .npmrc" {
@@ -99,14 +103,21 @@ teardown() {
 	assert_output "undefined"
 }
 
-@test "config set collapses aliases so a prior spelling doesn't linger" {
+@test "config set for an aube-owned key leaves user .npmrc untouched" {
+	# Discussion #601: `aube config set <known-key>` writes to
+	# `config.toml` and must not edit `~/.npmrc`, which is shared with
+	# npm/pnpm/yarn. The new value still takes effect because
+	# `config.toml` outranks `~/.npmrc` in the resolver.
 	echo "auto-install-peers=false" >"$HOME/.npmrc"
 	run aube config set autoInstallPeers true
 	assert_success
 	run cat "$HOME/.npmrc"
-	refute_output --partial "auto-install-peers=false"
+	assert_output "auto-install-peers=false"
 	run cat "$XDG_CONFIG_HOME/aube/config.toml"
 	assert_output --partial "autoInstallPeers = true"
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "true"
 }
 
 @test "config delete removes a key" {
