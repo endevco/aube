@@ -43,6 +43,7 @@ where
 pub mod client;
 pub mod config;
 pub mod jsr;
+pub mod slow_metadata;
 
 // Packuments and `package.json` files share the `bundledDependencies`
 // shape, so the registry crate borrows the type from `aube-manifest`

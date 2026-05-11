@@ -666,15 +666,14 @@ impl RegistryClient {
     }
 
     /// Metadata-request wrapper around [`Self::send_with_retry_timed`]
-    /// that emits the `fetchWarnTimeoutMs` warning when total
-    /// wall-clock (including any retry backoff) exceeds the configured
-    /// threshold. `0` disables the warning, matching pnpm's
-    /// convention and the default in `settings.toml`.
+    /// that records a slow-metadata entry when total wall-clock
+    /// (including any retry backoff) exceeds `fetchWarnTimeoutMs`. `0`
+    /// disables the recording, matching pnpm's convention and the
+    /// default in `settings.toml`.
     ///
-    /// `label` is the logical resource being fetched (e.g.
-    /// `"packument lodash"`), used in the warn message so an operator
-    /// can map a slow fetch back to a package name without re-enabling
-    /// debug tracing.
+    /// Per-event detail goes into [`crate::slow_metadata`], not the
+    /// log stream — the install pipeline emits one summary warning
+    /// after resolve via [`crate::slow_metadata::flush_summary`].
     ///
     /// Not used by tarball downloads — `fetchMinSpeedKiBps` is the
     /// tarball-side observability knob, and the two warnings are
@@ -691,28 +690,16 @@ impl RegistryClient {
         let threshold = self.fetch_policy.warn_timeout_ms;
         let elapsed_ms = elapsed.as_millis() as u64;
         if threshold > 0 && elapsed_ms > threshold {
-            tracing::warn!(
-                elapsed_ms,
-                threshold_ms = threshold,
-                label,
-                code = aube_codes::warnings::WARN_AUBE_SLOW_METADATA,
-                "slow registry metadata request exceeded fetchWarnTimeoutMs",
-            );
+            crate::slow_metadata::record(label, elapsed_ms);
         }
         Ok(resp)
     }
 
-    fn maybe_warn_slow_metadata(&self, label: &str, started: std::time::Instant) {
+    fn maybe_record_slow_metadata(&self, label: &str, started: std::time::Instant) {
         let threshold = self.fetch_policy.warn_timeout_ms;
         let elapsed_ms = started.elapsed().as_millis() as u64;
         if threshold > 0 && elapsed_ms > threshold {
-            tracing::warn!(
-                elapsed_ms,
-                threshold_ms = threshold,
-                label,
-                code = aube_codes::warnings::WARN_AUBE_SLOW_METADATA,
-                "slow registry metadata request exceeded fetchWarnTimeoutMs",
-            );
+            crate::slow_metadata::record(label, elapsed_ms);
         }
     }
 
@@ -977,7 +964,7 @@ impl RegistryClient {
                 }
                 Ok(resp) => {
                     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                        self.maybe_warn_slow_metadata(&label, started);
+                        self.maybe_record_slow_metadata(&label, started);
                         return Err(Error::NotFound(name.to_string()));
                     }
 
@@ -1000,7 +987,7 @@ impl RegistryClient {
                                 cache_path.display()
                             );
                         }
-                        self.maybe_warn_slow_metadata(&label, started);
+                        self.maybe_record_slow_metadata(&label, started);
                         return Ok(c.packument.clone());
                     }
 
@@ -1024,7 +1011,7 @@ impl RegistryClient {
                                     cache_path.display()
                                 );
                             }
-                            self.maybe_warn_slow_metadata(&label, started);
+                            self.maybe_record_slow_metadata(&label, started);
                             return Ok(packument);
                         }
                         Err(err) if !is_last => {
@@ -1172,7 +1159,7 @@ impl RegistryClient {
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                    self.maybe_warn_slow_metadata(&label, started);
+                    self.maybe_record_slow_metadata(&label, started);
                     return Err(Error::NotFound(name.to_string()));
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
@@ -1206,7 +1193,7 @@ impl RegistryClient {
                             cache_path.display()
                         );
                     }
-                    self.maybe_warn_slow_metadata(&label, started);
+                    self.maybe_record_slow_metadata(&label, started);
                     return Ok(cached.packument);
                 }
                 Ok(resp) => {
@@ -1237,7 +1224,7 @@ impl RegistryClient {
                                         e,
                                     ))
                                 })?;
-                            self.maybe_warn_slow_metadata(&label, started);
+                            self.maybe_record_slow_metadata(&label, started);
                             return Ok(packument);
                         }
                         Err(err) if !is_last => {
@@ -1339,7 +1326,7 @@ impl RegistryClient {
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                    self.maybe_warn_slow_metadata(&label, started);
+                    self.maybe_record_slow_metadata(&label, started);
                     return Err(Error::NotFound(name.to_string()));
                 }
                 Ok(resp) => {
@@ -1363,7 +1350,7 @@ impl RegistryClient {
                     match parse_full_response::<Packument>(resp.error_for_status()?).await {
                         Ok(packument) => {
                             drop(_diag_parse);
-                            self.maybe_warn_slow_metadata(&label, started);
+                            self.maybe_record_slow_metadata(&label, started);
                             return Ok(packument);
                         }
                         Err(err) if !is_last => {
@@ -1513,7 +1500,7 @@ impl RegistryClient {
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                    self.maybe_warn_slow_metadata(&label, started);
+                    self.maybe_record_slow_metadata(&label, started);
                     return Err(Error::NotFound(name.to_string()));
                 }
                 Ok(resp)
@@ -1535,7 +1522,7 @@ impl RegistryClient {
                             cache_path.display()
                         );
                     }
-                    self.maybe_warn_slow_metadata(&label, started);
+                    self.maybe_record_slow_metadata(&label, started);
                     return Ok(c.packument.clone());
                 }
                 Ok(resp) => {
@@ -1560,7 +1547,7 @@ impl RegistryClient {
                                     cache_path.display()
                                 );
                             }
-                            self.maybe_warn_slow_metadata(&label, started);
+                            self.maybe_record_slow_metadata(&label, started);
                             return Ok(packument);
                         }
                         Err(err) if !is_last => {
@@ -3301,11 +3288,12 @@ mod retry_tests {
     #[tokio::test]
     async fn warn_timeout_is_pure_observability_and_does_not_fail_request() {
         // Server returns a normal 200 after a 50ms delay. With
-        // `warn_timeout_ms = 1`, the helper should log a warning but
-        // the request must still succeed — the setting is advisory,
-        // not a hard cutoff (that's `timeout_ms`). This pins the
-        // invariant so a future refactor doesn't turn a warn into an
-        // error by accident.
+        // `warn_timeout_ms = 1`, the helper records the slow fetch
+        // into the slow-metadata accumulator but the request must
+        // still succeed — the setting is advisory, not a hard cutoff
+        // (that's `timeout_ms`). This pins the invariant so a future
+        // refactor doesn't turn the threshold into an error by
+        // accident.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/demo"))
