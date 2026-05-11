@@ -194,15 +194,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # BOLT runs against the x86_64 Linux PGO targets only. Local
-          # bench on Zen 4 shows -2.7% wall / -18% L1-icache misses /
+          # BOLT runs against every Linux PGO target. Local bench on
+          # Zen 4 (x86_64) shows -2.7% wall / -18% L1-icache misses /
           # -4.4% branch misses on the user-mode "frozen lockfile"
           # fast path (z=-6.45 on wall, n=20). The canonical install
           # benchmarks don't move statistically because system-call
           # time dominates real installs — codegen wins exist but get
-          # buried under syscall jitter. aarch64-linux is skipped
-          # pending validation on an aarch64 host; macOS BOLT support
-          # is not in tree.
+          # buried under syscall jitter. aarch64-linux uses the same
+          # perf-LBR-driven flow; the host's branch sampling support
+          # is checked at runtime in pgo.bash phase 4 and fails loud
+          # if absent. macOS BOLT support is not in tree.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             runner: namespace-profile-endev-linux-amd64-large;overrides.cache-tag=aube-rust-linux
@@ -217,7 +218,7 @@ jobs:
             os: ubuntu-latest
             runner: namespace-profile-endev-linux-arm64-large;overrides.cache-tag=aube-rust-linux-arm64
             build-tool: cargo
-            bolt: false
+            bolt: true
           - target: aarch64-apple-darwin
             os: macos-latest
             # Trying GitHub's standard Apple Silicon runner — the
