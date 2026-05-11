@@ -4454,17 +4454,26 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let placements_ref = stats.hoisted_placements.as_ref();
     let phase_start = std::time::Instant::now();
     // `extendNodePath` controls whether shim scripts export `NODE_PATH`.
-    // `preferSymlinkedExecutables` only matters on POSIX: `None` (default)
-    // or `Some(true)` keep the historical symlink layout, `Some(false)`
-    // swaps in a shell shim so `extendNodePath` can actually take effect
-    // (bare symlinks can't set env vars). Windows always writes cmd/ps1/sh
-    // wrappers regardless, since real symlinks there need Developer Mode.
+    // `preferSymlinkedExecutables` only matters on POSIX: `Some(true)`
+    // keeps the symlink layout, `Some(false)` swaps in a shell shim so
+    // `extendNodePath` can actually take effect (bare symlinks can't set
+    // env vars). When the user leaves it unset, default to shim under the
+    // isolated linker (NODE_PATH matters there so transitives hoisted to
+    // `.aube/node_modules/` resolve from a shimmed bin) and symlink under
+    // hoisted (every dep is already on the root `node_modules/` walk-up
+    // path, so NODE_PATH is unnecessary). Mirrors pnpm's effective
+    // default. Windows always writes cmd/ps1/sh wrappers regardless,
+    // since real symlinks there need Developer Mode.
     let extend_node_path = aube_settings::resolved::extend_node_path(&settings_ctx);
-    let prefer_symlinked_executables =
-        aube_settings::resolved::prefer_symlinked_executables(&settings_ctx);
+    let prefer_symlinked_executables = aube_settings::resolved::prefer_symlinked_executables(
+        &settings_ctx,
+    )
+    .or((!matches!(node_linker, aube_linker::NodeLinker::Hoisted)).then_some(false));
+    let hidden_modules_dir = aube_dir.join("node_modules");
     let shim_opts = aube_linker::BinShimOptions {
         extend_node_path,
         prefer_symlinked_executables,
+        hidden_modules_dir: Some(hidden_modules_dir.as_path()),
     };
     if !virtual_store_only {
         let mut pkg_json_cache = bin_linking::PkgJsonCache::new();

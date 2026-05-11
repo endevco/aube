@@ -2275,9 +2275,14 @@ async fn run_global_inner(
     // settings resolved from the user's `.npmrc` via the normal cwd-walking
     // chain starting at the throwaway install dir, which lives under
     // `~/.aube/global/` and will still pick up the user-level `.npmrc`.
+    // `hidden_modules_dir = None`: the global install lays packages out
+    // at `<install>/node_modules/<name>` (hoisted shape, no `.aube/`
+    // store), so the bin's `$basedir/..` already lands the resolver on
+    // every transitive — no second NODE_PATH entry needed.
     let shim_opts = super::with_settings_ctx(install_dir, |ctx| aube_linker::BinShimOptions {
         extend_node_path: aube_settings::resolved::extend_node_path(ctx),
         prefer_symlinked_executables: aube_settings::resolved::prefer_symlinked_executables(ctx),
+        hidden_modules_dir: None,
     });
     let linked = global::link_bins(install_dir, &layout.bin_dir, &aliases, shim_opts)?;
 

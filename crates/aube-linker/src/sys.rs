@@ -118,16 +118,31 @@ fn is_retriable_link_error(error: &io::Error) -> bool {
 /// `Default` preserves the pre-settings behavior: POSIX symlink,
 /// Windows shim without `NODE_PATH`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BinShimOptions {
-    /// Export `NODE_PATH` (pointing at the top-level `node_modules`)
-    /// in shell / cmd / PowerShell shims. Has no effect when the
-    /// final entry is a POSIX symlink.
+pub struct BinShimOptions<'a> {
+    /// Export `NODE_PATH` in shell / cmd / PowerShell shims so the
+    /// shimmed binary can resolve transitives that live outside the
+    /// directory tree walked by Node from the cwd. Has no effect when
+    /// the final entry is a POSIX symlink (symlinks can't export env
+    /// vars). When `hidden_modules_dir` is set, the shim's NODE_PATH
+    /// becomes a colon/semicolon-separated list of: the bin's
+    /// top-level `node_modules`, then the hidden modules dir at
+    /// `<virtual_store>/node_modules`. Otherwise it's just the
+    /// top-level `node_modules`.
     pub extend_node_path: bool,
     /// POSIX-only. `None` → platform default (symlink). `Some(true)` is
     /// equivalent. `Some(false)` writes a shell-script shim instead, so
     /// `extend_node_path` can actually inject `NODE_PATH`. Ignored on
     /// Windows — shims are always used there.
     pub prefer_symlinked_executables: Option<bool>,
+    /// Absolute path to the virtual store's hidden modules dir
+    /// (`<project>/node_modules/.aube/node_modules`). When set and
+    /// `extend_node_path=true`, the generated shim includes it in
+    /// `NODE_PATH` so transitives hoisted there resolve when the
+    /// shimmed binary asks Node for them — pnpm's `.pnpm/node_modules`
+    /// behavior. Independent of `bin_dir` so workspace-member bin
+    /// shims (whose `bin_dir` is nowhere near `.aube/`) get the same
+    /// resolution shape as the root importer's `.bin/`.
+    pub hidden_modules_dir: Option<&'a Path>,
 }
 
 /// Create bin shims for a package binary.
@@ -152,7 +167,7 @@ pub fn create_bin_shim(
     bin_dir: &Path,
     name: &str,
     target: &Path,
-    opts: BinShimOptions,
+    opts: BinShimOptions<'_>,
 ) -> io::Result<()> {
     validate_bin_name(name)?;
     #[cfg(unix)]
@@ -164,15 +179,13 @@ pub fn create_bin_shim(
         let _ = std::fs::remove_file(&link_path);
         if write_shim {
             let rel = relative_bin_target(link_parent, target);
-            let node_path_rel = relative_bin_target(link_parent, node_modules_dir_for_bin(bin_dir));
+            let node_path = opts
+                .extend_node_path
+                .then(|| shim_node_path(link_parent, bin_dir, opts.hidden_modules_dir, "/", ":"));
             let prog = detect_interpreter(target);
             std::fs::write(
                 &link_path,
-                generate_posix_shim(
-                    &prog,
-                    &rel,
-                    opts.extend_node_path.then_some(node_path_rel.as_str()),
-                ),
+                generate_posix_shim(&prog, &rel, node_path.as_deref()),
             )?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&link_path, std::fs::Permissions::from_mode(0o755))?;
@@ -208,29 +221,31 @@ pub fn create_bin_shim(
         }
 
         let rel = relative_bin_target(link_parent, target);
-        let node_path_rel = relative_bin_target(link_parent, node_modules_dir_for_bin(bin_dir));
         let prog = detect_interpreter(target);
 
         let rel_backslash = rel.replace('/', "\\");
         let rel_fwdslash = rel.replace('\\', "/");
-        let node_path_backslash = node_path_rel.replace('/', "\\");
-        let node_path_fwdslash = node_path_rel.replace('\\', "/");
+        // cmd.exe wants `;`-separated, backslash paths; PowerShell and the
+        // Git-Bash `.sh` wrapper want `:`-separated, forward-slash paths.
+        // `shim_node_path` builds either shape from the same input.
         let node_path_backslash = opts
             .extend_node_path
-            .then_some(node_path_backslash.as_str());
-        let node_path_fwdslash = opts.extend_node_path.then_some(node_path_fwdslash.as_str());
+            .then(|| shim_node_path(link_parent, bin_dir, opts.hidden_modules_dir, "\\", ";"));
+        let node_path_fwdslash = opts
+            .extend_node_path
+            .then(|| shim_node_path(link_parent, bin_dir, opts.hidden_modules_dir, "/", ":"));
 
         write_shim_file(
             &bin_dir.join(format!("{name}.cmd")),
-            generate_cmd_shim(&prog, &rel_backslash, node_path_backslash).as_bytes(),
+            generate_cmd_shim(&prog, &rel_backslash, node_path_backslash.as_deref()).as_bytes(),
         )?;
         write_shim_file(
             &bin_dir.join(format!("{name}.ps1")),
-            generate_ps1_shim(&prog, &rel_fwdslash, node_path_fwdslash).as_bytes(),
+            generate_ps1_shim(&prog, &rel_fwdslash, node_path_fwdslash.as_deref()).as_bytes(),
         )?;
         write_shim_file(
             &bin_dir.join(name),
-            generate_sh_shim(&prog, &rel_fwdslash, node_path_fwdslash).as_bytes(),
+            generate_sh_shim(&prog, &rel_fwdslash, node_path_fwdslash.as_deref()).as_bytes(),
         )?;
     }
     #[cfg(not(any(unix, windows)))]
@@ -465,8 +480,52 @@ fn relative_bin_target(base_dir: &Path, target: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn node_modules_dir_for_bin(bin_dir: &Path) -> &Path {
-    bin_dir.parent().unwrap_or(bin_dir)
+/// Build the value the bin shim assigns to `NODE_PATH`. Always starts
+/// with the `node_modules/` that holds the `.bin/` directory itself
+/// (recovers Node's `cwd` walk-up from a shim invoked outside its
+/// project). When the caller supplies `hidden_modules_dir`, that path
+/// is appended so transitives hoisted to `<virtual_store>/node_modules`
+/// — the only place auto-installed peers like `typescript` live for an
+/// isolated install — resolve too. Matches the load-bearing entries of
+/// pnpm's own NODE_PATH (the bin's `node_modules`, then the hidden
+/// `.pnpm/node_modules`).
+///
+/// `path_sep` is `/` on POSIX/PowerShell/Git-Bash and `\` for cmd.exe;
+/// `list_sep` is `:` on POSIX, `;` on cmd.exe. Each entry is prefixed
+/// with `$basedir/` (or `%~dp0` for cmd via the caller's prefix —
+/// cmd's `%~dp0` already ends with a backslash so no extra path-sep is
+/// emitted between prefix and entry).
+fn shim_node_path(
+    link_parent: &Path,
+    bin_dir: &Path,
+    hidden_modules_dir: Option<&Path>,
+    path_sep: &str,
+    list_sep: &str,
+) -> String {
+    let (basedir_prefix, basedir_suffix) = if path_sep == "\\" {
+        // cmd: `%~dp0` already ends in a backslash, so don't emit one.
+        ("%~dp0", "")
+    } else {
+        ("$basedir", "/")
+    };
+    let normalize = |rel: String| -> String {
+        if path_sep == "\\" {
+            rel.replace('/', "\\")
+        } else {
+            rel.replace('\\', "/")
+        }
+    };
+    let mut entries: Vec<String> = Vec::with_capacity(2);
+    let top = normalize(relative_bin_target(
+        link_parent,
+        bin_dir.parent().unwrap_or(bin_dir),
+    ));
+    entries.push(format!("{basedir_prefix}{basedir_suffix}{top}"));
+    if let Some(hidden) = hidden_modules_dir {
+        let rel = normalize(relative_bin_target(link_parent, hidden));
+        entries.push(format!("{basedir_prefix}{basedir_suffix}{rel}"));
+    }
+    entries.join(list_sep)
 }
 
 /// Read the shebang line of `target` to determine the interpreter.
@@ -580,13 +639,11 @@ fn safe_prog(prog: &str) -> &str {
 fn generate_cmd_shim(
     prog: &str,
     rel_target_backslash: &str,
-    node_path_rel_backslash: Option<&str>,
+    node_path_value: Option<&str>,
 ) -> String {
     let prog = safe_prog(prog);
-    // `%~dp0` already ends with a backslash.
-    let node_path = node_path_rel_backslash.map_or(String::new(), |rel| {
-        format!("@SET NODE_PATH=%~dp0{rel}\r\n")
-    });
+    let node_path =
+        node_path_value.map_or(String::new(), |val| format!("@SET NODE_PATH={val}\r\n"));
     format!(
         "@SETLOCAL\r\n\
          {node_path}\
@@ -603,12 +660,11 @@ fn generate_cmd_shim(
 fn generate_ps1_shim(
     prog: &str,
     rel_target_fwdslash: &str,
-    node_path_rel_fwdslash: Option<&str>,
+    node_path_value: Option<&str>,
 ) -> String {
     let prog = safe_prog(prog);
-    let node_path = node_path_rel_fwdslash.map_or(String::new(), |rel| {
-        format!("$env:NODE_PATH=\"$basedir/{rel}\"\n")
-    });
+    let node_path =
+        node_path_value.map_or(String::new(), |val| format!("$env:NODE_PATH=\"{val}\"\n"));
     format!(
         "#!/usr/bin/env pwsh\n\
          $basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n\
@@ -642,12 +698,11 @@ fn generate_ps1_shim(
 fn generate_sh_shim(
     prog: &str,
     rel_target_fwdslash: &str,
-    node_path_rel_fwdslash: Option<&str>,
+    node_path_value: Option<&str>,
 ) -> String {
     let prog = safe_prog(prog);
-    let node_path = node_path_rel_fwdslash.map_or(String::new(), |rel| {
-        format!("export NODE_PATH=\"$basedir/{rel}\"\n")
-    });
+    let node_path =
+        node_path_value.map_or(String::new(), |val| format!("export NODE_PATH=\"{val}\"\n"));
     format!(
         "#!/bin/sh\n\
          basedir=$(dirname \"$(echo \"$0\" | sed -e 's,\\\\,/,g')\")\n\
@@ -687,12 +742,11 @@ pub const POSIX_SHIM_MARKER_PREFIX: &str = "# aube-bin-shim v1 target=";
 fn generate_posix_shim(
     prog: &str,
     rel_target_fwdslash: &str,
-    node_path_rel_fwdslash: Option<&str>,
+    node_path_value: Option<&str>,
 ) -> String {
     let prog = safe_prog(prog);
-    let node_path = node_path_rel_fwdslash.map_or(String::new(), |rel| {
-        format!("export NODE_PATH=\"$basedir/{rel}\"\n")
-    });
+    let node_path =
+        node_path_value.map_or(String::new(), |val| format!("export NODE_PATH=\"{val}\"\n"));
     format!(
         "#!/bin/sh\n\
          {POSIX_SHIM_MARKER_PREFIX}{rel_target_fwdslash}\n\
@@ -1102,6 +1156,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: true,
                 prefer_symlinked_executables: Some(false),
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
@@ -1135,6 +1190,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: false,
                 prefer_symlinked_executables: Some(false),
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
@@ -1163,6 +1219,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: false,
                 prefer_symlinked_executables: Some(false),
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
@@ -1209,6 +1266,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: true,
                 prefer_symlinked_executables: Some(false),
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
@@ -1253,12 +1311,51 @@ mod tests {
             BinShimOptions {
                 extend_node_path: true,
                 prefer_symlinked_executables: Some(false),
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
 
         let content = std::fs::read_to_string(bin_dir.join("mycli")).unwrap();
         assert!(content.contains("export NODE_PATH=\"$basedir/..\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_bin_shim_appends_hidden_modules_to_node_path() {
+        // The regression this guards: without the hidden-modules entry,
+        // tools like `astro check` invoked from a shimmed bin can't see
+        // auto-installed peers (e.g. `typescript`) that aube hoists to
+        // `<project>/node_modules/.aube/node_modules/`. The single
+        // `$basedir/..` entry only covers the top-level `node_modules/`,
+        // which holds direct deps but never transitives.
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let hidden = dir.path().join("node_modules/.aube/node_modules");
+        std::fs::create_dir_all(&hidden).unwrap();
+        let pkg_dir = dir.path().join("pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let script = pkg_dir.join("cli.js");
+        std::fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+
+        create_bin_shim(
+            &bin_dir,
+            "mycli",
+            &script,
+            BinShimOptions {
+                extend_node_path: true,
+                prefer_symlinked_executables: Some(false),
+                hidden_modules_dir: Some(hidden.as_path()),
+            },
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(bin_dir.join("mycli")).unwrap();
+        assert!(
+            content.contains("export NODE_PATH=\"$basedir/..:$basedir/../.aube/node_modules\""),
+            "expected two-entry NODE_PATH, got:\n{content}"
+        );
     }
 
     #[cfg(unix)]
@@ -1283,6 +1380,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: true,
                 prefer_symlinked_executables: None,
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
@@ -1309,6 +1407,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: true,
                 prefer_symlinked_executables: None,
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
@@ -1339,6 +1438,7 @@ mod tests {
             BinShimOptions {
                 extend_node_path: false,
                 prefer_symlinked_executables: None,
+                hidden_modules_dir: None,
             },
         )
         .unwrap();
