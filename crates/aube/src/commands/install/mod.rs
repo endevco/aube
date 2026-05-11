@@ -999,8 +999,8 @@ async fn prefer_materializer_error(
         Ok(Err(mat_err)) => mat_err,
         Err(join_err) => Err::<(), _>(join_err)
             .into_diagnostic()
-            .err()
-            .map_or(fetch_err, |r| r.wrap_err("materializer task panicked")),
+            .unwrap_err()
+            .wrap_err("materializer task panicked"),
     }
 }
 
@@ -3894,19 +3894,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             );
             let materialize_handle = spawn_gvs_prewarm(materialize_inputs, materialize_rx);
 
-            // Wait for all fetches to complete. If fetch fails we have
-            // to abort the materializer explicitly: dropping a
-            // `JoinHandle` only detaches the task, so otherwise the
-            // install would return an error while the materializer
-            // kept reflinking packages into the GVS in the background.
+            // On fetch err, await the materializer (don't abort): the
+            // failing fetch task drops its `tx`, so the materializer's
+            // `rx` closes and it exits naturally. Awaiting first lets a
+            // real materializer error (the likely root cause of a
+            // generic "materializer task exited..." fetch err) surface
+            // instead.
             let _diag_fetch_wait =
                 aube_util::diag::Span::new(aube_util::diag::Category::Install, "phase_fetch_await");
             let fetch_phase_start = std::time::Instant::now();
-            // Don't abort the materializer on fetch err: the failing
-            // fetch task drops its `tx`, so the materializer's `rx`
-            // closes and it exits naturally. Awaiting first lets a real
-            // materializer error (the likely root cause of a generic
-            // "materializer task exited..." fetch err) surface instead.
             let fetch_result = match fetch_handle.await.into_diagnostic()? {
                 Ok(v) => v,
                 Err(e) => {
