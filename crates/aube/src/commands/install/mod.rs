@@ -2970,6 +2970,60 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     if let Err(e) = store.ensure_shards_exist() {
         tracing::debug!("ensure_shards_exist failed (slow path will cover): {e}");
     }
+    // Non-Linux fast-path gate: take an exclusive `try_lock` on
+    // `<store>/v1/.install.lock`. If we get it, no other aube install is
+    // running against this store right now, so the CAS write path can
+    // skip the tempfile + persist_noclobber dance and write straight to
+    // the final content-addressed path (`Store::enable_fast_path`). The
+    // guard is held in `_store_lock` for the rest of this `run` call;
+    // dropping it at function exit releases the lock. Contention falls
+    // back to the safe tempfile path — concurrent installers still
+    // proceed, just at the existing speed.
+    //
+    // Linux is unaffected: `create_cas_file` always uses O_TMPFILE+linkat
+    // there, which is already atomic-by-construction and faster than
+    // both options.
+    #[cfg(not(target_os = "linux"))]
+    let _store_lock = {
+        let lock_dir = store
+            .root()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| store.root().to_path_buf());
+        let _ = std::fs::create_dir_all(&lock_dir);
+        let lock_path = lock_dir.join(".install.lock");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(file) => match file.try_lock() {
+                Ok(()) => {
+                    store.enable_fast_path();
+                    tracing::debug!("CAS fast path enabled (exclusive store lock acquired)");
+                    Some(file)
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    tracing::debug!(
+                        "another aube install is using this store; staying on tempfile path"
+                    );
+                    None
+                }
+                Err(std::fs::TryLockError::Error(e)) => {
+                    tracing::debug!("store lock probe failed ({e}); staying on tempfile path");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!(
+                    "could not open store lock at {} ({e}); staying on tempfile path",
+                    lock_path.display()
+                );
+                None
+            }
+        }
+    };
 
     // Decide what to do with whatever lockfile is on disk based on FrozenMode + drift.
     // Returns either:
