@@ -2219,16 +2219,20 @@ are never rewritten by the no-`--latest` path regardless of this setting.
 Create symlinks instead of shims for `.bin` entries.
 
 - Type: `bool`
-- Default: `true (POSIX hoisted)`
+- Default: `` true under `nodeLinker=hoisted`, false otherwise ``
 - Environment: `npm_config_prefer_symlinked_executables`, `NPM_CONFIG_PREFER_SYMLINKED_EXECUTABLES`, `AUBE_PREFER_SYMLINKED_EXECUTABLES`
 - .npmrc keys: `preferSymlinkedExecutables`, `prefer-symlinked-executables`
 
-POSIX only. Default (unset or `true`) creates a plain symlink from
-`node_modules/.bin/<name>` straight to the package's executable file —
-the historical aube layout and matches pnpm's hoisted default. Set
-`false` to write a shell-script shim instead; pair this with
-`extendNodePath=true` when you need the shim to export `NODE_PATH`,
-since a bare symlink can't set env vars. Ignored on Windows —
+POSIX only. When unset, defaults to `false` for the standard
+isolated layout (`.bin/<name>` is a shell-script shim that exports
+`NODE_PATH` covering the project's top-level `node_modules/` and the
+hidden `.aube/node_modules/`, so transitives like an auto-installed
+`typescript` peer resolve when the bin asks Node for them) and to
+`true` under `nodeLinker=hoisted` (every dep is already on the
+top-level `node_modules/` walk-up path, so the symlink is enough).
+Setting it explicitly overrides that logic. A bare symlink can't
+export env vars, so `preferSymlinkedExecutables=true` makes
+`extendNodePath` a no-op. Ignored on Windows —
 `.bin/<name>.{cmd,ps1,}` wrappers are always written there since real
 symlinks require Developer Mode / admin rights.
 
@@ -2318,13 +2322,14 @@ Set NODE_PATH in command shims.
 - Environment: `npm_config_extend_node_path`, `NPM_CONFIG_EXTEND_NODE_PATH`, `AUBE_EXTEND_NODE_PATH`
 - .npmrc keys: `extendNodePath`, `extend-node-path`
 
-When `true` (default), aube-generated `.bin` shims export
-`NODE_PATH="$basedir/.."` so the shimmed binary can resolve modules
-through the top-level `node_modules` even when invoked with an
-unusual working directory. Has no effect on POSIX with the default
-symlink layout — only shim scripts can export env vars, so pair
-`extendNodePath=true` with `preferSymlinkedExecutables=false` on
-POSIX if the binary really needs `NODE_PATH`. Windows shims always
+When `true` (default), aube-generated `.bin` shims export a
+`NODE_PATH` covering the project's top-level `node_modules/` *and*
+the hidden `.aube/node_modules/` (when using the isolated linker)
+so the shimmed binary can resolve hoisted transitives — e.g. an
+auto-installed `typescript` peer — even when invoked from an
+unusual working directory. Has no effect on POSIX with
+`preferSymlinkedExecutables=true` — only shim scripts can export
+env vars. Windows shims always
 honor this setting.
 
 ### `deployAllFiles` {#setting-deployallfiles}
