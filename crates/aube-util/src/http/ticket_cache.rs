@@ -313,20 +313,34 @@ mod tests {
         assert!(reopened.get("a.example", 443).is_empty());
     }
 
+    /// Panic-safe cleanup so a failed assertion inside the killswitch
+    /// test doesn't leave `AUBE_DISABLE_TLS_TICKET_CACHE=1` set —
+    /// `RUST_TEST_THREADS=1` serializes the suite but doesn't reset
+    /// process env between tests, so a leaked killswitch would still
+    /// poison subsequent tests in the same binary.
+    struct EnvVarGuard {
+        key: &'static str,
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests run serially via RUST_TEST_THREADS=1; no
+            // other thread is mid-setenv when this guard drops.
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+
     #[test]
     fn killswitch_short_circuits() {
-        // Acquire the crate-shared env lock so concurrent tests in
-        // other modules (e.g. concurrency) can't race setenv/getenv.
-        let _g = crate::test_env::ENV_LOCK.lock().unwrap();
-        let dir = tempdir().unwrap();
-        // SAFETY: ENV_LOCK serializes every env-mutating test in this
-        // crate; no other thread touches the process environment
-        // while this guard is held.
+        // SAFETY: tests run serially via RUST_TEST_THREADS=1; no
+        // other thread is reading the env while we mutate it.
         unsafe { std::env::set_var("AUBE_DISABLE_TLS_TICKET_CACHE", "1") };
+        let _cleanup = EnvVarGuard {
+            key: "AUBE_DISABLE_TLS_TICKET_CACHE",
+        };
+        let dir = tempdir().unwrap();
         let cache = TicketCache::open(dir.path().join("tickets.json"));
         cache.put("a.example", 443, entry(1));
         assert!(cache.get("a.example", 443).is_empty());
-        unsafe { std::env::remove_var("AUBE_DISABLE_TLS_TICKET_CACHE") };
     }
 
     #[test]

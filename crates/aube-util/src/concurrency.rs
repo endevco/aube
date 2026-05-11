@@ -46,18 +46,16 @@ pub fn parse_concurrency_env() -> Option<u32> {
 mod tests {
     use super::*;
 
-    // The env var is process-global. Serialize via the crate-shared
-    // mutex so these tests don't race the parallel test runner. Other
-    // env-mutating tests in this crate (e.g. http::ticket_cache) take
-    // the same lock so concurrent setenv/getenv across tests can't
-    // collide on the libc environ pointer.
-    use crate::test_env::ENV_LOCK;
-
+    // `RUST_TEST_THREADS=1` in `.cargo/config.toml` runs every test
+    // serially across the workspace, so these env-mutating tests
+    // don't collide with concurrent setenv/getenv from other tests.
+    // Preserve and restore the previous value so a test that leaves
+    // `AUBE_CONCURRENCY` set in the environment doesn't bleed into
+    // the next test in the suite.
     fn with_env<F: FnOnce()>(value: Option<&str>, f: F) {
-        let _g = ENV_LOCK.lock().unwrap();
         let prev = std::env::var_os("AUBE_CONCURRENCY");
-        // SAFETY: tests serialized via ENV_LOCK; no other thread
-        // touches this var concurrently.
+        // SAFETY: tests run serially via RUST_TEST_THREADS=1; no
+        // other thread touches this var concurrently.
         unsafe {
             match value {
                 Some(v) => std::env::set_var("AUBE_CONCURRENCY", v),
