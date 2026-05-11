@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.4](https://github.com/endevco/aube/compare/aube-store-v1.10.3...aube-store-v1.10.4) - 2026-05-11
+
+### Fixed
+
+- *(store)* take libc::off_t in posix_fallocate wrapper for 32-bit targets ([#587](https://github.com/endevco/aube/pull/587))
+
 ## [1.10.1](https://github.com/endevco/aube/compare/aube-store-v1.10.0...aube-store-v1.10.1) - 2026-05-10
 
 ### Other

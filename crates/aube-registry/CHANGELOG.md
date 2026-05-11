@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.4](https://github.com/endevco/aube/compare/aube-registry-v1.10.3...aube-registry-v1.10.4) - 2026-05-11
+
+### Fixed
+
+- *(registry)* retry initial request in start_tarball_stream ([#591](https://github.com/endevco/aube/pull/591))
+
 ## [1.10.1](https://github.com/endevco/aube/compare/aube-registry-v1.10.0...aube-registry-v1.10.1) - 2026-05-10
 
 ### Other

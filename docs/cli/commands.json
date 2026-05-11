@@ -12098,7 +12098,7 @@
   "config": {
     "props": {}
   },
-  "version": "1.10.3",
+  "version": "1.10.4",
   "usage": "Usage: aube [OPTIONS] [COMMAND]",
   "complete": {},
   "about": "A fast Node.js package manager"
