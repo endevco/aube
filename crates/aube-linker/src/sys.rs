@@ -225,15 +225,18 @@ pub fn create_bin_shim(
 
         let rel_backslash = rel.replace('/', "\\");
         let rel_fwdslash = rel.replace('\\', "/");
-        // cmd.exe wants `;`-separated, backslash paths; PowerShell and the
-        // Git-Bash `.sh` wrapper want `:`-separated, forward-slash paths.
-        // `shim_node_path` builds either shape from the same input.
+        // cmd.exe wants backslash paths; PowerShell + the Git-Bash `.sh`
+        // wrapper want forward-slash paths. NODE_PATH itself is parsed by
+        // Node.js, which on Windows always splits on `;` (`path.delimiter`)
+        // regardless of which shell launched it, so every Windows shim uses
+        // `;`. Mixing `:` here would make Node treat the multi-entry value
+        // as one invalid path and silently drop the hidden-modules entry.
         let node_path_backslash = opts
             .extend_node_path
             .then(|| shim_node_path(link_parent, bin_dir, opts.hidden_modules_dir, "\\", ";"));
         let node_path_fwdslash = opts
             .extend_node_path
-            .then(|| shim_node_path(link_parent, bin_dir, opts.hidden_modules_dir, "/", ":"));
+            .then(|| shim_node_path(link_parent, bin_dir, opts.hidden_modules_dir, "/", ";"));
 
         write_shim_file(
             &bin_dir.join(format!("{name}.cmd")),
@@ -1418,6 +1421,53 @@ mod tests {
         assert!(ps1.contains("$env:NODE_PATH=\"$basedir/..\""));
         let sh = std::fs::read_to_string(bin_dir.join("mycli")).unwrap();
         assert!(sh.contains("export NODE_PATH=\"$basedir/..\""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn create_bin_shim_appends_hidden_modules_on_windows_uses_semicolon() {
+        // Regression: Node.js on Windows splits NODE_PATH on `;`
+        // (`path.delimiter`) regardless of which shell launched it.
+        // The ps1 / .sh wrappers use forward-slash paths but must
+        // still join with `;`, or Node treats the multi-entry value
+        // as one invalid path and drops the hidden-modules entry.
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let hidden = dir.path().join("node_modules/.aube/node_modules");
+        std::fs::create_dir_all(&hidden).unwrap();
+        let pkg_dir = dir.path().join("pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let script = pkg_dir.join("cli.js");
+        std::fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+
+        create_bin_shim(
+            &bin_dir,
+            "mycli",
+            &script,
+            BinShimOptions {
+                extend_node_path: true,
+                prefer_symlinked_executables: None,
+                hidden_modules_dir: Some(hidden.as_path()),
+            },
+        )
+        .unwrap();
+
+        let cmd = std::fs::read_to_string(bin_dir.join("mycli.cmd")).unwrap();
+        assert!(
+            cmd.contains("@SET NODE_PATH=%~dp0..;%~dp0..\\.aube\\node_modules"),
+            "cmd shim should join with `;` and use backslashes:\n{cmd}"
+        );
+        let ps1 = std::fs::read_to_string(bin_dir.join("mycli.ps1")).unwrap();
+        assert!(
+            ps1.contains("$env:NODE_PATH=\"$basedir/..;$basedir/../.aube/node_modules\""),
+            "ps1 shim should join with `;` even though paths use `/`:\n{ps1}"
+        );
+        let sh = std::fs::read_to_string(bin_dir.join("mycli")).unwrap();
+        assert!(
+            sh.contains("export NODE_PATH=\"$basedir/..;$basedir/../.aube/node_modules\""),
+            "windows .sh shim must use `;` so Node parses both entries:\n{sh}"
+        );
     }
 
     #[cfg(windows)]

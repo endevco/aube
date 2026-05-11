@@ -4465,15 +4465,21 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // default. Windows always writes cmd/ps1/sh wrappers regardless,
     // since real symlinks there need Developer Mode.
     let extend_node_path = aube_settings::resolved::extend_node_path(&settings_ctx);
-    let prefer_symlinked_executables = aube_settings::resolved::prefer_symlinked_executables(
-        &settings_ctx,
-    )
-    .or((!matches!(node_linker, aube_linker::NodeLinker::Hoisted)).then_some(false));
+    let isolated = !matches!(node_linker, aube_linker::NodeLinker::Hoisted);
+    let prefer_symlinked_executables =
+        aube_settings::resolved::prefer_symlinked_executables(&settings_ctx)
+            .or(isolated.then_some(false));
+    // Only the isolated layout has a hidden modules dir worth exposing
+    // via NODE_PATH — under `node-linker=hoisted` every dep is already
+    // on the top-level `node_modules/` walk-up path, so appending
+    // `.aube/node_modules/` would just stuff a non-existent entry into
+    // every shim. `add.rs` (global install, hoisted-shaped) passes
+    // `None` for the same reason.
     let hidden_modules_dir = aube_dir.join("node_modules");
     let shim_opts = aube_linker::BinShimOptions {
         extend_node_path,
         prefer_symlinked_executables,
-        hidden_modules_dir: Some(hidden_modules_dir.as_path()),
+        hidden_modules_dir: isolated.then_some(hidden_modules_dir.as_path()),
     };
     if !virtual_store_only {
         let mut pkg_json_cache = bin_linking::PkgJsonCache::new();

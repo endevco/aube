@@ -317,25 +317,26 @@ _setup_workspace_fixture() {
 
 	run aube install
 	assert_success
-	# `test -L` on the link itself + `test -f` on the resolved
-	# target proves the symlink exists *and* its target is a real
-	# file. Avoids comparing the literal link-target string, which
-	# includes absolute-path noise (`.../which/./dist/...`) that's
-	# not stable across machines.
-	run test -L packages/app/node_modules/.bin/node-which
-	assert_success
+	# `test -f` (regular file or symlink-to-regular-file) + `test -x`
+	# proves the bin entry exists *and* is callable, whether it's a
+	# plain symlink (`node-linker=hoisted` default) or the shim that
+	# the isolated linker writes by default. Avoids comparing the
+	# literal link-target string, which includes absolute-path noise
+	# (`.../which/./dist/...`) that's not stable across machines.
 	run test -f packages/app/node_modules/.bin/node-which
+	assert_success
+	run test -x packages/app/node_modules/.bin/node-which
 	assert_success
 
 	# Second install: the fix is specifically that this path
-	# re-creates the bin symlink even though the fetch phase took
+	# re-creates the bin entry even though the fetch phase took
 	# the warm shortcut and didn't load a `PackageIndex` entry for
 	# `which`.
 	run aube install
 	assert_success
-	run test -L packages/app/node_modules/.bin/node-which
-	assert_success
 	run test -f packages/app/node_modules/.bin/node-which
+	assert_success
+	run test -x packages/app/node_modules/.bin/node-which
 	assert_success
 }
 
@@ -571,11 +572,23 @@ _setup_shared_direct_dep_workspace() {
 	assert_success
 
 	# Shim exists in each consumer's .bin and resolves to the
-	# workspace package's bin script.
+	# workspace package's bin script. Default `.bin/` entries under
+	# the isolated linker are POSIX shims (so `extendNodePath` can
+	# set NODE_PATH), which means `readlink -f` returns the shim's
+	# own canonical path. Check the recorded target inside the shim
+	# instead: the v1 marker comment carries the resolved relative
+	# path for the prune / unlink pass to recover.
 	for app in app1 app2; do
-		run test -e "packages/$app/node_modules/.bin/my-tool"
+		bin="packages/$app/node_modules/.bin/my-tool"
+		run test -e "$bin"
 		assert_success
-		target="$(readlink -f "packages/$app/node_modules/.bin/my-tool")"
+		if [ -L "$bin" ]; then
+			target="$(readlink -f "$bin")"
+		else
+			# `aube-bin-shim v1 target=...` line embeds the
+			# $basedir-relative path to the workspace file.
+			target="$(grep -m1 'aube-bin-shim v1 target=' "$bin")"
+		fi
 		[[ "$target" == *"tools/dev/bin/my-tool.mjs" ]]
 	done
 }

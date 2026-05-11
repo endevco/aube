@@ -73,12 +73,24 @@ _setup_bin_fixture() {
 	EOF
 }
 
-@test "default POSIX .bin/<name> entry is a symlink" {
+@test "default POSIX .bin/<name> entry is a shell shim under isolated linker" {
 	_setup_bin_fixture
 	aube install
 	assert_file_exists node_modules/.bin/loose-envify
-	# Symlink, not a regular file — the pre-settings behavior aube has
-	# always shipped on POSIX.
+	# Regular file, not a symlink — the default under the isolated
+	# linker writes a shim so `extendNodePath` can export NODE_PATH
+	# covering both the top-level `node_modules/` and the hidden
+	# `.aube/node_modules/` (only shim scripts can set env vars).
+	[ ! -L node_modules/.bin/loose-envify ]
+	head -n1 node_modules/.bin/loose-envify | grep -q '^#!/bin/sh'
+	[ -x node_modules/.bin/loose-envify ]
+}
+
+@test "preferSymlinkedExecutables=true forces a plain symlink" {
+	_setup_bin_fixture
+	echo "preferSymlinkedExecutables=true" >>.npmrc
+	aube install
+	assert_file_exists node_modules/.bin/loose-envify
 	[ -L node_modules/.bin/loose-envify ]
 }
 
@@ -97,16 +109,16 @@ _setup_bin_fixture() {
 	[ -x node_modules/.bin/loose-envify ]
 }
 
-@test "preferSymlinkedExecutables=false + extendNodePath=true exports NODE_PATH" {
+@test "default shim exports NODE_PATH covering top-level and hidden modules" {
 	_setup_bin_fixture
-	cat >>.npmrc <<-EOF
-		preferSymlinkedExecutables=false
-		extendNodePath=true
-	EOF
 	aube install
 
+	# Two-entry NODE_PATH: top-level `node_modules/` plus the hidden
+	# modules at `.aube/node_modules/`, so tools that invoke shimmed
+	# bins resolve auto-installed peers hoisted to the virtual store.
 	# shellcheck disable=SC2016  # literal `$basedir` is the content we grep for
-	grep -q 'export NODE_PATH="\$basedir/\.\."' node_modules/.bin/loose-envify
+	grep -q 'export NODE_PATH="\$basedir/\.\.:\$basedir/\.\./\.aube/node_modules"' \
+		node_modules/.bin/loose-envify
 }
 
 @test "extendNodePath=false suppresses NODE_PATH in the shim" {

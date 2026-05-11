@@ -146,19 +146,18 @@ pub async fn run(
             // on PATH for the lifecycle scripts. `link_bins_for_dep`
             // is idempotent, so re-running on an already-wired tree
             // is a no-op.
+            let isolated = !matches!(
+                node_linker_setting,
+                aube_settings::resolved::NodeLinker::Hoisted
+            );
             let prefer_symlinked_executables =
-                aube_settings::resolved::prefer_symlinked_executables(&settings_ctx).or(
-                    (!matches!(
-                        node_linker_setting,
-                        aube_settings::resolved::NodeLinker::Hoisted
-                    ))
-                    .then_some(false),
-                );
+                aube_settings::resolved::prefer_symlinked_executables(&settings_ctx)
+                    .or(isolated.then_some(false));
             let hidden_modules_dir = aube_dir.join("node_modules");
             let shim_opts = aube_linker::BinShimOptions {
                 extend_node_path: aube_settings::resolved::extend_node_path(&settings_ctx),
                 prefer_symlinked_executables,
-                hidden_modules_dir: Some(hidden_modules_dir.as_path()),
+                hidden_modules_dir: isolated.then_some(hidden_modules_dir.as_path()),
             };
             let mut pkg_json_cache = super::install::PkgJsonCache::new();
             super::install::link_dep_bins(
