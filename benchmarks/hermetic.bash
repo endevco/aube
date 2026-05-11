@@ -317,3 +317,23 @@ hermetic_stop() {
 	_hermetic_stop_proxy
 	_hermetic_stop_verdaccio
 }
+
+# Swap Verdaccio to the warm (uplink-enabled) config. Used by bench.sh
+# to bracket the per-tool populate step so any package the warm pass
+# missed gets pulled from npmjs and cached locally — without this,
+# subtle resolution differences (e.g. deno's warm fixture includes
+# `is-odd` while the bench fixture does not) leave 404-holes that
+# crash the cold-config populate. The throttle proxy stays up; client
+# requests resume against the restarted Verdaccio on the same port.
+hermetic_use_warm_uplink() {
+	_hermetic_stop_verdaccio
+	_hermetic_start_verdaccio "$HERMETIC_CONFIG_WARM"
+}
+
+# Swap Verdaccio back to the cold (no-uplink) config. Called after
+# the populate step so the timed benchmark scenarios run against a
+# fully hermetic registry — no npmjs jitter in the numbers.
+hermetic_use_no_uplink() {
+	_hermetic_stop_verdaccio
+	_hermetic_start_verdaccio "$HERMETIC_CONFIG_COLD"
+}
