@@ -3186,8 +3186,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &supported_architectures,
                 &ignored_optional_deps,
             );
-            // npm/yarn(v1)/bun lockfiles serialize a flat, pre-hoisted
-            // tree with no peer context — they rely on Node's upward
+            // npm/bun lockfiles serialize a flat, pre-hoisted tree
+            // with no peer context — they rely on Node's upward
             // `node_modules/` walk to find peer deps, which the
             // isolated virtual store breaks. Fresh resolves flow
             // through `Resolver::resolve_workspace`, which runs
@@ -3202,6 +3202,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // peer-context suffixes and peer edges merged into
             // `dependencies`, so we skip them — re-running the pass
             // would double-suffix every key.
+            //
+            // Yarn v1 has the same flat shape but is intentionally
+            // omitted: real-world `yarn.lock` files don't record
+            // `peerDependencies` per entry (yarn 1.22 emits them
+            // only on the workspace root), so running the pass would
+            // be a no-op. Making yarn v1 imports peer-correct needs
+            // a packument fetch on the import path to graft peer
+            // ranges back onto each `LockedPackage` — a deeper
+            // change than this match arm.
             if matches!(
                 kind,
                 aube_lockfile::LockfileKind::Npm

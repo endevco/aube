@@ -107,12 +107,16 @@ teardown() {
 	run aube install
 	assert_success
 
-	# Peer-qualified virtual-store directory now exists.
-	run sh -c 'ls node_modules/.aube/ | grep "^fdir@6.5.0_picomatch@4.0.4"'
-	assert_success
+	# Resolve the peer-qualified virtual-store directory via a glob
+	# so the test fails loudly if zero or multiple entries match
+	# (rather than papering over the breakage with a literal
+	# newline embedded in the assert_link_exists path).
+	local matches=(node_modules/.aube/fdir@6.5.0_picomatch@4.0.4*)
+	[ "${#matches[@]}" -eq 1 ] || fail "expected exactly one peer-qualified fdir dir, got: ${matches[*]}"
+	[ -d "${matches[0]}" ] || fail "peer-qualified fdir dir missing: ${matches[0]}"
 
 	# And the sibling peer link is wired inside that directory.
-	assert_link_exists "node_modules/.aube/$(ls node_modules/.aube/ | grep '^fdir@6.5.0_picomatch@4.0.4')/node_modules/picomatch"
+	assert_link_exists "${matches[0]}/node_modules/picomatch"
 }
 
 @test "aube install smoke installs messy bun.lock fixture and doesn't change lockfile" {
