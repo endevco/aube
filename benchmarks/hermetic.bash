@@ -209,6 +209,13 @@ _hermetic_warm() {
 				printf 'cacheFolder: "%s/yarn-cache"\n' "$pm_dir/home"
 				printf 'npmRegistryServer: "%s"\n' "$reg"
 				printf 'unsafeHttpWhitelist:\n  - 127.0.0.1\n  - localhost\n'
+				# Yarn 4 auto-enables immutable installs when `CI=true`,
+				# refusing to create the initial `yarn.lock` and failing
+				# the warm step with YN0028. Without this the warm cache
+				# misses transitive tarballs (e.g. node-gyp), and later
+				# bench steps that ask for them 404 against Verdaccio.
+				# Sibling fix for the bench.sh-side yarnrc in PR #594.
+				printf 'enableImmutableInstalls: false\n'
 			} >"$pm_dir/.yarnrc.yml"
 		fi
 		if ! (cd "$pm_dir" && HOME="$pm_dir/home" \
