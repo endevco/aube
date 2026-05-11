@@ -5218,11 +5218,7 @@ fn print_direct_dependency_section(
         return;
     }
     deps.sort_by(|a, b| a.name.cmp(&b.name));
-    let label = match dep_type {
-        aube_lockfile::DepType::Production => "dependencies",
-        aube_lockfile::DepType::Optional => "optionalDependencies",
-        aube_lockfile::DepType::Dev => "devDependencies",
-    };
+    let label = aube_lockfile::dep_type_label(dep_type);
     eprintln!("{}{}", style::ebold(label), style::edim(":"));
     for dep in deps {
         let version = graph

@@ -1131,3 +1131,51 @@ YAML
 	assert_success
 	assert_output --partial '"name": "is-odd"'
 }
+
+@test "aube install rewrites lockfile when a dep moves between sections" {
+	# Discussion #602: moving a dep between dependencies/devDependencies
+	# kept the same specifier, so the prefer-frozen drift check reported
+	# Fresh and the warm path short-circuited without rewriting the
+	# lockfile. The user had to nuke + reinstall (`aube clean -l && aube i`)
+	# to recover.
+	cat >package.json <<'JSON'
+{
+  "name": "dep-move",
+  "version": "1.0.0",
+  "dependencies": { "is-odd": "3.0.1" },
+  "devDependencies": { "is-even": "1.0.0" }
+}
+JSON
+	run aube install
+	assert_success
+
+	cat >package.json <<'JSON'
+{
+  "name": "dep-move",
+  "version": "1.0.0",
+  "dependencies": { "is-even": "1.0.0" },
+  "devDependencies": { "is-odd": "3.0.1" }
+}
+JSON
+	run aube install
+	assert_success
+
+	# After the second install the lockfile must agree with the
+	# manifest's new section assignment. Pre-fix, the importer block
+	# still showed is-odd under `dependencies:` and is-even under
+	# `devDependencies:`.
+	#
+	# The importer block lives at four-space indent under `.:`; transitive
+	# `dependencies:` maps under `snapshots:` are six-space indented.
+	# `awk` slices out the importer block so the assertion only inspects
+	# the section that's load-bearing.
+	run awk '/^  \.:/{flag=1; next} /^  [^ ]/{flag=0} flag' aube-lock.yaml
+	assert_success
+	# Importer dependencies block holds is-even (post-swap),
+	# devDependencies block holds is-odd. The full section text
+	# is asserted in one shot so an accidental mix-up shows up.
+	assert_output --partial "    dependencies:
+      is-even:"
+	assert_output --partial "    devDependencies:
+      is-odd:"
+}

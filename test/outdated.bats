@@ -150,6 +150,35 @@ EOF
 	refute_output --partial "b  "
 }
 
+@test "aube outdated --recursive includes the workspace root" {
+	# Discussion #602: pnpm's `-r` skips the root unless
+	# `include-workspace-root: true` is set. For aube's `outdated` we
+	# default to including it because read-only audits that omit
+	# root-level shared dev tooling feel broken.
+	cat >package.json <<'EOF'
+{"name":"root","version":"0.0.0","private":true,"dependencies":{"is-odd":"0.1.2"}}
+EOF
+	cat >pnpm-workspace.yaml <<'EOF'
+packages:
+  - packages/*
+EOF
+	mkdir -p packages/a
+	cat >packages/a/package.json <<'EOF'
+{"name":"a","version":"1.0.0","dependencies":{"is-even":"0.1.0"}}
+EOF
+
+	run aube install
+	assert_success
+
+	run aube outdated --recursive
+	assert_failure
+	# Workspace package importer.
+	assert_output --partial "is-even"
+	# Root importer's own deps must show up too — pre-fix the `root`
+	# importer was silently dropped from the matched set.
+	assert_output --partial "is-odd"
+}
+
 @test "aube outdated --filter limits workspace importers" {
 	cat >package.json <<'EOF'
 {"name":"root","version":"0.0.0","private":true}

@@ -7,7 +7,7 @@
 //!
 //! This is a pure read — no network, no filesystem mutation, no project lock.
 
-use aube_lockfile::{DepType, LockfileGraph};
+use aube_lockfile::{DepType, LockfileGraph, dep_type_label};
 use clap::Args;
 use miette::{Context, miette};
 use std::collections::{BTreeSet, HashSet};
@@ -331,14 +331,6 @@ fn walk(
 }
 
 // ------- rendering -------
-
-fn dep_type_label(dt: DepType) -> &'static str {
-    match dt {
-        DepType::Production => "dependencies",
-        DepType::Dev => "devDependencies",
-        DepType::Optional => "optionalDependencies",
-    }
-}
 
 fn print_tree(
     manifest: &aube_manifest::PackageJson,
