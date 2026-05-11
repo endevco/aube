@@ -1789,12 +1789,16 @@ impl RegistryClient {
 
     /// Start a streaming tarball fetch. Returns the live reqwest
     /// Response so the caller can pull `chunk()` futures and pipe them
-    /// through gz+tar+CAS without buffering the full body. Caller must
-    /// enforce the body cap and retries (we skip retry here because
-    /// once chunks have started flowing into the importer, restarting
-    /// the request would require unwinding partial CAS writes).
-    /// Caller should fall back to fetch_tarball_bytes_streaming_sha512
-    /// on error if a retried buffered fetch is desired.
+    /// through gz+tar+CAS without buffering the full body.
+    ///
+    /// Retries the *initial* request on transient failures (5xx, 429,
+    /// connection errors) using `fetch_policy.retries` attempts with
+    /// exponential backoff. Once chunks start flowing the caller owns
+    /// stream-level errors — restarting mid-body would require
+    /// unwinding partial CAS writes — so the caller should fall back
+    /// to `fetch_tarball_bytes_streaming_sha512` (which retries the
+    /// full body cleanly via a buffered fetch) if a mid-stream error
+    /// needs another attempt.
     pub async fn start_tarball_stream(&self, url: &str) -> Result<reqwest::Response, Error> {
         let _diag =
             aube_util::diag::Span::new(aube_util::diag::Category::Registry, "tarball_stream_open")
@@ -1818,14 +1822,66 @@ impl RegistryClient {
         if self.network_mode == NetworkMode::Offline {
             return Err(Error::Offline(format!("tarball {safe_url}")));
         }
-        let resp = self
-            .authed_tarball_get(url, url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .send()
-            .await?;
-        let resp = resp.error_for_status()?;
-        check_body_cap(&resp, self.fetch_policy.tarball_max_bytes, "tarball")?;
-        Ok(resp)
+
+        let label = format!("tarball {safe_url}");
+        let max_attempts = self.fetch_policy.retries.saturating_add(1);
+        let mut timeout_retries: u32 = 0;
+        for attempt in 0..max_attempts {
+            let is_last = attempt + 1 >= max_attempts;
+            let result = self
+                .authed_tarball_get(url, url)
+                .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                .send()
+                .await;
+            match result {
+                Ok(resp) if is_retriable_status(resp.status()) && !is_last => {
+                    let wait = retry_after_from(&resp)
+                        .unwrap_or_else(|| self.fetch_policy.backoff_for_attempt(attempt + 1));
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        status = resp.status().as_u16(),
+                        label = label.as_str(),
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
+                        "retrying HTTP request after transient failure",
+                    );
+                    drop(resp);
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(resp) => {
+                    let resp = resp.error_for_status()?;
+                    check_body_cap(&resp, self.fetch_policy.tarball_max_bytes, "tarball")?;
+                    return Ok(resp);
+                }
+                Err(err) if !is_last => {
+                    if err.is_timeout() {
+                        if timeout_retries >= TIMEOUT_RETRY_CAP {
+                            return Err(Error::Http(err));
+                        }
+                        timeout_retries += 1;
+                    }
+                    let wait = self.fetch_policy.backoff_for_attempt(attempt + 1);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        backoff_ms = wait.as_millis() as u64,
+                        error = %err,
+                        label = label.as_str(),
+                        code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
+                        "retrying HTTP request after transport error",
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(err) => return Err(Error::Http(err)),
+            }
+        }
+        // FetchPolicy::retries is `u32`, so `max_attempts =
+        // retries + 1` is always ≥ 1 and the loop runs at least once;
+        // every path inside the loop either returns or continues. An
+        // exit past this point is a structural bug, not a runtime
+        // input the caller can provoke.
+        unreachable!("retry loop exited without returning; max_attempts was {max_attempts}")
     }
 
     /// Tarball body cap, surfaced so the streaming caller can enforce
@@ -2986,6 +3042,47 @@ mod retry_tests {
             .await
             .expect("tarball fetch should succeed");
         assert_eq!(&bytes[..], b"tgz bytes");
+    }
+
+    #[tokio::test]
+    async fn start_tarball_stream_retries_on_503_then_succeeds() {
+        // Streaming tarball fetch used to skip retry entirely — a single
+        // 503/connect-time hiccup from the registry would propagate
+        // straight back to the caller. The initial-request retry covers
+        // 5xx + transport errors before any chunks have streamed, while
+        // still leaving mid-stream errors to the caller (which falls
+        // back to the buffered fetch_tarball_bytes_streaming_sha512 path).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pkg.tgz"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/pkg.tgz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"tgz bytes".to_vec()))
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 5_000,
+            retries: 2,
+            retry_factor: 1,
+            retry_min_timeout_ms: 1,
+            retry_max_timeout_ms: 1,
+            ..FetchPolicy::default()
+        };
+        let client = client_with(&server, policy);
+        let url = format!("{}/pkg.tgz", server.uri());
+        let resp = client
+            .start_tarball_stream(&url)
+            .await
+            .expect("retry recovery");
+        assert_eq!(resp.status(), 200);
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3, "expected 3 attempts (2 retries)");
     }
 
     #[tokio::test]
