@@ -886,19 +886,12 @@ pub(super) async fn fetch_packages(
     // honest: the lockfile install path and the standalone fetch
     // path share the same hardcoded fallback behavior when no
     // setting is configured.
-    let npmrc_entries = aube_registry::config::load_npmrc_entries(&cwd);
-    let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
+    let files = crate::commands::FileSources::load(&cwd);
     let raw_workspace = aube_manifest::workspace::load_both(&cwd)
         .map(|(_, raw)| raw)
         .unwrap_or_default();
     let env = aube_settings::values::process_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc_entries,
-        aube_config: &aube_config_entries,
-        workspace_yaml: &raw_workspace,
-        env,
-        cli: &[],
-    };
+    let ctx = files.ctx(&raw_workspace, env, &[]);
     let network_concurrency = resolve_network_concurrency(&ctx);
     let verify_integrity = resolve_verify_store_integrity(&ctx);
     let strict_integrity = settings::resolve_strict_store_integrity(&ctx);
@@ -2111,8 +2104,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // resolving the dep graph. Also load `.npmrc` entries once so
     // the same borrow feeds both the resolve-time settings and the
     // later engine-check settings.
-    let npmrc_entries = aube_registry::config::load_npmrc_entries(&cwd);
-    let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
+    let files = crate::commands::FileSources::load(&cwd);
     let (ws_config_shared, raw_workspace) = aube_manifest::workspace::load_both(&cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
@@ -2122,13 +2114,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // workspace's catalog. See `discover_catalogs` for the precedence
     // order.
     let workspace_catalogs = super::discover_catalogs(&cwd)?;
-    let settings_ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc_entries,
-        aube_config: &aube_config_entries,
-        workspace_yaml: &raw_workspace,
-        env: &opts.env_snapshot,
-        cli: &opts.cli_flags,
-    };
+    let settings_ctx = files.ctx(&raw_workspace, &opts.env_snapshot, &opts.cli_flags);
     super::configure_script_settings(&settings_ctx);
 
     // `--lockfile-dir` / `lockfileDir`: relocate `aube-lock.yaml` to a

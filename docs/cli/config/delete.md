@@ -24,7 +24,7 @@ Shortcut for `--location project`
 
 Which config location to act on.
 
-Defaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.
+Defaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.
 
 **Choices:**
 

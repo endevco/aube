@@ -845,18 +845,10 @@ fn inner_main() -> miette::Result<()> {
     if !is_silent {
         let use_stderr_active = cli.use_stderr
             || startup_cwd(&cli).ok().is_some_and(|cwd| {
-                let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
-                let aube_config = commands::config::load_user_aube_config_entries();
+                let files = commands::FileSources::load(&cwd);
                 let ws = std::collections::BTreeMap::new();
                 let env_snap = aube_settings::values::capture_env();
-                let ctx = aube_settings::ResolveCtx {
-                    npmrc: &npmrc,
-                    aube_config: &aube_config,
-                    workspace_yaml: &ws,
-                    env: &env_snap,
-                    cli: &[],
-                };
-                aube_settings::resolved::use_stderr(&ctx)
+                aube_settings::resolved::use_stderr(&files.ctx(&ws, &env_snap, &[]))
             });
         if use_stderr_active {
             // SAFETY: single-threaded `main` — no other threads exist yet.
@@ -1387,20 +1379,20 @@ fn startup_cwd(cli: &Cli) -> miette::Result<PathBuf> {
 
 fn load_startup_settings() -> miette::Result<StartupSettings> {
     let cwd = std::env::current_dir().into_diagnostic()?;
-    let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
-    let aube_config = commands::config::load_user_aube_config_entries();
+    let files = commands::FileSources::load(&cwd);
     let empty_ws = std::collections::BTreeMap::new();
     let env = aube_settings::values::capture_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc,
-        aube_config: &aube_config,
-        workspace_yaml: &empty_ws,
-        env: &env,
-        cli: &[],
-    };
+    let ctx = files.ctx(&empty_ws, &env, &[]);
     Ok(StartupSettings {
         loglevel: aube_settings::values::string_from_env("loglevel", &env)
-            .or_else(|| aube_settings::values::string_from_npmrc("loglevel", &npmrc)),
+            .or_else(|| {
+                aube_settings::values::string_from_npmrc("loglevel", &files.project_aube_config)
+            })
+            .or_else(|| aube_settings::values::string_from_npmrc("loglevel", &files.project_npmrc))
+            .or_else(|| {
+                aube_settings::values::string_from_npmrc("loglevel", &files.user_aube_config)
+            })
+            .or_else(|| aube_settings::values::string_from_npmrc("loglevel", &files.user_npmrc)),
         package_manager_strict: resolve_package_manager_strict(&ctx),
         package_manager_strict_version: aube_settings::resolved::package_manager_strict_version(
             &ctx,
@@ -1826,20 +1818,13 @@ async fn run_install_command(
     // workspace yaml from the workspace root, not the member; without
     // this the two diverged when both roots existed.
     let cwd = crate::dirs::workspace_or_project_root()?;
-    let npmrc = aube_registry::config::load_npmrc_entries(&cwd);
+    let files = commands::FileSources::load(&cwd);
     let raw_ws = aube_manifest::workspace::load_raw(&cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
     let env = aube_settings::values::capture_env();
     let cli_flags = args.to_cli_flag_bag(global_frozen, global_gvs);
-    let aube_config = commands::config::load_user_aube_config_entries();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc,
-        aube_config: &aube_config,
-        workspace_yaml: &raw_ws,
-        env: &env,
-        cli: &cli_flags,
-    };
+    let ctx = files.ctx(&raw_ws, &env, &cli_flags);
     let yaml_prefer_frozen = aube_settings::resolved::prefer_frozen_lockfile(&ctx);
     let mut opts = args.into_options(global_frozen, yaml_prefer_frozen, cli_flags, env);
     opts.workspace_filter = filter;

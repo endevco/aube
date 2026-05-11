@@ -48,19 +48,12 @@ pub async fn run(
 
     let cwd = crate::dirs::project_root()?;
     let manifest = load_manifest(&cwd)?;
-    let npmrc_entries = aube_registry::config::load_npmrc_entries(&cwd);
-    let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
+    let files = crate::commands::FileSources::load(&cwd);
     let (workspace, raw_workspace) = aube_manifest::workspace::load_both(&cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
     let env_snapshot = aube_settings::values::capture_env();
-    let settings_ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc_entries,
-        aube_config: &aube_config_entries,
-        workspace_yaml: &raw_workspace,
-        env: &env_snapshot,
-        cli: &[],
-    };
+    let settings_ctx = files.ctx(&raw_workspace, &env_snapshot, &[]);
     super::configure_script_settings(&settings_ctx);
 
     let graph = match aube_lockfile::parse_lockfile(&cwd, &manifest) {

@@ -42,9 +42,13 @@ struct SettingDef {
     #[serde(default, rename = "typedAccessorUnused")]
     typed_accessor_unused: bool,
     /// Source precedence for the generated accessor, high-to-low.
-    /// Valid entries: `"npmrc"`, `"aubeConfig"`, `"workspaceYaml"`.
-    /// Unspecified sources are appended in the default order
-    /// (`["aubeConfig", "npmrc", "workspaceYaml"]`) so a partial
+    /// Valid entries: scope-qualified leaves `"projectAubeConfig"`,
+    /// `"projectNpmrc"`, `"userAubeConfig"`, `"userNpmrc"`,
+    /// `"workspaceYaml"`, plus the convenience aliases `"npmrc"`
+    /// (project + user, project first) and `"aubeConfig"` (project +
+    /// user, project first). Unspecified sources are appended in the
+    /// default order (`["projectAubeConfig", "projectNpmrc",
+    /// "userAubeConfig", "userNpmrc", "workspaceYaml"]`) so a partial
     /// override still falls back on every source. Settings that pnpm v11 reads
     /// primarily from `pnpm-workspace.yaml` (e.g.
     /// `minimumReleaseAge`) override this to
@@ -256,7 +260,8 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
         };
 
         // Emit source lookups in the declared precedence order. The
-        // default order is `[aubeConfig, npmrc, workspaceYaml]`; a setting whose
+        // default order is `[projectAubeConfig, projectNpmrc,
+        // userAubeConfig, userNpmrc, workspaceYaml]`; a setting whose
         // `precedence` field names only one source gets the rest
         // appended after it. Unknown source names panic loudly at
         // build time — cheaper to catch a typo here than in a user
@@ -282,8 +287,10 @@ fn generate_resolved_accessors(settings: &BTreeMap<String, SettingDef>) -> Strin
             let (call, arg) = match src.as_str() {
                 "cli" => (cli_call, "ctx.cli"),
                 "env" => (env_call, "ctx.env"),
-                "npmrc" => (npmrc_call, "ctx.npmrc"),
-                "aubeConfig" => (npmrc_call, "ctx.aube_config"),
+                "projectAubeConfig" => (npmrc_call, "ctx.project_aube_config"),
+                "projectNpmrc" => (npmrc_call, "ctx.project_npmrc"),
+                "userAubeConfig" => (npmrc_call, "ctx.user_aube_config"),
+                "userNpmrc" => (npmrc_call, "ctx.user_npmrc"),
                 "workspaceYaml" => (ws_call, "ctx.workspace_yaml"),
                 other => panic!("{name}: unknown source `{other}` in precedence"),
             };
@@ -533,16 +540,36 @@ fn pascal_case(name: &str) -> String {
 fn resolve_precedence(declared: &[String]) -> Vec<String> {
     // CLI and env are always highest-precedence, in that order. The
     // per-setting `precedence` override only reorders the file-based
-    // sources (`npmrc`, `aubeConfig`, `workspaceYaml`). Anyone who declares `cli`
-    // or `env` in their precedence list gets it silently dropped
-    // below because it's already pinned on top.
-    let file_default = ["aubeConfig", "npmrc", "workspaceYaml"];
+    // sources. Anyone who declares `cli` or `env` in their precedence
+    // list gets it silently dropped because it's already pinned on top.
+    //
+    // The default file order encodes two principles: scope locality
+    // (project > user) and aube authority within a scope (aubeConfig >
+    // npmrc).
+    let file_default = [
+        "projectAubeConfig",
+        "projectNpmrc",
+        "userAubeConfig",
+        "userNpmrc",
+        "workspaceYaml",
+    ];
     let mut files: Vec<String> = Vec::with_capacity(file_default.len());
     for src in declared {
-        match src.as_str() {
+        // Convenience aliases: bare `npmrc` / `aubeConfig` expand to
+        // their project+user pair (project first). Older
+        // `settings.toml` overrides that predate the scope split can
+        // keep using the short names.
+        let expansion: &[&str] = match src.as_str() {
             "cli" | "env" => continue,
-            _ if !files.contains(src) => files.push(src.clone()),
-            _ => {}
+            "npmrc" => &["projectNpmrc", "userNpmrc"],
+            "aubeConfig" => &["projectAubeConfig", "userAubeConfig"],
+            other => &[other],
+        };
+        for name in expansion {
+            let name = (*name).to_string();
+            if !files.contains(&name) {
+                files.push(name);
+            }
         }
     }
     for src in file_default {

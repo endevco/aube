@@ -51,14 +51,28 @@ fn global_cli_overrides() -> &'static [(String, String)] {
 /// accessors in [`resolved`]. Each field is a borrowed view so
 /// callers can reuse the same owned values across many lookups
 /// without cloning.
+///
+/// File-source fields are split by scope (user vs project) so the
+/// resolver can apply the locality principle — project-scope entries
+/// outrank user-scope entries, and within a scope aube's own config
+/// outranks `.npmrc`. See the module-level docs for the full chain.
 pub struct ResolveCtx<'a> {
-    /// Merged `.npmrc` entries (user-scope first, project-scope last),
-    /// as returned by `aube_registry::config::load_npmrc_entries`.
-    pub npmrc: &'a [(String, String)],
-    /// Entries from aube's user config file (`config.toml`). Keys use
-    /// canonical setting names, with npmrc aliases accepted for manual
-    /// edits.
-    pub aube_config: &'a [(String, String)],
+    /// Project-scope aube config (`<cwd>/.config/aube/config.toml`).
+    /// Highest-precedence file source by default — a project may pin
+    /// settings here as an alternative to committing them into the
+    /// project `.npmrc` shared with npm/pnpm/yarn.
+    pub project_aube_config: &'a [(String, String)],
+    /// Project-scope `.npmrc` (`<cwd>/.npmrc`) plus any
+    /// `npmrcAuthFile` it points at, in load order.
+    pub project_npmrc: &'a [(String, String)],
+    /// User-scope aube config (`~/.config/aube/config.toml`). Aube's
+    /// authoritative store for user-level settings written via
+    /// `aube config set` — outranks `~/.npmrc` so leftover entries in
+    /// a shared `.npmrc` don't silently shadow what aube wrote.
+    pub user_aube_config: &'a [(String, String)],
+    /// User-scope `.npmrc` (`~/.npmrc` or `NPM_CONFIG_USERCONFIG`) plus
+    /// pnpm's global `auth.ini`, in load order.
+    pub user_npmrc: &'a [(String, String)],
     /// Raw top-level map from `pnpm-workspace.yaml` /
     /// `aube-workspace.yaml`, as returned by
     /// `aube_manifest::workspace::load_raw`.
@@ -77,16 +91,23 @@ pub struct ResolveCtx<'a> {
 }
 
 impl<'a> ResolveCtx<'a> {
-    /// Construct a context that only sees file-based sources.
-    /// Convenience for tests and call sites that haven't wired env/cli
-    /// through yet.
+    /// Construct a context that only sees the merged-`.npmrc` and
+    /// workspace-yaml file sources. Convenience for tests and call
+    /// sites that don't need scope splitting or env/cli plumbing.
+    ///
+    /// The supplied `.npmrc` slice is treated as project-scope so its
+    /// values win over the (empty) user-scope sources — matching
+    /// the install-time precedence callers used to rely on before the
+    /// split.
     pub fn files_only(
         npmrc: &'a [(String, String)],
         workspace_yaml: &'a std::collections::BTreeMap<String, yaml_serde::Value>,
     ) -> Self {
         Self {
-            npmrc,
-            aube_config: &[],
+            project_aube_config: &[],
+            project_npmrc: npmrc,
+            user_aube_config: &[],
+            user_npmrc: &[],
             workspace_yaml,
             env: &[],
             cli: &[],
@@ -130,17 +151,36 @@ pub fn process_env() -> &'static [(String, String)] {
 /// returns `bool`, `store_dir` returns `Option<String>`, and
 /// calling either on the wrong type is a compile error.
 ///
-/// Precedence is `cli > env > aubeConfig > npmrc > workspaceYaml`. Aube's
-/// own user config (`~/.config/aube/config.toml`) wins over `~/.npmrc` so
-/// that `aube config set` is authoritative — values aube writes are not
-/// silently shadowed by leftover entries in a shared `.npmrc` that other
-/// tools (npm, pnpm, yarn) also read. The per-setting `precedence`
-/// override in `settings.toml` reorders the file-based sources
-/// (`aubeConfig`, `npmrc`, `workspaceYaml`) but cannot demote `cli` or
-/// `env` off the top — CLI flags and environment variables always win.
-/// Settings with concrete parseable defaults return the defaulted value
-/// directly; settings whose default is undefined or contextual still
-/// return `Option<T>`.
+/// Default precedence, high-to-low:
+///
+/// ```text
+/// cli > env
+///     > project_aube_config (<cwd>/.config/aube/config.toml)
+///     > project_npmrc       (<cwd>/.npmrc + npmrcAuthFile)
+///     > user_aube_config    (~/.config/aube/config.toml)
+///     > user_npmrc          (~/.npmrc + pnpm auth.ini)
+///     > workspace_yaml      (pnpm-workspace.yaml / aube-workspace.yaml)
+/// ```
+///
+/// Two principles drive the file-source ordering:
+///
+/// - **Scope locality**: project-scope entries beat user-scope entries.
+/// - **Aube authority**: within a scope, aube's own config file beats
+///   `.npmrc`. Values aube writes via `aube config set` are not
+///   silently shadowed by leftover entries in a `.npmrc` that other
+///   tools (npm, pnpm, yarn) also read.
+///
+/// The per-setting `precedence` override in `settings.toml` reorders
+/// the file-based sources but cannot demote `cli` or `env` off the
+/// top — CLI flags and environment variables always win. Bare names
+/// `npmrc` and `aubeConfig` in a `precedence` list expand to their
+/// project+user pair (project first); use the scope-qualified names
+/// `projectNpmrc`/`userNpmrc`/`projectAubeConfig`/`userAubeConfig` for
+/// fine-grained control.
+///
+/// Settings with concrete parseable defaults return the defaulted
+/// value directly; settings whose default is undefined or contextual
+/// still return `Option<T>`.
 pub mod resolved {
     use super::ResolveCtx;
     include!(concat!(env!("OUT_DIR"), "/settings_resolved.rs"));
@@ -151,11 +191,10 @@ pub mod resolved {
 /// earlier one). Returns `None` if the metadata entry doesn't exist,
 /// the setting isn't a bool, or no source key was found in `entries`.
 ///
-/// `entries` is the raw merged key/value list from
-/// `aube_registry::config::load_npmrc_entries`. Precedence is already
-/// baked in by the time entries reach this function: project `.npmrc`
-/// appears after user `.npmrc`, so iterating from the end gives
-/// last-write-wins behavior.
+/// `entries` is one of the per-scope slices from
+/// [`crate::ResolveCtx`] (e.g. `project_npmrc` or `user_npmrc`).
+/// Within a single scope, iterating from the end gives last-write-wins
+/// over duplicate keys.
 pub(crate) fn bool_from_npmrc(setting: &str, entries: &[(String, String)]) -> Option<bool> {
     let meta = meta::find(setting)?;
     if meta.type_ != "bool" {
@@ -895,8 +934,8 @@ mod tests {
 
     #[test]
     fn cli_beats_env_beats_npmrc_beats_workspace_yaml() {
-        // Precedence order is cli > env > aubeConfig > npmrc >
-        // workspaceYaml. This test hits the cli/env/npmrc/ws layers by
+        // CLI and env always win over file sources. This test hits
+        // every layer (cli, env, project npmrc, workspace yaml) by
         // setting a unique value at each and asserting the generated
         // accessor returns the CLI value.
         let npmrc = entries(&[("auto-install-peers", "false")]);
@@ -907,8 +946,10 @@ mod tests {
         )];
         let cli = vec![("auto-install-peers".to_string(), "true".to_string())];
         let ctx = ResolveCtx {
-            npmrc: &npmrc,
-            aube_config: &[],
+            project_aube_config: &[],
+            project_npmrc: &npmrc,
+            user_aube_config: &[],
+            user_npmrc: &[],
             workspace_yaml: &ws,
             env: &env,
             cli: &cli,
@@ -926,8 +967,10 @@ mod tests {
             "true".to_string(),
         )];
         let ctx = ResolveCtx {
-            npmrc: &npmrc,
-            aube_config: &aube_config,
+            project_aube_config: &aube_config,
+            project_npmrc: &npmrc,
+            user_aube_config: &aube_config,
+            user_npmrc: &npmrc,
             workspace_yaml: &ws,
             env: &env,
             cli: &[],
@@ -942,12 +985,13 @@ mod tests {
         // the tail, the effective order is workspaceYaml > npmrc >
         // aubeConfig — workspace YAML wins when present, and
         // `config.toml` is consulted only as a last resort.
-        let npmrc = Vec::new();
         let aube_config = entries(&[("minimumReleaseAge", "2880")]);
         let ws = raw_yaml("minimumReleaseAge: 1440\n");
         let ctx = ResolveCtx {
-            npmrc: &npmrc,
-            aube_config: &aube_config,
+            project_aube_config: &[],
+            project_npmrc: &[],
+            user_aube_config: &aube_config,
+            user_npmrc: &[],
             workspace_yaml: &ws,
             env: &[],
             cli: &[],
@@ -956,8 +1000,10 @@ mod tests {
 
         let ws = BTreeMap::new();
         let ctx = ResolveCtx {
-            npmrc: &npmrc,
-            aube_config: &aube_config,
+            project_aube_config: &[],
+            project_npmrc: &[],
+            user_aube_config: &aube_config,
+            user_npmrc: &[],
             workspace_yaml: &ws,
             env: &[],
             cli: &[],
@@ -966,26 +1012,74 @@ mod tests {
     }
 
     #[test]
-    fn aube_config_wins_over_npmrc_by_default() {
-        // Default file precedence is `[aubeConfig, npmrc, workspaceYaml]`
-        // so values aube wrote to `~/.config/aube/config.toml` via
-        // `aube config set` are authoritative — a leftover entry in
-        // `~/.npmrc` (which other tools like npm/pnpm/yarn also read)
-        // does not silently shadow them. `autoInstallPeers` has no
-        // per-setting precedence override, so it follows the default.
-        let npmrc = entries(&[("auto-install-peers", "false")]);
-        let aube_config = entries(&[("autoInstallPeers", "true")]);
+    fn user_aube_config_wins_over_user_npmrc_by_default() {
+        // Within user-scope, `~/.config/aube/config.toml` outranks
+        // `~/.npmrc` so values aube wrote via `aube config set` are
+        // authoritative — a leftover entry in `~/.npmrc` (which other
+        // tools like npm/pnpm/yarn also read) does not silently shadow
+        // them. `autoInstallPeers` has no per-setting precedence
+        // override, so it follows the default.
+        let user_npmrc = entries(&[("auto-install-peers", "false")]);
+        let user_aube_config = entries(&[("autoInstallPeers", "true")]);
         let ws = BTreeMap::new();
         let ctx = ResolveCtx {
-            npmrc: &npmrc,
-            aube_config: &aube_config,
+            project_aube_config: &[],
+            project_npmrc: &[],
+            user_aube_config: &user_aube_config,
+            user_npmrc: &user_npmrc,
             workspace_yaml: &ws,
             env: &[],
             cli: &[],
         };
         assert!(
             resolved::auto_install_peers(&ctx),
-            "aube_config=true should win over npmrc=false"
+            "user aube_config=true should win over user npmrc=false"
+        );
+    }
+
+    #[test]
+    fn project_npmrc_wins_over_user_aube_config_by_default() {
+        // Locality principle: a project `.npmrc` outranks user-scope
+        // `~/.config/aube/config.toml`. A repo-specific override should
+        // not be silently shadowed by a user-level aube preference.
+        let project_npmrc = entries(&[("auto-install-peers", "false")]);
+        let user_aube_config = entries(&[("autoInstallPeers", "true")]);
+        let ws = BTreeMap::new();
+        let ctx = ResolveCtx {
+            project_aube_config: &[],
+            project_npmrc: &project_npmrc,
+            user_aube_config: &user_aube_config,
+            user_npmrc: &[],
+            workspace_yaml: &ws,
+            env: &[],
+            cli: &[],
+        };
+        assert!(
+            !resolved::auto_install_peers(&ctx),
+            "project npmrc=false should win over user aube_config=true"
+        );
+    }
+
+    #[test]
+    fn project_aube_config_wins_over_project_npmrc_by_default() {
+        // Within project-scope, `<cwd>/.config/aube/config.toml`
+        // outranks `<cwd>/.npmrc` — same authority principle as the
+        // user-scope pair.
+        let project_npmrc = entries(&[("auto-install-peers", "false")]);
+        let project_aube_config = entries(&[("autoInstallPeers", "true")]);
+        let ws = BTreeMap::new();
+        let ctx = ResolveCtx {
+            project_aube_config: &project_aube_config,
+            project_npmrc: &project_npmrc,
+            user_aube_config: &[],
+            user_npmrc: &[],
+            workspace_yaml: &ws,
+            env: &[],
+            cli: &[],
+        };
+        assert!(
+            resolved::auto_install_peers(&ctx),
+            "project aube_config=true should win over project npmrc=false"
         );
     }
 

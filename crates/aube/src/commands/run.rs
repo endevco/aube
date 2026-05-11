@@ -806,19 +806,12 @@ pub(crate) fn load_manifest(cwd: &Path) -> miette::Result<PackageJson> {
 }
 
 fn configure_script_settings_for_project(cwd: &Path) -> miette::Result<bool> {
-    let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
-    let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
+    let files = crate::commands::FileSources::load(cwd);
     let (_, raw_workspace) = aube_manifest::workspace::load_both(cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
     let env_snapshot = aube_settings::values::capture_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc_entries,
-        aube_config: &aube_config_entries,
-        workspace_yaml: &raw_workspace,
-        env: &env_snapshot,
-        cli: &[],
-    };
+    let ctx = files.ctx(&raw_workspace, &env_snapshot, &[]);
     let enable_pre_post_scripts = aube_settings::resolved::enable_pre_post_scripts(&ctx);
     super::configure_script_settings(&ctx);
     Ok(enable_pre_post_scripts)

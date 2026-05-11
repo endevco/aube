@@ -70,8 +70,9 @@ pub(crate) struct KeyArgs {
     /// Which config location to act on.
     ///
     /// Defaults to `user`. Known aube settings use
-    /// `~/.config/aube/config.toml`; registry/auth and unknown keys
-    /// use `~/.npmrc`.
+    /// `~/.config/aube/config.toml` (user) or
+    /// `<cwd>/.config/aube/config.toml` (project); registry/auth and
+    /// unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
 }
@@ -110,7 +111,10 @@ pub(crate) enum ListLocation {
     Global,
 }
 
-pub(crate) use aube_config::load_user_entries as load_user_aube_config_entries;
+pub(crate) use aube_config::{
+    load_project_entries as load_project_aube_config_entries,
+    load_user_entries as load_user_aube_config_entries,
+};
 pub(crate) use get_cmd::GetArgs;
 pub(crate) use set_cmd::SetArgs;
 
@@ -269,18 +273,18 @@ fn search_text_matches(haystack: &str, term: &str) -> bool {
         .any(|word| word.starts_with(term))
 }
 
-/// Read `~/.npmrc`, then `<cwd>/.npmrc`, then aube's user `config.toml`
-/// and return every entry in file order so a later duplicate wins.
-/// Order mirrors the precedence the install pipeline applies via
-/// [`aube_settings::resolved`]: `aubeConfig` beats `npmrc`, and project
-/// `.npmrc` beats user `.npmrc`.
+/// Walk every config source in low-to-high precedence order so a later
+/// duplicate wins. Mirrors the chain the install pipeline applies via
+/// [`aube_settings::resolved`]:
+/// `userNpmrc < userAubeConfig < projectNpmrc < projectAubeConfig`.
 pub(super) fn read_merged(cwd: &Path) -> miette::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     if let Ok(user) = user_npmrc_path() {
         out.extend(read_single(&user)?);
     }
-    out.extend(read_single(&cwd.join(".npmrc"))?);
     out.extend(aube_config::load_user_entries());
+    out.extend(read_single(&cwd.join(".npmrc"))?);
+    out.extend(aube_config::load_project_entries(cwd));
     Ok(out)
 }
 

@@ -1451,7 +1451,7 @@
                 "name": "location",
                 "usage": "--location <LOCATION>",
                 "help": "Which config location to act on",
-                "help_long": "Which config location to act on.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.",
+                "help_long": "Which config location to act on.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.",
                 "help_first_line": "Which config location to act on",
                 "short": [],
                 "long": [
@@ -1763,7 +1763,7 @@
                 "name": "location",
                 "usage": "--location <LOCATION>",
                 "help": "Which config location to write to",
-                "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.",
+                "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.",
                 "help_first_line": "Which config location to write to",
                 "short": [],
                 "long": [
@@ -9161,7 +9161,7 @@
             "name": "location",
             "usage": "--location <LOCATION>",
             "help": "Which config location to write to",
-            "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`.",
+            "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.",
             "help_first_line": "Which config location to write to",
             "short": [],
             "long": [

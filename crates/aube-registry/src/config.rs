@@ -571,9 +571,10 @@ impl Default for FetchPolicy {
 
 impl FetchPolicy {
     /// Resolve every field from a settings [`ResolveCtx`]. Walks the
-    /// full cli > env > aubeConfig > npmrc > workspaceYaml precedence
-    /// chain via the generated accessors, so env-var overrides like
-    /// `NPM_CONFIG_FETCH_TIMEOUT` Just Work without bespoke parsing.
+    /// full cli > env > {project,user} aubeConfig/npmrc > workspaceYaml
+    /// precedence chain via the generated accessors, so env-var
+    /// overrides like `NPM_CONFIG_FETCH_TIMEOUT` Just Work without
+    /// bespoke parsing.
     pub fn from_ctx(ctx: &aube_settings::ResolveCtx<'_>) -> Self {
         Self {
             timeout_ms: aube_settings::resolved::fetch_timeout(ctx),
@@ -697,6 +698,58 @@ fn translate_npm_config_env(name: &str, value: &str) -> Option<(String, String)>
 /// looks up each setting's declared `sources.npmrc` keys. That keeps the
 /// registry of "which keys map to which setting" in `settings.toml`
 /// instead of scattering it through a hand-rolled parser.
+/// Scope-split view of [`load_npmrc_entries`]. Returns user-scope
+/// entries (user `~/.npmrc` + pnpm `auth.ini`) and project-scope entries
+/// (project `<cwd>/.npmrc` + `npmrcAuthFile`) as separate slices so the
+/// settings resolver can apply the locality principle (project beats
+/// user) while interleaving aube's own config sources.
+///
+/// Concatenating `user` and `project` (in that order) yields the same
+/// list as [`load_npmrc_entries`].
+pub fn load_npmrc_entries_split(project_dir: &Path) -> SplitNpmrcEntries {
+    use std::sync::{Mutex, OnceLock};
+    type CacheMap = std::collections::HashMap<PathBuf, SplitNpmrcEntries>;
+    static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(map) = cache.lock()
+        && let Some(hit) = map.get(project_dir)
+    {
+        return hit.clone();
+    }
+    let xdg = aube_util::env::xdg_config_home();
+    let home = home_dir();
+    let user_rc_override = std::env::var("NPM_CONFIG_USERCONFIG")
+        .ok()
+        .or_else(|| std::env::var("npm_config_userconfig").ok())
+        .and_then(|raw| expand_userconfig_path(&raw, home.as_deref()));
+    let tagged = load_npmrc_entries_tagged_with_home(
+        home.as_deref(),
+        xdg.as_deref(),
+        project_dir,
+        user_rc_override.as_deref(),
+    );
+    let mut split = SplitNpmrcEntries::default();
+    for (src, k, v) in tagged {
+        match src {
+            NpmrcSource::User | NpmrcSource::PnpmAuth => split.user.push((k, v)),
+            NpmrcSource::Project | NpmrcSource::NpmrcAuthFile => split.project.push((k, v)),
+            // Env-derived entries (npm_config_*) aren't loaded by the
+            // tagged file walker, so this arm is unreachable here.
+            NpmrcSource::Env => continue,
+        }
+    }
+    if let Ok(mut map) = cache.lock() {
+        map.insert(project_dir.to_path_buf(), split.clone());
+    }
+    split
+}
+
+#[derive(Default, Clone)]
+pub struct SplitNpmrcEntries {
+    pub user: Vec<(String, String)>,
+    pub project: Vec<(String, String)>,
+}
+
 pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
     // Process-wide memoization keyed by project_dir. `.npmrc` files are
     // not expected to change mid-install, and callers on the hot path

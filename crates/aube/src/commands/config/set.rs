@@ -16,8 +16,9 @@ pub struct SetArgs {
     /// Which config location to write to.
     ///
     /// Defaults to `user`. Known aube settings use
-    /// `~/.config/aube/config.toml`; registry/auth and unknown keys
-    /// use `~/.npmrc`.
+    /// `~/.config/aube/config.toml` (user) or
+    /// `<cwd>/.config/aube/config.toml` (project); registry/auth and
+    /// unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
 }
@@ -42,10 +43,13 @@ pub(super) fn set_value(
     location: Location,
     report: bool,
 ) -> miette::Result<()> {
-    if matches!(location, Location::User | Location::Global)
-        && let Some(meta) = aube_config::is_aube_config_key(key)
-    {
-        let path = aube_config::user_aube_config_path()?;
+    if let Some(meta) = aube_config::is_aube_config_key(key) {
+        let path = match location {
+            Location::User | Location::Global => aube_config::user_aube_config_path()?,
+            Location::Project => {
+                aube_config::project_aube_config_path(&crate::dirs::project_root_or_cwd()?)
+            }
+        };
         let mut edit = aube_config::AubeConfigEdit::load(&path)?;
         edit.set(meta, value)?;
         edit.save(&path)?;

@@ -218,12 +218,56 @@ teardown() {
 	assert_output --partial "auto-install-peers=false"
 }
 
-@test "config set --location project writes to ./.npmrc" {
+@test "config set --location project writes aube-owned keys to project config.toml" {
+	# Project-scope aube settings land in <cwd>/.config/aube/config.toml,
+	# the same XDG layout used at user-scope. The project `.npmrc` is
+	# left alone so it remains a shared file with npm/pnpm/yarn.
 	run aube config set autoInstallPeers false --location project
+	assert_success
+	assert [ -f ".config/aube/config.toml" ]
+	run cat ".config/aube/config.toml"
+	assert_output --partial "autoInstallPeers = false"
+	# If a project `.npmrc` exists (e.g. for the test registry pin), it
+	# must not contain the aube-owned key.
+	if [ -f "./.npmrc" ]; then
+		run cat "./.npmrc"
+		refute_output --partial "autoInstallPeers"
+	fi
+}
+
+@test "config set --location project writes unknown keys to ./.npmrc" {
+	# Registry/auth-style keys aren't aube-owned settings and continue
+	# to land in project `.npmrc`.
+	run aube config set "//registry.example.com/:_authToken" secret --location project
 	assert_success
 	assert [ -f "./.npmrc" ]
 	run cat "./.npmrc"
-	assert_output --partial "autoInstallPeers=false"
+	assert_output --partial "//registry.example.com/:_authToken=secret"
+}
+
+@test "config get prefers project config.toml over project .npmrc" {
+	# Locality: project beats user; within project, config.toml beats
+	# `.npmrc` for the same reason it does at user-scope.
+	mkdir proj
+	echo "autoInstallPeers=false" >proj/.npmrc
+	mkdir -p "proj/.config/aube"
+	echo "autoInstallPeers = true" >"proj/.config/aube/config.toml"
+	cd proj
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "true"
+}
+
+@test "config get prefers project npmrc over user config.toml" {
+	# Scope locality: project `.npmrc` outranks user `config.toml`.
+	mkdir proj
+	mkdir -p "$XDG_CONFIG_HOME/aube"
+	echo "autoInstallPeers = true" >"$XDG_CONFIG_HOME/aube/config.toml"
+	echo "autoInstallPeers=false" >proj/.npmrc
+	cd proj
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "false"
 }
 
 @test "config preserves existing unrelated entries when setting a key" {

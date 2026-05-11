@@ -510,12 +510,13 @@ mod tests {
     #[test]
     fn dlx_install_disables_global_virtual_store() {
         let opts = dlx_install_options();
-        let empty_npmrc = Vec::new();
         let empty_workspace = std::collections::BTreeMap::new();
         let empty_env = Vec::new();
         let ctx = aube_settings::ResolveCtx {
-            npmrc: &empty_npmrc,
-            aube_config: &[],
+            project_aube_config: &[],
+            project_npmrc: &[],
+            user_aube_config: &[],
+            user_npmrc: &[],
             workspace_yaml: &empty_workspace,
             env: &empty_env,
             cli: &opts.cli_flags,

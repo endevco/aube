@@ -319,7 +319,7 @@ cmd config help="Read and write settings in `.npmrc`" {
         alias rm remove unset
         flag --local help="Shortcut for `--location project`"
         flag --location help="Which config location to act on" default=user {
-            long_help "Which config location to act on.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`."
+            long_help "Which config location to act on.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively."
             arg <LOCATION> {
                 choices user project global
             }
@@ -367,7 +367,7 @@ cmd config help="Read and write settings in `.npmrc`" {
     cmd set help="Write a key=value pair to aube config or the selected `.npmrc` file" {
         flag --local help="Shortcut for `--location project`"
         flag --location help="Which config location to write to" default=user {
-            long_help "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`."
+            long_help "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively."
             arg <LOCATION> {
                 choices user project global
             }
@@ -1597,7 +1597,7 @@ cmd search hide=#true help="Search the registry for packages (not implemented â€
 cmd set hide=#true help="Alias for `config set` (hidden; prefer `config set`)" {
     flag --local help="Shortcut for `--location project`"
     flag --location help="Which config location to write to" default=user {
-        long_help "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml`; registry/auth and unknown keys use `~/.npmrc`."
+        long_help "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively."
         arg <LOCATION> {
             choices user project global
         }

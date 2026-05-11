@@ -79,11 +79,28 @@ pub(crate) fn user_aube_config_path() -> miette::Result<PathBuf> {
     Ok(home.join(".config").join("aube").join("config.toml"))
 }
 
+/// Project-scope aube config path: `<project>/.config/aube/config.toml`.
+/// Mirrors the XDG layout used at user-scope so the same file name and
+/// folder shape applies everywhere. Project-scope is an alternative to
+/// committing aube-specific settings into a project `.npmrc` shared
+/// with npm/pnpm/yarn.
+pub(crate) fn project_aube_config_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(".config").join("aube").join("config.toml")
+}
+
 pub(crate) fn load_user_entries() -> Vec<(String, String)> {
     let Ok(path) = user_aube_config_path() else {
         return Vec::new();
     };
-    match AubeConfigEdit::load(&path) {
+    load_entries_at(&path)
+}
+
+pub(crate) fn load_project_entries(project_dir: &Path) -> Vec<(String, String)> {
+    load_entries_at(&project_aube_config_path(project_dir))
+}
+
+fn load_entries_at(path: &Path) -> Vec<(String, String)> {
+    match AubeConfigEdit::load(path) {
         Ok(edit) => edit.entries(),
         Err(err) => {
             tracing::warn!("failed to load aube config at {}: {err}", path.display());

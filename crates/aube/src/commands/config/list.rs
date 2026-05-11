@@ -83,7 +83,13 @@ pub fn run(args: ListArgs) -> miette::Result<()> {
             entries.extend(super::aube_config::load_user_entries());
             entries
         }
-        ListLocation::Project => read_single(&cwd.join(".npmrc"))?,
+        ListLocation::Project => {
+            // Project-scope aube config outranks project `.npmrc`, same
+            // authority principle as the user-scope pair.
+            let mut entries = read_single(&cwd.join(".npmrc"))?;
+            entries.extend(super::aube_config::load_project_entries(&cwd));
+            entries
+        }
     };
 
     let mut seen: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();

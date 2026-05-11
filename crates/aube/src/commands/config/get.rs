@@ -52,7 +52,12 @@ pub fn run(args: GetArgs) -> miette::Result<()> {
             entries.extend(super::aube_config::load_user_entries());
             entries
         }
-        ListLocation::Project => read_single(&cwd.join(".npmrc"))?,
+        ListLocation::Project => {
+            // Project-scope aube config outranks project `.npmrc`.
+            let mut entries = read_single(&cwd.join(".npmrc"))?;
+            entries.extend(super::aube_config::load_project_entries(&cwd));
+            entries
+        }
     };
 
     for (k, v) in entries.iter().rev() {

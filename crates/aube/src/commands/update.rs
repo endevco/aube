@@ -802,19 +802,12 @@ fn with_update_settings_ctx<T>(
     cwd: &std::path::Path,
     f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,
 ) -> miette::Result<T> {
-    let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
-    let aube_config_entries = crate::commands::config::load_user_aube_config_entries();
+    let files = crate::commands::FileSources::load(cwd);
     let (_workspace_config, raw_workspace) = aube_manifest::workspace::load_both(cwd)
         .into_diagnostic()
         .wrap_err("failed to read workspace config")?;
     let env = aube_settings::values::process_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc_entries,
-        aube_config: &aube_config_entries,
-        workspace_yaml: &raw_workspace,
-        env,
-        cli: &[],
-    };
+    let ctx = files.ctx(&raw_workspace, env, &[]);
     Ok(f(&ctx))
 }
 

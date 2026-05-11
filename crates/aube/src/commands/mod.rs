@@ -193,21 +193,54 @@ pub(crate) fn configure_script_settings(ctx: &aube_settings::ResolveCtx<'_>) {
 /// lifecycle hooks (pack/publish/version) outside the install path,
 /// which already does this via `configure_script_settings` directly.
 pub(crate) fn configure_script_settings_for_cwd(cwd: &Path) -> miette::Result<()> {
-    let npmrc_entries = aube_registry::config::load_npmrc_entries(cwd);
-    let aube_config_entries = config::load_user_aube_config_entries();
+    let files = FileSources::load(cwd);
     let (_, raw_workspace) = aube_manifest::workspace::load_both(cwd)
         .into_diagnostic()
         .wrap_err("failed to load workspace config")?;
     let env_snapshot = aube_settings::values::capture_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc_entries,
-        aube_config: &aube_config_entries,
-        workspace_yaml: &raw_workspace,
-        env: &env_snapshot,
-        cli: &[],
-    };
+    let ctx = files.ctx(&raw_workspace, &env_snapshot, &[]);
     configure_script_settings(&ctx);
     Ok(())
+}
+
+/// Owned bundle of the four file-source slices that feed a
+/// [`aube_settings::ResolveCtx`]: project + user `.npmrc`, and project +
+/// user `~/.config/aube/config.toml`. Construct once with
+/// `FileSources::load`, borrow into a `ResolveCtx` via `FileSources::ctx`.
+pub(crate) struct FileSources {
+    pub user_npmrc: Vec<(String, String)>,
+    pub project_npmrc: Vec<(String, String)>,
+    pub user_aube_config: Vec<(String, String)>,
+    pub project_aube_config: Vec<(String, String)>,
+}
+
+impl FileSources {
+    pub(crate) fn load(cwd: &Path) -> Self {
+        let npmrc = aube_registry::config::load_npmrc_entries_split(cwd);
+        Self {
+            user_npmrc: npmrc.user,
+            project_npmrc: npmrc.project,
+            user_aube_config: config::load_user_aube_config_entries(),
+            project_aube_config: config::load_project_aube_config_entries(cwd),
+        }
+    }
+
+    pub(crate) fn ctx<'a>(
+        &'a self,
+        workspace_yaml: &'a std::collections::BTreeMap<String, yaml_serde::Value>,
+        env: &'a [(String, String)],
+        cli: &'a [(String, String)],
+    ) -> aube_settings::ResolveCtx<'a> {
+        aube_settings::ResolveCtx {
+            project_aube_config: &self.project_aube_config,
+            project_npmrc: &self.project_npmrc,
+            user_aube_config: &self.user_aube_config,
+            user_npmrc: &self.user_npmrc,
+            workspace_yaml,
+            env,
+            cli,
+        }
+    }
 }
 
 fn non_empty_string(value: String) -> Option<String> {
@@ -258,10 +291,10 @@ pub(crate) fn ensure_registry_auth(
 static LOCK_HELD: AtomicBool = AtomicBool::new(false);
 
 /// Whether the project-level advisory lock is disabled. Resolves the
-/// `aubeNoLock` setting through the full cli > env > aubeConfig >
-/// npmrc > workspace.yaml chain so `.npmrc`, `~/.config/aube/config.toml`,
-/// and `aube-workspace.yaml` entries participate alongside the canonical
-/// `AUBE_NO_LOCK` env var.
+/// `aubeNoLock` setting through the full file-source chain so
+/// `.npmrc`, `~/.config/aube/config.toml`, project
+/// `.config/aube/config.toml`, and `aube-workspace.yaml` entries
+/// participate alongside the canonical `AUBE_NO_LOCK` env var.
 fn aube_no_lock_enabled(cwd: &std::path::Path) -> bool {
     with_settings_ctx(cwd, aube_settings::resolved::aube_no_lock)
 }
@@ -406,29 +439,22 @@ pub(crate) fn with_settings_ctx<T>(
     cwd: &std::path::Path,
     f: impl FnOnce(&aube_settings::ResolveCtx<'_>) -> T,
 ) -> T {
-    let npmrc = aube_registry::config::load_npmrc_entries(cwd);
-    let aube_config = config::load_user_aube_config_entries();
+    let files = FileSources::load(cwd);
     let raw_workspace = aube_manifest::workspace::load_raw(cwd).unwrap_or_default();
     // `process_env()` returns a `&'static` borrow of the once-captured
     // env. Avoids cloning ~200-500 String pairs every time a command
     // builds a ResolveCtx (the typical path hits this 5+ times per
     // `aube run`).
     let env = aube_settings::values::process_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc,
-        aube_config: &aube_config,
-        workspace_yaml: &raw_workspace,
-        env,
-        cli: &[],
-    };
+    let ctx = files.ctx(&raw_workspace, env, &[]);
     f(&ctx)
 }
 
 /// Build a registry client configured from .npmrc files in the project directory.
 ///
 /// Also resolves the `fetch*` settings (timeout + retries + backoff)
-/// from the full cli > env > aubeConfig > npmrc > workspace precedence
-/// chain and threads the resulting [`aube_registry::config::FetchPolicy`] into
+/// from the full settings precedence chain and threads the resulting
+/// [`aube_registry::config::FetchPolicy`] into
 /// the client. The CLI bag comes from [`fetch_cli_overrides`], which
 /// `async_main` populates from the global `--fetch-timeout`,
 /// `--fetch-retries`, and `--fetch-retry-{factor,mintimeout,maxtimeout}`
@@ -519,19 +545,12 @@ pub(crate) fn build_resolver(
 /// deprecate, etc) can opt in without duplicating the ctx-building
 /// boilerplate.
 pub(crate) fn resolve_fetch_policy(cwd: &std::path::Path) -> aube_registry::config::FetchPolicy {
-    let npmrc = aube_registry::config::load_npmrc_entries(cwd);
-    let aube_config = config::load_user_aube_config_entries();
+    let files = FileSources::load(cwd);
     let workspace_yaml = aube_manifest::workspace::load_both(cwd)
         .map(|(_, raw)| raw)
         .unwrap_or_default();
     let env = aube_settings::values::process_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc,
-        aube_config: &aube_config,
-        workspace_yaml: &workspace_yaml,
-        env,
-        cli: fetch_cli_overrides(),
-    };
+    let ctx = files.ctx(&workspace_yaml, env, fetch_cli_overrides());
     aube_registry::config::FetchPolicy::from_ctx(&ctx)
 }
 
@@ -631,10 +650,18 @@ pub(crate) fn resolve_virtual_store_dir(
         let modules_dir = aube_settings::resolved::modules_dir(ctx);
         project_dir.join(modules_dir).join(".aube")
     };
-    let has_explicit_npmrc = ctx
-        .npmrc
-        .iter()
-        .any(|(k, _)| k == "virtualStoreDir" || k == "virtual-store-dir");
+    let has_explicit_npmrc = [
+        ctx.project_aube_config,
+        ctx.project_npmrc,
+        ctx.user_aube_config,
+        ctx.user_npmrc,
+    ]
+    .iter()
+    .any(|entries| {
+        entries
+            .iter()
+            .any(|(k, _)| k == "virtualStoreDir" || k == "virtual-store-dir")
+    });
     let has_explicit_yaml = ctx.workspace_yaml.contains_key("virtualStoreDir");
     // Mirrors the `sources.env` list in settings.toml (`virtualStoreDir`).
     // Keep all three aliases here — dropping `AUBE_VIRTUAL_STORE_DIR`
@@ -672,8 +699,10 @@ mod resolve_virtual_store_dir_tests {
         ws: &'a BTreeMap<String, yaml_serde::Value>,
     ) -> ResolveCtx<'a> {
         ResolveCtx {
-            npmrc: &[],
-            aube_config: &[],
+            project_aube_config: &[],
+            project_npmrc: &[],
+            user_aube_config: &[],
+            user_npmrc: &[],
             workspace_yaml: ws,
             env,
             cli: &[],
@@ -1334,17 +1363,10 @@ enum VerifyDepsBeforeRun {
 }
 
 fn resolve_verify_deps_before_run(cwd: &std::path::Path) -> miette::Result<VerifyDepsBeforeRun> {
-    let npmrc = aube_registry::config::load_npmrc_entries(cwd);
-    let aube_config = config::load_user_aube_config_entries();
+    let files = FileSources::load(cwd);
     let empty_ws = std::collections::BTreeMap::new();
     let env = aube_settings::values::process_env();
-    let ctx = aube_settings::ResolveCtx {
-        npmrc: &npmrc,
-        aube_config: &aube_config,
-        workspace_yaml: &empty_ws,
-        env,
-        cli: &[],
-    };
+    let ctx = files.ctx(&empty_ws, env, &[]);
     let raw = aube_settings::resolved::verify_deps_before_run(&ctx);
     Ok(match raw.trim().to_ascii_lowercase().as_str() {
         "false" | "0" => VerifyDepsBeforeRun::Skip,

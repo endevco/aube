@@ -32,7 +32,14 @@ fn resolve_resolution_mode(ctx: &aube_settings::ResolveCtx<'_>) -> aube_resolver
     // the generator grows per-setting variant aliases.
     let raw = aube_settings::values::string_from_cli("resolutionMode", ctx.cli)
         .or_else(|| aube_settings::values::string_from_env("resolutionMode", ctx.env))
-        .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.npmrc))
+        .or_else(|| {
+            aube_settings::values::string_from_npmrc("resolutionMode", ctx.project_aube_config)
+        })
+        .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.project_npmrc))
+        .or_else(|| {
+            aube_settings::values::string_from_npmrc("resolutionMode", ctx.user_aube_config)
+        })
+        .or_else(|| aube_settings::values::string_from_npmrc("resolutionMode", ctx.user_npmrc))
         .or_else(|| {
             aube_settings::values::string_from_workspace_yaml("resolutionMode", ctx.workspace_yaml)
         });
@@ -449,11 +456,20 @@ fn merge_json_object_setting(
     setting: &str,
     out: &mut BTreeMap<String, serde_json::Value>,
 ) {
+    // Walk file sources in low-to-high precedence order so later
+    // `.extend` calls overwrite earlier ones for shared keys.
     if let Some(value) = object_setting_from_workspace_yaml(setting, ctx.workspace_yaml) {
         out.extend(value);
     }
-    if let Some(value) = object_setting_from_npmrc(setting, ctx.npmrc) {
-        out.extend(value);
+    for entries in [
+        ctx.user_npmrc,
+        ctx.user_aube_config,
+        ctx.project_npmrc,
+        ctx.project_aube_config,
+    ] {
+        if let Some(value) = object_setting_from_npmrc(setting, entries) {
+            out.extend(value);
+        }
     }
     if let Some(value) = object_setting_from_env(setting, ctx.env) {
         out.extend(value);
@@ -468,8 +484,15 @@ fn merge_string_map_setting(
     if let Some(value) = object_setting_from_workspace_yaml(setting, ctx.workspace_yaml) {
         out.extend(json_string_map(value));
     }
-    if let Some(value) = object_setting_from_npmrc(setting, ctx.npmrc) {
-        out.extend(json_string_map(value));
+    for entries in [
+        ctx.user_npmrc,
+        ctx.user_aube_config,
+        ctx.project_npmrc,
+        ctx.project_aube_config,
+    ] {
+        if let Some(value) = object_setting_from_npmrc(setting, entries) {
+            out.extend(json_string_map(value));
+        }
     }
     if let Some(value) = object_setting_from_env(setting, ctx.env) {
         out.extend(json_string_map(value));
