@@ -90,6 +90,18 @@ fi
 mkdir -p "$PGO_PROFRAW_DIR"
 rm -f "$PGO_PROFRAW_DIR"/*.profraw "$PGO_MERGED"
 
+# With AUBE_PGO_BUILD_TOOL=cross, rustc runs inside a container that
+# mounts the project at `/project` (not at the host path), so when
+# phase 3b reads `-Cprofile-use=<host-path>` from RUSTFLAGS the file
+# is invisible — rustc bails with "file ... does not exist" even when
+# the merge step wrote it on the host. Bind-mount PGO_DATA_DIR at the
+# same host path inside the container so the existing RUSTFLAGS value
+# resolves. Harmless on the host-side phase 1 build (cross still
+# writes the instrumented binary to target/ via its own bind mount).
+if [ "$PGO_BUILD_TOOL" = "cross" ]; then
+	export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:-} -v $PGO_DATA_DIR:$PGO_DATA_DIR:rw"
+fi
+
 # ---------- Phase 1: instrumented build ----------
 echo ">>> [1/3] Building instrumented binary ($PGO_BUILD_TOOL, profile=$PGO_PROFILE${PGO_TARGET:+, target=$PGO_TARGET})"
 # shellcheck disable=SC2086 # intentional word-splitting on $target_arg
@@ -183,6 +195,19 @@ echo ">>> $profraw_count .profraw files collected"
 # ---------- Phase 3a: merge ----------
 echo ">>> [3/3] Merging profile data"
 "$LLVM_PROFDATA" merge -o "$PGO_MERGED" "$PGO_PROFRAW_DIR"
+
+# Defense in depth: confirm llvm-profdata actually wrote the merged
+# file. A version mismatch between the rustc that instrumented (phase 1
+# inside cross) and the host's llvm-profdata can produce a 0-exit
+# silent no-op. Without this check we'd fall through to phase 3b and
+# see rustc's opaque "file ... does not exist" against a path that
+# really doesn't exist on the host at all.
+if [ ! -f "$PGO_MERGED" ]; then
+	echo "ERROR: $PGO_MERGED was not produced by llvm-profdata merge" >&2
+	echo "  Check that the host's llvm-profdata version matches the rustc that built the instrumented binary." >&2
+	exit 1
+fi
+echo ">>> merged profile written: $(stat -c %s "$PGO_MERGED" 2>/dev/null || stat -f %z "$PGO_MERGED") bytes"
 
 if [ -n "${AUBE_PGO_SKIP_FINAL_BUILD:-}" ]; then
 	echo ">>> Skipping final optimized build (AUBE_PGO_SKIP_FINAL_BUILD=1)"
