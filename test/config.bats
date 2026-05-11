@@ -309,6 +309,47 @@ teardown() {
 	refute_output --partial "scriptShell"
 }
 
+@test "config set --location project stays in config.toml once it exists" {
+	# If a project already adopted `.config/aube/config.toml`, later
+	# `set` calls keep landing there even after a `pnpm-workspace.yaml`
+	# is added. Writing to yaml would be silently shadowed by the
+	# higher-precedence config.toml entry on read.
+	run aube config set autoInstallPeers false --location project
+	assert_success
+	assert [ -f ".config/aube/config.toml" ]
+	echo "packages:" >pnpm-workspace.yaml
+	run aube config set autoInstallPeers true --location project
+	assert_success
+	run cat ".config/aube/config.toml"
+	assert_output --partial "autoInstallPeers = true"
+	run cat pnpm-workspace.yaml
+	refute_output --partial "autoInstallPeers"
+	# Effective value matches the latest set.
+	run aube config get autoInstallPeers
+	assert_success
+	assert_output "true"
+}
+
+@test "config delete --location project sweeps both workspace yaml and config.toml" {
+	# Regression for the silent-resurrection bug: a setting can end up
+	# in both files (e.g. set into config.toml first, into yaml later
+	# via a manual edit). Delete must clear both — otherwise the
+	# config.toml copy silently reactivates after the yaml removal.
+	mkdir -p ".config/aube"
+	echo "autoInstallPeers = true" >".config/aube/config.toml"
+	cat >pnpm-workspace.yaml <<EOF
+packages:
+  - 'apps/*'
+autoInstallPeers: false
+EOF
+	run aube config delete autoInstallPeers --location project
+	assert_success
+	run cat ".config/aube/config.toml"
+	refute_output --partial "autoInstallPeers"
+	run cat pnpm-workspace.yaml
+	refute_output --partial "autoInstallPeers"
+}
+
 @test "config delete --location project removes the key from workspace yaml" {
 	# Symmetric with set: delete removes from the workspace yaml
 	# when the value lives there.

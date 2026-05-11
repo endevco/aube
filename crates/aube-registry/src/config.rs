@@ -688,16 +688,6 @@ fn translate_npm_config_env(name: &str, value: &str) -> Option<(String, String)>
     Some((npmrc_key.to_string(), value.to_string()))
 }
 
-/// Load raw `.npmrc` key/value pairs from the same file precedence as
-/// [`NpmConfig::load`]: user-level (`~/.npmrc`) first, then project-level
-/// (`<cwd>/.npmrc`). Returned in encounter order — a later duplicate key
-/// overrides an earlier one, matching npm's own precedence rules.
-///
-/// Callers that want typed, per-setting values should consume this via
-/// `aube_cli::settings_values`, which walks `settings_meta::SETTINGS` and
-/// looks up each setting's declared `sources.npmrc` keys. That keeps the
-/// registry of "which keys map to which setting" in `settings.toml`
-/// instead of scattering it through a hand-rolled parser.
 /// Scope-split view of [`load_npmrc_entries`]. Returns user-scope
 /// entries (user `~/.npmrc` + pnpm `auth.ini`) and project-scope entries
 /// (project `<cwd>/.npmrc` + `npmrcAuthFile`) as separate slices so the
@@ -750,6 +740,16 @@ pub struct SplitNpmrcEntries {
     pub project: Vec<(String, String)>,
 }
 
+/// Load raw `.npmrc` key/value pairs from the same file precedence as
+/// [`NpmConfig::load`]: user-level (`~/.npmrc`) first, then project-level
+/// (`<cwd>/.npmrc`). Returned in encounter order — a later duplicate key
+/// overrides an earlier one, matching npm's own precedence rules.
+///
+/// Callers that want typed, per-setting values should consume this via
+/// `aube_cli::settings_values`, which walks `settings_meta::SETTINGS` and
+/// looks up each setting's declared `sources.npmrc` keys. That keeps the
+/// registry of "which keys map to which setting" in `settings.toml`
+/// instead of scattering it through a hand-rolled parser.
 pub fn load_npmrc_entries(project_dir: &Path) -> Vec<(String, String)> {
     // Process-wide memoization keyed by project_dir. `.npmrc` files are
     // not expected to change mid-install, and callers on the hot path

@@ -1,6 +1,6 @@
 use super::{KeyArgs, Location, NpmrcEdit, aube_config, resolve_aliases};
 use miette::miette;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub type DeleteArgs = KeyArgs;
 
@@ -8,29 +8,48 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
     let aliases = resolve_aliases(&args.key);
     if let Some(meta) = aube_config::is_aube_config_key(&args.key) {
         let location = args.effective_location();
-        // Mirror `set --location project`: if the value lives in an
-        // existing workspace yaml, remove it from there.
+        let mut removed_paths: Vec<PathBuf> = Vec::new();
+
+        // Project-scope deletes also sweep the workspace yaml. We must
+        // not short-circuit after a successful yaml removal — a setting
+        // can exist in both files (e.g. written to `config.toml` first,
+        // overridden in yaml later), and leaving the `config.toml`
+        // copy behind would silently restore the deleted value.
         if matches!(location, Location::Project)
             && let Some(yaml_path) = aube_manifest::workspace::workspace_yaml_existing(
                 &crate::dirs::project_root_or_cwd()?,
             )
             && aube_config::remove_workspace_yaml_aliases(&yaml_path, meta)?
         {
-            eprintln!("deleted {} ({})", args.key, yaml_path.display());
-            return Ok(());
+            removed_paths.push(yaml_path);
         }
-        let path = match location {
+
+        let config_path = match location {
             Location::User | Location::Global => aube_config::user_aube_config_path()?,
             Location::Project => {
                 aube_config::project_aube_config_path(&crate::dirs::project_root_or_cwd()?)
             }
         };
-        let mut edit = aube_config::AubeConfigEdit::load(&path)?;
-        if !edit.remove_aliases(&aliases) {
-            return Err(missing_aube_key_error(&args.key, &aliases, &path, location));
+        let mut edit = aube_config::AubeConfigEdit::load(&config_path)?;
+        if edit.remove_aliases(&aliases) {
+            edit.save(&config_path)?;
+            removed_paths.push(config_path.clone());
         }
-        edit.save(&path)?;
-        eprintln!("deleted {} ({})", args.key, path.display());
+
+        if removed_paths.is_empty() {
+            return Err(missing_aube_key_error(
+                &args.key,
+                &aliases,
+                &config_path,
+                location,
+            ));
+        }
+        let joined = removed_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("deleted {} ({})", args.key, joined);
         return Ok(());
     }
 
