@@ -198,14 +198,22 @@ impl Store {
         }
     }
 
-    /// Enable the direct-write fast path for CAS imports. Bypasses the
-    /// tempfile + persist_noclobber pattern on non-Linux platforms and
-    /// writes straight to the final content-addressed path, saving
-    /// ~80µs/file on APFS. The caller MUST hold an exclusive lock against
-    /// the store for the duration any thread might invoke `import_bytes`;
-    /// otherwise a concurrent installer can observe a partial file and the
+    /// Enable the macOS direct-write fast path for CAS imports. Bypasses
+    /// the tempfile + persist_noclobber pattern and writes straight to
+    /// the final content-addressed path, saving ~80µs/file on APFS. The
+    /// caller MUST hold an exclusive lock against the store for the
+    /// duration any thread might invoke `import_bytes`; otherwise a
+    /// concurrent installer can observe a partial file and the
     /// `AlreadyExisted` recovery dance can clobber an in-flight write.
-    /// Linux uses O_TMPFILE+linkat unconditionally and is not affected.
+    ///
+    /// macOS-gated rather than just declared inert on other platforms.
+    /// On Linux the `O_TMPFILE+linkat` path has no inline length-check
+    /// recovery — that recovery only lives inside the macOS fast-path
+    /// branch — so the outer skip in `import_bytes` (also macOS-gated
+    /// via `cfg!`) must never see the flag set on Linux. Removing the
+    /// method on non-macOS platforms makes that mismatch a build error
+    /// rather than a silent acceptance of torn CAS files.
+    #[cfg(target_os = "macos")]
     pub fn enable_fast_path(&self) {
         self.fast_path.store(true, Ordering::Release);
     }
@@ -698,14 +706,23 @@ impl Store {
                 format!(r#"{{"size":{}}}"#, content.len())
             });
         }
-        // The non-Linux fast path verifies the file size inline under
-        // its shard mutex before returning `AlreadyExisted`, so this
+        // The macOS fast path verifies the file size inline under its
+        // shard mutex before returning `AlreadyExisted`, so this
         // recovery only needs to run when we took the tempfile path.
-        // Skipping it here also prevents a race where the recovery
+        // Skipping it there also prevents a race where the recovery
         // unlinks a file that another in-process thread is concurrently
         // re-creating after observing the same crashed-predecessor.
+        //
+        // `cfg!(target_os = "macos")` matches the cfg gate on the only
+        // code path that flips `fast_path` to true (and on the inline
+        // recovery inside `create_cas_file`). Without the cfg!, a future
+        // caller setting the flag on Linux would silently disable this
+        // recovery — the Linux O_TMPFILE branch has no inline
+        // length-check substitute, so torn CAS files would be accepted.
+        let fast_path_handled_recovery =
+            cfg!(target_os = "macos") && self.fast_path.load(Ordering::Acquire);
         if outcome == CasWriteOutcome::AlreadyExisted
-            && !self.fast_path.load(Ordering::Acquire)
+            && !fast_path_handled_recovery
             && !cas_file_matches_len(&store_path, content.len() as u64)
         {
             let _ = xx::file::remove_file(&store_path);
