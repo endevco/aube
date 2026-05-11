@@ -609,12 +609,24 @@ impl InstallProgress {
         // progresses. CI mode does the same conversion inside its
         // render path.
         let estimated_unpacked = estimated_bytes.load(Ordering::Relaxed);
-        let total_pkgs = total.load(Ordering::Relaxed);
+        // `total` here is the same atomic CI mode exposes as
+        // `snap.resolved` — both grow as BFS resolution streams in
+        // new packages. Use it directly as the "expected to download"
+        // denominator so both render paths feed
+        // `estimated_total_download` the same way and the displayed
+        // `~XX MB` doesn't drift between modes mid-install. (It is
+        // *not* `target_total`, which is the resolving-phase BFS
+        // frontier hint used only for the resolve-slice bar fill.)
+        let resolved_pkgs = total.load(Ordering::Relaxed);
         let downloaded_pkgs = downloaded.load(Ordering::Relaxed);
         let reused_pkgs = reused.load(Ordering::Relaxed);
-        let expected = total_pkgs.saturating_sub(reused_pkgs);
-        let estimated =
-            render::estimated_total_download(estimated_unpacked, bytes, downloaded_pkgs, expected);
+        let expected_to_download = resolved_pkgs.saturating_sub(reused_pkgs);
+        let estimated = render::estimated_total_download(
+            estimated_unpacked,
+            bytes,
+            downloaded_pkgs,
+            expected_to_download,
+        );
         let phase = phase_num.load(Ordering::Relaxed);
         // The bytes segment is only useful during fetching. Hide it
         // before fetching (nothing downloaded yet) and during linking

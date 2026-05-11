@@ -576,7 +576,7 @@ mod tests {
         s.target_total = 1230;
         let line = strip_ansi(&progress_line(s, 80, 15));
         assert!(line.contains("1300 pkgs"), "got: {line}");
-        // Bar is in resolving phase — at most ~RESOLVE_BAR_WEIGHT (~20%)
+        // Bar is in resolving phase — at most ~RESOLVE_BAR_WEIGHT (~15%)
         // of the 15-cell bar can be filled, so the empty portion is
         // still present.
         assert!(
