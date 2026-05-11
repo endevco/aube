@@ -3288,6 +3288,29 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // No lockfile — resolve + fetch tarballs concurrently
             tracing::debug!("No lockfile found, resolving dependencies for {project_name}...");
             if let Some(p) = prog_ref {
+                // Seed the resolving-phase denominator floor from any
+                // existing lockfile on disk. In FrozenMode::Fix /
+                // Prefer we already parsed it into
+                // `existing_for_resolver`; in FrozenMode::No the
+                // pre-parse is skipped (we always re-resolve), so peek
+                // the disk lockfile inline. The cost is one extra
+                // parse on the fresh-resolve path, dwarfed by the
+                // resolve itself — and the resulting estimate lets
+                // the resolving bar show real progress instead of an
+                // empty placeholder.
+                let lockfile_estimate =
+                    existing_for_resolver.map(|g| g.packages.len()).or_else(|| {
+                        parse_lockfile_dir_remapped_with_kind(
+                            &lockfile_dir,
+                            &lockfile_importer_key,
+                            &manifest,
+                        )
+                        .ok()
+                        .map(|(g, _)| g.packages.len())
+                    });
+                if let Some(n) = lockfile_estimate {
+                    p.set_total_floor(n);
+                }
                 p.set_phase("resolving");
             }
             // Resolve node version + build policy up front so the
@@ -3482,6 +3505,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 > = tokio::task::JoinSet::new();
                 let mut indices: BTreeMap<String, aube_store::PackageIndex> = BTreeMap::new();
                 let mut cached_count = 0usize;
+                // Drives the resolving-phase denominator estimate.
+                // `received + pkg.pending` is a non-strict lower bound
+                // on the final resolved-package count; raising it via
+                // `set_total_floor` makes the bar fill as the
+                // BFS-frontier high-water mark grows. Tracked locally
+                // because the resolver's view is per-send, not a
+                // single shared atomic.
+                let mut resolved_received: usize = 0;
 
                 while let Some(pkg) = resolved_rx.recv().await {
                     if let Some(ref msg) = pkg.deprecated {
@@ -3507,8 +3538,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // overcount on dropped optionals is reconciled by a
                     // single `set_total(graph.packages.len())` after
                     // `filter_graph` runs.
+                    resolved_received += 1;
                     if let Some(p) = fetch_progress.as_ref() {
                         p.inc_total(1);
+                        // Raise the resolving-phase denominator floor
+                        // toward the resolver's current frontier so
+                        // the bar fills against a meaningful target
+                        // instead of an empty placeholder. Stamping
+                        // the frontier on each `ResolvedPackage`
+                        // keeps the protocol shape unchanged.
+                        p.set_total_floor(resolved_received + pkg.pending);
                         if let Some(sz) = pkg.unpacked_size {
                             p.inc_estimated_bytes(&pkg.dep_path, sz);
                         }

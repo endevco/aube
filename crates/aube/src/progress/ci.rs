@@ -53,6 +53,17 @@ const CI_BAR_WIDTH: usize = 15;
 pub(super) struct CiState {
     phase: AtomicUsize,
     pub(super) resolved: AtomicUsize,
+    /// Best-effort estimate of the eventual resolved-package count.
+    /// Seeded once from any existing lockfile on disk (re-install,
+    /// `package.json` change, foreign lockfile) and raised by the
+    /// resolver's BFS-frontier signal as new transitives are
+    /// discovered. Only ever increases — `fetch_max` semantics — so
+    /// a transient frontier shrink (a packument fetch completing
+    /// without enqueueing children) can't snap the displayed
+    /// denominator backward. Zero until the first signal lands, in
+    /// which case the resolving-phase bar falls back to the empty-bar
+    /// placeholder.
+    pub(super) target_total: AtomicUsize,
     pub(super) reused: AtomicUsize,
     pub(super) downloaded: AtomicUsize,
     pub(super) downloaded_bytes: AtomicU64,
@@ -130,6 +141,7 @@ impl CiState {
         Self {
             phase: AtomicUsize::new(0),
             resolved: AtomicUsize::new(0),
+            target_total: AtomicUsize::new(0),
             reused: AtomicUsize::new(0),
             downloaded: AtomicUsize::new(0),
             downloaded_bytes: AtomicU64::new(0),
@@ -161,6 +173,7 @@ impl CiState {
         Snap {
             phase: self.phase.load(Ordering::Relaxed),
             resolved: self.resolved.load(Ordering::Relaxed),
+            target_total: self.target_total.load(Ordering::Relaxed),
             reused: self.reused.load(Ordering::Relaxed),
             downloaded: self.downloaded.load(Ordering::Relaxed),
             bytes: self.downloaded_bytes.load(Ordering::Relaxed),
@@ -361,6 +374,11 @@ impl CiState {
 pub(super) struct Snap {
     pub(super) phase: usize,
     pub(super) resolved: usize,
+    /// Best-effort estimate of the final resolved count: lockfile
+    /// peek plus the BFS-frontier high-water mark. `0` means no
+    /// estimate is available yet; render falls back to the pre-floor
+    /// empty bar.
+    pub(super) target_total: usize,
     pub(super) reused: usize,
     pub(super) downloaded: usize,
     pub(super) bytes: u64,
