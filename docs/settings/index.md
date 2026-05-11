@@ -609,9 +609,9 @@ transitive.
 already does. `symlink=false` is accepted so a `.npmrc` ported from a
 hard-copy-only pnpm setup keeps loading, but aube emits a single
 warning at install start and keeps building the symlink graph.
-Materialized *files* inside the store are still imported via reflink
-→ hardlink → copy (controlled by `packageImportMethod`), unaffected
-by this setting.
+Materialized *files* inside the store are still imported via
+hardlink (with a copy fallback for cross-filesystem boundaries),
+controlled by `packageImportMethod`, unaffected by this setting.
 
 Examples:
 
@@ -713,14 +713,18 @@ Method for importing packages from the store into node_modules.
 
 Controls how aube materializes files from the global content-addressable
 store into the virtual store. `auto` (default) probes the destination
-filesystem and picks the fastest strategy: reflink (clonefile/btrfs CoW)
-→ hardlink → copy. Explicit values force a single strategy: `hardlink`
-hard-links from the store (with a copy fallback on cross-filesystem
-errors), `copy` always writes a full copy, `clone` uses reflink (and
-currently falls back to copy when reflink is unsupported — strict
-enforcement is planned for a future release), and `clone-or-copy`
-tries reflink first and falls back to a plain copy instead of
-hardlinking. Overridable per-invocation with `--package-import-method`.
+filesystem and picks the fastest available strategy — currently
+`hardlink` everywhere it works, falling back to `copy` on
+cross-filesystem boundaries. Explicit values force a single strategy:
+`hardlink` hard-links from the store (with a copy fallback on
+cross-filesystem errors), `copy` always writes a full copy.
+
+`clone` and `clone-or-copy` are accepted for npm / pnpm compatibility
+but are **deprecated**: aube's previous reflink path was measurably
+slower than `hardlink` on every benchmarked target (APFS clonefile,
+btrfs/xfs reflink), so both values are honored as `hardlink` and emit
+`WARN_AUBE_CLONE_STRATEGY_FALLBACK`. Overridable per-invocation with
+`--package-import-method`.
 
 ### `modulesCacheMaxAge` {#setting-modulescachemaxage}
 
@@ -2501,12 +2505,11 @@ Maximum concurrent package materialization/linking tasks.
 
 Caps the dedicated linker worker pool used for filesystem-heavy
 materialization in `aube-linker`: creating package directories,
-reflinking / hardlinking files, and writing dependency symlinks.
-Defaults are platform-aware because APFS reflink metadata work and
-Linux hardlink work saturate at different points (currently 4 on
-macOS, 16 elsewhere, bounded by available parallelism). Set this when
-you know your filesystem prefers a different amount of link-phase
-parallelism.
+hardlinking files, and writing dependency symlinks. Defaults are
+platform-aware because hardlink metadata work saturates at different
+points across kernels (currently 4 on macOS, 16 elsewhere, bounded
+by available parallelism). Set this when you know your filesystem
+prefers a different amount of link-phase parallelism.
 
 Examples:
 

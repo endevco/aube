@@ -148,11 +148,12 @@ pub struct InstallArgs {
     /// How to import package files from the global store into the
     /// virtual store.
     ///
-    /// One of `auto` (default: detect the fastest strategy),
-    /// `hardlink`, `copy`, `clone` (reflink; falls back to copy
-    /// pending strict enforcement), or `clone-or-copy` (reflink with
-    /// a copy fallback). Overrides `package-import-method` /
-    /// `packageImportMethod` from `.npmrc` / `aube-workspace.yaml`
+    /// One of `auto` (default), `hardlink`, or `copy`. `clone` and
+    /// `clone-or-copy` are accepted for npm/pnpm compatibility but
+    /// resolve to `hardlink` with a deprecation warning — the reflink
+    /// path was removed because it was measurably slower than hardlink
+    /// on every benchmarked target. Overrides `package-import-method`
+    /// / `packageImportMethod` from `.npmrc` / `aube-workspace.yaml`
     /// when set.
     #[arg(long, value_name = "METHOD")]
     pub package_import_method: Option<String>,

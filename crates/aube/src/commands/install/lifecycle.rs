@@ -224,10 +224,15 @@ fn resolve_jail_grant_path(project_dir: &std::path::Path, raw: &str) -> std::pat
     }
 }
 
-/// Resolve the link strategy (reflink / hardlink / copy) from CLI
-/// override, `.npmrc` / `pnpm-workspace.yaml`, or filesystem detection.
-/// Shared by the prewarm-GVS materializer (which needs the strategy
-/// before the full linker is built) and the link phase proper.
+/// Resolve the link strategy (hardlink or copy) from CLI override,
+/// `.npmrc` / `pnpm-workspace.yaml`, or filesystem detection. Shared
+/// by the prewarm-GVS materializer (which needs the strategy before
+/// the full linker is built) and the link phase proper.
+///
+/// `clone` and `clone-or-copy` are accepted for npm/pnpm compatibility
+/// but emit a deprecation warning and resolve to `Hardlink` — reflink
+/// was measurably slower than hardlink on every benchmarked target
+/// and the path has been removed (see PR #597 / commit history).
 pub(super) fn resolve_link_strategy(
     cwd: &std::path::Path,
     ctx: &aube_settings::ResolveCtx<'_>,
@@ -236,7 +241,7 @@ pub(super) fn resolve_link_strategy(
         aube_settings::values::string_from_cli("packageImportMethod", ctx.cli);
     // Shared probe used by both the CLI and resolved-setting paths
     // below. Probe across store dir and project dir. Single-dir probe
-    // reports reflink but real link ops across a mount boundary hit
+    // reports hardlink but real link ops across a mount boundary hit
     // EXDEV and silently fall back to per-file copy. Catches the
     // cross-FS case at probe time without requiring node_modules to
     // exist yet.
@@ -248,10 +253,10 @@ pub(super) fn resolve_link_strategy(
             Some(sd) => aube_linker::Linker::detect_strategy_cross(sd, cwd),
             None => aube_linker::Linker::detect_strategy(cwd),
         };
-        // Cross-volume install hits Copy fallback because hardlink
-        // and reflink can't cross device boundaries. aube still
-        // outperforms other PMs in this regime, so just log at debug
-        // for diagnosis without spamming WARN at every invocation.
+        // Cross-volume install hits Copy fallback because hardlinks
+        // can't cross device boundaries. aube still outperforms other
+        // PMs in this regime, so just log at debug for diagnosis
+        // without spamming WARN at every invocation.
         if matches!(strategy, aube_linker::LinkStrategy::Copy)
             && let Some(sd) = store_dir.as_deref()
             && aube_util::fs::cross_volume(sd, cwd)
@@ -264,19 +269,22 @@ pub(super) fn resolve_link_strategy(
         }
         strategy
     };
+    let warn_clone_deprecated = |value: &str| {
+        tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_CLONE_STRATEGY_FALLBACK,
+            value,
+            "packageImportMethod={value} is deprecated; reflink was removed because it was \
+             measurably slower than hardlink on every benchmarked target. Using hardlink."
+        );
+    };
     let strategy = if let Some(cli) = package_import_method_cli.as_deref() {
         match cli.trim().to_ascii_lowercase().as_str() {
             "" | "auto" => auto_probe(),
             "hardlink" => aube_linker::LinkStrategy::Hardlink,
             "copy" => aube_linker::LinkStrategy::Copy,
-            "clone-or-copy" => aube_linker::LinkStrategy::Reflink,
-            "clone" => {
-                tracing::warn!(
-                    code = aube_codes::warnings::WARN_AUBE_CLONE_STRATEGY_FALLBACK,
-                    "package-import-method=clone: reflink will silently fall back to copy \
-                     if the filesystem does not support it (strict enforcement is a known TODO)"
-                );
-                aube_linker::LinkStrategy::Reflink
+            "clone" | "clone-or-copy" => {
+                warn_clone_deprecated(cli);
+                aube_linker::LinkStrategy::Hardlink
             }
             other => {
                 return Err(miette!(
@@ -292,15 +300,12 @@ pub(super) fn resolve_link_strategy(
             }
             aube_settings::resolved::PackageImportMethod::Copy => aube_linker::LinkStrategy::Copy,
             aube_settings::resolved::PackageImportMethod::CloneOrCopy => {
-                aube_linker::LinkStrategy::Reflink
+                warn_clone_deprecated("clone-or-copy");
+                aube_linker::LinkStrategy::Hardlink
             }
             aube_settings::resolved::PackageImportMethod::Clone => {
-                tracing::warn!(
-                    code = aube_codes::warnings::WARN_AUBE_CLONE_STRATEGY_FALLBACK,
-                    "package-import-method=clone: reflink will silently fall back to copy \
-                     if the filesystem does not support it (strict enforcement is a known TODO)"
-                );
-                aube_linker::LinkStrategy::Reflink
+                warn_clone_deprecated("clone");
+                aube_linker::LinkStrategy::Hardlink
             }
         }
     };
