@@ -10,13 +10,18 @@
 #      covers the resolver / registry / store / linker hot paths and
 #      the frozen-lockfile fast path.
 #   3. Merge .profraw via llvm-profdata, recompile with -Cprofile-use.
-#   4. (AUBE_PGO_BOLT=1) re-link phase 3b with `--emit-relocs`, retrain
-#      under `perf record` to capture an LBR-derived branch profile,
-#      then run `llvm-bolt` to reorder blocks + split cold paths.
+#   4. (AUBE_PGO_BOLT=1) re-link phase 3b with `--emit-relocs`, build
+#      an instrumented variant via `llvm-bolt --instrument`, replay
+#      the phase 2 training workload to collect per-process fdata,
+#      `merge-fdata` them, then run `llvm-bolt` again to reorder
+#      blocks + split cold paths using the merged profile.
 #      Layered after PGO because LLVM's PGO and BOLT optimize different
 #      things — PGO drives instruction-level codegen (inlining,
 #      branch weights), BOLT does post-link block/function layout
 #      and cold-path splitting that LLVM can't see at IR time.
+#      Instrumentation rather than perf-LBR sampling so the flow
+#      works on aarch64 (no LBR/BRBE dependency) and on hosts where
+#      `kernel.perf_event_paranoid` denies branch-stack sampling.
 #
 # Local default: target/release-pgo/aube using profile=release-pgo.
 #
@@ -199,8 +204,8 @@ PROFRAW_PATTERN="$PGO_PROFRAW_DIR/aube-%m-%p.profraw"
 # registry, store, and linker hot paths all run end-to-end. Warm runs
 # reuse the last cold dir so the frozen-lockfile fast path is also
 # represented in the profile. The binary is parameterized so phase 4
-# (BOLT) can replay the same workload against the PGO-optimized binary
-# under `perf record`.
+# (BOLT) can replay the same workload against the BOLT-instrumented
+# variant of the PGO-optimized binary.
 cold_run() {
 	local bin=$1 i=$2 tag=${3:-cold}
 	local run_dir="$train_dir/$tag.$i"
