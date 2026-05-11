@@ -205,7 +205,17 @@ jobs:
             build-tool: cargo
           - target: aarch64-apple-darwin
             os: macos-latest
-            runner: namespace-profile-endev-macos-arm64-large
+            # Trying GitHub's own Apple Silicon runner (12 vCPU / 30 GB)
+            # — the namespace `macos-arm64-large` image segfaulted the
+            # PGO-instrumented binary on both rustc 1.94 and 1.95. #589
+            # was supposed to rule out a 1.94 codegen bug; the upgrade
+            # fired but training still SIGSEGV'd, so the toolchain isn't
+            # it. Switch to GH's hosted runner to test whether the
+            # crash is something image- or hardware-specific to the
+            # namespace fleet (older Apple silicon, custom kernel/Xcode
+            # bundle, sandbox differences) before dropping macOS arm64
+            # from the PGO matrix entirely.
+            runner: macos-latest-large
             build-tool: cargo
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
