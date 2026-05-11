@@ -698,7 +698,7 @@ pub async fn run(
     }
 
     if global {
-        return run_global(packages, lockfile, network, virtual_store).await;
+        return run_global(packages, allow_build, lockfile, network, virtual_store).await;
     }
 
     // `--workspace` / `-w`: redirect the add at the workspace root
@@ -2040,6 +2040,7 @@ async fn run_filtered(
 /// keeps.
 async fn run_global(
     packages: &[String],
+    allow_build: Vec<String>,
     lockfile: crate::cli_args::LockfileArgs,
     network: crate::cli_args::NetworkArgs,
     virtual_store: crate::cli_args::VirtualStoreArgs,
@@ -2090,6 +2091,7 @@ async fn run_global(
         .collect();
     let result = run_global_inner(
         packages,
+        allow_build,
         &layout,
         &install_dir,
         lockfile,
@@ -2127,6 +2129,7 @@ async fn run_global(
 
 async fn run_global_inner(
     packages: &[String],
+    allow_build: Vec<String>,
     layout: &super::global::GlobalLayout,
     install_dir: &std::path::Path,
     lockfile: crate::cli_args::LockfileArgs,
@@ -2197,7 +2200,16 @@ async fn run_global_inner(
         workspace: false,
         save_catalog: false,
         save_catalog_name: None,
-        allow_build: Vec::new(),
+        // Forward `--allow-build=<pkg>` flags from the outer invocation:
+        // the inner `run()` writes them to the throwaway install dir's
+        // `package.json#aube.allowBuilds` (no workspace yaml exists
+        // there) before lifecycle scripts run, matching pnpm's
+        // `pnpm add -g --allow-build=<pkg>` behavior. Without this the
+        // outer flag is silently dropped — under `strictDepBuilds=true`
+        // the install then errors with "must be reviewed before
+        // install" even when the user explicitly approved the dep
+        // (see Discussion #617).
+        allow_build,
         // Propagate the outer caller's flag groups through so the inner
         // run()'s `install_overrides()` calls reset the global slots to the
         // same values rather than wiping them — `set_registry_override`
