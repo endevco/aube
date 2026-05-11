@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/aube-registry-v1.10.4...aube-registry-v1.11.0) - 2026-05-11
+
+### Added
+
+- *(config)* scope-split settings precedence; project config.toml support ([#608](https://github.com/endevco/aube/pull/608))
+
+### Fixed
+
+- *(registry)* coalesce slow-metadata warnings into one resolve summary ([#592](https://github.com/endevco/aube/pull/592))
+
+### Other
+
+- refresh benchmarks for v1.10.4 ([#600](https://github.com/endevco/aube/pull/600))
+
 ## [1.10.4](https://github.com/endevco/aube/compare/aube-registry-v1.10.3...aube-registry-v1.10.4) - 2026-05-11
 
 ### Fixed

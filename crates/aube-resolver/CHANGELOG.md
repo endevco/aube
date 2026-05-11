@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/aube-resolver-v1.10.4...aube-resolver-v1.11.0) - 2026-05-11
+
+### Added
+
+- *(install)* fill resolving bar against a real denominator ([#611](https://github.com/endevco/aube/pull/611))
+
+### Other
+
+- refresh benchmarks for v1.10.4 ([#600](https://github.com/endevco/aube/pull/600))
+
 ## [1.10.1](https://github.com/endevco/aube/compare/aube-resolver-v1.10.0...aube-resolver-v1.10.1) - 2026-05-10
 
 ### Other

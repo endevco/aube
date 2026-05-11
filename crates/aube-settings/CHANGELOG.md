@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/aube-settings-v1.10.4...aube-settings-v1.11.0) - 2026-05-11
+
+### Added
+
+- *(config)* scope-split settings precedence; project config.toml support ([#608](https://github.com/endevco/aube/pull/608))
+- *(linker)* pick hardlink in `auto`, skip reflink probe ([#599](https://github.com/endevco/aube/pull/599))
+
+### Fixed
+
+- *(linker)* point bin shim NODE_PATH at the hidden modules dir ([#613](https://github.com/endevco/aube/pull/613))
+
+### Other
+
+- refresh benchmarks for v1.10.4 ([#600](https://github.com/endevco/aube/pull/600))
+
 ## [1.10.3](https://github.com/endevco/aube/compare/aube-settings-v1.10.2...aube-settings-v1.10.3) - 2026-05-10
 
 ### Other

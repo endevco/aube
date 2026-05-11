@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/aube-store-v1.10.4...aube-store-v1.11.0) - 2026-05-11
+
+### Other
+
+- *(store)* direct-write CAS fast path on macOS under exclusive install lock ([#615](https://github.com/endevco/aube/pull/615))
+- refresh benchmarks for v1.10.4 ([#600](https://github.com/endevco/aube/pull/600))
+
 ## [1.10.4](https://github.com/endevco/aube/compare/aube-store-v1.10.3...aube-store-v1.10.4) - 2026-05-11
 
 ### Fixed

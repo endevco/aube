@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0](https://github.com/endevco/aube/compare/v1.10.4...v1.11.0) - 2026-05-11
+
+### Added
+
+- *(outdated, update)* wire `-w/--workspace-root` to retarget cwd at workspace root ([#614](https://github.com/endevco/aube/pull/614))
+- *(install)* fill resolving bar against a real denominator ([#611](https://github.com/endevco/aube/pull/611))
+- *(config)* scope-split settings precedence; project config.toml support ([#608](https://github.com/endevco/aube/pull/608))
+- *(deploy)* accept --offline and --prefer-offline ([#606](https://github.com/endevco/aube/pull/606))
+
+### Fixed
+
+- *(linker)* point bin shim NODE_PATH at the hidden modules dir ([#613](https://github.com/endevco/aube/pull/613))
+- address several bugs reported in #602 ([#610](https://github.com/endevco/aube/pull/610))
+- *(install)* surface materializer error instead of generic channel-closed message ([#607](https://github.com/endevco/aube/pull/607))
+- *(progress)* clamp reused on downward set_total rebase ([#609](https://github.com/endevco/aube/pull/609))
+- *(config)* preserve symlinked ~/.config/aube/config.toml on write ([#605](https://github.com/endevco/aube/pull/605))
+- *(install)* probe link strategy against the actual destination dir ([#604](https://github.com/endevco/aube/pull/604))
+- *(registry)* coalesce slow-metadata warnings into one resolve summary ([#592](https://github.com/endevco/aube/pull/592))
+
+### Other
+
+- *(store)* direct-write CAS fast path on macOS under exclusive install lock ([#615](https://github.com/endevco/aube/pull/615))
+- refresh benchmarks for v1.10.4 ([#600](https://github.com/endevco/aube/pull/600))
+
 ## [1.10.3](https://github.com/endevco/aube/compare/v1.10.2...v1.10.3) - 2026-05-10
 
 ### Other
