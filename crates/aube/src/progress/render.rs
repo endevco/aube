@@ -12,12 +12,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Rough gzip compression ratio for npm tarballs. `dist.unpackedSize`
 /// is what aube installs to disk, not what crosses the wire — typical
-/// JS/TS code minified through gzip lands around 0.20-0.35×, with a
-/// long tail. 0.30 is a middle-of-the-distribution constant that
-/// keeps the estimate within ~30% on most installs without per-package
-/// content-type tuning. Used solely for the `~13.8 MB` display
-/// segment, never persisted to lockfiles or the store.
-const TARBALL_COMPRESSION_RATIO: f64 = 0.30;
+/// JS/TS code minified through gzip lands around 0.18-0.25×, with
+/// already-compressed binaries (prebuilt `.node`, wasm) pushing the
+/// average up. 0.20 reflects the central tendency observed on real
+/// installs (e.g. a 1230-package tree with 276 MB unpacked downloads
+/// ~56 MB compressed = 0.20×). Used solely for the `~13.8 MB` display
+/// segment; never persisted to lockfiles or the store. Slightly
+/// underestimating is preferred — the bytes segment drops the
+/// estimate suffix once running bytes catch up, so a low estimate
+/// gracefully disappears, whereas a high one misleads the user about
+/// remaining work all the way to the finish line.
+const TARBALL_COMPRESSION_RATIO: f64 = 0.20;
 
 /// Build the full `<bar> <label>` line for one heartbeat tick.
 /// Returns an empty string when the snapshot has nothing meaningful
@@ -48,17 +53,17 @@ pub(super) fn progress_line(snap: Snap, term_width: usize, bar_width: usize) -> 
 
 /// Share of the install bar assigned to the resolving phase. The
 /// resolver typically accounts for a small fraction of wall time on a
-/// network-bound install; reserving ~20% leaves the dominant 80% for
-/// the fetching/linking stretch. The bar fills 0 → `RESOLVE_BAR_WEIGHT`
-/// during resolving, then continues 1:1 through fetching until it
-/// reaches the right edge.
-const RESOLVE_BAR_WEIGHT: f64 = 0.20;
-/// Share of the install bar assigned to fetching. Linking shares the
-/// fetching segment's right edge: by the time the linker runs every
-/// package is already in the CAS (or reflinked via the GVS prewarm
-/// pipeline), so there's no separate "linking" fill to track —
-/// the phase word in the label is the cue for that final stretch.
-const FETCH_BAR_WEIGHT: f64 = 1.0 - RESOLVE_BAR_WEIGHT;
+/// network-bound install; reserving ~15% leaves the dominant 80% for
+/// fetching and 5% in reserve for linking. The bar fills 0 →
+/// `RESOLVE_BAR_WEIGHT` during resolving, then continues monotonically
+/// through fetching.
+const RESOLVE_BAR_WEIGHT: f64 = 0.15;
+/// Share of the install bar assigned to fetching. Resolve + fetch
+/// covers 95% of the bar; the final 5% is reserved for linking so the
+/// bar never falsely reads "100%" while work is still in flight.
+/// Linking doesn't surface per-package progress, so phase 3 holds the
+/// fill at the end-of-fetch edge until `finish()` retires the display.
+const FETCH_BAR_WEIGHT: f64 = 0.80;
 
 /// Unified install-progress fraction in [0, 1]. Drives both the
 /// CI-mode bar (rendered here via [`bar_only`]) and the TTY-mode bar
@@ -66,6 +71,7 @@ const FETCH_BAR_WEIGHT: f64 = 1.0 - RESOLVE_BAR_WEIGHT;
 /// `progress_current`/`progress_total` integers). The two modes share
 /// this function so a tweak to the weighting lands in both renderers.
 pub(super) fn unified_progress(snap: Snap, completed: usize) -> f64 {
+    let fetch_end = RESOLVE_BAR_WEIGHT + FETCH_BAR_WEIGHT;
     match snap.phase {
         1 if snap.target_total > 0 => {
             let estimate = snap.target_total.max(snap.resolved).max(1) as f64;
@@ -79,46 +85,40 @@ pub(super) fn unified_progress(snap: Snap, completed: usize) -> f64 {
             // when a resolving estimate was actually in play. Without
             // one (true first install, no lockfile and no streamed
             // BFS-frontier signal), phase 1 rendered an empty bar,
-            // and anchoring fetching at 20% would snap the bar
-            // upward at the phase boundary. Fall back to the
-            // pre-PR full-range fill in that case. The mild
-            // boundary jump that survives — when `target_total`
-            // under- or overshoots reality — is bounded by
-            // `RESOLVE_BAR_WEIGHT` and resolves within the first
-            // few fetch completions.
+            // and anchoring fetching at RESOLVE_BAR_WEIGHT would snap
+            // the bar upward at the phase boundary. Map the bare
+            // fetch progress over [0, fetch_end] in that case so the
+            // no-estimate path still tops out where the with-estimate
+            // path does — both leave the link slice reserved.
             if snap.target_total > 0 {
                 RESOLVE_BAR_WEIGHT + FETCH_BAR_WEIGHT * fetch_progress
             } else {
-                fetch_progress
+                fetch_end * fetch_progress
             }
         }
-        3 => 1.0,
+        // Linking has no per-package signal; hold at the fetch-end
+        // edge so the bar doesn't claim 100% during the linking window.
+        // `finish()` retires the display before the user sees a full
+        // bar — the summary line is the completion cue.
+        3 => fetch_end,
         _ => 0.0,
     }
 }
 
 /// The fixed-width left-aligned bar. Empty portion is dim throughout;
-/// the filled portion takes its color from the current phase (cyan
-/// while fetching, green for linking/done) so the bar visually tracks
-/// the same phase progression that the right-side label spells out
-/// in words. One unified bar across the whole install: resolving
-/// fills the leftmost `RESOLVE_BAR_WEIGHT` slice, fetching extends
-/// from there to the right edge, linking holds at 100%. Without a
-/// resolving-phase estimate the resolving slice stays empty and
-/// fetching fills the full bar — the user-facing fallback when no
-/// lockfile and no BFS-frontier signal are available.
+/// the filled portion is cyan across every phase so the bar simply
+/// fills as work completes — phase is signalled by the label word
+/// (`resolving` / `fetching` / `linking`), not by recoloring the bar.
+/// One unified bar across the whole install: resolving fills the
+/// leftmost `RESOLVE_BAR_WEIGHT` slice, fetching extends from there
+/// toward the right edge, linking holds at the fetch-end edge.
 pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
     let progress = unified_progress(snap, completed);
     let filled = ((progress * width as f64).round() as usize).min(width);
     let empty = width - filled;
     let fill = "█".repeat(filled);
     let empty = "░".repeat(empty);
-    let styled_fill = if snap.phase == 2 {
-        style::ecyan(fill).to_string()
-    } else {
-        style::egreen(fill).to_string()
-    };
-    format!("{}{}", styled_fill, style::edim(empty))
+    format!("{}{}", style::ecyan(fill), style::edim(empty))
 }
 
 /// Just the count segment of the label (`23/142 pkgs`, `1230 pkgs`).
@@ -159,7 +159,7 @@ pub(super) fn count_segment(snap: Snap, completed: usize) -> String {
 ///
 /// * resolving: `   N pkgs · resolving`
 /// * fetching:  `  cur/total pkgs · 4.2 MB / ~13.8 MB · 1.4 MB/s · ETA 5s`
-/// * linking:   ` cur/total pkgs · linking · 13.8 MB`
+/// * linking:   ` cur/total pkgs · linking`
 ///
 /// Numbers are right-aligned to a min-width-4 column so the right edge
 /// of the count stays put across heartbeats — without it, the visible
@@ -173,7 +173,7 @@ fn label_for(snap: Snap, completed: usize) -> String {
         1 => {
             let parts = [
                 count_segment(snap, completed),
-                style::eyellow("resolving").bold().to_string(),
+                style::ecyan("resolving").bold().to_string(),
             ];
             parts.join(&dot)
         }
@@ -199,15 +199,14 @@ fn label_for(snap: Snap, completed: usize) -> String {
             parts.join(&dot)
         }
         3 => {
-            // Suppress the bytes segment when nothing was downloaded
-            // (fully warm cache) — `0 B` would be visual noise. Order
-            // is `linking · bytes` so the active phase word reads first
-            // and the static byte total trails it.
-            let mut parts = vec![count_segment(snap, completed)];
-            parts.push(style::ecyan("linking").bold().to_string());
-            if snap.bytes > 0 {
-                parts.push(style::edim(format_bytes(snap.bytes)).to_string());
-            }
+            // Linking has no per-package signal and the post-install
+            // summary line already reports total downloaded bytes —
+            // duplicating them here just adds visual noise during the
+            // brief linking window.
+            let parts = [
+                count_segment(snap, completed),
+                style::ecyan("linking").bold().to_string(),
+            ];
             parts.join(&dot)
         }
         _ => String::new(),
@@ -224,13 +223,20 @@ fn pad_count(count: usize, total: usize) -> String {
 }
 
 /// `4.2 MB` running, optionally `4.2 MB / ~13.8 MB` when the
-/// estimated total is known. The estimate is `unpackedSize ×
-/// TARBALL_COMPRESSION_RATIO` so it lands in the same units as the
-/// running download counter. Drops the estimate suffix once the
-/// running total has caught up — at that point we know the actual
-/// total and the estimate is just noise.
+/// estimated total is known. The estimate is computed by
+/// [`estimated_total_download`], which blends a static `unpacked ×
+/// ratio` fallback with an extrapolation from observed bytes so it
+/// converges to the real total as the install progresses. Drops the
+/// estimate suffix once the running total has caught up — at that
+/// point we know the actual total and the estimate is just noise.
 fn bytes_segment(snap: Snap) -> String {
-    let estimated_download = estimated_download_bytes(snap.estimated);
+    let expected_to_download = snap.resolved.saturating_sub(snap.reused);
+    let estimated_download = estimated_total_download(
+        snap.estimated,
+        snap.bytes,
+        snap.downloaded,
+        expected_to_download,
+    );
     if estimated_download > snap.bytes && snap.bytes > 0 {
         format!(
             "{} / ~{}",
@@ -250,17 +256,47 @@ fn bytes_segment(snap: Snap) -> String {
     }
 }
 
-/// Convert a sum of `unpackedSize` values to an estimated tarball
-/// (download) byte count. Pure helper so the call sites that build
-/// the segment — CI's heartbeat render and TTY's `refresh_bytes_segment`
-/// — stay aligned on the same conversion. Without this both modes
-/// would have to copy the constant; TTY previously displayed the raw
-/// unpacked sum (~3.3× too high) before this was hoisted.
-pub(super) fn estimated_download_bytes(unpacked: u64) -> u64 {
-    if unpacked == 0 {
-        return 0;
+/// Minimum completed downloads before we trust the observed
+/// bytes-per-package average. Below this the sample is too noisy
+/// (large packages skew the early estimate) and the static
+/// `unpacked × ratio` fallback wins. 20 is roughly where per-package
+/// variance averages out on real npm trees.
+const OBSERVED_SAMPLE_FLOOR: usize = 20;
+
+/// Estimate the total bytes the user will download over the install.
+/// Blends two estimators:
+///   * **static** — `unpacked × TARBALL_COMPRESSION_RATIO`. Available
+///     from the first packument; biased by per-package compressibility
+///     variance.
+///   * **observed** — `bytes_so_far × expected_total / downloaded_so_far`.
+///     Linear extrapolation from real data; converges to the true total
+///     as `downloaded` approaches `expected_total`.
+///
+/// The blend weight is `sqrt(downloaded / expected_total)`, so the
+/// observed signal ramps in smoothly (50% weight at 25% complete,
+/// 71% weight at 50% complete) instead of whiplashing on the first
+/// few samples. Late in the install the observed estimate dominates
+/// and the displayed `~XX MB` converges to the real download total.
+///
+/// `expected_total_pkgs` should be `resolved - reused` — cached
+/// packages contribute zero download bytes, so including them inflates
+/// the extrapolation.
+pub(super) fn estimated_total_download(
+    unpacked: u64,
+    bytes_done: u64,
+    downloaded_pkgs: usize,
+    expected_total_pkgs: usize,
+) -> u64 {
+    let static_estimate = (unpacked as f64 * TARBALL_COMPRESSION_RATIO) as u64;
+    if downloaded_pkgs < OBSERVED_SAMPLE_FLOOR || expected_total_pkgs == 0 {
+        return static_estimate;
     }
-    (unpacked as f64 * TARBALL_COMPRESSION_RATIO) as u64
+    let observed_avg = bytes_done as f64 / downloaded_pkgs as f64;
+    let extrapolated = observed_avg * expected_total_pkgs as f64;
+    let frac = (downloaded_pkgs as f64 / expected_total_pkgs as f64).clamp(0.0, 1.0);
+    let weight = frac.sqrt();
+    let blended = (1.0 - weight) * static_estimate as f64 + weight * extrapolated;
+    blended as u64
 }
 
 /// `ETA 5s` once we have enough fetch-window data to extrapolate;
@@ -415,27 +451,29 @@ mod tests {
     }
 
     #[test]
-    fn linking_phase_orders_linking_before_bytes() {
+    fn linking_phase_omits_byte_total() {
+        // Linking is brief and the post-install summary line carries
+        // the downloaded-bytes total — showing it inline during
+        // linking is duplicate noise.
         let line = strip_ansi(&progress_line(
             snap(3, 142, 142, 13_800_000, 13_800_000),
             80,
             15,
         ));
-        let linking_pos = line.find("linking").expect("linking present");
-        let mb_pos = line.find("13.8 MB").expect("byte total present");
+        assert!(line.contains("linking"), "got: {line}");
         assert!(
-            linking_pos < mb_pos,
-            "linking should precede byte total: {line}"
+            !line.contains("MB"),
+            "byte total must drop in linking: {line}"
         );
     }
 
     #[test]
     fn fetching_phase_shows_bytes_and_estimate() {
-        // Estimated unpacked = 46 MB → 0.30× = ~13.8 MB compressed,
+        // Estimated unpacked = 69 MB → 0.20× = ~13.8 MB compressed,
         // which exceeds the 4.2 MB downloaded so far so the
         // `/ ~estimated` segment renders.
         let line = strip_ansi(&progress_line(
-            snap(2, 142, 23, 4_200_000, 46_000_000),
+            snap(2, 142, 23, 4_200_000, 69_000_000),
             80,
             15,
         ));
@@ -446,7 +484,7 @@ mod tests {
 
     #[test]
     fn fetching_phase_drops_estimate_when_running_exceeds_it() {
-        // Estimated unpacked × 0.30 (≈ 4.1 MB) is below the running
+        // Estimated unpacked × 0.20 (≈ 2.76 MB) is below the running
         // 4.2 MB, so the `/ ~estimated` segment is dropped — at that
         // point the running figure is the better number anyway.
         let line = strip_ansi(&progress_line(
@@ -539,14 +577,15 @@ mod tests {
             "fetch start without estimate must not snap to RESOLVE_BAR_WEIGHT: {fetch_bar}"
         );
 
-        // And fetching still fills the full bar by completion, same
-        // as the pre-PR behavior on the no-estimate path.
+        // Fetching tops out at the resolve+fetch edge (95% of width)
+        // even without an estimate, leaving the link slice reserved.
+        // On a 15-cell bar that's round(0.95 * 15) = 14 filled cells.
         let fetch_end = snap(2, 142, 142, 0, 0);
         let end_bar = strip_ansi(&bar_only(fetch_end, 15, 142));
         assert_eq!(
             end_bar.matches('\u{2588}').count(),
-            15,
-            "fetch end without estimate must fill: {end_bar}"
+            14,
+            "fetch end without estimate must cap at fetch-end edge: {end_bar}"
         );
     }
 
@@ -575,14 +614,77 @@ mod tests {
             fetch_filled >= resolve_filled,
             "fetch start ({fetch_filled}) must not regress below resolve end ({resolve_filled})"
         );
-        // And fetch end (completed = total) reaches the full width.
+        // Fetch end caps at the resolve+fetch edge (95%); the final
+        // link slice stays reserved so the bar doesn't read "100%"
+        // mid-work. round(0.95 * 15) = 14 cells on a 15-wide bar.
         let mut end_fetch = snap(2, 1230, 1230, 0, 0);
         end_fetch.target_total = 1230;
         let end_fetch_bar = strip_ansi(&bar_only(end_fetch, 15, 1230));
         assert_eq!(
             end_fetch_bar.matches('\u{2588}').count(),
-            15,
+            14,
             "got: {end_fetch_bar}"
+        );
+    }
+
+    #[test]
+    fn linking_phase_holds_below_full() {
+        // Phase 3 must not paint a 100%-filled bar — linking is still
+        // doing work and a full bar would lie to the user. The fill
+        // holds at the resolve+fetch edge (95% of width); on a
+        // 15-wide bar that's 14 filled cells with 1 empty reserve.
+        let mut s = snap(3, 1230, 1230, 13_800_000, 13_800_000);
+        s.target_total = 1230;
+        let bar = strip_ansi(&bar_only(s, 15, 1230));
+        assert_eq!(
+            bar.matches('\u{2588}').count(),
+            14,
+            "linking must reserve the final cell: {bar}"
+        );
+        assert_eq!(
+            bar.matches('\u{2591}').count(),
+            1,
+            "linking must keep one empty cell: {bar}"
+        );
+    }
+
+    #[test]
+    fn estimate_falls_back_to_static_below_sample_floor() {
+        // Only a handful of packages downloaded — too few to trust
+        // the observed average. Stays on `unpacked × ratio`.
+        let estimate = estimated_total_download(100_000_000, 5_000_000, 5, 100);
+        assert_eq!(estimate, 20_000_000, "static fallback expected");
+    }
+
+    #[test]
+    fn estimate_converges_to_observed_late_in_install() {
+        // User's reported install: 1230/1237 downloaded, 56 MB so far,
+        // 276 MB unpacked sum. Without dynamic blending the displayed
+        // estimate would stick at 276 × 0.20 = 55.2 MB — close, but
+        // would also stay at 82.8 MB on the old 0.30 ratio. With
+        // blending the observed signal dominates at 99% complete and
+        // the estimate converges to the real ~56 MB regardless of
+        // which static ratio we shipped.
+        let estimate = estimated_total_download(276_000_000, 56_000_000, 1230, 1237);
+        // Observed extrapolation: 56MB / 1230 × 1237 ≈ 56.3 MB.
+        // Blend weight at this completion is sqrt(1230/1237) ≈ 0.997,
+        // so the blend is essentially the observed value.
+        assert!(
+            (55_000_000..58_000_000).contains(&estimate),
+            "expected ~56 MB convergence, got {estimate}"
+        );
+    }
+
+    #[test]
+    fn estimate_corrects_when_static_is_way_off() {
+        // Registry overstated `unpackedSize` by 3×: static would give
+        // 60 MB but the actual install only downloads ~55 MB. Late
+        // in install the observed signal pulls the estimate back to
+        // reality.
+        let estimate = estimated_total_download(300_000_000, 50_000_000, 90, 100);
+        assert!(
+            (54_000_000..58_000_000).contains(&estimate),
+            "expected dynamic correction below static overshoot, got {estimate}"
         );
     }
 

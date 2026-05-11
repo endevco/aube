@@ -453,9 +453,12 @@ impl InstallProgress {
                 if phase.is_empty() {
                     root.prop("phase", "");
                 } else {
+                    // Single cyan accent across phases so the phase
+                    // word reads as a status label, not a severity
+                    // signal. Yellow used to flag `resolving` which
+                    // reads like a warning in a terminal palette.
                     let colored_phase = match phase {
-                        "resolving" => style::eyellow(phase).to_string(),
-                        "linking" => style::ecyan(phase).to_string(),
+                        "resolving" | "linking" => style::ecyan(phase).to_string(),
                         _ => style::edim(phase).to_string(),
                     };
                     root.prop("phase", &format!(" {} {}", style::edim("—"), colored_phase));
@@ -588,6 +591,9 @@ impl InstallProgress {
             root,
             downloaded_bytes,
             estimated_bytes,
+            total,
+            downloaded,
+            reused,
             phase_num,
             ..
         } = &self.mode
@@ -595,17 +601,26 @@ impl InstallProgress {
             return;
         };
         let bytes = downloaded_bytes.load(Ordering::Relaxed);
-        // `estimated_bytes` is the raw `unpackedSize` sum; convert to
-        // the same compressed-tarball units that `bytes` is in so the
-        // `/ ~13.8 MB` segment compares apples-to-apples. CI mode
-        // does the same conversion inside its render path.
+        // `estimated_bytes` is the raw `unpackedSize` sum; route it
+        // through `estimated_total_download` to convert to the same
+        // compressed-tarball units that `bytes` is in *and* blend in
+        // the observed bytes-per-package average so the displayed
+        // estimate converges to the real total as the install
+        // progresses. CI mode does the same conversion inside its
+        // render path.
         let estimated_unpacked = estimated_bytes.load(Ordering::Relaxed);
-        let estimated = render::estimated_download_bytes(estimated_unpacked);
+        let total_pkgs = total.load(Ordering::Relaxed);
+        let downloaded_pkgs = downloaded.load(Ordering::Relaxed);
+        let reused_pkgs = reused.load(Ordering::Relaxed);
+        let expected = total_pkgs.saturating_sub(reused_pkgs);
+        let estimated =
+            render::estimated_total_download(estimated_unpacked, bytes, downloaded_pkgs, expected);
         let phase = phase_num.load(Ordering::Relaxed);
-        // The bytes segment only carries useful information from
-        // fetching onward. Hide it in resolving — there's nothing
-        // downloaded yet — and during phase 0 (pre-progress).
-        if phase < 2 || (bytes == 0 && estimated == 0) {
+        // The bytes segment is only useful during fetching. Hide it
+        // before fetching (nothing downloaded yet) and during linking
+        // (the post-install summary line reports the total, so showing
+        // it inline is just duplicate noise).
+        if phase != 2 || (bytes == 0 && estimated == 0) {
             root.prop("bytes", "");
             return;
         }

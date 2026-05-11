@@ -164,15 +164,16 @@ fn emit(records: Vec<Record>, threshold_ms: u64) {
         .iter()
         .max_by_key(|r| r.elapsed_ms)
         .expect("count > 0 implies a slowest record");
+    // Rendered message carries count, threshold, and which package was
+    // slowest. Drop redundant structured fields — they trail the line
+    // in CLI output and just print the same numbers twice. Also drop
+    // the slowest fetch's elapsed_ms: it's selection-biased to land
+    // just over the threshold so it carries no actionable signal.
+    // `code` stays so ndjson reporters and CI scripts can branch on it.
     tracing::warn!(
-        count,
-        threshold_ms,
-        slowest_label = %slowest.label,
-        slowest_ms = slowest.elapsed_ms,
         code = aube_codes::warnings::WARN_AUBE_SLOW_METADATA,
-        "registry slow: {count} metadata fetches took longer than {threshold_ms}ms (slowest: {} at {}ms)",
+        "registry slow: {count} metadata fetches over {threshold_ms}ms (slowest: {})",
         slowest.label,
-        slowest.elapsed_ms,
     );
 }
 
