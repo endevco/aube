@@ -783,6 +783,35 @@ pub(crate) fn packument_cache_dir() -> std::path::PathBuf {
     resolved_cache_dir(&cwd).join("packuments-v1")
 }
 
+/// Pick the highest version in `packument` that satisfies `range_str`.
+/// Returns the *original packument key* (not a round-tripped `Version`
+/// display string) so string comparisons against the lockfile's
+/// `current` — which also comes from a packument key — stay stable
+/// for versions whose `Display` differs from their original form
+/// (e.g. leading zeros in prerelease identifiers, build metadata
+/// that `Version` drops). Returns `None` for unparseable ranges
+/// (workspace:/file: specs, git URLs, etc.) so callers can fall
+/// back to the locked version.
+pub(crate) fn max_satisfying_version(
+    packument: &aube_registry::Packument,
+    range_str: &str,
+) -> Option<String> {
+    let range = node_semver::Range::parse(range_str).ok()?;
+    let mut best: Option<(&str, node_semver::Version)> = None;
+    for ver_str in packument.versions.keys() {
+        let Ok(v) = node_semver::Version::parse(ver_str) else {
+            continue;
+        };
+        if !v.satisfies(&range) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, b)| v > *b) {
+            best = Some((ver_str.as_str(), v));
+        }
+    }
+    best.map(|(key, _)| key.to_string())
+}
+
 /// Disk cache directory for *full* (non-corgi) packument JSON used by
 /// human-facing commands like `aube view`. Separate from the corgi cache
 /// because the shapes differ.

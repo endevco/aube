@@ -10,7 +10,7 @@
 
 use super::{make_client, packument_cache_dir};
 use crate::deprecations::{DeprecationRecord, classify};
-use aube_lockfile::LockfileGraph;
+use aube_lockfile::{LockfileGraph, dep_type_label};
 use aube_registry::Packument;
 use aube_resolver::is_deprecation_allowed;
 use clap::Args;
@@ -318,12 +318,4 @@ fn describe_direct_origin(r: &DeprecationRecord, graph: &LockfileGraph) -> Optio
         String::new()
     };
     Some(format!("via {imp_label} > {dep_type}{suffix}"))
-}
-
-fn dep_type_label(kind: aube_lockfile::DepType) -> &'static str {
-    match kind {
-        aube_lockfile::DepType::Production => "dependencies",
-        aube_lockfile::DepType::Dev => "devDependencies",
-        aube_lockfile::DepType::Optional => "optionalDependencies",
-    }
 }

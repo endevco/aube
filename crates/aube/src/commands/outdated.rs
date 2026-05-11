@@ -9,7 +9,7 @@
 //! Pure read: no state changes, no `node_modules/` writes, no project lock.
 
 use super::{DepFilter, make_client, packument_cache_dir};
-use aube_lockfile::{DepType, DirectDep};
+use aube_lockfile::{DepType, DirectDep, dep_type_label};
 use aube_registry::Packument;
 use clap::Args;
 use miette::{Context, IntoDiagnostic};
@@ -108,20 +108,22 @@ struct Row {
 /// Serialize `DepType` using pnpm's `package.json` field names so
 /// `outdated --json` is a drop-in match for `pnpm outdated --json`.
 fn serialize_dep_type<S: serde::Serializer>(dt: &DepType, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_str(match dt {
-        DepType::Production => "dependencies",
-        DepType::Dev => "devDependencies",
-        DepType::Optional => "optionalDependencies",
-    })
+    s.serialize_str(dep_type_label(*dt))
 }
 
 pub async fn run(
     args: OutdatedArgs,
-    filter: aube_workspace::selector::EffectiveFilter,
+    mut filter: aube_workspace::selector::EffectiveFilter,
 ) -> miette::Result<()> {
     args.network.install_overrides();
     let cwd = crate::dirs::project_root()?;
     if !filter.is_empty() {
+        // Discussion #602: include the workspace root in `outdated -r`
+        // by default. pnpm parity here is strict (root is opt-in via
+        // `include-workspace-root: true`), but for read-only audits
+        // the surprise of "where are my root deps?" outweighs the
+        // parity concern.
+        filter.include_workspace_root = true;
         return run_filtered(&cwd, args, &filter).await;
     }
     run_one(&cwd, args, None).await?;
@@ -144,6 +146,7 @@ async fn run_filtered(
         Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
     };
     let mut any_drift = false;
+    let mut printed_table = false;
     for pkg in matched {
         let importer = pkg
             .name
@@ -155,15 +158,23 @@ async fn run_filtered(
             .get(&importer_path)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        if run_graph(
+        // Discussion #602: separate per-importer tables with a blank
+        // line so the headers don't pile up against each other when
+        // every workspace package has drift. JSON output is suppressed
+        // here because it's a single object per call.
+        if printed_table && !args.json {
+            println!();
+        }
+        let drifted = run_graph(
             &root,
             args.clone_for_fanout(),
             &graph,
             roots,
             Some(importer),
         )
-        .await?
-        {
+        .await?;
+        printed_table = true;
+        if drifted {
             any_drift = true;
         }
     }
@@ -279,7 +290,7 @@ async fn run_graph(
         let wanted = dep
             .specifier
             .as_deref()
-            .and_then(|spec| max_satisfying(&packument, spec))
+            .and_then(|spec| super::max_satisfying_version(&packument, spec))
             .unwrap_or_else(|| current.clone());
 
         let latest_known = latest.is_some();
@@ -341,27 +352,93 @@ impl OutdatedArgs {
     }
 }
 
-/// Pick the highest version in the packument that satisfies `range_str`.
-/// Returns the *original packument key* (not a round-tripped `Version`
-/// display string) so string comparisons against `current` — which
-/// comes from the lockfile's packument key — stay stable for versions
-/// whose `Display` differs from their original form (e.g., leading
-/// zeros in prerelease identifiers, build metadata that `Version` drops).
-fn max_satisfying(packument: &Packument, range_str: &str) -> Option<String> {
-    let range = node_semver::Range::parse(range_str).ok()?;
-    let mut best: Option<(&str, node_semver::Version)> = None;
-    for ver_str in packument.versions.keys() {
-        let Ok(v) = node_semver::Version::parse(ver_str) else {
-            continue;
-        };
-        if !v.satisfies(&range) {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(_, b)| v > *b) {
-            best = Some((ver_str.as_str(), v));
-        }
+/// Render `target` left-padded to `width`, with the portion that
+/// changed relative to `current` colored. Mirrors pnpm's
+/// `@pnpm/colorize-semver-diff` palette: red for major bumps, cyan
+/// for minor, green for patch, magenta for prerelease changes.
+/// Falls back to the plain string when either side fails to parse
+/// as semver or `target == current`.
+///
+/// The padding is added on the *raw* string before color codes so
+/// downstream column alignment isn't thrown off by invisible escapes.
+fn colorize_diff(current: &str, target: &str, width: usize) -> String {
+    use clx::style;
+    let plain = format!("{target:<width$}");
+    if current == target {
+        return plain;
     }
-    best.map(|(key, _)| key.to_string())
+    let Ok(cur) = node_semver::Version::parse(current) else {
+        return plain;
+    };
+    let Ok(new) = node_semver::Version::parse(target) else {
+        return plain;
+    };
+    let trailing_pad = " ".repeat(width.saturating_sub(target.len()));
+    // Identify the leftmost differing component. Once we hit one,
+    // every component to the right is also "new" and gets the same
+    // color so a `1.2.3 → 2.0.0` major bump highlights the whole
+    // tail, not just the leading `2`.
+    let head_color = if cur.major != new.major {
+        SemverDiff::Major
+    } else if cur.minor != new.minor {
+        SemverDiff::Minor
+    } else if cur.patch != new.patch {
+        SemverDiff::Patch
+    } else {
+        SemverDiff::Prerelease
+    };
+    let core = format!("{}.{}.{}", new.major, new.minor, new.patch);
+    let prerelease = if !new.pre_release.is_empty() {
+        let parts: Vec<String> = new.pre_release.iter().map(|p| p.to_string()).collect();
+        format!("-{}", parts.join("."))
+    } else {
+        String::new()
+    };
+    // Split the rendered version into (unchanged head, changed tail)
+    // so only the differing slice carries color. Major bumps keep
+    // the whole string painted; prerelease-only differences leave
+    // `MAJOR.MINOR.PATCH` plain and color the `-rc.x` tail.
+    let split_at = match head_color {
+        SemverDiff::Major => 0,
+        SemverDiff::Minor => format!("{}.", new.major).len(),
+        SemverDiff::Patch => format!("{}.{}.", new.major, new.minor).len(),
+        SemverDiff::Prerelease => core.len(),
+    };
+    let (head, tail_in_core) = core.split_at(split_at.min(core.len()));
+    let tail = format!("{tail_in_core}{prerelease}");
+    // Prerelease-promoted-to-stable case (e.g. `1.2.3-rc.1` → `1.2.3`):
+    // every numeric component matches and the new version has no
+    // prerelease, so the computed tail collapses to an empty string
+    // and nothing would carry color. The version genuinely changed,
+    // so paint the whole `core` instead so the row reads as updated.
+    let (head, tail) = if tail.is_empty() && cur != new {
+        ("", core.as_str())
+    } else {
+        (head, tail.as_str())
+    };
+    // `render_table` writes via `println!` (stdout), so the styled
+    // tail must use the stdout-aware color helpers (`nstyle`).
+    // The `e*` family in clx checks stderr's TTY state and would
+    // either inject ANSI escapes into a piped report file or
+    // suppress color when stderr is redirected but the user is
+    // looking at a TTY on stdout. clx 1.3 only ships `nred`/`ncyan`
+    // directly, so green and magenta come from `nstyle(...).green()`
+    // / `.magenta()` — same effect, just the chain is explicit.
+    let painted = match head_color {
+        SemverDiff::Major => style::nstyle(tail).red().to_string(),
+        SemverDiff::Minor => style::nstyle(tail).cyan().to_string(),
+        SemverDiff::Patch => style::nstyle(tail).green().to_string(),
+        SemverDiff::Prerelease => style::nstyle(tail).magenta().to_string(),
+    };
+    format!("{head}{painted}{trailing_pad}")
+}
+
+#[derive(Clone, Copy)]
+enum SemverDiff {
+    Major,
+    Minor,
+    Patch,
+    Prerelease,
 }
 
 fn render_table(rows: &[Row], long: bool) {
@@ -391,6 +468,21 @@ fn render_table(rows: &[Row], long: bool) {
         .unwrap_or(6)
         .max(6);
 
+    // Per-row pre-colored cells. Width math above uses the raw
+    // strings so ANSI escapes don't throw off `<`-padding.
+    let painted: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| {
+            let wanted = colorize_diff(&r.current, &r.wanted, want_w);
+            let latest = if r.latest_known {
+                colorize_diff(&r.current, &r.latest, latest_w)
+            } else {
+                format!("{:<latest_w$}", r.latest)
+            };
+            (wanted, latest)
+        })
+        .collect();
+
     if rows.iter().any(|r| r.importer.is_some()) {
         let importer_w = rows
             .iter()
@@ -403,14 +495,12 @@ fn render_table(rows: &[Row], long: bool) {
             "{:<importer_w$}  {:<name_w$}  {:<cur_w$}  {:<want_w$}  {:<latest_w$}",
             "Importer", "Package", "Current", "Wanted", "Latest",
         );
-        for row in rows {
+        for (row, (wanted, latest)) in rows.iter().zip(&painted) {
             println!(
-                "{:<importer_w$}  {:<name_w$}  {:<cur_w$}  {:<want_w$}  {:<latest_w$}",
+                "{:<importer_w$}  {:<name_w$}  {:<cur_w$}  {wanted}  {latest}",
                 row.importer.as_deref().unwrap_or(""),
                 row.name,
                 row.current,
-                row.wanted,
-                row.latest,
             );
         }
     } else {
@@ -418,10 +508,10 @@ fn render_table(rows: &[Row], long: bool) {
             "{:<name_w$}  {:<cur_w$}  {:<want_w$}  {:<latest_w$}",
             "Package", "Current", "Wanted", "Latest",
         );
-        for row in rows {
+        for (row, (wanted, latest)) in rows.iter().zip(&painted) {
             println!(
-                "{:<name_w$}  {:<cur_w$}  {:<want_w$}  {:<latest_w$}",
-                row.name, row.current, row.wanted, row.latest,
+                "{:<name_w$}  {:<cur_w$}  {wanted}  {latest}",
+                row.name, row.current,
             );
         }
     }
@@ -430,11 +520,7 @@ fn render_table(rows: &[Row], long: bool) {
         println!();
         for row in rows {
             if let Some(spec) = &row.specifier {
-                let dep_label = match row.dep_type {
-                    DepType::Production => "dependencies",
-                    DepType::Dev => "devDependencies",
-                    DepType::Optional => "optionalDependencies",
-                };
+                let dep_label = dep_type_label(row.dep_type);
                 println!("  {} ({dep_label}): {spec}", row.name);
             }
         }
@@ -452,4 +538,77 @@ fn render_json(rows: &[Row]) -> miette::Result<()> {
     let out = serde_json::to_string_pretty(&Value::Object(map)).into_diagnostic()?;
     println!("{out}");
     Ok(())
+}
+
+#[cfg(test)]
+mod colorize_tests {
+    use super::colorize_diff;
+
+    fn strip_ansi(s: &str) -> String {
+        // Strip CSI sequences for assertion purposes — the renderer
+        // itself emits them, but tests assert on the visible glyphs.
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for c2 in chars.by_ref() {
+                    if c2.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn equal_versions_render_plain() {
+        let painted = colorize_diff("1.2.3", "1.2.3", 6);
+        assert_eq!(strip_ansi(&painted).trim_end(), "1.2.3");
+    }
+
+    #[test]
+    fn major_bump_renders_target_string() {
+        // ANSI escapes only appear when clx's color detection picks a
+        // colored output mode (TTY/`CLICOLOR_FORCE`); the test runs
+        // headless so we assert on visible content only.
+        let painted = colorize_diff("1.2.3", "2.0.0", 6);
+        assert_eq!(strip_ansi(&painted).trim_end(), "2.0.0");
+    }
+
+    #[test]
+    fn patch_bump_keeps_unchanged_head_plain() {
+        // The leading `1.2.` prefix matches the current version and
+        // must always render plain — only the trailing component is
+        // a candidate for color when a colored terminal is in play.
+        let painted = colorize_diff("1.2.3", "1.2.4", 6);
+        let visible = strip_ansi(&painted);
+        assert_eq!(visible.trim_end(), "1.2.4");
+        assert!(painted.starts_with("1.2."), "head should render plain");
+    }
+
+    #[test]
+    fn prerelease_promoted_to_stable_renders_changed_version() {
+        // Regression: 1.2.3-rc.1 → 1.2.3 has matching MAJOR.MINOR.PATCH
+        // with the new version carrying no prerelease, so the
+        // computed tail collapsed to "" and a colored terminal
+        // would render the row fully plain even though the version
+        // genuinely changed. The fallback paints the whole core
+        // when tail would be empty; here we just assert the visible
+        // version is correct (color presence depends on the
+        // ambient TTY mode, which is off in unit tests).
+        let painted = colorize_diff("1.2.3-rc.1", "1.2.3", 6);
+        assert_eq!(strip_ansi(&painted).trim_end(), "1.2.3");
+    }
+
+    #[test]
+    fn unparseable_versions_fall_back_to_plain() {
+        // dist-tags ("latest") and other non-semver strings should
+        // skip colorization rather than panic. Width still applies.
+        let painted = colorize_diff("1.2.3", "latest", 8);
+        assert_eq!(painted, "latest  ");
+    }
 }
