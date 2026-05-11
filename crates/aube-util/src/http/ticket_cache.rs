@@ -100,14 +100,6 @@ pub struct TicketCache {
     /// in the same process; cross-process is best-effort (last-writer
     /// wins, idempotent payload).
     file_lock: Mutex<()>,
-    /// `AUBE_DISABLE_TLS_TICKET_CACHE` state captured at [`open`]
-    /// time. Reading the env on every `get`/`put`/`save` raced with
-    /// the killswitch test's `setenv`/`removevar` under parallel
-    /// `cargo test` on Windows — sibling tests observed the
-    /// killswitch test's transient `"1"` mid-write and short-circuited
-    /// (see #592 Windows CI failure). Snapshot once at construction so
-    /// the runtime path doesn't touch the process environment.
-    disabled: bool,
 }
 
 impl TicketCache {
@@ -116,8 +108,7 @@ impl TicketCache {
     /// `XDG_CACHE_HOME` resolution; pass an explicit path here.
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let disabled = is_disabled();
-        let inner = if disabled {
+        let inner = if is_disabled() {
             HashMap::new()
         } else {
             load_from_disk(&path).unwrap_or_default()
@@ -126,7 +117,6 @@ impl TicketCache {
             path,
             inner: RwLock::new(inner),
             file_lock: Mutex::new(()),
-            disabled,
         }
     }
 
@@ -134,7 +124,7 @@ impl TicketCache {
     /// `MAX_AGE` are filtered transparently; callers receive only
     /// fresh tickets.
     pub fn get(&self, host: &str, port: u16) -> Vec<TicketEntry> {
-        if self.disabled {
+        if is_disabled() {
             return Vec::new();
         }
         let key = HostPort::new(host, port);
@@ -156,7 +146,7 @@ impl TicketCache {
     /// origin are kept (rustls servers typically issue 2 per
     /// handshake); `prune_max_per_host` caps the queue.
     pub fn put(&self, host: &str, port: u16, entry: TicketEntry) {
-        if self.disabled {
+        if is_disabled() {
             return;
         }
         const MAX_PER_HOST: usize = 4;
@@ -183,7 +173,7 @@ impl TicketCache {
     /// Persist the in-memory cache to disk. Atomic via
     /// `aube_util::fs_atomic::atomic_write`.
     pub fn save(&self) -> std::io::Result<()> {
-        if self.disabled {
+        if is_disabled() {
             return Ok(());
         }
         let _guard = self.file_lock.lock().unwrap_or_else(|e| e.into_inner());
