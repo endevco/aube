@@ -271,6 +271,15 @@ cp "$SCRIPT_DIR/fixture.package.json" "$BENCH_DIR/original-package.json"
 # populated before the scenario matrix runs. Everything is hermetic
 # (isolated HOME / cache / store), so this is safe to run in parallel
 # in the future but we keep it serial for clear console output.
+#
+# Bracket the populate loop with uplink-enabled Verdaccio so any
+# package the warm step missed (e.g. when a PM's resolution diverges
+# between the warm fixture and the bench fixture) gets fetched from
+# npmjs and cached locally. The cold config is restored afterwards so
+# the timed scenarios remain hermetic.
+if [ "${BENCH_HERMETIC:-0}" = "1" ]; then
+	hermetic_use_warm_uplink
+fi
 
 for i in "${!TOOLS[@]}"; do
 	tool="${TOOLS[$i]}"
@@ -346,6 +355,10 @@ for i in "${!TOOLS[@]}"; do
 	fi
 	cp "$dir/$lockfile_name" "$BENCH_DIR/saved-lockfile-$tool"
 done
+
+if [ "${BENCH_HERMETIC:-0}" = "1" ]; then
+	hermetic_use_no_uplink
+fi
 
 # ── Helper ─────────────────────────────────────────────────────────────────
 #
