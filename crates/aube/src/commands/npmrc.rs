@@ -149,7 +149,7 @@ impl NpmrcEdit {
     }
 }
 
-fn symlink_target_or_self(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn symlink_target_or_self(path: &Path) -> std::io::Result<PathBuf> {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Ok(path.to_path_buf());
     };

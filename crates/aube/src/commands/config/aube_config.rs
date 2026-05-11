@@ -1,4 +1,5 @@
 use super::{literal_aliases, setting_for_key, settings_meta};
+use crate::commands::npmrc::symlink_target_or_self;
 use miette::{Context, IntoDiagnostic, miette};
 use std::path::{Path, PathBuf};
 
@@ -63,9 +64,14 @@ impl AubeConfigEdit {
         let out = toml::to_string_pretty(&self.table)
             .into_diagnostic()
             .wrap_err("failed to serialize aube config")?;
-        aube_util::fs_atomic::atomic_write(path, out.as_bytes())
+        // Follow symlinks so a user-managed `~/.config/aube/config.toml`
+        // pointing at e.g. a dotfiles repo keeps its symlink intact;
+        // atomic_write renames a sibling temp over the path, which
+        // would otherwise replace the symlink with a regular file.
+        let write_path = symlink_target_or_self(path).into_diagnostic()?;
+        aube_util::fs_atomic::atomic_write(&write_path, out.as_bytes())
             .into_diagnostic()
-            .wrap_err_with(|| format!("failed to write {}", path.display()))
+            .wrap_err_with(|| format!("failed to write {}", write_path.display()))
     }
 }
 
@@ -175,5 +181,30 @@ mod tests {
             edit.entries(),
             vec![("minimumReleaseAge".to_string(), "2880".to_string())]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-config.toml");
+        let link = dir.path().join("config.toml");
+        std::fs::write(&real, "minimumReleaseAge = 1\n").unwrap();
+        std::os::unix::fs::symlink("real-config.toml", &link).unwrap();
+
+        let meta = settings_meta::find("minimumReleaseAge").unwrap();
+        let mut edit = AubeConfigEdit::load(&link).unwrap();
+        edit.set(meta, "2880").unwrap();
+        edit.save(&link).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "save replaced the symlink instead of following it"
+        );
+        let written = std::fs::read_to_string(&real).unwrap();
+        assert!(written.contains("minimumReleaseAge = 2880"));
     }
 }
