@@ -3205,7 +3205,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 aube_settings::resolved::node_version(&settings_ctx).as_deref(),
             );
             let lock_build_policy = std::sync::Arc::new(build_policy.clone());
-            let lock_strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
+            let lock_strategy = resolve_link_strategy(&cwd, &settings_ctx, planned_gvs)?;
             let (lock_patches, lock_patch_hashes) = crate::patches::load_patches_for_linker(&cwd)?;
             let (lock_materialize_tx, lock_materialize_rx) = materialize_channel();
             let lock_prewarm_inputs = GvsPrewarmInputs {
@@ -3848,7 +3848,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // the per-project .aube/<dep_path> symlink.
             let materialize_phase_start = std::time::Instant::now();
             let materialize_graph_arc = std::sync::Arc::new(graph.clone());
-            let materialize_strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
+            let materialize_strategy = resolve_link_strategy(&cwd, &settings_ctx, planned_gvs)?;
             let (materialize_patches, materialize_patch_hashes) =
                 crate::patches::load_patches_for_linker(&cwd)?;
             let materialize_inputs = GvsPrewarmInputs {
@@ -4231,7 +4231,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // diagnostic). Settings-file values flow through the generated typed
     // accessor, which collapses unknown values to `None` so they behave
     // like an absent setting.
-    let strategy = resolve_link_strategy(&cwd, &settings_ctx)?;
+    let strategy = resolve_link_strategy(&cwd, &settings_ctx, planned_gvs)?;
     if let Some(p) = prog_ref {
         p.set_phase("linking");
     }
