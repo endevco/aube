@@ -219,6 +219,34 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
+      # rustc 1.94.0 on aarch64-apple-darwin miscompiles the
+      # PGO-instrumented binary — the resulting `aube install` SIGSEGVs
+      # on its first invocation during phase 2 training. Verified
+      # locally on rustc 1.95.0 against the same source tree: full PGO
+      # pipeline completes clean. Bump to latest stable only when the
+      # runner's default rustc is older than 1.95 so we don't pay the
+      # toolchain download on runners that have already moved on.
+      # TODO: drop this step once the GH macos-arm64 runner image
+      # ships rustc 1.95+ as the default. Track via this PR.
+      - name: Ensure rustc >= 1.95 on macOS arm64
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          current=$(rustc --version | awk '{print $2}')
+          # Parse "1.94.0" into major / minor. `sort -V` would be the
+          # obvious idiom but isn't portable: GH macOS runners ship
+          # BSD `sort` (no `-V` flag), and under `set -eo pipefail`
+          # the failing pipeline either aborts the step or returns
+          # empty, both of which mis-trigger the upgrade path.
+          IFS=. read -r maj min _ <<<"$current"
+          if [ "$maj" -lt 1 ] || { [ "$maj" -eq 1 ] && [ "$min" -lt 95 ]; }; then
+            echo "rustc $current is below 1.95.0; upgrading to latest stable"
+            rustup update stable
+            rustup default stable
+            rustc --version
+          else
+            echo "rustc $current already >= 1.95.0; no upgrade needed"
+          fi
       - name: Install rustup llvm-tools-preview
         shell: bash
         run: rustup component add llvm-tools-preview
