@@ -984,6 +984,32 @@ pub(super) fn spawn_gvs_prewarm(
     tokio::spawn(run_gvs_prewarm_materializer(inputs, rx))
 }
 
+/// When the fetch task fails the surfaced error is often just
+/// "materializer task exited before fetch finished" — a symptom of the
+/// materializer dying first (its `rx` was dropped, fetch's `tx.send`
+/// returned Err). Await the materializer (don't abort) so its real
+/// error joins the chain. The returned report shows both errors:
+///
+/// * top message = how the pipeline aborted (the fetch error)
+/// * source chain = why the materializer task failed (root cause)
+///
+/// If the materializer succeeded the fetch error was the real one and
+/// is returned unchanged.
+async fn combine_install_pipeline_errors(
+    materialize_handle: MaterializeJoinHandle,
+    fetch_err: miette::Report,
+) -> miette::Report {
+    let mat_err = match materialize_handle.await {
+        Ok(Ok(_)) => return fetch_err,
+        Ok(Err(err)) => err,
+        Err(join_err) => Err::<(), _>(join_err)
+            .into_diagnostic()
+            .unwrap_err()
+            .wrap_err("materializer task panicked"),
+    };
+    mat_err.wrap_err(format!("install aborted: {fetch_err}"))
+}
+
 // Consumes (canonical_key, index) from rx as tarballs land in the CAS,
 // reflinks each into the global virtual store. Returns aggregate
 // LinkStats plus computed graph hashes so the caller's link phase
@@ -3248,12 +3274,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 resolve_git_shallow_hosts(&settings_ctx),
             )
             .await;
-            // Drop alone detaches. Abort kills the task on fetch err.
+            // Don't abort the materializer on fetch err: the failing
+            // fetch task drops its `tx`, so the materializer's `rx`
+            // closes and it exits naturally. Awaiting first lets a real
+            // materializer error (the likely root cause of a generic
+            // "materializer task exited..." fetch err) surface instead.
             let (indices, cached, fetched) = match fetch_result {
                 Ok(t) => t,
                 Err(e) => {
-                    lock_materialize_handle.abort();
-                    return Err(e);
+                    return Err(combine_install_pipeline_errors(lock_materialize_handle, e).await);
                 }
             };
             // Materializer stats roll into link via GVS-already-linked
@@ -3871,19 +3900,19 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             );
             let materialize_handle = spawn_gvs_prewarm(materialize_inputs, materialize_rx);
 
-            // Wait for all fetches to complete. If fetch fails we have
-            // to abort the materializer explicitly: dropping a
-            // `JoinHandle` only detaches the task, so otherwise the
-            // install would return an error while the materializer
-            // kept reflinking packages into the GVS in the background.
+            // On fetch err, await the materializer (don't abort): the
+            // failing fetch task drops its `tx`, so the materializer's
+            // `rx` closes and it exits naturally. Awaiting first lets a
+            // real materializer error (the likely root cause of a
+            // generic "materializer task exited..." fetch err) surface
+            // instead.
             let _diag_fetch_wait =
                 aube_util::diag::Span::new(aube_util::diag::Category::Install, "phase_fetch_await");
             let fetch_phase_start = std::time::Instant::now();
             let fetch_result = match fetch_handle.await.into_diagnostic()? {
                 Ok(v) => v,
                 Err(e) => {
-                    materialize_handle.abort();
-                    return Err(e);
+                    return Err(combine_install_pipeline_errors(materialize_handle, e).await);
                 }
             };
             let (canonical_indices, mut cached, mut fetched) = fetch_result;
@@ -5729,6 +5758,67 @@ mod critical_path_tests {
                 "lodash",
                 "@types/node"
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod combine_pipeline_errors_tests {
+    use super::combine_install_pipeline_errors;
+    use miette::miette;
+
+    fn fmt_chain(report: &miette::Report) -> String {
+        let mut out = report.to_string();
+        let mut src = report.source();
+        while let Some(e) = src {
+            out.push_str(" :: ");
+            out.push_str(&e.to_string());
+            src = e.source();
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn returns_fetch_err_when_materializer_succeeded() {
+        let handle = tokio::spawn(async {
+            Ok((
+                aube_linker::LinkStats::default(),
+                None::<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
+            ))
+        });
+        let fetch_err = miette!("network down: timed out fetching foo@1.0");
+        let combined = combine_install_pipeline_errors(handle, fetch_err).await;
+        assert!(
+            combined.to_string().contains("network down"),
+            "got: {}",
+            combined
+        );
+    }
+
+    #[tokio::test]
+    async fn nests_both_errors_when_materializer_failed() {
+        let handle = tokio::spawn(async {
+            Err::<
+                (
+                    aube_linker::LinkStats,
+                    Option<std::sync::Arc<aube_lockfile::graph_hash::GraphHashes>>,
+                ),
+                _,
+            >(miette!("materialize foo@1.0: permission denied"))
+        });
+        // The fetch task surfaces the channel-closed symptom.
+        let fetch_err = miette!("materializer task exited before fetch finished");
+        let combined = combine_install_pipeline_errors(handle, fetch_err).await;
+        let chain = fmt_chain(&combined);
+        // Both errors visible: fetch's symptom on top, materializer's
+        // root cause in the chain below.
+        assert!(
+            chain.contains("materializer task exited before fetch finished"),
+            "fetch err missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains("permission denied"),
+            "materializer err missing from chain: {chain}"
         );
     }
 }
