@@ -60,18 +60,13 @@ const RESOLVE_BAR_WEIGHT: f64 = 0.20;
 /// the phase word in the label is the cue for that final stretch.
 const FETCH_BAR_WEIGHT: f64 = 1.0 - RESOLVE_BAR_WEIGHT;
 
-/// The fixed-width left-aligned bar. Empty portion is dim throughout;
-/// the filled portion takes its color from the current phase (cyan
-/// while fetching, green for linking/done) so the bar visually tracks
-/// the same phase progression that the right-side label spells out
-/// in words. One unified bar across the whole install: resolving
-/// fills the leftmost `RESOLVE_BAR_WEIGHT` slice, fetching extends
-/// from there to the right edge, linking holds at 100%. Without a
-/// resolving-phase estimate the resolving slice stays empty and
-/// fetching fills the full bar — the user-facing fallback when no
-/// lockfile and no BFS-frontier signal are available.
-pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
-    let progress: f64 = match snap.phase {
+/// Unified install-progress fraction in [0, 1]. Drives both the
+/// CI-mode bar (rendered here via [`bar_only`]) and the TTY-mode bar
+/// (rendered by clx after the caller scales this to its
+/// `progress_current`/`progress_total` integers). The two modes share
+/// this function so a tweak to the weighting lands in both renderers.
+pub(super) fn unified_progress(snap: Snap, completed: usize) -> f64 {
+    match snap.phase {
         1 if snap.target_total > 0 => {
             let estimate = snap.target_total.max(snap.resolved).max(1) as f64;
             RESOLVE_BAR_WEIGHT * (snap.resolved as f64 / estimate).min(1.0)
@@ -99,7 +94,21 @@ pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
         }
         3 => 1.0,
         _ => 0.0,
-    };
+    }
+}
+
+/// The fixed-width left-aligned bar. Empty portion is dim throughout;
+/// the filled portion takes its color from the current phase (cyan
+/// while fetching, green for linking/done) so the bar visually tracks
+/// the same phase progression that the right-side label spells out
+/// in words. One unified bar across the whole install: resolving
+/// fills the leftmost `RESOLVE_BAR_WEIGHT` slice, fetching extends
+/// from there to the right edge, linking holds at 100%. Without a
+/// resolving-phase estimate the resolving slice stays empty and
+/// fetching fills the full bar — the user-facing fallback when no
+/// lockfile and no BFS-frontier signal are available.
+pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
+    let progress = unified_progress(snap, completed);
     let filled = ((progress * width as f64).round() as usize).min(width);
     let empty = width - filled;
     let fill = "█".repeat(filled);
@@ -110,6 +119,40 @@ pub(super) fn bar_only(snap: Snap, width: usize, completed: usize) -> String {
         style::egreen(fill).to_string()
     };
     format!("{}{}", styled_fill, style::edim(empty))
+}
+
+/// Just the count segment of the label (`23/142 pkgs`, `1230 pkgs`).
+/// Extracted from [`label_for`] so TTY mode can render the same
+/// phase-conditional shape via the `count` template prop. Width
+/// padding mirrors `label_for`: resolving without an estimate
+/// right-aligns to its own running count; everything else aligns to
+/// the denominator's digit width.
+pub(super) fn count_segment(snap: Snap, completed: usize) -> String {
+    match snap.phase {
+        1 if snap.target_total > snap.resolved => {
+            let cur = pad_count(snap.resolved, snap.target_total);
+            format!(
+                "{}/{} {}",
+                style::ecyan(cur).bold(),
+                style::ecyan(snap.target_total).bold(),
+                style::edim("pkgs"),
+            )
+        }
+        1 => {
+            let count = pad_count(snap.resolved, snap.resolved);
+            format!("{} {}", style::ecyan(count).bold(), style::edim("pkgs"))
+        }
+        2 | 3 => {
+            let cur = pad_count(completed, snap.resolved);
+            format!(
+                "{}/{} {}",
+                style::ecyan(cur).bold(),
+                style::ecyan(snap.resolved).bold(),
+                style::edim("pkgs"),
+            )
+        }
+        _ => String::new(),
+    }
 }
 
 /// Phase-specific label content. Format:
@@ -128,37 +171,15 @@ fn label_for(snap: Snap, completed: usize) -> String {
     let dot = format!(" {} ", style::edim("·"));
     match snap.phase {
         1 => {
-            // Phase 1 numerator: count resolved so far. When we have a
-            // denominator estimate from the lockfile peek or the
-            // BFS-frontier signal, render as `cur/total`; otherwise
-            // fall back to the bare running count.
-            let count_segment = if snap.target_total > snap.resolved {
-                let cur = pad_count(snap.resolved, snap.target_total);
-                format!(
-                    "{}/{} {}",
-                    style::ecyan(cur).bold(),
-                    style::ecyan(snap.target_total).bold(),
-                    style::edim("pkgs"),
-                )
-            } else {
-                let count = pad_count(snap.resolved, snap.resolved);
-                format!("{} {}", style::ecyan(count).bold(), style::edim("pkgs"))
-            };
             let parts = [
-                count_segment,
+                count_segment(snap, completed),
                 style::eyellow("resolving").bold().to_string(),
             ];
             parts.join(&dot)
         }
         2 => {
-            let cur = pad_count(completed, snap.resolved);
             let mut parts = Vec::with_capacity(4);
-            parts.push(format!(
-                "{}/{} {}",
-                style::ecyan(cur).bold(),
-                style::ecyan(snap.resolved).bold(),
-                style::edim("pkgs"),
-            ));
+            parts.push(count_segment(snap, completed));
             // Skip the bytes segment when nothing has landed and no
             // unpackedSize estimate is available — older publishes
             // and the lockfile fast path both miss the field. Pushing
@@ -182,13 +203,7 @@ fn label_for(snap: Snap, completed: usize) -> String {
             // (fully warm cache) — `0 B` would be visual noise. Order
             // is `linking · bytes` so the active phase word reads first
             // and the static byte total trails it.
-            let cur = pad_count(completed, snap.resolved);
-            let mut parts = vec![format!(
-                "{}/{} {}",
-                style::ecyan(cur).bold(),
-                style::ecyan(snap.resolved).bold(),
-                style::edim("pkgs"),
-            )];
+            let mut parts = vec![count_segment(snap, completed)];
             parts.push(style::ecyan("linking").bold().to_string());
             if snap.bytes > 0 {
                 parts.push(style::edim(format_bytes(snap.bytes)).to_string());

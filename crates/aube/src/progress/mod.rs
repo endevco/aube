@@ -43,6 +43,18 @@ use std::time::{Duration, Instant};
 /// once.
 const TTY_MAX_VISIBLE_FETCH_ROWS: usize = 5;
 
+/// Fixed denominator clx's `{{progress_bar}}` is held at in TTY mode.
+/// We don't drive clx's progress_current/progress_total with raw
+/// package counts because the unified-bar formula needs sub-package
+/// precision (resolving fills 20% of the bar, which on a 1230-package
+/// install is < 1 package per cell). Encoding the unified-progress
+/// fraction as `progress_current / TTY_BAR_SCALE` gives clx 10 000
+/// steps to interpolate over — more than enough for the flex-rendered
+/// bar to look smooth at any terminal width. The cur/total label is
+/// owned separately via the `count` prop so the scaled denominator
+/// never leaks into the user-facing text.
+const TTY_BAR_SCALE: usize = 10_000;
+
 fn overflow_fetch_label(count: usize) -> String {
     let word = pluralizer::pluralize("package", count as isize, false);
     format!("{count} more {word}…")
@@ -112,12 +124,12 @@ enum Mode {
         /// Resolving-phase denominator hint. Seeded from any lockfile
         /// on disk before resolution starts and raised by the
         /// resolver's BFS-frontier signal during resolution.
-        /// `fetch_max` semantics keep it from ever shrinking, so a
-        /// transient frontier dip can't snap the displayed total
-        /// backward. Distinct from `total` because the
-        /// post-`filter_graph` `set_total` reset would otherwise
-        /// clobber the resolving-phase estimate at the fetching-phase
-        /// transition.
+        /// `fetch_max` semantics keep it from ever shrinking. Drives
+        /// the resolving-slice fill via the shared
+        /// [`render::unified_progress`] math — the clx
+        /// `{{progress_bar}}` template reads `progress_current` /
+        /// `progress_total`, which `refresh_tty_bar` scales to encode
+        /// the unified-progress fraction.
         target_total: Arc<AtomicUsize>,
         /// Mirror of cumulative reused-package count so the TTY bar can
         /// recompute the live numerator without taking a round-trip
@@ -213,25 +225,32 @@ impl InstallProgress {
             style::edim(crate::version::VERSION.as_str()),
             style::edim("by en.dev"),
         );
-        // Layout: header, animated bar, cur/total, optional bytes
+        // Layout: header, animated bar, count segment, optional bytes
         // segment (running download, with `/ ~estimated` when
         // available), phase-gated rate, ETA. Mirrors the CI-mode
         // label segment-for-segment so both modes show the same
-        // information.
+        // information. `{{count}}` is a custom prop populated by
+        // `refresh_tty_bar` (using the shared
+        // [`render::count_segment`] helper) so the cur/total shape
+        // matches CI exactly — phase-conditional, suppressed-slash
+        // during resolving-without-an-estimate, and so on. The clx
+        // built-in `{{cur}}/{{total}}` is bypassed because
+        // `progress_total` is held at `TTY_BAR_SCALE` to encode the
+        // unified-progress fraction in the bar, which would otherwise
+        // leak into the label as the scaled denominator.
         let root = ProgressJobBuilder::new()
             .body(
-                "{{aube}}{{phase}}  {{progress_bar(flex=true)}} {{cur}}/{{total}}{{bytes}}{{rate}}{{eta}}",
+                "{{aube}}{{phase}}  {{progress_bar(flex=true)}} {{count}}{{bytes}}{{rate}}{{eta}}",
             )
-            .body_text(Some(
-                "{{aube}}{{phase}} {{cur}}/{{total}}{{bytes}}{{rate}}{{eta}}",
-            ))
+            .body_text(Some("{{aube}}{{phase}} {{count}}{{bytes}}{{rate}}{{eta}}"))
             .prop("aube", &header)
             .prop("phase", "")
+            .prop("count", "")
             .prop("bytes", "")
             .prop("rate", "")
             .prop("eta", "")
             .progress_current(0)
-            .progress_total(0)
+            .progress_total(TTY_BAR_SCALE)
             .on_done(ProgressJobDoneBehavior::Collapse)
             .start();
         Self {
@@ -283,6 +302,7 @@ impl InstallProgress {
         match &self.mode {
             Mode::Tty { target_total, .. } => {
                 target_total.fetch_max(n, Ordering::Relaxed);
+                self.refresh_tty_bar();
             }
             Mode::Ci(s) => {
                 s.target_total.fetch_max(n, Ordering::Relaxed);
@@ -305,15 +325,17 @@ impl InstallProgress {
     pub fn set_total(&self, total: usize) {
         match &self.mode {
             Mode::Tty {
-                root,
                 total: t,
                 reused,
                 downloaded,
                 ..
             } => {
                 t.store(total, Ordering::Relaxed);
-                root.progress_total(total);
                 clamp_reused_to(reused, downloaded, total);
+                // Refresh *after* clamping so the bar/count label
+                // pick up the corrected numerator on the same tick
+                // the denominator drops.
+                self.refresh_tty_bar();
                 self.refresh_eta();
             }
             Mode::Ci(s) => {
@@ -326,9 +348,9 @@ impl InstallProgress {
     /// Atomically bump the total (`resolved`) by `n` packages.
     pub fn inc_total(&self, n: usize) {
         match &self.mode {
-            Mode::Tty { root, total, .. } => {
-                let new_total = total.fetch_add(n, Ordering::Relaxed) + n;
-                root.progress_total(new_total);
+            Mode::Tty { total, .. } => {
+                total.fetch_add(n, Ordering::Relaxed);
+                self.refresh_tty_bar();
                 self.refresh_eta();
             }
             Mode::Ci(s) => {
@@ -473,6 +495,12 @@ impl InstallProgress {
                 self.refresh_bytes_segment();
                 self.refresh_rate();
                 self.refresh_eta();
+                // Phase change shifts the unified-progress slice
+                // (resolving → fetching crosses the
+                // `RESOLVE_BAR_WEIGHT` boundary; fetching → linking
+                // locks at 100%), so the bar + count label must
+                // recompute even when no counter advanced this turn.
+                self.refresh_tty_bar();
             }
             Mode::Ci(s) => s.set_phase(phase),
         }
@@ -483,9 +511,9 @@ impl InstallProgress {
     /// `file:` / `link:` source — anything that didn't touch the network.
     pub fn inc_reused(&self, n: usize) {
         match &self.mode {
-            Mode::Tty { root, reused, .. } => {
+            Mode::Tty { reused, .. } => {
                 reused.fetch_add(n, Ordering::Relaxed);
-                root.increment(n);
+                self.refresh_tty_bar();
                 self.refresh_eta();
             }
             Mode::Ci(s) => {
@@ -527,6 +555,31 @@ impl InstallProgress {
     /// TTY-only: rebuild the `bytes` prop from the current downloaded /
     /// estimated counters. Picks shape based on what we know:
     ///   `4.2 MB / ~13.8 MB` when both are available, `4.2 MB` when
+    /// TTY-only: recompute the bar fill + count label from the current
+    /// TTY atomics and push them to clx. Shares the unified-progress
+    /// math with CI mode via [`render::unified_progress`] and the
+    /// count-segment shape via [`render::count_segment`], so a tweak
+    /// to either lands in both renderers. clx's
+    /// `progress_total`/`progress_current` are held at
+    /// `TTY_BAR_SCALE / scaled-progress` to drive the flex-rendered
+    /// bar; the user-facing cur/total label lives in the `count` prop
+    /// so the scaled denominator never leaks into the text.
+    fn refresh_tty_bar(&self) {
+        let Mode::Tty {
+            root,
+            total,
+            target_total,
+            reused,
+            downloaded,
+            phase_num,
+            ..
+        } = &self.mode
+        else {
+            return;
+        };
+        refresh_tty_bar_from_atomics(root, total, target_total, reused, downloaded, phase_num);
+    }
+
     ///   only the running total is, `~13.8 MB` when only the estimate
     ///   is, empty otherwise. CI mode does this inside the heartbeat
     ///   render — no per-call refresh needed there.
@@ -677,9 +730,27 @@ impl InstallProgress {
             Mode::Tty {
                 root,
                 fetch_state,
+                total,
+                target_total,
+                reused,
                 downloaded,
+                phase_num,
                 ..
             } => {
+                let make_row = |child: Arc<ProgressJob>, visible: bool| FetchRow {
+                    inner: FetchRowInner::Tty {
+                        child,
+                        root: Arc::downgrade(root),
+                        fetch_state: Arc::downgrade(fetch_state),
+                        total: Arc::downgrade(total),
+                        target_total: Arc::downgrade(target_total),
+                        reused: Arc::downgrade(reused),
+                        downloaded: Arc::downgrade(downloaded),
+                        phase_num: Arc::downgrade(phase_num),
+                        visible,
+                    },
+                    completed: false,
+                };
                 let mut st = fetch_state.lock().unwrap();
                 if st.visible < TTY_MAX_VISIBLE_FETCH_ROWS {
                     st.visible += 1;
@@ -692,16 +763,7 @@ impl InstallProgress {
                         .on_done(ProgressJobDoneBehavior::Hide)
                         .build();
                     let child = root.add(child);
-                    return FetchRow {
-                        inner: FetchRowInner::Tty {
-                            child,
-                            root: Arc::downgrade(root),
-                            fetch_state: Arc::downgrade(fetch_state),
-                            downloaded: Arc::downgrade(downloaded),
-                            visible: true,
-                        },
-                        completed: false,
-                    };
+                    return make_row(child, true);
                 }
                 // Over the visible-row cap: fold this fetch into the
                 // single "N more packages…" overflow row. Lazily
@@ -721,16 +783,9 @@ impl InstallProgress {
                 } else if let Some(row) = &st.overflow_row {
                     row.prop("label", &overflow_fetch_label(st.overflow));
                 }
-                FetchRow {
-                    inner: FetchRowInner::Tty {
-                        child: st.overflow_row.as_ref().unwrap().clone(),
-                        root: Arc::downgrade(root),
-                        fetch_state: Arc::downgrade(fetch_state),
-                        downloaded: Arc::downgrade(downloaded),
-                        visible: false,
-                    },
-                    completed: false,
-                }
+                let child = st.overflow_row.as_ref().unwrap().clone();
+                drop(st);
+                make_row(child, false)
             }
             Mode::Ci(s) => FetchRow {
                 inner: FetchRowInner::Ci(Arc::downgrade(s)),
@@ -838,6 +893,52 @@ impl InstallProgress {
     }
 }
 
+/// TTY-only bar refresh primitive. Strongly-typed `&AtomicUsize` /
+/// `&ProgressJob` references so both the `InstallProgress`
+/// method (which holds Arcs) and `FetchRow::drop` (which holds
+/// Weaks and upgrades them) can share the math without duplicating
+/// the snapshot/scale/prop-set sequence. Reads the same field set
+/// as `Mode::Tty` and feeds it through `render::unified_progress` /
+/// `render::count_segment`, so a tweak to either lands in both
+/// renderers.
+fn refresh_tty_bar_from_atomics(
+    root: &Arc<ProgressJob>,
+    total: &AtomicUsize,
+    target_total: &AtomicUsize,
+    reused: &AtomicUsize,
+    downloaded: &AtomicUsize,
+    phase_num: &AtomicUsize,
+) {
+    let phase = phase_num.load(Ordering::Relaxed);
+    let resolved = total.load(Ordering::Relaxed);
+    let target = target_total.load(Ordering::Relaxed);
+    let r = reused.load(Ordering::Relaxed);
+    let d = downloaded.load(Ordering::Relaxed);
+    // Reuse the CI-mode `Snap` shape so the shared helpers don't
+    // need a TTY-specific variant. The byte/rate/ETA fields aren't
+    // consulted by `unified_progress` or `count_segment`; their
+    // zero values are inert.
+    let snap = ci::Snap {
+        phase,
+        resolved,
+        target_total: target,
+        reused: r,
+        downloaded: d,
+        bytes: 0,
+        estimated: 0,
+        fetch_elapsed_ms: 0,
+        completed_at_fetch_start: None,
+    };
+    // Same clamp the CI render applies — keeps the numerator from
+    // exceeding the resolved denominator if a deferred-package
+    // catch-up reorders against `set_total`.
+    let completed = (r + d).min(resolved);
+    let progress = render::unified_progress(snap, completed);
+    let scaled = ((progress * TTY_BAR_SCALE as f64).round() as usize).min(TTY_BAR_SCALE);
+    root.progress_current(scaled);
+    root.prop("count", &render::count_segment(snap, completed));
+}
+
 impl Drop for InstallProgress {
     /// Safety net: if `install::run` bails through `?` without reaching
     /// `finish()` (flaky network, lockfile parse error, linker failure, …)
@@ -887,11 +988,17 @@ enum FetchRowInner {
         /// decrement visible/overflow counters and refresh the
         /// overflow row label without pinning it alive.
         fetch_state: Weak<Mutex<FetchState>>,
-        /// Weak ref to the TTY mirror of the downloaded counter so
-        /// drop can bump it without holding the root alive. Mirrors
-        /// CI mode's `downloaded` counter — used by the ETA / clamp
-        /// computations in the bar render.
+        /// Weak refs to every TTY counter the unified-bar refresh
+        /// reads. Bundled here so `FetchRow::drop` can recompute the
+        /// bar fill + count label after bumping `downloaded`, without
+        /// requiring a back-pointer to `InstallProgress` (which is
+        /// not itself reference-counted). Mirrors the field set
+        /// `refresh_tty_bar` reads off `Mode::Tty`.
+        total: Weak<AtomicUsize>,
+        target_total: Weak<AtomicUsize>,
+        reused: Weak<AtomicUsize>,
         downloaded: Weak<AtomicUsize>,
+        phase_num: Weak<AtomicUsize>,
         /// Whether this row occupies one of the `TTY_MAX_VISIBLE_FETCH_ROWS`
         /// visible slots. Overflow rows share a single child job; they
         /// only bump the overflow counter and the label on drop.
@@ -914,26 +1021,49 @@ impl FetchRow {
                 child,
                 root,
                 fetch_state,
+                total,
+                target_total,
+                reused,
                 downloaded,
+                phase_num,
                 visible,
             } => {
-                // Note: this site bumps `downloaded` but doesn't call
-                // `refresh_eta` — the ETA prop is recomputed on every
-                // `inc_downloaded_bytes` event, which fires once per
-                // tarball *before* this drop. The off-by-one (ETA
-                // computed against pre-bump `downloaded`) self-corrects
-                // on the next fetch's bytes; for the very last fetch,
-                // `set_phase("linking")` immediately clears the prop.
-                // Wiring a refresh here would require either bundling
-                // every refresh-related Arc into the FetchRow weak ref
-                // or holding a back-pointer to InstallProgress; the
-                // observable lag is ≤ one fetch worth of time and the
-                // last-fetch case never reaches the user.
-                if let Some(root) = root.upgrade() {
-                    root.increment(1);
-                }
+                // Bump the downloaded counter, then refresh the
+                // unified bar (clx `progress_current` + `count` prop)
+                // by upgrading the weak refs to each TTY atomic.
+                // `refresh_eta` is *not* called here — the ETA prop
+                // is recomputed on every `inc_downloaded_bytes`
+                // event, which fires once per tarball before this
+                // drop. The off-by-one (ETA computed against pre-bump
+                // `downloaded`) self-corrects on the next fetch's
+                // bytes; for the very last fetch, `set_phase("linking")`
+                // immediately clears the prop.
                 if let Some(d) = downloaded.upgrade() {
                     d.fetch_add(1, Ordering::Relaxed);
+                }
+                if let (
+                    Some(root),
+                    Some(total),
+                    Some(target_total),
+                    Some(reused),
+                    Some(downloaded),
+                    Some(phase_num),
+                ) = (
+                    root.upgrade(),
+                    total.upgrade(),
+                    target_total.upgrade(),
+                    reused.upgrade(),
+                    downloaded.upgrade(),
+                    phase_num.upgrade(),
+                ) {
+                    refresh_tty_bar_from_atomics(
+                        &root,
+                        &total,
+                        &target_total,
+                        &reused,
+                        &downloaded,
+                        &phase_num,
+                    );
                 }
                 if *visible {
                     child.set_status(ProgressStatus::Done);
