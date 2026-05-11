@@ -984,6 +984,26 @@ pub(super) fn spawn_gvs_prewarm(
     tokio::spawn(run_gvs_prewarm_materializer(inputs, rx))
 }
 
+/// When the fetch task fails the surfaced error is often just
+/// "materializer task exited before fetch finished" — a symptom of the
+/// materializer dying first (its `rx` was dropped, fetch's `tx.send`
+/// returned Err). Await the materializer (don't abort) so its actual
+/// error wins. If the materializer succeeded the fetch error was the
+/// real one and stays put.
+async fn prefer_materializer_error(
+    materialize_handle: MaterializeJoinHandle,
+    fetch_err: miette::Report,
+) -> miette::Report {
+    match materialize_handle.await {
+        Ok(Ok(_)) => fetch_err,
+        Ok(Err(mat_err)) => mat_err,
+        Err(join_err) => Err::<(), _>(join_err)
+            .into_diagnostic()
+            .err()
+            .map_or(fetch_err, |r| r.wrap_err("materializer task panicked")),
+    }
+}
+
 // Consumes (canonical_key, index) from rx as tarballs land in the CAS,
 // reflinks each into the global virtual store. Returns aggregate
 // LinkStats plus computed graph hashes so the caller's link phase
@@ -3248,12 +3268,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 resolve_git_shallow_hosts(&settings_ctx),
             )
             .await;
-            // Drop alone detaches. Abort kills the task on fetch err.
+            // Don't abort the materializer on fetch err: the failing
+            // fetch task drops its `tx`, so the materializer's `rx`
+            // closes and it exits naturally. Awaiting first lets a real
+            // materializer error (the likely root cause of a generic
+            // "materializer task exited..." fetch err) surface instead.
             let (indices, cached, fetched) = match fetch_result {
                 Ok(t) => t,
                 Err(e) => {
-                    lock_materialize_handle.abort();
-                    return Err(e);
+                    return Err(prefer_materializer_error(lock_materialize_handle, e).await);
                 }
             };
             // Materializer stats roll into link via GVS-already-linked
@@ -3879,11 +3902,15 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let _diag_fetch_wait =
                 aube_util::diag::Span::new(aube_util::diag::Category::Install, "phase_fetch_await");
             let fetch_phase_start = std::time::Instant::now();
+            // Don't abort the materializer on fetch err: the failing
+            // fetch task drops its `tx`, so the materializer's `rx`
+            // closes and it exits naturally. Awaiting first lets a real
+            // materializer error (the likely root cause of a generic
+            // "materializer task exited..." fetch err) surface instead.
             let fetch_result = match fetch_handle.await.into_diagnostic()? {
                 Ok(v) => v,
                 Err(e) => {
-                    materialize_handle.abort();
-                    return Err(e);
+                    return Err(prefer_materializer_error(materialize_handle, e).await);
                 }
             };
             let (canonical_indices, mut cached, mut fetched) = fetch_result;
