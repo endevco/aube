@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Profile-Guided Optimization build for aube.
+# Profile-Guided Optimization build for aube, with optional BOLT
+# post-link rewrite.
 #
-# Three-phase rustc PGO flow:
+# Three-phase rustc PGO flow, plus an optional BOLT step:
 #
 #   1. Build aube with -Cprofile-generate (instrumented binary).
 #   2. Train against the hermetic Verdaccio registry — a mix of cold
@@ -9,6 +10,13 @@
 #      covers the resolver / registry / store / linker hot paths and
 #      the frozen-lockfile fast path.
 #   3. Merge .profraw via llvm-profdata, recompile with -Cprofile-use.
+#   4. (AUBE_PGO_BOLT=1) re-link phase 3b with `--emit-relocs`, retrain
+#      under `perf record` to capture an LBR-derived branch profile,
+#      then run `llvm-bolt` to reorder blocks + split cold paths.
+#      Layered after PGO because LLVM's PGO and BOLT optimize different
+#      things — PGO drives instruction-level codegen (inlining,
+#      branch weights), BOLT does post-link block/function layout
+#      and cold-path splitting that LLVM can't see at IR time.
 #
 # Local default: target/release-pgo/aube using profile=release-pgo.
 #
@@ -37,6 +45,11 @@
 #                               separate step (e.g. taiki-e action) that
 #                               picks up RUSTFLAGS+CARGO_PROFILE_RELEASE_LTO
 #                               from the environment.
+#   AUBE_PGO_BOLT=1             append a BOLT post-link rewrite pass
+#                               after phase 3b. Requires `llvm-bolt`,
+#                               `perf2bolt`, and `perf` (with branch
+#                               sampling) on the host. Linux-only;
+#                               BOLT's macOS support is not in tree.
 
 set -euo pipefail
 
@@ -49,6 +62,17 @@ PGO_MERGED="$PGO_DATA_DIR/merged.profdata"
 PGO_PROFILE="${AUBE_PGO_PROFILE:-release-pgo}"
 PGO_TARGET="${AUBE_PGO_TARGET:-}"
 PGO_BUILD_TOOL="${AUBE_PGO_BUILD_TOOL:-cargo}"
+PGO_BOLT="${AUBE_PGO_BOLT:-}"
+
+if [ -n "$PGO_BOLT" ]; then
+	for tool in llvm-bolt perf2bolt perf; do
+		if ! command -v "$tool" >/dev/null 2>&1; then
+			echo "ERROR: AUBE_PGO_BOLT=1 but '$tool' is not on PATH" >&2
+			echo "  Install on Debian/Ubuntu: sudo apt install llvm-bolt linux-tools-generic" >&2
+			exit 1
+		fi
+	done
+fi
 
 # target_arg stays unquoted at expansion sites: empty string disappears,
 # "--target=foo" expands to one arg. Avoids bash 3.2 (macOS) array+set -u
@@ -152,30 +176,37 @@ PROFRAW_PATTERN="$PGO_PROFRAW_DIR/aube-%m-%p.profraw"
 # 3 cold + 3 warm. Cold runs each get a fresh dir so the resolver,
 # registry, store, and linker hot paths all run end-to-end. Warm runs
 # reuse the last cold dir so the frozen-lockfile fast path is also
-# represented in the profile.
+# represented in the profile. The binary is parameterized so phase 4
+# (BOLT) can replay the same workload against the PGO-optimized binary
+# under `perf record`.
 cold_run() {
-	local i=$1
-	local run_dir="$train_dir/cold.$i"
+	local bin=$1 i=$2 tag=${3:-cold}
+	local run_dir="$train_dir/$tag.$i"
+	rm -rf "$run_dir"
 	mkdir -p "$run_dir/home"
 	cp "$SCRIPT_DIR/fixture.package.json" "$run_dir/package.json"
 	printf 'registry=%s\n' "$BENCH_REGISTRY_URL" >"$run_dir/.npmrc"
 	printf 'registry=%s\n' "$BENCH_REGISTRY_URL" >"$run_dir/home/.npmrc"
 	echo "  train: cold install ($i)"
-	(cd "$run_dir" && HOME="$run_dir/home" LLVM_PROFILE_FILE="$PROFRAW_PATTERN" "$INSTRUMENTED_BIN" install --ignore-scripts >/dev/null)
+	(cd "$run_dir" && HOME="$run_dir/home" "$bin" install --ignore-scripts >/dev/null)
 }
 
 warm_run() {
-	local run_dir=$1 i=$2
+	local bin=$1 run_dir=$2 i=$3
 	echo "  train: warm install ($i)"
-	(cd "$run_dir" && HOME="$run_dir/home" LLVM_PROFILE_FILE="$PROFRAW_PATTERN" "$INSTRUMENTED_BIN" install --ignore-scripts >/dev/null)
+	(cd "$run_dir" && HOME="$run_dir/home" "$bin" install --ignore-scripts >/dev/null)
 }
 
+# LLVM_PROFILE_FILE only matters for the instrumented binary, so it's
+# exported just around phase 2's training loop.
+export LLVM_PROFILE_FILE="$PROFRAW_PATTERN"
 for i in 1 2 3; do
-	cold_run "$i"
+	cold_run "$INSTRUMENTED_BIN" "$i" cold
 done
 for i in 1 2 3; do
-	warm_run "$train_dir/cold.3" "$i"
+	warm_run "$INSTRUMENTED_BIN" "$train_dir/cold.3" "$i"
 done
+unset LLVM_PROFILE_FILE
 
 hermetic_stop
 
@@ -216,7 +247,7 @@ if [ -n "${AUBE_PGO_SKIP_FINAL_BUILD:-}" ]; then
 fi
 
 # ---------- Phase 3b: optimize ----------
-echo ">>> Rebuilding with -Cprofile-use"
+echo ">>> Rebuilding with -Cprofile-use${PGO_BOLT:+ + --emit-relocs}"
 
 # -Cllvm-args=-pgo-warn-missing-function=false: silence LLVM's per-symbol
 # "no profile data available for function …" notes during phase 3b.
@@ -224,8 +255,18 @@ echo ">>> Rebuilding with -Cprofile-use"
 # code path — and emitting a warning per uncovered symbol drowns the CI
 # build log without surfacing actionable signal. The functions still
 # get compiled, just without PGO data, which is the documented fallback.
+#
+# When AUBE_PGO_BOLT=1, add `--emit-relocs` so the binary keeps its
+# `.rela.text` table after link. BOLT needs the relocations to rewrite
+# branch targets when it moves blocks around; without them it falls
+# back to a much less effective mode that only reorders within
+# functions.
+phase3b_rustflags="-Cprofile-use=$PGO_MERGED -Cllvm-args=-pgo-warn-missing-function=false"
+if [ -n "$PGO_BOLT" ]; then
+	phase3b_rustflags="$phase3b_rustflags -C link-arg=-Wl,--emit-relocs -C link-arg=-Wl,-q"
+fi
 # shellcheck disable=SC2086 # intentional word-splitting on $target_arg
-RUSTFLAGS="-Cprofile-use=$PGO_MERGED -Cllvm-args=-pgo-warn-missing-function=false" \
+RUSTFLAGS="$phase3b_rustflags" \
 	"$PGO_BUILD_TOOL" build --profile="$PGO_PROFILE" $target_arg -p aube
 
 # Phase 3b wrote to the same path as phase 1, so the file at
@@ -233,4 +274,85 @@ RUSTFLAGS="-Cprofile-use=$PGO_MERGED -Cllvm-args=-pgo-warn-missing-function=fals
 # one. Alias for clarity in the success log.
 PGO_FINAL_BIN="$INSTRUMENTED_BIN"
 echo ">>> PGO build complete: $PGO_FINAL_BIN"
+ls -lh "$PGO_FINAL_BIN"
+
+if [ -z "$PGO_BOLT" ]; then
+	exit 0
+fi
+
+# ---------- Phase 4: BOLT post-link rewrite ----------
+echo ">>> [4/4] BOLT post-link rewrite"
+
+BOLT_PERF_DATA="$PGO_DATA_DIR/bolt-perf.data"
+BOLT_FDATA="$PGO_DATA_DIR/aube.fdata"
+rm -f "$BOLT_PERF_DATA" "$BOLT_FDATA"
+
+# Restart hermetic so phase 4 trains against the same registry as
+# phase 2. The optimized binary doesn't emit profraw (no
+# -Cprofile-generate), so no per-process profile pattern is needed —
+# perf record samples cycles + branches across the whole training run.
+AUBE_BIN="$PGO_FINAL_BIN" hermetic_start
+
+# -j any,u captures user-space taken branches via LBR (kernel
+# samples discarded). A successful capture needs
+# `kernel.perf_event_paranoid <= 1` — checked here so the failure
+# is one line of helpful diagnostic instead of an empty perf.data
+# 30 seconds later.
+paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 4)
+if [ "$paranoid" -gt 1 ]; then
+	echo "ERROR: kernel.perf_event_paranoid=$paranoid (need <= 1 for BOLT)" >&2
+	echo "  Temporarily: sudo sysctl -w kernel.perf_event_paranoid=1" >&2
+	exit 1
+fi
+
+echo ">>> [4a/4] perf record around training workload"
+perf record -e cycles:u -j any,u -o "$BOLT_PERF_DATA" -- bash -c "
+	set -euo pipefail
+	$(declare -f cold_run warm_run)
+	train_dir='$train_dir'
+	BENCH_REGISTRY_URL='$BENCH_REGISTRY_URL'
+	SCRIPT_DIR='$SCRIPT_DIR'
+	for i in 1 2 3; do cold_run '$PGO_FINAL_BIN' \"\$i\" bolt; done
+	for i in 1 2 3; do warm_run '$PGO_FINAL_BIN' '$train_dir/bolt.3' \"\$i\"; done
+"
+
+hermetic_stop
+
+echo ">>> [4b/4] perf2bolt — converting LBR samples to fdata"
+perf2bolt -p "$BOLT_PERF_DATA" -o "$BOLT_FDATA" "$PGO_FINAL_BIN"
+
+# llvm-bolt flags:
+#   reorder-blocks=ext-tsp     — extended TSP block layout, the
+#                                strongest available; recommended by
+#                                upstream for any non-trivial binary.
+#   reorder-functions=cdsort   — function reordering using the cdsort
+#                                algorithm (call-density sort), the
+#                                current default on LLVM ≥ 17. Hot
+#                                functions cluster together so the
+#                                kernel can map them out of the same
+#                                pages.
+#   split-functions            — split each function into hot/cold so
+#                                the cold parts don't waste i-cache.
+#   split-all-cold             — aggressive: split even functions BOLT
+#                                isn't 100% sure about. Costs a few
+#                                kbytes; pays back in icache.
+#   split-eh                   — split exception-handling paths too;
+#                                aube's hot install path raises ~zero
+#                                so all of those are cold.
+#   use-gnu-stack              — emit a PT_GNU_STACK header; required
+#                                by recent toolchains to keep the
+#                                stack non-executable.
+echo ">>> [4c/4] llvm-bolt — rewriting binary"
+llvm-bolt "$PGO_FINAL_BIN" \
+	-o "$PGO_FINAL_BIN.bolt" \
+	-data="$BOLT_FDATA" \
+	-reorder-blocks=ext-tsp \
+	-reorder-functions=cdsort \
+	-split-functions \
+	-split-all-cold \
+	-split-eh \
+	-use-gnu-stack
+
+mv -f "$PGO_FINAL_BIN.bolt" "$PGO_FINAL_BIN"
+echo ">>> PGO+BOLT build complete: $PGO_FINAL_BIN"
 ls -lh "$PGO_FINAL_BIN"
