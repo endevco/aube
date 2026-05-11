@@ -342,7 +342,7 @@ pub const ALL: &[CodeMeta] = &[
     CodeMeta {
         name: WARN_AUBE_SLOW_METADATA,
         category: category::REGISTRY_PERF,
-        description: "One or more packument fetches exceeded `fetchWarnTimeoutMs` during resolve; emitted as a single summary line at end of resolve carrying the count and the slowest example.",
+        description: "One or more packument fetches exceeded `fetchWarnTimeoutMs`; emitted as a debounced group warning — a window opens on the first event and drains after a short delay, carrying the count and the slowest example. Multiple windows may fire during a single install when latency persists.",
         exit_code: None,
     },
     CodeMeta {

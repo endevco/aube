@@ -34,4 +34,5 @@ tempfile = "3"
 flate2 = { workspace = true }
 yaml_serde = { workspace = true }
 tar = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 wiremock = "0.6"

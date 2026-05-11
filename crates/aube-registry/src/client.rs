@@ -690,7 +690,7 @@ impl RegistryClient {
         let threshold = self.fetch_policy.warn_timeout_ms;
         let elapsed_ms = elapsed.as_millis() as u64;
         if threshold > 0 && elapsed_ms > threshold {
-            crate::slow_metadata::record(label, elapsed_ms);
+            crate::slow_metadata::record(label, elapsed_ms, threshold);
         }
         Ok(resp)
     }
@@ -699,7 +699,7 @@ impl RegistryClient {
         let threshold = self.fetch_policy.warn_timeout_ms;
         let elapsed_ms = started.elapsed().as_millis() as u64;
         if threshold > 0 && elapsed_ms > threshold {
-            crate::slow_metadata::record(label, elapsed_ms);
+            crate::slow_metadata::record(label, elapsed_ms, threshold);
         }
     }
 
