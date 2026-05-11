@@ -186,7 +186,10 @@ jobs:
   upload-assets-pgo:
     needs: generate-primer
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
+    # 180 to cover macos-latest (3 vCPU) which needs ~80 min for two
+    # fat-LTO compiles. Linux PGO on -large runners completes in well
+    # under 75, so the extra headroom is dead slack for them.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
