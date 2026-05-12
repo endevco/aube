@@ -53,12 +53,28 @@ impl AubeConfigEdit {
         Ok(())
     }
 
+    /// Store a free-form `key=value` pair as a TOML string. Used for
+    /// keys that aren't in `settings.toml` and aren't part of the
+    /// npm-shared `.npmrc` surface — they're aube-only by elimination,
+    /// so they belong in aube's own config rather than `~/.npmrc`.
+    pub(super) fn set_unknown(&mut self, key: &str, raw: &str) {
+        self.table
+            .insert(key.to_string(), toml::Value::String(raw.to_string()));
+    }
+
     pub(super) fn remove_aliases(&mut self, aliases: &[String]) -> bool {
         let before = self.table.len();
         for alias in aliases {
             self.table.remove(alias);
         }
         before != self.table.len()
+    }
+
+    /// Remove a single (free-form) key. Returns `true` if the key was
+    /// present. Sibling to `remove_aliases`, which sweeps a known
+    /// setting's canonical name + every literal `.npmrc` alias.
+    pub(super) fn remove(&mut self, key: &str) -> bool {
+        self.table.remove(key).is_some()
     }
 
     pub(super) fn save(&self, path: &Path) -> miette::Result<()> {
@@ -204,12 +220,22 @@ fn raw_to_yaml_value(meta: &settings_meta::SettingMeta, raw: &str) -> miette::Re
     }
 }
 
+/// True when `meta` is a scalar-like aube setting that can round-trip
+/// through `config.toml`. Object-typed maps (`allowBuilds`,
+/// `overrides`, …) are excluded; the caller rejects those at the
+/// `aube config set` boundary because they need structural edits in
+/// workspace yaml / `package.json#aube.<name>` rather than a single
+/// scalar TOML value.
+///
+/// The `typed_accessor_unused` flag is an audit hint for the workspace
+/// accessor self-test, not a user-facing classification — settings like
+/// `dangerouslyAllowAllBuilds` are still pure aube/pnpm-only knobs that
+/// belong in `config.toml` rather than `.npmrc`.
 fn is_aube_config_setting(meta: &settings_meta::SettingMeta) -> bool {
-    !meta.typed_accessor_unused
-        && (matches!(
-            meta.type_,
-            "bool" | "string" | "path" | "url" | "int" | "list<string>"
-        ) || meta.type_.starts_with('"'))
+    matches!(
+        meta.type_,
+        "bool" | "string" | "path" | "url" | "int" | "list<string>"
+    ) || meta.type_.starts_with('"')
 }
 
 fn raw_to_toml_value(meta: &settings_meta::SettingMeta, raw: &str) -> miette::Result<toml::Value> {

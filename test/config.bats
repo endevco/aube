@@ -434,6 +434,91 @@ EOF
 	unset AUBE_TEST_TOKEN
 }
 
+@test "config set routes unknown keys to user config.toml, not .npmrc" {
+	# Discussion #617 follow-up: aube's `.npmrc` writes are scoped to the
+	# npm-shared surface (auth, registries, npm-standard scalars). Any
+	# other key — known aube setting or genuinely unknown — lands in
+	# aube's own config.toml so it doesn't pollute the file npm/yarn/pnpm
+	# also read.
+	run aube config set some-experimental-flag value
+	assert_success
+	assert [ -f "$XDG_CONFIG_HOME/aube/config.toml" ]
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	assert_output --partial 'some-experimental-flag = "value"'
+	if [ -e "$HOME/.npmrc" ]; then
+		run cat "$HOME/.npmrc"
+		refute_output --partial "some-experimental-flag"
+	fi
+}
+
+@test "config get reads free-form unknown keys back from config.toml" {
+	# Round-trip: an unknown key written via `config set` must be
+	# readable via `config get` without the user having to remember
+	# which file it ended up in.
+	run aube config set some-experimental-flag value
+	assert_success
+	run aube config get some-experimental-flag
+	assert_success
+	assert_output "value"
+}
+
+@test "config delete removes a free-form unknown key from config.toml" {
+	run aube config set some-experimental-flag value
+	assert_success
+	run aube config delete some-experimental-flag
+	assert_success
+	run aube config get some-experimental-flag
+	assert_success
+	assert_output "undefined"
+}
+
+@test "config set routes pnpm-only knobs (dangerouslyAllowAllBuilds) to config.toml" {
+	# `dangerouslyAllowAllBuilds` is a pnpm/aube-only knob. npm warns
+	# about it in `.npmrc`. With the inverted routing it lands in
+	# aube's own config alongside other aube-known settings.
+	run aube config set dangerouslyAllowAllBuilds true
+	assert_success
+	assert [ -f "$XDG_CONFIG_HOME/aube/config.toml" ]
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	assert_output --partial "dangerouslyAllowAllBuilds = true"
+	if [ -e "$HOME/.npmrc" ]; then
+		run cat "$HOME/.npmrc"
+		refute_output --partial "dangerouslyAllowAllBuilds"
+	fi
+}
+
+@test "config set rejects bare aube map settings" {
+	# Object-typed aube settings (`allowBuilds`, `overrides`,
+	# `packageExtensions`, …) can't be serialized as a single scalar
+	# via `config set`. The error must point at the right edit site.
+	run aube config set allowBuilds 'maybe'
+	assert_failure
+	assert_output --partial "allowBuilds"
+	assert_output --partial "map setting"
+}
+
+@test "config set keeps npm-shared keys in .npmrc" {
+	# `registry`, scoped registries, and per-host auth/cert tokens are
+	# part of the multi-tool npm contract and must keep landing in
+	# `.npmrc` so npm/pnpm/yarn read the same values.
+	run aube config set registry https://r.example.com/
+	assert_success
+	run aube config set @mycorp:registry https://npm.mycorp.internal/
+	assert_success
+	run aube config set "//r.example.com/:_authToken" secret
+	assert_success
+	run cat "$HOME/.npmrc"
+	assert_output --partial "registry=https://r.example.com/"
+	assert_output --partial "@mycorp:registry=https://npm.mycorp.internal/"
+	assert_output --partial "//r.example.com/:_authToken=secret"
+	# config.toml should not contain registry/auth keys
+	if [ -e "$XDG_CONFIG_HOME/aube/config.toml" ]; then
+		run cat "$XDG_CONFIG_HOME/aube/config.toml"
+		refute_output --partial "registry"
+		refute_output --partial "_authToken"
+	fi
+}
+
 @test "config set rejects nested aube keys instead of writing to .npmrc" {
 	# Discussion #617: `aube config set allowBuilds.<pkg> true` previously
 	# fell through to `~/.npmrc`, where aube doesn't read the dotted key

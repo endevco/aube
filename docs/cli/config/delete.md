@@ -24,7 +24,7 @@ Shortcut for `--location project`
 
 Which config location to act on.
 
-Defaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.
+Defaults to `user`. Delete sweeps both aube's own config (`~/.config/aube/config.toml` at user-scope, `<cwd>/.config/aube/config.toml` at project-scope) and the matching `.npmrc`, so the call works regardless of which file the value was originally written to.
 
 **Choices:**
 

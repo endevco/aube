@@ -1451,7 +1451,7 @@
                 "name": "location",
                 "usage": "--location <LOCATION>",
                 "help": "Which config location to act on",
-                "help_long": "Which config location to act on.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.",
+                "help_long": "Which config location to act on.\n\nDefaults to `user`. Delete sweeps both aube's own config (`~/.config/aube/config.toml` at user-scope, `<cwd>/.config/aube/config.toml` at project-scope) and the matching `.npmrc`, so the call works regardless of which file the value was originally written to.",
                 "help_first_line": "Which config location to act on",
                 "short": [],
                 "long": [
@@ -1763,7 +1763,7 @@
                 "name": "location",
                 "usage": "--location <LOCATION>",
                 "help": "Which config location to write to",
-                "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.",
+                "help_long": "Which config location to write to.\n\nDefaults to `user`. Writes land in `.npmrc` only for the npm-shared surface (per-host auth, scoped registries, npm-standard scalars like `registry`, `email`, `proxy`, …); everything else — aube settings, pnpm-only knobs, and unknown keys — lands in aube's own config (`~/.config/aube/config.toml` at user-scope, `<cwd>/.config/aube/config.toml` at project-scope) so it doesn't pollute the file other npm-family tools read.",
                 "help_first_line": "Which config location to write to",
                 "short": [],
                 "long": [
@@ -9202,7 +9202,7 @@
             "name": "location",
             "usage": "--location <LOCATION>",
             "help": "Which config location to write to",
-            "help_long": "Which config location to write to.\n\nDefaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.",
+            "help_long": "Which config location to write to.\n\nDefaults to `user`. Writes land in `.npmrc` only for the npm-shared surface (per-host auth, scoped registries, npm-standard scalars like `registry`, `email`, `proxy`, …); everything else — aube settings, pnpm-only knobs, and unknown keys — lands in aube's own config (`~/.config/aube/config.toml` at user-scope, `<cwd>/.config/aube/config.toml` at project-scope) so it doesn't pollute the file other npm-family tools read.",
             "help_first_line": "Which config location to write to",
             "short": [],
             "long": [

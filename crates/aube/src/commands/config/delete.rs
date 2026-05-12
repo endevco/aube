@@ -53,22 +53,51 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
         return Ok(());
     }
 
-    let path = args.effective_location().path()?;
-    if !path.exists() {
-        return Err(miette!("no .npmrc at {}", path.display()));
+    // Free-form / npm-shared key: try aube config first (where writes
+    // since the inverted routing land for unknowns), then fall back to
+    // `.npmrc` (where npm-shared keys and legacy writes live).
+    let location = args.effective_location();
+    let config_path = match location {
+        Location::User | Location::Global => aube_config::user_aube_config_path()?,
+        Location::Project => {
+            aube_config::project_aube_config_path(&crate::dirs::project_root_or_cwd()?)
+        }
+    };
+    let mut removed_paths: Vec<PathBuf> = Vec::new();
+    let mut config_edit = aube_config::AubeConfigEdit::load(&config_path)?;
+    if config_edit.remove(&args.key) {
+        config_edit.save(&config_path)?;
+        removed_paths.push(config_path);
     }
-    let mut edit = NpmrcEdit::load(&path)?;
-    let mut removed = false;
-    for alias in &aliases {
-        if edit.remove(alias) {
-            removed = true;
+
+    let npmrc_path = location.path()?;
+    if npmrc_path.exists() {
+        let mut edit = NpmrcEdit::load(&npmrc_path)?;
+        let mut removed = false;
+        for alias in &aliases {
+            if edit.remove(alias) {
+                removed = true;
+            }
+        }
+        if removed {
+            edit.save(&npmrc_path)?;
+            removed_paths.push(npmrc_path.clone());
         }
     }
-    if !removed {
-        return Err(miette!("{} not set in {}", args.key, path.display()));
+
+    if removed_paths.is_empty() {
+        return Err(miette!(
+            "{} not set in aube config or {}",
+            args.key,
+            npmrc_path.display()
+        ));
     }
-    edit.save(&path)?;
-    eprintln!("deleted {} ({})", args.key, path.display());
+    let joined = removed_paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("deleted {} ({})", args.key, joined);
     Ok(())
 }
 

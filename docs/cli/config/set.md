@@ -25,7 +25,7 @@ Shortcut for `--location project`
 
 Which config location to write to.
 
-Defaults to `user`. Known aube settings use `~/.config/aube/config.toml` (user) or `<cwd>/.config/aube/config.toml` (project); registry/auth and unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.
+Defaults to `user`. Writes land in `.npmrc` only for the npm-shared surface (per-host auth, scoped registries, npm-standard scalars like `registry`, `email`, `proxy`, …); everything else — aube settings, pnpm-only knobs, and unknown keys — lands in aube's own config (`~/.config/aube/config.toml` at user-scope, `<cwd>/.config/aube/config.toml` at project-scope) so it doesn't pollute the file other npm-family tools read.
 
 **Choices:**
 

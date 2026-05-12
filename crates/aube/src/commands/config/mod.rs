@@ -69,10 +69,11 @@ pub(crate) struct KeyArgs {
 
     /// Which config location to act on.
     ///
-    /// Defaults to `user`. Known aube settings use
-    /// `~/.config/aube/config.toml` (user) or
-    /// `<cwd>/.config/aube/config.toml` (project); registry/auth and
-    /// unknown keys use `~/.npmrc` or `<cwd>/.npmrc` respectively.
+    /// Defaults to `user`. Delete sweeps both aube's own config
+    /// (`~/.config/aube/config.toml` at user-scope,
+    /// `<cwd>/.config/aube/config.toml` at project-scope) and the
+    /// matching `.npmrc`, so the call works regardless of which file
+    /// the value was originally written to.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
 }
@@ -221,6 +222,107 @@ pub(super) fn literal_aliases(keys: &[&'static str]) -> Vec<String> {
         .filter(|k| is_literal_alias(k))
         .map(|s| s.to_string())
         .collect()
+}
+
+/// True when `key` belongs to the npm-shared `.npmrc` surface — npm,
+/// pnpm, and yarn all read these from `.npmrc` and writing them
+/// anywhere else would break the multi-tool contract. Anything else is
+/// treated as aube-owned (or aube-experimental) and routed to
+/// `~/.config/aube/config.toml`, so `aube config set` no longer
+/// pollutes `.npmrc` with keys other npm-family tools warn about.
+///
+/// The allowlist is intentionally narrow: when in doubt, keep the
+/// value in aube's own config. Users who genuinely want a free-form
+/// `.npmrc` line for a third-party tool can edit `.npmrc` directly.
+pub(super) fn is_npm_shared_key(key: &str) -> bool {
+    // Per-host auth/cert templates: //host/:_authToken, //host/:_auth,
+    // //host/:_password, //host/:username, //host/:certfile, etc.
+    if key.starts_with("//") {
+        return true;
+    }
+    // Scoped registries: @mycorp:registry, @scope:registry, …
+    if let Some(rest) = key.strip_prefix('@')
+        && rest.contains(":registry")
+    {
+        return true;
+    }
+    matches!(
+        key,
+        // Registry + identity
+        "registry"
+            | "email"
+            // CA / TLS
+            | "ca"
+            | "cafile"
+            | "cert"
+            | "key"
+            | "keyfile"
+            | "certfile"
+            | "strict-ssl"
+            | "strictSsl"
+            // Proxy / network
+            | "proxy"
+            | "http-proxy"
+            | "httpProxy"
+            | "https-proxy"
+            | "httpsProxy"
+            | "no-proxy"
+            | "noproxy"
+            | "noProxy"
+            | "maxsockets"
+            | "maxSockets"
+            // Fetch retry knobs (npm-standard)
+            | "fetch-retries"
+            | "fetchRetries"
+            | "fetch-retry-factor"
+            | "fetchRetryFactor"
+            | "fetch-retry-mintimeout"
+            | "fetchRetryMintimeout"
+            | "fetch-retry-maxtimeout"
+            | "fetchRetryMaxtimeout"
+            | "fetch-timeout"
+            | "fetchTimeout"
+            // npm init defaults
+            | "init-author-name"
+            | "init-author-email"
+            | "init-author-url"
+            | "init-license"
+            | "init-module"
+            | "init-version"
+            // Legacy auth scalars (deprecated bare forms)
+            | "_auth"
+            | "_authToken"
+            | "_password"
+            | "username"
+            | "always-auth"
+            | "alwaysAuth"
+            // npm-shared knobs
+            | "userconfig"
+            | "user-config"
+            | "globalconfig"
+            | "global-config"
+            | "prefix"
+            | "tag"
+            | "scope"
+            | "access"
+            | "engine-strict"
+            | "engineStrict"
+            | "package-lock"
+            | "packageLock"
+            | "ignore-scripts"
+            | "ignoreScripts"
+            | "node-options"
+            | "nodeOptions"
+            | "audit"
+            | "audit-level"
+            | "auditLevel"
+            | "loglevel"
+            | "color"
+            | "progress"
+            | "before"
+            | "fund"
+            | "update-notifier"
+    )
 }
 
 pub(super) fn setting_for_key(key: &str) -> Option<&'static settings_meta::SettingMeta> {
