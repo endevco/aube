@@ -33,12 +33,11 @@ use lifecycle::{
     validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
-pub(crate) use settings::{resolve_dependency_policy, resolve_force_metadata_primer};
+pub(crate) use settings::{ResolverConfigInputs, configure_resolver};
 pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_root};
 
 use settings::{
-    ResolverConfigInputs, check_unmet_peers, configure_resolver,
-    default_lockfile_network_concurrency, default_streaming_network_concurrency,
+    check_unmet_peers, default_lockfile_network_concurrency, default_streaming_network_concurrency,
     detect_aube_dir_gvs_mode, find_gvs_incompatible_trigger, maybe_cleanup_unused_catalogs,
     resolve_dedupe_peer_dependents, resolve_dedupe_peers, resolve_git_shallow_hosts,
     resolve_link_concurrency, resolve_network_concurrency, resolve_peers_from_workspace_root,
@@ -2815,7 +2814,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 settings_ctx: &settings_ctx,
                 workspace_config: &ws_config_shared,
                 workspace_catalogs: &workspace_catalogs,
-                opts: &opts,
+                minimum_release_age_override: opts.minimum_release_age_override,
                 // `lockfile=false` collapses to `None` so the resolver
                 // doesn't waste a fetch widening a lockfile that will
                 // never be written. With lockfiles enabled, a missing
@@ -2824,6 +2823,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 // applies.
                 target_lockfile_kind: lockfile_enabled
                     .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
+                cache_full_packuments: true,
             },
             read_package_hook,
         );
@@ -3459,13 +3459,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     settings_ctx: &settings_ctx,
                     workspace_config: &ws_config_shared,
                     workspace_catalogs: &workspace_catalogs,
-                    opts: &opts,
+                    minimum_release_age_override: opts.minimum_release_age_override,
                     // Same disambiguation as the `--lockfile-only` path:
                     // `None` only when no lockfile will be written, so
                     // widening to every common platform doesn't happen
                     // just to be discarded.
                     target_lockfile_kind: lockfile_enabled
                         .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
+                    cache_full_packuments: true,
                 },
                 read_package_hook,
             );
