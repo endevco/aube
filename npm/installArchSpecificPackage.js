@@ -38,7 +38,10 @@ function main() {
     var subpkgName = '@endevco/aube-' + platform + '-' + arch + suffix;
 
     var npmCmd = platform === 'win32' ? 'npm.cmd' : 'npm';
-    var args = ['install', '--no-save', '--no-package-lock', subpkgName + '@' + version];
+    // --ignore-scripts: platform packages are passive binary carriers;
+    // a compromised mirror/registry must not get RCE via lifecycle hooks
+    // when the user installs the trusted root @endevco/aube.
+    var args = ['install', '--no-save', '--no-package-lock', '--ignore-scripts', subpkgName + '@' + version];
 
     var cp = spawn(npmCmd, args, { stdio: 'inherit', shell: true });
     cp.on('close', function(code, signal) {
@@ -64,6 +67,16 @@ function main() {
     });
 }
 
+// Only these names are ever produced by aube's own build pipeline; ignore
+// any other keys the platform package's bin map might carry so a hostile
+// or malformed sub-package can't smuggle in extra files.
+var ALLOWED_BINS = ['aube', 'aubr', 'aubx'];
+
+function isContained(parent, child) {
+    var rel = path.relative(parent, child);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 function linkSubpkgBins(subpkgName, platform) {
     var subpkgJsonPath = require.resolve(subpkgName + '/package.json');
     var subpkg = JSON.parse(fs.readFileSync(subpkgJsonPath, 'utf8'));
@@ -72,11 +85,26 @@ function linkSubpkgBins(subpkgName, platform) {
     var binDir = path.resolve(__dirname, 'bin');
     try { fs.mkdirSync(binDir); } catch (e) { if (e.code !== 'EEXIST') throw e; }
 
-    Object.keys(subpkg.bin).forEach(function(name) {
-        var srcRel = subpkg.bin[name];
+    var subpkgBin = subpkg.bin || {};
+    ALLOWED_BINS.forEach(function(name) {
+        var srcRel = subpkgBin[name];
+        if (typeof srcRel !== 'string') return;
+
         var src = path.resolve(subpkgDir, srcRel);
+        // Reject bin values whose path escapes the platform package — a
+        // hostile package could otherwise point us at arbitrary files on
+        // disk via "../../etc/..." style traversal.
+        if (!isContained(subpkgDir, src)) {
+            throw new Error('platform package bin "' + name + '" escapes its package directory');
+        }
+
         var destBasename = platform === 'win32' ? name + '.exe' : name;
         var dest = path.resolve(binDir, destBasename);
+        // destBasename comes from our static allowlist, but guard anyway so
+        // a future change to ALLOWED_BINS can't silently regress.
+        if (!isContained(binDir, dest)) {
+            throw new Error('refusing to write outside bin dir: ' + destBasename);
+        }
 
         try { fs.unlinkSync(dest); } catch (e) { if (e.code !== 'ENOENT') throw e; }
         try {
@@ -91,6 +119,9 @@ function linkSubpkgBins(subpkgName, platform) {
             try { fs.chmodSync(dest, 0o755); } catch (_) {}
         } else {
             var shim = path.resolve(binDir, name);
+            if (!isContained(binDir, shim)) {
+                throw new Error('refusing to write outside bin dir: ' + name);
+            }
             try { fs.unlinkSync(shim); } catch (e) { if (e.code !== 'ENOENT') throw e; }
             fs.writeFileSync(shim, '#!' + dest.replace(/\\/g, '/') + '\n');
         }

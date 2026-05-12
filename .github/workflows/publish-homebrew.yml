@@ -30,13 +30,30 @@ jobs:
       - name: Resolve tag
         id: tag
         env:
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${EVENT_TAG:-$INPUT_TAG}"
           if [ -z "$TAG" ]; then
             echo "::error::no tag from release event or workflow_dispatch input"
             exit 1
+          fi
+          # Strict format check before the tag reaches any privileged step.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+            echo "::error::Refusing to publish: tag '$TAG' does not match vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
+          fi
+          # Manual dispatch: require the tag to point at a commit reachable
+          # from main so an attacker with tag-create + dispatch can't push
+          # an unreviewed formula to the tap under AUBE_GH_TOKEN.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${TAG}" --jq '.status' 2>/dev/null || echo "missing")
+            if [ "$STATUS" != "identical" ] && [ "$STATUS" != "behind" ]; then
+              echo "::error::Tag '$TAG' is not reachable from main (compare status: $STATUS)"
+              exit 1
+            fi
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"

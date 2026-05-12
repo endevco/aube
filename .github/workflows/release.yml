@@ -45,13 +45,32 @@ env:
   AUBE_REQUIRE_PRIMER: "1"
 
 jobs:
+  validate-inputs:
+    # inputs.ref is dry-run-only by contract: it lets us rebuild a branch
+    # without an associated release tag. Honoring it for real uploads
+    # would let a dispatcher build arbitrary code under the release tag's
+    # name with contents/id-token/attestations write — fail fast.
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Reject ref override on real release
+        env:
+          REF: ${{ inputs.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -n "$REF" ] && [ "$DRY_RUN" != "true" ]; then
+            echo "::error::inputs.ref override is only allowed when inputs.dry_run is true"
+            exit 1
+          fi
+
   generate-primer:
+    needs: validate-inputs
     runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
+          ref: ${{ inputs.ref != '' && fromJSON(inputs.dry_run || 'false') && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -94,7 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
+          ref: ${{ inputs.ref != '' && fromJSON(inputs.dry_run || 'false') && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -122,7 +141,7 @@ jobs:
           archive: aube-$tag-$target
           target: ${{ matrix.target }}
           build-tool: ${{ matrix.build-tool }}
-          ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
+          ref: ${{ inputs.ref != '' && fromJSON(inputs.dry_run || 'false') && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           token: ${{ secrets.AUBE_GH_TOKEN }}
           codesign: "Developer ID Application: Jeffrey Dickey (4993Y37DX6)"
           codesign_prefix: dev.jdx.
@@ -136,7 +155,7 @@ jobs:
           archive: aube-$tag-$target
           target: ${{ matrix.target }}
           build-tool: ${{ matrix.build-tool }}
-          ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
+          ref: ${{ inputs.ref != '' && fromJSON(inputs.dry_run || 'false') && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           token: ${{ secrets.AUBE_GH_TOKEN }}
           dry-run: ${{ fromJSON(inputs.dry_run || 'false') }}
       - name: Resolve uploaded archive
@@ -239,7 +258,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
+          ref: ${{ inputs.ref != '' && fromJSON(inputs.dry_run || 'false') && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
