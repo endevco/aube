@@ -1,5 +1,5 @@
 use super::super::{packument_cache_dir, packument_full_cache_dir};
-use super::{InstallOptions, version_from_dep_path};
+use super::version_from_dep_path;
 use miette::miette;
 use std::collections::BTreeMap;
 
@@ -614,12 +614,25 @@ fn read_peer_dependencies_meta(
 /// the streaming main path and the `--lockfile-only` short-circuit.
 /// Both paths must produce identical lockfiles, so any new resolver
 /// option should land here rather than only in one branch.
-pub(super) struct ResolverConfigInputs<'a> {
-    pub(super) settings_ctx: &'a aube_settings::ResolveCtx<'a>,
-    pub(super) workspace_config: &'a aube_manifest::workspace::WorkspaceConfig,
-    pub(super) workspace_catalogs:
+///
+/// Also reused by `add`/`remove`/`update`/`dedupe`/`audit` via
+/// `super::build_resolver` so those commands resolve under the same
+/// settings install does — historically those went through a stripped
+/// `Resolver::new + with_dependency_policy` shim that silently dropped
+/// `supportedArchitectures`, `resolutionMode`, `minimumReleaseAge`,
+/// `autoInstallPeers`, overrides, and friends. Concrete fallout:
+/// `aube update` was rewriting the lockfile with host-only optional
+/// deps (collapsing `@biomejs/biome` / `rollup` platform variants) and
+/// dropping `time:` entries for not-updated direct deps.
+pub(crate) struct ResolverConfigInputs<'a> {
+    pub(crate) settings_ctx: &'a aube_settings::ResolveCtx<'a>,
+    pub(crate) workspace_config: &'a aube_manifest::workspace::WorkspaceConfig,
+    pub(crate) workspace_catalogs:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
-    pub(super) opts: &'a InstallOptions,
+    /// CLI-supplied `--minimum-release-age` override in minutes. Only
+    /// `aube install` exposes the flag today; every other caller passes
+    /// `None` and gets the settings-chain value.
+    pub(crate) minimum_release_age_override: Option<u64>,
     /// Lockfile format aube will write on the way out, or `None` when
     /// `lockfile=false` and no lockfile will be written at all. Drives
     /// whether the resolver widens its platform filter to cover every
@@ -631,10 +644,24 @@ pub(super) struct ResolverConfigInputs<'a> {
     /// `None` skips widening entirely — nothing consumes the extra
     /// resolutions. Callers compute this as
     /// `lockfile_enabled.then(|| source_kind_before.unwrap_or(Aube))`.
-    pub(super) target_lockfile_kind: Option<aube_lockfile::LockfileKind>,
+    pub(crate) target_lockfile_kind: Option<aube_lockfile::LockfileKind>,
+    /// When `true`, the resolver caches full (non-corgi) packuments on
+    /// disk so the next install/update can reuse them without a
+    /// round-trip. Install opts in (`true`) to amortize the cost of
+    /// fetching potentially thousands of full packuments. Update /
+    /// add / dedupe / audit (via `super::build_resolver`) opt out
+    /// (`false`) so that re-resolving immediately after a registry
+    /// dist-tag change picks up the new latest instead of serving the
+    /// previous run's cached packument within its `Cache-Control`
+    /// freshness window. The abbreviated cache stays on either way —
+    /// it's keyed off `(name, registry)` and revalidates per request,
+    /// so dist-tag drift is observed there too, but the freshness
+    /// window only matters when `needs_time` routes through the full
+    /// cache.
+    pub(crate) cache_full_packuments: bool,
 }
 
-pub(super) fn configure_resolver(
+pub(crate) fn configure_resolver(
     resolver: aube_resolver::Resolver,
     cwd: &std::path::Path,
     manifest: &aube_manifest::PackageJson,
@@ -645,8 +672,9 @@ pub(super) fn configure_resolver(
         settings_ctx,
         workspace_config,
         workspace_catalogs,
-        opts,
+        minimum_release_age_override,
         target_lockfile_kind,
+        cache_full_packuments,
     } = inputs;
     let auto_install_peers = resolve_auto_install_peers(settings_ctx);
     let exclude_links_from_lockfile = resolve_exclude_links_from_lockfile(settings_ctx);
@@ -726,7 +754,7 @@ pub(super) fn configure_resolver(
     }
     let resolution_mode = resolve_resolution_mode(settings_ctx);
     let minimum_release_age =
-        resolve_minimum_release_age(settings_ctx, opts.minimum_release_age_override);
+        resolve_minimum_release_age(settings_ctx, minimum_release_age_override);
     if let Some(ref mra) = minimum_release_age {
         tracing::debug!(
             "minimumReleaseAge: {} min, {} excluded, strict={}",
@@ -739,8 +767,11 @@ pub(super) fn configure_resolver(
     let packument_concurrency = resolve_network_concurrency(settings_ctx);
     let mut resolver = resolver
         .with_packument_network_concurrency(packument_concurrency)
-        .with_packument_cache(packument_cache_dir())
-        .with_packument_full_cache(packument_full_cache_dir())
+        .with_packument_cache(packument_cache_dir());
+    if cache_full_packuments {
+        resolver = resolver.with_packument_full_cache(packument_full_cache_dir());
+    }
+    let mut resolver = resolver
         .with_auto_install_peers(auto_install_peers)
         .with_peers_suffix_max_length(peers_suffix_max_length)
         .with_exclude_links_from_lockfile(exclude_links_from_lockfile)
