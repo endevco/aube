@@ -3222,26 +3222,31 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     | aube_lockfile::LockfileKind::NpmShrinkwrap
                     | aube_lockfile::LockfileKind::Bun
             );
-            let peer_pass_telemetry = if needs_peer_pass {
-                let start = std::time::Instant::now();
-                let pkgs_before = graph.packages.len();
+            // Time the hoist on its own, then `filter_graph` runs untimed
+            // (it's not part of the peer pass), then apply is timed below.
+            // Snapshotting `pkgs_before` after `filter_graph` keeps the
+            // logged delta a pure measure of `apply_peer_contexts`'s
+            // additions, not filter_graph's prunes.
+            let mut hoist_elapsed: Option<std::time::Duration> = None;
+            if needs_peer_pass {
+                let hoist_start = std::time::Instant::now();
                 graph = aube_resolver::hoist_auto_installed_peers(graph);
-                Some((start, pkgs_before))
-            } else {
-                None
-            };
+                hoist_elapsed = Some(hoist_start.elapsed());
+            }
             aube_resolver::platform::filter_graph(
                 &mut graph,
                 &supported_architectures,
                 &ignored_optional_deps,
             );
-            if let Some((peer_pass_start, pkgs_before)) = peer_pass_telemetry {
+            if let Some(hoist_elapsed) = hoist_elapsed {
                 let peer_options = aube_resolver::PeerContextOptions {
                     dedupe_peer_dependents: resolve_dedupe_peer_dependents(&settings_ctx),
                     dedupe_peers: resolve_dedupe_peers(&settings_ctx),
                     resolve_from_workspace_root: resolve_peers_from_workspace_root(&settings_ctx),
                     peers_suffix_max_length: resolve_peers_suffix_max_length(&settings_ctx),
                 };
+                let pkgs_before = graph.packages.len();
+                let apply_start = std::time::Instant::now();
                 graph = aube_resolver::apply_peer_contexts(graph, &peer_options)
                     .map_err(|e| miette!("peer-context pass failed: {e}"))?;
                 tracing::debug!(
@@ -3249,7 +3254,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     kind,
                     pkgs_before,
                     graph.packages.len(),
-                    peer_pass_start.elapsed()
+                    hoist_elapsed + apply_start.elapsed()
                 );
             }
             let source_label = match kind {
