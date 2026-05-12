@@ -603,6 +603,24 @@ EOF
 	assert_output --partial "'@mongodb-js/zstd': true"
 }
 
+@test "config set --local overrides.<pkg> writes pure-digit versions as strings" {
+	# `overrides.express 4` is a valid version spec ("any 4.x"). It
+	# must serialize as a YAML *string*, not a YAML number — pnpm's
+	# (and aube's) typed-`String` deserializer rejects integer values
+	# without a custom visitor.
+	cat >pnpm-workspace.yaml <<-YAML
+		packages:
+		  - 'apps/*'
+	YAML
+	run aube config set --local overrides.express 4
+	assert_success
+	run cat pnpm-workspace.yaml
+	assert_output --partial "overrides:"
+	assert_output --partial "express: '4'"
+	refute_output --partial "express: 4
+"
+}
+
 @test "config set --local overrides.<pkg> writes to project workspace yaml" {
 	# Generic map-setting branch: dotted writes for any aube
 	# object-typed setting (`overrides`, `packageExtensions`, …) follow

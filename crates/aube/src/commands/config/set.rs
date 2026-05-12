@@ -180,20 +180,17 @@ fn try_set_aube_map_entry(
     Ok(Some(()))
 }
 
-/// Parse a raw scalar string into matching yaml + json values. `true`
-/// / `false` become booleans, decimal integers become numbers, and
-/// everything else stays as a string — same shape `AubeConfigEdit`
-/// uses for free-form writes, so a value typed at the CLI round-trips
-/// through workspace yaml / `package.json` with the expected type.
+/// Parse a raw scalar string into matching yaml + json values for an
+/// aube map entry. Only booleans get a typed representation, because
+/// `allowBuilds` genuinely stores `true` / `false`; every other aube
+/// map value (override versions, package-extension ranges, deprecated
+/// version specs, …) must round-trip as a *string* so pnpm and
+/// aube's typed-`String` serde fields deserialize cleanly. A bare
+/// numeric version like `"4"` would otherwise serialize as a YAML /
+/// JSON number and break the read side.
 fn scalar_to_yaml_json(raw: &str) -> (yaml_serde::Value, serde_json::Value) {
     if let Some(b) = aube_settings::parse_bool(raw) {
         return (yaml_serde::Value::Bool(b), serde_json::Value::Bool(b));
-    }
-    if let Ok(n) = raw.trim().parse::<i64>() {
-        return (
-            yaml_serde::Value::Number(n.into()),
-            serde_json::Value::Number(n.into()),
-        );
     }
     (
         yaml_serde::Value::String(raw.to_string()),
