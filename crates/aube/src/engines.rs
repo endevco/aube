@@ -1,22 +1,24 @@
 //! `engines` field validation.
 //!
-//! Checks each package's declared `engines.{node,aube,pnpm}` constraints:
+//! Checks each package's declared `engines.{node,aube}` constraints:
 //!
 //! - `engines.node` runs against the host's Node version (or the
 //!   `node-version` `.npmrc` override). Checked on the root manifest,
 //!   every workspace-project manifest, and every resolved transitive
 //!   dependency.
-//! - `engines.aube` and `engines.pnpm` both run against aube's own
-//!   version. aube positions itself as a pnpm-compatible drop-in, so a
-//!   package gating on `engines.pnpm` is honored as if aube were that
-//!   pnpm. These two are checked on the root manifest and
-//!   workspace-project manifests only — wild transitive deps frequently
-//!   pin `engines.pnpm` for their authors' own toolchain and we don't
-//!   want every install to drown in unrelated warnings.
+//! - `engines.aube` runs against aube's own version. Checked on the
+//!   root manifest and workspace-project manifests only.
 //!
 //! Mismatches are surfaced as warnings by default; when `engine-strict`
 //! is set in `.npmrc` (or on the root package.json), they hard-fail the
 //! install.
+//!
+//! `engines.pnpm` is intentionally ignored. aube is a pnpm-compatible
+//! drop-in but its own version (`1.x`) does not live in pnpm's version
+//! namespace (`10.x+`), so honoring a package's `engines.pnpm` against
+//! aube's version would emit spurious mismatches on every install of a
+//! project that pins a pnpm version. Projects that genuinely want to
+//! gate on the running tool can use `engines.aube`.
 //!
 //! Other engine fields (`npm`, `yarn`, `vscode`, etc.) are ignored.
 
@@ -27,8 +29,8 @@ use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// The aube version reported for `engines.aube` / `engines.pnpm` checks.
-/// Compiled in via `env!` so it always matches the running binary.
+/// The aube version reported for `engines.aube` checks. Compiled in
+/// via `env!` so it always matches the running binary.
 pub fn aube_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -40,7 +42,6 @@ pub fn aube_version() -> &'static str {
 pub enum Engine {
     Node,
     Aube,
-    Pnpm,
 }
 
 impl Engine {
@@ -49,7 +50,6 @@ impl Engine {
         match self {
             Self::Node => "node",
             Self::Aube => "aube",
-            Self::Pnpm => "pnpm",
         }
     }
 }
@@ -125,16 +125,19 @@ fn check_engine_field(
     }
 }
 
-/// Check all three engine fields (`node`, `aube`, `pnpm`) on a single
-/// manifest, labeling each mismatch with the originating engine and the
+/// Check the `node` and `aube` engine fields on a single manifest,
+/// labeling each mismatch with the originating engine and the
 /// `package` label (project name or "(root)" for an unnamed root). This
 /// runs against root + workspace-project manifests; transitive deps go
 /// through `collect_dep_mismatches` (node-only).
 ///
+/// `engines.pnpm` is intentionally not checked here — see the module
+/// docs for the rationale.
+///
 /// `node_version` is `None` when no Node binary was probed and no
 /// `node-version` override is set — in that case the `engines.node`
 /// field is skipped (we have nothing to compare against), but
-/// `engines.aube` / `engines.pnpm` still run.
+/// `engines.aube` still runs.
 fn check_manifest_engines(
     manifest: &aube_manifest::PackageJson,
     label: &str,
@@ -155,14 +158,6 @@ fn check_manifest_engines(
     if let Some(declared) = check_engine_field(&manifest.engines, "aube", aube_v) {
         out.push(Mismatch {
             engine: Engine::Aube,
-            package: label.to_string(),
-            declared,
-            current: aube_v.to_string(),
-        });
-    }
-    if let Some(declared) = check_engine_field(&manifest.engines, "pnpm", aube_v) {
-        out.push(Mismatch {
-            engine: Engine::Pnpm,
             package: label.to_string(),
             declared,
             current: aube_v.to_string(),
@@ -205,12 +200,12 @@ fn check_manifest_engines(
 /// `read_materialized_pkg_json` already closed elsewhere in the
 /// PR.
 ///
-/// Only `engines.node` is read here. `engines.aube` and `engines.pnpm`
-/// are not checked on transitive deps — wild packages routinely declare
-/// `engines.pnpm` for their authors' own toolchain and we don't want
-/// every install to surface unrelated warnings. Workspace-project
-/// authors who care about `engines.aube` / `engines.pnpm` get them
-/// via `check_manifest_engines` on their own importer manifests.
+/// Only `engines.node` is read here. `engines.aube` is not checked on
+/// transitive deps — that field is for the project's own toolchain
+/// requirement, not its dependencies'. Workspace-project authors who
+/// care about `engines.aube` get it via `check_manifest_engines` on
+/// their own importer manifests. `engines.pnpm` is ignored everywhere;
+/// see the module docs.
 pub fn collect_dep_mismatches(
     aube_dir: &Path,
     graph: &LockfileGraph,
@@ -316,7 +311,7 @@ pub fn collect_dep_mismatches(
     Ok(per_pkg?.into_iter().flatten().collect())
 }
 
-/// Check the root manifest's `engines.{node,aube,pnpm}` constraints.
+/// Check the root manifest's `engines.{node,aube}` constraints.
 /// The package label is the manifest's `name`, falling back to
 /// `(root)` for unnamed manifests.
 pub fn check_root(
@@ -355,7 +350,7 @@ pub fn check_workspace_importers(
 /// Run the full engines check and either emit warnings or hard-fail the
 /// install, depending on `strict`. A `None` `node_version` (e.g. no node
 /// binary on PATH) skips `engines.node` checks but still validates
-/// `engines.aube` and `engines.pnpm` — those don't depend on Node.
+/// `engines.aube` — that one doesn't depend on Node.
 #[allow(clippy::too_many_arguments)]
 pub fn run_checks(
     aube_dir: &Path,
@@ -372,8 +367,8 @@ pub fn run_checks(
     // `node_version` is `None` when no Node binary was probed and no
     // `node-version` override is set. The manifest-engine helpers skip
     // the `engines.node` field in that case (`check_engine_field` has
-    // nothing to compare against), but still validate `engines.aube` /
-    // `engines.pnpm` against aube's own version.
+    // nothing to compare against), but still validate `engines.aube`
+    // against aube's own version.
     mismatches.extend(check_root(manifest, node_version));
     mismatches.extend(check_workspace_importers(workspace_manifests, node_version));
 
@@ -484,13 +479,15 @@ mod tests {
     }
 
     #[test]
-    fn check_root_flags_pnpm_mismatch() {
+    fn check_root_ignores_pnpm_engine() {
+        // engines.pnpm is intentionally not honored: aube's own
+        // version (1.x) lives in a different namespace than pnpm's
+        // (10.x+), so comparing them produces spurious warnings on
+        // every install of a project that pins a pnpm version.
+        // Discussion: github.com/endevco/aube/discussions/626.
         let mut m = empty_manifest();
         m.engines.insert("pnpm".into(), ">=99999".into());
-        let v = check_root(&m, Some("18.0.0"));
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].engine, Engine::Pnpm);
-        assert_eq!(v[0].current, aube_version());
+        assert!(check_root(&m, Some("18.0.0")).is_empty());
     }
 
     #[test]
@@ -504,19 +501,19 @@ mod tests {
     }
 
     #[test]
-    fn check_root_flags_all_three_engines_independently() {
-        // Three fields, three mismatches in one manifest — confirms
-        // we don't short-circuit on the first hit.
+    fn check_root_flags_node_and_aube_independently() {
+        // Both honored fields, both flagged in one manifest —
+        // confirms we don't short-circuit on the first hit. engines.pnpm
+        // is set but ignored (see check_root_ignores_pnpm_engine).
         let mut m = empty_manifest();
         m.engines.insert("node".into(), ">=99999".into());
         m.engines.insert("aube".into(), ">=99999".into());
         m.engines.insert("pnpm".into(), ">=99999".into());
         let v = check_root(&m, Some("18.0.0"));
-        assert_eq!(v.len(), 3);
+        assert_eq!(v.len(), 2);
         let engines: std::collections::HashSet<_> = v.iter().map(|m| m.engine).collect();
         assert!(engines.contains(&Engine::Node));
         assert!(engines.contains(&Engine::Aube));
-        assert!(engines.contains(&Engine::Pnpm));
     }
 
     #[test]
@@ -529,7 +526,7 @@ mod tests {
         // manifest declaring `engines.node`. Under engine-strict that
         // hard-failed installs on machines without Node. The fix
         // threads `Option<&str>` and skips the field entirely when
-        // None; engines.aube / engines.pnpm still run.
+        // None; engines.aube still runs.
         let mut m = empty_manifest();
         m.engines.insert("node".into(), ">=20".into());
         m.engines.insert("aube".into(), ">=99999".into());
@@ -555,7 +552,7 @@ mod tests {
         a.engines.insert("node".into(), ">=99999".into());
         let mut b = empty_manifest();
         b.name = Some("project-b".into());
-        b.engines.insert("pnpm".into(), ">=99999".into());
+        b.engines.insert("aube".into(), ">=99999".into());
         let manifests = vec![
             (".".to_string(), empty_manifest()),
             ("packages/a".to_string(), a),
@@ -569,7 +566,7 @@ mod tests {
         );
         assert!(
             v.iter()
-                .any(|m| m.package == "project-b" && m.engine == Engine::Pnpm)
+                .any(|m| m.package == "project-b" && m.engine == Engine::Aube)
         );
     }
 

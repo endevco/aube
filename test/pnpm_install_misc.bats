@@ -772,25 +772,20 @@ JSON
 	assert_output --partial "project-1: wanted node >=99999"
 }
 
-@test "engine-strict + workspace: install fails on a workspace project's engines.pnpm mismatch" {
-	# Ported from pnpm/test/install/misc.ts:303 ('recursive install
-	# should fail if the used pnpm version does not satisfy the pnpm
-	# version specified in engines of any of the workspace projects').
+@test "engine-strict + workspace: install ignores engines.pnpm" {
+	# aube does not honor engines.pnpm: its own version (1.x) lives
+	# in a different namespace than pnpm's (10.x+), so honoring
+	# `engines.pnpm` against aube's version would emit spurious
+	# mismatches on every install of a project that pins a pnpm
+	# version. Projects that genuinely want to gate on the running
+	# tool can use engines.aube instead. Regression for
+	# github.com/endevco/aube/discussions/626.
 	#
-	# pnpm's test asserts on the verbatim "Your pnpm version is
-	# incompatible with" string; aube emits its generic engines warning
-	# (which now labels the engine), so we assert on the structural
-	# parts: (1) project-1's name appears, (2) the `pnpm` engine is
-	# called out, (3) the requested range survives. aube checks
-	# `engines.pnpm` against its own version (`env!("CARGO_PKG_VERSION")`)
-	# because aube is a pnpm-compatible drop-in — a package gating on
-	# `engines.pnpm` is gating on this aube. >=99999 fails for any real
-	# aube release.
-	#
-	# Pnpm's variant doesn't enable engine-strict (engines.pnpm fails
-	# unconditionally in pnpm); aube routes everything through the
-	# engines machinery, so the test enables engine-strict to get the
-	# install-blocking semantics. Same regression guard either way.
+	# This is a deliberate divergence from pnpm/test/install/misc.ts:303
+	# ('recursive install should fail if the used pnpm version does
+	# not satisfy the pnpm version specified in engines of any of the
+	# workspace projects'). Even under engine-strict, an unsatisfiable
+	# engines.pnpm range must not block the install.
 	mkdir -p project-1 project-2
 	cat >pnpm-workspace.yaml <<'YAML'
 packages:
@@ -821,7 +816,6 @@ JSON
 	echo 'engine-strict=true' >.npmrc
 
 	run aube install --no-frozen-lockfile
-	assert_failure
-	assert_output --partial "engine-strict"
-	assert_output --partial "project-1: wanted pnpm >=99999"
+	assert_success
+	refute_output --partial "wanted pnpm"
 }
