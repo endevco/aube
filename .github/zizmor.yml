@@ -1,0 +1,40 @@
+# Pre-existing findings grandfathered in when zizmor was first wired up.
+# New workflows / new findings should be fixed rather than added to this list.
+# Drop entries here as the underlying workflows are hardened in follow-ups.
+rules:
+  cache-poisoning:
+    ignore:
+      - ci.yml
+  excessive-permissions:
+    ignore:
+      - ci.yml
+      - copr-publish.yml
+      - docs.yml
+      - ppa-publish.yml
+      - release.yml
+  artipacked:
+    ignore:
+      - bench-pr.yml
+      - bench-refresh.yml
+      - ci.yml
+      - copr-publish.yml
+      - docs.yml
+      - ppa-publish.yml
+      - publish-homebrew.yml
+      - publish-npm.yml
+      - release-plz.yml
+      - release.yml
+  ref-version-mismatch:
+    ignore:
+      - bench-pr.yml
+      - bench-refresh.yml
+      - ci.yml
+      - docs.yml
+      - release-plz.yml
+  secrets-inherit:
+    ignore:
+      - release-plz.yml
+  template-injection:
+    ignore:
+      - copr-publish.yml
+      - ppa-publish.yml
