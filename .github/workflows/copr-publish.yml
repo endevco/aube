@@ -15,6 +15,8 @@ on:
         default: "fedora-rawhide-aarch64 fedora-rawhide-x86_64 fedora-44-aarch64 fedora-44-x86_64 fedora-43-aarch64 fedora-43-x86_64 fedora-42-aarch64 fedora-42-x86_64 epel-10-aarch64 epel-10-x86_64"
         type: string
 
+permissions: {}
+
 env:
   PACKAGE_NAME: aube
 
@@ -24,6 +26,8 @@ jobs:
     timeout-minutes: 150
     container:
       image: fedora:45
+    permissions:
+      contents: read
     steps:
       - name: Install packaging deps
         run: |
@@ -80,6 +84,7 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up environment variables
         env:

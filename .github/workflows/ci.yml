@@ -16,6 +16,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -37,14 +39,20 @@ jobs:
             runner: namespace-profile-endev-macos-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    permissions:
+      contents: read
     env:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
         with:
           cache: rust
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+        with:
+          cache: false
       - run: mise run build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -60,14 +68,20 @@ jobs:
   test-linux:
     runs-on: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
     timeout-minutes: 30
+    permissions:
+      contents: read
     env:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
         with:
           cache: rust
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+        with:
+          cache: false
       - run: node benchmarks/validate-results.mjs
       - run: mise run test
       - run: mise run lint
@@ -125,19 +139,25 @@ jobs:
             count: 2
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    permissions:
+      contents: read
     env:
       AUBE_CI_OS: ${{ startsWith(matrix.os, 'ubuntu') && 'linux' || 'macos' }}
       AUBE_BATS_SHARD_INDEX: ${{ matrix.shard }}
       AUBE_BATS_SHARD_COUNT: ${{ matrix.count }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - name: Install GNU parallel (ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y parallel
       - name: Install GNU parallel (macos)
         if: startsWith(matrix.os, 'macos')
         run: brew install parallel
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+        with:
+          cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: aube-${{ matrix.os }}
@@ -166,17 +186,23 @@ jobs:
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    permissions:
+      contents: read
     env:
       AUBE_CI_OS: ${{ startsWith(matrix.os, 'ubuntu') && 'linux' || 'macos' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - name: Install GNU parallel (ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y parallel
       - name: Install GNU parallel (macos)
         if: startsWith(matrix.os, 'macos')
         run: brew install parallel
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+        with:
+          cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: aube-${{ matrix.os }}
@@ -197,11 +223,19 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2 # zizmor: ignore[cache-poisoning] save-if gates writes to main; PRs read-only
         with:
           shared-key: windows
+          # Only main may write the shared cache; PRs restore from it but
+          # cannot update it. Prevents a malicious PR from poisoning the
+          # cache that subsequent main runs / other PRs would restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --workspace
       - run: cargo test --workspace
 
@@ -217,6 +251,7 @@ jobs:
       - windows
     runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 2
+    permissions: {}
     # Run on success or upstream failure but skip when the workflow is cancelled
     # — `always()` would override `cancel-in-progress` and waste a runner.
     if: ${{ !cancelled() }}

@@ -25,6 +25,8 @@ on:
         default: ""
         type: string
 
+permissions: {}
+
 env:
   DEBIAN_FRONTEND: noninteractive
 
@@ -36,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ppa-publishing
     timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
       - name: Validate workflow inputs
@@ -87,6 +91,7 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up environment variables
         env:
