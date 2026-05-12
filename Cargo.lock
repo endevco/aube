@@ -372,6 +372,7 @@ dependencies = [
  "bytes",
  "flate2",
  "miette",
+ "proptest",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
