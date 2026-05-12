@@ -3301,11 +3301,14 @@ mod tests {
 
         // FxMap iteration is hash-based, so pinning "BBB.txt" as the
         // later-iterated entry the way the BTreeMap test did doesn't
-        // hold. Instead, build the index, read the actual iteration
-        // order to find the cheap probe's first-file sample, and
-        // corrupt a *different* file. Both halves of the invariant —
-        // cheap probe accepts, verified probe rejects — are then
-        // deterministic regardless of foldhash internals.
+        // hold. Instead, build the index, round-trip it through
+        // save+load, and read *that* iteration order — `FxMap`'s
+        // FixedState seed is stable, but the incremental-insert map's
+        // bucket count can differ from a freshly-deserialized map's,
+        // and the cheap probe runs on the deserialized path. Corrupt
+        // a non-first-iterated file so both halves of the invariant —
+        // cheap probe accepts, verified probe rejects — are
+        // deterministic.
         let mut index = PackageIndex::default();
         for i in 0..8 {
             let stored = store
@@ -3313,16 +3316,19 @@ mod tests {
                 .unwrap();
             index.insert(format!("file-{i:02}.txt"), stored);
         }
-        let first_path = index.values().next().unwrap().store_path.clone();
-        let dropped_path = index
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+        let loaded = store
+            .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+            .expect("freshly saved index must load before any corruption");
+        let first_path = loaded.values().next().unwrap().store_path.clone();
+        let dropped_path = loaded
             .values()
             .find(|f| f.store_path != first_path)
             .unwrap()
             .store_path
             .clone();
-        store
-            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
-            .unwrap();
 
         // Remove a non-first file's CAS shard.
         std::fs::remove_file(&dropped_path).unwrap();
