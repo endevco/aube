@@ -1564,6 +1564,34 @@ enum OTmpfileFallback {
     Hard(Error),
 }
 
+// Size threshold below which we skip both `posix_fallocate` and
+// `posix_fadvise(DONTNEED)` on the CAS write path. Both are
+// fixed-cost-per-call best-effort advisory syscalls whose benefits
+// (avoid ext4 fragmentation, evict pages) don't apply to small
+// writes — the kernel won't fragment a single-block write, and tiny
+// pages don't meaningfully pressure the cache. samply on a cold
+// 1230-pkg install pinned the two at ~4.4% + ~4.8% of self time
+// before this gate; gating to ≥64KB skips them for >95% of npm
+// tarball entries while preserving the original behavior on the
+// large files (typescript.js, monaco-editor, etc.) where it pays.
+//
+// Overridable via `AUBE_CAS_SMALL_FILE_THRESHOLD` (bytes). Set to 0
+// to restore the always-on behavior; set to a very large number to
+// effectively disable both syscalls.
+#[cfg(target_os = "linux")]
+const CAS_SMALL_FILE_THRESHOLD_DEFAULT: usize = 64 * 1024;
+
+#[cfg(target_os = "linux")]
+fn cas_small_file_threshold() -> usize {
+    static THRESHOLD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("AUBE_CAS_SMALL_FILE_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(CAS_SMALL_FILE_THRESHOLD_DEFAULT)
+    })
+}
+
 // Open anonymous file in parent dir, write, linkat via /proc/self/fd.
 // Skips the tempfile unique-name probe and explicit fchmod. Falls
 // back via Unsupported on EOPNOTSUPP, ENOENT (no /proc), or EXDEV.
@@ -1608,10 +1636,17 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
     // SAFETY: raw_fd is owned, OwnedFd closes on drop.
     let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
     let mut file = std::fs::File::from(owned);
+    let small_threshold = cas_small_file_threshold();
+    let is_large = bytes.len() >= small_threshold;
     // Best-effort fallocate so the kernel allocates contiguous extents
     // up front. Skips ext4 fragmentation churn on the next write.
     // EOPNOTSUPP and ENOSYS are fine, regular write_all handles them.
-    let _ = posix_fallocate(&file, bytes.len() as libc::off_t);
+    // Skipped below `small_threshold`: fragmentation only matters for
+    // multi-block writes, and most npm tarball entries are well under
+    // that. See `cas_small_file_threshold` for rationale.
+    if is_large {
+        let _ = posix_fallocate(&file, bytes.len() as libc::off_t);
+    }
     file.write_all(bytes)
         .map_err(|e| OTmpfileFallback::Hard(Error::Io(path.to_path_buf(), e)))?;
     // No sync_data: contradicts the no-fsync CAS policy. Crash window
@@ -1645,13 +1680,18 @@ fn try_o_tmpfile_publish(path: &Path, bytes: &[u8]) -> Result<CasWriteOutcome, O
     if r == 0 {
         // CAS bytes are read-once into reflinks/hardlinks. Drop them
         // from the page cache so the parallel linker pass over many
-        // packages doesn't push the working set out.
-        use std::os::fd::AsRawFd;
-        let fd = file.as_raw_fd();
-        // SAFETY: fd is still owned by `file` here. POSIX_FADV_DONTNEED
-        // is advisory, return value is ignored.
-        unsafe {
-            libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+        // packages doesn't push the working set out. Per-file cost is
+        // roughly fixed regardless of size, so small files paid a
+        // disproportionate share — gate on `small_threshold` to match
+        // the fallocate gate above.
+        if is_large {
+            use std::os::fd::AsRawFd;
+            let fd = file.as_raw_fd();
+            // SAFETY: fd is still owned by `file` here. POSIX_FADV_DONTNEED
+            // is advisory, return value is ignored.
+            unsafe {
+                libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+            }
         }
         return Ok(CasWriteOutcome::Created);
     }
