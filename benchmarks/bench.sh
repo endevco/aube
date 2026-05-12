@@ -393,12 +393,33 @@ expand_template() {
 	echo "$tpl"
 }
 
+# Minimum publish-age gate, in minutes. aube defaults to 1440 (24h)
+# as a supply-chain mitigation — the resolver skips versions newer
+# than this window. The default forces aube to fetch the full
+# (non-corgi) packument format so it can read the per-version `time`
+# map; corgi omits `time` on npmjs.org. Bun and pnpm both support an
+# equivalent flag; npm/yarn/deno/vlt don't. Pinning all supported
+# PMs to the same value is what makes the bench an apples-to-apples
+# comparison — otherwise aube alone pays the full-packument cost
+# (5x larger response on @types/node and similar heavily-versioned
+# packuments) while bun/pnpm cruise on corgi.
+#
+# Override via `BENCH_MIN_RELEASE_AGE_MINUTES=0` to disable the gate
+# across all PMs (useful for measuring raw resolver speed without
+# the security-feature axis).
+MIN_RELEASE_AGE_MINUTES="${BENCH_MIN_RELEASE_AGE_MINUTES:-1440}"
+MIN_RELEASE_AGE_SECONDS=$((MIN_RELEASE_AGE_MINUTES * 60))
+
 # Per-tool boilerplate factored out of the `CMDS` declarations below.
 # Every bun invocation threads the same hermetic environment
 # (isolated `HOME`, `BUN_INSTALL`, `--cache-dir`, `--ignore-scripts`,
 # `--no-summary`) so the scenarios only have to spell out the
 # install-mode flags that actually vary per scenario.
-BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} --ignore-scripts --no-summary"
+#
+# `--minimum-release-age` is bun's name for the same supply-chain
+# gate aube defaults on; matching the value here keeps the bench
+# from advantaging bun by silently skipping work aube does.
+BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} --ignore-scripts --no-summary --minimum-release-age=${MIN_RELEASE_AGE_SECONDS}"
 
 # aube reads the global store root from `$XDG_DATA_HOME/aube/store`
 # (falling back to `$HOME/.local/share/aube/store`). We must pin
@@ -438,7 +459,7 @@ cmd_template() {
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 		;;
 	gvs-warm:pnpm | gvs-cold:pnpm | ci-warm:pnpm | ci-cold:pnpm)
-		echo "cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts --config.minimum-release-age=${MIN_RELEASE_AGE_MINUTES} >/dev/null 2>&1"
 		;;
 	gvs-warm:yarn | gvs-cold:yarn | ci-warm:yarn | ci-cold:yarn)
 		# Yarn 4: --immutable replaces --frozen-lockfile and aborts
@@ -475,7 +496,7 @@ cmd_template() {
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install-test --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline >/dev/null 2>&1"
 		;;
 	install-test:pnpm)
-		echo "cd {project} && HOME={home} {bin} install-test --frozen-lockfile --ignore-scripts >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} {bin} install-test --frozen-lockfile --ignore-scripts --config.minimum-release-age=${MIN_RELEASE_AGE_MINUTES} >/dev/null 2>&1"
 		;;
 	install-test:yarn)
 		echo "cd {project} && HOME={home} {bin} install --immutable >/dev/null 2>&1 && HOME={home} {bin} test >/dev/null 2>&1"
@@ -490,13 +511,13 @@ cmd_template() {
 		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
 		;;
 	add:bun)
-		echo "cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary --minimum-release-age=${MIN_RELEASE_AGE_SECONDS} >/dev/null 2>&1"
 		;;
 	add:npm)
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps is-odd >/dev/null 2>&1"
 		;;
 	add:pnpm)
-		echo "cd {project} && HOME={home} {bin} add is-odd --ignore-scripts >/dev/null 2>&1"
+		echo "cd {project} && HOME={home} {bin} add is-odd --ignore-scripts --config.minimum-release-age=${MIN_RELEASE_AGE_MINUTES} >/dev/null 2>&1"
 		;;
 	add:yarn)
 		echo "cd {project} && HOME={home} {bin} add is-odd >/dev/null 2>&1"
