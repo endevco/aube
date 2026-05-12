@@ -1,4 +1,3 @@
-use serde::de::value::MapAccessDeserializer;
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
@@ -557,12 +556,24 @@ where
             f.write_str("an _npmUser object or any other JSON value")
         }
 
-        // Object case: defer to `NpmUser`'s derived `Deserialize` so any
-        // future fields on `NpmUser` get populated without touching this
-        // call site. `MapAccessDeserializer` is a zero-cost adapter that
-        // re-presents the live `MapAccess` as a `Deserializer`.
-        fn visit_map<A: MapAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
-            NpmUser::deserialize(MapAccessDeserializer::new(access)).map(Some)
+        // Object case: walk the map manually and pluck `trustedPublisher`
+        // — the only `NpmUser` field anyone reads (see `aube-resolver`'s
+        // trust-policy check). Deferring to `NpmUser::deserialize` on the
+        // live `MapAccess` would propagate any deserialize error up and
+        // fail the whole packument parse, which silently breaks the
+        // tolerant contract the moment `NpmUser` gains a non-defaulted
+        // field. New fields that need reading from the packument get
+        // their extraction added here.
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut trusted_publisher: Option<serde_json::Value> = None;
+            while let Some(key) = access.next_key::<String>()? {
+                if key == "trustedPublisher" && trusted_publisher.is_none() {
+                    trusted_publisher = access.next_value::<Option<serde_json::Value>>()?;
+                } else {
+                    let _: IgnoredAny = access.next_value()?;
+                }
+            }
+            Ok(Some(NpmUser { trusted_publisher }))
         }
 
         visit_primitives_to!('de, None);
@@ -919,6 +930,31 @@ mod tests {
         let v = parse(r#"{"name":"x","version":"1.0.0","_npmUser":{"name":"u","email":"u@x"}}"#);
         let user = v.npm_user.expect("_npmUser present");
         assert!(user.trusted_publisher.is_none());
+    }
+
+    /// Regression guard: the tolerant deserializer extracts
+    /// `trustedPublisher` *manually* and ignores everything else, so
+    /// payloads containing arbitrary garbage in the other `_npmUser`
+    /// fields don't fail the whole packument parse. Pinning this means
+    /// future contributors can't accidentally route through
+    /// `NpmUser::deserialize` again — which would propagate any new
+    /// non-defaulted-field error up and break tolerance for real-world
+    /// packuments that pre-date the new field.
+    #[test]
+    fn npm_user_garbage_sibling_fields_still_extract_trusted_publisher() {
+        let v = parse(
+            r#"{"name":"x","version":"1.0.0",
+                "_npmUser":{
+                    "trustedPublisher":{"id":"gh"},
+                    "name":42,
+                    "email":[null,{"deep":{"nested":"garbage"}}],
+                    "future_field_with_strict_type":"this would fail strict deserialize"
+                }}"#,
+        );
+        let user = v
+            .npm_user
+            .expect("_npmUser present despite garbage siblings");
+        assert!(user.trusted_publisher.is_some());
     }
 
     /// Pre-2010 publishes serialize `_npmUser` as a `"name <email>"`
