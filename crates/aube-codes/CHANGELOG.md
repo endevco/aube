@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0](https://github.com/endevco/aube/compare/aube-codes-v1.11.0...aube-codes-v1.12.0) - 2026-05-12
+
+### Added
+
+- *(config)* scope .npmrc to npm-shared keys, route aube settings to config.toml, support dotted map writes ([#634](https://github.com/endevco/aube/pull/634))
+
+### Other
+
+- refresh benchmarks for v1.11.0 ([#622](https://github.com/endevco/aube/pull/622))
+
 ## [1.11.0](https://github.com/endevco/aube/compare/aube-codes-v1.10.4...aube-codes-v1.11.0) - 2026-05-11
 
 ### Fixed
