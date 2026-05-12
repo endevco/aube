@@ -57,7 +57,11 @@ jobs:
             exit 1
           fi
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [[ -n "$INPUT_CHROOTS" && ! "$INPUT_CHROOTS" =~ ^[a-z0-9][a-z0-9\ \-]*$ ]]; then
+            # COPR chroot names look like `fedora-rawhide-x86_64` or
+            # `epel-10-aarch64` — lowercase letters, digits, hyphens,
+            # underscores, and spaces between entries. Underscore is
+            # required for the `x86_64` arch suffix.
+            if [[ -n "$INPUT_CHROOTS" && ! "$INPUT_CHROOTS" =~ ^[a-z0-9][a-z0-9\ _\-]*$ ]]; then
               echo "::error::Refusing to build: chroots '$INPUT_CHROOTS' contains unexpected characters"
               exit 1
             fi
