@@ -1105,7 +1105,9 @@ impl Store {
                     index.insert(rel_path, stored);
                 }
             } else {
-                use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+                use rayon::iter::{
+                    IndexedParallelIterator, IntoParallelIterator, ParallelIterator,
+                };
                 // `with_min_len` raises the minimum work unit per
                 // rayon task. samply on a 1230-pkg cold install
                 // pinned `crossbeam_deque::Stealer::steal` at 4.1%
@@ -3297,31 +3299,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("files"));
 
-        // Many files, one corrupted: with `FxMap` iteration order is
-        // hash-based, so the cheap probe's first-file sample is
-        // probabilistic. Stuffing 32 healthy files alongside one
-        // corrupted entry keeps the precondition (cheap probe likely
-        // accepts) statistically robust without being order-coupled.
+        // FxMap iteration is hash-based, so pinning "BBB.txt" as the
+        // later-iterated entry the way the BTreeMap test did doesn't
+        // hold. Instead, build the index, read the actual iteration
+        // order to find the cheap probe's first-file sample, and
+        // corrupt a *different* file. Both halves of the invariant —
+        // cheap probe accepts, verified probe rejects — are then
+        // deterministic regardless of foldhash internals.
         let mut index = PackageIndex::default();
-        for i in 0..32 {
+        for i in 0..8 {
             let stored = store
-                .import_bytes(format!("file-{i}").as_bytes(), false)
+                .import_bytes(format!("content-{i}").as_bytes(), false)
                 .unwrap();
             index.insert(format!("file-{i:02}.txt"), stored);
         }
-        let dropped = store.import_bytes(b"missing-soon", false).unwrap();
-        let dropped_path = dropped.store_path.clone();
-        index.insert("dropped.txt".to_string(), dropped);
+        let first_path = index.values().next().unwrap().store_path.clone();
+        let dropped_path = index
+            .values()
+            .find(|f| f.store_path != first_path)
+            .unwrap()
+            .store_path
+            .clone();
         store
             .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
             .unwrap();
 
-        // Remove the corrupted file's CAS shard.
+        // Remove a non-first file's CAS shard.
         std::fs::remove_file(&dropped_path).unwrap();
 
+        // Cheap probe samples only the iterated-first file (still
+        // healthy) and accepts the index — the bug class that motivated
+        // the fix.
+        assert!(
+            store
+                .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .is_some(),
+            "cheap probe must accept partial corruption (precondition for the fix)"
+        );
         // Re-save defensively in case the cheap probe path ever drops
-        // the index file on a future tuning. The verified-probe assertion
-        // below is the real invariant.
+        // the index file on a future tuning. The verified-probe
+        // assertion below is the real invariant.
         store
             .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
             .unwrap();
