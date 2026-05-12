@@ -1463,7 +1463,7 @@ where
     // (either as a real directory here in per-project mode, or as a
     // symlink into the global virtual store that itself exists),
     // there's nothing to materialize and the 13–15 KB JSON on disk at
-    // `~/.cache/aube/index/<name>@<ver>.json` would be read for
+    // `<store>/v1/index/<name>@<ver>.json` would be read for
     // nothing. A fresh no-op install against the 1.4k-package medium
     // fixture drops from ~38 ms of parallel index reads to a handful
     // of `stat(2)`s.
@@ -1540,7 +1540,22 @@ where
             // under the same (name, version) — e.g. a github codeload
             // archive vs. the npm-published bytes — can't return the
             // wrong file list.
-            match store.load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref()) {
+            //
+            // `_verified` because the index cache and the CAS shards
+            // live in separate paths until the v1/index/ migration
+            // completes on disk, and external systems can drift them
+            // apart even after (Docker BuildKit cache mounts that
+            // only cover one path, foreign sync tools, partial wipes
+            // mid-install). Stat-per-file is paid only on a cache hit;
+            // a stale index drops here and falls through to `NeedsFetch`,
+            // which re-fetches the tarball cleanly — the alternative is
+            // the materializer dying mid-link with `ERR_AUBE_MISSING_STORE_FILE`,
+            // forcing the user to retry the whole install.
+            match store.load_index_verified(
+                pkg.registry_name(),
+                &pkg.version,
+                pkg.integrity.as_deref(),
+            ) {
                 Some(index) => (dep_path.clone(), pkg, CheckResult::Cached(index)),
                 None => (dep_path.clone(), pkg, CheckResult::NeedsFetch),
             }
@@ -3699,8 +3714,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // of the cache key so a github-sourced tarball
                     // under the same (name, version) can't return the
                     // registry-cached file list.
+                    //
+                    // `_verified`: see the matching call in
+                    // `fetch_packages_with_root` for the full
+                    // rationale — short version, a stat-per-file cache
+                    // check is cheap, and dropping a stale index
+                    // here re-fetches the tarball cleanly instead of
+                    // letting the materializer die later with
+                    // `ERR_AUBE_MISSING_STORE_FILE`.
                     let pkg_registry_name = pkg.registry_name().to_string();
-                    if let Some(index) = fetch_store.load_index(
+                    if let Some(index) = fetch_store.load_index_verified(
                         &pkg_registry_name,
                         &pkg.version,
                         pkg.integrity.as_deref(),

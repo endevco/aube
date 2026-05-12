@@ -3251,6 +3251,69 @@ mod tests {
     }
 
     #[test]
+    fn load_index_passes_partial_corruption_load_index_verified_catches_it() {
+        // The user's BuildKit failure mode: cached index references
+        // multiple files; the lexicographically-first file's CAS shard
+        // happens to still exist (or never did — `dist.size` is absent
+        // on legacy indexes so the probe defaults to `exists()`), but a
+        // later file's shard is gone. The fast `load_index` returns
+        // Some(stale_index), which then dies inside the linker with
+        // `ERR_AUBE_MISSING_STORE_FILE`. `load_index_verified` stats
+        // every file and drops the index so the fetch path re-imports.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+
+        // Two files, distinct CAS shards. BTreeMap key order puts
+        // "AAA.txt" before "BBB.txt", so the cheap `load_index` probe
+        // checks AAA first.
+        let kept = store.import_bytes(b"present", false).unwrap();
+        let dropped = store.import_bytes(b"missing-soon", false).unwrap();
+        let dropped_path = dropped.store_path.clone();
+        let mut index = BTreeMap::new();
+        index.insert("AAA.txt".to_string(), kept);
+        index.insert("BBB.txt".to_string(), dropped);
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+
+        // Remove the SECOND file's CAS shard. The first remains.
+        std::fs::remove_file(&dropped_path).unwrap();
+
+        // Cheap probe accepts the index — the bug class that motivated
+        // the fix.
+        assert!(
+            store
+                .load_index("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .is_some(),
+            "cheap probe must accept partial corruption (precondition for the fix)"
+        );
+        // Re-save (load_index drops the index when its embedded
+        // `dist.size` check fires on later files for newer indexes).
+        // load_index doesn't actually drop on the cheap path today, but
+        // re-save defensively to keep this test independent of probe
+        // tuning.
+        store
+            .save_index("pkg", "1.0.0", Some(TEST_INTEGRITY), &index)
+            .unwrap();
+
+        // Verified probe walks every file and rejects the stale index.
+        assert!(
+            store
+                .load_index_verified("pkg", "1.0.0", Some(TEST_INTEGRITY))
+                .is_none(),
+            "verified probe must reject an index whose later files are missing"
+        );
+
+        // Side effect: load_index_verified drops the JSON so the next
+        // fetch re-imports rather than racing on the same dead reference.
+        let path = store.index_path("pkg", "1.0.0", Some(TEST_INTEGRITY));
+        assert!(
+            !path.unwrap().exists(),
+            "verified probe must drop the stale cached index"
+        );
+    }
+
+    #[test]
     fn test_invalidate_cached_index_removes_entry() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("files"));
