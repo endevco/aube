@@ -18,24 +18,27 @@ teardown() {
 	assert_output --partial "add"
 }
 
-@test "aube store path defaults to \$XDG_DATA_HOME/aube/store" {
+@test "aube store path defaults to \$XDG_DATA_HOME/aube/store/v1" {
 	run aube store path
 	assert_success
-	# HOME is isolated to the test temp dir and XDG_DATA_HOME points
-	# inside it, so the resolved store path must match exactly.
-	assert_output "$XDG_DATA_HOME/aube/store/v1/files"
+	# `aube store path` prints the store-version directory containing
+	# both `files/` (CAS) and `index/` (cached indexes), matching the
+	# granularity of `pnpm store path`. HOME is isolated to the test
+	# temp dir and XDG_DATA_HOME points inside it, so the resolved
+	# path must match exactly.
+	assert_output "$XDG_DATA_HOME/aube/store/v1"
 }
 
-@test "aube store path honors store-dir from .npmrc and appends v1/files" {
+@test "aube store path honors store-dir from .npmrc and appends v1" {
 	mkdir -p custom-store
 	echo "store-dir=$PWD/custom-store" >.npmrc
 	run aube store path
 	assert_success
-	# aube appends its own CAS schema suffix (`v1/files`) to the
-	# user-supplied store-dir. The suffix exists so the on-disk layout
-	# is stable across versions of aube and never collides with a pnpm
-	# store rooted at the same path.
-	assert_output "$PWD/custom-store/v1/files"
+	# aube appends its own schema suffix (`v1`) to the user-supplied
+	# store-dir. The suffix exists so the on-disk layout is stable
+	# across versions of aube and never collides with a pnpm store
+	# rooted at the same path.
+	assert_output "$PWD/custom-store/v1"
 }
 
 @test "aube store path honors storeDir from pnpm-workspace.yaml" {
@@ -45,14 +48,14 @@ storeDir: $PWD/ws-store
 EOF
 	run aube store path
 	assert_success
-	assert_output "$PWD/ws-store/v1/files"
+	assert_output "$PWD/ws-store/v1"
 }
 
 @test "aube store path expands ~ in store-dir to \$HOME" {
 	echo 'store-dir=~/custom-home-store' >.npmrc
 	run aube store path
 	assert_success
-	assert_output "$HOME/custom-home-store/v1/files"
+	assert_output "$HOME/custom-home-store/v1"
 }
 
 @test "aube store add fetches a package and subsequent install is warm" {
@@ -63,9 +66,10 @@ EOF
 	assert_output --partial "is-odd@3.0.1"
 
 	# The cached index should exist for the added package. The
-	# on-disk layout is `$HOME/.cache/aube/index/<16 hex>/<name>@<ver>.json`
-	# — find any such file matching the name and version.
-	run bash -c 'compgen -G "$HOME/.cache/aube/index/*/is-odd@3.0.1.json"'
+	# on-disk layout is `$STORE_V1/index/<16 hex>/<name>@<ver>.json`,
+	# where the store-version directory is what `aube store path` prints.
+	store_v1="$(aube store path)"
+	run bash -c "compgen -G \"$store_v1/index/*/is-odd@3.0.1.json\""
 	assert_success
 
 	# Also sanity-check `store status` returns clean after an add.
@@ -86,9 +90,10 @@ EOF
 
 	# Pick one of the files the cached index points at and corrupt it.
 	# Integrity-keyed entries live at
-	# `<index>/<16 hex>/<name>@<ver>.json` — walk two levels to find
-	# the actual file.
-	index="$(find "$HOME/.cache/aube/index" -mindepth 2 -maxdepth 2 -name 'is-odd@3.0.1.json' -print -quit)"
+	# `<store_v1>/index/<16 hex>/<name>@<ver>.json` — walk two levels
+	# to find the actual file.
+	store_v1="$(aube store path)"
+	index="$(find "$store_v1/index" -mindepth 2 -maxdepth 2 -name 'is-odd@3.0.1.json' -print -quit)"
 	assert_file_exists "$index"
 	store_path="$(grep -o '"store_path":"[^"]*"' "$index" | head -n1 | sed 's/.*":"//;s/"$//')"
 	echo "garbage" >"$store_path"
@@ -111,9 +116,10 @@ EOF
 	# Drop the cached index so every file the `add` just wrote becomes
 	# unreferenced. Without this the prune loop would `continue` on every
 	# file and never exercise the deletion branch. Integrity-keyed
-	# files live under `<16 hex>/<name>@<ver>.json` — glob the whole
-	# subdir layout.
-	rm "$HOME/.cache/aube/index"/*/is-odd@3.0.1.json
+	# files live under `<store_v1>/index/<16 hex>/<name>@<ver>.json` —
+	# glob the whole subdir layout.
+	store_v1="$(aube store path)"
+	rm "$store_v1/index"/*/is-odd@3.0.1.json
 
 	run aube store prune
 	assert_success

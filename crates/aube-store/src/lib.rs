@@ -79,6 +79,28 @@ thread_local! {
 static FAST_PATH_SHARD_LOCKS: [std::sync::Mutex<()>; 256] =
     [const { std::sync::Mutex::new(()) }; 256];
 
+/// Recursively copy `src` into `dst`. Used only by the one-shot
+/// legacy-index migration fallback when `rename` fails (typically
+/// cross-filesystem). Not a hot path; correctness > speed.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+        // Symlinks and other types are skipped — the index cache only
+        // ever contains regular JSON files (optionally under a single
+        // level of integrity-shard subdirs).
+    }
+    Ok(())
+}
+
 fn blake3_hex(content: &[u8]) -> String {
     B3_HASHER.with(|cell| {
         let mut h = cell.borrow_mut();
@@ -95,6 +117,15 @@ fn blake3_hex(content: &[u8]) -> String {
 /// Files are stored by BLAKE3 hash with two-char hex directory sharding.
 /// (Tarball-level integrity is still SHA-512 because that's the format the
 /// npm registry returns; the per-file CAS key is an internal choice.)
+///
+/// Layout under the store-version directory (`v1/`):
+/// - `v1/files/` — CAS shards, content-addressed by BLAKE3 hex
+/// - `v1/index/` — cached package indexes (kept next to `files/` so a
+///   single backup/mount captures the whole store; matches pnpm's
+///   `~/.pnpm-store/v11/{files,index.db}` grouping)
+///
+/// `cache_dir` ($XDG_CACHE_HOME/aube) still holds genuinely
+/// regenerable caches: the virtual store and packument metadata.
 #[derive(Clone)]
 pub struct Store {
     root: PathBuf,
@@ -165,11 +196,13 @@ impl Store {
     pub fn default_location() -> Result<Self, Error> {
         let root = dirs::store_dir().ok_or(Error::NoHome)?;
         let cache_dir = dirs::cache_dir().ok_or(Error::NoHome)?;
-        Ok(Self {
+        let store = Self {
             root,
             cache_dir,
             fast_path: Arc::new(AtomicBool::new(false)),
-        })
+        };
+        store.migrate_legacy_index_dir();
+        Ok(store)
     }
 
     /// Open the store with an explicit root, keeping the default
@@ -179,11 +212,13 @@ impl Store {
     /// rest of aube expects them.
     pub fn with_root(root: PathBuf) -> Result<Self, Error> {
         let cache_dir = dirs::cache_dir().ok_or(Error::NoHome)?;
-        Ok(Self {
+        let store = Self {
             root,
             cache_dir,
             fast_path: Arc::new(AtomicBool::new(false)),
-        })
+        };
+        store.migrate_legacy_index_dir();
+        Ok(store)
     }
 
     /// Open the store at a specific path (cache dir derived from store root).
@@ -222,10 +257,97 @@ impl Store {
         &self.root
     }
 
-    /// Directory for cached package indices. Public so introspection
-    /// commands (`aube find-hash`) can walk it directly.
+    /// The store-version directory containing `files/` and `index/`.
+    ///
+    /// For the default layout this is `<storeDir>/v1/` (parent of
+    /// `root`, which is the `files/` subdir). Matches the granularity
+    /// of `pnpm store path` — a single cache-mount or backup covering
+    /// this directory captures both the CAS shards and the cached
+    /// package indexes, so they cannot drift apart.
+    ///
+    /// Falls back to `root` itself when `root` has no parent (only
+    /// possible at the filesystem root, which is never a real store).
+    pub fn store_v1_dir(&self) -> PathBuf {
+        self.root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone())
+    }
+
+    /// Directory for cached package indexes. Lives next to `files/`
+    /// at `<v1_dir>/index/` so the whole store is one mount/backup
+    /// unit. Public so introspection commands (`aube find-hash`,
+    /// `aube store status`, `aube store prune`) can walk it directly.
     pub fn index_dir(&self) -> PathBuf {
+        self.store_v1_dir().join(INDEX_SUBDIR)
+    }
+
+    /// Legacy index location at `$XDG_CACHE_HOME/aube/index/`, where
+    /// aube wrote cached package indexes before they were moved next
+    /// to the CAS files. Used only by [`migrate_legacy_index_dir`]; new
+    /// code should always go through [`index_dir`].
+    fn legacy_index_dir(&self) -> PathBuf {
         self.cache_dir.join(INDEX_SUBDIR)
+    }
+
+    /// One-shot migration from the legacy XDG-cache index location to
+    /// the in-store `v1/index/` directory. Runs at `Store::open`-time.
+    ///
+    /// The legacy location was a footgun under Docker BuildKit cache
+    /// mounts: users would mount the CAS files dir, the indexes would
+    /// silently land on the image layer instead, and the next install
+    /// would hit `MissingStoreFile` on every package whose CAS shards
+    /// the cache mount dropped. Co-locating index with files matches
+    /// pnpm's grouping and removes the drift class entirely.
+    ///
+    /// Best-effort: a same-filesystem rename is one syscall; on
+    /// `EXDEV` (cache dir and store dir on different filesystems, e.g.
+    /// tmpfs cache + persistent data) we fall back to a recursive
+    /// copy + remove. Either failure logs a warning and proceeds —
+    /// the worst-case is re-fetching tarballs on the next install,
+    /// which is what would have happened without the migration anyway.
+    fn migrate_legacy_index_dir(&self) {
+        let legacy = self.legacy_index_dir();
+        let new = self.index_dir();
+        if !legacy.exists() || new.exists() {
+            return;
+        }
+        if let Some(parent) = new.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            warn!(
+                "failed to create {} for index migration: {e}",
+                parent.display()
+            );
+            return;
+        }
+        if std::fs::rename(&legacy, &new).is_ok() {
+            debug!(
+                "migrated cached indexes from {} to {}",
+                legacy.display(),
+                new.display()
+            );
+            return;
+        }
+        // Cross-filesystem rename (cache dir on tmpfs, data dir on a
+        // persistent FS — common in containers) or any other rename
+        // failure: fall back to recursive copy + remove.
+        if let Err(e) = copy_dir_recursive(&legacy, &new) {
+            warn!(
+                "failed to migrate cached indexes from {} to {}: {e}; will be rebuilt on next install",
+                legacy.display(),
+                new.display()
+            );
+            let _ = std::fs::remove_dir_all(&new);
+            return;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&legacy) {
+            warn!(
+                "migrated indexes to {} but failed to remove old {}: {e}",
+                new.display(),
+                legacy.display()
+            );
+        }
     }
 
     /// Directory for the global virtual store (materialized packages).
@@ -2679,6 +2801,109 @@ fn git_commit_matches(actual: &str, requested: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Construct a Store with explicit root + cache_dir, bypassing the
+    /// XDG resolution path. Test-only so the migration test can drive
+    /// `migrate_legacy_index_dir` against a fully isolated layout
+    /// without touching env vars or process-global state.
+    fn store_for_migration_test(root: PathBuf, cache_dir: PathBuf) -> Store {
+        Store {
+            root,
+            cache_dir,
+            fast_path: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_index_dir_relocates_files_and_subdirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("data/aube/store/v1/files");
+        let cache_dir = tmp.path().join("cache/aube");
+        std::fs::create_dir_all(&root).unwrap();
+        let legacy_index = cache_dir.join("index");
+        let legacy_shard = legacy_index.join("0123456789abcdef");
+        std::fs::create_dir_all(&legacy_shard).unwrap();
+        std::fs::write(legacy_index.join("foo@1.0.0.json"), b"{\"index\":\"a\"}").unwrap();
+        std::fs::write(legacy_shard.join("bar@2.0.0.json"), b"{\"index\":\"b\"}").unwrap();
+
+        let store = store_for_migration_test(root.clone(), cache_dir.clone());
+        store.migrate_legacy_index_dir();
+
+        let new_index = store.index_dir();
+        assert!(new_index.exists(), "new index dir must exist");
+        assert_eq!(
+            std::fs::read(new_index.join("foo@1.0.0.json")).unwrap(),
+            b"{\"index\":\"a\"}",
+            "integrity-less entry must migrate"
+        );
+        assert_eq!(
+            std::fs::read(new_index.join("0123456789abcdef/bar@2.0.0.json")).unwrap(),
+            b"{\"index\":\"b\"}",
+            "integrity-keyed shard subdir must migrate"
+        );
+        assert!(
+            !legacy_index.exists(),
+            "legacy index dir must be removed after a successful migration"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_index_dir_is_a_noop_when_new_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("data/aube/store/v1/files");
+        let cache_dir = tmp.path().join("cache/aube");
+        std::fs::create_dir_all(&root).unwrap();
+        let legacy_index = cache_dir.join("index");
+        std::fs::create_dir_all(&legacy_index).unwrap();
+        std::fs::write(legacy_index.join("foo@1.0.0.json"), b"old").unwrap();
+
+        let store = store_for_migration_test(root.clone(), cache_dir.clone());
+        // Pre-existing new-location entry must not be clobbered.
+        std::fs::create_dir_all(store.index_dir()).unwrap();
+        std::fs::write(store.index_dir().join("keep.json"), b"new").unwrap();
+
+        store.migrate_legacy_index_dir();
+
+        assert!(
+            legacy_index.exists(),
+            "legacy dir must stay untouched when new dir already exists"
+        );
+        assert_eq!(
+            std::fs::read(store.index_dir().join("keep.json")).unwrap(),
+            b"new",
+            "existing new-location content must not be overwritten"
+        );
+        assert!(
+            !store.index_dir().join("foo@1.0.0.json").exists(),
+            "no copy must happen — migration only runs when new dir is absent"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_index_dir_is_a_noop_when_legacy_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("data/aube/store/v1/files");
+        let cache_dir = tmp.path().join("cache/aube");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let store = store_for_migration_test(root, cache_dir);
+        store.migrate_legacy_index_dir();
+
+        assert!(
+            !store.index_dir().exists(),
+            "migration must not create an empty new dir when there's nothing to migrate"
+        );
+    }
+
+    #[test]
+    fn store_v1_dir_is_parent_of_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("data/aube/store/v1/files");
+        let cache_dir = tmp.path().join("cache/aube");
+        let store = store_for_migration_test(root.clone(), cache_dir);
+        assert_eq!(store.store_v1_dir(), root.parent().unwrap());
+        assert_eq!(store.index_dir(), root.parent().unwrap().join("index"));
+    }
 
     #[test]
     fn git_commit_matches_abbreviated_sha() {

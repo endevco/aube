@@ -76,11 +76,14 @@ teardown() {
 	assert_dir_exists "$aube_store/v1/files"
 
 	# Wipe the store but leave node_modules intact — the case the
-	# `AlreadyLinked` shortcut would have silently broken.
+	# `AlreadyLinked` shortcut would have silently broken. The
+	# `v1/` removal takes the cached package indexes (under `v1/index`)
+	# with it, so `load_index` is forced to fall through to a real
+	# tarball fetch when the store file is missing.
 	rm -rf "$aube_store"
-	# Also clear the per-package index cache so `load_index` is
-	# forced to fall through to a real tarball fetch when the
-	# store file is missing.
+	# Belt-and-suspenders: also clear the legacy XDG-cache index dir
+	# in case the user is on an older aube that hadn't run the
+	# one-shot in-store migration yet.
 	rm -rf "$HOME/.cache/aube/index"
 
 	# `aube fetch` must re-download + repopulate the store, not

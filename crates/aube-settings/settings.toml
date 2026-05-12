@@ -776,11 +776,11 @@ examples = []
 [storeDir]
 description = "Location where packages are saved on disk (content-addressable store)."
 type = "path"
-default = "$XDG_DATA_HOME/aube/store/v1/files/"
+default = "$XDG_DATA_HOME/aube/store/"
 docs = """
 Defaults to aube's own XDG-compliant store path
-(`$XDG_DATA_HOME/aube/store/v1/files/`, falling back to
-`~/.local/share/aube/store/v1/files/`). aube does not read from or write to
+(`$XDG_DATA_HOME/aube/store/`, falling back to
+`~/.local/share/aube/store/`). aube does not read from or write to
 pnpm's `~/.pnpm-store/`. Set in `.npmrc` or `aube-workspace.yaml` to point at
 a different directory, which is useful for isolating CI runners, putting the
 store on a faster disk, or sharing one store across multiple users on the
@@ -788,12 +788,16 @@ same host.
 
 Path interpretation matches pnpm: `~` expands to the user's home
 directory and a relative path is resolved against the project root,
-not the current working directory. aube appends its own CAS schema suffix
-(`v1/files`) to the user-supplied directory, so `store-dir=/srv/aube-store`
-stores package content under `/srv/aube-store/v1/files`.
+not the current working directory. aube appends its own schema suffix
+(`v1`) to the user-supplied directory, so `store-dir=/srv/aube-store`
+stores package content under `/srv/aube-store/v1/files/` and cached
+package indexes under `/srv/aube-store/v1/index/`. `aube store path`
+prints the `v1/` directory itself — a single backup or Docker
+BuildKit cache mount of that path captures both files and indexes,
+matching `pnpm store path` granularity.
 
-Only the on-disk CAS moves; the packument and virtual-store caches
-stay at `$XDG_CACHE_HOME/aube`.
+Only the on-disk store moves; the packument cache (regenerable from
+the registry) stays at `$XDG_CACHE_HOME/aube`.
 """
 sources.cli = []
 sources.env = ["npm_config_store_dir", "NPM_CONFIG_STORE_DIR", "AUBE_STORE_DIR"]

@@ -2901,14 +2901,14 @@ fn classify_link_error(
 /// next install miss `load_index` instead of looping on the same dead
 /// reference. If the cache write fails (e.g. permission error), warn
 /// loudly so the user knows the auto-recovery didn't take and they need
-/// to wipe `~/.cache/aube/index/` by hand.
+/// to wipe the index dir by hand (run `aube store path` to find it).
 pub(crate) fn invalidate_stale_index_for_package(store: &aube_store::Store, pkg: &LockedPackage) {
     match store.invalidate_cached_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref())
     {
         Ok(true) => debug!("invalidated stale index for {}", pkg.spec_key()),
         Ok(false) => {}
         Err(e) => warn!(
-            "failed to invalidate stale index for {}: {e}; manual recovery: rm -rf ~/.cache/aube/index",
+            "failed to invalidate stale index for {}: {e}; manual recovery: rm -rf \"$(aube store path)/index\"",
             pkg.spec_key()
         ),
     }

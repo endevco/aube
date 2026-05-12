@@ -31,14 +31,20 @@ packages are visible at the top level.
 
 ## Global store
 
-Package files are stored by content hash under:
+Package files and their cached indexes live side-by-side under the
+store-version directory:
 
 ```text
-$XDG_DATA_HOME/aube/store/v1/files/
+$XDG_DATA_HOME/aube/store/v1/
+├── files/   # content-addressed CAS shards (BLAKE3, 2-char sharding)
+└── index/   # cached package indexes (name@version -> files map)
 ```
 
-This defaults to `~/.local/share/aube/store/v1/files/` when
-`$XDG_DATA_HOME` is unset.
+The `v1/` directory is what `aube store path` prints. The defaults
+fall back to `~/.local/share/aube/store/v1/{files,index}/` when
+`$XDG_DATA_HOME` is unset. Co-locating files and index means a single
+backup, snapshot, or Docker BuildKit cache mount of that one path
+captures the whole store — matching `pnpm store path` granularity.
 
 aube imports files from that store into the virtual store with reflinks,
 hardlinks, or copies depending on filesystem support and

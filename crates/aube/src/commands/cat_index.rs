@@ -1,7 +1,11 @@
 //! `aube cat-index <pkg@version>` — print the cached package index JSON.
 //!
 //! Prints the index that `aube fetch`/`aube install` writes under
-//! `~/.cache/aube/index/`. Integrity-keyed entries live under
+//! `<store>/v1/index/` (next to the CAS shards in `v1/files/`, so a
+//! single backup/cache-mount captures both). Older aube versions wrote
+//! these under `$XDG_CACHE_HOME/aube/index/`; a one-shot migration on
+//! the first store open after upgrade relocates them. Integrity-keyed
+//! entries live under
 //! `<16 hex>/<name>@<version>.json` (subdirectory keyed by the
 //! tarball's SHA-512 prefix); integrity-less entries live at
 //! `<name>@<version>.json` in the root. The filename alone never
