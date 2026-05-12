@@ -214,6 +214,39 @@ fn write_npmrc(key: &str, value: &str, location: Location, report: bool) -> miet
     if report {
         eprintln!("set {}={} ({})", write_key, value, path.display());
     }
+    sweep_stale_aube_config(key, &aliases, location)?;
+    Ok(())
+}
+
+/// Sweep stale `config.toml` entries for `key` after an `.npmrc`
+/// write. Necessary for settings that overlap the npm-shared
+/// allowlist *and* the known-aube-setting set (`engineStrict`,
+/// `ignoreScripts`, `color`, `loglevel`, `httpsProxy`, …): the
+/// resolver gives `config.toml` higher precedence than `.npmrc`, so a
+/// previous `aube config set` that landed in `config.toml` would
+/// silently shadow the new `.npmrc` value otherwise.
+fn sweep_stale_aube_config(
+    key: &str,
+    aliases: &[String],
+    location: Location,
+) -> miette::Result<()> {
+    let Some(meta) = aube_config::is_aube_config_key(key) else {
+        return Ok(());
+    };
+    let config_path = match location {
+        Location::User | Location::Global => aube_config::user_aube_config_path()?,
+        Location::Project => {
+            aube_config::project_aube_config_path(&crate::dirs::project_root_or_cwd()?)
+        }
+    };
+    let mut edit = aube_config::AubeConfigEdit::load(&config_path)?;
+    let mut sweep: Vec<String> = aliases.to_vec();
+    if !sweep.iter().any(|s| s == meta.name) {
+        sweep.push(meta.name.to_string());
+    }
+    if edit.remove_aliases(&sweep) {
+        edit.save(&config_path)?;
+    }
     Ok(())
 }
 

@@ -519,6 +519,32 @@ EOF
 	fi
 }
 
+@test "config set on an npm-shared aube setting sweeps stale config.toml" {
+	# Settings like `engineStrict` are in both the npm-shared allowlist
+	# (so writes land in `.npmrc` for cross-tool visibility) and
+	# settings.toml (so older aube versions may have written them to
+	# `config.toml` instead). The user-aube-config source outranks
+	# user `.npmrc` in the resolver, so a stale `config.toml` entry
+	# would silently shadow the new `.npmrc` value if we didn't sweep
+	# it on each write.
+	mkdir -p "$XDG_CONFIG_HOME/aube"
+	echo "engineStrict = true" >"$XDG_CONFIG_HOME/aube/config.toml"
+	run aube config set engineStrict false
+	assert_success
+	# .npmrc has the new value (preferred_write_key preserves the
+	# spelling the user typed when it's one of the known aliases).
+	run cat "$HOME/.npmrc"
+	assert_output --partial "engineStrict=false"
+	# config.toml stale entry must be gone
+	run cat "$XDG_CONFIG_HOME/aube/config.toml"
+	refute_output --partial "engineStrict"
+	refute_output --partial "engine-strict"
+	# Round-trip: get returns the new value, not the stale one.
+	run aube config get engineStrict
+	assert_success
+	assert_output "false"
+}
+
 @test "config set --local allowBuilds.<pkg> writes to project workspace yaml" {
 	# Discussion #617: `aube config set allowBuilds.<pkg> true` should
 	# be a valid input — at project scope it edits the same
