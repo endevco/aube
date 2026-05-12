@@ -38,7 +38,10 @@ function main() {
     var subpkgName = '@endevco/aube-' + platform + '-' + arch + suffix;
 
     var npmCmd = platform === 'win32' ? 'npm.cmd' : 'npm';
-    var args = ['install', '--no-save', '--no-package-lock', subpkgName + '@' + version];
+    // --ignore-scripts: platform packages are passive binary carriers;
+    // a compromised mirror/registry must not get RCE via lifecycle hooks
+    // when the user installs the trusted root @endevco/aube.
+    var args = ['install', '--no-save', '--no-package-lock', '--ignore-scripts', subpkgName + '@' + version];
 
     var cp = spawn(npmCmd, args, { stdio: 'inherit', shell: true });
     cp.on('close', function(code, signal) {
@@ -64,6 +67,16 @@ function main() {
     });
 }
 
+// Only these names are ever produced by aube's own build pipeline; ignore
+// any other keys the platform package's bin map might carry so a hostile
+// or malformed sub-package can't smuggle in extra files.
+var ALLOWED_BINS = ['aube', 'aubr', 'aubx'];
+
+function isContained(parent, child) {
+    var rel = path.relative(parent, child);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 function linkSubpkgBins(subpkgName, platform) {
     var subpkgJsonPath = require.resolve(subpkgName + '/package.json');
     var subpkg = JSON.parse(fs.readFileSync(subpkgJsonPath, 'utf8'));
@@ -72,25 +85,60 @@ function linkSubpkgBins(subpkgName, platform) {
     var binDir = path.resolve(__dirname, 'bin');
     try { fs.mkdirSync(binDir); } catch (e) { if (e.code !== 'EEXIST') throw e; }
 
-    Object.keys(subpkg.bin).forEach(function(name) {
-        var srcRel = subpkg.bin[name];
+    // Realpath the platform package dir once so the containment compares
+    // happen in symlink-resolved space (the package itself can be
+    // pnpm-style symlinked, which is fine — what we care about is whether
+    // its `bin/*` entries escape the realpath of that directory).
+    var subpkgRealDir = fs.realpathSync(subpkgDir);
+
+    var subpkgBin = subpkg.bin || {};
+    ALLOWED_BINS.forEach(function(name) {
+        var srcRel = subpkgBin[name];
+        if (typeof srcRel !== 'string') return;
+
         var src = path.resolve(subpkgDir, srcRel);
+        // String-only containment first: rejects `../` traversal before
+        // we ever touch the filesystem.
+        if (!isContained(subpkgDir, src)) {
+            throw new Error('platform package bin "' + name + '" escapes its package directory');
+        }
+        // Then realpath the source so a symlink inside the package can't
+        // smuggle in an arbitrary on-disk file (e.g. `bin/aube -> ~/.ssh/id_rsa`).
+        // The subsequent hardlink/copy follows symlinks, so a bare string
+        // check would let `fs.copyFileSync` read straight through.
+        var srcReal;
+        try { srcReal = fs.realpathSync(src); } catch (e) {
+            throw new Error('platform package bin "' + name + '" cannot be resolved: ' + (e && e.message ? e.message : e));
+        }
+        if (!isContained(subpkgRealDir, srcReal)) {
+            throw new Error('platform package bin "' + name + '" resolves outside its package directory');
+        }
+
         var destBasename = platform === 'win32' ? name + '.exe' : name;
         var dest = path.resolve(binDir, destBasename);
+        // destBasename comes from our static allowlist, but guard anyway so
+        // a future change to ALLOWED_BINS can't silently regress.
+        if (!isContained(binDir, dest)) {
+            throw new Error('refusing to write outside bin dir: ' + destBasename);
+        }
 
         try { fs.unlinkSync(dest); } catch (e) { if (e.code !== 'ENOENT') throw e; }
         try {
             // Hardlink is cheapest (same inode, no extra disk). On some
             // filesystems (cross-device, restricted sandboxes) hardlink
-            // fails — fall through to a copy.
-            fs.linkSync(src, dest);
+            // fails — fall through to a copy. Use the realpath so we
+            // never link/copy through a symlink that bypassed the check.
+            fs.linkSync(srcReal, dest);
         } catch (e) {
-            fs.copyFileSync(src, dest);
+            fs.copyFileSync(srcReal, dest);
         }
         if (platform !== 'win32') {
             try { fs.chmodSync(dest, 0o755); } catch (_) {}
         } else {
             var shim = path.resolve(binDir, name);
+            if (!isContained(binDir, shim)) {
+                throw new Error('refusing to write outside bin dir: ' + name);
+            }
             try { fs.unlinkSync(shim); } catch (e) { if (e.code !== 'ENOENT') throw e; }
             fs.writeFileSync(shim, '#!' + dest.replace(/\\/g, '/') + '\n');
         }

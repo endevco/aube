@@ -48,13 +48,31 @@ jobs:
       - name: Resolve tag
         id: tag
         env:
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${EVENT_TAG:-$INPUT_TAG}"
           if [ -z "$TAG" ]; then
             echo "::error::no tag from release event or workflow_dispatch input"
             exit 1
+          fi
+          # Strict format check before the tag controls the checkout ref.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+            echo "::error::Refusing to publish: tag '$TAG' does not match vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
+          fi
+          # Manual dispatch path: id-token: write on this workflow means npm
+          # Trusted Publishing will accept whatever the checked-out tag's
+          # publish.mjs does. Require the tag to be reachable from main so
+          # an unreviewed ref can't push an @endevco/aube* package.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${TAG}" --jq '.status' 2>/dev/null || echo "missing")
+            if [ "$STATUS" != "identical" ] && [ "$STATUS" != "behind" ]; then
+              echo "::error::Tag '$TAG' is not reachable from main (compare status: $STATUS)"
+              exit 1
+            fi
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

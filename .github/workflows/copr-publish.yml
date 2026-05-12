@@ -30,35 +30,82 @@ jobs:
           dnf update -y
           # copr-cli comes from Fedora's own packages — Fedora 38+
           # enforces PEP 668 and blocks `pip install` into the system
-          # Python.
-          dnf install -y rpm-build rpmdevtools copr-cli git rust cargo gcc openssl-devel pkgconf-pkg-config tar gzip
+          # Python. `gh` is needed by the validate-inputs step below; it
+          # runs inside this `fedora:45` container, where the host
+          # runner's pre-installed `gh` isn't visible.
+          dnf install -y rpm-build rpmdevtools copr-cli git rust cargo gcc openssl-devel pkgconf-pkg-config tar gzip gh
           rpmdev-setuptree
+
+      - name: Validate workflow inputs
+        # Inputs from workflow_dispatch are attacker-controllable; reject
+        # anything that doesn't match the expected release-tag and chroot
+        # shapes before we let those values reach a shell or the COPR API.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CHROOTS: ${{ inputs.chroots }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="$RELEASE_TAG"
+          else
+            TAG="$INPUT_TAG"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+            echo "::error::Refusing to build: tag '$TAG' does not match vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # COPR chroot names look like `fedora-rawhide-x86_64` or
+            # `epel-10-aarch64` — lowercase letters, digits, hyphens,
+            # underscores, and spaces between entries. Underscore is
+            # required for the `x86_64` arch suffix.
+            if [[ -n "$INPUT_CHROOTS" && ! "$INPUT_CHROOTS" =~ ^[a-z0-9][a-z0-9\ _\-]*$ ]]; then
+              echo "::error::Refusing to build: chroots '$INPUT_CHROOTS' contains unexpected characters"
+              exit 1
+            fi
+            # Tag must point at a commit reachable from main so a manual
+            # dispatch can't sign packages from unreviewed history.
+            STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${TAG}" --jq '.status' 2>/dev/null || echo "missing")
+            if [ "$STATUS" != "identical" ] && [ "$STATUS" != "behind" ]; then
+              echo "::error::Tag '$TAG' is not reachable from main (compare status: $STATUS)"
+              exit 1
+            fi
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.event_name == 'release' && github.ref || inputs.tag }}
+          ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
 
       - name: Set up environment variables
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_CHROOTS: ${{ inputs.chroots }}
+          MAINTAINER_NAME_VAR: ${{ vars.COPR_MAINTAINER_NAME }}
+          MAINTAINER_EMAIL_VAR: ${{ vars.COPR_MAINTAINER_EMAIL }}
+          COPR_OWNER_VAR: ${{ vars.COPR_OWNER }}
+          COPR_PROJECT_VAR: ${{ vars.COPR_PROJECT }}
         run: |
-          TAG="${{ github.event_name == 'release' && github.ref_name || inputs.tag }}"
           VERSION="${TAG#v}"
 
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "$EVENT_NAME" = "release" ]; then
             CHROOTS="fedora-rawhide-aarch64 fedora-rawhide-x86_64 fedora-44-aarch64 fedora-44-x86_64 fedora-43-aarch64 fedora-43-x86_64 fedora-42-aarch64 fedora-42-x86_64 epel-10-aarch64 epel-10-x86_64"
           else
-            CHROOTS="${{ inputs.chroots }}"
+            CHROOTS="$INPUT_CHROOTS"
           fi
 
           {
             echo "VERSION=${VERSION}"
             echo "CHROOTS=${CHROOTS}"
             echo "PACKAGE_NAME=${PACKAGE_NAME}"
-            echo "MAINTAINER_NAME=${{ vars.COPR_MAINTAINER_NAME || 'aube Release Bot' }}"
-            echo "MAINTAINER_EMAIL=${{ vars.COPR_MAINTAINER_EMAIL || 'noreply@aube.en.dev' }}"
-            echo "COPR_OWNER=${{ vars.COPR_OWNER || 'jdxcode' }}"
-            echo "COPR_PROJECT=${{ vars.COPR_PROJECT || 'aube' }}"
+            echo "MAINTAINER_NAME=${MAINTAINER_NAME_VAR:-aube Release Bot}"
+            echo "MAINTAINER_EMAIL=${MAINTAINER_EMAIL_VAR:-noreply@aube.en.dev}"
+            echo "COPR_OWNER=${COPR_OWNER_VAR:-jdxcode}"
+            echo "COPR_PROJECT=${COPR_PROJECT_VAR:-aube}"
             echo "BUILD_PROFILE=release"
           } >> "$GITHUB_ENV"
 
