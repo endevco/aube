@@ -25,7 +25,8 @@ set -euo pipefail
 #                  back to the defaults above when unset.
 #   RESULTS_JSON — override the structured JSON output path
 #   BENCH_TOOLS  — comma-separated tools to include
-#                  (default: aube,bun,pnpm,npm,yarn,deno,vlt)
+#                  (default: aube,bun,pnpm,npm,yarn,deno; vlt is
+#                  temporarily disabled — see PR removing it)
 #   BENCH_SCENARIOS — comma-separated scenario keys to run
 #                     (default: all)
 #   BENCH_PHASES — set to 0 to skip aube phase timing samples
@@ -66,7 +67,7 @@ RUNS_PNPM="${RUNS_PNPM:-$(((RUNS + 1) / 2))}"
 RUNS_VLT="${RUNS_VLT:-$(((RUNS + 1) / 2))}"
 RUNS_NPM="${RUNS_NPM:-$(((RUNS + 2) / 3))}"
 RUNS_YARN="${RUNS_YARN:-$(((RUNS + 2) / 3))}"
-BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno,vlt}"
+BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno}"
 BENCH_SCENARIOS="${BENCH_SCENARIOS:-gvs-warm,gvs-cold,ci-warm,ci-cold,install-test,add}"
 BENCH_PHASES="${BENCH_PHASES:-1}"
 

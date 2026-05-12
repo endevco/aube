@@ -60,7 +60,7 @@ HERMETIC_STORAGE="$BENCH_HERMETIC_CACHE/storage"
 # Sentinel name carries a generation tag so adding/removing PMs in the
 # default warm set automatically invalidates an existing warmed cache.
 # Bump when the default BENCH_TOOLS set changes.
-HERMETIC_WARMED_SENTINEL="$BENCH_HERMETIC_CACHE/.warmed.v2"
+HERMETIC_WARMED_SENTINEL="$BENCH_HERMETIC_CACHE/.warmed.v3"
 HERMETIC_LOG="$BENCH_HERMETIC_CACHE/verdaccio.log"
 HERMETIC_CONFIG_WARM="$HERMETIC_DIR/registry/config.warm.yaml"
 HERMETIC_CONFIG_COLD="$HERMETIC_DIR/registry/config.yaml"
@@ -130,8 +130,8 @@ _hermetic_stop_verdaccio() {
 # via the `.warmed` sentinel. Running the warm step requires network;
 # subsequent benchmark runs are fully offline.
 #
-# Warming runs one install per PM (aube, bun, pnpm, npm, yarn, deno,
-# vlt) so the cache is the *union* of every tool's resolution set —
+# Warming runs one install per PM (aube, bun, pnpm, npm, yarn, deno)
+# so the cache is the *union* of every tool's resolution set —
 # each resolver picks its preferred versions independently (e.g. aube
 # may pick `get-intrinsic@1.3.1` which drags in `async-function` /
 # `async-generator-function` while pnpm picks an earlier version
@@ -144,7 +144,7 @@ _hermetic_stop_verdaccio() {
 # bootstrap-safe for CI flows that warm before compiling aube.
 _hermetic_warm() {
 	local warm_sentinel="$HERMETIC_WARMED_SENTINEL"
-	if [ "${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno,vlt}" != "aube,bun,pnpm,npm,yarn,deno,vlt" ]; then
+	if [ "${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno}" != "aube,bun,pnpm,npm,yarn,deno" ]; then
 		warm_sentinel="$HERMETIC_STORAGE/.warmed.${BENCH_TOOLS//[^A-Za-z0-9_.-]/_}"
 	fi
 
