@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0](https://github.com/endevco/aube/compare/aube-registry-v1.11.0...aube-registry-v1.12.0) - 2026-05-12
+
+### Added
+
+- *(install)* polish install progress display ([#616](https://github.com/endevco/aube/pull/616))
+
+### Other
+
+- *(registry)* rewrite tolerant packument deserializers as Visitors ([#641](https://github.com/endevco/aube/pull/641))
+- refresh benchmarks for v1.11.0 ([#622](https://github.com/endevco/aube/pull/622))
+
 ## [1.11.0](https://github.com/endevco/aube/compare/aube-registry-v1.10.4...aube-registry-v1.11.0) - 2026-05-11
 
 ### Added

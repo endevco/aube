@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0](https://github.com/endevco/aube/compare/v1.11.0...v1.12.0) - 2026-05-12
+
+### Added
+
+- *(config)* scope .npmrc to npm-shared keys, route aube settings to config.toml, support dotted map writes ([#634](https://github.com/endevco/aube/pull/634))
+- *(install)* polish install progress display ([#616](https://github.com/endevco/aube/pull/616))
+
+### Fixed
+
+- *(install)* hoist bun.lock peer-only packages before GC ([#639](https://github.com/endevco/aube/pull/639))
+- *(update)* correct version lookup for direct deps shadowed by transitives ([#636](https://github.com/endevco/aube/pull/636))
+- *(install)* co-locate cached indexes with CAS + verified probe self-heal ([#635](https://github.com/endevco/aube/pull/635))
+- *(update)* preserve cross-platform optionals and time entries ([#637](https://github.com/endevco/aube/pull/637))
+- *(install)* ignore engines.pnpm to stop spurious version warnings ([#633](https://github.com/endevco/aube/pull/633))
+- *(install)* run peer-context pass on bun.lock imports ([#619](https://github.com/endevco/aube/pull/619))
+- *(add)* forward --allow-build to global installs ([#620](https://github.com/endevco/aube/pull/620))
+
+### Other
+
+- refresh benchmarks for v1.11.0 ([#622](https://github.com/endevco/aube/pull/622))
+
 ## [1.11.0](https://github.com/endevco/aube/compare/v1.10.4...v1.11.0) - 2026-05-11
 
 ### Added
