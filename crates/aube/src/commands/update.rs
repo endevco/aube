@@ -209,13 +209,30 @@ pub async fn run(
                 .and_then(|ws| aube_lockfile::parse_lockfile(&ws, &manifest).ok())
         });
     // Importer keys to try when looking up a direct dep in `existing`.
-    // `"."` covers the standalone-project and workspace-root cases.
-    // The cwd-relative-to-workspace path covers a sub-package under a
-    // shared workspace lockfile, where the lockfile we just loaded
-    // came from the workspace root and lists this project under e.g.
-    // `./packages/foo`. `lookup_pkg` walks the list in order and returns
-    // `None` when no candidate importer carries a DirectDep for the key —
-    // there is no name-scan fallback (see the function's doc comment).
+    // Order matters: try the cwd's own importer first, then fall through
+    // to `"."`.
+    //
+    // In shared-workspace mode, `existing` came from the workspace-root
+    // lockfile and carries BOTH the root's `"."` importer (the root
+    // manifest's own deps) and the sub-package's importer key
+    // (`./packages/foo` etc.) — distinct entries that may share dep
+    // names. Trying `"."` first would cross-resolve any shared name
+    // (e.g. the root and the sub-package both depend on `typescript`)
+    // to the ROOT's locked version, which is wrong for the sub-package
+    // pass and would feed the wrong "current" into the picker, the
+    // post-resolve report, and the `preserve_pin` guard.
+    //
+    // For the standalone-project and workspace-root cases, `cwd_importer`
+    // resolves to `"."` so the second slot is dropped — the lookup is
+    // single-importer and unambiguous.
+    //
+    // For the sub-package-with-its-own-lockfile case (no shared
+    // lockfile), `existing` only has `"."` — `cwd_importer` simply
+    // misses and the fall-through to `"."` returns the right entry.
+    //
+    // `lookup_pkg` walks the list in order and returns `None` when no
+    // candidate importer carries a DirectDep for the key — there is no
+    // name-scan fallback (see the function's doc comment).
     let cwd_importer = match crate::dirs::find_workspace_root(&cwd) {
         Some(ws) if ws.as_path() != cwd.as_path() => {
             super::workspace_importer_path(&ws, &cwd).unwrap_or_else(|_| ".".to_string())
@@ -225,7 +242,7 @@ pub async fn run(
     let existing_importers: Vec<&str> = if cwd_importer == "." {
         vec!["."]
     } else {
-        vec![".", cwd_importer.as_str()]
+        vec![cwd_importer.as_str(), "."]
     };
 
     // Snapshot of every direct dep as (manifest key, specifier). Owned
@@ -1507,6 +1524,48 @@ mod tests {
         let pkg = lookup_pkg(&graph, &[".", "./pkgs/a"], "foo", "foo")
             .expect("foo should resolve via the sub-package importer");
         assert_eq!(pkg.version, "2.0.0");
+    }
+
+    #[test]
+    fn lookup_pkg_prefers_first_importer_when_both_carry_the_same_name() {
+        // Shared-workspace lockfile case: the root manifest and the
+        // sub-package both depend on `typescript` at different versions.
+        // The lockfile records each under its own importer key. Looking
+        // up `typescript` for the sub-package must return the
+        // sub-package's locked version — `existing_importers` is built
+        // as `[cwd_importer, "."]` so the sub-package's entry is tried
+        // first; this test pins that contract on the helper.
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph.packages.insert(
+            "typescript@5.0.0".to_string(),
+            locked("typescript", "5.0.0"),
+        );
+        graph.packages.insert(
+            "typescript@5.5.0".to_string(),
+            locked("typescript", "5.5.0"),
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "typescript".to_string(),
+                dep_path: "typescript@5.0.0".to_string(),
+                dep_type: aube_lockfile::DepType::Dev,
+                specifier: Some("^5.0.0".to_string()),
+            }],
+        );
+        graph.importers.insert(
+            "./packages/foo".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "typescript".to_string(),
+                dep_path: "typescript@5.5.0".to_string(),
+                dep_type: aube_lockfile::DepType::Dev,
+                specifier: Some("^5.5.0".to_string()),
+            }],
+        );
+
+        let pkg = lookup_pkg(&graph, &["./packages/foo", "."], "typescript", "typescript")
+            .expect("typescript should resolve via the sub-package importer first");
+        assert_eq!(pkg.version, "5.5.0");
     }
 
     #[test]
