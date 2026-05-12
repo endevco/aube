@@ -218,61 +218,23 @@ rust:
     - crates/aube-*/ (libraries) use tracing (info!/warn!/error!/debug!/trace!). crates/aube/src/commands/*.rs CLI command impls may print to stdout via println!/writeln! when the whole point is CLI output (view, list, outdated, why, cat-index, etc.)
     - cargo clippy -- -D warnings must pass with zero warnings
     - cargo fmt enforced, never reformat unrelated code
-  style_current[8]:
-    - let-else for unwrap-or-return, let-chains (1.88) for compact `if let && cond` blocks
+  style[4]:
     - &str over String in params, Cow<'_, str> when ownership is conditional
-    - impl Trait in arg position for one-shot callbacks, generics only when reused
     - #[serde(skip_serializing_if = "Option::is_none")] on optional request fields
-    - #[serde(flatten)] extra: Map<String, Value> on manifest structs for upstream forward-compat (aube already does this on WorkspaceConfig, PackageJson)
-    - OnceLock/LazyLock for init-once globals (aube uses this pattern idiomatically, 15+ sites)
-    - BLAKE3 for non-crypto-verifying hashes (3-5x faster than SHA-256, used for CAS content + graph hashing + state freshness)
-    - rayon par_iter for CPU-bound parallel passes off the tokio runtime (aube-linker uses it for symlink creation)
-  modern_2026[8]:
-    - async_fn_in_trait / RPITIT (stable): use native `async fn` in trait defs, drop #[async_trait] macro and its per-call heap alloc
-    - trait object upcasting (1.86): implicit &dyn Child -> &dyn Parent coercion, no as_parent() helpers
-    - let chains (1.88): `if let Some(v) = x && v.is_fresh() { ... }` collapses 2-level match/if nests
-    - safe #[target_feature] (1.86): target_feature fns are no longer auto-unsafe when called from same-feature caller, enables SIMD without the unsafe ceremony
-    - naked functions #[naked] (1.88): not relevant to aube, noted for completeness
-    - const generic `_` inference (1.89): `[u8; _]` in function sigs, less boilerplate on fixed-size buffers
-    - Result::flatten (1.89): drop the `.map(|x| x.transpose())` scaffolding
-    - file locking APIs (1.89): std-native `File::lock_shared` / `lock_exclusive` can replace xx::fslock for simple cases (aube still needs fslock callback path, so no action today)
-  style_aspirational[6]:
-    - #[non_exhaustive] on new public enums/structs added to library crates. existing public types can adopt incrementally
-    - #[must_use] on new builder setters and constructors that return Self. existing with_* setters in aube-linker / aube-resolver should migrate
-    - Other(String) fallback variant on upstream-parsing enums (LockfileKind, DepType, LocalSource currently lack it and will hard-fail on new pnpm/yarn values)
-    - newtype wrappers for identifiers (PackageName, Version, DepPath, Integrity) — raw String is pervasive today
-    - enum state machines over mutually-exclusive bool flags (prefer a single enum + `Option` over loose boolean bags that can represent invalid states)
-    - #[default] on enums with an obvious default variant
-  performance[20]:
+    - #[serde(flatten)] extra: Map<String, Value> on manifest structs for upstream forward-compat (aube does this on WorkspaceConfig, PackageJson)
+    - let-else for unwrap-or-return, let-chains for compact `if let && cond` blocks
+  performance[5]:
+    - profile before optimizing (samply on Linux for hardware events; never guess from intuition). measure in release mode only
     - shared reqwest::Client with pool, never one per request (aube-registry/src/client.rs does this right)
-    - Arc<str> over Arc<String>, Box<str> over String when immutable
-    - Cow<'_, str> when ownership is conditional (borrowed default, owned on modify)
-    - OnceLock/LazyLock for init-once globals, never Mutex-guarded init
-    - avoid format! in hot paths, write! into reused buffer
-    - iterator chains over explicit for when readable (compile to tight loops)
-    - never .collect() mid-chain, breaks lazy fusion, only collect at the end
-    - never .clone() inside hot loops (each clone is a heap alloc for heap types). resolver has ~505 clones today, budget them
-    - never Box<dyn Trait> in hot loops (dyn dispatch + heap alloc), reserve for plugins and runtime polymorphism
-    - return large types via Arc<T> or &T, never by-value clones across a boundary
-    - pre-size Vec::with_capacity / HashMap::with_capacity when bounds known
-    - DashMap<K,V> for concurrent maps (never Arc<Mutex<HashMap<K,V>>>)
-    - SmallVec<[T; N]> for hot paths with known-small size
-    - struct field ordering: group hot fields, place smaller fields before larger to minimize padding
-    - #[repr(C)] for cache-friendly layout when the struct is read sequentially (aube doesn't use this today, not currently needed)
-    - never #[repr(packed)] for hot data (unaligned access is slower on most archs)
-    - rayon par_iter for CPU-bound parallel passes (aube-linker does this), never spawn tokio tasks for pure CPU
-    - zero-copy streaming, Pin<Box<dyn Stream>>, Bytes over Vec<u8> for shared network buffers
-    - profile before optimizing, cargo flamegraph / samply / hyperfine (never guess)
-    - measure in release mode only, debug builds prioritize compile speed
-    - data-oriented design on hot paths: consider struct-of-arrays (SoA) when iterating a hot field across thousands of entries, up to 50%+ wins from CPU cache locality + compiler autovectorization. concrete aube target, resolver packument iteration where only (name, version) is read
-    - concentrate unsafe in tiny modules with proven invariants, expose safe APIs. aube currently has no unsafe code, keep it that way unless a BLAKE3 mmap or io_uring integration demands it
-    - consider mimalloc global allocator for aube binary, ~15% lower P99 on small-frequent allocs, single-line change via `#[global_allocator]`, measure first
+    - DashMap for concurrent maps, OnceLock/LazyLock for init-once globals, rayon par_iter for CPU-bound parallel passes off the tokio runtime (never spawn tokio tasks for pure CPU)
+    - pre-size Vec/HashMap when bounds are known; SmallVec<[T; N]> for hot paths with known-small size; Arc<str>/Box<str> over String when immutable
+    - aube already adopts mimalloc (global allocator), sonic_rs (packument decode), BLAKE3 (non-crypto hashing). these are settled; don't re-propose them
   async[7]:
     - tokio multi-thread runtime for install (main.rs:586), nested current_thread islands inside spawn_blocking are fine
     - never block in async fn, offload via spawn_blocking (IO that can't be async, tarball decode, tar extract)
     - spawn_blocking tasks cannot be aborted, has configurable upper limit, queues beyond
     - JoinSet for fan-out (abort-on-drop, strictly more featureful than FuturesUnordered, aube uses it everywhere)
-    - bounded mpsc channels on hot paths, unbounded only for low-volume control channels. resolver currently uses unbounded on the packument queue (aube-resolver/src/lib.rs:429), known pressure risk on huge graphs
+    - bounded mpsc channels on hot paths, unbounded only for low-volume control channels
     - never hold std::sync::Mutex across .await, use tokio::sync::Mutex or restructure
     - Bytes over Vec<u8> for shared network buffers (cheap clone, ref counted)
   errors[4]:
@@ -287,27 +249,6 @@ rust:
     - TODO without a tracking link
     - redundant type annotations the compiler infers
 
-type_safety_aspirational:
-  intent: aube is pre-1.0, most of these are proposals tied to real file:line pain. adopt incrementally, don't block PRs on them
-  patterns[5]:
-    newtype_ids: wrap identifiers in #[repr(transparent)] tuple structs. concrete targets: PackageName/Version/DepPath/Integrity in aube-resolver/src/lib.rs, StoreHash in aube-store
-    typestate: generic type parameter encodes pipeline stage. concrete target: Resolver<Unresolved> -> Resolver<Resolved> -> Fetched -> Linked for the install::run pipeline
-    sealed_traits: private module + pub trait Sealed prevents external impls. concrete target: lock the set of lockfile format tags if they become a public trait
-    phantom_data: zero-sized marker for variance / lifetimes / type tags. pairs with newtype_ids and typestate
-    const_generics: compile-time bounds. already used once in install/mod.rs:filter_graph_to_importers<const N>, room for more in SmallVec sizing
-  serde_forward_compat:
-    - #[serde(flatten)] extra: Map<String, Value> on response structs (aube-manifest already does this on WorkspaceConfig + PackageJson)
-    - Other(String) variant on upstream-parsing enums (LockfileKind, DepType, LocalSource currently lack this)
-
-antipatterns_rust[7]:
-  - "match x { Some(y) => y, None => return }" -> "let Some(y) = x else { return };"
-  - "if x.is_some() { x.unwrap() }" -> "if let Some(v) = x"
-  - "String::from(s)" where s is &str -> "s.to_owned()"
-  - "v.iter().map(..).collect::<Vec<_>>()" -> ".collect()" (let inference work)
-  - "Vec::new(); for x in .. { v.push(x) }" -> iterator chain + .collect()
-  - "Arc<Mutex<HashMap<K,V>>>" for concurrent maps -> "DashMap<K,V>"
-  - "std::collections::HashMap<ShortKey, V>" in hot paths -> "FxHashMap<K,V>" via rustc-hash (aube's inputs are already signed/locked, SipHash DoS resistance is unneeded overhead)
-
 security[5]:
   - no secrets in code, config, or logs (env vars only)
   - input validated at system boundaries (HTTP, CLI args, env vars)
@@ -319,10 +260,9 @@ deps:
   policy: minimize, prefer std over external, every added dep must justify >=20 LOC saved
   tls: rustls (no OpenSSL / native-tls)
   reqwest_features: minimal (rustls-tls + http2 + json + stream + charset + system-proxy)
-  supply_chain[3]:
+  supply_chain[2]:
     - cargo audit: CVE database scan (RustSec advisories) before every release, required in CI
     - cargo deny: license policy, banned crates, duplicate detection, approved sources. deny.toml checked in
-    - cargo vet (aspirational): per-dep signed audit trail, imports Mozilla + Google audit sets to bootstrap. consider when the dep graph stabilizes post-1.0
 
 git:
   forbidden[2]:
@@ -338,23 +278,3 @@ forbidden[7]:
   - single-use wrappers (1-3 lines called once, inline it)
   - feature flags or backwards-compat shims for one-time ops
 
-next_gen_proposals:
-  intent: concrete aube-tied improvements found in deep audit. each tied to real file:line pain. adopt when the perf/ergo win justifies the churn
-  top_ten[9]:
-    - string_interning: lasso::ThreadedRodeo for package identifiers in aube-resolver. resolver has 505 clone/to_string calls across 5493 lines. Spur (u32) replaces String keys in visited sets, peer context, override rules, lockfile merge maps. 2-8% resolver wall-time, big RSS reduction on huge graphs
-    - saphyr_for_yaml: serde_yaml is archived (unmaintained since 2024) and allocates per-key on lookups. yarn.rs scavenges serde_yaml::Value via string-allocating .get(). migrate to saphyr (YAML 1.2, borrowed &str keys) for reads, keep serde_yaml or hand-written emitter for writes
-    - memmap2_for_verify: CAS verify path and tarball read use std buffered IO. blake3::Hasher::update_mmap_rayon for multi-MB tarballs on aube store verify / find-hash. scope to verify-only commands, not the extract hot path
-    - phf_static_tables: aube-settings/build.rs already codegens from settings.toml. emit phf::Map<&'static str, SettingDescriptor> instead of runtime HashMap for zero-alloc constant-time lookups, matters because aube run re-reads settings on every invocation (shell integration)
-    - compact_str_or_smol_str: package names, dep-path fragments, version strings are typically <=24 bytes. compact_str inlines up to 24 bytes, smol_str up to 22 bytes with O(1) clone via Arc. drop-in replacement for many String fields in aube-resolver / aube-lockfile. pairs well with string_interning for unique keys, small-string for values
-    - data_oriented_resolver: split the hot resolver walker from (name, version, deps, metadata, integrity) struct-of-arrays into parallel Vecs. iterating just (name, version) across a 2000-pkg packument touches one cache line instead of five. reserve for a pre-1.0 perf pass once profiler confirms the miss rate
-    - mimalloc_global_allocator: #[global_allocator] static GLOBAL: MiMalloc = MiMalloc; in aube/src/main.rs. ~15% lower P99 on small-frequent allocs (npm installs are alloc-heavy). benchmark before committing, CLI startup cost is the counter-risk
-    - proptest_lockfile_roundtrip: add crates/aube-lockfile/tests/proptest.rs with read-write-read roundtrip on every format. catches serialization asymmetries before they hit user lockfiles. high leverage, 6 parsers
-    - cargo_vet_adoption: import Mozilla + Google audit sets, lock every new dep behind an explicit audit entry. zero perf cost, supply-chain win for a package manager that touches ~/.aube-store/ with user code
-  explicitly_rejected[7]:
-    - simd-json for packuments: already a workspace dep (Cargo.toml:21), verify it is actually used on the packument path before proposing new
-    - yoke/self_cell: solves a borrow-checker problem aube doesn't have (resolver already owns PackageInfo)
-    - petgraph in linker: current FxHashMap<dep_path, Vec<dep_path>> is implicit and sufficient, petgraph = ceremony without gain
-    - redb/sled for CAS index: filesystem is the index, adding a DB creates consistency-recovery surface on crashes
-    - io_uring: Linux-only, tokio-uring experimental, aube ships macOS/Linux/Windows
-    - tower middleware on reqwest: aube-registry retry/auth logic is not complex enough to justify tower learning curve
-    - arc-swap/left-right: solves a read-mostly-hot-config problem aube doesn't have yet
