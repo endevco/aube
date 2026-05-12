@@ -143,12 +143,16 @@ _hermetic_stop_verdaccio() {
 # aube is skipped when `$AUBE_BIN` isn't built yet, so warming is still
 # bootstrap-safe for CI flows that warm before compiling aube.
 _hermetic_warm() {
+	# Non-default BENCH_TOOLS gets its own sentinel; the default
+	# sentinel cannot cover a tool set that includes anything outside
+	# the default warm pass (e.g. re-enabling vlt), so don't fall back
+	# to it.
 	local warm_sentinel="$HERMETIC_WARMED_SENTINEL"
 	if [ "${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno}" != "aube,bun,pnpm,npm,yarn,deno" ]; then
 		warm_sentinel="$HERMETIC_STORAGE/.warmed.${BENCH_TOOLS//[^A-Za-z0-9_.-]/_}"
 	fi
 
-	if [ -f "$HERMETIC_WARMED_SENTINEL" ] || [ -f "$warm_sentinel" ]; then
+	if [ -f "$warm_sentinel" ]; then
 		return 0
 	fi
 
