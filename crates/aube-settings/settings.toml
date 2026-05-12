@@ -790,14 +790,8 @@ Path interpretation matches pnpm: `~` expands to the user's home
 directory and a relative path is resolved against the project root,
 not the current working directory. aube appends its own schema suffix
 (`v1`) to the user-supplied directory, so `store-dir=/srv/aube-store`
-stores package content under `/srv/aube-store/v1/files/` and cached
-package indexes under `/srv/aube-store/v1/index/`. `aube store path`
-prints the `v1/` directory itself — a single backup or Docker
-BuildKit cache mount of that path captures both files and indexes,
-matching `pnpm store path` granularity.
-
-Only the on-disk store moves; the packument cache (regenerable from
-the registry) stays at `$XDG_CACHE_HOME/aube`.
+stores package content under `/srv/aube-store/v1/`. Run
+`aube store path` to print the resolved store location.
 """
 sources.cli = []
 sources.env = ["npm_config_store_dir", "NPM_CONFIG_STORE_DIR", "AUBE_STORE_DIR"]

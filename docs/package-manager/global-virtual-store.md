@@ -5,9 +5,8 @@ projects. It is enabled by default for local installs and disabled under CI.
 
 This is separate from the global content store:
 
-- The **global content store** (`$XDG_DATA_HOME/aube/store/v1/`) holds the
-  CAS shards under `files/` and the cached package indexes under `index/`,
-  both addressed by BLAKE3 hash. Every install uses it.
+- The **global content store** (`$XDG_DATA_HOME/aube/store/v1/`) stores
+  package files by BLAKE3 hash. Every install uses it.
 - The **global virtual store**
   (`$XDG_CACHE_HOME/aube/virtual-store/`, defaulting to
   `~/.cache/aube/virtual-store/`) stores package directory trees keyed by
