@@ -519,6 +519,29 @@ EOF
 	fi
 }
 
+@test "config delete sweeps .npmrc for npm-shared aube settings" {
+	# Settings like `engineStrict` are both npm-shared (so `set`
+	# routes them to .npmrc) and known aube settings in
+	# settings.toml. Delete must follow the same routing — otherwise
+	# the value sits stuck in .npmrc after `set` and `delete` fails
+	# with a misleading "stale entry" error.
+	run aube config set engineStrict false
+	assert_success
+	run cat "$HOME/.npmrc"
+	assert_output --partial "engineStrict=false"
+	# Delete must succeed and actually remove the .npmrc line.
+	run aube config delete engineStrict
+	assert_success
+	if [ -e "$HOME/.npmrc" ]; then
+		run cat "$HOME/.npmrc"
+		refute_output --partial "engineStrict"
+		refute_output --partial "engine-strict"
+	fi
+	run aube config get engineStrict
+	assert_success
+	assert_output "undefined"
+}
+
 @test "config set on an npm-shared aube setting sweeps stale config.toml" {
 	# Settings like `engineStrict` are in both the npm-shared allowlist
 	# (so writes land in `.npmrc` for cross-tool visibility) and

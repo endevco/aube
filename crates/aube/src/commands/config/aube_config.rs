@@ -70,13 +70,6 @@ impl AubeConfigEdit {
         before != self.table.len()
     }
 
-    /// Remove a single (free-form) key. Returns `true` if the key was
-    /// present. Sibling to `remove_aliases`, which sweeps a known
-    /// setting's canonical name + every literal `.npmrc` alias.
-    pub(super) fn remove(&mut self, key: &str) -> bool {
-        self.table.remove(key).is_some()
-    }
-
     pub(super) fn save(&self, path: &Path) -> miette::Result<()> {
         let out = toml::to_string_pretty(&self.table)
             .into_diagnostic()
