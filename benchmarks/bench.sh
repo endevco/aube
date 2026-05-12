@@ -26,7 +26,8 @@ set -euo pipefail
 #   RESULTS_JSON — override the structured JSON output path
 #   BENCH_TOOLS  — comma-separated tools to include
 #                  (default: aube,bun,pnpm,npm,yarn,deno; vlt is
-#                  temporarily disabled — see PR removing it)
+#                  temporarily disabled — its --frozen-lockfile still
+#                  makes network requests, skewing results)
 #   BENCH_SCENARIOS — comma-separated scenario keys to run
 #                     (default: all)
 #   BENCH_PHASES — set to 0 to skip aube phase timing samples
