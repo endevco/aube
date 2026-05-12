@@ -167,6 +167,23 @@ impl Resolver {
             ),
             None => aube_util::adaptive::AdaptiveLimit::new(packument_seed, 4, packument_max),
         };
+        // Disable CUSUM-driven shrink on the packument fetch path.
+        // The CUSUM controller fires on sustained RTT regime rise,
+        // which conflates "registry is asking us to back off" with
+        // "registry is slow to serve under load." On a fast hermetic
+        // mirror (Verdaccio, JSR, a corporate npm proxy) or any
+        // single-threaded registry, every fetch the resolver issues
+        // tends to push the next one's RTT up — and CUSUM shrinks,
+        // serializing the resolver behind a small permit pool.
+        // Measured impact on the bench fixture: 432 of 1124
+        // packument fetches waited on a permit (mean 170ms, p99
+        // 351ms, 73s cumulative wait) despite the seed being 256.
+        //
+        // Real backpressure from npmjs / private registries is still
+        // honored via `record_throttle` — that fires on HTTP 429/503
+        // and shrinks the limit immediately. CUSUM was a noise filter
+        // on top of that, and it's overcorrecting.
+        shared_semaphore.disable_cusum_shrink();
         let packument_persist_handle = persistent
             .as_ref()
             .map(|p| (Arc::clone(p), Arc::clone(&shared_semaphore)));
