@@ -907,6 +907,107 @@ JSON
 	assert_failure
 }
 
+@test "aube update --latest: reports correct current version when same name appears transitively" {
+	# Discussion #623: when a direct dep shares its name with a
+	# transitive snapshot at a different version (here `dep-of-pkg-with-1-dep@101.0.0`
+	# direct via catalog vs `@100.0.0` pulled in transitively by abc),
+	# the post-resolve report's "current" must come from the importer's
+	# resolved edge — not whichever dep_path comes first in BTreeMap
+	# iteration. The pre-fix code printed `100.0.0 (already latest)`
+	# (the wrong, transitive version) for catalog deps that were already
+	# at the registry's latest.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/dep-of-pkg-with-1-dep' latest 101.0.0
+
+	cat >package.json <<'JSON'
+{
+  "name": "aube-update-dup-name",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/dep-of-pkg-with-1-dep": "catalog:",
+    "@pnpm.e2e/abc": "2.0.0"
+  }
+}
+JSON
+	cat >pnpm-workspace.yaml <<'YAML'
+packages:
+  - "."
+catalog:
+  "@pnpm.e2e/dep-of-pkg-with-1-dep": 101.0.0
+YAML
+
+	run aube install
+	assert_success
+
+	# Sanity: lockfile carries both versions — direct catalog at 101.0.0,
+	# transitive (pinned by abc@2.0.0) at 100.0.0.
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+
+	run aube update --latest
+	assert_success
+
+	# Report must reflect the *direct* version (101.0.0), not the
+	# transitive 100.0.0 the buggy lookup picked first by lex order.
+	assert_output --partial '101.0.0 (already latest)'
+	refute_output --partial '100.0.0 (already latest)'
+
+	# Catalog spec is preserved, both lockfile snapshots intact.
+	run grep '"@pnpm.e2e/dep-of-pkg-with-1-dep": "catalog:"' package.json
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@101.0.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/dep-of-pkg-with-1-dep@100.0.0' aube-lock.yaml
+	assert_success
+}
+
+@test "aube update --latest: keeps a higher-than-latest caret-prerelease range" {
+	# Discussion #623: same #7436 guard, extended to caret/tilde
+	# prereleases. The original guard only covered exact pins, so
+	# `"^3.0.0-rc.0"` (or any non-exact spec resolving above the
+	# dist-tag latest) silently downgraded to the registry's latest.
+	# The fix uses the LOCKED version, not just the manifest spec, so
+	# anything that resolved above latest is preserved regardless of
+	# spec shape.
+	_require_registry
+
+	add_dist_tag '@pnpm.e2e/has-prerelease' latest 2.0.0
+
+	# Hand-roll the manifest with a caret-prefixed prerelease — `aube
+	# add @pkg@3.0.0-rc.0` would save it as an exact pin, masking the
+	# bug. The manifest spec "^3.0.0-rc.0" resolves to 3.0.0-rc.0 (the
+	# only version satisfying the range that includes a prerelease) but
+	# wouldn't get caught by the old `exact_pin_version` check.
+	cat >package.json <<'JSON'
+{
+  "name": "aube-update-caret-prerelease",
+  "version": "0.0.0",
+  "dependencies": {
+    "@pnpm.e2e/has-prerelease": "^3.0.0-rc.0"
+  }
+}
+JSON
+
+	run aube install
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	assert_success
+
+	run aube update --latest
+	assert_success
+
+	# Manifest spec preserved verbatim: no downgrade to "^2.0.0".
+	run grep '"@pnpm.e2e/has-prerelease": "\^3.0.0-rc.0"' package.json
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@3.0.0-rc.0' aube-lock.yaml
+	assert_success
+	run grep '@pnpm.e2e/has-prerelease@2.0.0' aube-lock.yaml
+	assert_failure
+}
+
 @test "aube update -r --latest: prerelease workspace mix preserves higher pins" {
 	# Ported from pnpm/test/update.ts:728 ('update to latest recursive
 	# workspace (outdated, updated, prerelease, outdated)'). Four
