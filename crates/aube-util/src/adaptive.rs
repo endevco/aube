@@ -204,18 +204,31 @@ struct ColdState {
      * the limit. Throttle-driven shrink (`record_throttle`, fired
      * on real backpressure: HTTP 429/503, IO errors) is unaffected.
      *
-     * Use case: filesystem-bound limiters where per-op latency
-     * variance is exogenous (antivirus scans, NTFS cold-cache
-     * reads, COW reflink fall-through to copy). Rising RTT on
-     * those paths is intrinsic noise, not a signal that more
-     * concurrency is making things worse — there is no upstream
-     * queue to relieve. Treating it as backpressure was observed
-     * to collapse the linker prewarm limit from seed 16 to 12 on
-     * Windows, queueing 1195 packages behind a 12-permit cap.
+     * Use it on limiters where rising RTT does *not* reliably
+     * indicate "consumers want me to back off." Two known cases:
      *
-     * Network limiters (registry packument, registry tarball)
-     * keep CUSUM enabled because rising RTT there does correlate
-     * with upstream queueing.
+     * - **Filesystem-bound limiters.** Per-op latency variance is
+     *   exogenous (antivirus scans, NTFS cold-cache reads, COW
+     *   reflink fall-through to copy). Treating it as backpressure
+     *   was observed to collapse the linker prewarm limit from
+     *   seed 16 to 12 on Windows, queueing 1195 packages behind a
+     *   12-permit cap.
+     *
+     * - **Network limiters against single-threaded / fragile
+     *   registries.** Verdaccio, JSR, corporate npm proxies serve
+     *   each request slowly under load. RTT climbs as a function of
+     *   the registry's own thread saturation, not because the
+     *   registry wants the client to back off — there's no upstream
+     *   queue we'd relieve by shrinking. Disabled on the resolver's
+     *   packument fetch path; observed to cut permit-wait
+     *   occurrences from 432 to 128 (cumulative 73.6 s → 17.8 s)
+     *   on a 1230-pkg cold install.
+     *
+     * The deciding factor is signal quality, not fs-vs-network.
+     * If a limiter's RTT rises mostly because of intrinsic peer
+     * variance rather than queueing aube can relieve, disable
+     * CUSUM and rely on `record_throttle` (which still fires on
+     * real HTTP 429/503 / IO errors).
      */
     cusum_shrink_disabled: AtomicBool,
 }
@@ -284,9 +297,12 @@ impl AdaptiveLimit {
 
     /**
      * Disable CUSUM-driven shrinking on the success path. Call
-     * once after construction for limiters that gate
-     * filesystem-bound work (linker, materializer). Throttle-path
-     * shrink (record_throttle on real IO errors) remains active.
+     * once after construction for limiters whose rising RTT
+     * doesn't reliably indicate that the consumer wants
+     * backpressure — filesystem-bound work (linker, materializer)
+     * or network fetches against single-threaded / fragile
+     * registries. Throttle-path shrink (`record_throttle` on real
+     * HTTP 429/503 / IO errors) remains active.
      * See [`ColdState::cusum_shrink_disabled`] for rationale.
      */
     pub fn disable_cusum_shrink(&self) {
