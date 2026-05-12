@@ -224,105 +224,24 @@ pub(super) fn literal_aliases(keys: &[&'static str]) -> Vec<String> {
         .collect()
 }
 
-/// True when `key` belongs to the npm-shared `.npmrc` surface — npm,
-/// pnpm, and yarn all read these from `.npmrc` and writing them
-/// anywhere else would break the multi-tool contract. Anything else is
-/// treated as aube-owned (or aube-experimental) and routed to
-/// `~/.config/aube/config.toml`, so `aube config set` no longer
-/// pollutes `.npmrc` with keys other npm-family tools warn about.
-///
-/// The allowlist is intentionally narrow: when in doubt, keep the
-/// value in aube's own config. Users who genuinely want a free-form
-/// `.npmrc` line for a third-party tool can edit `.npmrc` directly.
+/// True when `key` belongs to the npm-shared `.npmrc` surface: npm,
+/// pnpm, and yarn read it from `.npmrc` so `aube config set` keeps
+/// the value there for cross-tool visibility. The two pattern checks
+/// cover per-host auth/cert templates (`//host/:_authToken`, etc.)
+/// and scoped registries (`@scope:registry`); everything else is
+/// driven by the `npmShared` flag on each entry in `settings.toml`,
+/// so the answer for any specific key lives next to that setting's
+/// other metadata rather than in a hardcoded list here.
 pub(super) fn is_npm_shared_key(key: &str) -> bool {
-    // Per-host auth/cert templates: //host/:_authToken, //host/:_auth,
-    // //host/:_password, //host/:username, //host/:certfile, etc.
     if key.starts_with("//") {
         return true;
     }
-    // Scoped registries: @mycorp:registry, @scope:registry, …
     if let Some(rest) = key.strip_prefix('@')
         && rest.contains(":registry")
     {
         return true;
     }
-    matches!(
-        key,
-        // Registry + identity
-        "registry"
-            | "email"
-            // CA / TLS
-            | "ca"
-            | "cafile"
-            | "cert"
-            | "key"
-            | "keyfile"
-            | "certfile"
-            | "strict-ssl"
-            | "strictSsl"
-            // Proxy / network
-            | "proxy"
-            | "http-proxy"
-            | "httpProxy"
-            | "https-proxy"
-            | "httpsProxy"
-            | "no-proxy"
-            | "noproxy"
-            | "noProxy"
-            | "maxsockets"
-            | "maxSockets"
-            // Fetch retry knobs (npm-standard)
-            | "fetch-retries"
-            | "fetchRetries"
-            | "fetch-retry-factor"
-            | "fetchRetryFactor"
-            | "fetch-retry-mintimeout"
-            | "fetchRetryMintimeout"
-            | "fetch-retry-maxtimeout"
-            | "fetchRetryMaxtimeout"
-            | "fetch-timeout"
-            | "fetchTimeout"
-            // npm init defaults
-            | "init-author-name"
-            | "init-author-email"
-            | "init-author-url"
-            | "init-license"
-            | "init-module"
-            | "init-version"
-            // Legacy auth scalars (deprecated bare forms)
-            | "_auth"
-            | "_authToken"
-            | "_password"
-            | "username"
-            | "always-auth"
-            | "alwaysAuth"
-            // npm-shared knobs
-            | "userconfig"
-            | "user-config"
-            | "globalconfig"
-            | "global-config"
-            | "prefix"
-            | "tag"
-            | "scope"
-            | "access"
-            | "engine-strict"
-            | "engineStrict"
-            | "package-lock"
-            | "packageLock"
-            | "ignore-scripts"
-            | "ignoreScripts"
-            | "node-options"
-            | "nodeOptions"
-            | "audit"
-            | "audit-level"
-            | "auditLevel"
-            | "loglevel"
-            | "color"
-            | "progress"
-            | "before"
-            | "fund"
-            | "update-notifier"
-    )
+    setting_for_key(key).is_some_and(|meta| meta.npm_shared)
 }
 
 pub(super) fn setting_for_key(key: &str) -> Option<&'static settings_meta::SettingMeta> {

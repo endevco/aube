@@ -24,6 +24,13 @@
 #   sources.npmrc = .npmrc keys (list, may be empty)
 #   sources.workspaceYaml = pnpm-workspace.yaml keys (list, may be empty)
 #   examples      = optional list of concrete invocations
+#   npmShared     = bool. Marks a key that npm (and yarn) also read
+#                   from `.npmrc`. Set on settings where aube's
+#                   `config set` must keep the value in `.npmrc` for
+#                   cross-tool visibility (auth, proxy, registry,
+#                   TLS, npm-standard scalars). Aube-only or
+#                   pnpm-only settings leave this `false` and route
+#                   to aube's own config.
 #
 # Key names match pnpm's canonical camelCase spelling so a future generator
 # can link directly to anchors on pnpm.io/next/settings. Settings with
@@ -361,6 +368,7 @@ examples = [
   "registry=https://registry.npmmirror.com/",
   "@mycorp:registry=https://npm.mycorp.internal/",
 ]
+npmShared = true
 
 # ========================================= Dependency Hoisting =========================================
 
@@ -905,6 +913,7 @@ examples = []
 # Consumed inside `aube_registry::config::NpmConfig::load`, before
 # the CLI has a `ResolveCtx`; keep this metadata grepable for docs.
 typedAccessorUnused = true
+npmShared = true
 
 [httpProxy]
 description = "Proxy URL for outgoing HTTP requests."
@@ -924,6 +933,7 @@ examples = []
 # Consumed inside `aube_registry::config::NpmConfig::load`, before
 # the CLI has a `ResolveCtx`; keep this metadata grepable for docs.
 typedAccessorUnused = true
+npmShared = true
 
 [noProxy]
 description = "Comma-separated list of domains that bypass the proxy."
@@ -944,6 +954,7 @@ examples = []
 # client is built before a `ResolveCtx` exists. Same pattern as every
 # other reqwest-level knob below.
 typedAccessorUnused = true
+npmShared = true
 
 [localAddress]
 description = "Local interface IP address to bind registry connections to."
@@ -962,6 +973,7 @@ examples = []
 # string-keyed match on the raw `.npmrc` entries — same reason as
 # `noProxy` above.
 typedAccessorUnused = true
+npmShared = true
 
 [maxsockets]
 description = "Maximum concurrent connections per origin."
@@ -981,6 +993,7 @@ examples = []
 # string-keyed match on the raw `.npmrc` entries — same reason as
 # `noProxy` above.
 typedAccessorUnused = true
+npmShared = true
 
 [strictSsl]
 description = "Validate SSL certificates for HTTPS requests."
@@ -1001,6 +1014,7 @@ examples = []
 # string-keyed match on the raw `.npmrc` entries — same reason as
 # `noProxy` above.
 typedAccessorUnused = true
+npmShared = true
 
 # ========================================= Lockfile =========================================
 
@@ -1305,6 +1319,7 @@ sources.cli = ["fetch-retries"]
 sources.env = ["npm_config_fetch_retries", "NPM_CONFIG_FETCH_RETRIES", "AUBE_FETCH_RETRIES"]
 sources.npmrc = ["fetch-retries", "fetchRetries"]
 examples = ["aube install --fetch-retries=5"]
+npmShared = true
 
 [fetchRetryFactor]
 description = "Exponential backoff factor for fetch retries."
@@ -1320,6 +1335,7 @@ sources.cli = ["fetch-retry-factor"]
 sources.env = ["npm_config_fetch_retry_factor", "NPM_CONFIG_FETCH_RETRY_FACTOR", "AUBE_FETCH_RETRY_FACTOR"]
 sources.npmrc = ["fetch-retry-factor", "fetchRetryFactor"]
 examples = []
+npmShared = true
 
 [fetchRetryMintimeout]
 description = "Minimum retry timeout in milliseconds."
@@ -1330,6 +1346,7 @@ sources.cli = ["fetch-retry-mintimeout"]
 sources.env = ["npm_config_fetch_retry_mintimeout", "NPM_CONFIG_FETCH_RETRY_MINTIMEOUT", "AUBE_FETCH_RETRY_MINTIMEOUT"]
 sources.npmrc = ["fetch-retry-mintimeout", "fetchRetryMintimeout"]
 examples = []
+npmShared = true
 
 [fetchRetryMaxtimeout]
 description = "Maximum retry timeout in milliseconds."
@@ -1340,6 +1357,7 @@ sources.cli = ["fetch-retry-maxtimeout"]
 sources.env = ["npm_config_fetch_retry_maxtimeout", "NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT", "AUBE_FETCH_RETRY_MAXTIMEOUT"]
 sources.npmrc = ["fetch-retry-maxtimeout", "fetchRetryMaxtimeout"]
 examples = []
+npmShared = true
 
 [fetchTimeout]
 description = "Max time (ms) to wait for an HTTP request."
@@ -1355,6 +1373,7 @@ sources.cli = ["fetch-timeout"]
 sources.env = ["npm_config_fetch_timeout", "NPM_CONFIG_FETCH_TIMEOUT", "AUBE_FETCH_TIMEOUT"]
 sources.npmrc = ["fetch-timeout", "fetchTimeout"]
 examples = ["aube add lodash --fetch-timeout=60000"]
+npmShared = true
 
 [fetchWarnTimeoutMs]
 description = "Warn if a metadata request exceeds this threshold (ms)."
@@ -1599,6 +1618,7 @@ examples = []
 # and has to happen first. Uses the same underlying helpers as
 # `resolved::color` would, just without the ctx wrapper.
 typedAccessorUnused = true
+npmShared = true
 
 [loglevel]
 description = "Minimum log level to display."
@@ -1615,6 +1635,7 @@ examples = []
 # `resolved::loglevel` accessor would need a `ResolveCtx` that
 # doesn't exist yet at that point.
 typedAccessorUnused = true
+npmShared = true
 
 [useBetaCli]
 description = "Opt into experimental CLI features."
@@ -1648,6 +1669,7 @@ sources.cli = []
 sources.env = ["npm_config_engine_strict", "NPM_CONFIG_ENGINE_STRICT", "AUBE_ENGINE_STRICT"]
 sources.npmrc = ["engine-strict", "engineStrict"]
 examples = []
+npmShared = true
 
 [npmPath]
 description = "Path to the npm binary aube should shell out to when needed."
@@ -1727,6 +1749,7 @@ examples = [
 # reads both paths directly, so the typed accessor would be a third,
 # redundant surface.
 typedAccessorUnused = true
+npmShared = true
 
 [childConcurrency]
 description = "Maximum number of concurrent script-executing child processes."
@@ -1880,6 +1903,7 @@ sources.cli = []
 sources.env = ["npm_config_node_options", "NPM_CONFIG_NODE_OPTIONS", "AUBE_NODE_OPTIONS", "NODE_OPTIONS"]
 sources.npmrc = ["nodeOptions"]
 examples = []
+npmShared = true
 
 [verifyDepsBeforeRun]
 description = "Check dependencies before running scripts."
@@ -2065,6 +2089,7 @@ sources.cli = []
 sources.env = ["npm_config_tag", "NPM_CONFIG_TAG", "AUBE_TAG"]
 sources.npmrc = ["tag"]
 examples = []
+npmShared = true
 
 [globalDir]
 description = "Directory where globally installed packages live."
@@ -2168,6 +2193,7 @@ sources.cli = []
 sources.env = ["npm_config_update_notifier", "NPM_CONFIG_UPDATE_NOTIFIER", "AUBE_UPDATE_NOTIFIER"]
 sources.npmrc = ["updateNotifier"]
 examples = []
+npmShared = true
 
 [updateRewritesSpecifier]
 description = "Rewrite caret/tilde manifest specifiers on `aube update` without `--latest`."

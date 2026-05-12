@@ -41,6 +41,14 @@ struct SettingDef {
     /// a `resolved::<name>` call — the audit then enforces the wiring.
     #[serde(default, rename = "typedAccessorUnused")]
     typed_accessor_unused: bool,
+    /// Marks a setting as part of the npm-shared `.npmrc` surface: npm
+    /// (and yarn / pnpm) also read this key from `.npmrc`, so
+    /// `aube config set` writes it there to keep the multi-tool
+    /// contract. Defaults to `false` — aube-specific or pnpm-only
+    /// settings without this flag are routed to aube's own config
+    /// (`~/.config/aube/config.toml`).
+    #[serde(default, rename = "npmShared")]
+    npm_shared: bool,
     /// Source precedence for the generated accessor, high-to-low.
     /// Valid entries: scope-qualified leaves `"projectAubeConfig"`,
     /// `"projectNpmrc"`, `"userAubeConfig"`, `"userNpmrc"`,
@@ -121,6 +129,7 @@ fn main() {
             def.typed_accessor_unused
         )
         .unwrap();
+        writeln!(out, "        npm_shared: {},", def.npm_shared).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 

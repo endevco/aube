@@ -55,13 +55,12 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
     }
 
     // `.npmrc`: sweep when the key is npm-shared (the canonical home
-    // for those after `set`) or when it's a free-form / unknown key
-    // (which may legitimately live in `.npmrc`). Aube-owned settings
-    // that are *not* npm-shared (`autoInstallPeers`,
-    // `minimumReleaseAge`, …) are intentionally not swept — `.npmrc`
-    // is shared with npm/pnpm/yarn and an aube-known entry there is
-    // typically a hand-edit or a pre-#517 leftover the user wants to
-    // control.
+    // for those) or when it's a free-form / unknown key (which may
+    // legitimately live in `.npmrc`). Aube-only settings
+    // (`autoInstallPeers`, `minimumReleaseAge`, …) are intentionally
+    // not swept — `.npmrc` is shared with npm/pnpm/yarn and an
+    // aube-known entry there is typically a hand-edit the user wants
+    // to control.
     let should_sweep_npmrc = key_is_npm_shared || meta.is_none();
     let npmrc_path = location.path()?;
     if should_sweep_npmrc && npmrc_path.exists() {
@@ -114,11 +113,10 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
 }
 
 /// Build the error when an aube-only setting isn't in the expected
-/// `config.toml`. Surfaces a stale `.npmrc` entry (typically left by
-/// an older aube that wrote aube-owned keys there) so the user knows
-/// where the value is actually coming from. Aube intentionally doesn't
-/// modify `.npmrc` for aube-only settings — it's shared with
-/// npm/pnpm/yarn — so the message tells the user to clear the line
+/// `config.toml`. Surfaces a still-present `.npmrc` entry so the user
+/// knows where the value is coming from — aube doesn't modify
+/// `.npmrc` for aube-only settings (it's shared with
+/// npm/pnpm/yarn), so the message tells the user to clear the line
 /// themselves.
 fn missing_aube_key_error(
     key: &str,
@@ -132,8 +130,8 @@ fn missing_aube_key_error(
         && edit.entries().iter().any(|(k, _)| aliases.contains(k))
     {
         return miette!(
-            "{key} is not set in {} but a stale entry exists in {}.\n\
-             aube no longer modifies `.npmrc` for known settings (it's shared with \
+            "{key} is not set in {} but an entry exists in {}.\n\
+             aube doesn't modify `.npmrc` for aube-only settings (it's shared with \
              npm/pnpm/yarn) — edit that file directly to remove it, or run \
              `aube config set {key} <value>` to override it from {}.",
             config_path.display(),
