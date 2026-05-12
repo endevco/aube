@@ -25,6 +25,14 @@ pub struct SetArgs {
     /// keys — lands in aube's own config (`~/.config/aube/config.toml`
     /// at user-scope, `<cwd>/.config/aube/config.toml` at project-scope)
     /// so it doesn't pollute the file other npm-family tools read.
+    ///
+    /// Dotted writes for aube map settings (`allowBuilds.<pkg>`,
+    /// `overrides.<pkg>`, …) edit one entry at a time. At project
+    /// scope (`--local`) they land in
+    /// `pnpm-workspace.yaml#<map>.<entry>` or
+    /// `package.json#aube.<map>.<entry>` if no workspace yaml exists
+    /// — the same place install reads from. At user scope these still
+    /// error since aube only reads these maps per project.
     #[arg(long, value_enum, default_value_t = Location::User)]
     pub location: Location,
 }
@@ -56,20 +64,28 @@ pub(super) fn set_value(
         return write_npmrc(key, value, location, report);
     }
 
-    // 2. Aube map settings (object-typed) can't be serialized as a
-    //    single scalar — reject with a hint at the right edit site.
+    // 2. Dotted writes that land in an aube map setting
+    //    (`allowBuilds.<pkg>`, `overrides.<pkg>`, …). Project scope
+    //    edits the workspace yaml or `package.json#aube.<map>`; user
+    //    scope errors with a `--local` pointer (aube doesn't read
+    //    user-scope maps yet).
+    if let Some(handled) = try_set_aube_map_entry(key, value, location, report)? {
+        return Ok(handled);
+    }
+
+    // 3. Bare object-typed aube settings (`allowBuilds` without a
+    //    package name) can't be serialized as a single scalar.
     if let Some(meta) = setting_for_key(key)
         && meta.type_ == "object"
     {
         return Err(reject_aube_map_key(key, meta));
     }
 
-    // 3. Reject dotted writes whose prefix is an aube setting (e.g.
-    //    `allowBuilds.<pkg>`), even when the prefix isn't object-typed:
-    //    scalar settings don't have a nested namespace either.
-    reject_nested_aube_key(key)?;
+    // 4. Dotted writes whose prefix is a *scalar* aube setting —
+    //    scalar settings don't have a nested namespace.
+    reject_scalar_nested_key(key)?;
 
-    // 4. Known aube scalar setting → config.toml (or workspace yaml at
+    // 5. Known aube scalar setting → config.toml (or workspace yaml at
     //    project-scope, if one already exists).
     if let Some(meta) = aube_config::is_aube_config_key(key) {
         let path = aube_config_target(location, meta)?;
@@ -93,7 +109,7 @@ pub(super) fn set_value(
         return Ok(());
     }
 
-    // 5. Free-form unknown key — store as a TOML string in aube's own
+    // 6. Free-form unknown key — store as a TOML string in aube's own
     //    config rather than polluting the npm-shared `.npmrc`.
     let path = unknown_aube_config_target(location)?;
     let mut edit = aube_config::AubeConfigEdit::load(&path)?;
@@ -103,6 +119,84 @@ pub(super) fn set_value(
         eprintln!("set {}={} ({})", key, value, path.display());
     }
     Ok(())
+}
+
+/// Handle `aube config set <map>.<entry> <value>` when `<map>` is an
+/// aube map setting. Returns `Ok(Some(()))` if the dotted form was
+/// recognized (handled or rejected with a structured error),
+/// `Ok(None)` if the key isn't a dotted aube-map write and the caller
+/// should fall through to the normal flow.
+///
+/// Project-scope dotted writes land in the existing workspace yaml or
+/// `package.json#<pnpm|aube>.<map>` via
+/// [`aube_manifest::workspace::upsert_map_entry`] — the same path
+/// `aube approve-builds` and install-time seeding take. User-scope
+/// writes error with a `--local` pointer because aube only reads
+/// these maps from the project workspace yaml / `package.json` today;
+/// dropping a user-scope entry into `~/.config/aube/config.toml`
+/// would be silently ineffective.
+fn try_set_aube_map_entry(
+    key: &str,
+    value: &str,
+    location: Location,
+    report: bool,
+) -> miette::Result<Option<()>> {
+    let Some((prefix, entry)) = key.split_once('.') else {
+        return Ok(None);
+    };
+    let Some(meta) = setting_for_key(prefix) else {
+        return Ok(None);
+    };
+    if meta.type_ != "object" {
+        return Ok(None);
+    }
+    // Canonical dotted-name settings like `peerDependencyRules.allowedVersions`
+    // route through `is_aube_config_key` instead — they're scalar list/string
+    // settings whose name happens to contain a dot.
+    if aube_config::is_aube_config_key(key).is_some() {
+        return Ok(None);
+    }
+
+    if !matches!(location, Location::Project) {
+        return Err(miette!(
+            code = aube_codes::errors::ERR_AUBE_CONFIG_NESTED_AUBE_KEY,
+            help = format!(
+                "use `aube config set --local {prefix}.{entry} {value}` to edit `pnpm-workspace.yaml#{prefix}.{entry}` (or `package.json#aube.{prefix}.{entry}` if no workspace yaml exists). Aube doesn't read user-scope `{prefix}` today.",
+            ),
+            "`{key}` only applies at project scope: `{prefix}` is read from `pnpm-workspace.yaml` / `package.json#<pnpm|aube>.{prefix}`, not user-scope aube config."
+        ));
+    }
+
+    let (yaml_value, json_value) = scalar_to_yaml_json(value);
+    let cwd = crate::dirs::project_root_or_cwd()?;
+    let written =
+        aube_manifest::workspace::upsert_map_entry(&cwd, meta.name, entry, yaml_value, json_value)
+            .map_err(|e| miette!("failed to write {}.{entry}: {e}", meta.name))?;
+    if report {
+        eprintln!("set {}.{entry}={value} ({})", meta.name, written.display());
+    }
+    Ok(Some(()))
+}
+
+/// Parse a raw scalar string into matching yaml + json values. `true`
+/// / `false` become booleans, decimal integers become numbers, and
+/// everything else stays as a string — same shape `AubeConfigEdit`
+/// uses for free-form writes, so a value typed at the CLI round-trips
+/// through workspace yaml / `package.json` with the expected type.
+fn scalar_to_yaml_json(raw: &str) -> (yaml_serde::Value, serde_json::Value) {
+    if let Some(b) = aube_settings::parse_bool(raw) {
+        return (yaml_serde::Value::Bool(b), serde_json::Value::Bool(b));
+    }
+    if let Ok(n) = raw.trim().parse::<i64>() {
+        return (
+            yaml_serde::Value::Number(n.into()),
+            serde_json::Value::Number(n.into()),
+        );
+    }
+    (
+        yaml_serde::Value::String(raw.to_string()),
+        serde_json::Value::String(raw.to_string()),
+    )
 }
 
 fn write_npmrc(key: &str, value: &str, location: Location, report: bool) -> miette::Result<()> {
@@ -126,23 +220,12 @@ fn write_npmrc(key: &str, value: &str, location: Location, report: bool) -> miet
 fn reject_aube_map_key(key: &str, meta: &aube_settings::meta::SettingMeta) -> miette::Report {
     miette!(
         code = aube_codes::errors::ERR_AUBE_CONFIG_NESTED_AUBE_KEY,
-        help = aube_map_help(meta),
-        "`{key}` is an aube map setting (type `{}`) and can't be set as a scalar via `aube config set` — it needs structural edits in workspace yaml or `package.json`.",
+        help = format!(
+            "set a single entry with `aube config set --local {key}.<entry> <value>`, or edit `{key}:` directly in `pnpm-workspace.yaml` / `aube.{key}` in `package.json`.",
+        ),
+        "`{key}` is an aube map setting (type `{}`) and can't be set as a single scalar — set one entry at a time, or edit the map structurally.",
         meta.type_,
     )
-}
-
-/// One-liner advice for editing an aube map setting outside of
-/// `aube config set` (which only handles scalar TOML values).
-fn aube_map_help(meta: &aube_settings::meta::SettingMeta) -> String {
-    if meta.name == "allowBuilds" {
-        "approve dep build scripts with `aube approve-builds <pkg>`, or set `aube.allowBuilds.<pkg>` in `package.json` / `allowBuilds:` in `pnpm-workspace.yaml`".to_string()
-    } else {
-        format!(
-            "edit `{}` in `pnpm-workspace.yaml` or `aube.{}` in `package.json`",
-            meta.name, meta.name,
-        )
-    }
 }
 
 /// Where free-form (settings.toml-unknown) writes land. Unlike known
@@ -184,24 +267,31 @@ fn aube_config_target(
     }
 }
 
-/// Reject `aube config set <prefix>.<sub> …` when `<prefix>` names an
-/// aube setting that wasn't already routed to aube config (the
-/// `is_aube_config_key` check above). The fall-through would write the
-/// dotted key verbatim to `~/.npmrc` where aube doesn't read it and
-/// npm warns/errors about the unknown key. Aube map settings (e.g.
-/// `allowBuilds`, `overrides`, `packageExtensions`) are edited
-/// structurally in workspace yaml or `package.json#aube.<prefix>`.
-fn reject_nested_aube_key(key: &str) -> miette::Result<()> {
+/// Reject `aube config set <scalar>.<sub> …` where `<scalar>` is a
+/// known aube scalar setting (`autoInstallPeers`, `minimumReleaseAge`,
+/// …). Object-typed prefixes are handled upstream by
+/// [`try_set_aube_map_entry`]; this guard catches the remaining case
+/// where the user typed a nested form against a setting that doesn't
+/// have a nested namespace.
+fn reject_scalar_nested_key(key: &str) -> miette::Result<()> {
     let Some((prefix, _)) = key.split_once('.') else {
         return Ok(());
     };
     let Some(meta) = setting_for_key(prefix) else {
         return Ok(());
     };
+    // Object-typed prefixes are handled by `try_set_aube_map_entry`
+    // before reaching here.
+    if meta.type_ == "object" {
+        return Ok(());
+    }
     Err(miette!(
         code = aube_codes::errors::ERR_AUBE_CONFIG_NESTED_AUBE_KEY,
-        help = aube_map_help(meta),
-        "`{key}` is not a writable config key: `{}` is an aube setting and nested keys can't be set via `aube config set`.",
+        help = format!(
+            "`{}` is type `{}` — set it directly with `aube config set {} <value>`.",
+            meta.name, meta.type_, meta.name,
+        ),
+        "`{key}` is not a writable config key: `{}` is a scalar aube setting and has no nested namespace.",
         meta.name,
     ))
 }

@@ -519,21 +519,88 @@ EOF
 	fi
 }
 
-@test "config set rejects nested aube keys instead of writing to .npmrc" {
-	# Discussion #617: `aube config set allowBuilds.<pkg> true` previously
-	# fell through to `~/.npmrc`, where aube doesn't read the dotted key
-	# and npm warns/errors about an unknown user config. Fail loudly
-	# instead and point at the right way to edit the map.
+@test "config set --local allowBuilds.<pkg> writes to project workspace yaml" {
+	# Discussion #617: `aube config set allowBuilds.<pkg> true` should
+	# be a valid input — at project scope it edits the same
+	# `allowBuilds:` map `aube approve-builds` mutates. With no
+	# workspace yaml present, the write lands in `package.json#aube.allowBuilds`
+	# via `aube-manifest::edit_setting_map`.
+	echo '{"name":"demo","version":"0.0.1"}' >package.json
+	run aube config set --local "allowBuilds.@mongodb-js/zstd" true
+	assert_success
+	run cat package.json
+	assert_output --partial '"allowBuilds"'
+	assert_output --partial '"@mongodb-js/zstd": true'
+	# .npmrc must stay clean.
+	if [ -e ".npmrc" ]; then
+		run cat .npmrc
+		refute_output --partial "allowBuilds"
+	fi
+}
+
+@test "config set --local allowBuilds.<pkg> appends to existing workspace yaml" {
+	# When a workspace yaml already exists, the dotted write extends
+	# its `allowBuilds:` map instead of touching `package.json`.
+	cat >pnpm-workspace.yaml <<-YAML
+		packages:
+		  - 'apps/*'
+		allowBuilds:
+		  sharp: true
+	YAML
+	run aube config set --local "allowBuilds.@mongodb-js/zstd" true
+	assert_success
+	run cat pnpm-workspace.yaml
+	assert_output --partial "sharp: true"
+	assert_output --partial "'@mongodb-js/zstd': true"
+}
+
+@test "config set --local overrides.<pkg> writes to project workspace yaml" {
+	# Generic map-setting branch: dotted writes for any aube
+	# object-typed setting (`overrides`, `packageExtensions`, …) follow
+	# the same path as `allowBuilds`, without the approve-builds hint.
+	cat >pnpm-workspace.yaml <<-YAML
+		packages:
+		  - 'apps/*'
+	YAML
+	run aube config set --local overrides.lodash 4.17.21
+	assert_success
+	run cat pnpm-workspace.yaml
+	assert_output --partial "overrides:"
+	assert_output --partial "lodash: 4.17.21"
+}
+
+@test "config set allowBuilds.<pkg> at user scope errors with --local hint" {
+	# User-scope errors because aube only reads `allowBuilds` from the
+	# project's workspace yaml / `package.json` today. The hint points
+	# at `--local` rather than dropping the value where nothing reads
+	# it.
 	run aube config set "allowBuilds.@mongodb-js/zstd" true
 	assert_failure
 	assert_output --partial "allowBuilds"
-	assert_output --partial "approve-builds"
-	# .npmrc must stay clean — the rejected write must not leak any
-	# `allowBuilds.<pkg>=true` line through to ~/.npmrc.
+	assert_output --partial "--local"
+	# .npmrc must stay clean.
 	if [ -e "$HOME/.npmrc" ]; then
 		run cat "$HOME/.npmrc"
 		refute_output --partial "allowBuilds"
 	fi
+}
+
+@test "config set overrides.<pkg> at user scope errors with --local hint" {
+	# Same user-scope rejection as `allowBuilds` — generic map-setting
+	# branch, no per-setting special case.
+	run aube config set overrides.lodash 4.17.21
+	assert_failure
+	assert_output --partial "overrides"
+	assert_output --partial "--local"
+}
+
+@test "config set autoInstallPeers.foo errors: scalar settings have no nested namespace" {
+	# Dotted writes against a *scalar* aube setting are still a
+	# syntactic error — there's no nested namespace to write into.
+	run aube config set autoInstallPeers.foo true
+	assert_failure
+	assert_output --partial "autoInstallPeers"
+	assert_output --partial "scalar"
 }
 
 @test "config accepts unknown (literal) keys for auth-style writes" {

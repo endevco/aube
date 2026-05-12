@@ -27,6 +27,8 @@ Which config location to write to.
 
 Defaults to `user`. Writes land in `.npmrc` only for the npm-shared surface (per-host auth, scoped registries, npm-standard scalars like `registry`, `email`, `proxy`, …); everything else — aube settings, pnpm-only knobs, and unknown keys — lands in aube's own config (`~/.config/aube/config.toml` at user-scope, `<cwd>/.config/aube/config.toml` at project-scope) so it doesn't pollute the file other npm-family tools read.
 
+Dotted writes for aube map settings (`allowBuilds.<pkg>`, `overrides.<pkg>`, …) edit one entry at a time. At project scope (`--local`) they land in `pnpm-workspace.yaml#<map>.<entry>` or `package.json#aube.<map>.<entry>` if no workspace yaml exists — the same place install reads from. At user scope these still error since aube only reads these maps per project.
+
 **Choices:**
 
 - `user`

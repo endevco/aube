@@ -58,10 +58,19 @@ writes them to aube's own config instead. See the
 [settings reference](/settings/) — each entry lists its `.npmrc` key alongside
 the other sources.
 
-Aube map settings (`allowBuilds`, `overrides`, `packageExtensions`, …) can't be
-set as a single scalar via `aube config set`; edit them in workspace yaml,
-`package.json#aube.<name>`, or — for `allowBuilds` specifically — via
-`aube approve-builds`.
+Aube map settings (`allowBuilds`, `overrides`, `packageExtensions`, …) support
+**dotted writes** at project scope to edit one entry at a time:
+
+```sh
+aube config set --local allowBuilds.@mongodb-js/zstd true
+aube config set --local overrides.lodash 4.17.21
+```
+
+The write lands in `pnpm-workspace.yaml#<map>.<entry>` when a workspace yaml
+exists, otherwise `package.json#aube.<map>.<entry>` — the same place install
+reads from. At user scope these still error today since aube only reads these
+maps per project. For `allowBuilds` specifically, `aube approve-builds <pkg>`
+is the interactive equivalent.
 
 ## Workspace YAML
 
