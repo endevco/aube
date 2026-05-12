@@ -661,6 +661,55 @@ EOF
 	assert_output --partial "--local"
 }
 
+@test "config delete --local allowBuilds.<pkg> round-trips with set" {
+	# Symmetric to `config set --local allowBuilds.<pkg>`: the set
+	# path writes to workspace yaml / `package.json#aube.allowBuilds`,
+	# so delete must sweep the same place. Without the dotted-delete
+	# path, the entry sits stuck after set and the CLI can't remove it.
+	echo '{"name":"demo","version":"0.0.1"}' >package.json
+	run aube config set --local "allowBuilds.@mongodb-js/zstd" true
+	assert_success
+	run aube config delete --local "allowBuilds.@mongodb-js/zstd"
+	assert_success
+	# allowBuilds map should be gone (empty submap is scrubbed).
+	run cat package.json
+	refute_output --partial "@mongodb-js/zstd"
+}
+
+@test "config delete --local allowBuilds.<pkg> sweeps existing workspace yaml" {
+	cat >pnpm-workspace.yaml <<-YAML
+		packages:
+		  - 'apps/*'
+		allowBuilds:
+		  sharp: true
+		  '@mongodb-js/zstd': true
+	YAML
+	run aube config delete --local "allowBuilds.@mongodb-js/zstd"
+	assert_success
+	run cat pnpm-workspace.yaml
+	# the other allowBuilds entry must survive
+	assert_output --partial "sharp: true"
+	# our target entry must be gone
+	refute_output --partial "@mongodb-js/zstd"
+}
+
+@test "config delete allowBuilds.<pkg> at user scope errors with --local hint" {
+	run aube config delete "allowBuilds.@mongodb-js/zstd"
+	assert_failure
+	assert_output --partial "allowBuilds"
+	assert_output --partial "--local"
+}
+
+@test "config delete --local overrides.<pkg> on missing entry errors cleanly" {
+	cat >pnpm-workspace.yaml <<-YAML
+		packages:
+		  - 'apps/*'
+	YAML
+	run aube config delete --local overrides.lodash
+	assert_failure
+	assert_output --partial "not set"
+}
+
 @test "config set autoInstallPeers.foo errors: scalar settings have no nested namespace" {
 	# Dotted writes against a *scalar* aube setting are still a
 	# syntactic error — there's no nested namespace to write into.

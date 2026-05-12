@@ -935,6 +935,44 @@ pub fn upsert_map_entry(
     }
 }
 
+/// Remove a single `<map>.<entry>` pair from the project's
+/// workspace-level config. Mirrors [`upsert_map_entry`]: sweeps both
+/// the workspace yaml (when one exists) and
+/// `<pnpm|aube>.<map>.<entry>` in `package.json` so a value set
+/// through either file can be deleted regardless of which one the
+/// current layout would have written to. Drops empty `<map>:`
+/// containers behind it so a removal doesn't leave a `{}` stub.
+///
+/// Returns `true` when at least one location held the entry. Used by
+/// `aube config delete --local <map>.<entry>` so dotted writes have
+/// a symmetric round-trip.
+pub fn remove_map_entry(
+    project_dir: &Path,
+    map_name: &str,
+    entry_key: &str,
+) -> Result<bool, crate::Error> {
+    let mut existed = false;
+    if let Some(yaml_path) = workspace_yaml_existing(project_dir) {
+        edit_workspace_yaml(&yaml_path, |map| {
+            let yaml_key = yaml_serde::Value::String(map_name.to_string());
+            let Some(submap) = map.get_mut(&yaml_key).and_then(|v| v.as_mapping_mut()) else {
+                return Ok(());
+            };
+            if submap.shift_remove(entry_key).is_some() {
+                existed = true;
+            }
+            if submap.is_empty() {
+                map.shift_remove(&yaml_key);
+            }
+            Ok(())
+        })?;
+    }
+    if remove_setting_entry(project_dir, map_name, entry_key)? {
+        existed = true;
+    }
+    Ok(existed)
+}
+
 /// How `add_to_allow_builds` should write each entry.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AllowBuildsWriteMode {

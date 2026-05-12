@@ -1,4 +1,4 @@
-use super::{KeyArgs, Location, NpmrcEdit, aube_config, resolve_aliases};
+use super::{KeyArgs, Location, NpmrcEdit, aube_config, resolve_aliases, setting_for_key};
 use miette::miette;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,13 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
     // `ignore-scripts`). Delete must follow the same routing or it'll
     // skip the file the value actually lives in.
     let key_is_npm_shared = super::is_npm_shared_key(&args.key);
+
+    // Dotted aube-map deletes (`allowBuilds.<pkg>`, `overrides.<pkg>`,
+    // …) sweep workspace yaml / `package.json#aube.<map>` — symmetric
+    // to `try_set_aube_map_entry`.
+    if let Some(handled) = try_delete_aube_map_entry(&args.key, location)? {
+        return Ok(handled);
+    }
 
     let mut removed_paths: Vec<PathBuf> = Vec::new();
 
@@ -110,6 +117,51 @@ pub fn run(args: DeleteArgs) -> miette::Result<()> {
         .join(", ");
     eprintln!("deleted {} ({})", args.key, joined);
     Ok(())
+}
+
+/// Mirror of `try_set_aube_map_entry`: handle `aube config delete
+/// <map>.<entry>` for an object-typed aube setting. Returns
+/// `Ok(Some(()))` when the dotted form was recognized (and either
+/// removed or rejected with a structured error), `Ok(None)` to fall
+/// through to the normal delete flow. Project scope sweeps the
+/// workspace yaml + `package.json#<pnpm|aube>.<map>`; user scope
+/// errors with a `--local` pointer because aube only reads these
+/// maps per project.
+fn try_delete_aube_map_entry(key: &str, location: Location) -> miette::Result<Option<()>> {
+    let Some((prefix, entry)) = key.split_once('.') else {
+        return Ok(None);
+    };
+    let Some(meta) = setting_for_key(prefix) else {
+        return Ok(None);
+    };
+    if meta.type_ != "object" {
+        return Ok(None);
+    }
+    // Canonical dotted-name settings like `peerDependencyRules.allowedVersions`
+    // are handled by the regular delete flow below (they're scalar
+    // settings whose name happens to contain a dot).
+    if aube_config::is_aube_config_key(key).is_some() {
+        return Ok(None);
+    }
+
+    if !matches!(location, Location::Project) {
+        return Err(miette!(
+            "`{key}` only applies at project scope: `{prefix}` is read from `pnpm-workspace.yaml` / `package.json#<pnpm|aube>.{prefix}`, not user-scope aube config.\n\
+             use `aube config delete --local {prefix}.{entry}` to remove it from the project workspace yaml / `package.json`.",
+        ));
+    }
+
+    let cwd = crate::dirs::project_root_or_cwd()?;
+    let removed = aube_manifest::workspace::remove_map_entry(&cwd, meta.name, entry)
+        .map_err(|e| miette!("failed to remove {}.{entry}: {e}", meta.name))?;
+    if !removed {
+        return Err(miette!(
+            "{}.{entry} not set in `pnpm-workspace.yaml` or `package.json`",
+            meta.name,
+        ));
+    }
+    eprintln!("deleted {}.{entry} ({})", meta.name, cwd.display());
+    Ok(Some(()))
 }
 
 /// Build the error when an aube-only setting isn't in the expected
