@@ -498,7 +498,14 @@ pub struct Linker {
 pub type Patches = std::collections::BTreeMap<String, String>;
 
 pub fn default_linker_parallelism() -> usize {
-    let default_limit = if cfg!(target_os = "macos") { 4 } else { 16 };
+    // Cap based on observed utilization, not core count. samply on a
+    // 1230-pkg fixture (Ryzen 9 7950X3D, 32 threads, warm linker pass)
+    // showed `wait_until_cold` at 74.7% inclusive — average ~4 of 16
+    // workers busy. 8 covers the working set with headroom and trims
+    // the thread-pool startup tail visible on small warm installs.
+    // macOS keeps a tighter cap because per-thread Mach IPC overhead
+    // dominates on small jobs.
+    let default_limit = if cfg!(target_os = "macos") { 4 } else { 8 };
 
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -538,6 +545,7 @@ fn with_link_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
         None => f(),
     }
 }
+
 
 /// Strategy for linking files from the store to node_modules.
 #[derive(Debug, Clone, Copy)]
