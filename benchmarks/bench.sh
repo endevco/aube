@@ -525,6 +525,9 @@ cmd_template() {
 		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
 		;;
 	add:bun)
+		# Can't reuse $BUN_BASE: that template hardcodes `install`,
+		# this scenario needs `add`. Flag list below is intentionally
+		# kept in sync with BUN_BASE — update both together.
 		echo "cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary --minimum-release-age=${MIN_RELEASE_AGE_SECONDS} >/dev/null 2>&1"
 		;;
 	add:npm)
