@@ -46,7 +46,7 @@ and install first only when needed. Use `aubx <pkg>` for one-off tools.
 | --- | --- | --- |
 | Default lockfile (new projects) | `pnpm-lock.yaml` | `aube-lock.yaml` |
 | Virtual store | `node_modules/.pnpm/` | `node_modules/.aube/` |
-| Global content-addressable store | `~/.pnpm-store/` | `$XDG_DATA_HOME/aube/store/v1/files/` (defaulting to `~/.local/share/aube/store/v1/files/`) |
+| Global content-addressable store | `~/.pnpm-store/` | `$XDG_DATA_HOME/aube/store/v1/` (defaulting to `~/.local/share/aube/store/v1/`). Run `aube store path` to see the resolved location. |
 | Install state | `node_modules/.modules.yaml` | `node_modules/.aube-state` |
 | Workspace manifest | `pnpm-workspace.yaml` | `aube-workspace.yaml` |
 

@@ -1704,10 +1704,24 @@ impl Resolver {
                 // (v5.15.1+) and full-packument fetches do include it,
                 // and then we round-trip it into the lockfile just like
                 // pnpm does.
-                if self.should_record_times()
-                    && let Some(t) = picked_publish_time.as_ref()
-                {
-                    resolved_times.insert(dep_path.clone(), t.clone());
+                //
+                // Fall back to the prior lockfile's time when the
+                // packument doesn't carry one — `aube update` filters
+                // direct deps out of `existing.packages` to force a
+                // fresh resolve, so the lockfile-reuse fallback further
+                // up doesn't fire for them. Without this fallback the
+                // resolver-fetched corgi (no time) would silently drop
+                // the dep's `time:` entry on every update, even when
+                // the version didn't change. Reported in discussion
+                // #345 (mrazauskas).
+                if self.should_record_times() {
+                    if let Some(t) = picked_publish_time.as_ref() {
+                        resolved_times.insert(dep_path.clone(), t.clone());
+                    } else if let Some(g) = existing
+                        && let Some(t) = g.times.get(&dep_path)
+                    {
+                        resolved_times.insert(dep_path.clone(), t.clone());
+                    }
                 }
 
                 // Record root dep

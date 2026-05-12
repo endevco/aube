@@ -1179,3 +1179,57 @@ JSON
 	assert_output --partial "    devDependencies:
       is-odd:"
 }
+
+@test "aube install self-heals when a CAS shard goes missing under a cached index" {
+	# Regression for the BuildKit cache-mount class (endevco/aube#345):
+	# a stale cached package index points at a CAS shard that's been
+	# pruned out from under it (foreign sync tool, partial wipe, a
+	# cache-mount that only covered part of the store, etc.). The fast
+	# `load_index` probe only checks the first file in the index, so
+	# corruption past that point used to slip through and the
+	# materializer would die mid-link with `ERR_AUBE_MISSING_STORE_FILE`.
+	#
+	# The verified probe on the install fetch fast path walks every
+	# file, drops the stale index, and re-fetches the tarball — the
+	# install completes without any user-visible recovery dance.
+	_setup_basic_fixture
+	run aube install
+	assert_success
+
+	store_v1="$(aube store path)"
+	# Pick one cached index, then delete the CAS shard for a NON-first
+	# file inside it. The first file would be caught by the old cheap
+	# probe; this test exercises the gap that the verified probe closes.
+	index="$(find "$store_v1/index" -name '*.json' -print -quit)"
+	assert_file_exists "$index"
+	# Jump to the second `store_path` entry — the index is JSON keyed by
+	# file path, and BTreeMap serialization preserves lexicographic key
+	# order, so entry #2 is reliably past the first-file probe horizon.
+	victim="$(grep -o '"store_path":"[^"]*"' "$index" | sed -n '2p' | sed 's/.*":"//;s/"$//')"
+	assert_file_exists "$victim"
+	rm "$victim"
+
+	# Wipe both node_modules AND the global virtual store. The GVS at
+	# `$XDG_CACHE_HOME/aube/virtual-store/` holds hardlinks back to the
+	# (deleted) CAS path, and `ensure_in_virtual_store` short-circuits
+	# on `pkg_nm_dir.exists()` — leaving the GVS in place would let the
+	# materializer skip the broken package entirely and mask the very
+	# bug this test exists to catch.
+	rm -rf node_modules "$XDG_CACHE_HOME/aube/virtual-store"
+
+	# Without the verified probe, this install would fail with
+	# `ERR_AUBE_MISSING_STORE_FILE` from the GVS prewarm path; with
+	# the fix, the fetch fast path drops the stale index, the tarball
+	# gets re-fetched against the offline Verdaccio, and the install
+	# completes cleanly.
+	run aube install
+	assert_success
+	assert_dir_exists node_modules/.aube
+
+	# The previously-missing shard must be back in the store after the
+	# self-heal. We can't assert the exact path (the re-fetched tarball
+	# may BLAKE3 to a different shard if the tarball/file bytes differ),
+	# but the CAS root must still contain at least one file.
+	shard_count="$(find "$store_v1/files" -type f | wc -l | tr -d ' ')"
+	[ "$shard_count" -gt 0 ]
+}

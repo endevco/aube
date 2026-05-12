@@ -88,6 +88,14 @@ jobs:
       - run: cargo-machete
       - run: cargo msrv --manifest-path crates/aube/Cargo.toml verify --output-format minimal
       - run: mise run render
+      - name: assert render produces no diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::'mise run render' produced changes. Run it locally and commit."
+            git status
+            git diff
+            exit 1
+          fi
       - run: mise run docs:build
 
   # BATS integration shards. Linux runs 4 shards (matches Buildkite),

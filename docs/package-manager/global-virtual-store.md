@@ -5,7 +5,7 @@ projects. It is enabled by default for local installs and disabled under CI.
 
 This is separate from the global content store:
 
-- The **global content store** (`$XDG_DATA_HOME/aube/store/v1/files/`) stores
+- The **global content store** (`$XDG_DATA_HOME/aube/store/v1/`) stores
   package files by BLAKE3 hash. Every install uses it.
 - The **global virtual store**
   (`$XDG_CACHE_HOME/aube/virtual-store/`, defaulting to

@@ -208,6 +208,42 @@ pub async fn run(
                 .filter(|ws| ws.as_path() != cwd.as_path())
                 .and_then(|ws| aube_lockfile::parse_lockfile(&ws, &manifest).ok())
         });
+    // Importer keys to try when looking up a direct dep in `existing`.
+    // Order matters: try the cwd's own importer first, then fall through
+    // to `"."`.
+    //
+    // In shared-workspace mode, `existing` came from the workspace-root
+    // lockfile and carries BOTH the root's `"."` importer (the root
+    // manifest's own deps) and the sub-package's importer key
+    // (`./packages/foo` etc.) — distinct entries that may share dep
+    // names. Trying `"."` first would cross-resolve any shared name
+    // (e.g. the root and the sub-package both depend on `typescript`)
+    // to the ROOT's locked version, which is wrong for the sub-package
+    // pass and would feed the wrong "current" into the picker, the
+    // post-resolve report, and the `preserve_pin` guard.
+    //
+    // For the standalone-project and workspace-root cases, `cwd_importer`
+    // resolves to `"."` so the second slot is dropped — the lookup is
+    // single-importer and unambiguous.
+    //
+    // For the sub-package-with-its-own-lockfile case (no shared
+    // lockfile), `existing` only has `"."` — `cwd_importer` simply
+    // misses and the fall-through to `"."` returns the right entry.
+    //
+    // `lookup_pkg` walks the list in order and returns `None` when no
+    // candidate importer carries a DirectDep for the key — there is no
+    // name-scan fallback (see the function's doc comment).
+    let cwd_importer = match crate::dirs::find_workspace_root(&cwd) {
+        Some(ws) if ws.as_path() != cwd.as_path() => {
+            super::workspace_importer_path(&ws, &cwd).unwrap_or_else(|_| ".".to_string())
+        }
+        _ => ".".to_string(),
+    };
+    let existing_importers: Vec<&str> = if cwd_importer == "." {
+        vec!["."]
+    } else {
+        vec![cwd_importer.as_str(), "."]
+    };
 
     // Snapshot of every direct dep as (manifest key, specifier). Owned
     // strings so we can hold this across mutations of `manifest`.
@@ -310,48 +346,32 @@ pub async fn run(
             .cloned()
             .collect()
     };
-    if args.interactive && !manifest_keys_to_update.is_empty() {
-        let selected = pick_update_interactively(
-            &manifest_keys_to_update,
-            &manifest,
-            &all_specifiers,
-            existing.as_ref(),
-            &cwd,
-            latest,
-        )
-        .await?;
-        if selected.is_empty() && indirect_arg_names.is_empty() {
-            eprintln!("No packages selected.");
-            return Ok(());
-        }
-        manifest_keys_to_update.retain(|key| selected.contains(key));
-    }
-
-    let real_names_to_update: std::collections::HashSet<String> = manifest_keys_to_update
-        .iter()
-        .map(|k| resolve_real_name(k))
-        .collect();
-
-    if update_all {
-        eprintln!("Updating all dependencies...");
-    } else {
-        eprintln!("Updating: {}", parsed_packages.join(", "));
-    }
-
-    // `--latest`: pre-fetch packuments for every direct dep we're
-    // about to rewrite so we can detect manifest pins that are NEWER
-    // than the registry's `latest` dist-tag and skip them. Mirrors
-    // pnpm's regression guard from #7436 — a user-pinned prerelease
-    // (e.g. `"3.0.0-rc.0"` while latest=`2.0.0`) shouldn't be silently
-    // downgraded by `update --latest`. Packuments come from the same
-    // cache the resolver uses moments later, so the only cost when
-    // nothing's stale is a cheap revalidation.
+    // `--latest`: pre-compute the set of direct deps that should NOT be
+    // rewritten because the user is already on a version newer than the
+    // registry's `latest` dist-tag. Mirrors pnpm's regression guard from
+    // #7436 — a user pinned at `"3.0.0-rc.0"` while latest=`2.0.0`
+    // shouldn't be silently downgraded by `update --latest`.
+    //
+    // Two version sources feed this check:
+    //   - The manifest spec (`exact_pin_version`) — picks up exact
+    //     prerelease pins even when no lockfile exists yet.
+    //   - The LOCKED version from `existing` — picks up caret/tilde
+    //     prerelease ranges (e.g. `"^3.0.0-rc.1"`) and dist-tag
+    //     specifiers (`"next"`) that resolved to a version above the
+    //     registry's current `latest`. Discussion #623: caret-prefix
+    //     prereleases were getting downgraded because `exact_pin_version`
+    //     only recognized bare exact pins.
     //
     // Only applied to bulk updates (no positional args). When the user
     // explicitly names a package — `aube update --latest <pkg>` or
     // `aube update <pkg>@latest` — they're opting in to whatever the
     // registry's `latest` says, even when that downgrades a prerelease
     // (matching pnpm's behavior for `pnpm update <pkg>@latest`).
+    //
+    // Computed BEFORE the interactive picker so preserve-pin entries are
+    // hidden from the picker — otherwise the picker would surface a
+    // phantom downgrade row that the post-picker rewrite path then
+    // ignores.
     let preserve_pin: BTreeSet<String> = if latest && update_all {
         let client = std::sync::Arc::new(super::make_client(&cwd));
         let mut handles = Vec::new();
@@ -360,13 +380,19 @@ pub async fn run(
             if aube_util::pkg::is_workspace_spec(original) {
                 continue;
             }
-            let Some(pinned) = exact_pin_version(original) else {
-                continue;
-            };
-            let Ok(parsed_pin) = node_semver::Version::parse(pinned) else {
-                continue;
-            };
             let real_name = resolve_real_name(key);
+            // Candidate "current" versions to compare against the registry
+            // `latest`: the manifest pin (if exact) and the locked version
+            // (if any). Either tipping above latest is enough to preserve.
+            let manifest_pin =
+                exact_pin_version(original).and_then(|p| node_semver::Version::parse(p).ok());
+            let locked_pin = existing
+                .as_ref()
+                .and_then(|g| lookup_pkg(g, &existing_importers, key, &real_name))
+                .and_then(|p| node_semver::Version::parse(&p.version).ok());
+            if manifest_pin.is_none() && locked_pin.is_none() {
+                continue;
+            }
             let key_owned = key.clone();
             let client = client.clone();
             handles.push(tokio::spawn(async move {
@@ -396,7 +422,9 @@ pub async fn run(
                     );
                     return None;
                 };
-                (parsed_pin > parsed_latest).then_some(key_owned)
+                let above_latest = manifest_pin.as_ref().is_some_and(|v| v > &parsed_latest)
+                    || locked_pin.as_ref().is_some_and(|v| v > &parsed_latest);
+                above_latest.then_some(key_owned)
             }));
         }
         let mut set = BTreeSet::new();
@@ -409,6 +437,36 @@ pub async fn run(
     } else {
         BTreeSet::new()
     };
+
+    if args.interactive && !manifest_keys_to_update.is_empty() {
+        let selected = pick_update_interactively(
+            &manifest_keys_to_update,
+            &manifest,
+            &all_specifiers,
+            existing.as_ref(),
+            &existing_importers,
+            &preserve_pin,
+            &cwd,
+            latest,
+        )
+        .await?;
+        if selected.is_empty() && indirect_arg_names.is_empty() {
+            eprintln!("No packages selected.");
+            return Ok(());
+        }
+        manifest_keys_to_update.retain(|key| selected.contains(key));
+    }
+
+    let real_names_to_update: std::collections::HashSet<String> = manifest_keys_to_update
+        .iter()
+        .map(|k| resolve_real_name(k))
+        .collect();
+
+    if update_all {
+        eprintln!("Updating all dependencies...");
+    } else {
+        eprintln!("Updating: {}", parsed_packages.join(", "));
+    }
 
     // Rewrite each targeted direct-dep specifier on a *clone* of the
     // manifest handed to the resolver. Mutating the real in-memory
@@ -573,14 +631,19 @@ pub async fn run(
     // `pkg.alias_of == Some("real")`, so the version-lookup match has to
     // accept either the manifest key (the alias) or the real name —
     // matching only on `real_name` would miss aliased entries.
+    // The freshly resolved `graph` was built from `resolver_manifests = [(".", ...)]`,
+    // so its only importer key is "." regardless of the cwd's path under
+    // any workspace root.
+    let new_importers: Vec<&str> = vec!["."];
     for manifest_key in &manifest_keys_to_update {
         let real_name = resolve_real_name(manifest_key);
 
         let old_ver = existing
             .as_ref()
-            .and_then(|g| lookup_pkg(g, manifest_key, &real_name))
+            .and_then(|g| lookup_pkg(g, &existing_importers, manifest_key, &real_name))
             .map(|p| p.version.as_str());
-        let new_ver = lookup_pkg(&graph, manifest_key, &real_name).map(|p| p.version.as_str());
+        let new_ver = lookup_pkg(&graph, &new_importers, manifest_key, &real_name)
+            .map(|p| p.version.as_str());
 
         match (old_ver, new_ver) {
             (Some(old), Some(new)) if old != new => {
@@ -652,7 +715,8 @@ pub async fn run(
                     continue;
                 }
             }
-            let Some(resolved) = lookup_pkg(&graph, key, &real_name).map(|p| p.version.clone())
+            let Some(resolved) =
+                lookup_pkg(&graph, &new_importers, key, &real_name).map(|p| p.version.clone())
             else {
                 continue;
             };
@@ -724,11 +788,14 @@ fn workspace_package_versions(cwd: &std::path::Path) -> miette::Result<HashMap<S
     Ok(versions)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn pick_update_interactively(
     keys: &[String],
     manifest: &aube_manifest::PackageJson,
     specifiers: &BTreeMap<String, String>,
     existing: Option<&aube_lockfile::LockfileGraph>,
+    existing_importers: &[&str],
+    preserve_pin: &BTreeSet<String>,
     cwd: &std::path::Path,
     latest: bool,
 ) -> miette::Result<BTreeSet<String>> {
@@ -747,6 +814,11 @@ async fn pick_update_interactively(
     // carry a path; none of them are registry-resolvable. The
     // pre-fetch is the same packument round-trip `aube outdated`
     // makes, just gated on the `-i` path.
+    //
+    // Discussion #623: also drop `preserve_pin` entries — direct deps
+    // whose locked version sits above the registry's `latest` dist-tag.
+    // The post-picker rewrite path skips these so showing them as
+    // toggleable in the picker would be a lie.
     let registry_keys: Vec<&String> = keys
         .iter()
         .filter(|key| {
@@ -754,6 +826,7 @@ async fn pick_update_interactively(
             !aube_util::pkg::is_workspace_spec(spec)
                 && !spec.starts_with("link:")
                 && !spec.starts_with("file:")
+                && !preserve_pin.contains(key.as_str())
         })
         .collect();
     if registry_keys.is_empty() {
@@ -803,7 +876,7 @@ async fn pick_update_interactively(
             continue;
         };
         let current = existing
-            .and_then(|g| lookup_pkg(g, key, &real_name))
+            .and_then(|g| lookup_pkg(g, existing_importers, key, &real_name))
             .map(|p| p.version.as_str());
         let registry_latest = packument.dist_tags.get("latest").map(String::as_str);
         let wanted =
@@ -871,14 +944,51 @@ fn real_name_from_spec(manifest_key: &str, specifier: Option<&String>) -> String
     manifest_key.to_string()
 }
 
+/// Look up the LockedPackage for a direct dep of the current importer.
+///
+/// Walks `importer_paths` in order and returns the first match found via
+/// the importer's `DirectDep` edge — using `dep_path` for an exact lookup
+/// rather than name-matching across `g.packages`. This matters when the
+/// same package name appears multiple times in the lockfile (e.g. a
+/// `catalog:` dep at one version plus the same name pulled in transitively
+/// at an older version): a name-only `g.packages.values().find(...)` walks
+/// the BTreeMap in `dep_path` lex order and returns whichever version
+/// happens to come first, mis-reporting the user's "current" version and
+/// driving phantom upgrade offers in `--interactive`. Discussion #623.
+///
+/// `importer_paths` should list the candidate importer keys to try — `"."`
+/// first (standalone or workspace-root cwd), then the cwd's path relative
+/// to the workspace root (sub-package under a shared lockfile).
+///
+/// Returns `None` when no candidate importer carries a `DirectDep` for
+/// the requested key. Deliberately does NOT fall back to a name scan
+/// across `g.packages`: in a `update -r` fanout the lockfile read between
+/// per-project iterations contains the previously-processed project's
+/// importer entries but not yet the current one, and a name scan would
+/// return some other importer's snapshot of the same name and trip the
+/// `preserve_pin` guard with the wrong "current" version. All supported
+/// lockfile formats (`aube`, `pnpm`, `npm`, `yarn`, `bun`) populate
+/// `importers` from their per-importer direct-dep records, so an
+/// importer-only lookup is sufficient.
 fn lookup_pkg<'a>(
     g: &'a aube_lockfile::LockfileGraph,
+    importer_paths: &[&str],
     manifest_key: &str,
     real_name: &str,
 ) -> Option<&'a aube_lockfile::LockedPackage> {
-    g.packages
-        .values()
-        .find(|p| p.name == real_name || p.name == manifest_key)
+    for importer in importer_paths {
+        let Some(deps) = g.importers.get(*importer) else {
+            continue;
+        };
+        if let Some(dep) = deps
+            .iter()
+            .find(|d| d.name == manifest_key || d.name == real_name)
+            && let Some(pkg) = g.get_package(&dep.dep_path)
+        {
+            return Some(pkg);
+        }
+    }
+    None
 }
 
 struct UpdateSettings {
@@ -1347,5 +1457,140 @@ mod tests {
         retain_package_times(&mut graph);
 
         assert!(graph.times.contains_key("foo@1.0.0"));
+    }
+
+    #[test]
+    fn lookup_pkg_uses_importer_edge_to_disambiguate_duplicate_names() {
+        // Discussion #623: when the same package name lives at multiple
+        // versions in `packages` (a `catalog:` direct dep at 6.2.3 plus a
+        // transitive at 5.10.0 from another snapshot), `lookup_pkg` must
+        // return the importer's actual resolved version — not whichever
+        // dep_path comes first in BTreeMap iteration order ("jose@5.10.0"
+        // < "jose@6.2.3" lex-wise).
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph
+            .packages
+            .insert("jose@5.10.0".to_string(), locked("jose", "5.10.0"));
+        graph
+            .packages
+            .insert("jose@6.2.3".to_string(), locked("jose", "6.2.3"));
+        graph.importers.insert(
+            ".".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "jose".to_string(),
+                dep_path: "jose@6.2.3".to_string(),
+                dep_type: aube_lockfile::DepType::Production,
+                specifier: Some("catalog:".to_string()),
+            }],
+        );
+
+        let pkg = lookup_pkg(&graph, &["."], "jose", "jose")
+            .expect("jose direct dep should resolve via importer edge");
+        assert_eq!(pkg.version, "6.2.3");
+    }
+
+    #[test]
+    fn lookup_pkg_walks_workspace_importer_after_root() {
+        // Sub-package under a shared workspace lockfile: the loaded graph
+        // has importers ".", "./pkgs/a", "./pkgs/b". The cwd's importer
+        // is "./pkgs/a"; "." carries an unrelated dep so the helper must
+        // skip past it without false-matching by name.
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph
+            .packages
+            .insert("foo@1.0.0".to_string(), locked("foo", "1.0.0"));
+        graph
+            .packages
+            .insert("foo@2.0.0".to_string(), locked("foo", "2.0.0"));
+        graph.importers.insert(
+            ".".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "bar".to_string(),
+                dep_path: "bar@1.0.0".to_string(),
+                dep_type: aube_lockfile::DepType::Production,
+                specifier: Some("^1.0.0".to_string()),
+            }],
+        );
+        graph.importers.insert(
+            "./pkgs/a".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@2.0.0".to_string(),
+                dep_type: aube_lockfile::DepType::Production,
+                specifier: Some("^2.0.0".to_string()),
+            }],
+        );
+
+        let pkg = lookup_pkg(&graph, &[".", "./pkgs/a"], "foo", "foo")
+            .expect("foo should resolve via the sub-package importer");
+        assert_eq!(pkg.version, "2.0.0");
+    }
+
+    #[test]
+    fn lookup_pkg_prefers_first_importer_when_both_carry_the_same_name() {
+        // Shared-workspace lockfile case: the root manifest and the
+        // sub-package both depend on `typescript` at different versions.
+        // The lockfile records each under its own importer key. Looking
+        // up `typescript` for the sub-package must return the
+        // sub-package's locked version — `existing_importers` is built
+        // as `[cwd_importer, "."]` so the sub-package's entry is tried
+        // first; this test pins that contract on the helper.
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph.packages.insert(
+            "typescript@5.0.0".to_string(),
+            locked("typescript", "5.0.0"),
+        );
+        graph.packages.insert(
+            "typescript@5.5.0".to_string(),
+            locked("typescript", "5.5.0"),
+        );
+        graph.importers.insert(
+            ".".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "typescript".to_string(),
+                dep_path: "typescript@5.0.0".to_string(),
+                dep_type: aube_lockfile::DepType::Dev,
+                specifier: Some("^5.0.0".to_string()),
+            }],
+        );
+        graph.importers.insert(
+            "./packages/foo".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "typescript".to_string(),
+                dep_path: "typescript@5.5.0".to_string(),
+                dep_type: aube_lockfile::DepType::Dev,
+                specifier: Some("^5.5.0".to_string()),
+            }],
+        );
+
+        let pkg = lookup_pkg(&graph, &["./packages/foo", "."], "typescript", "typescript")
+            .expect("typescript should resolve via the sub-package importer first");
+        assert_eq!(pkg.version, "5.5.0");
+    }
+
+    #[test]
+    fn lookup_pkg_returns_none_when_no_importer_carries_the_dep() {
+        // Mid-`update -r` lockfile read scenario: the workspace lockfile
+        // already lists project-1's importer (with `foo@3.0.0-rc.0`) but
+        // not yet project-2's. Looking up `foo` for project-2's importer
+        // must return None — falling back to a name scan across `packages`
+        // would return project-1's snapshot and trip the prerelease-pin
+        // guard against the wrong "current" version.
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph
+            .packages
+            .insert("foo@3.0.0-rc.0".to_string(), locked("foo", "3.0.0-rc.0"));
+        graph.importers.insert(
+            "project-1".to_string(),
+            vec![aube_lockfile::DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@3.0.0-rc.0".to_string(),
+                dep_type: aube_lockfile::DepType::Production,
+                specifier: Some("3.0.0-rc.0".to_string()),
+            }],
+        );
+
+        // project-2 isn't in importers yet — the helper must say so.
+        assert!(lookup_pkg(&graph, &[".", "project-2"], "foo", "foo").is_none());
     }
 }

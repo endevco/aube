@@ -2,9 +2,13 @@
 //!
 //! Mirrors `pnpm store`:
 //!
-//! - `aube store path` — print the store root (aube-owned by default:
-//!   `$XDG_DATA_HOME/aube/store/v1/files/`, falling back to
-//!   `~/.local/share/aube/store/v1/files/`).
+//! - `aube store path` — print the store-version directory (aube-owned
+//!   by default: `$XDG_DATA_HOME/aube/store/v1/`, falling back to
+//!   `~/.local/share/aube/store/v1/`). This directory contains both
+//!   `files/` (the CAS shards) and `index/` (the cached package
+//!   indexes), so a single backup or Docker BuildKit cache mount of
+//!   this path captures the whole store — matching `pnpm store path`'s
+//!   granularity (which prints e.g. `~/.pnpm-store/v11/`).
 //! - `aube store add <pkg>…` — resolve each spec against the registry, fetch
 //!   the tarball, and import it into the global CAS. Pre-warms the store
 //!   without touching any project's `node_modules/`.
@@ -14,7 +18,7 @@
 //!   independent inodes so the nlink count is always 1 and pruning there
 //!   can't safely tell referenced from unreferenced files; in that case we
 //!   fall back to removing only files that no cached package index in
-//!   `~/.cache/aube/index/` points at.
+//!   `<store>/v1/index/` points at.
 //! - `aube store status` — verify every file referenced by a cached package
 //!   index still exists in the store and its BLAKE3 hash matches. Exits 0
 //!   when everything is consistent, 1 when any corruption is found.
@@ -74,7 +78,7 @@ fn open_store() -> miette::Result<aube_store::Store> {
 
 fn path() -> miette::Result<()> {
     let store = open_store()?;
-    println!("{}", store.root().display());
+    println!("{}", store.store_v1_dir().display());
     Ok(())
 }
 
@@ -154,7 +158,7 @@ async fn add(specs: Vec<String>) -> miette::Result<()> {
 }
 
 /// Collect the set of hex hashes referenced by any cached package index
-/// under `~/.cache/aube/index/`. Integrity-keyed entries live under
+/// under `<store>/v1/index/`. Integrity-keyed entries live under
 /// `<16 hex>/<name>@<version>.json` subdirs; integrity-less entries
 /// live at the root as `<name>@<version>.json`. Walk both. Used as
 /// the "known-referenced" set for `store prune` and `store status`.

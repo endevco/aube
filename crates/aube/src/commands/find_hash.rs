@@ -1,7 +1,7 @@
 //! `aube find-hash <hash>` — reverse lookup from a file hash to the
 //! `<name>@<version>` packages whose index references it.
 //!
-//! Walks `~/.cache/aube/index/*.json`, parses each cached `PackageIndex`,
+//! Walks `<store>/v1/index/*.json`, parses each cached `PackageIndex`,
 //! and prints every `<name>@<version>` whose index contains the given
 //! hash along with the relative path the hash lives at. Accepts both
 //! `sha512-<base64>` integrity strings and raw hex CAS digests;

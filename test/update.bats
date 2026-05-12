@@ -288,3 +288,121 @@ EOF
 	run aube update --lockfile-only --frozen-lockfile
 	assert_failure
 }
+
+# Regression for discussion #345 (mrazauskas): `aube update` was
+# stripping non-host platform-locked optional deps from the lockfile
+# because `super::build_resolver` constructed a stripped-down resolver
+# that never received `supportedArchitectures` from install's settings
+# pipeline. The bug collapsed packages like `@biomejs/biome` /
+# `rollup` to one platform binary each, breaking cross-platform CI.
+@test "aube update preserves cross-platform optional deps in lockfile" {
+	cat >package.json <<-'JSON'
+		{
+		  "name": "update-cross-platform",
+		  "version": "0.0.0",
+		  "optionalDependencies": {
+		    "aube-test-optional-win32": "1.0.0"
+		  }
+		}
+	JSON
+	run aube install --no-frozen-lockfile
+	assert_success
+	# Sanity: install widens supportedArchitectures and writes the
+	# win32-only optional into the committed lockfile even on
+	# Linux/macOS hosts. Without this baseline the regression test
+	# below has nothing to preserve.
+	run grep -F 'aube-test-optional-win32@1.0.0' aube-lock.yaml
+	assert_success
+
+	# The actual regression: `aube update` should re-resolve under
+	# the same widened platform filter install used, so the optional
+	# entry survives the rewrite.
+	run aube update
+	assert_success
+	run grep -F 'aube-test-optional-win32@1.0.0' aube-lock.yaml
+	assert_success
+}
+
+# Companion regression for discussion #345: `aube update` was dropping
+# `time:` entries for direct deps from the rewritten lockfile because
+# (a) the stripped-down `build_resolver` skipped install-time settings
+# and (b) `aube update`'s `filtered_existing` strips direct deps from
+# `existing.packages` to force a fresh re-resolve, so the lockfile-
+# reuse path's time-carry-forward never fired for them. Transitive
+# deps stayed in `existing.packages` and kept their times — the
+# asymmetry @mrazauskas flagged.
+@test "aube update preserves time: entries for direct deps" {
+	# `^0.1.0` is the only spec that exposes the bug cleanly: `>=0.1.0`
+	# would bump is-odd to 3.0.1 and the resolver would (correctly)
+	# write a fresh `time:` entry for the new version, masking the
+	# regression. With `^0.1.0` the highest in-range version equals
+	# the locked one (0.1.2), so the resolver re-resolves to the
+	# same version and the `time:` entry must round-trip.
+	cat >package.json <<-'JSON'
+		{
+		  "name": "update-time-preserve",
+		  "version": "0.0.0",
+		  "dependencies": {
+		    "is-odd": "^0.1.0"
+		  }
+		}
+	JSON
+	cat >aube-lock.yaml <<-'EOF'
+		lockfileVersion: '9.0'
+
+		settings:
+		  autoInstallPeers: true
+		  excludeLinksFromLockfile: false
+
+		time:
+		  is-odd@0.1.2: '2099-01-02T00:00:00.000Z'
+		  is-number@3.0.0: '2099-01-03T00:00:00.000Z'
+		  kind-of@3.2.2: '2099-01-04T00:00:00.000Z'
+
+		importers:
+		  .:
+		    dependencies:
+		      is-odd:
+		        specifier: ^0.1.0
+		        version: 0.1.2
+
+		packages:
+		  is-number@3.0.0:
+		    resolution: {integrity: sha512-4cboCqIpliH+mAvFNegjZQ4kgKc3ZUhQVr3HvWbSh5q3WH2v82ct+T2Y1hdU5Gdtorx/cLifQjqCbL7bpznLTg==}
+		  is-odd@0.1.2:
+		    resolution: {integrity: sha512-Ri7C2K7o5IrUU9UEI8losXJCCD/UtsaIrkR5sxIcFg4xQ9cRJXlWA5DQvTE0yDc0krvSNLsRGXN11UPS6KyfBw==}
+		  kind-of@3.2.2:
+		    resolution: {integrity: sha512-NOW9QQXMoZGg/oqnVNoNTTIFEIid1627WCffUBJEdMxYApq7mNE7CpzucIPc+ZQg25Phej7IJSmX3hO+oblOtQ==}
+
+		snapshots:
+		  is-number@3.0.0:
+		    dependencies:
+		      kind-of: 3.2.2
+		  is-odd@0.1.2:
+		    dependencies:
+		      is-number: 3.0.0
+		  kind-of@3.2.2: {}
+	EOF
+
+	run aube update
+	assert_success
+
+	# Every locked dep — direct AND transitive — must keep a `time:`
+	# entry after the rewrite. We can't pin the timestamp value
+	# because the resolver may have refreshed it from the packument
+	# during re-resolve, but the entry MUST be present. The
+	# pre-fix bug dropped the is-odd line entirely while leaving the
+	# transitive entries intact.
+	#
+	# The character after the colon-space distinguishes a `time:`
+	# block entry (`  is-odd@0.1.2: <ISO>` — pnpm-style writers may
+	# quote or omit quotes depending on YAML rules) from a
+	# `packages:`/`snapshots:` key (`  is-odd@0.1.2:` followed by
+	# EOL or `{...}`). A non-empty char after `: ` is enough.
+	run grep -E "^  is-odd@0\.1\.2: [^[:space:]]" aube-lock.yaml
+	assert_success
+	run grep -E "^  is-number@3\.0\.0: [^[:space:]]" aube-lock.yaml
+	assert_success
+	run grep -E "^  kind-of@3\.2\.2: [^[:space:]]" aube-lock.yaml
+	assert_success
+}

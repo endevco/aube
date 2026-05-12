@@ -33,12 +33,11 @@ use lifecycle::{
     validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
-pub(crate) use settings::{resolve_dependency_policy, resolve_force_metadata_primer};
+pub(crate) use settings::{ResolverConfigInputs, configure_resolver};
 pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_root};
 
 use settings::{
-    ResolverConfigInputs, check_unmet_peers, configure_resolver,
-    default_lockfile_network_concurrency, default_streaming_network_concurrency,
+    check_unmet_peers, default_lockfile_network_concurrency, default_streaming_network_concurrency,
     detect_aube_dir_gvs_mode, find_gvs_incompatible_trigger, maybe_cleanup_unused_catalogs,
     resolve_dedupe_peer_dependents, resolve_dedupe_peers, resolve_git_shallow_hosts,
     resolve_link_concurrency, resolve_network_concurrency, resolve_peers_from_workspace_root,
@@ -1463,7 +1462,7 @@ where
     // (either as a real directory here in per-project mode, or as a
     // symlink into the global virtual store that itself exists),
     // there's nothing to materialize and the 13–15 KB JSON on disk at
-    // `~/.cache/aube/index/<name>@<ver>.json` would be read for
+    // `<store>/v1/index/<name>@<ver>.json` would be read for
     // nothing. A fresh no-op install against the 1.4k-package medium
     // fixture drops from ~38 ms of parallel index reads to a handful
     // of `stat(2)`s.
@@ -1540,7 +1539,22 @@ where
             // under the same (name, version) — e.g. a github codeload
             // archive vs. the npm-published bytes — can't return the
             // wrong file list.
-            match store.load_index(pkg.registry_name(), &pkg.version, pkg.integrity.as_deref()) {
+            //
+            // `_verified` because the index cache and the CAS shards
+            // live in separate paths until the v1/index/ migration
+            // completes on disk, and external systems can drift them
+            // apart even after (Docker BuildKit cache mounts that
+            // only cover one path, foreign sync tools, partial wipes
+            // mid-install). Stat-per-file is paid only on a cache hit;
+            // a stale index drops here and falls through to `NeedsFetch`,
+            // which re-fetches the tarball cleanly — the alternative is
+            // the materializer dying mid-link with `ERR_AUBE_MISSING_STORE_FILE`,
+            // forcing the user to retry the whole install.
+            match store.load_index_verified(
+                pkg.registry_name(),
+                &pkg.version,
+                pkg.integrity.as_deref(),
+            ) {
                 Some(index) => (dep_path.clone(), pkg, CheckResult::Cached(index)),
                 None => (dep_path.clone(), pkg, CheckResult::NeedsFetch),
             }
@@ -2815,7 +2829,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 settings_ctx: &settings_ctx,
                 workspace_config: &ws_config_shared,
                 workspace_catalogs: &workspace_catalogs,
-                opts: &opts,
+                minimum_release_age_override: opts.minimum_release_age_override,
                 // `lockfile=false` collapses to `None` so the resolver
                 // doesn't waste a fetch widening a lockfile that will
                 // never be written. With lockfiles enabled, a missing
@@ -2824,6 +2838,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 // applies.
                 target_lockfile_kind: lockfile_enabled
                     .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
+                cache_full_packuments: true,
             },
             read_package_hook,
         );
@@ -3459,13 +3474,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     settings_ctx: &settings_ctx,
                     workspace_config: &ws_config_shared,
                     workspace_catalogs: &workspace_catalogs,
-                    opts: &opts,
+                    minimum_release_age_override: opts.minimum_release_age_override,
                     // Same disambiguation as the `--lockfile-only` path:
                     // `None` only when no lockfile will be written, so
                     // widening to every common platform doesn't happen
                     // just to be discarded.
                     target_lockfile_kind: lockfile_enabled
                         .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
+                    cache_full_packuments: true,
                 },
                 read_package_hook,
             );
@@ -3699,8 +3715,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     // of the cache key so a github-sourced tarball
                     // under the same (name, version) can't return the
                     // registry-cached file list.
+                    //
+                    // `_verified`: see the matching call in
+                    // `fetch_packages_with_root` for the full
+                    // rationale — short version, a stat-per-file cache
+                    // check is cheap, and dropping a stale index
+                    // here re-fetches the tarball cleanly instead of
+                    // letting the materializer die later with
+                    // `ERR_AUBE_MISSING_STORE_FILE`.
                     let pkg_registry_name = pkg.registry_name().to_string();
-                    if let Some(index) = fetch_store.load_index(
+                    if let Some(index) = fetch_store.load_index_verified(
                         &pkg_registry_name,
                         &pkg.version,
                         pkg.integrity.as_deref(),

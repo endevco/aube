@@ -513,30 +513,65 @@ pub(crate) async fn run_pnpmfile_pre_resolution(
         .wrap_err("pnpmfile preResolution hook failed")
 }
 
-/// Build the standard resolver used by add/remove/update/dedupe: a
-/// shared `RegistryClient` wrapped in `Arc`, the shared packument
-/// cache directory, the given catalog map, and the dependency policy
-/// resolved from `.npmrc` / workspace yaml. Without applying the
-/// policy here `blockExoticSubdeps=false` (and other policy bits)
-/// gets honored by `aube install` but ignored by `aube add` — the
-/// install pipeline runs `configure_resolver` while these commands
-/// re-resolve manifests through this stripped-down builder.
+/// Build the standard resolver used by add/remove/update/dedupe/audit.
+/// Internally routes through install's `configure_resolver` so every
+/// setting `aube install` plumbs — `supportedArchitectures`,
+/// `resolutionMode`, `minimumReleaseAge`, `autoInstallPeers`,
+/// `dedupePeerDependents`, overrides, `ignoredOptionalDependencies`,
+/// peer suffix length, git shallow hosts, network concurrency — lands
+/// here too. Skipping this caused `aube update` to rewrite the
+/// lockfile against host-only `supportedArchitectures` (collapsing
+/// platform-variant optional deps like `@biomejs/biome-*` /
+/// `@rollup/rollup-linux-*`) and to drop `time:` entries for direct
+/// deps reused from the lockfile (the resolver only records times
+/// when `resolutionMode=time-based` / `minimumReleaseAge` is on /
+/// `trustPolicy=no-downgrade`, and none of those were threaded
+/// through here).
+///
+/// Reads `.npmrc` + workspace yaml once via `with_settings_ctx`,
+/// detects the existing lockfile kind so the platform-widening
+/// behaves identically to the install that wrote that lockfile, and
+/// passes `minimum_release_age_override = None` since these commands
+/// don't expose `--minimum-release-age` today.
 pub(crate) fn build_resolver(
     cwd: &std::path::Path,
     manifest: &aube_manifest::PackageJson,
     catalogs: CatalogMap,
 ) -> aube_resolver::Resolver {
-    let (policy, force_metadata_primer) = with_settings_ctx(cwd, |ctx| {
-        (
-            install::resolve_dependency_policy(manifest, ctx),
-            install::resolve_force_metadata_primer(ctx),
-        )
-    });
-    aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd)))
-        .with_packument_cache(packument_cache_dir())
-        .with_catalogs(catalogs)
-        .with_dependency_policy(policy)
-        .with_force_metadata_primer(force_metadata_primer)
+    let (ws_config, raw_workspace) = aube_manifest::workspace::load_both(cwd).unwrap_or_default();
+    let files = FileSources::load(cwd);
+    let env = aube_settings::values::process_env();
+    let ctx = files.ctx(&raw_workspace, env, &[]);
+    // `aube update` and friends always rewrite a lockfile, so pick a
+    // target kind. Detect the existing format to match install's
+    // cross-platform widening rules — a project on `pnpm-lock.yaml`
+    // keeps pnpm's host-only optional set, `aube-lock.yaml` gets the
+    // wide aube default.
+    let target_lockfile_kind = Some(
+        aube_lockfile::detect_existing_lockfile_kind(cwd)
+            .unwrap_or(aube_lockfile::LockfileKind::Aube),
+    );
+    install::configure_resolver(
+        aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd))),
+        cwd,
+        manifest,
+        install::ResolverConfigInputs {
+            settings_ctx: &ctx,
+            workspace_config: &ws_config,
+            workspace_catalogs: &catalogs,
+            minimum_release_age_override: None,
+            target_lockfile_kind,
+            // Update / add / dedupe / audit deliberately skip the
+            // full-packument disk cache install populates: the cache's
+            // freshness window can outlive a registry dist-tag bump,
+            // and these commands need to observe `latest` exactly as
+            // it stands right now (pnpm_update.bats simulates this by
+            // mutating `dist-tags` between commands). The abbreviated
+            // cache stays on either way.
+            cache_full_packuments: false,
+        },
+        None,
+    )
 }
 
 /// Resolve [`aube_registry::config::FetchPolicy`] from the same
