@@ -3854,7 +3854,7 @@ mod tests {
         let foo_stored = store
             .import_bytes(b"module.exports = 'foo';", false)
             .unwrap();
-        let mut foo_index = BTreeMap::new();
+        let mut foo_index = PackageIndex::default();
         foo_index.insert("index.js".to_string(), foo_stored);
 
         // foo also has package.json
@@ -3868,7 +3868,7 @@ mod tests {
         let bar_stored = store
             .import_bytes(b"module.exports = 'bar';", false)
             .unwrap();
-        let mut bar_index = BTreeMap::new();
+        let mut bar_index = PackageIndex::default();
         bar_index.insert("index.js".to_string(), bar_stored);
         indices.insert("bar@2.0.0".to_string(), bar_index);
 
@@ -3957,7 +3957,7 @@ mod tests {
         let host_pkg_json = store
             .import_bytes(b"{\"name\":\"react_ujs\",\"version\":\"3.3.0\"}", false)
             .unwrap();
-        let mut host_index = BTreeMap::new();
+        let mut host_index = PackageIndex::default();
         host_index.insert("index.js".to_string(), host_index_js);
         host_index.insert("package.json".to_string(), host_pkg_json);
         indices.insert("react_ujs@3.3.0".to_string(), host_index);
@@ -4395,7 +4395,7 @@ mod tests {
         let foo_v1 = store
             .import_bytes(b"module.exports = 'foo@1';", false)
             .unwrap();
-        let mut foo_v1_index = BTreeMap::new();
+        let mut foo_v1_index = PackageIndex::default();
         foo_v1_index.insert("index.js".to_string(), foo_v1);
         indices_v1.insert("foo@1.0.0".to_string(), foo_v1_index);
 
@@ -4439,7 +4439,7 @@ mod tests {
         let foo_v2 = store
             .import_bytes(b"module.exports = 'foo@2';", false)
             .unwrap();
-        let mut foo_v2_index = BTreeMap::new();
+        let mut foo_v2_index = PackageIndex::default();
         foo_v2_index.insert("index.js".to_string(), foo_v2);
         indices_v2.insert("foo@2.0.0".to_string(), foo_v2_index);
 
@@ -4494,12 +4494,12 @@ mod tests {
         let foo_v1 = store
             .import_bytes(b"module.exports = 'foo@1';", false)
             .unwrap();
-        let mut foo_v1_idx = BTreeMap::new();
+        let mut foo_v1_idx = PackageIndex::default();
         foo_v1_idx.insert("index.js".to_string(), foo_v1);
         let bar_v1 = store
             .import_bytes(b"module.exports = 'bar@1';", false)
             .unwrap();
-        let mut bar_v1_idx = BTreeMap::new();
+        let mut bar_v1_idx = PackageIndex::default();
         bar_v1_idx.insert("index.js".to_string(), bar_v1);
         let mut indices_v1 = BTreeMap::new();
         indices_v1.insert("foo@1.0.0".to_string(), foo_v1_idx);
@@ -4555,14 +4555,14 @@ mod tests {
         let foo_v2 = store
             .import_bytes(b"module.exports = 'foo@2';", false)
             .unwrap();
-        let mut foo_v2_idx = BTreeMap::new();
+        let mut foo_v2_idx = PackageIndex::default();
         foo_v2_idx.insert("index.js".to_string(), foo_v2);
         let mut indices_v2 = BTreeMap::new();
         // Reuse bar's materialized index from v1.
         let bar_v1_for_v2 = store
             .import_bytes(b"module.exports = 'bar@1';", false)
             .unwrap();
-        let mut bar_v1_idx_v2 = BTreeMap::new();
+        let mut bar_v1_idx_v2 = PackageIndex::default();
         bar_v1_idx_v2.insert("index.js".to_string(), bar_v1_for_v2);
         indices_v2.insert("bar@1.0.0".to_string(), bar_v1_idx_v2);
         indices_v2.insert("foo@2.0.0".to_string(), foo_v2_idx);
