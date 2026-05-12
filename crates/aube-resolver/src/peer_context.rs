@@ -628,7 +628,13 @@ fn apply_peer_contexts_once(
     // scan-by-name is the resolver's hottest inner loop. Without
     // this, each peer runs `O(|graph|)` per package per fixed-point
     // iter. Prebuilt index drops the scan to O(1) average.
-    let mut name_index: FxHashMap<&str, Vec<&LockedPackage>> = FxHashMap::default();
+    //
+    // Pre-size to the package count: most graphs have one entry per
+    // name and only a handful of multi-version names, so capacity
+    // headroom is small and the upper bound saves 8+ rehashes on
+    // medium graphs (default 16 → 2048 covers ~1200 pkgs).
+    let mut name_index: FxHashMap<&str, Vec<&LockedPackage>> =
+        FxHashMap::with_capacity_and_hasher(canonical.packages.len(), Default::default());
     for pkg in canonical.packages.values() {
         name_index.entry(pkg.name.as_str()).or_default().push(pkg);
     }
