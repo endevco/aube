@@ -35,9 +35,6 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
-      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
-        with:
-          cache: rust
       - name: Run release-plz
         id: release-plz
         uses: release-plz/action@1528104d2ca23787631a1c1f022abb64b34c1e11 # v0.5
@@ -234,9 +231,6 @@ jobs:
       # of silently re-resolving `"latest"` pins and rewriting mise.lock.
       # release-plz refuses to run against a dirty tree, and intentional
       # lockfile bumps should land via their own PR.
-      - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
-        with:
-          cache: rust
       - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
         env:
           MISE_LOCKED: "1"
