@@ -129,6 +129,10 @@ fi
 export BENCH_HERMETIC="${BENCH_HERMETIC:-1}"
 export BENCH_BANDWIDTH="${BENCH_BANDWIDTH:-500mbit}"
 export BENCH_LATENCY="${BENCH_LATENCY:-50ms}"
+# Force the bundled metadata primer on for the hermetic Verdaccio
+# mirror — the primer is keyed to npmjs.org, so without this aube
+# would skip its own warm-cache fast path on the bench registry.
+export AUBE_FORCE_METADATA_PRIMER="${AUBE_FORCE_METADATA_PRIMER:-true}"
 
 if [ -z "${AUBE_PGO_NO_LOCK:-}" ] && command -v flock >/dev/null 2>&1; then
 	echo ">>> Acquiring /tmp/aube-bench.lock (30 min timeout)"

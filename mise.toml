@@ -43,7 +43,12 @@ run = "../target/debug/aube install && exec ../target/debug/aube run docs:build"
 # https://github.com/aquaproj/aqua-registry/.
 [tasks.bench]
 dir = "{{config_root}}"
-env = { BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms" }
+env = {
+  BENCH_HERMETIC = "1",
+  BENCH_BANDWIDTH = "500mbit",
+  BENCH_LATENCY = "50ms",
+  AUBE_FORCE_METADATA_PRIMER = "true",
+}
 run = [
   "cargo build --release",
   "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:@yarnpkg/cli-dist@latest bun@latest deno@latest npm:vlt@latest node@24 -- bash benchmarks/bench.sh",
@@ -51,7 +56,17 @@ run = [
 
 [tasks."bench:pr"]
 dir = "{{config_root}}"
-env = { RUNS = "3", WARMUP = "1", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms", BENCH_TOOLS = "aube,bun,pnpm", BENCH_SCENARIOS = "gvs-warm,ci-warm,ci-cold", BENCH_PHASES = "0" }
+env = {
+  RUNS = "3",
+  WARMUP = "1",
+  BENCH_HERMETIC = "1",
+  BENCH_BANDWIDTH = "500mbit",
+  BENCH_LATENCY = "50ms",
+  BENCH_TOOLS = "aube,bun,pnpm",
+  BENCH_SCENARIOS = "gvs-warm,ci-warm,ci-cold",
+  BENCH_PHASES = "0",
+  AUBE_FORCE_METADATA_PRIMER = "true",
+}
 run = [
   "cargo build --release",
   "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh",
@@ -67,7 +82,15 @@ run = [
 # landing-page ratios stay in sync with the JSON.
 [tasks."bench:bump"]
 dir = "{{config_root}}"
-env = { RUNS = "10", WARMUP = "3", RESULTS_JSON = "{{config_root}}/benchmarks/results.json", BENCH_HERMETIC = "1", BENCH_BANDWIDTH = "500mbit", BENCH_LATENCY = "50ms" }
+env = {
+  RUNS = "10",
+  WARMUP = "3",
+  RESULTS_JSON = "{{config_root}}/benchmarks/results.json",
+  BENCH_HERMETIC = "1",
+  BENCH_BANDWIDTH = "500mbit",
+  BENCH_LATENCY = "50ms",
+  AUBE_FORCE_METADATA_PRIMER = "true",
+}
 run = [
   "cargo build --release",
   "mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest npm:@yarnpkg/cli-dist@latest bun@latest deno@latest npm:vlt@latest node@24 -- bash benchmarks/bench.sh",
