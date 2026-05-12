@@ -504,8 +504,15 @@ pub fn default_linker_parallelism() -> usize {
     // workers busy. 8 covers the working set with headroom and trims
     // the thread-pool startup tail visible on small warm installs.
     // macOS keeps a tighter cap because per-thread Mach IPC overhead
-    // dominates on small jobs.
-    let default_limit = if cfg!(target_os = "macos") { 4 } else { 8 };
+    // dominates on small jobs. Other platforms (Windows, BSDs) stay
+    // at the prior 16 cap until we have profiling data for them.
+    let default_limit = if cfg!(target_os = "macos") {
+        4
+    } else if cfg!(target_os = "linux") {
+        8
+    } else {
+        16
+    };
 
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -545,7 +552,6 @@ fn with_link_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
         None => f(),
     }
 }
-
 
 /// Strategy for linking files from the store to node_modules.
 #[derive(Debug, Clone, Copy)]
