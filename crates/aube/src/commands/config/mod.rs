@@ -237,7 +237,7 @@ pub(super) fn is_npm_shared_key(key: &str) -> bool {
         return true;
     }
     if let Some(rest) = key.strip_prefix('@')
-        && rest.contains(":registry")
+        && rest.ends_with(":registry")
     {
         return true;
     }
