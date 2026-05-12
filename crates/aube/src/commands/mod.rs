@@ -551,11 +551,8 @@ pub(crate) fn build_resolver(
         aube_lockfile::detect_existing_lockfile_kind(cwd)
             .unwrap_or(aube_lockfile::LockfileKind::Aube),
     );
-    let resolver = aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd)))
-        .with_packument_cache(packument_cache_dir())
-        .with_catalogs(catalogs.clone());
     install::configure_resolver(
-        resolver,
+        aube_resolver::Resolver::new(std::sync::Arc::new(make_client(cwd))),
         cwd,
         manifest,
         install::ResolverConfigInputs {
