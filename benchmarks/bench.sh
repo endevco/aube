@@ -640,7 +640,16 @@ run_aube_phase_bench() {
 		cmd_tpl=$(cmd_template "$bench_name" "$tool")
 		local cmd
 		cmd=$(expand_template "$cmd_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
-		cmd="${cmd/&& /&& AUBE_BENCH_PHASES_FILE=$PHASES_FILE AUBE_BENCH_SCENARIO=$bench_name }"
+		# Inject phase-timing env vars after the `cd {project} && `
+		# prefix. We can't use `${cmd/&& /&& ...}` here: bash 5.2+
+		# treats `&` in the replacement of `${var/pat/repl}` as a
+		# backreference to the matched pattern (sed-like), so each
+		# unescaped `&` expands to the matched `&& ` and the result
+		# becomes `cd <p> && && ...` which fails at eval time.
+		# Escaping with `\&` works on 5.2+ but emits literal backslashes
+		# on bash 3.2 (macOS dev shell). Splitting around `&& ` avoids
+		# both traps and works the same on every bash we care about.
+		cmd="${cmd%%&& *}&& AUBE_BENCH_PHASES_FILE=$PHASES_FILE AUBE_BENCH_SCENARIO=$bench_name ${cmd#*&& }"
 
 		echo "  $bench_name"
 		if ! eval "$prepare"; then
