@@ -3181,11 +3181,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &manifest,
                 &ws_config_shared,
             );
-            aube_resolver::platform::filter_graph(
-                &mut graph,
-                &supported_architectures,
-                &ignored_optional_deps,
-            );
             // npm/bun lockfiles serialize a flat, pre-hoisted tree
             // with no peer context — they rely on Node's upward
             // `node_modules/` walk to find peer deps, which the
@@ -3211,15 +3206,33 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // a packument fetch on the import path to graft peer
             // ranges back onto each `LockedPackage` — a deeper
             // change than this match arm.
-            if matches!(
+            //
+            // The hoist must run *before* `filter_graph`: bun records
+            // peer-only-installed packages (e.g. `@mui/material` when
+            // the importer only depends on `@textea/json-viewer`, which
+            // peers on MUI) in its packages map, but our bun parser
+            // doesn't merge those into the consumer's `dependencies`
+            // map. `filter_graph`'s GC walk only follows `dependencies`,
+            // so without the hoist running first it prunes every
+            // peer-only package as unreachable — and a post-prune hoist
+            // has nothing left to promote.
+            let needs_peer_pass = matches!(
                 kind,
                 aube_lockfile::LockfileKind::Npm
                     | aube_lockfile::LockfileKind::NpmShrinkwrap
                     | aube_lockfile::LockfileKind::Bun
-            ) {
-                let peer_pass_start = std::time::Instant::now();
-                let pkgs_before = graph.packages.len();
+            );
+            let peer_pass_start = std::time::Instant::now();
+            let pkgs_before = graph.packages.len();
+            if needs_peer_pass {
                 graph = aube_resolver::hoist_auto_installed_peers(graph);
+            }
+            aube_resolver::platform::filter_graph(
+                &mut graph,
+                &supported_architectures,
+                &ignored_optional_deps,
+            );
+            if needs_peer_pass {
                 let peer_options = aube_resolver::PeerContextOptions {
                     dedupe_peer_dependents: resolve_dedupe_peer_dependents(&settings_ctx),
                     dedupe_peers: resolve_dedupe_peers(&settings_ctx),
