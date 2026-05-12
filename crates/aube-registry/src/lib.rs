@@ -1,5 +1,79 @@
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
+
+// Visitor helper macros — each tolerant deserializer below picks the
+// subset that matches its custom handlers. Splitting these granularly
+// is what lets `funding_url` keep its own `visit_seq` (array case)
+// while `FundingArrayEntry` keeps its own `visit_map` (object case),
+// without colliding on duplicate method definitions.
+
+/// Visit-primitives-as-default + `visit_some` re-entry. Covers the
+/// shapes that have no structural content: `null`, bool, integer,
+/// float. Every tolerant visitor in this file wants this.
+macro_rules! visit_primitives_to {
+    ($de:lifetime, $default:expr) => {
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_some<D2: Deserializer<$de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(self)
+        }
+        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+    };
+}
+
+/// Drain a JSON array and return `$default`. Pulled into a macro because
+/// the `Visitor::visit_seq` signature varies by `'de` lifetime and
+/// `A: SeqAccess<'de>` bounds — same body, different traits.
+macro_rules! visit_seq_to {
+    ($de:lifetime, $default:expr) => {
+        fn visit_seq<A: SeqAccess<$de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            while access.next_element::<IgnoredAny>()?.is_some() {}
+            Ok($default)
+        }
+    };
+}
+
+/// Drain a JSON object and return `$default`.
+macro_rules! visit_map_to {
+    ($de:lifetime, $default:expr) => {
+        fn visit_map<A: MapAccess<$de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            while access.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok($default)
+        }
+    };
+}
+
+/// Drop strings: `visit_str` / `visit_string` → `$default`. Used by the
+/// `*_to_none_via_any` visitors that consider strings non-applicable
+/// (e.g. `npm_user_tolerant`, which only accepts objects).
+macro_rules! visit_strings_to {
+    ($de:lifetime, $default:expr) => {
+        fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_string<E: serde::de::Error>(self, _: String) -> Result<Self::Value, E> {
+            Ok($default)
+        }
+    };
+}
 
 /// Deserialize a `BTreeMap<String, String>` tolerant to any non-string
 /// value — both at the whole-map level (`"dist-tags": null` → empty
@@ -25,19 +99,50 @@ use std::collections::BTreeMap;
 /// when the user's range doesn't select it. Drop the unparseable
 /// entries so the resolver sees the same shape npmjs would have served
 /// for a modern publish. pnpm and bun behave the same way.
+///
+/// Implemented as a direct serde `Visitor` rather than buffering
+/// through `serde_json::Value` — the dep-object case (Value 2 above)
+/// would otherwise allocate a nested `Map<String, Value>` per dropped
+/// entry. The proptest suite in `tests/tolerant_deserializers.rs`
+/// pins down parity with the old `Value`-based behavior.
 fn non_string_tolerant_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let maybe: Option<BTreeMap<String, serde_json::Value>> = Option::deserialize(de)?;
-    Ok(maybe
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(k, v)| match v {
-            serde_json::Value::String(s) => Some((k, s)),
-            _ => None,
-        })
-        .collect())
+    struct V;
+
+    impl<'de> Visitor<'de> for V {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("null or an object mapping strings to strings")
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(BTreeMap::new())
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(BTreeMap::new())
+        }
+
+        fn visit_some<D2: Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(self)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut out = BTreeMap::new();
+            while let Some(key) = access.next_key::<String>()? {
+                let MaybeString(maybe) = access.next_value()?;
+                if let Some(s) = maybe {
+                    out.insert(key, s);
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    de.deserialize_any(V)
 }
 
 pub mod client;
@@ -321,13 +426,10 @@ pub struct Attestations {
 
 fn deprecated_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    let value = Option::<serde_json::Value>::deserialize(de)?;
-    Ok(match value {
-        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
-        _ => None,
-    })
+    let MaybeString(maybe) = MaybeString::deserialize(de)?;
+    Ok(maybe.filter(|s| !s.is_empty()))
 }
 
 /// Accept the packument's `license:` field in any of its documented
@@ -337,18 +439,41 @@ where
 /// expressions or license-file references here.
 fn license_string<'de, D>(de: D) -> Result<Option<String>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    let value = Option::<serde_json::Value>::deserialize(de)?;
-    Ok(match value {
-        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
-        Some(serde_json::Value::Object(m)) => m
-            .get("type")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(String::from),
-        _ => None,
-    })
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a license string, a {type, url} object, or null")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
+            Ok((!s.is_empty()).then(|| s.to_owned()))
+        }
+
+        fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Self::Value, E> {
+            Ok((!s.is_empty()).then_some(s))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut found: Option<String> = None;
+            while let Some(key) = access.next_key::<String>()? {
+                if key == "type" && found.is_none() {
+                    let MaybeString(maybe) = access.next_value()?;
+                    found = maybe.filter(|s| !s.is_empty());
+                } else {
+                    let _: IgnoredAny = access.next_value()?;
+                }
+            }
+            Ok(found)
+        }
+
+        visit_primitives_to!('de, None);
+        visit_seq_to!('de, None);
+    }
+    de.deserialize_any(V)
 }
 
 /// Extract the first `url:` out of a packument's `funding:` field.
@@ -358,27 +483,60 @@ where
 /// / non-url-bearing shapes degrade to `None`.
 fn funding_url<'de, D>(de: D) -> Result<Option<String>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    let value = Option::<serde_json::Value>::deserialize(de)?;
-    Ok(match value {
-        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
-        Some(serde_json::Value::Object(m)) => m
-            .get("url")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(String::from),
-        Some(serde_json::Value::Array(arr)) => arr.iter().find_map(|v| match v {
-            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
-            serde_json::Value::Object(m) => m
-                .get("url")
-                .and_then(|u| u.as_str())
-                .filter(|s| !s.is_empty())
-                .map(String::from),
-            _ => None,
-        }),
-        _ => None,
-    })
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a funding URL string, a {url} object, or an array of either")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
+            Ok((!s.is_empty()).then(|| s.to_owned()))
+        }
+
+        fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Self::Value, E> {
+            Ok((!s.is_empty()).then_some(s))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
+            extract_url_from_map(access)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            // Walk the array via `FundingArrayEntry`, which performs the
+            // same string-or-{url} extraction per element. First non-empty
+            // hit wins — drain the rest with `IgnoredAny` so we don't
+            // re-parse elements we'll discard.
+            while let Some(FundingArrayEntry(maybe)) = access.next_element()? {
+                if let Some(s) = maybe {
+                    while access.next_element::<IgnoredAny>()?.is_some() {}
+                    return Ok(Some(s));
+                }
+            }
+            Ok(None)
+        }
+
+        visit_primitives_to!('de, None);
+    }
+    de.deserialize_any(V)
+}
+
+/// Shared map-walk for `funding`'s top-level object form and per-array-element
+/// object form: extract a non-empty `url` field, ignore everything else.
+fn extract_url_from_map<'de, A: MapAccess<'de>>(mut access: A) -> Result<Option<String>, A::Error> {
+    let mut found: Option<String> = None;
+    while let Some(key) = access.next_key::<String>()? {
+        if key == "url" && found.is_none() {
+            let MaybeString(maybe) = access.next_value()?;
+            found = maybe.filter(|s| !s.is_empty());
+        } else {
+            let _: IgnoredAny = access.next_value()?;
+        }
+    }
+    Ok(found)
 }
 
 /// Accept the packument's `_npmUser:` field in its documented shapes
@@ -389,13 +547,29 @@ where
 /// — they just lose the trusted-publisher signal for that version.
 fn npm_user_tolerant<'de, D>(de: D) -> Result<Option<NpmUser>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    let value = Option::<serde_json::Value>::deserialize(de)?;
-    Ok(match value {
-        Some(v @ serde_json::Value::Object(_)) => serde_json::from_value(v).ok(),
-        _ => None,
-    })
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = Option<NpmUser>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an _npmUser object or any other JSON value")
+        }
+
+        // Object case: defer to `NpmUser`'s derived `Deserialize` so any
+        // future fields on `NpmUser` get populated without touching this
+        // call site. `MapAccessDeserializer` is a zero-cost adapter that
+        // re-presents the live `MapAccess` as a `Deserializer`.
+        fn visit_map<A: MapAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
+            NpmUser::deserialize(MapAccessDeserializer::new(access)).map(Some)
+        }
+
+        visit_primitives_to!('de, None);
+        visit_seq_to!('de, None);
+        visit_strings_to!('de, None);
+    }
+    de.deserialize_any(V)
 }
 
 /// Normalize `package.json` `bin` into a `name → path` map.
@@ -413,28 +587,118 @@ where
 /// the package name in scope and can patch it up.
 fn bin_map<'de, D>(de: D) -> Result<BTreeMap<String, String>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    let value = Option::<serde_json::Value>::deserialize(de)?;
-    Ok(match value {
-        None | Some(serde_json::Value::Null) => BTreeMap::new(),
-        // The implicit-name case — keep a single empty-keyed entry so
-        // consumers can still detect presence and patch the name.
-        Some(serde_json::Value::String(s)) if s.is_empty() => BTreeMap::new(),
-        Some(serde_json::Value::String(s)) => {
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a bin string, a bin map, or null")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
+            if s.is_empty() {
+                return Ok(BTreeMap::new());
+            }
+            let mut m = BTreeMap::new();
+            m.insert(String::new(), s.to_owned());
+            Ok(m)
+        }
+
+        fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Self::Value, E> {
+            if s.is_empty() {
+                return Ok(BTreeMap::new());
+            }
             let mut m = BTreeMap::new();
             m.insert(String::new(), s);
-            m
+            Ok(m)
         }
-        Some(serde_json::Value::Object(m)) => m
-            .into_iter()
-            .filter_map(|(k, v)| match v {
-                serde_json::Value::String(s) => Some((k, s)),
-                _ => None,
-            })
-            .collect(),
-        Some(_) => BTreeMap::new(),
-    })
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut out = BTreeMap::new();
+            while let Some(key) = access.next_key::<String>()? {
+                let MaybeString(maybe) = access.next_value()?;
+                if let Some(s) = maybe {
+                    out.insert(key, s);
+                }
+            }
+            Ok(out)
+        }
+
+        visit_primitives_to!('de, BTreeMap::new());
+        visit_seq_to!('de, BTreeMap::new());
+    }
+    de.deserialize_any(V)
+}
+
+/// Map value adapter: returns `Some(String)` for any JSON string, `None`
+/// for everything else. Drains seqs/maps without allocation so non-string
+/// values (including deeply nested dep-objects from ancient publishes)
+/// never get materialized as a `serde_json::Value`.
+struct MaybeString(Option<String>);
+
+impl<'de> Deserialize<'de> for MaybeString {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = MaybeString;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any JSON value")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<MaybeString, E> {
+                Ok(MaybeString(Some(s.to_owned())))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, s: String) -> Result<MaybeString, E> {
+                Ok(MaybeString(Some(s)))
+            }
+
+            visit_primitives_to!('de, MaybeString(None));
+            visit_seq_to!('de, MaybeString(None));
+            visit_map_to!('de, MaybeString(None));
+        }
+        de.deserialize_any(V)
+    }
+}
+
+/// Array-element adapter for `funding`'s array case: yields `Some(url)`
+/// for a non-empty string or an object element with a non-empty `url`
+/// field; `None` otherwise. Mirrors the top-level `funding_url` shape.
+struct FundingArrayEntry(Option<String>);
+
+impl<'de> Deserialize<'de> for FundingArrayEntry {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = FundingArrayEntry;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a funding URL string or a {url} object")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<FundingArrayEntry, E> {
+                Ok(FundingArrayEntry((!s.is_empty()).then(|| s.to_owned())))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, s: String) -> Result<FundingArrayEntry, E> {
+                Ok(FundingArrayEntry((!s.is_empty()).then_some(s)))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                access: A,
+            ) -> Result<FundingArrayEntry, A::Error> {
+                Ok(FundingArrayEntry(extract_url_from_map(access)?))
+            }
+
+            visit_primitives_to!('de, FundingArrayEntry(None));
+            visit_seq_to!('de, FundingArrayEntry(None));
+        }
+        de.deserialize_any(V)
+    }
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
