@@ -78,6 +78,7 @@ pub const ERR_AUBE_UNKNOWN_COMMAND: &str = "ERR_AUBE_UNKNOWN_COMMAND";
 pub const ERR_AUBE_NPM_ONLY_COMMAND: &str = "ERR_AUBE_NPM_ONLY_COMMAND";
 pub const ERR_AUBE_COMPLETION_FAILED: &str = "ERR_AUBE_COMPLETION_FAILED";
 pub const ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR: &str = "ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR";
+pub const ERR_AUBE_CONFIG_NESTED_AUBE_KEY: &str = "ERR_AUBE_CONFIG_NESTED_AUBE_KEY";
 
 // ── misc tracing::error! sites (non-fatal but high-severity) ────────
 pub const ERR_AUBE_PATCHES_TRACKING_WRITE: &str = "ERR_AUBE_PATCHES_TRACKING_WRITE";
@@ -385,6 +386,12 @@ pub const ALL: &[CodeMeta] = &[
         name: ERR_AUBE_REMOVE_PRIOR_INSTALL_DIR,
         category: category::ENGINE_CLI,
         description: "Couldn't clean up a prior global install dir before re-installing.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: ERR_AUBE_CONFIG_NESTED_AUBE_KEY,
+        category: category::ENGINE_CLI,
+        description: "`aube config set <prefix>.<sub> …` was used for a key whose prefix is an aube map setting (e.g. `allowBuilds.<pkg>`). Such nested writes would otherwise land in `.npmrc` where aube doesn't read them and npm warns/errors about the unknown key — set the map in workspace yaml or `package.json#aube.<prefix>` instead.",
         exit_code: None,
     },
     // Misc / safety

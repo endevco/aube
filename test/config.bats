@@ -434,6 +434,23 @@ EOF
 	unset AUBE_TEST_TOKEN
 }
 
+@test "config set rejects nested aube keys instead of writing to .npmrc" {
+	# Discussion #617: `aube config set allowBuilds.<pkg> true` previously
+	# fell through to `~/.npmrc`, where aube doesn't read the dotted key
+	# and npm warns/errors about an unknown user config. Fail loudly
+	# instead and point at the right way to edit the map.
+	run aube config set "allowBuilds.@mongodb-js/zstd" true
+	assert_failure
+	assert_output --partial "allowBuilds"
+	assert_output --partial "approve-builds"
+	# .npmrc must stay clean — the rejected write must not leak any
+	# `allowBuilds.<pkg>=true` line through to ~/.npmrc.
+	if [ -e "$HOME/.npmrc" ]; then
+		run cat "$HOME/.npmrc"
+		refute_output --partial "allowBuilds"
+	fi
+}
+
 @test "config accepts unknown (literal) keys for auth-style writes" {
 	# Auth token keys like `//registry/:_authToken` are not registered
 	# in settings.toml. The command should still write them verbatim.

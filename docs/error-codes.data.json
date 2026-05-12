@@ -277,6 +277,12 @@
       "exit_code": null
     },
     {
+      "name": "ERR_AUBE_CONFIG_NESTED_AUBE_KEY",
+      "category": "Engine / CLI",
+      "description": "`aube config set <prefix>.<sub> …` was used for a key whose prefix is an aube map setting (e.g. `allowBuilds.<pkg>`). Such nested writes would otherwise land in `.npmrc` where aube doesn't read them and npm warns/errors about the unknown key — set the map in workspace yaml or `package.json#aube.<prefix>` instead.",
+      "exit_code": null
+    },
+    {
       "name": "ERR_AUBE_UNSAFE_INDEX_KEY",
       "category": "Misc / safety",
       "description": "A package index key tried to escape its directory (path traversal defense in depth).",

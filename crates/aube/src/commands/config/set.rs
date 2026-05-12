@@ -1,5 +1,6 @@
-use super::{Location, NpmrcEdit, aube_config, resolve_aliases};
+use super::{Location, NpmrcEdit, aube_config, resolve_aliases, setting_for_key};
 use clap::Args;
+use miette::miette;
 
 #[derive(Debug, Args)]
 pub struct SetArgs {
@@ -65,6 +66,8 @@ pub(super) fn set_value(
         return Ok(());
     }
 
+    reject_nested_aube_key(key)?;
+
     let aliases = resolve_aliases(key);
     let write_key = preferred_write_key(key, &aliases);
     let path = location.path()?;
@@ -106,6 +109,36 @@ fn aube_config_target(
             Ok(config_path)
         }
     }
+}
+
+/// Reject `aube config set <prefix>.<sub> …` when `<prefix>` names an
+/// aube setting that wasn't already routed to aube config (the
+/// `is_aube_config_key` check above). The fall-through would write the
+/// dotted key verbatim to `~/.npmrc` where aube doesn't read it and
+/// npm warns/errors about the unknown key. Aube map settings (e.g.
+/// `allowBuilds`, `overrides`, `packageExtensions`) are edited
+/// structurally in workspace yaml or `package.json#aube.<prefix>`.
+fn reject_nested_aube_key(key: &str) -> miette::Result<()> {
+    let Some((prefix, _)) = key.split_once('.') else {
+        return Ok(());
+    };
+    let Some(meta) = setting_for_key(prefix) else {
+        return Ok(());
+    };
+    let help = if meta.name == "allowBuilds" {
+        "approve dep build scripts with `aube approve-builds <pkg>`, or set `aube.allowBuilds.<pkg>` in `package.json` / `allowBuilds:` in `pnpm-workspace.yaml`".to_string()
+    } else {
+        format!(
+            "edit `{}` in `pnpm-workspace.yaml` or `aube.{}` in `package.json`",
+            meta.name, meta.name,
+        )
+    };
+    Err(miette!(
+        code = aube_codes::errors::ERR_AUBE_CONFIG_NESTED_AUBE_KEY,
+        help = help,
+        "`{key}` is not a writable config key: `{}` is an aube setting and nested keys can't be set via `aube config set` (they would land in `.npmrc` where aube doesn't read them and npm warns).",
+        meta.name,
+    ))
 }
 
 pub(super) fn preferred_write_key(input: &str, aliases: &[String]) -> String {
