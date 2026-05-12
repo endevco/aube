@@ -25,6 +25,8 @@ on:
         default: ""
         type: string
 
+permissions: {}
+
 env:
   DEBIAN_FRONTEND: noninteractive
 
@@ -36,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ppa-publishing
     timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -43,21 +47,32 @@ jobs:
         with:
           ref: ${{ github.event_name == 'release' && github.ref || inputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up environment variables
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUTS_DISTRIBUTIONS: ${{ inputs.distributions }}
+          INPUTS_BUILD_REVISION: ${{ inputs.build_revision || '1' }}
+          INPUTS_VERSION_SUFFIX: ${{ inputs.version_suffix }}
+          MAINTAINER_NAME: ${{ vars.PPA_MAINTAINER_NAME || 'aube Release Bot' }}
+          MAINTAINER_EMAIL: ${{ vars.PPA_MAINTAINER_EMAIL || 'noreply@aube.en.dev' }}
+          PPA_NAME: ${{ vars.PPA_NAME || 'ppa:jdxcode/aube' }}
         run: |
-          TAG="${{ github.event_name == 'release' && github.ref_name || inputs.tag }}"
-          VERSION="${TAG#v}"
-
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "${EVENT_NAME}" = "release" ]; then
+            TAG="${REF_NAME}"
             DISTRIBUTIONS="resolute"
             BUILD_REVISION="1"
             VERSION_SUFFIX=""
           else
-            DISTRIBUTIONS="${{ inputs.distributions }}"
-            BUILD_REVISION="${{ inputs.build_revision || '1' }}"
-            VERSION_SUFFIX="${{ inputs.version_suffix }}"
+            TAG="${INPUT_TAG}"
+            DISTRIBUTIONS="${INPUTS_DISTRIBUTIONS}"
+            BUILD_REVISION="${INPUTS_BUILD_REVISION}"
+            VERSION_SUFFIX="${INPUTS_VERSION_SUFFIX}"
           fi
+          VERSION="${TAG#v}"
 
           # Deb version: SemVer `-` prerelease separators collate as
           # newer than release in dpkg; `~` collates as older, which is
@@ -72,9 +87,9 @@ jobs:
             echo "DISTRIBUTIONS=${DISTRIBUTIONS}"
             echo "BUILD_REVISION=${BUILD_REVISION}"
             echo "PACKAGE_NAME=aube"
-            echo "MAINTAINER_NAME=${{ vars.PPA_MAINTAINER_NAME || 'aube Release Bot' }}"
-            echo "MAINTAINER_EMAIL=${{ vars.PPA_MAINTAINER_EMAIL || 'noreply@aube.en.dev' }}"
-            echo "PPA_NAME=${{ vars.PPA_NAME || 'ppa:jdxcode/aube' }}"
+            echo "MAINTAINER_NAME=${MAINTAINER_NAME}"
+            echo "MAINTAINER_EMAIL=${MAINTAINER_EMAIL}"
+            echo "PPA_NAME=${PPA_NAME}"
             echo "BUILD_PROFILE=release"
           } >> "$GITHUB_ENV"
 
@@ -124,8 +139,8 @@ jobs:
 
       - name: Configure Git
         run: |
-          git config --global user.name "${{ env.MAINTAINER_NAME }}"
-          git config --global user.email "${{ env.MAINTAINER_EMAIL }}"
+          git config --global user.name "${MAINTAINER_NAME}"
+          git config --global user.email "${MAINTAINER_EMAIL}"
 
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6

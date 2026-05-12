@@ -9,10 +9,7 @@ name: release
 # directly on tag push, since release-plz owns the tag/release
 # lifecycle and dispatching on both would race.
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 on:
   workflow_call:
@@ -20,6 +17,13 @@ on:
       tag:
         required: true
         type: string
+    secrets:
+      AUBE_GH_TOKEN:
+        required: true
+      CERTIFICATES_P12:
+        required: true
+      CERTIFICATES_P12_PASS:
+        required: true
   workflow_dispatch:
     inputs:
       tag:
@@ -48,11 +52,14 @@ jobs:
   generate-primer:
     runs-on: namespace-profile-endev-linux-amd64
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
@@ -75,6 +82,10 @@ jobs:
     needs: generate-primer
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +107,7 @@ jobs:
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: metadata-primer
@@ -190,6 +202,10 @@ jobs:
     # fat-LTO compiles. Linux PGO on -large runners completes in well
     # under 75, so the extra headroom is dead slack for them.
     timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -241,6 +257,7 @@ jobs:
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: metadata-primer

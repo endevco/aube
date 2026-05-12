@@ -15,6 +15,8 @@ on:
         default: "fedora-rawhide-aarch64 fedora-rawhide-x86_64 fedora-44-aarch64 fedora-44-x86_64 fedora-43-aarch64 fedora-43-x86_64 fedora-42-aarch64 fedora-42-x86_64 epel-10-aarch64 epel-10-x86_64"
         type: string
 
+permissions: {}
+
 env:
   PACKAGE_NAME: aube
 
@@ -24,6 +26,8 @@ jobs:
     timeout-minutes: 150
     container:
       image: fedora:45
+    permissions:
+      contents: read
     steps:
       - name: Install packaging deps
         run: |
@@ -39,26 +43,36 @@ jobs:
         with:
           ref: ${{ github.event_name == 'release' && github.ref || inputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up environment variables
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CHROOTS: ${{ inputs.chroots }}
+          MAINTAINER_NAME: ${{ vars.COPR_MAINTAINER_NAME || 'aube Release Bot' }}
+          MAINTAINER_EMAIL: ${{ vars.COPR_MAINTAINER_EMAIL || 'noreply@aube.en.dev' }}
+          COPR_OWNER: ${{ vars.COPR_OWNER || 'jdxcode' }}
+          COPR_PROJECT: ${{ vars.COPR_PROJECT || 'aube' }}
         run: |
-          TAG="${{ github.event_name == 'release' && github.ref_name || inputs.tag }}"
-          VERSION="${TAG#v}"
-
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "${EVENT_NAME}" = "release" ]; then
+            TAG="${REF_NAME}"
             CHROOTS="fedora-rawhide-aarch64 fedora-rawhide-x86_64 fedora-44-aarch64 fedora-44-x86_64 fedora-43-aarch64 fedora-43-x86_64 fedora-42-aarch64 fedora-42-x86_64 epel-10-aarch64 epel-10-x86_64"
           else
-            CHROOTS="${{ inputs.chroots }}"
+            TAG="${INPUT_TAG}"
+            CHROOTS="${INPUT_CHROOTS}"
           fi
+          VERSION="${TAG#v}"
 
           {
             echo "VERSION=${VERSION}"
             echo "CHROOTS=${CHROOTS}"
             echo "PACKAGE_NAME=${PACKAGE_NAME}"
-            echo "MAINTAINER_NAME=${{ vars.COPR_MAINTAINER_NAME || 'aube Release Bot' }}"
-            echo "MAINTAINER_EMAIL=${{ vars.COPR_MAINTAINER_EMAIL || 'noreply@aube.en.dev' }}"
-            echo "COPR_OWNER=${{ vars.COPR_OWNER || 'jdxcode' }}"
-            echo "COPR_PROJECT=${{ vars.COPR_PROJECT || 'aube' }}"
+            echo "MAINTAINER_NAME=${MAINTAINER_NAME}"
+            echo "MAINTAINER_EMAIL=${MAINTAINER_EMAIL}"
+            echo "COPR_OWNER=${COPR_OWNER}"
+            echo "COPR_PROJECT=${COPR_PROJECT}"
             echo "BUILD_PROFILE=release"
           } >> "$GITHUB_ENV"
 

@@ -12,10 +12,7 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
 concurrency:
   group: pages
@@ -27,15 +24,18 @@ env:
 jobs:
   build:
     runs-on: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: namespacelabs/nscloud-cache-action@15799a6b54e5765f85b2aac25b3f0df43ed571c0 # v1
         with:
           cache: rust
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
       - name: Build aube
         run: cargo build
       - name: Setup Pages
@@ -74,6 +74,9 @@ jobs:
     needs: build
     runs-on: namespace-profile-endev-linux-amd64
     name: Deploy
+    permissions:
+      pages: write
+      id-token: write
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

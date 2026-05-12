@@ -35,9 +35,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
+          persist-credentials: false
       - name: Run release-plz
         id: release-plz
-        uses: release-plz/action@1528104d2ca23787631a1c1f022abb64b34c1e11 # v0.5
+        uses: release-plz/action@1528104d2ca23787631a1c1f022abb64b34c1e11 # v0.5.128
         with:
           command: release
         env:
@@ -117,7 +118,10 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release-plz-release.outputs.tag }}
-    secrets: inherit
+    secrets:
+      AUBE_GH_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+      CERTIFICATES_P12: ${{ secrets.CERTIFICATES_P12 }}
+      CERTIFICATES_P12_PASS: ${{ secrets.CERTIFICATES_P12_PASS }}
 
   # Flip the draft release to non-draft once *every* asset uploaded
   # cleanly. With immutable GitHub releases enabled, a published
@@ -159,7 +163,8 @@ jobs:
         with:
           ref: refs/tags/${{ needs.release-plz-release.outputs.tag }}
           submodules: recursive
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+          persist-credentials: false
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
         with:
           install_args: communique
       - name: Enhance GitHub release with communique
@@ -226,15 +231,16 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.AUBE_GH_TOKEN }}
           submodules: recursive
+          persist-credentials: false
       # MISE_LOCKED=1 makes `mise install` fail if the committed
       # mise.lock doesn't already pin the current platform's URL, instead
       # of silently re-resolving `"latest"` pins and rewriting mise.lock.
       # release-plz refuses to run against a dirty tree, and intentional
       # lockfile bumps should land via their own PR.
-      - uses: jdx/mise-action@b287efda3dc5f4f3c328507653b6617da783ff84 # v4
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
         env:
           MISE_LOCKED: "1"
-      - uses: taiki-e/install-action@7769b73c2ec98c38dfcf2e18c83cfd4880c038c1 # v2
+      - uses: taiki-e/install-action@7769b73c2ec98c38dfcf2e18c83cfd4880c038c1 # v2.75.27
         with:
           tool: release-plz
       - name: Configure git identity
@@ -337,6 +343,8 @@ jobs:
       - name: Commit and push
         if: steps.dirty.outputs.dirty == 'true'
         env:
+          GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ steps.find_pr.outputs.branch }}
           BUMP: ${{ steps.update.outputs.bump }}
           TAG: ${{ steps.update.outputs.tag }}
@@ -349,7 +357,11 @@ jobs:
           git checkout -B "$BRANCH"
           git add -A
           git commit -m "$MSG"
-          git push --force-with-lease -u origin "$BRANCH"
+          # persist-credentials: false on checkout means we need to auth
+          # the push explicitly.
+          git push --force-with-lease \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git" \
+            "HEAD:refs/heads/${BRANCH}"
 
       # Step 6: open the PR if it's new, or refresh its title if an
       # existing one is being reused. We keep the body minimal — the
