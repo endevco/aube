@@ -213,9 +213,9 @@ pub async fn run(
     // The cwd-relative-to-workspace path covers a sub-package under a
     // shared workspace lockfile, where the lockfile we just loaded
     // came from the workspace root and lists this project under e.g.
-    // `./packages/foo`. `lookup_pkg` walks the list in order and falls
-    // back to a name scan when neither importer carries a DirectDep
-    // for the requested key (yarn classic, etc.).
+    // `./packages/foo`. `lookup_pkg` walks the list in order and returns
+    // `None` when no candidate importer carries a DirectDep for the key —
+    // there is no name-scan fallback (see the function's doc comment).
     let cwd_importer = match crate::dirs::find_workspace_root(&cwd) {
         Some(ws) if ws.as_path() != cwd.as_path() => {
             super::workspace_importer_path(&ws, &cwd).unwrap_or_else(|_| ".".to_string())
