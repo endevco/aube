@@ -229,10 +229,13 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2 # zizmor: ignore[cache-poisoning] save-if gates writes to main; PRs read-only
         with:
           shared-key: windows
-          lookup-only: true
+          # Only main may write the shared cache; PRs restore from it but
+          # cannot update it. Prevents a malicious PR from poisoning the
+          # cache that subsequent main runs / other PRs would restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --workspace
       - run: cargo test --workspace
 
