@@ -3222,17 +3222,20 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     | aube_lockfile::LockfileKind::NpmShrinkwrap
                     | aube_lockfile::LockfileKind::Bun
             );
-            let peer_pass_start = std::time::Instant::now();
-            let pkgs_before = graph.packages.len();
-            if needs_peer_pass {
+            let peer_pass_telemetry = if needs_peer_pass {
+                let start = std::time::Instant::now();
+                let pkgs_before = graph.packages.len();
                 graph = aube_resolver::hoist_auto_installed_peers(graph);
-            }
+                Some((start, pkgs_before))
+            } else {
+                None
+            };
             aube_resolver::platform::filter_graph(
                 &mut graph,
                 &supported_architectures,
                 &ignored_optional_deps,
             );
-            if needs_peer_pass {
+            if let Some((peer_pass_start, pkgs_before)) = peer_pass_telemetry {
                 let peer_options = aube_resolver::PeerContextOptions {
                     dedupe_peer_dependents: resolve_dedupe_peer_dependents(&settings_ctx),
                     dedupe_peers: resolve_dedupe_peers(&settings_ctx),
