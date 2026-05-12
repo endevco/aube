@@ -174,9 +174,13 @@ jobs:
           done
 
       - name: Configure Git
+        # `MAINTAINER_NAME`/`MAINTAINER_EMAIL` were already exported via
+        # $GITHUB_ENV; read them from the process env rather than letting
+        # GitHub Actions splice the literal value into the shell source,
+        # so a tampered `vars.PPA_MAINTAINER_*` can't reach `bash -c`.
         run: |
-          git config --global user.name "${{ env.MAINTAINER_NAME }}"
-          git config --global user.email "${{ env.MAINTAINER_EMAIL }}"
+          git config --global user.name "$MAINTAINER_NAME"
+          git config --global user.email "$MAINTAINER_EMAIL"
 
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6

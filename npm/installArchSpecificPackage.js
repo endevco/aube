@@ -85,17 +85,33 @@ function linkSubpkgBins(subpkgName, platform) {
     var binDir = path.resolve(__dirname, 'bin');
     try { fs.mkdirSync(binDir); } catch (e) { if (e.code !== 'EEXIST') throw e; }
 
+    // Realpath the platform package dir once so the containment compares
+    // happen in symlink-resolved space (the package itself can be
+    // pnpm-style symlinked, which is fine — what we care about is whether
+    // its `bin/*` entries escape the realpath of that directory).
+    var subpkgRealDir = fs.realpathSync(subpkgDir);
+
     var subpkgBin = subpkg.bin || {};
     ALLOWED_BINS.forEach(function(name) {
         var srcRel = subpkgBin[name];
         if (typeof srcRel !== 'string') return;
 
         var src = path.resolve(subpkgDir, srcRel);
-        // Reject bin values whose path escapes the platform package — a
-        // hostile package could otherwise point us at arbitrary files on
-        // disk via "../../etc/..." style traversal.
+        // String-only containment first: rejects `../` traversal before
+        // we ever touch the filesystem.
         if (!isContained(subpkgDir, src)) {
             throw new Error('platform package bin "' + name + '" escapes its package directory');
+        }
+        // Then realpath the source so a symlink inside the package can't
+        // smuggle in an arbitrary on-disk file (e.g. `bin/aube -> ~/.ssh/id_rsa`).
+        // The subsequent hardlink/copy follows symlinks, so a bare string
+        // check would let `fs.copyFileSync` read straight through.
+        var srcReal;
+        try { srcReal = fs.realpathSync(src); } catch (e) {
+            throw new Error('platform package bin "' + name + '" cannot be resolved: ' + (e && e.message ? e.message : e));
+        }
+        if (!isContained(subpkgRealDir, srcReal)) {
+            throw new Error('platform package bin "' + name + '" resolves outside its package directory');
         }
 
         var destBasename = platform === 'win32' ? name + '.exe' : name;
@@ -110,10 +126,11 @@ function linkSubpkgBins(subpkgName, platform) {
         try {
             // Hardlink is cheapest (same inode, no extra disk). On some
             // filesystems (cross-device, restricted sandboxes) hardlink
-            // fails — fall through to a copy.
-            fs.linkSync(src, dest);
+            // fails — fall through to a copy. Use the realpath so we
+            // never link/copy through a symlink that bypassed the check.
+            fs.linkSync(srcReal, dest);
         } catch (e) {
-            fs.copyFileSync(src, dest);
+            fs.copyFileSync(srcReal, dest);
         }
         if (platform !== 'win32') {
             try { fs.chmodSync(dest, 0o755); } catch (_) {}
