@@ -1584,11 +1584,15 @@ const CAS_SMALL_FILE_THRESHOLD_DEFAULT: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
 fn cas_small_file_threshold() -> usize {
     static THRESHOLD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *THRESHOLD.get_or_init(|| {
-        std::env::var("AUBE_CAS_SMALL_FILE_THRESHOLD")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(CAS_SMALL_FILE_THRESHOLD_DEFAULT)
+    *THRESHOLD.get_or_init(|| match std::env::var("AUBE_CAS_SMALL_FILE_THRESHOLD") {
+        Err(_) => CAS_SMALL_FILE_THRESHOLD_DEFAULT,
+        Ok(raw) => raw.parse::<usize>().unwrap_or_else(|_| {
+            warn!(
+                "AUBE_CAS_SMALL_FILE_THRESHOLD={raw:?} is not a non-negative integer; \
+                 falling back to default {CAS_SMALL_FILE_THRESHOLD_DEFAULT}"
+            );
+            CAS_SMALL_FILE_THRESHOLD_DEFAULT
+        }),
     })
 }
 
