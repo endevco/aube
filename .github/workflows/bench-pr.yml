@@ -65,6 +65,7 @@ jobs:
             BENCH_HERMETIC=1 \
             BENCH_BANDWIDTH=500mbit \
             BENCH_LATENCY=50ms \
+            AUBE_FORCE_METADATA_PRIMER=true \
             mise x aqua:sharkdp/hyperfine@latest github:pnpm/pnpm@latest bun@latest node@24 -- bash benchmarks/bench.sh
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
