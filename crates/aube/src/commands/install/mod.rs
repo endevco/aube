@@ -3196,11 +3196,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 &manifest,
                 &ws_config_shared,
             );
-            aube_resolver::platform::filter_graph(
-                &mut graph,
-                &supported_architectures,
-                &ignored_optional_deps,
-            );
             // npm/bun lockfiles serialize a flat, pre-hoisted tree
             // with no peer context — they rely on Node's upward
             // `node_modules/` walk to find peer deps, which the
@@ -3226,21 +3221,47 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // a packument fetch on the import path to graft peer
             // ranges back onto each `LockedPackage` — a deeper
             // change than this match arm.
-            if matches!(
+            //
+            // The hoist must run *before* `filter_graph`: bun records
+            // peer-only-installed packages (e.g. `@mui/material` when
+            // the importer only depends on `@textea/json-viewer`, which
+            // peers on MUI) in its packages map, but our bun parser
+            // doesn't merge those into the consumer's `dependencies`
+            // map. `filter_graph`'s GC walk only follows `dependencies`,
+            // so without the hoist running first it prunes every
+            // peer-only package as unreachable — and a post-prune hoist
+            // has nothing left to promote.
+            let needs_peer_pass = matches!(
                 kind,
                 aube_lockfile::LockfileKind::Npm
                     | aube_lockfile::LockfileKind::NpmShrinkwrap
                     | aube_lockfile::LockfileKind::Bun
-            ) {
-                let peer_pass_start = std::time::Instant::now();
-                let pkgs_before = graph.packages.len();
+            );
+            // Time the hoist on its own, then `filter_graph` runs untimed
+            // (it's not part of the peer pass), then apply is timed below.
+            // Snapshotting `pkgs_before` after `filter_graph` keeps the
+            // logged delta a pure measure of `apply_peer_contexts`'s
+            // additions, not filter_graph's prunes.
+            let mut hoist_elapsed: Option<std::time::Duration> = None;
+            if needs_peer_pass {
+                let hoist_start = std::time::Instant::now();
                 graph = aube_resolver::hoist_auto_installed_peers(graph);
+                hoist_elapsed = Some(hoist_start.elapsed());
+            }
+            aube_resolver::platform::filter_graph(
+                &mut graph,
+                &supported_architectures,
+                &ignored_optional_deps,
+            );
+            if let Some(hoist_elapsed) = hoist_elapsed {
                 let peer_options = aube_resolver::PeerContextOptions {
                     dedupe_peer_dependents: resolve_dedupe_peer_dependents(&settings_ctx),
                     dedupe_peers: resolve_dedupe_peers(&settings_ctx),
                     resolve_from_workspace_root: resolve_peers_from_workspace_root(&settings_ctx),
                     peers_suffix_max_length: resolve_peers_suffix_max_length(&settings_ctx),
                 };
+                let pkgs_before = graph.packages.len();
+                let apply_start = std::time::Instant::now();
                 graph = aube_resolver::apply_peer_contexts(graph, &peer_options)
                     .map_err(|e| miette!("peer-context pass failed: {e}"))?;
                 tracing::debug!(
@@ -3248,7 +3269,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     kind,
                     pkgs_before,
                     graph.packages.len(),
-                    peer_pass_start.elapsed()
+                    hoist_elapsed + apply_start.elapsed()
                 );
             }
             let source_label = match kind {

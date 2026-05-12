@@ -119,6 +119,33 @@ teardown() {
 	assert_link_exists "${matches[0]}/node_modules/picomatch"
 }
 
+@test "aube install hoists peer-only packages from bun.lock that aren't in workspace deps" {
+	# Regression for bun.lock importer pruning peer-only-installed
+	# packages before the peer-hoist pass could promote them. The
+	# workspace declares only `fdir`, but bun has materialized
+	# `picomatch` in `packages:` because fdir peers on it. Before the
+	# fix, `filter_graph`'s GC walk ran first and dropped `picomatch`
+	# as unreachable from importers; the subsequent
+	# `hoist_auto_installed_peers` then had nothing to promote.
+	cp "$PROJECT_ROOT/fixtures/import-bun-peer-only-in-packages/package.json" .
+	cp "$PROJECT_ROOT/fixtures/import-bun-peer-only-in-packages/bun.lock" .
+
+	run aube install
+	assert_success
+
+	# Both packages should be installed and reachable from the root.
+	assert_dir_exists node_modules/fdir
+	assert_dir_exists node_modules/picomatch
+
+	# fdir's isolated dir should carry the peer-context suffix and
+	# wire picomatch as a sibling so fdir can resolve it from its
+	# own require() context.
+	local matches=(node_modules/.aube/fdir@6.5.0_picomatch@4.0.4*)
+	[ "${#matches[@]}" -eq 1 ] || fail "expected exactly one peer-qualified fdir dir, got: ${matches[*]}"
+	[ -d "${matches[0]}" ] || fail "peer-qualified fdir dir missing: ${matches[0]}"
+	assert_link_exists "${matches[0]}/node_modules/picomatch"
+}
+
 @test "aube install smoke installs messy bun.lock fixture and doesn't change lockfile" {
 	cp -R "$PROJECT_ROOT/fixtures/import-bun-messy/." .
 	cp bun.lock bun.lock.before
