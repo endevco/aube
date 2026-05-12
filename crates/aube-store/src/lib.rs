@@ -329,6 +329,12 @@ impl Store {
             );
             return;
         }
+        // Rename lost (cross-FS, or a concurrent process already won
+        // the race). If `legacy` is gone, a concurrent process already
+        // migrated successfully — leave `new` alone.
+        if !legacy.exists() {
+            return;
+        }
         // Cross-filesystem rename (cache dir on tmpfs, data dir on a
         // persistent FS — common in containers) or any other rename
         // failure: fall back to recursive copy + remove.
@@ -338,7 +344,15 @@ impl Store {
                 legacy.display(),
                 new.display()
             );
-            let _ = std::fs::remove_dir_all(&new);
+            // Only roll back `new` if `legacy` is still here — meaning
+            // we own the half-copied content and have a recovery
+            // path (next install re-fetches). If `legacy` is also gone,
+            // a concurrent rename succeeded between our two checks and
+            // `new` holds that process's valid data; removing it would
+            // silently delete the only good copy.
+            if legacy.exists() {
+                let _ = std::fs::remove_dir_all(&new);
+            }
             return;
         }
         if let Err(e) = std::fs::remove_dir_all(&legacy) {
