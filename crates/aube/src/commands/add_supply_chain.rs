@@ -15,12 +15,21 @@
 //!    `allowedUnpopularPackages` setting (glob patterns) bypasses
 //!    this gate for opted-in names, leaving the OSV check intact.
 //!
-//! The gate fires only on the names the user typed for *registry*
-//! packages — git/local/workspace/jsr/aliased specs all skip both
-//! checks because the public-registry signal doesn't apply. Names
-//! whose resolved registry isn't `registry.npmjs.org` (per
-//! `NpmConfig::is_public_npmjs`) are filtered out upstream in
+//! The CLI-name gate fires only on the names the user typed for
+//! *registry* packages — git/local/workspace/jsr/aliased specs all
+//! skip both checks because the public-registry signal doesn't
+//! apply. Names whose resolved registry isn't `registry.npmjs.org`
+//! (per `NpmConfig::is_public_npmjs`) are filtered out upstream in
 //! `registry_bound_names_for_supply_chain`.
+//!
+//! [`run_transitive_osv_gate`] is the post-resolve cousin of the
+//! OSV check above: `aube add` flips
+//! [`crate::commands::install::InstallOptions::osv_transitive_check`]
+//! on, install::run calls this against the resolved graph just
+//! before `securityScanner`, and a `MAL-*` hit anywhere in the
+//! transitive closure fails the install. The downloads floor is
+//! intentionally NOT extended to transitives — a legitimate
+//! library can be low-traffic on its own merits.
 
 use aube_codes::errors::{
     ERR_AUBE_ADVISORY_CHECK_FAILED, ERR_AUBE_LOW_DOWNLOAD_PACKAGE, ERR_AUBE_MALICIOUS_PACKAGE,
@@ -60,35 +69,8 @@ pub async fn run_gates(
     // One client shared across both gates and every per-package
     // probe so the OSV POST and the (potentially parallel) downloads
     // GETs all reuse the same connection pool + TLS session.
-    //
-    // Builder failure (TLS init, no root certs, etc.) routes through
-    // the same `advisoryCheck` policy `osv_gate` applies to HTTP
-    // failures: under `Required` it's a hard fail with
-    // `ERR_AUBE_ADVISORY_CHECK_FAILED`, otherwise it warns and skips
-    // both gates. `Off` short-circuits before even surfacing the
-    // warning — the user opted out of OSV entirely, so a probe-
-    // client init failure is no longer their concern.
-    let client = match aube_registry::supply_chain::build_probe_client() {
-        Ok(c) => c,
-        Err(e) => {
-            if matches!(advisory_check, AdvisoryCheck::Off) {
-                tracing::debug!(
-                    "supply-chain probe client init failed; OSV is off, skipping all gates: {e}"
-                );
-                return Ok(());
-            }
-            tracing::warn!(
-                code = WARN_AUBE_ADVISORY_CHECK_FAILED,
-                "supply-chain probe client init failed: {e}"
-            );
-            if matches!(advisory_check, AdvisoryCheck::Required) {
-                return Err(miette!(
-                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
-                    "supply-chain probe client could not be initialised and `advisoryCheck = required` is set: {e}"
-                ));
-            }
-            return Ok(());
-        }
+    let Some(client) = probe_client_for_policy(advisory_check)? else {
+        return Ok(());
     };
     osv_gate(&client, names, advisory_check).await?;
     if !allow_low_downloads && low_download_threshold > 0 {
@@ -103,6 +85,96 @@ pub async fn run_gates(
         }
     }
     Ok(())
+}
+
+/// Post-resolve OSV `MAL-*` check against the full transitive set
+/// of a resolved `LockfileGraph`. Called from `install::run` when
+/// `aube add` flips `InstallOptions::osv_transitive_check` on. Same
+/// `advisoryCheck` policy, same `ERR_AUBE_MALICIOUS_PACKAGE` exit
+/// as the CLI-name gate — `paranoid` upgrades `On` to `Required`
+/// upstream just like `run_gates` does, so callers don't repeat
+/// that logic here.
+///
+/// Filters mirror `registry_bound_names_for_supply_chain` so a
+/// scoped registry override (`@myorg:registry=...`) or a swapped
+/// default registry doesn't ship internal package names to OSV.
+/// Workspace / `link:` / `file:` entries also drop out via
+/// `LockedPackage::local_source.is_none()`.
+pub async fn run_transitive_osv_gate(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    advisory_check: AdvisoryCheck,
+) -> miette::Result<()> {
+    if matches!(advisory_check, AdvisoryCheck::Off) {
+        return Ok(());
+    }
+    let names = transitive_registry_names(cwd, graph);
+    if names.is_empty() {
+        return Ok(());
+    }
+    let Some(client) = probe_client_for_policy(advisory_check)? else {
+        return Ok(());
+    };
+    osv_gate(&client, &names, advisory_check).await
+}
+
+/// Distinct public-npmjs registry names in `graph`, filtered to
+/// match the CLI-name gate. Sorted + deduped so the OSV batch is
+/// deterministic; aliased entries report under their real
+/// registry name via `LockedPackage::registry_name`.
+fn transitive_registry_names(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+) -> Vec<String> {
+    let npm_config = aube_registry::config::NpmConfig::load(cwd);
+    let mut names: Vec<String> = graph
+        .packages
+        .values()
+        .filter(|pkg| pkg.local_source.is_none())
+        .map(|pkg| pkg.registry_name().to_string())
+        .filter(|name| npm_config.is_public_npmjs(name))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Build the shared supply-chain probe client and translate any
+/// init failure (TLS, missing root certs, …) into the configured
+/// `advisoryCheck` policy:
+/// - `Off` → debug-log and skip (`Ok(None)`).
+/// - `On` → warn and skip (`Ok(None)`).
+/// - `Required` → `Err(ERR_AUBE_ADVISORY_CHECK_FAILED)`.
+///
+/// Shared between the CLI-name gate and the transitive gate so
+/// the two stay byte-identical on probe-init policy. Callers
+/// pattern-match `Ok(None)` to short-circuit without an HTTP
+/// round-trip.
+fn probe_client_for_policy(
+    advisory_check: AdvisoryCheck,
+) -> miette::Result<Option<reqwest::Client>> {
+    match aube_registry::supply_chain::build_probe_client() {
+        Ok(c) => Ok(Some(c)),
+        Err(e) => {
+            if matches!(advisory_check, AdvisoryCheck::Off) {
+                tracing::debug!(
+                    "supply-chain probe client init failed; OSV is off, skipping all gates: {e}"
+                );
+                return Ok(None);
+            }
+            tracing::warn!(
+                code = WARN_AUBE_ADVISORY_CHECK_FAILED,
+                "supply-chain probe client init failed: {e}"
+            );
+            if matches!(advisory_check, AdvisoryCheck::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "supply-chain probe client could not be initialised and `advisoryCheck = required` is set: {e}"
+                ));
+            }
+            Ok(None)
+        }
+    }
 }
 
 /// Parse `allowedUnpopularPackages` entries into compiled
@@ -135,7 +207,10 @@ async fn osv_gate(
             // First hit drives the error message; subsequent hits are
             // chained in for visibility. Confirmed-malicious is a hard
             // block — we don't care whether the user is interactive.
-            let mut lines = vec!["refusing to add malicious package(s):".to_string()];
+            // "install" (vs. "add") covers both the CLI-name gate and
+            // the post-resolve transitive gate, where the malicious
+            // name is a dep of something the user typed.
+            let mut lines = vec!["refusing to install malicious package(s):".to_string()];
             for hit in &hits {
                 lines.push(format!(
                     "  - {} ({}: {})",
@@ -327,5 +402,76 @@ mod tests {
         assert!(pats[0].matches("@myorg/nested-name"));
         assert!(!pats[0].matches("@otherorg/utils"));
         assert!(!pats[0].matches("myorg-utils"));
+    }
+
+    fn registry_pkg(name: &str, version: &str) -> aube_lockfile::LockedPackage {
+        aube_lockfile::LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn transitive_registry_names_skips_local_source_entries() {
+        // `file:` / `link:` / workspace edges resolve outside the
+        // public registry — OSV has nothing to say about them, and
+        // forwarding the workspace package name to OSV could leak
+        // an internal name to a public API.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let mut linked = registry_pkg("@workspace/util", "1.0.0");
+        linked.local_source = Some(aube_lockfile::LocalSource::Link("../util".into()));
+        packages.insert("@workspace/util@1.0.0".to_string(), linked);
+        let graph = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let names = transitive_registry_names(tmp.path(), &graph);
+        assert_eq!(names, vec!["lodash".to_string()]);
+    }
+
+    #[test]
+    fn transitive_registry_names_dedups_by_registry_name() {
+        // Alias entries (`{"my-alias": "npm:lodash@^4"}`) and the
+        // real package both report under `registry_name() = "lodash"`.
+        // The OSV batch shouldn't see duplicates — and shouldn't
+        // surface the alias name to the public API either.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let mut aliased = registry_pkg("my-alias", "4.17.21");
+        aliased.alias_of = Some("lodash".to_string());
+        packages.insert("my-alias@4.17.21".to_string(), aliased);
+        let graph = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let names = transitive_registry_names(tmp.path(), &graph);
+        assert_eq!(names, vec!["lodash".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn run_transitive_osv_gate_off_skips_network() {
+        // `advisoryCheck = off` shouldn't hit OSV at all — important
+        // for air-gapped CI runs that flip the setting precisely to
+        // skip the network round-trip. An empty graph also shouldn't
+        // emit a request; cover both in one call.
+        let graph = aube_lockfile::LockfileGraph::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            run_transitive_osv_gate(tmp.path(), &graph, AdvisoryCheck::Off)
+                .await
+                .is_ok()
+        );
     }
 }

@@ -309,6 +309,7 @@ pub async fn run(
             inherited_build_policy: None,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
             skip_root_lifecycle: false,
+            osv_transitive_check: false,
         };
         install::run(opts).await?;
 

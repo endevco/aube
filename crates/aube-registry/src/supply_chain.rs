@@ -30,6 +30,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Public host for OSV's batch-query endpoint.
 const OSV_ENDPOINT: &str = "https://api.osv.dev/v1/querybatch";
 
+/// Max queries per OSV `/querybatch` request. OSV's documented limit
+/// is 1000; we stay well under that so transitive-graph checks
+/// (which can hit hundreds or low thousands of distinct names on a
+/// large monorepo) don't truncate. Sequential chunks share one
+/// client so the connection pool stays warm.
+const OSV_BATCH_LIMIT: usize = 500;
+
 /// Public host for npm's downloads API. The `point/last-week/{pkg}`
 /// route returns one integer per request — cheap and rate-limit
 /// friendly compared to the `range` endpoint.
@@ -142,6 +149,17 @@ pub async fn fetch_malicious_advisories(
     if names.is_empty() {
         return Ok(Vec::new());
     }
+    let mut hits = Vec::new();
+    for chunk in names.chunks(OSV_BATCH_LIMIT) {
+        hits.extend(fetch_malicious_advisories_chunk(client, chunk).await?);
+    }
+    Ok(hits)
+}
+
+async fn fetch_malicious_advisories_chunk(
+    client: &reqwest::Client,
+    names: &[String],
+) -> Result<Vec<MaliciousAdvisory>, SupplyChainError> {
     let body = OsvBatchRequest {
         queries: names
             .iter()
