@@ -120,22 +120,28 @@ pub fn build_probe_client() -> Result<reqwest::Client, SupplyChainError> {
     Ok(reqwest::Client::builder().timeout(PROBE_TIMEOUT).build()?)
 }
 
-/// Probe OSV for `MAL-*` advisories on every candidate. Versions are
-/// intentionally omitted from the query: typosquats and impersonation
-/// packages are usually malicious in every published version, and we
+/// Probe OSV for `MAL-*` advisories on every candidate against a
+/// caller-supplied shared client. Versions are intentionally
+/// omitted from the query: typosquats and impersonation packages
+/// are usually malicious in every published version, and we
 /// haven't run the resolver yet when this fires.
 ///
-/// Returns the subset of input names that hit a `MAL-*` advisory. An
-/// `Err` is a fetch / decode failure — the caller decides whether to
-/// surface it (`advisoryCheck=required`) or warn-and-continue
-/// (`advisoryCheck=on`).
+/// Returns the subset of input names that hit a `MAL-*` advisory.
+/// An `Err` is a fetch / decode / truncated-response failure — the
+/// caller decides whether to surface it (`advisoryCheck=required`)
+/// or warn-and-continue (`advisoryCheck=on`).
+///
+/// Mirrors [`fetch_weekly_downloads_with`]: the gate caller builds
+/// one [`build_probe_client`] up front and threads it through both
+/// probes so the OSV → downloads sequence reuses the same connection
+/// pool across all per-package requests.
 pub async fn fetch_malicious_advisories(
+    client: &reqwest::Client,
     names: &[String],
 ) -> Result<Vec<MaliciousAdvisory>, SupplyChainError> {
     if names.is_empty() {
         return Ok(Vec::new());
     }
-    let client = build_probe_client()?;
     let body = OsvBatchRequest {
         queries: names
             .iter()

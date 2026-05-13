@@ -22,8 +22,7 @@ use aube_codes::errors::{
 };
 use aube_codes::warnings::{WARN_AUBE_ADVISORY_CHECK_FAILED, WARN_AUBE_LOW_DOWNLOAD_PACKAGE};
 use aube_registry::supply_chain::{
-    DownloadCount, advisory_url, build_probe_client, fetch_malicious_advisories,
-    fetch_weekly_downloads_with,
+    DownloadCount, advisory_url, fetch_malicious_advisories, fetch_weekly_downloads_with,
 };
 use aube_settings::resolved::AdvisoryCheck;
 use miette::miette;
@@ -46,18 +45,35 @@ pub async fn run_gates(
     if names.is_empty() {
         return Ok(());
     }
-    osv_gate(names, advisory_check).await?;
+    // One client shared across both gates and every per-package
+    // probe so the OSV POST and the (potentially parallel) downloads
+    // GETs all reuse the same connection pool + TLS session. A
+    // builder failure here is best-effort: warn at debug and skip
+    // both gates rather than aborting the install — the scanner is
+    // a defense-in-depth layer, not a hard prerequisite.
+    let client = match aube_registry::supply_chain::build_probe_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("supply-chain probe client init failed; skipping gates: {e}");
+            return Ok(());
+        }
+    };
+    osv_gate(&client, names, advisory_check).await?;
     if !allow_low_downloads && low_download_threshold > 0 {
-        downloads_gate(names, low_download_threshold).await?;
+        downloads_gate(&client, names, low_download_threshold).await?;
     }
     Ok(())
 }
 
-async fn osv_gate(names: &[String], policy: AdvisoryCheck) -> miette::Result<()> {
+async fn osv_gate(
+    client: &reqwest::Client,
+    names: &[String],
+    policy: AdvisoryCheck,
+) -> miette::Result<()> {
     if matches!(policy, AdvisoryCheck::Off) {
         return Ok(());
     }
-    match fetch_malicious_advisories(names).await {
+    match fetch_malicious_advisories(client, names).await {
         Ok(hits) if hits.is_empty() => Ok(()),
         Ok(hits) => {
             // First hit drives the error message; subsequent hits are
@@ -96,17 +112,12 @@ async fn osv_gate(names: &[String], policy: AdvisoryCheck) -> miette::Result<()>
     }
 }
 
-async fn downloads_gate(names: &[String], threshold: u64) -> miette::Result<()> {
+async fn downloads_gate(
+    client: &reqwest::Client,
+    names: &[String],
+    threshold: u64,
+) -> miette::Result<()> {
     let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    // Single shared client across all probes — repeated `aube add a b c`
-    // would otherwise build a fresh `reqwest::Client` and pay the
-    // round-trip serially per package. Probe failures are
-    // best-effort (no signal → skip), so a builder error degrades to
-    // skipping the whole gate rather than aborting the install.
-    let Ok(client) = build_probe_client() else {
-        tracing::debug!("downloads probe client init failed; skipping low-download gate");
-        return Ok(());
-    };
     let mut set: tokio::task::JoinSet<(String, Result<DownloadCount, _>)> =
         tokio::task::JoinSet::new();
     for name in names {
@@ -209,9 +220,13 @@ mod tests {
     async fn osv_gate_off_skips_network() {
         // `Off` short-circuits before any HTTP — important so users
         // who set `advisoryCheck = off` for an air-gapped registry
-        // don't see spurious timeouts on add.
+        // don't see spurious timeouts on add. The dummy client is
+        // never touched on this code path; we still have to
+        // construct one to satisfy the type signature.
+        let client = aube_registry::supply_chain::build_probe_client()
+            .expect("probe client builder shouldn't fail in tests");
         let names = vec!["lodash".to_string()];
-        assert!(osv_gate(&names, AdvisoryCheck::Off).await.is_ok());
+        assert!(osv_gate(&client, &names, AdvisoryCheck::Off).await.is_ok());
     }
 
     #[tokio::test]
