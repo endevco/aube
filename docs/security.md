@@ -177,12 +177,24 @@ aube add supabase-javascript
 
 In non-interactive contexts the prompt becomes a hard refusal with
 `ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is passed.
-Scoped private packages and workspace deps are skipped (no public registry
-signal → no false positive).
+
+**Private packages skip both gates automatically.** Any package routed
+through a non-`registry.npmjs.org` registry — whether by a scoped
+override (`@myorg:registry=https://npm.internal.example/`) or by
+replacing the default `registry=` URL outright — is exempted from
+the OSV check and the downloads gate, because npmjs has no signal on
+it. Workspace deps and git/local specs are also skipped.
+
+For names that *do* route through public npmjs but are known-internal
+(e.g. you publish a low-traffic helper under your own brand), list
+them in `allowedUnpopularPackages` to skip the downloads gate alone:
 
 ```yaml
 advisoryCheck: on            # default; fail open on network error
 lowDownloadThreshold: 1000   # weekly downloads, 0 disables
+allowedUnpopularPackages:    # glob patterns; OSV check still runs
+  - "@mycompany/*"
+  - "internal-*"
 ```
 
 Set `advisoryCheck: required` to fail closed when OSV can't be reached —
@@ -191,7 +203,8 @@ appropriate for hardened CI, included in `paranoid: true`. Set
 independently.
 
 Settings: [`advisoryCheck`](/settings/#setting-advisorycheck),
-[`lowDownloadThreshold`](/settings/#setting-lowdownloadthreshold).
+[`lowDownloadThreshold`](/settings/#setting-lowdownloadthreshold),
+[`allowedUnpopularPackages`](/settings/#setting-allowedunpopularpackages).
 
 ## Block exotic transitive dependencies
 

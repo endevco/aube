@@ -289,6 +289,19 @@ impl NpmConfig {
         &self.registry
     }
 
+    /// True when `package_name` resolves through the public
+    /// `registry.npmjs.org` registry. Used by supply-chain gates
+    /// (`crates/aube/src/commands/add_supply_chain.rs`) to skip
+    /// public-only signals (OSV `MAL-*` advisories, npmjs weekly
+    /// downloads) on packages a private/internal registry is the
+    /// source of truth for. The default registry being swapped out
+    /// (`registry=https://internal.example/`) or a scoped override
+    /// (`@myorg:registry=https://...`) both cause this to return
+    /// `false` so internal packages don't trip the gates.
+    pub fn is_public_npmjs(&self, package_name: &str) -> bool {
+        is_public_npmjs_url(self.registry_for(package_name))
+    }
+
     /// Get the auth token for a given registry URL.
     pub fn auth_token_for(&self, registry_url: &str) -> Option<&str> {
         if let Some(auth) = self.registry_config_for(registry_url)
@@ -1242,6 +1255,29 @@ pub fn normalize_registry_url_pub(url: &str) -> String {
 /// the scheme-stripping logic.
 pub fn registry_uri_key_pub(url: &str) -> String {
     registry_uri_key(url)
+}
+
+/// True when `url` points at `registry.npmjs.org` (the public npm
+/// registry). Lowercased + trailing-slash-tolerant so different
+/// equivalent spellings (`https://Registry.NPMJS.org/`, no slash,
+/// scheme-relative `//registry.npmjs.org/`) all resolve the same way.
+/// A scheme other than `https`/`http` is rejected — anything else
+/// (mirrors, replays, transports we don't speak) is by definition
+/// not the public registry.
+fn is_public_npmjs_url(url: &str) -> bool {
+    let url = url.trim();
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("//"))
+        .unwrap_or(url);
+    let host = after_scheme
+        .split_once('/')
+        .map(|(h, _)| h)
+        .unwrap_or(after_scheme);
+    let host = host.split_once('@').map(|(_, h)| h).unwrap_or(host);
+    let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
+    host.eq_ignore_ascii_case("registry.npmjs.org")
 }
 
 /// Ensure registry URL has a trailing slash.
@@ -2900,6 +2936,59 @@ mod tests {
             config.registry, "https://env.registry/",
             "env var must override file-based registry"
         );
+    }
+
+    #[test]
+    fn is_public_npmjs_matches_canonical_and_normalised_urls() {
+        // The same npmjs.org URL spelled different ways should all
+        // resolve to "yes, public" — supply-chain gates skip on a
+        // mismatch and we don't want capitalization / trailing slash
+        // drift between npm, pnpm, and aube's own normalisation to
+        // accidentally flip a public package into "private" mode.
+        for url in [
+            "https://registry.npmjs.org/",
+            "https://registry.npmjs.org",
+            "https://Registry.NPMJS.org/",
+            "http://registry.npmjs.org/",
+            "//registry.npmjs.org/",
+        ] {
+            assert!(is_public_npmjs_url(url), "expected public for {url}");
+        }
+    }
+
+    #[test]
+    fn is_public_npmjs_rejects_private_and_mirror_urls() {
+        // Anything other than the canonical npmjs host counts as
+        // private from the gate's perspective: mirrors, internal
+        // Verdaccio installs, Artifactory proxies, and unrelated
+        // hosts that happen to embed `npmjs.org` as a subpath.
+        for url in [
+            "https://internal.example.com/",
+            "https://npm.pkg.github.com/",
+            "https://registry.yarnpkg.com/",
+            "https://example.com/registry.npmjs.org/",
+            "ftp://registry.npmjs.org/",
+        ] {
+            assert!(!is_public_npmjs_url(url), "expected private for {url}");
+        }
+    }
+
+    #[test]
+    fn is_public_npmjs_via_npm_config_uses_scope_override() {
+        // A scoped registry override flips the per-package answer
+        // even though the default registry is still npmjs. Verifies
+        // the gate filter respects scope→registry mapping rather
+        // than only looking at the global `registry=` field.
+        let mut cfg = NpmConfig {
+            registry: "https://registry.npmjs.org/".to_string(),
+            ..Default::default()
+        };
+        cfg.scoped_registries.insert(
+            "@myorg".to_string(),
+            "https://npm.internal.example/".to_string(),
+        );
+        assert!(cfg.is_public_npmjs("lodash"));
+        assert!(!cfg.is_public_npmjs("@myorg/utils"));
     }
 
     #[test]

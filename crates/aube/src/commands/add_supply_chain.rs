@@ -11,11 +11,16 @@
 //! 2. **Weekly-downloads floor** — interactive confirm prompt below
 //!    the threshold, hard refusal in non-interactive contexts unless
 //!    `--allow-low-downloads` is passed. Catches typosquats and
-//!    impersonations that haven't been reported to OSV yet.
+//!    impersonations that haven't been reported to OSV yet. The
+//!    `allowedUnpopularPackages` setting (glob patterns) bypasses
+//!    this gate for opted-in names, leaving the OSV check intact.
 //!
 //! The gate fires only on the names the user typed for *registry*
 //! packages — git/local/workspace/jsr/aliased specs all skip both
-//! checks because the public-registry signal doesn't apply.
+//! checks because the public-registry signal doesn't apply. Names
+//! whose resolved registry isn't `registry.npmjs.org` (per
+//! `NpmConfig::is_public_npmjs`) are filtered out upstream in
+//! `registry_bound_names_for_supply_chain`.
 
 use aube_codes::errors::{
     ERR_AUBE_ADVISORY_CHECK_FAILED, ERR_AUBE_LOW_DOWNLOAD_PACKAGE, ERR_AUBE_MALICIOUS_PACKAGE,
@@ -36,11 +41,18 @@ use std::io::{BufRead, IsTerminal, Write};
 /// `allow_low_downloads` is the per-invocation `--allow-low-downloads`
 /// override; when `true` the download gate is skipped entirely (the
 /// advisory check still runs).
+///
+/// `allowed_unpopular_globs` are the `allowedUnpopularPackages`
+/// setting entries: full-name globs that exempt matching names from
+/// the downloads gate only. The advisory check still runs against
+/// every name regardless — exempting confirmed-malicious advisories
+/// is not what this list is for.
 pub async fn run_gates(
     names: &[String],
     advisory_check: AdvisoryCheck,
     low_download_threshold: u64,
     allow_low_downloads: bool,
+    allowed_unpopular_globs: &[String],
 ) -> miette::Result<()> {
     if names.is_empty() {
         return Ok(());
@@ -80,9 +92,33 @@ pub async fn run_gates(
     };
     osv_gate(&client, names, advisory_check).await?;
     if !allow_low_downloads && low_download_threshold > 0 {
-        downloads_gate(&client, names, low_download_threshold).await?;
+        let patterns = compile_allowed_unpopular(allowed_unpopular_globs);
+        let gated: Vec<String> = names
+            .iter()
+            .filter(|n| !patterns.iter().any(|p| p.matches(n)))
+            .cloned()
+            .collect();
+        if !gated.is_empty() {
+            downloads_gate(&client, &gated, low_download_threshold).await?;
+        }
     }
     Ok(())
+}
+
+/// Parse `allowedUnpopularPackages` entries into compiled
+/// `glob::Pattern`s. Invalid entries are logged and dropped — we'd
+/// rather miss an exemption (and prompt the user) than fail the
+/// whole `aube add` over a typo in a user-defined glob.
+fn compile_allowed_unpopular(raw: &[String]) -> Vec<glob::Pattern> {
+    raw.iter()
+        .filter_map(|p| match glob::Pattern::new(p) {
+            Ok(pat) => Some(pat),
+            Err(e) => {
+                tracing::warn!("ignoring malformed allowedUnpopularPackages entry `{p}`: {e}");
+                None
+            }
+        })
+        .collect()
 }
 
 async fn osv_gate(
@@ -258,9 +294,38 @@ mod tests {
         // registry-name list. The function must be a no-op in that
         // case (no network, no error) so those code paths stay free.
         assert!(
-            run_gates(&[], AdvisoryCheck::Required, 1000, false)
+            run_gates(&[], AdvisoryCheck::Required, 1000, false, &[])
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn compile_allowed_unpopular_drops_invalid_patterns() {
+        // `[` is a malformed range — we keep the well-formed entries
+        // and drop the broken one so a single typo doesn't disable
+        // every exemption.
+        let pats = compile_allowed_unpopular(&[
+            "@myorg/*".to_string(),
+            "[unterminated".to_string(),
+            "internal-*".to_string(),
+        ]);
+        assert_eq!(pats.len(), 2);
+        assert!(pats.iter().any(|p| p.matches("@myorg/foo")));
+        assert!(pats.iter().any(|p| p.matches("internal-thing")));
+        assert!(!pats.iter().any(|p| p.matches("public-pkg")));
+    }
+
+    #[test]
+    fn compile_allowed_unpopular_scope_glob_matches_only_in_scope() {
+        // `@myorg/*` should match every name in the `@myorg` scope
+        // but not a same-named unscoped package, and not a different
+        // scope. Catches the regression where a too-greedy pattern
+        // (e.g. plain `myorg*`) would skip arbitrary names.
+        let pats = compile_allowed_unpopular(&["@myorg/*".to_string()]);
+        assert!(pats[0].matches("@myorg/utils"));
+        assert!(pats[0].matches("@myorg/nested-name"));
+        assert!(!pats[0].matches("@otherorg/utils"));
+        assert!(!pats[0].matches("myorg-utils"));
     }
 }
