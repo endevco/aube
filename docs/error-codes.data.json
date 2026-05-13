@@ -669,6 +669,12 @@
       "exit_code": null
     },
     {
+      "name": "WARN_AUBE_OSV_MIRROR_REFRESH_FAILED",
+      "category": "Supply chain (add-time)",
+      "description": "OSV advisory mirror used by `advisoryCheckOnInstall` failed to refresh (download, ETag, or zip parse error). With `advisoryCheckOnInstall=on` install proceeds against the previously cached index if any; with `advisoryCheckOnInstall=required` install fails closed with `ERR_AUBE_ADVISORY_CHECK_FAILED`.",
+      "exit_code": null
+    },
+    {
       "name": "WARN_AUBE_SECURITY_SCANNER_FINDING",
       "category": "Supply chain (add-time)",
       "description": "User-configured `securityScanner` returned a `warn`-level advisory. Install continues — only `fatal`-level advisories block.",

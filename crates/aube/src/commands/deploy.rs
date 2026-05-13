@@ -309,6 +309,11 @@ pub async fn run(
             inherited_build_policy: None,
             workspace_filter: aube_workspace::selector::EffectiveFilter::default(),
             skip_root_lifecycle: false,
+            // Deploys are lockfile-driven by definition. Don't
+            // force the live API; install::run's fresh-resolution
+            // detection still kicks in if the resolver picks a
+            // version that wasn't pinned.
+            osv_transitive_check: false,
         };
         install::run(opts).await?;
 

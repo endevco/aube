@@ -334,6 +334,14 @@ impl InstallArgs {
             // chained-call constructor (`with_mode`) is where commands
             // with package args opt into skipping them.
             skip_root_lifecycle: false,
+            // Argumentless `aube install` doesn't force the live-API
+            // transitive gate by itself. `install::run` still runs
+            // the gate when it detects fresh resolution (no
+            // pre-existing lockfile, or the resolver picked a
+            // version the lockfile didn't pin), and the
+            // `advisoryCheckEveryInstall` setting flips it on for
+            // every install — neither needs the caller to opt in.
+            osv_transitive_check: false,
         }
     }
 }
@@ -445,6 +453,17 @@ pub struct InstallOptions {
     /// git-prepare install — that one's "root" IS the git dep itself and
     /// running its `prepare` is the whole point.
     pub skip_root_lifecycle: bool,
+    /// Run the post-resolve transitive OSV `MAL-*` gate against
+    /// the live OSV API (not the mirror). Flipped on by commands
+    /// whose whole point is fresh resolution — `aube add` and
+    /// `aube update` — so the freshest signal lands at the moment
+    /// the user is changing what's installed. Default `false` for
+    /// every other entry point; `install::run` also flips it on
+    /// internally when `advisoryCheckEveryInstall` is set, when
+    /// no lockfile existed before resolve, or when the resolver
+    /// picked a `(name, version)` pair the lockfile didn't
+    /// already pin.
+    pub osv_transitive_check: bool,
 }
 
 #[derive(Default)]
@@ -558,6 +577,13 @@ impl InstallOptions {
             // the only construction path that runs them and it goes
             // through `InstallArgs::into_options`, not here.
             skip_root_lifecycle: true,
+            // Default `false`. `aube add` and `aube update` flip
+            // this on at construction. Other chained callers
+            // (remove, dedupe, patch_commit, …) leave it off so
+            // their chained install relies on the install-time
+            // routing (fresh-resolution detection / mirror
+            // fallback) instead of an unconditional API hit.
+            osv_transitive_check: false,
         }
     }
 }
@@ -3296,6 +3322,28 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
 
+            // Post-resolve OSV `MAL-*` routing — lockfile-found
+            // branch. `fresh_resolution = false` here because the
+            // graph came from the lockfile and we never ran the
+            // resolver, so the router falls through to the mirror
+            // backend unless `osv_transitive_check` or
+            // `advisoryCheckEveryInstall` forces the live API.
+            // Same helper as the no-lockfile branch — kept here so
+            // `aube ci`, `aube install --frozen-lockfile`, and
+            // every frozen reinstall actually run the routing
+            // (previously skipped, surfaced by review).
+            let osv_settings = resolve_osv_routing_settings(&cwd);
+            super::add_supply_chain::run_post_resolve_osv_routing(
+                &cwd,
+                &graph,
+                /*fresh_resolution=*/ false,
+                opts.osv_transitive_check,
+                osv_settings.advisory_check,
+                osv_settings.advisory_check_on_install,
+                osv_settings.advisory_check_every_install,
+            )
+            .await?;
+
             // Check index cache, fetch missing tarballs. Tarball client
             // is lazy because eager construction costs ~20ms even when
             // no request gets sent, dominating no-op install time.
@@ -3989,6 +4037,29 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // chain back to the importer.
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
+
+            // Post-resolve OSV `MAL-*` routing — no-lockfile /
+            // re-resolve branch. The lockfile-found branch has the
+            // parallel call before its own fetch so both paths
+            // run through the same router. See
+            // `add_supply_chain::run_post_resolve_osv_routing` for
+            // the decision table. Fires before the pluggable
+            // scanner so a confirmed-malicious advisory aborts
+            // without spawning the scanner.
+            let prior_lockfile = lockfile_pre_parse.as_ref().map(|(g, _)| g);
+            let fresh_resolution =
+                super::add_supply_chain::lockfile_has_new_picks(&cwd, prior_lockfile, &graph);
+            let osv_settings = resolve_osv_routing_settings(&cwd);
+            super::add_supply_chain::run_post_resolve_osv_routing(
+                &cwd,
+                &graph,
+                fresh_resolution,
+                opts.osv_transitive_check,
+                osv_settings.advisory_check,
+                osv_settings.advisory_check_on_install,
+                osv_settings.advisory_check_every_install,
+            )
+            .await?;
 
             // Bun-compatible security scanner runs against the
             // *resolved* graph — full transitive set with concrete
@@ -5133,6 +5204,34 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     }
 
     Ok(())
+}
+
+/// Three resolved OSV-routing settings, fetched in one
+/// `with_settings_ctx` pass so the lockfile-found and no-lockfile
+/// arms can call the routing helper with the same shape. Paranoid
+/// upgrade for `advisoryCheck` is applied here so the router sees
+/// the final policy.
+struct OsvRoutingSettings {
+    advisory_check: aube_settings::resolved::AdvisoryCheck,
+    advisory_check_on_install: aube_settings::resolved::AdvisoryCheckOnInstall,
+    advisory_check_every_install: bool,
+}
+
+fn resolve_osv_routing_settings(cwd: &std::path::Path) -> OsvRoutingSettings {
+    super::with_settings_ctx(cwd, |ctx| {
+        let advisory_check = if aube_settings::resolved::paranoid(ctx) {
+            aube_settings::resolved::AdvisoryCheck::Required
+        } else {
+            aube_settings::resolved::advisory_check(ctx)
+        };
+        OsvRoutingSettings {
+            advisory_check,
+            advisory_check_on_install: aube_settings::resolved::advisory_check_on_install(ctx),
+            advisory_check_every_install: aube_settings::resolved::advisory_check_every_install(
+                ctx,
+            ),
+        }
+    })
 }
 
 /// Emit the `ignored build scripts for ...` warning. Same wording

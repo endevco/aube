@@ -23,7 +23,9 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
 | [`securityScanner`](#setting-securityscanner) | `string` | Bun-compatible security scanner module. |
-| [`advisoryCheck`](#setting-advisorycheck) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check on `aube add`. |
+| [`advisoryCheck`](#setting-advisorycheck) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check during `aube add` and other fresh-resolution installs. |
+| [`advisoryCheckOnInstall`](#setting-advisorycheckoninstall) | `"on" \| "required" \| "off"` | Local-mirror OSV `MAL-*` advisory check for plain reinstalls. |
+| [`advisoryCheckEveryInstall`](#setting-advisorycheckeveryinstall) | `bool` | Force the live-API OSV `MAL-*` check on every install (including frozen reinstalls). |
 | [`lowDownloadThreshold`](#setting-lowdownloadthreshold) | `int` | Weekly-download floor for `aube add` (typosquat prompt). |
 | [`allowedUnpopularPackages`](#setting-allowedunpopularpackages) | `list<string>` | Glob patterns exempted from the `lowDownloadThreshold` gate. |
 | [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
@@ -367,7 +369,7 @@ authoring instructions, and the post-resolve firing model:
 
 ### `advisoryCheck` {#setting-advisorycheck}
 
-OSV `MAL-*` advisory check on `aube add`.
+OSV `MAL-*` advisory check during `aube add` and other fresh-resolution installs.
 
 - Type: `"on" | "required" | "off"`
 - Default: `"on"`
@@ -375,11 +377,24 @@ OSV `MAL-*` advisory check on `aube add`.
 - .npmrc keys: `advisoryCheck`, `advisory-check`
 - Workspace YAML keys: `advisoryCheck`
 
-`aube add` batch-queries [OSV](https://osv.dev) for malicious-package
-advisories (`MAL-*`) on every package about to land in `package.json`.
-A hit fails the install with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to
-the advisory. Transitive deps and packages already in the lockfile are
-not re-checked — the gate is the moment of human intent.
+Live-API OSV `MAL-*` advisory check. aube batch-queries
+[OSV](https://osv.dev) at three points, all against `api.osv.dev`:
+
+1. `aube add` CLI names, before they land in `package.json`.
+2. The full post-resolve transitive graph during any
+   *fresh-resolution* install — `aube add`, `aube update`, an
+   install with no lockfile, or an install where the resolver
+   picked a `(name, version)` the lockfile didn't already pin.
+3. Every install (including frozen reinstalls), if
+   `advisoryCheckEveryInstall` is `true`.
+
+A hit at any step fails the install with `ERR_AUBE_MALICIOUS_PACKAGE`
+and a link to the advisory.
+
+Plain reinstalls where the lockfile was authoritative don't hit the
+network here — they fall through to the local mirror (see
+`advisoryCheckOnInstall`) when that's enabled, or no OSV check at all
+when it isn't.
 
 - `on` (default): fail closed on a malicious-package hit; fail open
   (continue with a `WARN_AUBE_ADVISORY_CHECK_FAILED`) when the API can't
@@ -387,6 +402,78 @@ not re-checked — the gate is the moment of human intent.
 - `required`: same fail-closed behavior on hits, plus fail closed on
   fetch errors. Use in hardened CI. Included in the `paranoid` bundle.
 - `off`: skip the check entirely.
+
+### `advisoryCheckOnInstall` {#setting-advisorycheckoninstall}
+
+Local-mirror OSV `MAL-*` advisory check for plain reinstalls.
+
+- Type: `"on" | "required" | "off"`
+- Default: `"off"`
+- Environment: `npm_config_advisory_check_on_install`, `NPM_CONFIG_ADVISORY_CHECK_ON_INSTALL`, `AUBE_ADVISORY_CHECK_ON_INSTALL`
+- .npmrc keys: `advisoryCheckOnInstall`, `advisory-check-on-install`
+- Workspace YAML keys: `advisoryCheckOnInstall`
+
+Fallback OSV `MAL-*` check for installs the live-API gate
+(`advisoryCheck`) didn't fire for — i.e. plain reinstalls where the
+lockfile was authoritative (no `aube add` / `aube update`, no
+`advisoryCheckEveryInstall`, no lockfile drift). Backed by a local
+mirror of OSV's npm advisory dump so there's no per-install
+`api.osv.dev` round-trip.
+
+A hit fails the install with `ERR_AUBE_MALICIOUS_PACKAGE` — same
+exit as `advisoryCheck`. Fresh-resolution installs (`aube add`,
+`aube update`, missing-lockfile, new picked version) always go
+through the live API regardless of this setting, so the freshest
+signal lands at the moment a human is changing what's installed.
+
+The mirror lives at `$XDG_CACHE_HOME/aube/osv/npm/` and lazily
+refreshes from
+`https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip`
+(roughly tens of MB) with an `If-None-Match` revalidation. A miss
+between refreshes won't catch an advisory published in the last
+~day; for live signals on every install, use
+`advisoryCheckEveryInstall = true` instead.
+
+- `off` (default): plain reinstalls skip OSV entirely. Fresh-resolution
+  installs still hit the live API via `advisoryCheck`.
+- `on`: plain reinstalls check the resolved graph against the mirror.
+  Fail open (continue with `WARN_AUBE_OSV_MIRROR_REFRESH_FAILED`) when
+  the mirror can't be refreshed.
+- `required`: as `on`, plus fail closed on mirror refresh failures
+  with `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use in hardened CI where a
+  stale or unreachable mirror should block the install.
+
+### `advisoryCheckEveryInstall` {#setting-advisorycheckeveryinstall}
+
+Force the live-API OSV `MAL-*` check on every install (including frozen reinstalls).
+
+- Type: `bool`
+- Default: `false`
+- Environment: `npm_config_advisory_check_every_install`, `NPM_CONFIG_ADVISORY_CHECK_EVERY_INSTALL`, `AUBE_ADVISORY_CHECK_EVERY_INSTALL`
+- .npmrc keys: `advisoryCheckEveryInstall`, `advisory-check-every-install`
+- Workspace YAML keys: `advisoryCheckEveryInstall`
+
+By default, the live-API OSV check (`advisoryCheck`) fires on
+*fresh-resolution* installs only — `aube add`, `aube update`,
+missing-lockfile installs, and installs where the resolver picks a
+version the lockfile didn't pin. Plain reinstalls fall through to the
+local mirror (`advisoryCheckOnInstall`) when that's enabled.
+
+Setting `advisoryCheckEveryInstall = true` forces the live API on
+every install entry point, including strict frozen reinstalls and
+`aube ci`. Every install round-trips through `api.osv.dev` for the
+freshest signal; mirror lookups are skipped because the live API
+strictly dominates.
+
+Useful in hardened CI where every job must observe the latest
+advisories regardless of whether the lockfile changed. The trade-off
+is per-install latency — for a large transitive graph, batch queries
+chunk at 500 names per request, so an `aube install` against a graph
+of 2000 packages incurs four sequential OSV requests.
+
+- `false` (default): live-API check on fresh-resolution installs only.
+- `true`: live-API check on every install. Honors `advisoryCheck`'s
+  fail-open / fail-closed policy on fetch errors.
 
 ### `lowDownloadThreshold` {#setting-lowdownloadthreshold}
 
