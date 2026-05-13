@@ -45,6 +45,14 @@ pub fn is_disabled() -> bool {
     std::env::var_os("AUBE_DISABLE_PREFETCH").is_some()
 }
 
+/// `AUBE_SPECULATIVE_PREFETCH=1` opts into the primer-graph walk
+/// for transitive prefetch targets. Off by default — see comment
+/// at the call site in `spawn_packument_prefetch`.
+#[inline]
+fn speculative_walk_enabled() -> bool {
+    std::env::var_os("AUBE_SPECULATIVE_PREFETCH").is_some()
+}
+
 /// Spawn a fire-and-forget packument GET for every direct dep AND
 /// every speculative transitive target the bundled primer can
 /// identify. Returns immediately; results are discarded — the win
@@ -89,7 +97,17 @@ pub fn spawn_packument_prefetch(
     // network RTT for, gated by BFS depth — exactly the chain we want
     // to collapse. Primer-covered names are excluded by construction
     // (the resolver skips the network for them).
-    let speculative = aube_resolver::collect_speculative_prefetch_targets(direct.iter().cloned());
+    //
+    // Gated by `AUBE_SPECULATIVE_PREFETCH=1` until the registry client
+    // grows in-flight request dedup — without it, the resolver
+    // re-fires every name the prefetch hasn't yet landed in the
+    // on-disk cache, costing 2× bandwidth on overlapping requests
+    // and burying the resolver's own GETs behind HTTP/2 queue depth.
+    let speculative = if speculative_walk_enabled() {
+        aube_resolver::collect_speculative_prefetch_targets(direct.iter().cloned())
+    } else {
+        Vec::new()
+    };
     let mut all: Vec<String> = direct;
     all.extend(speculative);
     all.sort();
