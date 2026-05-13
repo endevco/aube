@@ -351,7 +351,7 @@ accepts `{ advisories: [...] }` for friendliness.
 - Bun-runtime APIs **not** in the shim (`Bun.spawn`,
   `Bun.password`, `Bun.serve`, the web frameworks, etc.) will
   throw at runtime; the bridge surfaces this as
-  `WARN_AUBE_SECURITY_SCANNER_FAILED` and the install fails open.
+  `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install **fails closed**.
 
 **Levels**: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
 `warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues).
