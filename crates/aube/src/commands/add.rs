@@ -1918,7 +1918,7 @@ fn scanner_packages_for(packages: &[String]) -> Vec<super::security_scanner::Sca
         }
         out.push(super::security_scanner::ScannerPackage {
             name: spec.name,
-            spec: spec.range,
+            version: spec.range,
         });
     }
     out

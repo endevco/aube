@@ -180,14 +180,13 @@ scrubbed from the script environment unless explicitly granted via
 
 ## Pluggable security scanner
 
-`securityScanner` points aube at an executable that vets the
-packages an install (or `add`) is about to introduce. Modeled on
-[Bun's Security Scanner API](https://bun.sh/docs/pm/security-scanner-api#security-scanner-api)
-— same `{packages} → {advisories}` contract with `fatal` / `warn`
-levels — but invoked as a subprocess rather than an in-process JS
-plugin (since aube is Rust, not a JS runtime). The same logical
-scanner module that ships to Bun users can run under aube via a thin
-wrapper.
+`securityScanner` runs a [Bun-compatible security scanner](https://bun.sh/docs/pm/security-scanner-api)
+against the packages an install (or `add`) is about to introduce.
+Drop-in compatible with the existing Bun scanner ecosystem — point
+the setting at the same npm package name you'd put in
+`bunfig.toml#install.security.scanner` and aube loads the module
+through a `node` bridge that adapts Bun's in-process plugin
+contract to a subprocess + JSON-over-stdio shape.
 
 **Fires on**:
 
@@ -198,48 +197,57 @@ wrapper.
 
 ```yaml
 # aube-workspace.yaml
-securityScanner: ./scripts/scanner.mjs
-# or any executable on PATH:
-# securityScanner: socket-scanner
+securityScanner: "@acme/bun-security-scanner"
+# or a path to a local scanner:
+# securityScanner: ./scripts/scanner.mjs
 ```
 
-The scanner reads a JSON request on stdin:
+The scanner module exports the standard Bun shape:
 
-```json
-{
-  "version": 1,
-  "packages": [
-    {"name": "lodash", "spec": "^4.17.21"}
-  ]
-}
+```js
+export const scanner = {
+  version: '1',
+  async scan({ packages }) {
+    // packages: [{ name, version }, ...]
+    return [
+      {
+        level: 'fatal',                 // or 'warn'
+        package: 'evil-pkg',
+        description: 'Known malicious package',
+        url: 'https://socket.dev/...',
+      },
+    ];
+  },
+};
 ```
 
-…and writes a JSON response on stdout:
-
-```json
-{
-  "advisories": [
-    {
-      "package": "evil-pkg",
-      "level": "fatal",
-      "description": "Known malicious package",
-      "url": "https://socket.dev/..."
-    }
-  ]
-}
-```
+Bun's docs specify the return value is `Advisory[]`. Aube also
+accepts `{ advisories: [...] }` for friendliness.
 
 A `fatal` advisory fails the install with `ERR_AUBE_SECURITY_SCANNER_FATAL`.
 A `warn` advisory surfaces via `WARN_AUBE_SECURITY_SCANNER_FINDING`
-and the install continues. Any other level (`info`, custom) is logged
-at debug level only.
+and the install continues. Any other level is logged at debug only.
 
-Failure modes — scanner missing, non-zero exit, timeout (30s),
-unparseable JSON — emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and let
-the install proceed. The reasoning: a broken scanner shouldn't be
-able to block every install in the project. Operators who'd rather
-fail closed can wrap their scanner in a script that converts
-internal failures into a `fatal` advisory.
+**Differences from Bun**:
+
+- Bun runs the scanner *after* the resolver, so `packages[i].version`
+  is the resolved version. Aube runs it *before* the resolver, so
+  `packages[i].version` is the requested range (`"^4.17.21"`,
+  `"latest"`). Scanners that match on package *name* (typosquats,
+  malware) work identically; scanners that match on exact version
+  strings will see misses.
+- Aube spawns `node` rather than running the scanner in-process,
+  so `node` must be on `PATH`. TypeScript scanners must be compiled
+  to JS — published Bun-scanner npm packages already are.
+- Aube can't run scanners that depend on Bun-specific runtime
+  APIs (`Bun.spawn`, `Bun.file`).
+
+Failure modes — `node` missing, scanner module unresolvable,
+non-zero exit, timeout (30s), unparseable JSON — emit
+`WARN_AUBE_SECURITY_SCANNER_FAILED` and let the install proceed. A
+broken scanner shouldn't be able to block every install in the
+project. Operators who'd rather fail closed can wrap their scanner
+in a script that converts internal failures into a `fatal` advisory.
 
 Skipped specs: git, local, workspace, JSR, aliased. Those route
 through code paths a public-data scanner has no useful answer for.

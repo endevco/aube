@@ -22,7 +22,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
-| [`securityScanner`](#setting-securityscanner) | `string` | Path to a pluggable security scanner (Bun-style contract). |
+| [`securityScanner`](#setting-securityscanner) | `string` | Bun-compatible security scanner module. |
 | [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
 | [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Fail install when a package's trust evidence weakens between releases. |
 | [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from `trustPolicy` checks. |
@@ -337,7 +337,7 @@ resolver fails the install instead.
 
 ### `securityScanner` {#setting-securityscanner}
 
-Path to a pluggable security scanner (Bun-style contract).
+Bun-compatible security scanner module.
 
 - Type: `string`
 - Default: `""`
@@ -345,11 +345,12 @@ Path to a pluggable security scanner (Bun-style contract).
 - .npmrc keys: `securityScanner`, `security-scanner`
 - Workspace YAML keys: `securityScanner`
 
-Aube spawns the configured executable at install time, pipes a list
-of registry-bound packages in as JSON on stdin, and reads back a JSON
-list of advisories on stdout. A `fatal`-level advisory blocks the
-install; `warn`-level surfaces as `WARN_AUBE_SECURITY_SCANNER_FINDING`
-and the install continues.
+Drop-in compatible with the [Bun Security Scanner
+API](https://bun.sh/docs/pm/security-scanner-api). Set this to the
+same npm package name (or path) you'd put under
+`bunfig.toml#install.security.scanner` and aube will load it through
+a `node` bridge that adapts Bun's in-process plugin contract to a
+subprocess + JSON-over-stdio shape.
 
 **Fired from**:
 
@@ -358,50 +359,69 @@ and the install continues.
   the warm-path short-circuits (so repeated no-op installs don't pay
   the subprocess cost).
 
-Modeled on [Bun's Security Scanner API](https://bun.sh/docs/pm/security-scanner-api#security-scanner-api) —
-the contract is intentionally executable-agnostic (any binary on
-`PATH` or a path to a script) so the same scanner module that ships
-to Bun users via npm can run under aube with a thin wrapper. Where
-Bun's scanner is an in-process JS plugin (Bun has a JS runtime),
-aube's is a subprocess (aube is Rust) — same semantic shape, different
-ABI.
+**Configuring an existing Bun scanner**:
 
-**Stdin payload** (JSON):
-
-```json
-{
-  "version": 1,
-  "packages": [
-    {"name": "lodash", "spec": "^4.17.21"},
-    {"name": "evil-pkg", "spec": "latest"}
-  ]
-}
+```yaml
+# aube-workspace.yaml
+securityScanner: "@acme/bun-security-scanner"
 ```
 
-**Stdout response** (JSON):
+The scanner package must be present in the project's `node_modules`
+at the moment the gate fires — aube spawns `node` with `cwd =
+project root`, and the bridge does a `import('@acme/bun-security-scanner')`
+that resolves against `node_modules/`. Install the scanner as a
+dev dep (or globally) before relying on the gate.
 
-```json
-{
-  "advisories": [
-    {
-      "package": "evil-pkg",
-      "level": "fatal",
-      "description": "Known malicious package",
-      "url": "https://example.org/advisory"
-    }
-  ]
-}
+**Contract** (mirrors Bun's exactly):
+
+```js
+export const scanner = {
+  version: '1',
+  async scan({ packages }) {
+    // packages: [{ name: string, version: string }, ...]
+    return [
+      {
+        level: 'fatal',          // or 'warn'
+        package: 'evil-pkg',
+        description: 'Known malicious package',
+        url: 'https://example.org/advisory',
+      },
+    ];
+  },
+};
 ```
 
-Levels: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
-`warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues). Any
-other level is logged at debug level and otherwise ignored.
+Bun's docs specify the return value is `Advisory[]`. Aube also
+accepts `{ advisories: [...] }` for friendliness.
 
-Failure modes (scanner missing, non-zero exit, timeout &gt;30s,
-unparseable JSON) emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and fall
-through — a broken scanner shouldn't be able to block every install.
-Operators can wrap their scanner in a thin shell to fail loudly if
-they prefer.
+**Differences vs. Bun**:
+
+- Bun runs the scanner *after* the resolver, so
+  `packages[i].version` is the resolved version string
+  (`"4.17.21"`). Aube runs it *before* the resolver, so
+  `packages[i].version` is the requested range
+  (`"^4.17.21"`, `"latest"`). Scanners that match on package
+  *name* (the typosquat/malware case) work identically; scanners
+  that match on exact version strings will see misses.
+- Aube spawns `node`; Bun runs the scanner in-process via its own
+  JS runtime. `node` must be on `PATH`. TypeScript scanners must
+  be compiled to JS — `node` doesn't strip type annotations
+  natively. (Published Bun-scanner npm packages already ship
+  compiled JS.)
+- Aube can't run scanners that depend on Bun-specific runtime
+  APIs (`Bun.spawn`, `Bun.file`, etc.). Public scanners avoid
+  these.
+
+**Levels**: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
+`warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues).
+Any other level is logged at debug level and otherwise ignored.
+
+**Failure modes** (`node` missing, scanner module unresolvable,
+non-zero exit, timeout &gt;30s, unparseable JSON output) emit
+`WARN_AUBE_SECURITY_SCANNER_FAILED` and fall through — a broken
+scanner shouldn't be able to block every install. Operators who
+want fail-closed can wrap their scanner in a script that converts
+internal failures into a `fatal` advisory.
 
 Empty string (the default) disables the integration entirely.
 
