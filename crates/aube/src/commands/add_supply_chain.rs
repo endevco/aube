@@ -47,14 +47,34 @@ pub async fn run_gates(
     }
     // One client shared across both gates and every per-package
     // probe so the OSV POST and the (potentially parallel) downloads
-    // GETs all reuse the same connection pool + TLS session. A
-    // builder failure here is best-effort: warn at debug and skip
-    // both gates rather than aborting the install — the scanner is
-    // a defense-in-depth layer, not a hard prerequisite.
+    // GETs all reuse the same connection pool + TLS session.
+    //
+    // Builder failure (TLS init, no root certs, etc.) routes through
+    // the same `advisoryCheck` policy `osv_gate` applies to HTTP
+    // failures: under `Required` it's a hard fail with
+    // `ERR_AUBE_ADVISORY_CHECK_FAILED`, otherwise it warns and skips
+    // both gates. `Off` short-circuits before even surfacing the
+    // warning — the user opted out of OSV entirely, so a probe-
+    // client init failure is no longer their concern.
     let client = match aube_registry::supply_chain::build_probe_client() {
         Ok(c) => c,
         Err(e) => {
-            tracing::debug!("supply-chain probe client init failed; skipping gates: {e}");
+            if matches!(advisory_check, AdvisoryCheck::Off) {
+                tracing::debug!(
+                    "supply-chain probe client init failed; OSV is off, skipping all gates: {e}"
+                );
+                return Ok(());
+            }
+            tracing::warn!(
+                code = WARN_AUBE_ADVISORY_CHECK_FAILED,
+                "supply-chain probe client init failed: {e}"
+            );
+            if matches!(advisory_check, AdvisoryCheck::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "supply-chain probe client could not be initialised and `advisoryCheck = required` is set: {e}"
+                ));
+            }
             return Ok(());
         }
     };
