@@ -446,30 +446,52 @@ fn create_bin_link(
     // when the leaf sits behind a junction in the path, even when the
     // leaf is absent. The isolated layout's `.aube/<dep_path>` is a
     // junction into the global virtual store, so every `.bin/` under it
-    // hits the quirk. Fix: canonicalize the parent (`crate::dirs::canonicalize`
-    // already strips the `\\?\` verbatim prefix, which would otherwise
-    // trip CreateDirectoryW's own os-123 quirk, while keeping real
-    // `\\?\UNC\…` share paths intact), then create the leaf on the
-    // resulting plain drive path. No-op on Unix.
+    // hits the quirk. Workaround: canonicalize the parent
+    // (`crate::dirs::canonicalize` already strips the `\\?\` verbatim
+    // prefix, which would otherwise trip CreateDirectoryW's own os-123
+    // quirk, while keeping real `\\?\UNC\…` share paths intact), then
+    // create everything down to `link_path.parent()` on that plain-drive
+    // root. The leaf inode is shared with the surface side, so
+    // `create_bin_shim` later writes through the surface path into the
+    // same directory. Including the `link_path.parent()` here covers
+    // scoped bin names (`@scope/foo`): we have to pre-create
+    // `<bin_dir>/@scope/` on the canonical side too, because
+    // `create_bin_shim`'s own `create_dir_all` would otherwise trip the
+    // same quirk on the surface side and the shim's `@scope/foo.cmd`
+    // write would fail with `NotFound`. No-op on Unix.
+    //
+    // Pass the *surface* `bin_dir` (not the canonicalized form) to
+    // `create_bin_shim`: the shim's relative target is anchored on
+    // `link_parent`, and the canonical form lives on a different
+    // subtree (the GVS, e.g. `…\aube\virtual-store\…`) than the
+    // surface invocation path (`…\.aube\<dep_path>\node_modules\.bin\`).
+    // `pathdiff` would then find only `C:\Users\…\AppData\Local\` as a
+    // common prefix and emit a long `..\..\..\…` traversal back down
+    // through the surface tree, producing the duplicated install-root
+    // path Node surfaces as `Cannot find module
+    // '…\pnpm\global-aube\<hash>\pnpm\global-aube\<hash>\…'`
+    // (Discussion #654).
     #[cfg(windows)]
-    let target_for_mkdir_owned = bin_dir.parent().and_then(|parent| {
+    let mkdir_root_owned = bin_dir.parent().and_then(|parent| {
         let leaf = bin_dir.file_name()?;
         let canon = crate::dirs::canonicalize(parent).ok()?;
         Some(canon.join(leaf))
     });
     #[cfg(windows)]
-    let target_for_mkdir: &std::path::Path = target_for_mkdir_owned.as_deref().unwrap_or(bin_dir);
+    let mkdir_root: &std::path::Path = mkdir_root_owned.as_deref().unwrap_or(bin_dir);
     #[cfg(not(windows))]
-    let target_for_mkdir = bin_dir;
-    if let Err(e) = std::fs::create_dir_all(target_for_mkdir) {
-        let tolerated = e.kind() == std::io::ErrorKind::AlreadyExists && target_for_mkdir.is_dir();
+    let mkdir_root = bin_dir;
+    let mkdir_link_path = mkdir_root.join(name);
+    let mkdir_target = mkdir_link_path.parent().unwrap_or(mkdir_root);
+    if let Err(e) = std::fs::create_dir_all(mkdir_target) {
+        let tolerated = e.kind() == std::io::ErrorKind::AlreadyExists && mkdir_target.is_dir();
         if !tolerated {
             return Err(e)
                 .into_diagnostic()
                 .wrap_err_with(|| format!("failed to create bin directory {}", bin_dir.display()));
         }
     }
-    aube_linker::create_bin_shim(target_for_mkdir, name, target, shim_opts)
+    aube_linker::create_bin_shim(bin_dir, name, target, shim_opts)
         .into_diagnostic()
         .wrap_err_with(|| {
             format!(
@@ -556,5 +578,146 @@ mod tests {
         .unwrap();
 
         assert!(project_dir.join("node_modules/.bin/vitepress").exists());
+    }
+
+    /// Regression for Discussion #654. The isolated layout puts
+    /// `.aube/<dep_path>` as an NTFS junction into the global virtual
+    /// store, and per-dep `.bin/` lives under that junction. The
+    /// previous `create_bin_link` body canonicalized the bin-dir parent
+    /// (workaround for `CreateDirectoryW`'s ERROR_ALREADY_EXISTS quirk)
+    /// and *also* handed that canonical path to `create_bin_shim`. The
+    /// generated `.cmd` then anchored its relative target on the GVS
+    /// subtree, but `%~dp0` at runtime is the surface invocation path —
+    /// so the combined path re-descended through the install root and
+    /// Node surfaced `Cannot find module
+    /// '…\pnpm\global-aube\<hash>\pnpm\global-aube\<hash>\…'`. The fix
+    /// keeps the canonical mkdir but routes the shim writer through
+    /// the surface `bin_dir`, so `pathdiff` sees a short common prefix
+    /// and emits the expected `..\..\..\…` form.
+    #[cfg(windows)]
+    #[test]
+    fn create_bin_link_surface_relative_path_when_dep_dir_is_a_junction() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        let aube_dir = project.join("node_modules/.aube");
+        std::fs::create_dir_all(&aube_dir).unwrap();
+
+        // Stand-in for the GVS: a separate subtree the dep_path junction
+        // points at.
+        let gvs = project.join("gvs");
+        let gvs_dep = gvs.join("node-liblzma@2.2.0/node_modules");
+        std::fs::create_dir_all(&gvs_dep).unwrap();
+        aube_linker::create_dir_link(
+            &gvs.join("node-liblzma@2.2.0"),
+            &aube_dir.join("node-liblzma@2.2.0"),
+        )
+        .unwrap();
+
+        // Sibling `.aube/` entry housing the bin we want to shim into
+        // the junction's `.bin/`. Lives on the surface tree, not under
+        // the junction.
+        let target_pkg = aube_dir.join("prebuild-install@7.1.3/node_modules/prebuild-install");
+        std::fs::create_dir_all(&target_pkg).unwrap();
+        let target = target_pkg.join("bin.js");
+        std::fs::write(&target, "#!/usr/bin/env node\n").unwrap();
+
+        // Surface bin dir: traverses the junction. Pre-fix, the canonical
+        // form lived under `gvs/…`, which is precisely the mismatch this
+        // test pins down.
+        let bin_dir = aube_dir.join("node-liblzma@2.2.0/node_modules/.bin");
+
+        create_bin_link(
+            &bin_dir,
+            "prebuild-install",
+            &target,
+            aube_linker::BinShimOptions::default(),
+        )
+        .unwrap();
+
+        let cmd = std::fs::read_to_string(bin_dir.join("prebuild-install.cmd")).unwrap();
+        // Three uplevels out of `.bin/`: `.bin` → `node_modules` →
+        // `node-liblzma@2.2.0` → `.aube`, then descend into the sibling
+        // `prebuild-install@7.1.3` entry.
+        let expected = r"..\..\..\prebuild-install@7.1.3\node_modules\prebuild-install\bin.js";
+        assert!(
+            cmd.contains(expected),
+            ".cmd shim should embed surface-tree relative path `{expected}`; got:\n{cmd}"
+        );
+        // Belt-and-braces: the pre-fix bug embedded a path that re-descended
+        // through the project root after a long `..\` chain. Reject any
+        // absolute-style fragment or a relative path that escapes far enough
+        // to climb above `.aube/`.
+        assert!(
+            !cmd.contains(r"..\..\..\..\"),
+            ".cmd shim should not climb above the `.aube/` root; got:\n{cmd}"
+        );
+    }
+
+    /// Companion to the case above: scoped bin name (`@scope/foo`)
+    /// behind the same junction. The pre-fix code routed shim writes
+    /// through the canonical bin dir, so `create_bin_shim`'s internal
+    /// `create_dir_all(<bin>\@scope)` ran on the GVS subtree where no
+    /// junction is in the path — it just worked. With the fix, the
+    /// shim writer sees the *surface* path and would hit the same
+    /// "leaf behind junction" `ERROR_ALREADY_EXISTS` quirk on the
+    /// `@scope/` mkdir. The fix's other half is pre-creating
+    /// `link_path.parent()` on the canonical side; this test pins
+    /// that behavior — without it, `@scope/foo.cmd` would fail to
+    /// write through the junction with `NotFound`.
+    #[cfg(windows)]
+    #[test]
+    fn create_bin_link_creates_scoped_parent_when_dep_dir_is_a_junction() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        let aube_dir = project.join("node_modules/.aube");
+        std::fs::create_dir_all(&aube_dir).unwrap();
+
+        let gvs = project.join("gvs");
+        let gvs_dep = gvs.join("node-liblzma@2.2.0/node_modules");
+        std::fs::create_dir_all(&gvs_dep).unwrap();
+        aube_linker::create_dir_link(
+            &gvs.join("node-liblzma@2.2.0"),
+            &aube_dir.join("node-liblzma@2.2.0"),
+        )
+        .unwrap();
+
+        // Scoped sibling: target lives at
+        // `.aube/@scope+tool@1.0.0/node_modules/@scope/tool/cli.js` on
+        // the surface tree (the linker escapes `/` as `+` in the
+        // dep_path filename).
+        let target_pkg = aube_dir.join("@scope+tool@1.0.0/node_modules/@scope/tool");
+        std::fs::create_dir_all(&target_pkg).unwrap();
+        let target = target_pkg.join("cli.js");
+        std::fs::write(&target, "#!/usr/bin/env node\n").unwrap();
+
+        let bin_dir = aube_dir.join("node-liblzma@2.2.0/node_modules/.bin");
+
+        create_bin_link(
+            &bin_dir,
+            "@scope/tool",
+            &target,
+            aube_linker::BinShimOptions::default(),
+        )
+        .unwrap();
+
+        // `@scope/` must exist as an actual directory on the surface
+        // side (visible via the junction) so the shim file landed.
+        assert!(
+            bin_dir.join("@scope").is_dir(),
+            "scoped parent `@scope/` should be pre-created through the junction"
+        );
+        let cmd = std::fs::read_to_string(bin_dir.join("@scope/tool.cmd")).unwrap();
+        // Four uplevels out of `.bin/@scope/`: `@scope` → `.bin` →
+        // `node_modules` → `node-liblzma@2.2.0` → `.aube`, then descend
+        // into the sibling scoped entry.
+        let expected = r"..\..\..\..\@scope+tool@1.0.0\node_modules\@scope\tool\cli.js";
+        assert!(
+            cmd.contains(expected),
+            ".cmd shim should embed surface-tree relative path `{expected}`; got:\n{cmd}"
+        );
+        assert!(
+            !cmd.contains(r"..\..\..\..\..\"),
+            ".cmd shim should not climb above the `.aube/` root; got:\n{cmd}"
+        );
     }
 }

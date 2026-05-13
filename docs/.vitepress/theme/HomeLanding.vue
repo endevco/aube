@@ -427,6 +427,10 @@ watch(progressBarEl, (el, previousEl) => {
             <i>24h cooling</i>
           </span>
           <span class="aube-script-row">
+            <b>typosquats</b>
+            <i>checked on add</i>
+          </span>
+          <span class="aube-script-row">
             <b>build scripts</b>
             <i>deny by default</i>
           </span>
@@ -434,9 +438,11 @@ watch(progressBarEl, (el, previousEl) => {
         <strong>Supply-chain defaults across the install path.</strong>
         <span>
           Trust downgrades fail at resolve, new releases sit out a 24h cooling
-          window, lifecycle scripts wait for approval, and exotic transitive
-          deps are blocked. <code>paranoid: true</code> adds the build jail
-          and turns the soft gates into hard fails.
+          window, <code>aube add</code> blocks known-malicious packages and
+          prompts on near-zero-download installs, lifecycle scripts wait for
+          approval, and exotic transitive deps are blocked.
+          <code>paranoid: true</code> adds the build jail and turns the soft
+          gates into hard fails.
         </span>
         <span class="aube-proof-link">Security overview -></span>
       </a>

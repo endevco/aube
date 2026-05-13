@@ -25,6 +25,9 @@ configured individually:
   `dist.integrity` instead of warning
 - `strictDepBuilds = true` — fail the install when a dep has unreviewed
   build scripts instead of silently skipping
+- [`advisoryCheck = required`](#typosquat-and-impersonation-protection) —
+  fail `aube add` if OSV can't be reached instead of falling back to
+  download-count signal alone
 
 Use it when you want maximum protection without listing each setting.
 
@@ -141,6 +144,54 @@ Default: `0` (disabled).
 Settings: [`minimumReleaseAge`](/settings/#setting-minimumreleaseage),
 [`minimumReleaseAgeExclude`](/settings/#setting-minimumreleaseageexclude),
 [`minimumReleaseAgeStrict`](/settings/#setting-minimumreleaseagestrict).
+
+## Typosquat and impersonation protection
+
+`aube add` checks every package on the command line before adding it to your
+manifest. Transitive deps and packages already in the lockfile are not
+re-checked — the gate is the moment of human intent, not every reinstall.
+
+Two signals, with different response levels:
+
+**Known-malicious advisories.** aube batch-queries [OSV](https://osv.dev) for
+`MAL-*` advisories on every name about to be added. A hit fails the install
+with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to the advisory. Confirmed
+malicious isn't a judgement call — this is a hard block, not a prompt. If
+the OSV API can't be reached, the default (`advisoryCheck: on`) warns and
+continues; `advisoryCheck: required` upgrades that to a fail-closed
+`ERR_AUBE_ADVISORY_CHECK_FAILED` so CI can tell a network outage from a
+confirmed-malicious advisory.
+
+**Low download count.** A typosquat or impersonation has approximately zero
+installs on day one regardless of how cleverly it's named, so a
+download-count floor catches the long tail of squats that haven't been
+reported yet. Below the threshold, aube prompts for confirmation:
+
+```
+aube add supabase-javascript
+
+  ⚠ supabase-javascript looks suspicious:
+    • 3 downloads last week (threshold: 1000)
+  Continue adding supabase-javascript? [y/N]
+```
+
+In non-interactive contexts the prompt becomes a hard refusal with
+`ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is passed.
+Scoped private packages and workspace deps are skipped (no public registry
+signal → no false positive).
+
+```yaml
+advisoryCheck: on            # default; fail open on network error
+lowDownloadThreshold: 1000   # weekly downloads, 0 disables
+```
+
+Set `advisoryCheck: required` to fail closed when OSV can't be reached —
+appropriate for hardened CI, included in `paranoid: true`. Set
+`advisoryCheck: off` or `lowDownloadThreshold: 0` to disable either check
+independently.
+
+Settings: [`advisoryCheck`](/settings/#setting-advisorycheck),
+[`lowDownloadThreshold`](/settings/#setting-lowdownloadthreshold).
 
 ## Block exotic transitive dependencies
 

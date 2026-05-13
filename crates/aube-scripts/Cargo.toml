@@ -11,12 +11,12 @@ readme.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
-# aube-codes is *not* a dep here even though `#[diagnostic(code(ERR_AUBE_X))]`
-# attributes appear below. miette treats the `code(...)` argument as an
-# identifier token, not a symbol reference, so the codes flow through as
-# string literals at macro-expansion time. cargo-machete correctly flags
-# the dep as unused. Validation that the names exist in `aube-codes`'s
-# registry is a workspace-level concern, not a per-crate one.
+# aube-codes provides the `WARN_AUBE_*` constants used by Windows
+# Job Object fallback warnings emitted via `tracing::warn!(code = ...)`.
+# miette `#[diagnostic(code(ERR_AUBE_X))]` attributes treat the code
+# as an identifier token (not a symbol reference) so they don't need
+# this dep at expansion time — but the `tracing::warn!` sites do.
+aube-codes = { workspace = true }
 aube-manifest = { workspace = true }
 aube-util = { workspace = true }
 tokio = { workspace = true }
@@ -28,3 +28,30 @@ tracing = { workspace = true }
 landlock = { workspace = true }
 libc = { workspace = true }
 seccompiler = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Job Objects + Foundation for the kill-on-job-close process tree reaper
+# used by `run_command_killing_descendants`. On Windows,
+# `TerminateProcess` on the direct cmd.exe shell does not propagate to
+# its descendants (node-gyp → MSBuild → node), so without a Job Object
+# aborting a failing lifecycle script leaves grandchildren running.
+# `CreateJobObjectW` in windows-sys v0.61 is `cfg(feature =
+# "Win32_Security")` because its signature mentions `SECURITY_ATTRIBUTES`
+# — we pass NULL but still need the feature for the function symbol to
+# be visible. windows-sys v0.61 is already in the dep graph
+# transitively (rustls, tokio), so this just selects the extra
+# features aube-scripts needs.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Tests poll grandchild liveness with OpenProcess / GetExitCodeProcess.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

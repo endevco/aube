@@ -23,6 +23,8 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
 | [`securityScanner`](#setting-securityscanner) | `string` | Bun-compatible security scanner module. |
+| [`advisoryCheck`](#setting-advisorycheck) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check on `aube add`. |
+| [`lowDownloadThreshold`](#setting-lowdownloadthreshold) | `int` | Weekly-download floor for `aube add` (typosquat prompt). |
 | [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
 | [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Fail install when a package's trust evidence weakens between releases. |
 | [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from `trustPolicy` checks. |
@@ -446,6 +448,53 @@ scanner is back.
 
 Empty string (the default) disables the integration entirely.
 
+### `advisoryCheck` {#setting-advisorycheck}
+
+OSV `MAL-*` advisory check on `aube add`.
+
+- Type: `"on" | "required" | "off"`
+- Default: `"on"`
+- Environment: `npm_config_advisory_check`, `NPM_CONFIG_ADVISORY_CHECK`, `AUBE_ADVISORY_CHECK`
+- .npmrc keys: `advisoryCheck`, `advisory-check`
+- Workspace YAML keys: `advisoryCheck`
+
+`aube add` batch-queries [OSV](https://osv.dev) for malicious-package
+advisories (`MAL-*`) on every package about to land in `package.json`.
+A hit fails the install with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to
+the advisory. Transitive deps and packages already in the lockfile are
+not re-checked — the gate is the moment of human intent.
+
+- `on` (default): fail closed on a malicious-package hit; fail open
+  (continue with a `WARN_AUBE_ADVISORY_CHECK_FAILED`) when the API can't
+  be reached, so offline workflows aren't blocked.
+- `required`: same fail-closed behavior on hits, plus fail closed on
+  fetch errors. Use in hardened CI. Included in the `paranoid` bundle.
+- `off`: skip the check entirely.
+
+### `lowDownloadThreshold` {#setting-lowdownloadthreshold}
+
+Weekly-download floor for `aube add` (typosquat prompt).
+
+- Type: `int`
+- Default: `1000`
+- Environment: `npm_config_low_download_threshold`, `NPM_CONFIG_LOW_DOWNLOAD_THRESHOLD`, `AUBE_LOW_DOWNLOAD_THRESHOLD`
+- .npmrc keys: `lowDownloadThreshold`, `low-download-threshold`
+- Workspace YAML keys: `lowDownloadThreshold`
+
+`aube add` looks up each candidate's weekly download count via
+`api.npmjs.org/downloads/point/last-week/<pkg>` and prompts for
+confirmation when the count falls below this threshold — the floor
+catches typosquats and impersonations, which have near-zero downloads
+on day one regardless of how cleverly they're named.
+
+Interactive sessions get a `[y/N]` prompt showing the weekly
+download count. Non-interactive contexts fail with
+`ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is
+passed. Scoped private packages and workspace deps are skipped (no
+public-registry signal → no false positive).
+
+Set to `0` to disable.
+
 ### `paranoid` {#setting-paranoid}
 
 Turn on the strict-security setting bundle in one switch.
@@ -464,6 +513,8 @@ bundle on, regardless of how each is configured individually:
 - `minimumReleaseAgeStrict = true` (makes the age gate hard, not advisory)
 - `strictStoreIntegrity = true` (fail on missing `dist.integrity`)
 - `strictDepBuilds = true` (fail when deps have unreviewed build scripts)
+- `advisoryCheck = required` (fail closed on OSV fetch errors instead of
+  falling through with a warning)
 
 Set to `false` (the default) to honor the underlying settings as-is.
 

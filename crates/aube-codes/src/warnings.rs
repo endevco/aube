@@ -17,6 +17,7 @@ pub const WARN_AUBE_HOOK_PACKAGE_ADDED: &str = "WARN_AUBE_HOOK_PACKAGE_ADDED";
 
 // ── install lifecycle ───────────────────────────────────────────────
 pub const WARN_AUBE_IGNORED_BUILD_SCRIPTS: &str = "WARN_AUBE_IGNORED_BUILD_SCRIPTS";
+#[rustfmt::skip] pub const WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE: &str = "WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE";
 pub const WARN_AUBE_MISSING_INTEGRITY: &str = "WARN_AUBE_MISSING_INTEGRITY";
 pub const WARN_AUBE_CACHE_WRITE_FAILED: &str = "WARN_AUBE_CACHE_WRITE_FAILED";
 pub const WARN_AUBE_CLONE_STRATEGY_FALLBACK: &str = "WARN_AUBE_CLONE_STRATEGY_FALLBACK";
@@ -88,6 +89,8 @@ pub const WARN_AUBE_PROGRESS_OVERFLOW: &str = "WARN_AUBE_PROGRESS_OVERFLOW";
 pub const WARN_AUBE_WORKSPACE_TOPO_CYCLE: &str = "WARN_AUBE_WORKSPACE_TOPO_CYCLE";
 
 // ── supply chain (add-time) ─────────────────────────────────────────
+pub const WARN_AUBE_LOW_DOWNLOAD_PACKAGE: &str = "WARN_AUBE_LOW_DOWNLOAD_PACKAGE";
+pub const WARN_AUBE_ADVISORY_CHECK_FAILED: &str = "WARN_AUBE_ADVISORY_CHECK_FAILED";
 pub const WARN_AUBE_SECURITY_SCANNER_FINDING: &str = "WARN_AUBE_SECURITY_SCANNER_FINDING";
 
 /// Stable category labels that group codes in the generated docs.
@@ -155,6 +158,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_IGNORED_BUILD_SCRIPTS,
         category: category::INSTALL_LIFECYCLE,
         description: "Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE,
+        category: category::INSTALL_LIFECYCLE,
+        description: "Windows: couldn't create or assign a kill-on-job-close job object for a lifecycle script. The script still runs, but on abort/failure its grandchildren (node-gyp / MSBuild / node) may be orphaned. Usually caused by a restrictive parent job or enterprise policy.",
         exit_code: None,
     },
     CodeMeta {
@@ -445,6 +454,18 @@ pub const ALL: &[CodeMeta] = &[
         exit_code: None,
     },
     // Supply chain (add-time)
+    CodeMeta {
+        name: WARN_AUBE_LOW_DOWNLOAD_PACKAGE,
+        category: category::SUPPLY_CHAIN,
+        description: "`aube add` flagged a package whose weekly downloads fall below `lowDownloadThreshold`. Interactive sessions prompt for confirmation; non-interactive contexts fail with `ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is passed.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_ADVISORY_CHECK_FAILED,
+        category: category::SUPPLY_CHAIN,
+        description: "OSV `MAL-*` advisory check couldn't reach the API. With `advisoryCheck=on` (default) install continues; with `advisoryCheck=required` install fails closed.",
+        exit_code: None,
+    },
     CodeMeta {
         name: WARN_AUBE_SECURITY_SCANNER_FINDING,
         category: category::SUPPLY_CHAIN,

@@ -153,7 +153,7 @@ Run from the workspace root regardless of the current package
 - [`aube fetch [FLAGS]`](/cli/fetch.md)
 - [`aube find-hash [FLAGS] <HASH>`](/cli/find-hash.md)
 - [`aube ignored-builds [-g --global]`](/cli/ignored-builds.md)
-- [`aube import [FLAGS]`](/cli/import.md)
+- [`aube import [--force] [--lockfile-only]`](/cli/import.md)
 - [`aube init [FLAGS]`](/cli/init.md)
 - [`aube install [FLAGS]`](/cli/install.md)
 - [`aube licenses [FLAGS]`](/cli/licenses.md)

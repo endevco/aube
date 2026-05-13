@@ -1,4 +1,5 @@
 pub mod add;
+pub mod add_supply_chain;
 pub mod approve_builds;
 pub mod audit;
 pub mod bin;
@@ -1443,20 +1444,34 @@ fn resolve_verify_deps_before_run(cwd: &std::path::Path) -> miette::Result<Verif
 }
 
 /// Remove an existing file/dir/symlink at the given path, if present.
+///
+/// Windows quirk: directory junctions and directory symlinks report as
+/// symlinks via `symlink_metadata`, but `std::fs::remove_file` returns
+/// `Access is denied (os error 5)` for them — the Win32 `DeleteFile`
+/// syscall only works on file-shaped entries. The link entry has to be
+/// torn down with `RemoveDirectory` (= `std::fs::remove_dir`), which is
+/// non-recursive and so leaves the junction target untouched. Falling
+/// back on `remove_file` failure keeps every other platform on the
+/// usual single-syscall path.
 pub(crate) fn remove_existing(path: &std::path::Path) -> miette::Result<()> {
-    if path.symlink_metadata().is_err() {
+    let Ok(md) = path.symlink_metadata() else {
         return Ok(());
-    }
-    if path.is_dir() && !path.is_symlink() {
-        std::fs::remove_dir_all(path)
+    };
+    let file_type = md.file_type();
+    if file_type.is_dir() {
+        return std::fs::remove_dir_all(path)
             .into_diagnostic()
-            .wrap_err_with(|| format!("failed to remove {}", path.display()))?;
-    } else {
-        std::fs::remove_file(path)
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to remove {}", path.display()))?;
+            .wrap_err_with(|| format!("failed to remove {}", path.display()));
     }
-    Ok(())
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(_) if file_type.is_symlink() => std::fs::remove_dir(path)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to remove {}", path.display())),
+        Err(e) => Err(e)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to remove {}", path.display())),
+    }
 }
 
 pub(crate) fn workspace_importer_path(
@@ -1644,5 +1659,38 @@ mod manifest_write_tests {
             panic!("expected object");
         };
         obj.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod remove_existing_tests {
+    use super::*;
+
+    #[test]
+    fn removes_a_symlink_pointing_at_a_populated_directory_without_touching_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let canary = target.join("keep.txt");
+        std::fs::write(&canary, b"keep me").unwrap();
+
+        let link = dir.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        aube_linker::create_dir_link(&target, &link).unwrap();
+
+        remove_existing(&link).unwrap();
+        assert!(!link.exists());
+        assert!(
+            canary.exists(),
+            "remove_existing must not recurse into the symlink's target"
+        );
+    }
+
+    #[test]
+    fn missing_path_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        remove_existing(&dir.path().join("does-not-exist")).unwrap();
     }
 }

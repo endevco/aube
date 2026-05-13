@@ -72,7 +72,7 @@ pub struct UpdateArgs {
     /// `allowBuilds`, so the flag is currently a no-op, but scripts
     /// that wrap `pnpm update --ignore-scripts` keep working without
     /// complaint.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub ignore_scripts: bool,
     /// Refresh the lockfile without populating `node_modules`.
     ///

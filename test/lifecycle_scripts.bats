@@ -180,15 +180,15 @@ JSON
   }
 }
 JSON
+	cp package.json package.json.before
 	run aube install
 	assert_failure
 	assert_output --partial "dependencies with build scripts must be reviewed"
 	assert_output --partial "dep-with-build@1.0.0"
-	# No yaml + no pnpm namespace in package.json → seed lands in
-	# package.json#aube.allowBuilds with the canonical placeholder
-	# string that matches pnpm's wording.
+	# Diverges from pnpm: aube does not auto-seed an `allowBuilds`
+	# placeholder. The manifest is left exactly as the user wrote it.
 	assert_file_not_exists aube-workspace.yaml
-	run grep -q '"dep-with-build": "set this to true or false"' package.json
+	run diff -u package.json.before package.json
 	assert_success
 }
 
@@ -632,14 +632,16 @@ JSON
 # -- Dep build-policy ports from pnpm/test/install/lifecycleScripts.ts --------
 #
 # Cover aube's `allowBuilds` review machinery and `--allow-build` CLI
-# flag. Aube writes the same canonical `"set this to true or false"`
-# placeholder string as pnpm. Aube's strict-dep-builds error message
-# differs from pnpm's ("dependencies with build scripts must be reviewed"
-# vs "Ignored build scripts:") and the assertions below reflect that.
+# flag. Diverges from pnpm: aube never writes a "set this to true or
+# false" placeholder into the user's manifest. Aube's strict-dep-builds
+# error message also differs from pnpm's ("dependencies with build
+# scripts must be reviewed" vs "Ignored build scripts:").
 
-@test "aube add seeds an allowBuilds review placeholder for unreviewed dep build scripts" {
-	# Ported from pnpm/test/install/lifecycleScripts.ts:260
+@test "aube add leaves package.json untouched for unreviewed dep build scripts" {
+	# Diverges from pnpm/test/install/lifecycleScripts.ts:260
 	# ('ignored builds are auto-populated as placeholders in allowBuilds').
+	# Aube does not auto-seed — the manifest is left alone except for
+	# the new dep entry under `dependencies`.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allowbuilds-seed",
@@ -648,20 +650,20 @@ JSON
 JSON
 	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
 	assert_success
-	# No workspace yaml present and no `pnpm` namespace in package.json
-	# → seed lands in package.json#aube.allowBuilds with the canonical
-	# placeholder string.
 	assert_file_not_exists pnpm-workspace.yaml
 	assert_file_not_exists aube-workspace.yaml
-	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": "set this to true or false"' package.json
+	# `dependencies` entry exists, but no `allowBuilds` map is written.
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example"' package.json
 	assert_success
+	run grep -F 'allowBuilds' package.json
+	assert_failure
 }
 
-@test "aube add merges allowBuilds review placeholder with existing approvals in workspace yaml" {
-	# Ported from pnpm/test/install/lifecycleScripts.ts:268
+@test "aube add does not seed allowBuilds even when a workspace yaml already exists" {
+	# Diverges from pnpm/test/install/lifecycleScripts.ts:268
 	# ('auto-populated placeholders are merged with existing allowBuilds').
-	# Pre-existing approval is preserved verbatim; the new build-script
-	# dep is appended with the placeholder string.
+	# Pre-existing approval is preserved verbatim; aube does not append
+	# the new build-script dep to the map.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allowbuilds-merge",
@@ -672,14 +674,11 @@ JSON
 allowBuilds:
   "@pnpm.e2e/install-script-example": true
 YAML
+	cp pnpm-workspace.yaml pnpm-workspace.yaml.before
 	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
 	assert_success
-	# Quote-agnostic checks: aube's yaml_serde rewrites with
-	# single-quoted keys, but the test reads as documented behavior
-	# rather than serializer detail.
-	run grep -E "@pnpm\.e2e/install-script-example['\"]?: true" pnpm-workspace.yaml
-	assert_success
-	run grep -E "@pnpm\.e2e/pre-and-postinstall-scripts-example['\"]?: ['\"]?set this to true or false['\"]?" pnpm-workspace.yaml
+	# Existing yaml is unchanged.
+	run diff -u pnpm-workspace.yaml.before pnpm-workspace.yaml
 	assert_success
 }
 
@@ -691,7 +690,7 @@ YAML
 	# for the setting (reads it from .npmrc / pnpm-workspace.yaml / env)
 	# and surfaces a different error string. Common contract: install
 	# fails, but the dep + lockfile are still written so the user can
-	# flip the placeholder to `true`/`false` and re-run.
+	# add the package to `allowBuilds` and re-run.
 	# Append (don't overwrite) so the registry= line _common_setup wrote
 	# survives when AUBE_TEST_REGISTRY is set.
 	echo "strictDepBuilds=true" >>.npmrc
@@ -709,9 +708,9 @@ JSON
 	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": "1.0.0"' package.json
 	assert_success
 	assert_file_exists aube-lock.yaml
-	# Review placeholder seeded so the user can flip it.
-	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": "set this to true or false"' package.json
-	assert_success
+	# Aube does NOT auto-seed an allowBuilds placeholder (diverges from pnpm).
+	run grep -F 'allowBuilds' package.json
+	assert_failure
 }
 
 @test "strictDepBuilds fails even when side-effects are already cached" {
@@ -764,8 +763,8 @@ JSON
 	# Ported from pnpm/test/install/lifecycleScripts.ts:149
 	# ('selectively allow scripts in some dependencies by --allow-build flag').
 	# Adds two build-script packages and pre-approves one via the flag —
-	# only the named one runs its build, the other gets the canonical
-	# review placeholder.
+	# only the named one runs its build, the other is left alone (aube
+	# does not auto-seed a placeholder for it).
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allow-build-selective",
@@ -782,21 +781,27 @@ JSON
 	# Unapproved dep did NOT run pre/post-install scripts.
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-preinstall.js ]
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-postinstall.js ]
-	# Workspace state: approved entry is `true`, unapproved gets the placeholder.
+	# Manifest state: approved entry is `true`; unapproved dep is NOT
+	# added to `allowBuilds` (diverges from pnpm — aube leaves the
+	# manifest alone).
 	run grep -F '"@pnpm.e2e/install-script-example": true' package.json
 	assert_success
-	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": "set this to true or false"' package.json
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example"' package.json
 	assert_success
+	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example": "set this to true or false"' package.json
+	assert_failure
 }
 
-@test "aube add --allow-build with no value errors with pnpm's verbatim wording" {
-	# Ported from pnpm/test/install/lifecycleScripts.ts:164
-	# ('--allow-build flag should specify the package'). aube routes
-	# bare `--allow-build` through `parse_allow_build_value` via
-	# clap's `default_missing_value = ""`, so the diagnostic matches
-	# pnpm's exact line — scripts that grep pnpm's stderr keep working
-	# after a swap to aube. Place the flag last so clap sees no value
-	# to consume.
+@test "aube add --allow-build with no value errors and points at the = syntax" {
+	# Bare `--allow-build` is rejected by clap before it reaches our
+	# validator, because the arg has `require_equals = true` and no
+	# `default_missing_value`. Clap's diagnostic — "equal sign is
+	# needed when assigning values to '--allow-build=<PKG>'" — points
+	# the user straight at the correct syntax, where the prior
+	# pnpm-verbatim "missing a package name" wording was ambiguous
+	# (Discussion #655). The explicit empty form `--allow-build=`
+	# still routes through `parse_allow_build_value` and keeps the
+	# pnpm-verbatim wording; see the companion test below.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allow-build-bare",
@@ -805,8 +810,7 @@ JSON
 JSON
 	run aube add @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0 --allow-build
 	assert_failure
-	assert_output --partial "The --allow-build flag is missing a package name."
-	assert_output --partial "Please specify the package name(s) that are allowed to run installation scripts."
+	assert_output --partial "equal sign is needed when assigning values to '--allow-build=<PKG>'"
 	# Build did not run.
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-preinstall.js ]
 	assert [ ! -e node_modules/@pnpm.e2e/pre-and-postinstall-scripts-example/generated-by-postinstall.js ]
@@ -834,14 +838,13 @@ JSON
 }
 
 @test "aube add --allow-build (space form) does not silently swallow the next positional" {
-	# Regression: with `num_args = 0..=1` and no `require_equals`, clap
-	# would greedily consume the next non-flag token as the
-	# allow-build value — `aube add --allow-build esbuild some-pkg`
-	# would silently parse `esbuild` as the value and leave the
-	# positional packages list short. `require_equals = true` forces
-	# the `=` syntax and routes the bare-flag case through
-	# `default_missing_value`, so the diagnostic is pnpm's verbatim
-	# missing-package-name error instead of a silent no-op.
+	# Regression: without `require_equals = true`, clap would greedily
+	# consume the next non-flag token as the allow-build value —
+	# `aube add --allow-build esbuild some-pkg` would silently parse
+	# `esbuild` as the value and leave the positional packages list
+	# short. `require_equals = true` forces the `=` syntax, so the
+	# diagnostic is clap's "equal sign is needed" error instead of a
+	# silent no-op.
 	cat >package.json <<'JSON'
 {
   "name": "pnpm-lifecycle-allow-build-no-swallow",
@@ -850,7 +853,7 @@ JSON
 JSON
 	run aube add --allow-build @pnpm.e2e/install-script-example @pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0
 	assert_failure
-	assert_output --partial "The --allow-build flag is missing a package name."
+	assert_output --partial "equal sign is needed when assigning values to '--allow-build=<PKG>'"
 	# Neither package was installed.
 	run grep -F '"@pnpm.e2e/install-script-example"' package.json
 	assert_failure
@@ -861,9 +864,8 @@ JSON
 @test "aube add --allow-build=<pkg> writes to workspace root under --filter" {
 	# Regression: in the workspace-filter path (`aube add --filter=<sel>
 	# <pkg> --allow-build=<pkg>`), the `--allow-build` flag was silently
-	# dropped — the conflict check never ran and no approval was written.
-	# Pin that the filtered path now writes the approval to the
-	# workspace root and the conflict check fires too.
+	# dropped — no approval was written. Pin that the filtered path
+	# writes the approval to the workspace root yaml (not the child).
 	mkdir -p packages/app
 	cat >package.json <<'JSON'
 {
@@ -883,28 +885,6 @@ YAML
 }
 JSON
 
-	# Conflict path: pre-existing deny in workspace yaml — flag must error.
-	cat >pnpm-workspace.yaml <<'YAML'
-packages:
-  - "packages/*"
-allowBuilds:
-  "@pnpm.e2e/install-script-example": false
-YAML
-	run aube --filter '@scope/app' add \
-		--allow-build=@pnpm.e2e/install-script-example \
-		@pnpm.e2e/install-script-example
-	assert_failure
-	assert_output --partial "ignored by the root project"
-	# Child manifest unchanged — the conflict tripped before any write.
-	run grep -F '"@pnpm.e2e/install-script-example"' packages/app/package.json
-	assert_failure
-
-	# Happy path: drop the deny, retry — approval lands in the workspace
-	# yaml and the dep's install script runs.
-	cat >pnpm-workspace.yaml <<'YAML'
-packages:
-  - "packages/*"
-YAML
 	run aube --filter '@scope/app' add \
 		--allow-build=@pnpm.e2e/install-script-example \
 		@pnpm.e2e/install-script-example
@@ -972,20 +952,15 @@ JSON
 	assert_output --partial "@pnpm.e2e/pre-and-postinstall-scripts-example"
 }
 
-@test "aube add --allow-build=<pkg> errors when allowBuilds: <pkg>: false already exists" {
-	# Ported from pnpm/test/install/lifecycleScripts.ts:347
-	# ('--allow-build flag should error when conflicting with allowBuilds: false').
-	# Pre-existing explicit deny in pnpm-workspace.yaml. The flag must not
-	# silently flip the value — pnpm errors and aube matches the wording
-	# verbatim. miette wraps long error lines, so split the assertion
-	# into shorter substrings that survive the wrap.
-	#
-	# Also pins that the conflict check fires BEFORE `update_manifest_for_add`
-	# writes the new deps — failing late would leave the manifest with
-	# unresolved deps and no matching install (caught in PR review).
+@test "aube add --allow-build=<pkg> flips an existing allowBuilds: <pkg>: false to true" {
+	# pnpm errors when `--allow-build=<pkg>` collides with an existing
+	# `allowBuilds: <pkg>: false`. aube flips the value instead
+	# (Discussion #655): the user passed the flag deliberately, so
+	# treating it as a conflict just forces them to hand-edit the yaml
+	# to get the same effect.
 	cat >package.json <<'JSON'
 {
-  "name": "pnpm-lifecycle-allow-build-conflict",
+  "name": "aube-lifecycle-allow-build-flip",
   "version": "1.0.0"
 }
 JSON
@@ -995,18 +970,14 @@ allowBuilds:
 YAML
 	run aube add \
 		--allow-build=@pnpm.e2e/install-script-example \
-		@pnpm.e2e/pre-and-postinstall-scripts-example@1.0.0 \
-		@pnpm.e2e/install-script-example
-	assert_failure
-	assert_output --partial "ignored by the root project"
-	assert_output --partial "allowed to be built by the current command"
-	assert_output --partial "@pnpm.e2e/install-script-"
-	# Manifest is unchanged — neither dep was written, no `dependencies`
-	# block was created.
-	run grep -F '"@pnpm.e2e/pre-and-postinstall-scripts-example"' package.json
-	assert_failure
-	run grep -F '"dependencies"' package.json
-	assert_failure
+		@pnpm.e2e/install-script-example@1.0.0
+	assert_success
+	# The yaml entry was flipped to `true`.
+	run grep -E "@pnpm\.e2e/install-script-example['\"]?:\s*true" pnpm-workspace.yaml
+	assert_success
+	# And the dep is in the manifest.
+	run grep -F '"@pnpm.e2e/install-script-example"' package.json
+	assert_success
 }
 
 # Ported from pnpm/test/install/lifecycleScripts.ts:179

@@ -108,7 +108,11 @@ JSON
 	assert_output --partial "No ignored builds"
 }
 
-@test "install writes unreviewed builds to allowBuilds as the review placeholder" {
+@test "install leaves package.json untouched when builds are unreviewed" {
+	# Diverges from pnpm: pnpm rewrites `package.json#pnpm.onlyBuiltDependencies`
+	# (or the placeholder map) on every install when it discovers an unreviewed
+	# build. Aube keeps the manifest pristine — the warning + `aube approve-builds`
+	# flow is enough.
 	cat >package.json <<'JSON'
 {
   "name": "approve-builds-all-test",
@@ -118,16 +122,12 @@ JSON
   }
 }
 JSON
+	cp package.json package.json.before
 	run aube install
 	assert_success
 	assert_file_not_exists aube-builds-marker.txt
-	# No yaml on disk and no `pnpm` namespace in package.json, so the
-	# install-time auto-seed writes to package.json#aube.allowBuilds with
-	# the canonical placeholder string (matches pnpm's wording).
 	assert_file_not_exists aube-workspace.yaml
-	run grep -q '"allowBuilds"' package.json
-	assert_success
-	run grep -q '"aube-test-builds-marker": "set this to true or false"' package.json
+	run diff -u package.json.before package.json
 	assert_success
 
 	run aube approve-builds --all
