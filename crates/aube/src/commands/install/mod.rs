@@ -39,9 +39,9 @@ pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_r
 use settings::{
     check_unmet_peers, default_lockfile_network_concurrency, default_streaming_network_concurrency,
     detect_aube_dir_gvs_mode, find_gvs_incompatible_trigger, maybe_cleanup_unused_catalogs,
-    needs_time_for_prefetch, resolve_dedupe_peer_dependents, resolve_dedupe_peers,
-    resolve_git_shallow_hosts, resolve_link_concurrency, resolve_network_concurrency,
-    resolve_peers_from_workspace_root, resolve_peers_suffix_max_length, resolve_side_effects_cache,
+    resolve_dedupe_peer_dependents, resolve_dedupe_peers, resolve_git_shallow_hosts,
+    resolve_link_concurrency, resolve_network_concurrency, resolve_peers_from_workspace_root,
+    resolve_peers_suffix_max_length, resolve_side_effects_cache,
     resolve_side_effects_cache_readonly, resolve_strict_peer_dependencies,
     resolve_strict_store_pkg_content_check, resolve_symlink, resolve_use_running_store_server,
     resolve_verify_store_integrity,
@@ -2155,17 +2155,16 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // run. By the time the resolver pops its first task, the packument
     // is in the on-disk cache and the reqwest pool is hot.
     //
-    // Runs *after* settings are resolved so `needs_time` (mirroring
-    // the resolver's same-named binding) can pick the cache variant
-    // the resolver will actually read from. Writing to the wrong cache
-    // is wasted work — the single-flight gate is keyed per variant,
-    // so cross-variant fetches don't coalesce either. The settings
-    // build above is mostly file I/O (~ms-scale) which is dwarfed by
-    // the network RTT prefetch is hiding.
+    // Writes the corgi (abbreviated) cache regardless of the
+    // resolver's `needs_time` setting. The full packument is ~5×
+    // larger, and an earlier draft that matched the resolver's
+    // variant regressed hermetic-bench wall by ~25% on parse cost
+    // (see prefetch.rs for the trade-off rationale). Today's
+    // mismatch-on-default-aube is a known cache no-op rather than
+    // an active regression.
     //
     // Honors `AUBE_DISABLE_PREFETCH=1`.
-    let prefetch_needs_time = needs_time_for_prefetch(&settings_ctx);
-    prefetch::spawn_direct_dep_prefetch(&manifest, &cwd, opts.network_mode, prefetch_needs_time);
+    prefetch::spawn_direct_dep_prefetch(&manifest, &cwd, opts.network_mode);
 
     // `--lockfile-dir` / `lockfileDir`: relocate `aube-lock.yaml` to a
     // different directory than the project root. The project becomes

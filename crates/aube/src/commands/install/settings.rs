@@ -400,45 +400,6 @@ fn resolve_registry_supports_time_field(ctx: &aube_settings::ResolveCtx<'_>) -> 
     aube_settings::resolved::registry_supports_time_field(ctx)
 }
 
-/// Mirror the resolver's `needs_time` decision (see the `needs_time`
-/// binding in `aube-resolver/src/resolve.rs`) so the pre-resolver
-/// packument prefetch picks the cache variant the resolver will
-/// actually read from.
-///
-/// Without this, default-aube against npmjs writes 88+128 prefetched
-/// packuments into the corgi cache (`packument_cache_dir`) while the
-/// resolver reads from the full cache (`packument_full_cache_dir`),
-/// because `trustPolicy=no-downgrade` + `minimumReleaseAge=1440` +
-/// `registrySupportsTimeField=false` forces `needs_time = true`.
-/// The single-flight gate keys include the variant, so cross-variant
-/// races never coalesce — the wrong cache writes are wasted work.
-///
-/// Returns true when any of `resolutionMode=time-based`,
-/// `minimumReleaseAge>0`, `paranoid`, or `trustPolicy=no-downgrade`
-/// is set AND the registry doesn't advertise corgi `time` field
-/// support. Default-aube returns true.
-pub(super) fn needs_time_for_prefetch(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
-    if resolve_registry_supports_time_field(ctx) {
-        return false;
-    }
-    if matches!(
-        resolve_resolution_mode(ctx),
-        aube_resolver::ResolutionMode::TimeBased
-    ) {
-        return true;
-    }
-    if aube_settings::resolved::minimum_release_age(ctx) > 0 {
-        return true;
-    }
-    if aube_settings::resolved::paranoid(ctx) {
-        return true;
-    }
-    matches!(
-        aube_settings::resolved::trust_policy(ctx),
-        aube_settings::resolved::TrustPolicy::NoDowngrade
-    )
-}
-
 pub(crate) fn resolve_force_metadata_primer(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
     aube_settings::resolved::force_metadata_primer(ctx)
 }

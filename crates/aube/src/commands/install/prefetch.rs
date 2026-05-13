@@ -101,7 +101,6 @@ pub fn spawn_direct_dep_prefetch(
     manifest: &aube_manifest::PackageJson,
     cwd: &std::path::Path,
     network_mode: aube_registry::NetworkMode,
-    needs_time: bool,
 ) {
     if is_disabled() {
         return;
@@ -117,18 +116,21 @@ pub fn spawn_direct_dep_prefetch(
         return;
     }
     let client = Arc::new(super::super::make_client(cwd).with_network_mode(network_mode));
-    // Pick the cache variant the resolver will actually read from.
-    // `trustPolicy=no-downgrade` and `minimumReleaseAge` need the
-    // `time` field, so the resolver routes through the full cache
-    // — writing corgi here would warm a cache the resolver never
-    // consults. The registry client's single-flight gate is keyed
-    // per variant, so mismatched writes also can't coalesce with
-    // the resolver's fetches.
-    let cache_dir = if needs_time {
-        super::super::packument_full_cache_dir()
-    } else {
-        super::super::packument_cache_dir()
-    };
+    // Prefetch always writes the corgi (abbreviated) packument cache.
+    //
+    // On the default-aube path against npmjs the resolver actually
+    // reads from the full cache (`trustPolicy=no-downgrade` +
+    // `minimumReleaseAge=1440` + `registrySupportsTimeField=false` →
+    // `needs_time = true`). A prior iteration tried to mirror that
+    // decision here so writes landed in the cache the resolver reads,
+    // but the full packument is ~5× larger than corgi, and the extra
+    // JSON-parse cost dominated wall time on the hermetic bench
+    // (~+25% wall, ~+1.4s user CPU). The current shape keeps the
+    // prefetch cheap and treats it as a TCP/TLS/H2/DNS warmup +
+    // best-effort corgi cache fill; the cache mismatch on default
+    // npmjs is a known no-op rather than a regression. See PR
+    // discussion for the trade-off rationale.
+    let cache_dir = super::super::packument_cache_dir();
     // Bound concurrent prefetch GETs so the install-start fanout
     // doesn't thundering-herd the registry or starve the resolver's
     // foreground packument fetches. See `PREFETCH_CONCURRENCY` for
@@ -136,12 +138,10 @@ pub fn spawn_direct_dep_prefetch(
     // fanout inflating single-packument waits 30–40× under contention.
     let limiter = Arc::new(Semaphore::new(PREFETCH_CONCURRENCY));
     let direct_count = direct_names.len();
-    tracing::debug!(
-        "prefetch: spawning {direct_count} direct-dep packument GETs (needs_time={needs_time})"
-    );
+    tracing::debug!("prefetch: spawning {direct_count} direct-dep packument GETs");
 
     for name in &direct_names {
-        spawn_one(&client, &cache_dir, &limiter, name.clone(), needs_time);
+        spawn_one(&client, &cache_dir, &limiter, name.clone());
     }
 
     if speculative_is_disabled() {
@@ -172,7 +172,7 @@ pub fn spawn_direct_dep_prefetch(
                 if direct_set.contains(t.as_str()) || !fired.insert(t.clone()) {
                     continue;
                 }
-                spawn_one(&client, &cache_dir, &limiter, t, needs_time);
+                spawn_one(&client, &cache_dir, &limiter, t);
                 budget -= 1;
                 transitive_count += 1;
             }
@@ -186,7 +186,6 @@ fn spawn_one(
     cache_dir: &Path,
     limiter: &Arc<Semaphore>,
     name: String,
-    needs_time: bool,
 ) {
     let client = client.clone();
     let cache_dir = cache_dir.to_path_buf();
@@ -199,18 +198,7 @@ fn spawn_one(
         let Ok(_permit) = limiter.acquire_owned().await else {
             return;
         };
-        let result = if needs_time {
-            client
-                .fetch_packument_with_time_cached(&name, &cache_dir)
-                .await
-                .map(|_| ())
-        } else {
-            client
-                .fetch_packument_cached(&name, &cache_dir)
-                .await
-                .map(|_| ())
-        };
-        if let Err(e) = result {
+        if let Err(e) = client.fetch_packument_cached(&name, &cache_dir).await {
             tracing::debug!(name = %name, error = %e, "prefetch fetch failed");
         }
     });
