@@ -26,48 +26,25 @@ pub struct AddArgs {
     pub save_optional: bool,
     /// Pre-approve a dependency's lifecycle scripts as part of the add.
     ///
-    /// `--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into
-    /// the workspace yaml (or `package.json#aube.allowBuilds`) before
-    /// the install runs, so the named package's `preinstall` /
-    /// `install` / `postinstall` scripts execute on this invocation.
-    /// Repeatable — pass the flag once per package.
+    /// Writes `allowBuilds: { <pkg>: true }` into the workspace yaml
+    /// (or `package.json#aube.allowBuilds`) before the install runs,
+    /// so the named package's `preinstall` / `install` / `postinstall`
+    /// scripts execute on this invocation. Repeatable — pass the flag
+    /// once per package. Mirrors `pnpm add --allow-build=<pkg>`.
     ///
-    /// Errors when `<pkg>` is already on the allowlist with `false` —
-    /// promoting an explicit deny should be a deliberate edit, not a
-    /// silent flip. Mirrors `pnpm add --allow-build=<pkg>`.
-    ///
-    /// Conflicts with `--no-save`: when a workspace yaml exists, the
-    /// approval lands there, but `--no-save`'s restore path only
-    /// snapshots `package.json` + the lockfile — combining the two
-    /// would silently leave an orphaned approval behind. Same
-    /// reasoning as `--save-catalog`'s `--no-save` conflict.
-    ///
-    /// Both bare `--allow-build` and the explicit empty form
-    /// `--allow-build=` are rejected with pnpm's verbatim error so
-    /// users porting pnpm scripts see the same diagnostic. The
-    /// `num_args` plus `default_missing_value` pair routes the bare
-    /// form through the same `value_parser` validator that catches
-    /// the explicit empty form.
-    ///
-    /// `require_equals = true` is load-bearing: without it,
-    /// `aube add --allow-build esbuild some-pkg` would let clap
-    /// silently swallow `esbuild` as the flag's value (since
-    /// `num_args` allows 1 value) and leave the positional packages
-    /// list empty. Forcing `=` syntax — `--allow-build=esbuild` —
-    /// makes the boundary unambiguous and routes every bare-flag
-    /// occurrence through `default_missing_value`.
+    /// Conflicts with `--no-save`, which only snapshots `package.json`
+    /// and the lockfile and would leave an orphaned approval in the
+    /// workspace yaml on restore.
     #[arg(
         long = "allow-build",
         value_name = "PKG",
         conflicts_with = "no_save",
-        num_args = 0..=1,
-        default_missing_value = "",
         require_equals = true,
         value_parser = parse_allow_build_value,
     )]
     pub allow_build: Vec<String>,
-    /// Skip lifecycle scripts (no-op; aube already skips by default)
-    #[arg(long)]
+    /// Skip lifecycle scripts (no-op; aube already skips by default).
+    #[arg(long, hide = true)]
     pub ignore_scripts: bool,
     /// Install without persisting the dependency to `package.json`.
     ///
@@ -1810,9 +1787,10 @@ fn decide_save_catalog(
 /// Reject empty values for the allow-build flag with pnpm's
 /// verbatim error message.
 ///
-/// Catches the explicit empty form (`--allow-build=`) and the bare
-/// form (`--allow-build`), which clap routes through this validator
-/// via the `default_missing_value = ""` arg attribute.
+/// Catches the explicit empty form `--allow-build=`. The bare form
+/// `--allow-build` is rejected upstream by clap (because the arg
+/// has no `default_missing_value` and `require_equals = true`), so
+/// it never reaches this validator.
 ///
 /// Wording must stay byte-identical to pnpm's: scripts that grep
 /// pnpm's stderr for this exact line continue to work after a swap
@@ -1829,49 +1807,10 @@ fn parse_allow_build_value(s: &str) -> Result<String, String> {
 
 /// Apply `--allow-build=<pkg>` flags by writing each package as `true`
 /// to the project's `allowBuilds` map (workspace yaml or
-/// `package.json#aube.allowBuilds`). Errors when any name is already
-/// pinned to `false` — flipping an explicit deny should be a deliberate
-/// edit, not a side effect. Mirrors pnpm's `--allow-build=<pkg>` /
-/// `allowBuilds: false` conflict check.
-///
-/// Merge precedence matches `build_policy_from_sources` in
-/// `install/lifecycle.rs`: workspace yaml wins over manifest. So a
-/// `false` in `pnpm-workspace.yaml` blocks a `--allow-build` even when
-/// the manifest's `pnpm.allowBuilds` flips it to `true`.
+/// `package.json#aube.allowBuilds`), overwriting any prior value. An
+/// explicit `false` is treated as something the user is now flipping
+/// on purpose, not a conflict.
 fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::Result<()> {
-    let manifest_path = cwd.join("package.json");
-    let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
-        .into_diagnostic()
-        .wrap_err("failed to read package.json for --allow-build")?;
-    let workspace = aube_manifest::WorkspaceConfig::load(cwd)
-        .into_diagnostic()
-        .wrap_err("failed to read workspace config for --allow-build")?;
-
-    let mut existing: std::collections::BTreeMap<String, aube_manifest::AllowBuildRaw> =
-        manifest.pnpm_allow_builds();
-    // Workspace yaml overrides manifest — overwriting (not
-    // `or_insert`-ing) keeps the precedence aligned with
-    // `build_policy_from_sources`.
-    for (k, v) in workspace.allow_builds_raw() {
-        existing.insert(k, v);
-    }
-
-    let mut conflicts = Vec::new();
-    for name in names {
-        if matches!(
-            existing.get(name),
-            Some(aube_manifest::AllowBuildRaw::Bool(false))
-        ) {
-            conflicts.push(name.clone());
-        }
-    }
-    if !conflicts.is_empty() {
-        return Err(miette!(
-            "The following dependencies are ignored by the root project, but are allowed to be built by the current command: {}",
-            conflicts.join(", ")
-        ));
-    }
-
     aube_manifest::workspace::add_to_allow_builds(
         cwd,
         names,

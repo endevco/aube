@@ -86,10 +86,10 @@ cmd add help="Add a dependency" {
     }
     flag "-O --save-optional" help="Add as optional dependency"
     flag --allow-build help="Pre-approve a dependency's lifecycle scripts as part of the add" var=#true {
-        long_help "Pre-approve a dependency's lifecycle scripts as part of the add.\n\n`--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package.\n\nErrors when `<pkg>` is already on the allowlist with `false` — promoting an explicit deny should be a deliberate edit, not a silent flip. Mirrors `pnpm add --allow-build=<pkg>`.\n\nConflicts with `--no-save`: when a workspace yaml exists, the approval lands there, but `--no-save`'s restore path only snapshots `package.json` + the lockfile — combining the two would silently leave an orphaned approval behind. Same reasoning as `--save-catalog`'s `--no-save` conflict.\n\nBoth bare `--allow-build` and the explicit empty form `--allow-build=` are rejected with pnpm's verbatim error so users porting pnpm scripts see the same diagnostic. The `num_args` plus `default_missing_value` pair routes the bare form through the same `value_parser` validator that catches the explicit empty form.\n\n`require_equals = true` is load-bearing: without it, `aube add --allow-build esbuild some-pkg` would let clap silently swallow `esbuild` as the flag's value (since `num_args` allows 1 value) and leave the positional packages list empty. Forcing `=` syntax — `--allow-build=esbuild` — makes the boundary unambiguous and routes every bare-flag occurrence through `default_missing_value`."
+        long_help "Pre-approve a dependency's lifecycle scripts as part of the add.\n\nWrites `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package. Mirrors `pnpm add --allow-build=<pkg>`.\n\nConflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore."
         arg <PKG>
     }
-    flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)"
+    flag --ignore-scripts help="Skip lifecycle scripts (no-op; aube already skips by default)" hide=#true
     flag --no-save help="Install without persisting the dependency to `package.json`" {
         long_help "Install without persisting the dependency to `package.json`.\n\nSnapshots `package.json` and the lockfile, links the named packages into `node_modules`, and then restores both files — so the dependency is usable for the current process but the project's committed state is untouched.\n\nHandy for one-off experiments and for scripts that install a tool transiently. Mirrors `pnpm add --no-save`. Conflicts with `-g`/`--global`, which has to persist the install to its global manifest."
     }
@@ -808,7 +808,7 @@ cmd ignored-builds help="Print packages whose install scripts were skipped by `p
 }
 cmd import help="Convert a supported lockfile into aube-lock.yaml" {
     flag --force help="Overwrite an existing aube-lock.yaml"
-    flag --ignore-scripts help="Skip lifecycle scripts when the follow-up install runs" {
+    flag --ignore-scripts help="Skip lifecycle scripts when the follow-up install runs" hide=#true {
         long_help "Skip lifecycle scripts when the follow-up install runs.\n\nAccepted for compatibility — `aube import` today only writes the lockfile and does not chain into install, so this is a no-op, kept so wrappers that already pass it keep working."
     }
     flag --lockfile-only help="Write only the converted lockfile and skip linking `node_modules` afterwards" {
@@ -1888,7 +1888,7 @@ cmd update help="Update dependencies" {
         arg <PATH>
     }
     flag --ignore-pnpmfile help="Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update"
-    flag --ignore-scripts help="Skip lifecycle scripts" {
+    flag --ignore-scripts help="Skip lifecycle scripts" hide=#true {
         long_help "Skip lifecycle scripts.\n\nAccepted for pnpm parity — dep scripts are already gated by `allowBuilds`, so the flag is currently a no-op, but scripts that wrap `pnpm update --ignore-scripts` keep working without complaint."
     }
     flag --lockfile-only help="Refresh the lockfile without populating `node_modules`" {

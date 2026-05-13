@@ -11,7 +11,7 @@ pub struct ImportArgs {
     /// Accepted for compatibility — `aube import` today only writes the
     /// lockfile and does not chain into install, so this is a
     /// no-op, kept so wrappers that already pass it keep working.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub ignore_scripts: bool,
     /// Write only the converted lockfile and skip linking
     /// `node_modules` afterwards.

@@ -36,19 +36,9 @@ Add as optional dependency
 
 Pre-approve a dependency's lifecycle scripts as part of the add.
 
-`--allow-build=<pkg>` writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package.
+Writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package. Mirrors `pnpm add --allow-build=<pkg>`.
 
-Errors when `<pkg>` is already on the allowlist with `false` — promoting an explicit deny should be a deliberate edit, not a silent flip. Mirrors `pnpm add --allow-build=<pkg>`.
-
-Conflicts with `--no-save`: when a workspace yaml exists, the approval lands there, but `--no-save`'s restore path only snapshots `package.json` + the lockfile — combining the two would silently leave an orphaned approval behind. Same reasoning as `--save-catalog`'s `--no-save` conflict.
-
-Both bare `--allow-build` and the explicit empty form `--allow-build=` are rejected with pnpm's verbatim error so users porting pnpm scripts see the same diagnostic. The `num_args` plus `default_missing_value` pair routes the bare form through the same `value_parser` validator that catches the explicit empty form.
-
-`require_equals = true` is load-bearing: without it, `aube add --allow-build esbuild some-pkg` would let clap silently swallow `esbuild` as the flag's value (since `num_args` allows 1 value) and leave the positional packages list empty. Forcing `=` syntax — `--allow-build=esbuild` — makes the boundary unambiguous and routes every bare-flag occurrence through `default_missing_value`.
-
-### `--ignore-scripts`
-
-Skip lifecycle scripts (no-op; aube already skips by default)
+Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore.
 
 ### `--no-save`
 
