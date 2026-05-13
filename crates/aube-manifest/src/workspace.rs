@@ -440,6 +440,13 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub minimum_release_age_strict: Option<bool>,
 
+    /// Path to a Bun-style security scanner executable. Spawned at
+    /// `aube add` time with the package list on stdin (JSON); the
+    /// scanner's stdout (JSON advisories) decides whether the add is
+    /// allowed. Empty string disables the integration.
+    #[serde(default)]
+    pub security_scanner: Option<String>,
+
     /// pnpm-style peer dependency escape hatches. Read by
     /// `PeerDependencyRules::resolve` during install; the actual matching
     /// logic lives in `aube`. We only need the container here so the

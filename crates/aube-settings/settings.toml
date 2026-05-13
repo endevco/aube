@@ -264,6 +264,71 @@ sources.workspaceYaml = ["minimumReleaseAgeStrict"]
 precedence = ["workspaceYaml", "npmrc"]
 examples = []
 
+[securityScanner]
+description = "Path to a pluggable security scanner (Bun-style contract)."
+type = "string"
+default = "\"\""
+docs = """
+Aube spawns the configured executable at `aube add` time, pipes the
+list of packages-to-be-added in as JSON on stdin, and reads back a
+JSON list of advisories on stdout. A `fatal`-level advisory blocks
+the add; `warn`-level surfaces as `WARN_AUBE_SECURITY_SCANNER_FINDING`
+and the install continues.
+
+Modeled on [Bun's Security Scanner API](https://bun.sh/docs/install/security-scanner) —
+the contract is intentionally executable-agnostic (any binary on
+`PATH` or a path to a script) so the same scanner module that ships
+to Bun users via npm can run under aube with a thin wrapper. Where
+Bun's scanner is an in-process JS plugin (Bun has a JS runtime),
+aube's is a subprocess (aube is Rust) — same semantic shape, different
+ABI.
+
+**Stdin payload** (JSON):
+
+```json
+{
+  "version": 1,
+  "packages": [
+    {"name": "lodash", "spec": "^4.17.21"},
+    {"name": "evil-pkg", "spec": "latest"}
+  ]
+}
+```
+
+**Stdout response** (JSON):
+
+```json
+{
+  "advisories": [
+    {
+      "package": "evil-pkg",
+      "level": "fatal",
+      "description": "Known malicious package",
+      "url": "https://example.org/advisory"
+    }
+  ]
+}
+```
+
+Levels: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
+`warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues). Any
+other level is logged at debug level and otherwise ignored.
+
+Failure modes (scanner missing, non-zero exit, timeout >30s,
+unparseable JSON) emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and fall
+through — a broken scanner shouldn't be able to block every add.
+Operators can wrap their scanner in a thin shell to fail loudly if
+they prefer.
+
+Empty string (the default) disables the integration entirely.
+"""
+sources.cli = []
+sources.env = ["npm_config_security_scanner", "NPM_CONFIG_SECURITY_SCANNER", "AUBE_SECURITY_SCANNER"]
+sources.npmrc = ["securityScanner"]
+sources.workspaceYaml = ["securityScanner"]
+precedence = ["workspaceYaml", "npmrc"]
+examples = []
+
 [paranoid]
 description = "Turn on the strict-security setting bundle in one switch."
 type = "bool"

@@ -820,6 +820,16 @@ pub async fn run(
         apply_allow_build_flags(&cwd, &allow_build)?;
     }
 
+    // Bun-style pluggable security scanner. Runs before manifest
+    // mutation so a `fatal` advisory refuses the add and leaves
+    // `package.json` untouched. Skipped on git/local/workspace/jsr
+    // specs — same registry-bound filter as the OSV gate.
+    let scanner = super::with_settings_ctx(&cwd, aube_settings::resolved::security_scanner);
+    if !scanner.is_empty() {
+        let scanner_packages = scanner_packages_for(packages);
+        super::security_scanner::run_scanner(&scanner, &cwd, &scanner_packages).await?;
+    }
+
     update_manifest_for_add(
         &cwd,
         packages,
@@ -1882,6 +1892,38 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
     Ok(())
 }
 
+/// Parse the user-typed `aube add` arguments into the
+/// `(name, spec)` tuples the Bun-style scanner contract expects.
+/// Git/local/workspace/jsr/aliased specs are excluded — they
+/// route through code paths the scanner has no useful answer
+/// for, and forcing operators to special-case them in every
+/// scanner module would be friction without benefit. `spec`
+/// is the raw range string (e.g. `^4.17.21`, `latest`) — the
+/// scanner decides how (or whether) to apply version-range
+/// policy.
+fn scanner_packages_for(packages: &[String]) -> Vec<super::security_scanner::ScannerPackage> {
+    let mut out = Vec::with_capacity(packages.len());
+    for raw in packages {
+        let Ok(spec) = parse_pkg_spec(raw) else {
+            continue;
+        };
+        if spec.git_spec.is_some()
+            || spec.local_spec.is_some()
+            || spec.jsr_name.is_some()
+            || spec.alias.is_some()
+            || aube_util::pkg::is_workspace_spec(&spec.range)
+            || aube_util::pkg::is_catalog_spec(&spec.range)
+        {
+            continue;
+        }
+        out.push(super::security_scanner::ScannerPackage {
+            name: spec.name,
+            spec: spec.range,
+        });
+    }
+    out
+}
+
 /// Resolve the on-disk lockfile path that a normal `add` would write
 /// to in `project_dir`. Mirrors the `LockfileKind` -> filename mapping
 /// inside `aube_lockfile::write_lockfile_as` so the snapshot/restore
@@ -1925,6 +1967,17 @@ async fn run_filtered(
     // child manifests half-mutated.
     if !args.allow_build.is_empty() {
         apply_allow_build_flags(&root, &args.allow_build)?;
+    }
+
+    // Bun-style scanner runs once against the workspace root for
+    // the filtered path — every filter-matched importer shares
+    // the same `args.packages` list, so re-scanning per child
+    // would just duplicate the work without producing new
+    // verdicts.
+    let scanner = super::with_settings_ctx(&root, aube_settings::resolved::security_scanner);
+    if !scanner.is_empty() {
+        let scanner_packages = scanner_packages_for(&args.packages);
+        super::security_scanner::run_scanner(&scanner, &root, &scanner_packages).await?;
     }
 
     let mut snapshots = Vec::new();

@@ -87,6 +87,10 @@ pub const WARN_AUBE_PROGRESS_OVERFLOW: &str = "WARN_AUBE_PROGRESS_OVERFLOW";
 // ── workspace recursion ─────────────────────────────────────────────
 pub const WARN_AUBE_WORKSPACE_TOPO_CYCLE: &str = "WARN_AUBE_WORKSPACE_TOPO_CYCLE";
 
+// ── supply chain (add-time) ─────────────────────────────────────────
+pub const WARN_AUBE_SECURITY_SCANNER_FINDING: &str = "WARN_AUBE_SECURITY_SCANNER_FINDING";
+pub const WARN_AUBE_SECURITY_SCANNER_FAILED: &str = "WARN_AUBE_SECURITY_SCANNER_FAILED";
+
 /// Stable category labels that group codes in the generated docs.
 /// Public so the docs generator can iterate them deterministically.
 pub mod category {
@@ -103,6 +107,7 @@ pub mod category {
     pub const LOCKFILE: &str = "Lockfile";
     pub const PROGRESS_UI: &str = "Progress UI";
     pub const WORKSPACE_RECURSION: &str = "Workspace recursion";
+    pub const SUPPLY_CHAIN: &str = "Supply chain (add-time)";
 }
 
 /// Registry of every warning code with its category and description.
@@ -438,6 +443,19 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_WORKSPACE_TOPO_CYCLE,
         category: category::WORKSPACE_RECURSION,
         description: "Topological sort of `aube run -r` / `aube exec -r` selected packages found a dependency cycle. Cycle members run in workspace-listing order after the rest of the topo-sorted set.",
+        exit_code: None,
+    },
+    // Supply chain (add-time)
+    CodeMeta {
+        name: WARN_AUBE_SECURITY_SCANNER_FINDING,
+        category: category::SUPPLY_CHAIN,
+        description: "User-configured `securityScanner` returned a `warn`-level advisory. Install continues — only `fatal`-level advisories block.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_SECURITY_SCANNER_FAILED,
+        category: category::SUPPLY_CHAIN,
+        description: "User-configured `securityScanner` couldn't be spawned, exited non-zero, timed out, or emitted unparseable JSON. Fails open (install continues) by design — a broken scanner shouldn't block all adds; surface the failure to the operator and let them fix the scanner.",
         exit_code: None,
     },
 ];

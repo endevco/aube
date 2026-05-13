@@ -178,6 +178,69 @@ Inside jailed lifecycle scripts, common token env vars (`NPM_TOKEN`,
 scrubbed from the script environment unless explicitly granted via
 `jailBuildPermissions`.
 
+## Pluggable security scanner
+
+`securityScanner` points `aube add` at an executable that vets every
+package about to land in `package.json`. Modeled on
+[Bun's Security Scanner API](https://bun.sh/docs/install/security-scanner)
+— same `{packages} → {advisories}` contract with `fatal` / `warn`
+levels — but invoked as a subprocess rather than an in-process JS
+plugin (since aube is Rust, not a JS runtime). The same logical
+scanner module that ships to Bun users can run under aube via a thin
+wrapper.
+
+```yaml
+# aube-workspace.yaml
+securityScanner: ./scripts/scanner.mjs
+# or any executable on PATH:
+# securityScanner: socket-scanner
+```
+
+The scanner reads a JSON request on stdin:
+
+```json
+{
+  "version": 1,
+  "packages": [
+    {"name": "lodash", "spec": "^4.17.21"}
+  ]
+}
+```
+
+…and writes a JSON response on stdout:
+
+```json
+{
+  "advisories": [
+    {
+      "package": "evil-pkg",
+      "level": "fatal",
+      "description": "Known malicious package",
+      "url": "https://socket.dev/..."
+    }
+  ]
+}
+```
+
+A `fatal` advisory fails the add with `ERR_AUBE_SECURITY_SCANNER_FATAL`.
+A `warn` advisory surfaces via `WARN_AUBE_SECURITY_SCANNER_FINDING`
+and the install continues. Any other level (`info`, custom) is logged
+at debug level only.
+
+Failure modes — scanner missing, non-zero exit, timeout (30s),
+unparseable JSON — emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and let
+the install proceed. The reasoning: a broken scanner shouldn't be
+able to block every `aube add` in the project. Operators who'd
+rather fail closed can wrap their scanner in a script that converts
+internal failures into a `fatal` advisory.
+
+Skipped specs: git, local, workspace, JSR, aliased. Those route
+through code paths a public-data scanner has no useful answer for.
+
+Empty string (the default) disables the integration entirely.
+
+Settings: [`securityScanner`](/settings/#setting-securityscanner).
+
 ## Auditing installed dependencies
 
 ```sh

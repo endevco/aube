@@ -22,6 +22,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAge`](#setting-minimumreleaseage) | `int` | Delay installation of newly published versions (minutes). |
 | [`minimumReleaseAgeExclude`](#setting-minimumreleaseageexclude) | `list<string>` | Packages exempt from the minimumReleaseAge requirement. |
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
+| [`securityScanner`](#setting-securityscanner) | `string` | Path to a pluggable security scanner (Bun-style contract). |
 | [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
 | [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Fail install when a package's trust evidence weakens between releases. |
 | [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from `trustPolicy` checks. |
@@ -333,6 +334,69 @@ Fail the install when no version satisfies the minimumReleaseAge cutoff.
 By default the resolver falls back to the lowest satisfying version when
 every candidate is younger than `minimumReleaseAge`. With this set, the
 resolver fails the install instead.
+
+### `securityScanner` {#setting-securityscanner}
+
+Path to a pluggable security scanner (Bun-style contract).
+
+- Type: `string`
+- Default: `""`
+- Environment: `npm_config_security_scanner`, `NPM_CONFIG_SECURITY_SCANNER`, `AUBE_SECURITY_SCANNER`
+- .npmrc keys: `securityScanner`, `security-scanner`
+- Workspace YAML keys: `securityScanner`
+
+Aube spawns the configured executable at `aube add` time, pipes the
+list of packages-to-be-added in as JSON on stdin, and reads back a
+JSON list of advisories on stdout. A `fatal`-level advisory blocks
+the add; `warn`-level surfaces as `WARN_AUBE_SECURITY_SCANNER_FINDING`
+and the install continues.
+
+Modeled on [Bun's Security Scanner API](https://bun.sh/docs/install/security-scanner) —
+the contract is intentionally executable-agnostic (any binary on
+`PATH` or a path to a script) so the same scanner module that ships
+to Bun users via npm can run under aube with a thin wrapper. Where
+Bun's scanner is an in-process JS plugin (Bun has a JS runtime),
+aube's is a subprocess (aube is Rust) — same semantic shape, different
+ABI.
+
+**Stdin payload** (JSON):
+
+```json
+{
+  "version": 1,
+  "packages": [
+    {"name": "lodash", "spec": "^4.17.21"},
+    {"name": "evil-pkg", "spec": "latest"}
+  ]
+}
+```
+
+**Stdout response** (JSON):
+
+```json
+{
+  "advisories": [
+    {
+      "package": "evil-pkg",
+      "level": "fatal",
+      "description": "Known malicious package",
+      "url": "https://example.org/advisory"
+    }
+  ]
+}
+```
+
+Levels: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
+`warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues). Any
+other level is logged at debug level and otherwise ignored.
+
+Failure modes (scanner missing, non-zero exit, timeout &gt;30s,
+unparseable JSON) emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and fall
+through — a broken scanner shouldn't be able to block every add.
+Operators can wrap their scanner in a thin shell to fail loudly if
+they prefer.
+
+Empty string (the default) disables the integration entirely.
 
 ### `paranoid` {#setting-paranoid}
 

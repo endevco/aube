@@ -39,6 +39,7 @@ pub const ERR_AUBE_UNAUTHORIZED: &str = "ERR_AUBE_UNAUTHORIZED";
 pub const ERR_AUBE_OFFLINE: &str = "ERR_AUBE_OFFLINE";
 pub const ERR_AUBE_INVALID_PACKAGE_NAME: &str = "ERR_AUBE_INVALID_PACKAGE_NAME";
 pub const ERR_AUBE_REGISTRY_WRITE_REJECTED: &str = "ERR_AUBE_REGISTRY_WRITE_REJECTED";
+pub const ERR_AUBE_SECURITY_SCANNER_FATAL: &str = "ERR_AUBE_SECURITY_SCANNER_FATAL";
 
 // ── tarball / store ─────────────────────────────────────────────────
 pub const ERR_AUBE_TARBALL_INTEGRITY: &str = "ERR_AUBE_TARBALL_INTEGRITY";
@@ -257,6 +258,12 @@ pub const ALL: &[CodeMeta] = &[
         category: category::REGISTRY_NETWORK,
         description: "Registry rejected a publish/deprecate/owner write with a non-2xx response.",
         exit_code: Some(45),
+    },
+    CodeMeta {
+        name: ERR_AUBE_SECURITY_SCANNER_FATAL,
+        category: category::REGISTRY_NETWORK,
+        description: "User-configured `securityScanner` returned a `fatal`-level advisory against a package the user is trying to add. Bun-style pluggable scanner contract; the scanner itself decides what counts as fatal.",
+        exit_code: Some(48),
     },
     // Scripts / build
     CodeMeta {
