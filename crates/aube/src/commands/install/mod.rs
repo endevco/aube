@@ -3340,6 +3340,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.osv_transitive_check,
                 osv_settings.advisory_check,
                 osv_settings.advisory_check_on_install,
+                osv_settings.advisory_bloom_check,
                 osv_settings.advisory_check_every_install,
             )
             .await?;
@@ -4057,6 +4058,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.osv_transitive_check,
                 osv_settings.advisory_check,
                 osv_settings.advisory_check_on_install,
+                osv_settings.advisory_bloom_check,
                 osv_settings.advisory_check_every_install,
             )
             .await?;
@@ -5214,6 +5216,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 struct OsvRoutingSettings {
     advisory_check: aube_settings::resolved::AdvisoryCheck,
     advisory_check_on_install: aube_settings::resolved::AdvisoryCheckOnInstall,
+    advisory_bloom_check: aube_settings::resolved::AdvisoryBloomCheck,
     advisory_check_every_install: bool,
 }
 
@@ -5227,6 +5230,7 @@ fn resolve_osv_routing_settings(cwd: &std::path::Path) -> OsvRoutingSettings {
         OsvRoutingSettings {
             advisory_check,
             advisory_check_on_install: aube_settings::resolved::advisory_check_on_install(ctx),
+            advisory_bloom_check: aube_settings::resolved::advisory_bloom_check(ctx),
             advisory_check_every_install: aube_settings::resolved::advisory_check_every_install(
                 ctx,
             ),

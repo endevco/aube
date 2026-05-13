@@ -92,6 +92,7 @@ pub const WARN_AUBE_WORKSPACE_TOPO_CYCLE: &str = "WARN_AUBE_WORKSPACE_TOPO_CYCLE
 pub const WARN_AUBE_LOW_DOWNLOAD_PACKAGE: &str = "WARN_AUBE_LOW_DOWNLOAD_PACKAGE";
 pub const WARN_AUBE_ADVISORY_CHECK_FAILED: &str = "WARN_AUBE_ADVISORY_CHECK_FAILED";
 pub const WARN_AUBE_OSV_MIRROR_REFRESH_FAILED: &str = "WARN_AUBE_OSV_MIRROR_REFRESH_FAILED";
+pub const WARN_AUBE_OSV_BLOOM_REFRESH_FAILED: &str = "WARN_AUBE_OSV_BLOOM_REFRESH_FAILED";
 pub const WARN_AUBE_SECURITY_SCANNER_FINDING: &str = "WARN_AUBE_SECURITY_SCANNER_FINDING";
 
 /// Stable category labels that group codes in the generated docs.
@@ -471,6 +472,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
         category: category::SUPPLY_CHAIN,
         description: "OSV advisory mirror used by `advisoryCheckOnInstall` failed to refresh (download, ETag, or zip parse error). With `advisoryCheckOnInstall=on` install proceeds against the previously cached index if any; with `advisoryCheckOnInstall=required` install fails closed with `ERR_AUBE_ADVISORY_CHECK_FAILED`.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_OSV_BLOOM_REFRESH_FAILED,
+        category: category::SUPPLY_CHAIN,
+        description: "OSV bloom-filter prefilter used by `advisoryBloomCheck` failed to refresh (download or format-decode error). With `advisoryBloomCheck=on` install proceeds against the previously cached filter if any; with `advisoryBloomCheck=required` install fails closed with `ERR_AUBE_ADVISORY_CHECK_FAILED`.",
         exit_code: None,
     },
     CodeMeta {

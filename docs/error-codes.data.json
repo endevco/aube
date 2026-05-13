@@ -675,6 +675,12 @@
       "exit_code": null
     },
     {
+      "name": "WARN_AUBE_OSV_BLOOM_REFRESH_FAILED",
+      "category": "Supply chain (add-time)",
+      "description": "OSV bloom-filter prefilter used by `advisoryBloomCheck` failed to refresh (download or format-decode error). With `advisoryBloomCheck=on` install proceeds against the previously cached filter if any; with `advisoryBloomCheck=required` install fails closed with `ERR_AUBE_ADVISORY_CHECK_FAILED`.",
+      "exit_code": null
+    },
+    {
       "name": "WARN_AUBE_SECURITY_SCANNER_FINDING",
       "category": "Supply chain (add-time)",
       "description": "User-configured `securityScanner` returned a `warn`-level advisory. Install continues — only `fatal`-level advisories block.",

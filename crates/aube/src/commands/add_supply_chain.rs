@@ -27,14 +27,15 @@ use aube_codes::errors::{
 };
 use aube_codes::warnings::{
     WARN_AUBE_ADVISORY_CHECK_FAILED, WARN_AUBE_LOW_DOWNLOAD_PACKAGE,
-    WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
+    WARN_AUBE_OSV_BLOOM_REFRESH_FAILED, WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
 };
+use aube_registry::osv_bloom_client::OsvBloomClient;
 use aube_registry::osv_mirror::OsvMirror;
 use aube_registry::supply_chain::{
     DownloadCount, MaliciousAdvisory, advisory_url, fetch_malicious_advisories,
     fetch_malicious_advisories_versioned, fetch_weekly_downloads_with,
 };
-use aube_settings::resolved::{AdvisoryCheck, AdvisoryCheckOnInstall};
+use aube_settings::resolved::{AdvisoryBloomCheck, AdvisoryCheck, AdvisoryCheckOnInstall};
 use miette::miette;
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -132,6 +133,7 @@ pub async fn run_gates(
 /// (paranoid → `Required`). Both gates internally short-circuit
 /// on `Off`, but skip the call entirely so an empty graph
 /// doesn't get a useless `transitive_registry_pairs` walk.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_post_resolve_osv_routing(
     cwd: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
@@ -139,6 +141,7 @@ pub async fn run_post_resolve_osv_routing(
     osv_transitive_check: bool,
     advisory_check: AdvisoryCheck,
     advisory_check_on_install: AdvisoryCheckOnInstall,
+    advisory_bloom_check: AdvisoryBloomCheck,
     advisory_check_every_install: bool,
 ) -> miette::Result<()> {
     let needs_live_api = osv_transitive_check || advisory_check_every_install || fresh_resolution;
@@ -146,6 +149,14 @@ pub async fn run_post_resolve_osv_routing(
         if !matches!(advisory_check, AdvisoryCheck::Off) {
             run_transitive_osv_gate(cwd, graph, advisory_check).await?;
         }
+    } else if !matches!(advisory_bloom_check, AdvisoryBloomCheck::Off) {
+        // Bloom preferred over the local-mirror fallback when both
+        // are configured: it's <1 MB on the wire vs the mirror's
+        // 200 MB zip, and bloom hits escalate to the same live-API
+        // oracle the fresh-resolution path uses, so a confirmed
+        // hit produces the identical `ERR_AUBE_MALICIOUS_PACKAGE`
+        // either way.
+        run_transitive_osv_gate_via_bloom(cwd, graph, advisory_bloom_check).await?;
     } else if !matches!(advisory_check_on_install, AdvisoryCheckOnInstall::Off) {
         run_transitive_osv_gate_via_mirror(cwd, graph, advisory_check_on_install).await?;
     }
@@ -312,6 +323,132 @@ pub async fn run_transitive_osv_gate_via_mirror(
             "Set `advisoryCheckOnInstall = off` to bypass (not recommended).",
         ),
     ))
+}
+
+/// Bloom-prefilter transitive OSV `MAL-*` check for lockfile-driven
+/// installs. Probes each `(registry_name, semver-major)` against the
+/// upstream-published bloom (sub-MB, regenerated every 10 minutes
+/// by `endevco/osv-bloom`); only bloom hits escalate to the live
+/// OSV API for exact-version confirmation. Cheap enough on the wire
+/// that a future PR can flip the default to `on` once we've watched
+/// the FPR in real installs.
+///
+/// Policy mapping mirrors the live-API gate so settings can be
+/// composed sensibly:
+/// - `Off` → no-op.
+/// - `On` → bloom refresh / live-API failures degrade to
+///   `WARN_AUBE_OSV_BLOOM_REFRESH_FAILED` or
+///   `WARN_AUBE_ADVISORY_CHECK_FAILED` and install proceeds.
+/// - `Required` → refresh / live-API failures map to
+///   `ERR_AUBE_ADVISORY_CHECK_FAILED`. Confirmed hits map to
+///   `ERR_AUBE_MALICIOUS_PACKAGE` under both `On` and `Required`,
+///   identical to every other OSV gate.
+pub async fn run_transitive_osv_gate_via_bloom(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    policy: AdvisoryBloomCheck,
+) -> miette::Result<()> {
+    if matches!(policy, AdvisoryBloomCheck::Off) {
+        return Ok(());
+    }
+    let pkgs = transitive_registry_pairs(cwd, graph);
+    if pkgs.is_empty() {
+        return Ok(());
+    }
+    let Some(cache_dir) = aube_store::dirs::cache_dir() else {
+        tracing::warn!(
+            code = WARN_AUBE_OSV_BLOOM_REFRESH_FAILED,
+            "OSV bloom cache dir unavailable (HOME/XDG_CACHE_HOME unset); skipping bloom check"
+        );
+        if matches!(policy, AdvisoryBloomCheck::Required) {
+            return Err(miette!(
+                code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                "OSV bloom cache dir unavailable and `advisoryBloomCheck = required` is set"
+            ));
+        }
+        return Ok(());
+    };
+    let bloom_client = OsvBloomClient::open(&cache_dir);
+    let http = match OsvBloomClient::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                code = WARN_AUBE_OSV_BLOOM_REFRESH_FAILED,
+                "OSV bloom probe client init failed: {e}"
+            );
+            if matches!(policy, AdvisoryBloomCheck::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "OSV bloom probe client could not be initialised and `advisoryBloomCheck = required` is set: {e}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    if let Err(e) = bloom_client.refresh_if_stale_default(&http).await {
+        tracing::warn!(
+            code = WARN_AUBE_OSV_BLOOM_REFRESH_FAILED,
+            "OSV bloom refresh failed: {e}"
+        );
+        if matches!(policy, AdvisoryBloomCheck::Required) {
+            return Err(miette!(
+                code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                "OSV bloom refresh failed and `advisoryBloomCheck = required` is set: {e}"
+            ));
+        }
+        return Ok(());
+    }
+    let bloom_hits = match bloom_client.probe_lockfile(&pkgs) {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::warn!(
+                code = WARN_AUBE_OSV_BLOOM_REFRESH_FAILED,
+                "OSV bloom probe failed: {e}"
+            );
+            if matches!(policy, AdvisoryBloomCheck::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "OSV bloom probe failed and `advisoryBloomCheck = required` is set: {e}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    if bloom_hits.is_empty() {
+        return Ok(());
+    }
+    // Escalate to the live OSV API for exact-version confirmation.
+    // The bloom is a prefilter: a hit is a *probable* malicious
+    // package, not a confirmed one. False positives turn into one
+    // extra `/querybatch` request per FP, which the existing
+    // chunking in `fetch_malicious_advisories` already handles.
+    let live_policy = match policy {
+        AdvisoryBloomCheck::Required => AdvisoryCheck::Required,
+        _ => AdvisoryCheck::On,
+    };
+    let live_client = match aube_registry::supply_chain::build_probe_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                code = WARN_AUBE_ADVISORY_CHECK_FAILED,
+                "live-OSV probe client init failed during bloom escalation: {e}"
+            );
+            if matches!(policy, AdvisoryBloomCheck::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "live-OSV probe client could not be initialised and `advisoryBloomCheck = required` is set: {e}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    // Escalate through the versioned gate: the bloom probe returns
+    // the `(name, version)` pairs that *might* be malicious; the
+    // live API confirms or clears each pair against its exact
+    // pinned version. Name-only escalation here would collapse a
+    // version-specific compromise (e.g. `ansi-regex@6.2.1`) into a
+    // permanent name-level block of every release.
+    osv_gate_versioned(&live_client, &bloom_hits, live_policy).await
 }
 
 /// True when the resolved graph contains at least one

@@ -456,6 +456,18 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub advisory_check_on_install: Option<String>,
 
+    /// Bloom-filter prefilter for OSV `MAL-*` advisories on
+    /// lockfile-driven installs. Downloads a sub-MB filter from
+    /// `endevco/osv-bloom` (regenerated every 10 minutes) and
+    /// probes the resolved graph against it. Only bloom hits
+    /// escalate to the live OSV API for confirmation, so this
+    /// stays cheap enough to enable per-install. Values: `"on"`
+    /// (fail-open on refresh/probe error), `"required"`
+    /// (fail-closed on refresh/probe error), or `"off"` (default).
+    /// Coexists with `advisory_check` and `advisory_check_on_install`.
+    #[serde(default)]
+    pub advisory_bloom_check: Option<String>,
+
     /// Force the live-API OSV `MAL-*` check on every install
     /// (including frozen reinstalls). Default `false`. Set to
     /// `true` for hardened CI where every install must observe

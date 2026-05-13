@@ -381,6 +381,7 @@ dependencies = [
  "bytes",
  "flate2",
  "miette",
+ "node-semver",
  "proptest",
  "reqwest 0.12.28",
  "serde",

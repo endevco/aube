@@ -25,6 +25,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`securityScanner`](#setting-securityscanner) | `string` | Bun-compatible security scanner module. |
 | [`advisoryCheck`](#setting-advisorycheck) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check during `aube add` and other fresh-resolution installs. |
 | [`advisoryCheckOnInstall`](#setting-advisorycheckoninstall) | `"on" \| "required" \| "off"` | Local-mirror OSV `MAL-*` advisory check for plain reinstalls. |
+| [`advisoryBloomCheck`](#setting-advisorybloomcheck) | `"on" \| "required" \| "off"` | Bloom-filter prefilter for OSV `MAL-*` advisories on lockfile-driven installs. |
 | [`advisoryCheckEveryInstall`](#setting-advisorycheckeveryinstall) | `bool` | Force the live-API OSV `MAL-*` check on every install (including frozen reinstalls). |
 | [`lowDownloadThreshold`](#setting-lowdownloadthreshold) | `int` | Weekly-download floor for `aube add` (typosquat prompt). |
 | [`allowedUnpopularPackages`](#setting-allowedunpopularpackages) | `list<string>` | Glob patterns exempted from the `lowDownloadThreshold` gate. |
@@ -442,6 +443,46 @@ between refreshes won't catch an advisory published in the last
 - `required`: as `on`, plus fail closed on mirror refresh failures
   with `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use in hardened CI where a
   stale or unreachable mirror should block the install.
+
+### `advisoryBloomCheck` {#setting-advisorybloomcheck}
+
+Bloom-filter prefilter for OSV `MAL-*` advisories on lockfile-driven installs.
+
+- Type: `"on" | "required" | "off"`
+- Default: `"off"`
+- Environment: `npm_config_advisory_bloom_check`, `NPM_CONFIG_ADVISORY_BLOOM_CHECK`, `AUBE_ADVISORY_BLOOM_CHECK`
+- .npmrc keys: `advisoryBloomCheck`, `advisory-bloom-check`
+- Workspace YAML keys: `advisoryBloomCheck`
+
+Fast bloom-filter prefilter that aube downloads (~380 KB) from
+`endevco/osv-bloom`. The upstream filter contains one entry per
+`(npm package name, semver major bucket)` pair drawn from OSV's
+malicious-package archive and is regenerated every 10 minutes.
+
+When enabled, aube probes the resolved transitive graph against the
+filter and escalates *only* the bloom hits to the live OSV API for
+exact `(name, version)` confirmation. Bloom false-positive rate is
+~0.1%, so a typical lockfile of ~1000 packages either triggers no
+escalation at all or one extra live-API round trip per install — much
+cheaper than `advisoryCheckEveryInstall` which round-trips the full
+graph.
+
+Designed to coexist with `advisoryCheck` and `advisoryCheckOnInstall`
+rather than replace them. The bloom check fires on every install path
+the live-API gate didn't already cover for that install: if
+`advisoryCheckEveryInstall = true` or the install is a fresh-resolution
+path that already hits the live API, the bloom is skipped (the live API
+strictly dominates a bloom probe).
+
+- `off` (default): bloom prefilter disabled.
+- `on`: probe the lockfile against the bloom, escalate hits to the
+  live API, fail closed on a confirmed `MAL-*` hit with
+  `ERR_AUBE_MALICIOUS_PACKAGE`. Fail open (continue with
+  `WARN_AUBE_OSV_BLOOM_REFRESH_FAILED`) when the bloom can't be
+  refreshed.
+- `required`: as `on`, plus fail closed on bloom refresh failures
+  with `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use in hardened CI where a
+  stale or unreachable bloom should block the install.
 
 ### `advisoryCheckEveryInstall` {#setting-advisorycheckeveryinstall}
 
