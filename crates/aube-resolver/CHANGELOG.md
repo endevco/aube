@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0](https://github.com/endevco/aube/compare/aube-resolver-v1.12.0...aube-resolver-v1.13.0) - 2026-05-13
+
+### Fixed
+
+- *(install)* skip prerelease dist-tag latest in postinstall summary ([#668](https://github.com/endevco/aube/pull/668))
+
+### Other
+
+- *(resolver)* correct build.rs version_cap comment to match measured numbers ([#676](https://github.com/endevco/aube/pull/676))
+- *(resolver)* drop primer version_cap from 1000 to 100 ([#674](https://github.com/endevco/aube/pull/674))
+- *(resolver)* shrink primer by dropping deterministic tarball URLs and shasum ([#664](https://github.com/endevco/aube/pull/664))
+- refresh benchmarks for v1.12.0 ([#625](https://github.com/endevco/aube/pull/625))
+
 ## [1.12.0](https://github.com/endevco/aube/compare/aube-resolver-v1.11.0...aube-resolver-v1.12.0) - 2026-05-12
 
 ### Fixed

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0](https://github.com/endevco/aube/compare/v1.12.0...v1.13.0) - 2026-05-13
+
+### Added
+
+- *(install)* route OSV checks live-API vs local mirror by fresh-resolution ([#678](https://github.com/endevco/aube/pull/678))
+- *(add)* skip supply-chain gates on private packages + allowlist globs ([#673](https://github.com/endevco/aube/pull/673))
+- *(install)* bun-compatible security scanner ([#657](https://github.com/endevco/aube/pull/657))
+- *(add)* block malicious packages via OSV + prompt on low downloads ([#656](https://github.com/endevco/aube/pull/656))
+- *(install)* stop auto-seeding allowBuilds placeholders in package.json ([#662](https://github.com/endevco/aube/pull/662))
+
+### Fixed
+
+- *(add)* clarify --allow-build help and let it flip an existing deny ([#660](https://github.com/endevco/aube/pull/660))
+- *(linker)* anchor windows bin-shim relative path on the surface tree ([#659](https://github.com/endevco/aube/pull/659))
+- *(global)* unlink hash pointer via remove_dir fallback on Windows ([#658](https://github.com/endevco/aube/pull/658))
+
+### Other
+
+- *(install)* delete pre-resolver direct-dep packument prefetch ([#672](https://github.com/endevco/aube/pull/672))
+- refresh benchmarks for v1.12.0 ([#625](https://github.com/endevco/aube/pull/625))
+
 ## [1.12.0](https://github.com/endevco/aube/compare/v1.11.0...v1.12.0) - 2026-05-12
 
 ### Added

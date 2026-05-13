@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0](https://github.com/endevco/aube/compare/aube-codes-v1.12.0...aube-codes-v1.13.0) - 2026-05-13
+
+### Added
+
+- *(install)* route OSV checks live-API vs local mirror by fresh-resolution ([#678](https://github.com/endevco/aube/pull/678))
+- *(install)* bun-compatible security scanner ([#657](https://github.com/endevco/aube/pull/657))
+- *(add)* block malicious packages via OSV + prompt on low downloads ([#656](https://github.com/endevco/aube/pull/656))
+
+### Fixed
+
+- *(scripts)* reap orphaned grandchildren on Windows when a lifecycle script aborts ([#661](https://github.com/endevco/aube/pull/661))
+
+### Other
+
+- refresh benchmarks for v1.12.0 ([#625](https://github.com/endevco/aube/pull/625))
+
 ## [1.12.0](https://github.com/endevco/aube/compare/aube-codes-v1.11.0...aube-codes-v1.12.0) - 2026-05-12
 
 ### Added

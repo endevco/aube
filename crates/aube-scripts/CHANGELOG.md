@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0](https://github.com/endevco/aube/compare/aube-scripts-v1.12.0...aube-scripts-v1.13.0) - 2026-05-13
+
+### Added
+
+- *(install)* stop auto-seeding allowBuilds placeholders in package.json ([#662](https://github.com/endevco/aube/pull/662))
+
+### Fixed
+
+- *(scripts)* reap orphaned grandchildren on Windows when a lifecycle script aborts ([#661](https://github.com/endevco/aube/pull/661))
+
+### Other
+
+- refresh benchmarks for v1.12.0 ([#625](https://github.com/endevco/aube/pull/625))
+
 ## [1.12.0](https://github.com/endevco/aube/compare/aube-scripts-v1.11.0...aube-scripts-v1.12.0) - 2026-05-12
 
 ### Other

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0](https://github.com/endevco/aube/compare/aube-registry-v1.12.0...aube-registry-v1.13.0) - 2026-05-13
+
+### Added
+
+- *(install)* route OSV checks live-API vs local mirror by fresh-resolution ([#678](https://github.com/endevco/aube/pull/678))
+- *(add)* skip supply-chain gates on private packages + allowlist globs ([#673](https://github.com/endevco/aube/pull/673))
+- *(add)* block malicious packages via OSV + prompt on low downloads ([#656](https://github.com/endevco/aube/pull/656))
+
+### Other
+
+- *(registry)* single-flight concurrent packument fetches per name ([#651](https://github.com/endevco/aube/pull/651))
+- refresh benchmarks for v1.12.0 ([#625](https://github.com/endevco/aube/pull/625))
+
 ## [1.12.0](https://github.com/endevco/aube/compare/aube-registry-v1.11.0...aube-registry-v1.12.0) - 2026-05-12
 
 ### Added
