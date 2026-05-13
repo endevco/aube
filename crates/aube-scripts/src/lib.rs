@@ -17,6 +17,9 @@ pub mod policy;
 #[cfg(target_os = "linux")]
 mod linux_jail;
 
+#[cfg(windows)]
+mod windows_job;
+
 pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError, pattern_matches};
 
 use aube_manifest::PackageJson;
@@ -158,7 +161,7 @@ fn spawn_shell_with_settings(
     settings: &ScriptSettings,
 ) -> tokio::process::Command {
     #[cfg(unix)]
-    {
+    let mut cmd = {
         let mut cmd = tokio::process::Command::new(
             settings
                 .script_shell
@@ -166,11 +169,10 @@ fn spawn_shell_with_settings(
                 .unwrap_or_else(|| Path::new("sh")),
         );
         cmd.arg("-c").arg(script_cmd);
-        apply_script_settings_env(&mut cmd, settings);
         cmd
-    }
+    };
     #[cfg(windows)]
-    {
+    let mut cmd = {
         let mut cmd = tokio::process::Command::new(
             settings
                 .script_shell
@@ -186,9 +188,19 @@ fn spawn_shell_with_settings(
             // so cmd.exe sees the original script bytes.
             cmd.raw_arg("/d /s /c \"").raw_arg(script_cmd).raw_arg("\"");
         }
-        apply_script_settings_env(&mut cmd, settings);
         cmd
-    }
+    };
+    apply_script_settings_env(&mut cmd, settings);
+    // Aborting the `JoinSet` that drives the parallel lifecycle pass
+    // drops the spawned `Child`, which without `kill_on_drop` would
+    // leave the shell running detached (Discussion #654). On Windows
+    // that's only half the fix — `TerminateProcess` on `cmd.exe`
+    // doesn't reach grandchildren like `node-gyp` → `MSBuild` → `node`;
+    // [`run_command_killing_descendants`] also assigns the shell to a
+    // `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job object to reap the
+    // whole tree.
+    cmd.kill_on_drop(true);
+    cmd
 }
 
 #[cfg(target_os = "macos")]
@@ -263,6 +275,8 @@ fn spawn_jailed_shell(
         .arg("-c")
         .arg(script_cmd);
     apply_script_settings_env(&mut cmd, settings);
+    // Matches the unjailed path — see `spawn_shell_with_settings`.
+    cmd.kill_on_drop(true);
     cmd
 }
 
@@ -698,6 +712,68 @@ pub fn write_line_to_real_stderr(line: &str) {
     eprintln!("{line}");
 }
 
+/// Spawn `cmd`, wait for it, and on Windows attach the shell to a
+/// kill-on-job-close job object so an aborted lifecycle script reaps
+/// its full descendant tree instead of leaving orphans behind.
+///
+/// `kill_on_drop(true)` on the parent `Command` (set by
+/// [`spawn_shell_with_settings`]) covers `TerminateProcess` /
+/// `SIGKILL` on the direct shell. That alone is enough on Unix
+/// because most build tooling handles the parent dying — and the
+/// shell itself is the foreground process for the subscript pipeline.
+/// On Windows the shell's grandchildren (`node-gyp` → `MSBuild` →
+/// `node`) are *not* part of the shell's job by default, so killing
+/// the shell leaves them running detached. Discussion #654 is the
+/// in-the-wild bug: `aube add --global` failed, aube exited, and
+/// node/MSBuild kept writing to the console.
+///
+/// We mitigate by spawning, then assigning the child process handle
+/// to a job created with [`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`]. The
+/// `_job` binding's `Drop` (called when this future returns, panics,
+/// or is aborted) closes the last job handle, and the kernel kills
+/// every assigned process — including everything the shell has
+/// spawned by that point. There is a microscopic race between spawn
+/// and `AssignProcessToJobObject`, but the shell does not have time
+/// to spawn anything in that window; the `tokio::process::Child`
+/// returns control to us synchronously after `CreateProcessW`
+/// returns.
+///
+/// Job-object creation failures surface as [`Error::Spawn`] (carrying
+/// `ERR_AUBE_SCRIPT_SPAWN`) — without the job we cannot safely
+/// guarantee the no-orphans contract on Windows, so we fail closed.
+/// `AssignProcessToJobObject` failing is logged but does not abort
+/// the script: the only realistic cause is the shell having already
+/// exited, in which case there is nothing to clean up anyway.
+async fn run_command_killing_descendants(
+    mut cmd: tokio::process::Command,
+    script_name: &str,
+) -> Result<std::process::ExitStatus, Error> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+    #[cfg(windows)]
+    let _job = {
+        let job = windows_job::JobObject::new()
+            .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+        // raw_handle() returns None only if the child has already been
+        // reaped, which can't happen between spawn() and the very next
+        // line. Fall through silently if it does — kill_on_drop still
+        // handles the direct shell on tokio's side.
+        if let Some(handle) = child.raw_handle()
+            && let Err(err) = job.assign(handle)
+        {
+            tracing::debug!(
+                "windows: AssignProcessToJobObject failed for `{script_name}` shell: {err}"
+            );
+        }
+        job
+    };
+    child
+        .wait()
+        .await
+        .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))
+}
+
 /// Run a single npm-style script line through `sh -c` with the usual
 /// environment (`$PATH` extended with `node_modules/.bin`, `INIT_CWD`,
 /// `npm_lifecycle_event`, `npm_package_name`, `npm_package_version`).
@@ -800,10 +876,7 @@ pub async fn run_script(
     }
 
     tracing::debug!("lifecycle: {script_name} → {script_cmd}");
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
+    let status = run_command_killing_descendants(cmd, script_name).await?;
 
     if !status.success() {
         return Err(Error::NonZeroExit {
@@ -1159,5 +1232,104 @@ mod windows_quote_tests {
         assert_eq!(shell_quote_arg(r#"a"b"#), "\"a\\\"b\"");
         assert_eq!(shell_quote_arg(r#"a\"b"#), "\"a\\\\\\\"b\"");
         assert_eq!(shell_quote_arg(r#"a\\"b"#), "\"a\\\\\\\\\\\"b\"");
+    }
+}
+
+// Regression test for Discussion #654: aborting the lifecycle JoinSet
+// after a failed `aube add --global` left node-gyp / MSBuild / node
+// running orphaned on Windows because `TerminateProcess` on the cmd.exe
+// shell does not propagate to its descendants. The Job Object the
+// spawn helper now attaches the shell to must reap the entire process
+// tree when the parent future is dropped.
+#[cfg(all(test, windows))]
+mod windows_job_object_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    fn is_process_alive(pid: u32) -> bool {
+        // SAFETY: documented entry points; we close any handle we
+        // successfully obtain. `OpenProcess` returns NULL once the
+        // pid has been reaped or never existed.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            ok != 0 && code == STILL_ACTIVE as u32
+        }
+    }
+
+    async fn wait_until<F: Fn() -> bool>(check: F, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while !check() {
+            if start.elapsed() > timeout {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(75)).await;
+        }
+        true
+    }
+
+    #[tokio::test]
+    async fn aborting_script_kills_grandchildren() {
+        // Unique pid-file path per test run so concurrent test
+        // executions don't stomp each other. `tempfile` is not a
+        // dep of this crate; std::env::temp_dir + nanos is enough.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid_file = std::env::temp_dir().join(format!("aube-test-grandchild-{nanos}.pid"));
+        // Background a hidden powershell that writes its own PID
+        // and then sleeps long enough that the test will fail if it
+        // isn't reaped. `start /b` detaches the powershell from the
+        // cmd.exe shell — exactly the orphaned-grandchild shape that
+        // node-gyp / MSBuild produce in Discussion #654. The trailing
+        // `ping` keeps the shell itself alive for ~8s so the test
+        // can race a liveness check against the running grandchild
+        // before aborting the parent future.
+        let script = format!(
+            "start /b powershell -NoProfile -WindowStyle Hidden -Command \
+             \"$pid | Out-File -Encoding ascii -FilePath '{}'; Start-Sleep 60\" \
+             & ping -n 10 127.0.0.1 >nul",
+            pid_file.display()
+        );
+        let cmd = spawn_shell_with_settings(&script, &ScriptSettings::default());
+        let task = tokio::spawn(async move {
+            let _ = run_command_killing_descendants(cmd, "test-grandchild").await;
+        });
+
+        let appeared = wait_until(|| pid_file.exists(), Duration::from_secs(20)).await;
+        assert!(appeared, "grandchild never wrote pid file at {pid_file:?}");
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("read pid file")
+            .trim()
+            .parse()
+            .expect("parse pid");
+        assert!(
+            is_process_alive(pid),
+            "grandchild pid {pid} not alive immediately after writing pid file"
+        );
+
+        // Drop the future mid-`child.wait().await`. The `_job` local
+        // in `run_command_killing_descendants` drops with it, which
+        // closes the last handle and fires `KILL_ON_JOB_CLOSE` —
+        // killing both the shell *and* the detached powershell.
+        task.abort();
+        let _ = task.await;
+
+        let reaped = wait_until(|| !is_process_alive(pid), Duration::from_secs(10)).await;
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(
+            reaped,
+            "grandchild pid {pid} survived parent abort — job object did not kill the tree"
+        );
     }
 }
