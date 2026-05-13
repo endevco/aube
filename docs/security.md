@@ -259,14 +259,16 @@ both run unchanged.
   with `"exports": "./src/index.ts"`).
 - Bun-runtime APIs outside the shim (`Bun.spawn`, `Bun.password`,
   `Bun.serve`) will throw; the bridge surfaces this as
-  `WARN_AUBE_SECURITY_SCANNER_FAILED` and the install fails open.
+  `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install **fails closed**.
 
 Failure modes — `node` missing, scanner module unresolvable,
-non-zero exit, timeout (30s), unparseable JSON — emit
-`WARN_AUBE_SECURITY_SCANNER_FAILED` and let the install proceed. A
-broken scanner shouldn't be able to block every install in the
-project. Operators who'd rather fail closed can wrap their scanner
-in a script that converts internal failures into a `fatal` advisory.
+non-zero exit, timeout (30s), unparseable JSON — all **fail closed**
+with `ERR_AUBE_SECURITY_SCANNER_FAILED`. A configured scanner that
+can't run is treated as a refusal; silent bypass would defeat the
+point of opting in. Operators bootstrapping a project (scanner npm
+package not yet installed) or recovering from a broken scanner can
+set `securityScanner: ""` in workspace yaml to disable the
+integration until the scanner is back.
 
 Skipped specs: git, local, workspace, JSR, aliased. Those route
 through code paths a public-data scanner has no useful answer for.

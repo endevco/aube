@@ -434,11 +434,15 @@ accepts `{ advisories: [...] }` for friendliness.
 Any other level is logged at debug level and otherwise ignored.
 
 **Failure modes** (`node` missing, scanner module unresolvable,
-non-zero exit, timeout &gt;30s, unparseable JSON output) emit
-`WARN_AUBE_SECURITY_SCANNER_FAILED` and fall through — a broken
-scanner shouldn't be able to block every install. Operators who
-want fail-closed can wrap their scanner in a script that converts
-internal failures into a `fatal` advisory.
+non-zero exit, timeout &gt;30s, unparseable JSON output) **fail closed**
+with `ERR_AUBE_SECURITY_SCANNER_FAILED`. A configured scanner that
+can't run is treated as a refusal — silent bypass would undermine
+the intent of opting into the scanner.
+
+Operators bootstrapping a project (scanner npm package not yet in
+`node_modules`) or recovering from a broken scanner can set
+`securityScanner = ""` to disable the integration until the
+scanner is back.
 
 Empty string (the default) disables the integration entirely.
 

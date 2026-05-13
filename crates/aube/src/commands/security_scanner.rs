@@ -55,7 +55,10 @@
 //!   available — calls like `Bun.spawn`, `Bun.password`, or
 //!   `Bun.serve` will throw at runtime and the scanner subprocess
 //!   exits non-zero. The bridge surfaces this as
-//!   `WARN_AUBE_SECURITY_SCANNER_FAILED`; install fails open.
+//!   `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install fails
+//!   closed; a configured scanner that can't run is treated as a
+//!   refusal. Set `securityScanner = ""` to disable the integration
+//!   when bootstrapping or recovering from a broken scanner.
 //!
 //! ## Fired from
 //!
@@ -65,8 +68,8 @@
 //!   [`direct_deps_for_scanner`]), via the same [`run_scanner`]
 //!   entry point.
 
-use aube_codes::errors::ERR_AUBE_SECURITY_SCANNER_FATAL;
-use aube_codes::warnings::{WARN_AUBE_SECURITY_SCANNER_FAILED, WARN_AUBE_SECURITY_SCANNER_FINDING};
+use aube_codes::errors::{ERR_AUBE_SECURITY_SCANNER_FAILED, ERR_AUBE_SECURITY_SCANNER_FATAL};
+use aube_codes::warnings::WARN_AUBE_SECURITY_SCANNER_FINDING;
 use miette::miette;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -187,16 +190,20 @@ pub async fn run_scanner(
     let advisories = match invoke(scanner_spec, cwd, packages).await {
         Ok(a) => a,
         Err(e) => {
-            // Fail open: a misconfigured scanner (node not
-            // installed, module not in node_modules yet, scanner
-            // threw) shouldn't break every install in the
-            // project. Surface a warning and let the install
-            // continue using whatever other gates are configured.
-            tracing::warn!(
-                code = WARN_AUBE_SECURITY_SCANNER_FAILED,
-                "securityScanner `{scanner_spec}` failed: {e}"
-            );
-            return Ok(());
+            // Fail closed: a configured `securityScanner` that
+            // can't run (node missing, module unresolvable,
+            // scanner panicked, timeout, garbage output) is
+            // treated as a refusal rather than a free pass.
+            // Silently bypassing on failure would undermine the
+            // exact intent of opting into the scanner. Operators
+            // who need to bootstrap a project (scanner package
+            // not yet installed) or recover from a broken scanner
+            // can unset `securityScanner` and run the install,
+            // then re-set it once the scanner is back.
+            return Err(miette!(
+                code = ERR_AUBE_SECURITY_SCANNER_FAILED,
+                "securityScanner `{scanner_spec}` could not run: {e}\n\nSet `securityScanner = \"\"` to disable the integration temporarily."
+            ));
         }
     };
     apply_advisories(scanner_spec, &advisories)
@@ -564,11 +571,15 @@ mod tests {
         );
     }
 
-    /// Missing scanner module must surface as
-    /// `WARN_AUBE_SECURITY_SCANNER_FAILED` and let the install
-    /// proceed — a broken scanner shouldn't gate every install.
+    /// Fail-closed contract: a missing scanner module surfaces as
+    /// `ERR_AUBE_SECURITY_SCANNER_FAILED` and blocks the install.
+    /// A configured scanner that can't run is treated as a refusal,
+    /// not a free pass — silent bypass would defeat the point of
+    /// opting into the scanner. The error message points at the
+    /// `securityScanner = ""` escape hatch so operators bootstrapping
+    /// a project know how to unblock themselves.
     #[tokio::test]
-    async fn missing_scanner_fails_open() {
+    async fn missing_scanner_fails_closed() {
         if !node_available() {
             eprintln!("skipping: `node` not on PATH");
             return;
@@ -577,13 +588,30 @@ mod tests {
             name: "lodash".to_string(),
             version: "^4".to_string(),
         }];
-        let result = run_scanner(
+        let err = run_scanner(
             "/definitely/not/a/real/path/to/a/scanner.mjs",
             std::path::Path::new("."),
             &pkgs,
         )
-        .await;
-        assert!(result.is_ok(), "fail-open contract broken: {result:?}");
+        .await
+        .unwrap_err();
+        // `Debug` for `miette::Report` line-wraps the message,
+        // breaking simple substring assertions on multi-word phrases.
+        // Match against the structured code instead, and probe the
+        // wrapped body via a handful of unique tokens.
+        let chain = format!("{err:?}");
+        assert!(
+            chain.contains("ERR_AUBE_SECURITY_SCANNER_FAILED"),
+            "wrong code: {chain}"
+        );
+        assert!(
+            chain.contains("scanner.mjs"),
+            "missing scanner spec in error: {chain}"
+        );
+        assert!(
+            chain.contains("disable"),
+            "missing bootstrap hint: {chain}"
+        );
     }
 
     /// `{ advisories: [...] }` response shape is accepted in

@@ -40,6 +40,7 @@ pub const ERR_AUBE_OFFLINE: &str = "ERR_AUBE_OFFLINE";
 pub const ERR_AUBE_INVALID_PACKAGE_NAME: &str = "ERR_AUBE_INVALID_PACKAGE_NAME";
 pub const ERR_AUBE_REGISTRY_WRITE_REJECTED: &str = "ERR_AUBE_REGISTRY_WRITE_REJECTED";
 pub const ERR_AUBE_SECURITY_SCANNER_FATAL: &str = "ERR_AUBE_SECURITY_SCANNER_FATAL";
+pub const ERR_AUBE_SECURITY_SCANNER_FAILED: &str = "ERR_AUBE_SECURITY_SCANNER_FAILED";
 
 // ── tarball / store ─────────────────────────────────────────────────
 pub const ERR_AUBE_TARBALL_INTEGRITY: &str = "ERR_AUBE_TARBALL_INTEGRITY";
@@ -264,6 +265,12 @@ pub const ALL: &[CodeMeta] = &[
         category: category::REGISTRY_NETWORK,
         description: "User-configured `securityScanner` returned a `fatal`-level advisory against a package the user is trying to add. Bun-style pluggable scanner contract; the scanner itself decides what counts as fatal.",
         exit_code: Some(48),
+    },
+    CodeMeta {
+        name: ERR_AUBE_SECURITY_SCANNER_FAILED,
+        category: category::REGISTRY_NETWORK,
+        description: "User-configured `securityScanner` couldn't be spawned, exited non-zero, timed out, or emitted unparseable JSON. Fail-closed by design: a configured scanner that can't run is treated as a refusal, not a free pass. Set `securityScanner = \"\"` to disable the integration when bootstrapping or recovering from a broken scanner.",
+        exit_code: None,
     },
     // Scripts / build
     CodeMeta {
