@@ -163,6 +163,12 @@
       "exit_code": 47
     },
     {
+      "name": "ERR_AUBE_ADVISORY_CHECK_FAILED",
+      "category": "Registry / network",
+      "description": "`aube add` couldn't reach the OSV advisory API and `advisoryCheck = required` is set. Distinct from `ERR_AUBE_MALICIOUS_PACKAGE` so CI tooling can tell a network outage from a confirmed malicious advisory.",
+      "exit_code": 48
+    },
+    {
       "name": "ERR_AUBE_SCRIPT_NON_ZERO_EXIT",
       "category": "Scripts / build",
       "description": "A lifecycle script (`preinstall` / `install` / `postinstall` / a `package.json` script) exited non-zero.",

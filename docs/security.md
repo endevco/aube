@@ -156,32 +156,27 @@ Two signals, with different response levels:
 **Known-malicious advisories.** aube batch-queries [OSV](https://osv.dev) for
 `MAL-*` advisories on every name about to be added. A hit fails the install
 with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to the advisory. Confirmed
-malicious isn't a judgement call — this is a hard block, not a prompt.
-Responses are cached for 15 minutes so repeated `aube add` calls don't
-hammer the API.
+malicious isn't a judgement call — this is a hard block, not a prompt. If
+the OSV API can't be reached, the default (`advisoryCheck: on`) warns and
+continues; `advisoryCheck: required` upgrades that to a fail-closed
+`ERR_AUBE_ADVISORY_CHECK_FAILED` so CI can tell a network outage from a
+confirmed-malicious advisory.
 
 **Low download count.** A typosquat or impersonation has approximately zero
 installs on day one regardless of how cleverly it's named, so a
 download-count floor catches the long tail of squats that haven't been
-reported yet. Below the threshold, aube prompts for confirmation and shows
-the closest popular package as a "did you mean" hint:
+reported yet. Below the threshold, aube prompts for confirmation:
 
 ```
 aube add supabase-javascript
 
   ⚠ supabase-javascript looks suspicious:
     • 3 downloads last week (threshold: 1000)
-    • published 2 days ago
-    • maintainer "xkj4" has 1 other package
-    • did you mean: supabase (4.2M/week)?
-
-  Continue? [y/N]
+  Continue adding supabase-javascript? [y/N]
 ```
 
-The "did you mean" line is informational — the gate is the download count,
-not the name distance, so the arms race over naming patterns doesn't matter.
 In non-interactive contexts the prompt becomes a hard refusal with
-`WARN_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is passed.
+`ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is passed.
 Scoped private packages and workspace deps are skipped (no public registry
 signal → no false positive).
 

@@ -103,6 +103,14 @@ struct NpmDownloadsResponse {
     error: Option<String>,
 }
 
+/// Build the shared probe `reqwest::Client`. Centralized so the OSV
+/// and downloads probes use identical timeout / TLS settings and so
+/// `aube add a b c` can reuse a single client + connection pool
+/// across all per-package downloads requests.
+pub fn build_probe_client() -> Result<reqwest::Client, SupplyChainError> {
+    Ok(reqwest::Client::builder().timeout(PROBE_TIMEOUT).build()?)
+}
+
 /// Probe OSV for `MAL-*` advisories on every candidate. Versions are
 /// intentionally omitted from the query: typosquats and impersonation
 /// packages are usually malicious in every published version, and we
@@ -118,7 +126,7 @@ pub async fn fetch_malicious_advisories(
     if names.is_empty() {
         return Ok(Vec::new());
     }
-    let client = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build()?;
+    let client = build_probe_client()?;
     let body = OsvBatchRequest {
         queries: names
             .iter()
@@ -168,11 +176,14 @@ pub enum DownloadCount {
     Unknown,
 }
 
-/// Look up `name`'s weekly download count. Returns
-/// [`DownloadCount::Unknown`] when the API has no record (e.g. scoped
-/// packages, which the downloads endpoint doesn't index).
-pub async fn fetch_weekly_downloads(name: &str) -> Result<DownloadCount, SupplyChainError> {
-    let client = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build()?;
+/// Look up `name`'s weekly download count using a caller-supplied
+/// shared client. Preferred over [`fetch_weekly_downloads`] when
+/// probing many packages at once — keeps the connection pool warm
+/// across requests.
+pub async fn fetch_weekly_downloads_with(
+    client: &reqwest::Client,
+    name: &str,
+) -> Result<DownloadCount, SupplyChainError> {
     // Scoped names contain `/` which must be percent-encoded for the
     // path segment. We still fire the request — npm returns a 404
     // with a JSON `error` body that the parse step recognizes.
@@ -189,6 +200,14 @@ pub async fn fetch_weekly_downloads(name: &str) -> Result<DownloadCount, SupplyC
     let bytes = resp.bytes().await?;
     let parsed: NpmDownloadsResponse = serde_json::from_slice(&bytes)?;
     Ok(parse_downloads(&parsed))
+}
+
+/// Single-shot convenience wrapper that builds a fresh probe client
+/// and forwards to [`fetch_weekly_downloads_with`]. Kept for callers
+/// that only need one lookup.
+pub async fn fetch_weekly_downloads(name: &str) -> Result<DownloadCount, SupplyChainError> {
+    let client = build_probe_client()?;
+    fetch_weekly_downloads_with(&client, name).await
 }
 
 fn parse_downloads(resp: &NpmDownloadsResponse) -> DownloadCount {

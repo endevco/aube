@@ -17,10 +17,13 @@
 //! packages — git/local/workspace/jsr/aliased specs all skip both
 //! checks because the public-registry signal doesn't apply.
 
-use aube_codes::errors::{ERR_AUBE_LOW_DOWNLOAD_PACKAGE, ERR_AUBE_MALICIOUS_PACKAGE};
+use aube_codes::errors::{
+    ERR_AUBE_ADVISORY_CHECK_FAILED, ERR_AUBE_LOW_DOWNLOAD_PACKAGE, ERR_AUBE_MALICIOUS_PACKAGE,
+};
 use aube_codes::warnings::{WARN_AUBE_ADVISORY_CHECK_FAILED, WARN_AUBE_LOW_DOWNLOAD_PACKAGE};
 use aube_registry::supply_chain::{
-    DownloadCount, advisory_url, fetch_malicious_advisories, fetch_weekly_downloads,
+    DownloadCount, advisory_url, build_probe_client, fetch_malicious_advisories,
+    fetch_weekly_downloads_with,
 };
 use aube_settings::resolved::AdvisoryCheck;
 use miette::miette;
@@ -84,7 +87,7 @@ async fn osv_gate(names: &[String], policy: AdvisoryCheck) -> miette::Result<()>
             );
             match policy {
                 AdvisoryCheck::Required => Err(miette!(
-                    code = ERR_AUBE_MALICIOUS_PACKAGE,
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
                     "OSV advisory check failed and `advisoryCheck = required` is set: {e}"
                 )),
                 AdvisoryCheck::On | AdvisoryCheck::Off => Ok(()),
@@ -95,14 +98,53 @@ async fn osv_gate(names: &[String], policy: AdvisoryCheck) -> miette::Result<()>
 
 async fn downloads_gate(names: &[String], threshold: u64) -> miette::Result<()> {
     let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    // Single shared client across all probes — repeated `aube add a b c`
+    // would otherwise build a fresh `reqwest::Client` and pay the
+    // round-trip serially per package. Probe failures are
+    // best-effort (no signal → skip), so a builder error degrades to
+    // skipping the whole gate rather than aborting the install.
+    let Ok(client) = build_probe_client() else {
+        tracing::debug!("downloads probe client init failed; skipping low-download gate");
+        return Ok(());
+    };
+    let mut set: tokio::task::JoinSet<(String, Result<DownloadCount, _>)> =
+        tokio::task::JoinSet::new();
     for name in names {
-        let count = match fetch_weekly_downloads(name).await {
+        let client = client.clone();
+        let name = name.clone();
+        set.spawn(async move {
+            let result = fetch_weekly_downloads_with(&client, &name).await;
+            (name, result)
+        });
+    }
+    // Preserve input order so the warning / prompt sequence is
+    // deterministic regardless of which probe returns first.
+    let mut by_name: std::collections::HashMap<String, _> =
+        std::collections::HashMap::with_capacity(names.len());
+    while let Some(joined) = set.join_next().await {
+        // `join_next` only errors on panic / cancellation — those are
+        // bugs in this call site rather than expected probe failures,
+        // so propagate via tracing and skip the slot. The OSV gate
+        // above is still the harder line.
+        let (name, result) = match joined {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::debug!("downloads probe task join failed: {e}");
+                continue;
+            }
+        };
+        by_name.insert(name, result);
+    }
+    for name in names {
+        let Some(result) = by_name.remove(name) else {
+            continue;
+        };
+        let count = match result {
             Ok(c) => c,
             Err(e) => {
                 // Treat a downloads-API fetch error as "no signal" —
                 // we'd rather let a sketchy install through than break
-                // every add when api.npmjs.org has a hiccup. The OSV
-                // gate above is the harder line.
+                // every add when api.npmjs.org has a hiccup.
                 tracing::debug!("downloads probe failed for {name}: {e}");
                 continue;
             }
