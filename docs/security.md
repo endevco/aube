@@ -147,19 +147,16 @@ Settings: [`minimumReleaseAge`](/settings/#setting-minimumreleaseage),
 
 ## Typosquat and impersonation protection
 
-`aube add` is where these checks run. Plain `aube install` skips them on the
-assumption that anything already in the lockfile was vetted at add time;
-network round-trips on every install would add latency without new signal.
+`aube add` checks every package you name on the command line before adding
+it to your manifest. Transitive deps and packages already in the lockfile
+aren't re-checked.
 
 Two signals, with different response levels:
 
 **Known-malicious advisories.** aube batch-queries [OSV](https://osv.dev) for
-`MAL-*` advisories on every name on the `aube add` command line, then runs
-the same batch once more after resolution against the full transitive
-closure. A hit at either step fails the install with
-`ERR_AUBE_MALICIOUS_PACKAGE` and a link to the advisory — so a malicious
-dep-of-dep is caught even when the package you typed is itself clean. If the
-OSV API can't be reached, the default (`advisoryCheck: on`) warns and
+`MAL-*` advisories on every name about to be added. A hit fails the install
+with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to the advisory. If
+the OSV API can't be reached, the default (`advisoryCheck: on`) warns and
 continues; `advisoryCheck: required` upgrades that to a fail-closed
 `ERR_AUBE_ADVISORY_CHECK_FAILED` so CI can tell a network outage from a
 confirmed-malicious advisory.
@@ -167,9 +164,7 @@ confirmed-malicious advisory.
 **Low download count.** A typosquat or impersonation has approximately zero
 installs on day one regardless of how cleverly it's named, so a
 download-count floor catches the long tail of squats that haven't been
-reported yet. Only names on the command line are gated here — a legitimate
-library can be low-traffic on its own merits, so transitive deps are exempt.
-Below the threshold, aube prompts for confirmation:
+reported yet. Below the threshold, aube prompts for confirmation:
 
 ```
 aube add supabase-javascript

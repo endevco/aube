@@ -879,14 +879,11 @@ pub async fn run(
     // leave the mutated `package.json` on disk, breaking `--no-save`.
     // `with_mode()` already skips root lifecycle hooks (chained-call
     // contract) so `aube add` doesn't re-run the root postinstall /
-    // prepare on every invocation. `osv_transitive_check = true`
-    // routes the resolved transitive set through OSV's `MAL-*` batch
-    // query post-resolve, so a malicious dep-of-dep fails the install
-    // with the same `ERR_AUBE_MALICIOUS_PACKAGE` as the CLI-name gate.
-    let mut install_opts =
-        install::InstallOptions::with_mode(super::chained_frozen_mode(install::FrozenMode::Fix));
-    install_opts.osv_transitive_check = true;
-    let pipeline_result: miette::Result<()> = install::run(install_opts).await;
+    // prepare on every invocation.
+    let pipeline_result: miette::Result<()> = install::run(install::InstallOptions::with_mode(
+        super::chained_frozen_mode(install::FrozenMode::Fix),
+    ))
+    .await;
 
     // 5. Under `--no-save`, restore the snapshotted `package.json` and
     // lockfile so neither shows up in `git status`. The user's

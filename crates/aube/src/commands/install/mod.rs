@@ -334,9 +334,6 @@ impl InstallArgs {
             // chained-call constructor (`with_mode`) is where commands
             // with package args opt into skipping them.
             skip_root_lifecycle: false,
-            // Argumentless `aube install` doesn't OSV-check transitives;
-            // only `aube add` flips this on for its chained install.
-            osv_transitive_check: false,
         }
     }
 }
@@ -448,15 +445,6 @@ pub struct InstallOptions {
     /// git-prepare install — that one's "root" IS the git dep itself and
     /// running its `prepare` is the whole point.
     pub skip_root_lifecycle: bool,
-    /// Run an OSV `MAL-*` advisory check against the full resolved
-    /// transitive set after resolve, before fetch. Set by `aube add`
-    /// so a new direct dep can't pull in a known-malicious transitive
-    /// without the same hard block the CLI-name gate applies. Off
-    /// everywhere else — `aube install` would re-query the same
-    /// closure on every reinstall, and the pluggable
-    /// `securityScanner` is the right place for users who want
-    /// install-time scanning regardless of who's adding what.
-    pub osv_transitive_check: bool,
 }
 
 #[derive(Default)]
@@ -570,9 +558,6 @@ impl InstallOptions {
             // the only construction path that runs them and it goes
             // through `InstallArgs::into_options`, not here.
             skip_root_lifecycle: true,
-            // Off by default. Only `aube add` flips this on after
-            // construction — see `commands::add::run`.
-            osv_transitive_check: false,
         }
     }
 }
@@ -4004,25 +3989,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // chain back to the importer.
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
-
-            // Transitive OSV `MAL-*` gate. Only `aube add` opts in
-            // (via `osv_transitive_check`); other install paths
-            // would re-query the same closure on every reinstall
-            // for no incremental signal. Fires before the
-            // pluggable scanner because a confirmed-malicious
-            // advisory is a stronger signal than a scanner finding
-            // and the error message is more actionable.
-            if opts.osv_transitive_check {
-                let advisory_check = super::with_settings_ctx(&cwd, |ctx| {
-                    if aube_settings::resolved::paranoid(ctx) {
-                        aube_settings::resolved::AdvisoryCheck::Required
-                    } else {
-                        aube_settings::resolved::advisory_check(ctx)
-                    }
-                });
-                super::add_supply_chain::run_transitive_osv_gate(&cwd, &graph, advisory_check)
-                    .await?;
-            }
 
             // Bun-compatible security scanner runs against the
             // *resolved* graph — full transitive set with concrete
