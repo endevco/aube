@@ -39,6 +39,8 @@ pub const ERR_AUBE_UNAUTHORIZED: &str = "ERR_AUBE_UNAUTHORIZED";
 pub const ERR_AUBE_OFFLINE: &str = "ERR_AUBE_OFFLINE";
 pub const ERR_AUBE_INVALID_PACKAGE_NAME: &str = "ERR_AUBE_INVALID_PACKAGE_NAME";
 pub const ERR_AUBE_REGISTRY_WRITE_REJECTED: &str = "ERR_AUBE_REGISTRY_WRITE_REJECTED";
+pub const ERR_AUBE_MALICIOUS_PACKAGE: &str = "ERR_AUBE_MALICIOUS_PACKAGE";
+pub const ERR_AUBE_LOW_DOWNLOAD_PACKAGE: &str = "ERR_AUBE_LOW_DOWNLOAD_PACKAGE";
 
 // ── tarball / store ─────────────────────────────────────────────────
 pub const ERR_AUBE_TARBALL_INTEGRITY: &str = "ERR_AUBE_TARBALL_INTEGRITY";
@@ -257,6 +259,18 @@ pub const ALL: &[CodeMeta] = &[
         category: category::REGISTRY_NETWORK,
         description: "Registry rejected a publish/deprecate/owner write with a non-2xx response.",
         exit_code: Some(45),
+    },
+    CodeMeta {
+        name: ERR_AUBE_MALICIOUS_PACKAGE,
+        category: category::REGISTRY_NETWORK,
+        description: "`aube add` refused a package because OSV reports it as malicious (`MAL-*` advisory). Hard block — confirmed-malicious advisories aren't a judgement call.",
+        exit_code: Some(46),
+    },
+    CodeMeta {
+        name: ERR_AUBE_LOW_DOWNLOAD_PACKAGE,
+        category: category::REGISTRY_NETWORK,
+        description: "`aube add` refused a package whose weekly downloads fall below `lowDownloadThreshold` in a non-interactive context (or when stdin is not a TTY). Pass `--allow-low-downloads` to bypass.",
+        exit_code: Some(47),
     },
     // Scripts / build
     CodeMeta {

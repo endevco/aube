@@ -264,6 +264,57 @@ sources.workspaceYaml = ["minimumReleaseAgeStrict"]
 precedence = ["workspaceYaml", "npmrc"]
 examples = []
 
+[advisoryCheck]
+description = "OSV `MAL-*` advisory check on `aube add`."
+type = '"on" | "required" | "off"'
+default = "\"on\""
+docs = """
+`aube add` batch-queries [OSV](https://osv.dev) for malicious-package
+advisories (`MAL-*`) on every package about to land in `package.json`.
+A hit fails the install with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to
+the advisory. Transitive deps and packages already in the lockfile are
+not re-checked — the gate is the moment of human intent.
+
+- `on` (default): fail closed on a malicious-package hit; fail open
+  (continue with a `WARN_AUBE_ADVISORY_CHECK_FAILED`) when the API can't
+  be reached, so offline workflows aren't blocked.
+- `required`: same fail-closed behavior on hits, plus fail closed on
+  fetch errors. Use in hardened CI. Included in the `paranoid` bundle.
+- `off`: skip the check entirely.
+"""
+sources.cli = []
+sources.env = ["npm_config_advisory_check", "NPM_CONFIG_ADVISORY_CHECK", "AUBE_ADVISORY_CHECK"]
+sources.npmrc = ["advisoryCheck"]
+sources.workspaceYaml = ["advisoryCheck"]
+precedence = ["workspaceYaml", "npmrc"]
+examples = []
+
+[lowDownloadThreshold]
+description = "Weekly-download floor for `aube add` (typosquat prompt)."
+type = "int"
+default = "1000"
+docs = """
+`aube add` looks up each candidate's weekly download count via
+`api.npmjs.org/downloads/point/last-week/<pkg>` and prompts for
+confirmation when the count falls below this threshold — the floor
+catches typosquats and impersonations, which have near-zero downloads
+on day one regardless of how cleverly they're named.
+
+Interactive sessions get a `[y/N]` prompt with package age and
+maintainer context. Non-interactive contexts fail with
+`ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is
+passed. Scoped private packages and workspace deps are skipped (no
+public-registry signal → no false positive).
+
+Set to `0` to disable.
+"""
+sources.cli = []
+sources.env = ["npm_config_low_download_threshold", "NPM_CONFIG_LOW_DOWNLOAD_THRESHOLD", "AUBE_LOW_DOWNLOAD_THRESHOLD"]
+sources.npmrc = ["lowDownloadThreshold"]
+sources.workspaceYaml = ["lowDownloadThreshold"]
+precedence = ["workspaceYaml", "npmrc"]
+examples = []
+
 [paranoid]
 description = "Turn on the strict-security setting bundle in one switch."
 type = "bool"
@@ -277,6 +328,8 @@ bundle on, regardless of how each is configured individually:
 - `minimumReleaseAgeStrict = true` (makes the age gate hard, not advisory)
 - `strictStoreIntegrity = true` (fail on missing `dist.integrity`)
 - `strictDepBuilds = true` (fail when deps have unreviewed build scripts)
+- `advisoryCheck = required` (fail closed on OSV fetch errors instead of
+  falling through with a warning)
 
 Set to `false` (the default) to honor the underlying settings as-is.
 """

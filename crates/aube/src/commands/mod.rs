@@ -1,4 +1,5 @@
 pub mod add;
+pub mod add_supply_chain;
 pub mod approve_builds;
 pub mod audit;
 pub mod bin;

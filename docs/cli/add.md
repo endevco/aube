@@ -46,6 +46,12 @@ Both bare `--allow-build` and the explicit empty form `--allow-build=` are rejec
 
 `require_equals = true` is load-bearing: without it, `aube add --allow-build esbuild some-pkg` would let clap silently swallow `esbuild` as the flag's value (since `num_args` allows 1 value) and leave the positional packages list empty. Forcing `=` syntax — `--allow-build=esbuild` — makes the boundary unambiguous and routes every bare-flag occurrence through `default_missing_value`.
 
+### `--allow-low-downloads`
+
+Bypass the [`lowDownloadThreshold`] confirm prompt / refusal for this invocation.
+
+`aube add` looks up each candidate's weekly download count and prompts (interactive) or fails (CI) when the count is below [`lowDownloadThreshold`]. The flag is intended for the cases where you've already verified the package out-of-band — adding a brand-new niche tool, a fresh fork, an internal scratch package — and don't want the prompt to interrupt scripted workflows. Does not affect the OSV malicious-package check, which remains a hard block.
+
 ### `--ignore-scripts`
 
 Skip lifecycle scripts (no-op; aube already skips by default)
