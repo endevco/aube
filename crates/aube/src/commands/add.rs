@@ -1903,10 +1903,14 @@ fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec
             continue;
         }
         if !npm_config.is_public_npmjs(&spec.name) {
+            // `redact_url` strips any embedded userinfo (`https://tok@host/`
+            // — uncommon but a registry URL can legally carry it) so a
+            // token doesn't slip into observability pipelines that ingest
+            // debug-level structured logs.
             tracing::debug!(
                 "skipping supply-chain gates for {}: routes through non-public registry {}",
                 spec.name,
-                npm_config.registry_for(&spec.name)
+                aube_util::url::redact_url(npm_config.registry_for(&spec.name))
             );
             continue;
         }
