@@ -420,7 +420,7 @@ MIN_RELEASE_AGE_MINUTES="${BENCH_MIN_RELEASE_AGE_MINUTES:-1440}"
 MIN_RELEASE_AGE_SECONDS=$((MIN_RELEASE_AGE_MINUTES * 60))
 # npm uses days as the unit. Round up so the gate is at least as
 # strict as aube's, never weaker. (60*24 = 1440 → 1 day exactly.)
-MIN_RELEASE_AGE_DAYS=$(( (MIN_RELEASE_AGE_MINUTES + 60 * 24 - 1) / (60 * 24) ))
+MIN_RELEASE_AGE_DAYS=$(((MIN_RELEASE_AGE_MINUTES + 60 * 24 - 1) / (60 * 24)))
 
 # Per-tool boilerplate factored out of the `CMDS` declarations below.
 # Every bun invocation threads the same hermetic environment
