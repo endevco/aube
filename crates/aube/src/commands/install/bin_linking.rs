@@ -652,4 +652,72 @@ mod tests {
             ".cmd shim should not climb above the `.aube/` root; got:\n{cmd}"
         );
     }
+
+    /// Companion to the case above: scoped bin name (`@scope/foo`)
+    /// behind the same junction. The pre-fix code routed shim writes
+    /// through the canonical bin dir, so `create_bin_shim`'s internal
+    /// `create_dir_all(<bin>\@scope)` ran on the GVS subtree where no
+    /// junction is in the path — it just worked. With the fix, the
+    /// shim writer sees the *surface* path and would hit the same
+    /// "leaf behind junction" `ERROR_ALREADY_EXISTS` quirk on the
+    /// `@scope/` mkdir. The fix's other half is pre-creating
+    /// `link_path.parent()` on the canonical side; this test pins
+    /// that behavior — without it, `@scope/foo.cmd` would fail to
+    /// write through the junction with `NotFound`.
+    #[cfg(windows)]
+    #[test]
+    fn create_bin_link_creates_scoped_parent_when_dep_dir_is_a_junction() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path();
+        let aube_dir = project.join("node_modules/.aube");
+        std::fs::create_dir_all(&aube_dir).unwrap();
+
+        let gvs = project.join("gvs");
+        let gvs_dep = gvs.join("node-liblzma@2.2.0/node_modules");
+        std::fs::create_dir_all(&gvs_dep).unwrap();
+        aube_linker::create_dir_link(
+            &gvs.join("node-liblzma@2.2.0"),
+            &aube_dir.join("node-liblzma@2.2.0"),
+        )
+        .unwrap();
+
+        // Scoped sibling: target lives at
+        // `.aube/@scope+tool@1.0.0/node_modules/@scope/tool/cli.js` on
+        // the surface tree (the linker escapes `/` as `+` in the
+        // dep_path filename).
+        let target_pkg = aube_dir.join("@scope+tool@1.0.0/node_modules/@scope/tool");
+        std::fs::create_dir_all(&target_pkg).unwrap();
+        let target = target_pkg.join("cli.js");
+        std::fs::write(&target, "#!/usr/bin/env node\n").unwrap();
+
+        let bin_dir = aube_dir.join("node-liblzma@2.2.0/node_modules/.bin");
+
+        create_bin_link(
+            &bin_dir,
+            "@scope/tool",
+            &target,
+            aube_linker::BinShimOptions::default(),
+        )
+        .unwrap();
+
+        // `@scope/` must exist as an actual directory on the surface
+        // side (visible via the junction) so the shim file landed.
+        assert!(
+            bin_dir.join("@scope").is_dir(),
+            "scoped parent `@scope/` should be pre-created through the junction"
+        );
+        let cmd = std::fs::read_to_string(bin_dir.join("@scope/tool.cmd")).unwrap();
+        // Four uplevels out of `.bin/@scope/`: `@scope` → `.bin` →
+        // `node_modules` → `node-liblzma@2.2.0` → `.aube`, then descend
+        // into the sibling scoped entry.
+        let expected = r"..\..\..\..\@scope+tool@1.0.0\node_modules\@scope\tool\cli.js";
+        assert!(
+            cmd.contains(expected),
+            ".cmd shim should embed surface-tree relative path `{expected}`; got:\n{cmd}"
+        );
+        assert!(
+            !cmd.contains(r"..\..\..\..\..\"),
+            ".cmd shim should not climb above the `.aube/` root; got:\n{cmd}"
+        );
+    }
 }
