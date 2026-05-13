@@ -27,32 +27,7 @@
 //! `AUBE_DISABLE_SPECULATIVE_PREFETCH=1` keeps the direct-dep walk
 //! but skips the primer-transitive expansion.
 
-use std::collections::BTreeSet;
-use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
-
-/// Upper bound on the speculative primer-transitive expansion.
-/// Caps runaway speculative work on huge dep trees and keeps the
-/// request fan-out comfortably below npmjs's per-connection HTTP/2
-/// concurrent-stream limit (typically 128). Only the transitive
-/// expansion is capped — direct deps are always included since the
-/// resolver definitely needs them.
-const MAX_PREFETCH: usize = 128;
-
-/// Cap on concurrent in-flight prefetch GETs. Prefetch is best-effort
-/// background work and must never starve the resolver's foreground
-/// fetches. Without this, a manifest with 88 direct deps + the
-/// 128-cap speculative expansion can dump 216 simultaneous requests
-/// at the registry the instant `aube install` boots — measured on a
-/// local Verdaccio with 50ms-throttle, that thundering herd queues
-/// the resolver's first packument waits behind 200+ siblings (single
-/// fetches blow up to 1.5–2.2s wall vs ~50ms with no prefetch). The
-/// resolver itself runs at `packumentNetworkConcurrency` (default
-/// 256), so a 16-slot prefetch budget gives plenty of headroom for
-/// the resolver's foreground work while still letting prefetch warm
-/// the on-disk cache.
-const PREFETCH_CONCURRENCY: usize = 16;
 
 const REGISTRY_LIKE_PREFIXES: &[&str] = &["npm:"];
 const NON_REGISTRY_SPEC_MARKERS: &[&str] = &[
@@ -71,13 +46,6 @@ const NON_REGISTRY_SPEC_MARKERS: &[&str] = &[
 #[inline]
 pub fn is_disabled() -> bool {
     std::env::var_os("AUBE_DISABLE_PREFETCH").is_some()
-}
-
-/// Returns true when primer-transitive expansion is disabled.
-/// Direct-dep prefetch is unaffected.
-#[inline]
-fn speculative_is_disabled() -> bool {
-    std::env::var_os("AUBE_DISABLE_SPECULATIVE_PREFETCH").is_some()
 }
 
 /// Spawn a fire-and-forget packument GET for every registry-shaped
@@ -116,92 +84,18 @@ pub fn spawn_direct_dep_prefetch(
         return;
     }
     let client = Arc::new(super::super::make_client(cwd).with_network_mode(network_mode));
-    // Prefetch always writes the corgi (abbreviated) packument cache.
-    //
-    // On the default-aube path against npmjs the resolver actually
-    // reads from the full cache (`trustPolicy=no-downgrade` +
-    // `minimumReleaseAge=1440` + `registrySupportsTimeField=false` →
-    // `needs_time = true`). A prior iteration tried to mirror that
-    // decision here so writes landed in the cache the resolver reads,
-    // but the full packument is ~5× larger than corgi, and the extra
-    // JSON-parse cost dominated wall time on the hermetic bench
-    // (~+25% wall, ~+1.4s user CPU). The current shape keeps the
-    // prefetch cheap and treats it as a TCP/TLS/H2/DNS warmup +
-    // best-effort corgi cache fill; the cache mismatch on default
-    // npmjs is a known no-op rather than a regression. See PR
-    // discussion for the trade-off rationale.
-    let cache_dir = super::super::packument_cache_dir();
-    // Bound concurrent prefetch GETs so the install-start fanout
-    // doesn't thundering-herd the registry or starve the resolver's
-    // foreground packument fetches. See `PREFETCH_CONCURRENCY` for
-    // why 16 — hermetic Verdaccio measurements showed unbounded
-    // fanout inflating single-packument waits 30–40× under contention.
-    let limiter = Arc::new(Semaphore::new(PREFETCH_CONCURRENCY));
-    let direct_count = direct_names.len();
-    tracing::debug!("prefetch: spawning {direct_count} direct-dep packument GETs");
-
-    for name in &direct_names {
-        spawn_one(&client, &cache_dir, &limiter, name.clone());
-    }
-
-    if speculative_is_disabled() {
-        return;
-    }
-    // Defer the primer-transitive expansion: each `primer::get` decodes
-    // a zstd-compressed rkyv entry, which adds up across N direct deps.
-    // Running the walk in a background task keeps that cost off the
-    // critical path; the single-flight gate in the registry client
-    // handles any race with the resolver popping the same name.
-    let limiter = limiter.clone();
-    tokio::spawn(async move {
-        let mut budget = MAX_PREFETCH;
-        let direct_set: BTreeSet<&str> = direct_names.iter().map(String::as_str).collect();
-        let mut fired: BTreeSet<String> = BTreeSet::new();
-        let mut transitive_count = 0usize;
-        for name in &direct_names {
-            if budget == 0 {
-                break;
-            }
-            let Some(transitives) = aube_resolver::primer_one_hop_deps(name) else {
-                continue;
-            };
-            for t in transitives {
-                if budget == 0 {
-                    break;
-                }
-                if direct_set.contains(t.as_str()) || !fired.insert(t.clone()) {
-                    continue;
-                }
-                spawn_one(&client, &cache_dir, &limiter, t);
-                budget -= 1;
-                transitive_count += 1;
-            }
-        }
-        tracing::debug!("prefetch: spawned {transitive_count} primer-transitive packument GETs");
-    });
-}
-
-fn spawn_one(
-    client: &Arc<aube_registry::client::RegistryClient>,
-    cache_dir: &Path,
-    limiter: &Arc<Semaphore>,
-    name: String,
-) {
-    let client = client.clone();
-    let cache_dir = cache_dir.to_path_buf();
-    let limiter = limiter.clone();
-    tokio::spawn(async move {
-        // Permit-acquire failures are unreachable in practice
-        // (semaphore is never closed), but `acquire_owned` propagates
-        // the Result anyway — bail silently on the off chance the
-        // runtime is mid-shutdown.
-        let Ok(_permit) = limiter.acquire_owned().await else {
-            return;
-        };
-        if let Err(e) = client.fetch_packument_cached(&name, &cache_dir).await {
-            tracing::debug!(name = %name, error = %e, "prefetch fetch failed");
-        }
-    });
+    // Fire a HEAD-only TCP/TLS/H2/DNS warmup *instead* of body GETs
+    // for the direct deps. The full-body prefetch was costing 19% on
+    // hermetic Verdaccio (parse + disk write + duplicate work that
+    // the resolver re-does anyway), and on real npmjs the corgi
+    // cache it warms is never read on the default `needs_time=true`
+    // resolver path. HEAD requests carry no body, so we get the
+    // connection-warmup win without paying parse cost.
+    client.prewarm_connection();
+    tracing::debug!(
+        "prefetch: HEAD-only TCP/TLS warmup for {} direct-dep registries",
+        direct_names.len()
+    );
 }
 
 fn has_lockfile(cwd: &std::path::Path) -> bool {
