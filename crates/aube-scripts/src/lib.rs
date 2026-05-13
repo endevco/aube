@@ -728,7 +728,7 @@ pub fn write_line_to_real_stderr(line: &str) {
 /// node/MSBuild kept writing to the console.
 ///
 /// We mitigate by spawning, then assigning the child process handle
-/// to a job created with [`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`]. The
+/// to a job created with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The
 /// `_job` binding's `Drop` (called when this future returns, panics,
 /// or is aborted) closes the last job handle, and the kernel kills
 /// every assigned process — including everything the shell has
@@ -738,12 +738,15 @@ pub fn write_line_to_real_stderr(line: &str) {
 /// returns control to us synchronously after `CreateProcessW`
 /// returns.
 ///
-/// Job-object creation failures surface as [`Error::Spawn`] (carrying
-/// `ERR_AUBE_SCRIPT_SPAWN`) — without the job we cannot safely
-/// guarantee the no-orphans contract on Windows, so we fail closed.
-/// `AssignProcessToJobObject` failing is logged but does not abort
-/// the script: the only realistic cause is the shell having already
-/// exited, in which case there is nothing to clean up anyway.
+/// Job-object failures are fail-open: restricted Windows environments
+/// (nested-job parents, container policy, handle quota) can refuse
+/// either `CreateJobObjectW` or `AssignProcessToJobObject`. In those
+/// cases we surface a `WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE`
+/// warning and run the script anyway — degrading to the
+/// `kill_on_drop`-only path that aube used before this fix. Failing
+/// closed would block lifecycle scripts entirely on those hosts,
+/// which is a worse regression than the orphaning we're trying to
+/// avoid.
 async fn run_command_killing_descendants(
     mut cmd: tokio::process::Command,
     script_name: &str,
@@ -752,21 +755,36 @@ async fn run_command_killing_descendants(
         .spawn()
         .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
     #[cfg(windows)]
-    let _job = {
-        let job = windows_job::JobObject::new()
-            .map_err(|e| Error::Spawn(script_name.to_string(), e.to_string()))?;
-        // raw_handle() returns None only if the child has already been
-        // reaped, which can't happen between spawn() and the very next
-        // line. Fall through silently if it does — kill_on_drop still
-        // handles the direct shell on tokio's side.
-        if let Some(handle) = child.raw_handle()
-            && let Err(err) = job.assign(handle)
-        {
-            tracing::debug!(
-                "windows: AssignProcessToJobObject failed for `{script_name}` shell: {err}"
-            );
+    let _job = match windows_job::JobObject::new() {
+        Ok(job) => {
+            // raw_handle() returns None only if the child has already
+            // been reaped, which can't happen between spawn() and the
+            // very next line.
+            if let Some(handle) = child.raw_handle()
+                && let Err(err) = job.assign(handle)
+            {
+                // Realistic causes: parent job created without
+                // JOB_OBJECT_LIMIT_BREAKAWAY_OK (pre-Win8 nested-job
+                // restrictions, enterprise policy), or the shell
+                // already exited. In either case the kill-tree
+                // guarantee is gone — log loud enough that CI logs
+                // pick it up.
+                tracing::warn!(
+                    code = aube_codes::warnings::WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE,
+                    "windows: AssignProcessToJobObject failed for `{script_name}` shell ({err}); \
+                     grandchildren may be orphaned if the script is aborted"
+                );
+            }
+            Some(job)
         }
-        job
+        Err(err) => {
+            tracing::warn!(
+                code = aube_codes::warnings::WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE,
+                "windows: CreateJobObjectW failed for `{script_name}` shell ({err}); \
+                 running without orphan-reaping — grandchildren may leak if aborted"
+            );
+            None
+        }
     };
     child
         .wait()

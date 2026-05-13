@@ -17,6 +17,7 @@ pub const WARN_AUBE_HOOK_PACKAGE_ADDED: &str = "WARN_AUBE_HOOK_PACKAGE_ADDED";
 
 // ── install lifecycle ───────────────────────────────────────────────
 pub const WARN_AUBE_IGNORED_BUILD_SCRIPTS: &str = "WARN_AUBE_IGNORED_BUILD_SCRIPTS";
+#[rustfmt::skip] pub const WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE: &str = "WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE";
 pub const WARN_AUBE_MISSING_INTEGRITY: &str = "WARN_AUBE_MISSING_INTEGRITY";
 pub const WARN_AUBE_CACHE_WRITE_FAILED: &str = "WARN_AUBE_CACHE_WRITE_FAILED";
 pub const WARN_AUBE_CLONE_STRATEGY_FALLBACK: &str = "WARN_AUBE_CLONE_STRATEGY_FALLBACK";
@@ -151,6 +152,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_IGNORED_BUILD_SCRIPTS,
         category: category::INSTALL_LIFECYCLE,
         description: "Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE,
+        category: category::INSTALL_LIFECYCLE,
+        description: "Windows: couldn't create or assign a kill-on-job-close job object for a lifecycle script. The script still runs, but on abort/failure its grandchildren (node-gyp / MSBuild / node) may be orphaned. Usually caused by a restrictive parent job or enterprise policy.",
         exit_code: None,
     },
     CodeMeta {

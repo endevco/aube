@@ -419,6 +419,7 @@ dependencies = [
 name = "aube-scripts"
 version = "1.12.0"
 dependencies = [
+ "aube-codes",
  "aube-manifest",
  "aube-util",
  "landlock",

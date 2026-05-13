@@ -345,6 +345,12 @@
       "exit_code": null
     },
     {
+      "name": "WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE",
+      "category": "Install lifecycle",
+      "description": "Windows: couldn't create or assign a kill-on-job-close job object for a lifecycle script. The script still runs, but on abort/failure its grandchildren (node-gyp / MSBuild / node) may be orphaned. Usually caused by a restrictive parent job or enterprise policy.",
+      "exit_code": null
+    },
+    {
       "name": "WARN_AUBE_MISSING_INTEGRITY",
       "category": "Install lifecycle",
       "description": "Lockfile entry / registry response had no `dist.integrity`; importing without verification. Set `strict-store-integrity=true` to refuse.",

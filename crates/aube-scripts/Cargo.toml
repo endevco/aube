@@ -11,12 +11,12 @@ readme.workspace = true
 include = ["src/**/*.rs"]
 
 [dependencies]
-# aube-codes is *not* a dep here even though `#[diagnostic(code(ERR_AUBE_X))]`
-# attributes appear below. miette treats the `code(...)` argument as an
-# identifier token, not a symbol reference, so the codes flow through as
-# string literals at macro-expansion time. cargo-machete correctly flags
-# the dep as unused. Validation that the names exist in `aube-codes`'s
-# registry is a workspace-level concern, not a per-crate one.
+# aube-codes provides the `WARN_AUBE_*` constants used by Windows
+# Job Object fallback warnings emitted via `tracing::warn!(code = ...)`.
+# miette `#[diagnostic(code(ERR_AUBE_X))]` attributes treat the code
+# as an identifier token (not a symbol reference) so they don't need
+# this dep at expansion time — but the `tracing::warn!` sites do.
+aube-codes = { workspace = true }
 aube-manifest = { workspace = true }
 aube-util = { workspace = true }
 tokio = { workspace = true }
