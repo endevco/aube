@@ -25,6 +25,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`securityScanner`](#setting-securityscanner) | `string` | Bun-compatible security scanner module. |
 | [`advisoryCheck`](#setting-advisorycheck) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check on `aube add`. |
 | [`lowDownloadThreshold`](#setting-lowdownloadthreshold) | `int` | Weekly-download floor for `aube add` (typosquat prompt). |
+| [`allowedUnpopularPackages`](#setting-allowedunpopularpackages) | `list<string>` | Glob patterns exempted from the `lowDownloadThreshold` gate. |
 | [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
 | [`trustPolicy`](#setting-trustpolicy) | `"no-downgrade" \| "off"` | Fail install when a package's trust evidence weakens between releases. |
 | [`trustPolicyExclude`](#setting-trustpolicyexclude) | `list<string>` | Packages exempt from `trustPolicy` checks. |
@@ -406,10 +407,51 @@ on day one regardless of how cleverly they're named.
 Interactive sessions get a `[y/N]` prompt showing the weekly
 download count. Non-interactive contexts fail with
 `ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is
-passed. Scoped private packages and workspace deps are skipped (no
-public-registry signal → no false positive).
+passed.
+
+Packages that route through a non-`registry.npmjs.org` registry are
+skipped automatically: a scoped override like
+`@myorg:registry=https://npm.internal.example/` or a swapped-out
+default registry both mean npmjs has no signal on the package, so
+neither the downloads gate nor the OSV `MAL-*` check fires.
+Workspace deps and git/local specs are also skipped. To exempt
+specific names that *do* resolve through npmjs (e.g. you publish a
+low-download but trusted package internally), see
+`allowedUnpopularPackages`.
 
 Set to `0` to disable.
+
+### `allowedUnpopularPackages` {#setting-allowedunpopularpackages}
+
+Glob patterns exempted from the `lowDownloadThreshold` gate.
+
+- Type: `list<string>`
+- Default: `undefined`
+- Environment: `npm_config_allowed_unpopular_packages`, `NPM_CONFIG_ALLOWED_UNPOPULAR_PACKAGES`, `AUBE_ALLOWED_UNPOPULAR_PACKAGES`
+- .npmrc keys: `allowedUnpopularPackages`, `allowed-unpopular-packages`
+- Workspace YAML keys: `allowedUnpopularPackages`
+
+Each pattern is matched against the registry name (`@scope/foo` or
+`bar`) of every candidate the `lowDownloadThreshold` gate would
+otherwise probe. Matches skip the weekly-downloads lookup entirely,
+so internal/low-traffic packages don't trip the prompt in CI or the
+`y/N` prompt locally.
+
+Patterns are full-name globs (the [`glob`](https://docs.rs/glob)
+crate's syntax — `*`, `?`, `[…]`). Match-everything (`*`) is allowed
+but defeats the gate; prefer to set `lowDownloadThreshold = 0` if
+that is what you want.
+
+The OSV `MAL-*` advisory check (`advisoryCheck`) is **not** affected
+— a hit there is confirmed-malicious and not the kind of judgement
+call this list is meant to suppress.
+
+```yaml
+# aube-workspace.yaml
+allowedUnpopularPackages:
+  - "@mycompany/*"
+  - "internal-*"
+```
 
 ### `paranoid` {#setting-paranoid}
 

@@ -451,6 +451,13 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub low_download_threshold: Option<u64>,
 
+    /// Glob patterns exempted from the `low_download_threshold` gate.
+    /// Each entry is matched against the full registry name (e.g.
+    /// `@scope/foo`). Matching names skip the weekly-downloads lookup;
+    /// the OSV `MAL-*` check still runs.
+    #[serde(default)]
+    pub allowed_unpopular_packages: Option<Vec<String>>,
+
     /// Bun-compatible security scanner module spec (npm package name
     /// or path) loaded via a `node` bridge at install / add time.
     /// Empty string disables the integration.

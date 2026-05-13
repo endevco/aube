@@ -828,19 +828,25 @@ pub async fn run(
     // concrete versions + transitives the OSV/downloads probes
     // wouldn't see at this stage.
     let registry_names = registry_bound_names_for_supply_chain(&cwd, packages);
-    let (advisory_check, low_download_threshold) = super::with_settings_ctx(&cwd, |ctx| {
-        let policy = if aube_settings::resolved::paranoid(ctx) {
-            aube_settings::resolved::AdvisoryCheck::Required
-        } else {
-            aube_settings::resolved::advisory_check(ctx)
-        };
-        (policy, aube_settings::resolved::low_download_threshold(ctx))
-    });
+    let (advisory_check, low_download_threshold, allowed_unpopular) =
+        super::with_settings_ctx(&cwd, |ctx| {
+            let policy = if aube_settings::resolved::paranoid(ctx) {
+                aube_settings::resolved::AdvisoryCheck::Required
+            } else {
+                aube_settings::resolved::advisory_check(ctx)
+            };
+            (
+                policy,
+                aube_settings::resolved::low_download_threshold(ctx),
+                aube_settings::resolved::allowed_unpopular_packages(ctx).unwrap_or_default(),
+            )
+        });
     super::add_supply_chain::run_gates(
         &registry_names,
         advisory_check,
         low_download_threshold,
         allow_low_downloads,
+        &allowed_unpopular,
     )
     .await?;
 
@@ -1867,6 +1873,13 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
 fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec<String> {
     let mut names = Vec::with_capacity(packages.len());
     let workspace_versions = collect_workspace_versions(cwd);
+    // Scope→registry overrides + the default registry tell us which
+    // names route through public npmjs. Anything else (a swapped-out
+    // default registry, an `@myorg:registry=https://internal/`
+    // override) has no signal in the OSV `MAL-*` database or the
+    // npmjs weekly-downloads API — skip those names so private
+    // packages don't trip the gates on a public-registry collision.
+    let npm_config = aube_registry::config::NpmConfig::load(cwd);
     for raw in packages {
         let Ok(spec) = parse_pkg_spec(raw) else {
             // Parse failures get a richer diagnostic from
@@ -1887,6 +1900,18 @@ fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec
         // resolves locally — no public registry round-trip happens,
         // so the OSV / downloads probes have nothing to say.
         if workspace_versions.contains_key(&spec.name) {
+            continue;
+        }
+        if !npm_config.is_public_npmjs(&spec.name) {
+            // `redact_url` strips any embedded userinfo (`https://tok@host/`
+            // — uncommon but a registry URL can legally carry it) so a
+            // token doesn't slip into observability pipelines that ingest
+            // debug-level structured logs.
+            tracing::debug!(
+                "skipping supply-chain gates for {}: routes through non-public registry {}",
+                spec.name,
+                aube_util::url::redact_url(npm_config.registry_for(&spec.name))
+            );
             continue;
         }
         // Scoped names (`@scope/name`) stay in the list. OSV's batch
@@ -1954,19 +1979,25 @@ async fn run_filtered(
     // NOT called here: it runs post-resolve from `install::run`
     // against the full resolved graph.
     let registry_names = registry_bound_names_for_supply_chain(&root, &args.packages);
-    let (advisory_check, low_download_threshold) = super::with_settings_ctx(&root, |ctx| {
-        let policy = if aube_settings::resolved::paranoid(ctx) {
-            aube_settings::resolved::AdvisoryCheck::Required
-        } else {
-            aube_settings::resolved::advisory_check(ctx)
-        };
-        (policy, aube_settings::resolved::low_download_threshold(ctx))
-    });
+    let (advisory_check, low_download_threshold, allowed_unpopular) =
+        super::with_settings_ctx(&root, |ctx| {
+            let policy = if aube_settings::resolved::paranoid(ctx) {
+                aube_settings::resolved::AdvisoryCheck::Required
+            } else {
+                aube_settings::resolved::advisory_check(ctx)
+            };
+            (
+                policy,
+                aube_settings::resolved::low_download_threshold(ctx),
+                aube_settings::resolved::allowed_unpopular_packages(ctx).unwrap_or_default(),
+            )
+        });
     super::add_supply_chain::run_gates(
         &registry_names,
         advisory_check,
         low_download_threshold,
         args.allow_low_downloads,
+        &allowed_unpopular,
     )
     .await?;
 
