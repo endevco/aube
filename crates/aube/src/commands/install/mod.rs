@@ -39,9 +39,9 @@ pub(crate) use side_effects_cache::{SideEffectsCacheConfig, side_effects_cache_r
 use settings::{
     check_unmet_peers, default_lockfile_network_concurrency, default_streaming_network_concurrency,
     detect_aube_dir_gvs_mode, find_gvs_incompatible_trigger, maybe_cleanup_unused_catalogs,
-    resolve_dedupe_peer_dependents, resolve_dedupe_peers, resolve_git_shallow_hosts,
-    resolve_link_concurrency, resolve_network_concurrency, resolve_peers_from_workspace_root,
-    resolve_peers_suffix_max_length, resolve_side_effects_cache,
+    needs_time_for_prefetch, resolve_dedupe_peer_dependents, resolve_dedupe_peers,
+    resolve_git_shallow_hosts, resolve_link_concurrency, resolve_network_concurrency,
+    resolve_peers_from_workspace_root, resolve_peers_suffix_max_length, resolve_side_effects_cache,
     resolve_side_effects_cache_readonly, resolve_strict_peer_dependencies,
     resolve_strict_store_pkg_content_check, resolve_symlink, resolve_use_running_store_server,
     resolve_verify_store_integrity,
@@ -2127,14 +2127,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let manifest = super::load_manifest_or_default(&cwd)?;
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
 
-    // Pre-resolver packument prefetch. Reads `package.json` keys and
-    // fires fire-and-forget GETs for every registry-shaped direct dep
-    // before workspace yaml load, settings resolve, lockfile parse,
-    // pnpmfile setup, and resolver construction run. By the time the
-    // resolver pops its first task, the packument is in the on-disk
-    // cache and the reqwest pool is hot. Honors `AUBE_DISABLE_PREFETCH=1`.
-    prefetch::spawn_direct_dep_prefetch(&manifest, &cwd, opts.network_mode);
-
     // Load the workspace yaml *once* — both as the typed
     // `WorkspaceConfig` (used below for `allow_builds_raw` and
     // friends) and as a raw `BTreeMap` (used by
@@ -2156,6 +2148,24 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let workspace_catalogs = super::discover_catalogs(&cwd)?;
     let settings_ctx = files.ctx(&raw_workspace, &opts.env_snapshot, &opts.cli_flags);
     super::configure_script_settings(&settings_ctx);
+
+    // Pre-resolver packument prefetch. Reads `package.json` keys and
+    // fires fire-and-forget GETs for every registry-shaped direct dep
+    // before lockfile parse, pnpmfile setup, and resolver construction
+    // run. By the time the resolver pops its first task, the packument
+    // is in the on-disk cache and the reqwest pool is hot.
+    //
+    // Runs *after* settings are resolved so `needs_time` (mirroring
+    // the resolver's same-named binding) can pick the cache variant
+    // the resolver will actually read from. Writing to the wrong cache
+    // is wasted work — the single-flight gate is keyed per variant,
+    // so cross-variant fetches don't coalesce either. The settings
+    // build above is mostly file I/O (~ms-scale) which is dwarfed by
+    // the network RTT prefetch is hiding.
+    //
+    // Honors `AUBE_DISABLE_PREFETCH=1`.
+    let prefetch_needs_time = needs_time_for_prefetch(&settings_ctx);
+    prefetch::spawn_direct_dep_prefetch(&manifest, &cwd, opts.network_mode, prefetch_needs_time);
 
     // `--lockfile-dir` / `lockfileDir`: relocate `aube-lock.yaml` to a
     // different directory than the project root. The project becomes

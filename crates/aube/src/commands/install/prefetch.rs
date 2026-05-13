@@ -86,6 +86,7 @@ pub fn spawn_direct_dep_prefetch(
     manifest: &aube_manifest::PackageJson,
     cwd: &std::path::Path,
     network_mode: aube_registry::NetworkMode,
+    needs_time: bool,
 ) {
     if is_disabled() {
         return;
@@ -101,12 +102,25 @@ pub fn spawn_direct_dep_prefetch(
         return;
     }
     let client = Arc::new(super::super::make_client(cwd).with_network_mode(network_mode));
-    let cache_dir = super::super::packument_cache_dir();
+    // Pick the cache variant the resolver will actually read from.
+    // `trustPolicy=no-downgrade` and `minimumReleaseAge` need the
+    // `time` field, so the resolver routes through the full cache
+    // — writing corgi here would warm a cache the resolver never
+    // consults. The registry client's single-flight gate is keyed
+    // per variant, so mismatched writes also can't coalesce with
+    // the resolver's fetches.
+    let cache_dir = if needs_time {
+        super::super::packument_full_cache_dir()
+    } else {
+        super::super::packument_cache_dir()
+    };
     let direct_count = direct_names.len();
-    tracing::debug!("prefetch: spawning {direct_count} direct-dep packument GETs");
+    tracing::debug!(
+        "prefetch: spawning {direct_count} direct-dep packument GETs (needs_time={needs_time})"
+    );
 
     for name in &direct_names {
-        spawn_one(&client, &cache_dir, name.clone());
+        spawn_one(&client, &cache_dir, name.clone(), needs_time);
     }
 
     if speculative_is_disabled() {
@@ -136,7 +150,7 @@ pub fn spawn_direct_dep_prefetch(
                 if direct_set.contains(t.as_str()) || !fired.insert(t.clone()) {
                     continue;
                 }
-                spawn_one(&client, &cache_dir, t);
+                spawn_one(&client, &cache_dir, t, needs_time);
                 budget -= 1;
                 transitive_count += 1;
             }
@@ -145,11 +159,27 @@ pub fn spawn_direct_dep_prefetch(
     });
 }
 
-fn spawn_one(client: &Arc<aube_registry::client::RegistryClient>, cache_dir: &Path, name: String) {
+fn spawn_one(
+    client: &Arc<aube_registry::client::RegistryClient>,
+    cache_dir: &Path,
+    name: String,
+    needs_time: bool,
+) {
     let client = client.clone();
     let cache_dir = cache_dir.to_path_buf();
     tokio::spawn(async move {
-        if let Err(e) = client.fetch_packument_cached(&name, &cache_dir).await {
+        let result = if needs_time {
+            client
+                .fetch_packument_with_time_cached(&name, &cache_dir)
+                .await
+                .map(|_| ())
+        } else {
+            client
+                .fetch_packument_cached(&name, &cache_dir)
+                .await
+                .map(|_| ())
+        };
+        if let Err(e) = result {
             tracing::debug!(name = %name, error = %e, "prefetch fetch failed");
         }
     });
