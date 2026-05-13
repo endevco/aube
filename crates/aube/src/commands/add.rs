@@ -1962,13 +1962,13 @@ fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec
         if workspace_versions.contains_key(&spec.name) {
             continue;
         }
-        // Scoped names — npm downloads API doesn't index them and
-        // we'd add latency for no signal. OSV `MAL-*` hits on
-        // scoped names are vanishingly rare in practice (the
-        // common pattern is to squat an unscoped popular name).
-        if spec.name.starts_with('@') {
-            continue;
-        }
+        // Scoped names (`@scope/name`) stay in the list. OSV's batch
+        // API supports scoped queries — skipping them here would let
+        // a `MAL-*` advisory against `@scope/evil` slip past the
+        // hard block. The downloads probe already folds scoped
+        // packages into `DownloadCount::Unknown` (npm's downloads
+        // API doesn't index them), so the prompt naturally skips
+        // them — no per-name special case needed in the gate.
         names.push(spec.name);
     }
     names.sort();

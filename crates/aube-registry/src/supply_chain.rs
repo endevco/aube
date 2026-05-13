@@ -55,6 +55,15 @@ pub enum SupplyChainError {
     Decode(#[from] serde_json::Error),
     #[error("supply-chain probe returned non-success status: {0}")]
     Status(reqwest::StatusCode),
+    /// OSV's batch endpoint contract guarantees one `results[i]` per
+    /// `queries[i]`. A short response means a trailing subset of
+    /// candidate names was never actually checked — silently
+    /// treating that as "no advisories" would let a known-malicious
+    /// package slip through on a truncated reply. The caller
+    /// surfaces this as a probe failure so the configured
+    /// fail-open/fail-closed policy applies.
+    #[error("OSV returned {got} results for {expected} queries — truncated response")]
+    TruncatedOsvResponse { expected: usize, got: usize },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -144,10 +153,27 @@ pub async fn fetch_malicious_advisories(
     }
     let bytes = resp.bytes().await?;
     let parsed: OsvBatchResponse = serde_json::from_slice(&bytes)?;
+    // Enforce the OSV `results[i] ↔ queries[i]` parity contract.
+    // A short response is treated as a probe failure (not "no
+    // advisories") so the trailing names aren't silently skipped —
+    // the `advisoryCheck` policy then decides whether to warn-and-
+    // continue or fail closed.
+    if parsed.results.len() != names.len() {
+        return Err(SupplyChainError::TruncatedOsvResponse {
+            expected: names.len(),
+            got: parsed.results.len(),
+        });
+    }
     Ok(extract_malicious(names, &parsed))
 }
 
 fn extract_malicious(names: &[String], resp: &OsvBatchResponse) -> Vec<MaliciousAdvisory> {
+    // Caller (`fetch_malicious_advisories`) has already validated
+    // `names.len() == resp.results.len()` and bailed otherwise, so
+    // the zip below is safe — every input name has a corresponding
+    // result slot. Tests call this helper directly with hand-built
+    // responses; those happen to pass matched-length slices, so no
+    // runtime check is needed here.
     let mut hits = Vec::new();
     for (name, result) in names.iter().zip(resp.results.iter()) {
         for vuln in &result.vulns {
@@ -177,9 +203,10 @@ pub enum DownloadCount {
 }
 
 /// Look up `name`'s weekly download count using a caller-supplied
-/// shared client. Preferred over [`fetch_weekly_downloads`] when
-/// probing many packages at once — keeps the connection pool warm
-/// across requests.
+/// shared client. The caller is expected to reuse one
+/// [`build_probe_client`] across every probe in an invocation so
+/// the reqwest connection pool stays warm — see
+/// `crates/aube/src/commands/add_supply_chain.rs::downloads_gate`.
 pub async fn fetch_weekly_downloads_with(
     client: &reqwest::Client,
     name: &str,
@@ -200,14 +227,6 @@ pub async fn fetch_weekly_downloads_with(
     let bytes = resp.bytes().await?;
     let parsed: NpmDownloadsResponse = serde_json::from_slice(&bytes)?;
     Ok(parse_downloads(&parsed))
-}
-
-/// Single-shot convenience wrapper that builds a fresh probe client
-/// and forwards to [`fetch_weekly_downloads_with`]. Kept for callers
-/// that only need one lookup.
-pub async fn fetch_weekly_downloads(name: &str) -> Result<DownloadCount, SupplyChainError> {
-    let client = build_probe_client()?;
-    fetch_weekly_downloads_with(&client, name).await
 }
 
 fn parse_downloads(resp: &NpmDownloadsResponse) -> DownloadCount {
@@ -263,22 +282,24 @@ mod tests {
     }
 
     #[test]
-    fn extract_malicious_handles_missing_results() {
-        // OSV pads `results` to match `queries` length, but if a
-        // truncated response sneaks through we should not panic —
-        // `zip` stops at the shorter side, which already does the
-        // right thing.
-        let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let resp = OsvBatchResponse {
-            results: vec![OsvResult {
-                vulns: vec![OsvVuln {
-                    id: "MAL-1".to_string(),
-                }],
-            }],
+    fn truncated_osv_response_carries_lengths_in_error() {
+        // `fetch_malicious_advisories` rejects a short response
+        // rather than silently zipping the prefix — a missing
+        // `results[i]` would otherwise let the corresponding query's
+        // package skip the malicious-advisory gate entirely. The
+        // error carries both expected and actual lengths so the
+        // operator-facing log message names the gap.
+        let err = SupplyChainError::TruncatedOsvResponse {
+            expected: 3,
+            got: 1,
         };
-        let hits = extract_malicious(&names, &resp);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].package, "a");
+        let rendered = err.to_string();
+        assert!(rendered.contains("3"), "expected count missing: {rendered}");
+        assert!(rendered.contains("1"), "got count missing: {rendered}");
+        assert!(
+            rendered.contains("truncated"),
+            "category word missing: {rendered}"
+        );
     }
 
     #[test]
