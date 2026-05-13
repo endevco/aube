@@ -65,12 +65,6 @@ Mirrors pnpm's `--global-pnpmfile <path>`. The global hook runs first and the lo
 
 Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this update
 
-### `--ignore-scripts`
-
-Skip lifecycle scripts.
-
-Accepted for pnpm parity — dep scripts are already gated by `allowBuilds`, so the flag is currently a no-op, but scripts that wrap `pnpm update --ignore-scripts` keep working without complaint.
-
 ### `--lockfile-only`
 
 Refresh the lockfile without populating `node_modules`.
