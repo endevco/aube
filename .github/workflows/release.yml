@@ -97,9 +97,10 @@ jobs:
           name: metadata-primer
           path: crates/aube-resolver/data/primer-top${{ env.AUBE_PRIMER_TOP }}-v${{ env.AUBE_PRIMER_VERSION_CAP }}.rkyv.json
 
-  # Non-PGO targets: aarch64 musl Linux (cross-compiled, no native musl
-  # runner) and Windows (untested PGO toolchain). Built via taiki-e
-  # straight from the release profile.
+  # Non-PGO Windows targets (untested PGO toolchain). Built via taiki-e
+  # straight from the release profile. `aarch64-unknown-linux-musl` lives
+  # in its own job (`upload-assets-musl-arm64`) so it can ship
+  # `aubr`/`aubx` as symlinks the same way the PGO tarballs do.
   upload-assets:
     needs: generate-primer
     runs-on: ${{ matrix.runner }}
@@ -112,10 +113,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            runner: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
-            build-tool: cross
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             runner: windows-latest
@@ -192,6 +189,78 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: aube-${{ inputs.tag }}-${{ matrix.target }}
+          path: ${{ steps.archive.outputs.path }}
+      - name: Attest release archive
+        if: ${{ !fromJSON(inputs.dry_run || 'false') }}
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.archive.outputs.path }}
+
+  # aarch64-unknown-linux-musl: split out from upload-assets so we can
+  # ship `aubr`/`aubx` as symlinks to `aube` in the tarball, matching
+  # the PGO targets. `taiki-e/upload-rust-binary-action` bundles
+  # build + archive in one step with no hook to mutate the staged bins,
+  # so we run cross + symlink + tar by hand here. No PGO/BOLT — same
+  # musl-libc constraint as x86_64-unknown-linux-musl in
+  # upload-assets-pgo (BOLT's instrumentation runtime SIGSEGVs against
+  # musl).
+  upload-assets-musl-arm64:
+    needs: generate-primer
+    runs-on: namespace-profile-endev-linux-amd64;overrides.cache-tag=aube-rust-linux
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TARGET: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.ref != '' && fromJSON(inputs.dry_run || 'false') && inputs.ref || format('refs/tags/{0}', inputs.tag) }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: metadata-primer
+          path: crates/aube-resolver/data
+      - name: Install cross
+        shell: bash
+        run: cargo install cross --locked
+      - name: Build aube (release)
+        shell: bash
+        # Only build `aube` — `aubr`/`aubx` become symlinks in the
+        # archive step, so the multicall stub bins would just be thrown
+        # away. Saves ~2 minutes of cross compile time.
+        run: cross build --release --locked --target "$TARGET" --bin aube
+      - name: Archive release binary
+        id: archive
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          archive="aube-${TAG}-${TARGET}.tar.gz"
+          # Replace aubr/aubx with symlinks to aube before tar-ing.
+          # See the matching archive step in upload-assets-pgo for the
+          # multicall / argv[0] rationale.
+          BIN_DIR="target/${TARGET}/release"
+          ln -sf aube "$BIN_DIR/aubr"
+          ln -sf aube "$BIN_DIR/aubx"
+          tar -czf "$archive" -C "$BIN_DIR" aube aubr aubx
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - name: Upload archive to release
+        if: ${{ !fromJSON(inputs.dry_run || 'false') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          ARCHIVE: ${{ steps.archive.outputs.path }}
+        run: gh release upload "$TAG" "$ARCHIVE" --clobber
+      - name: Upload archive as workflow artifact (dry run)
+        if: ${{ fromJSON(inputs.dry_run || 'false') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: aube-${{ inputs.tag }}-aarch64-unknown-linux-musl
           path: ${{ steps.archive.outputs.path }}
       - name: Attest release archive
         if: ${{ !fromJSON(inputs.dry_run || 'false') }}
