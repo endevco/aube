@@ -29,8 +29,10 @@ pub struct DirectDepInfo {
     /// The registry's `dist-tags.latest` for this package, but only
     /// when it differs from the resolved version. `None` when latest
     /// matches the resolved version, when the registry omits `latest`
-    /// (common on private registries), or when the dep wasn't resolved
-    /// from a packument (git / file / link / remote tarball).
+    /// (common on private registries), when `latest` points to a
+    /// prerelease (we don't nudge users toward betas), or when the dep
+    /// wasn't resolved from a packument (git / file / link / remote
+    /// tarball).
     pub latest: Option<String>,
 }
 
@@ -67,6 +69,7 @@ impl Resolver {
                     .dist_tags
                     .get("latest")
                     .filter(|l| l.as_str() != pkg.version.as_str())
+                    .filter(|l| !is_prerelease(l))
                     .cloned();
                 if deprecated || latest.is_some() {
                     out.insert(dep.dep_path.clone(), DirectDepInfo { deprecated, latest });
@@ -74,5 +77,34 @@ impl Resolver {
             }
         }
         out
+    }
+}
+
+/// Whether a version string parses to a semver with a prerelease tag
+/// (e.g. `1.2.0-beta.3`, `2.0.0-rc.1`). Unparseable strings are treated
+/// as non-prerelease so a registry returning a non-semver `latest`
+/// (rare, but possible) still surfaces as an upgrade hint.
+fn is_prerelease(version: &str) -> bool {
+    node_semver::Version::parse(version)
+        .map(|v| !v.pre_release.is_empty())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_prerelease;
+
+    #[test]
+    fn detects_prerelease_versions() {
+        assert!(is_prerelease("1.0.0-beta.1"));
+        assert!(is_prerelease("2.0.0-rc.0"));
+        assert!(is_prerelease("0.1.0-alpha"));
+    }
+
+    #[test]
+    fn stable_versions_are_not_prerelease() {
+        assert!(!is_prerelease("1.0.0"));
+        assert!(!is_prerelease("0.0.1"));
+        assert!(!is_prerelease("not-a-version"));
     }
 }
