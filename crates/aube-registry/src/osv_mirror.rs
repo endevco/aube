@@ -471,10 +471,14 @@ fn now_rfc3339() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
-/// Inverse of [`now_rfc3339`]. Tolerant of fractional seconds and
-/// `+HH:MM` offsets so a future format bump (or a third-party
-/// hand-edit of `index.json`) doesn't silently treat the cache as
-/// stale.
+/// Inverse of [`now_rfc3339`] for the exact shape that function
+/// emits: `YYYY-MM-DDTHH:MM:SSZ` (UTC, no fractional seconds, no
+/// offset). Anything past the seconds field is ignored — so a
+/// hand-edited `index.json` that tacks on `.123` or `+05:30`
+/// won't fail outright, but the offset isn't applied. The
+/// fallback for an unparseable timestamp is "treat as stale"
+/// ([`is_stale`] surfaces the `Err` as stale), so the worst case
+/// is one extra refresh round-trip.
 fn parse_rfc3339(s: &str) -> Result<SystemTime, ()> {
     let bytes = s.as_bytes();
     if bytes.len() < 20 {
