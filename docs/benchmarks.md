@@ -53,7 +53,7 @@ store off and measure the shared per-project model.
 - **CI install (warm cache, GVS disabled)** — frozen lockfile, `node_modules` wiped, store and packument cache warm. Disables aube's global virtual store to match CI defaults.
 - **CI install (cold cache, GVS disabled)** — frozen lockfile but the store, packument cache, and `node_modules` are all wiped. Worst-case CI: every tarball is downloaded, extracted, and hashed into the CAS without aube's global virtual store path.
 - **npm install && npm run test (already installed)** — models the developer loop after dependencies are already installed. Each timed run repeats the tool's normal "install if needed, then run tests" command. aube can skip the install work when its install-state file is fresh; other tools still revalidate their lockfile or install state before dispatching the script. The fixture's `test` script is a no-op `node -e`, so this scenario mostly measures install short-circuiting and script dispatch.
-- **Add dependency** — lockfile and store both warm, then `<pm> add is-odd` to exercise the incremental resolve path.
+- **Add dependency** — `node_modules`, lockfile, and store all warm, then `<pm> add is-odd` to measure only the incremental add work (resolve, lockfile write, link). The previous iteration's `add` is undone between runs via a frozen-lockfile install so each timed run starts from the same pre-add state.
 
 ## Reproducing
 

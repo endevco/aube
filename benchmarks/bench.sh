@@ -657,6 +657,69 @@ run_bench_preinstall() {
 	done
 }
 
+# Like `run_bench`, but tailored to the `add` scenario: the prepare step
+# restores `package.json` + the saved lockfile (undoing the previous
+# iteration's `add is-odd`) and then runs each tool's frozen install so
+# `node_modules` ends up matching the pre-add lockfile state. The timed
+# iteration therefore measures only the *incremental* add work — resolve
+# is-odd, write to package.json + lockfile, link it in — instead of
+# folding a full install into every run, which is what wiping
+# `node_modules` between iterations did.
+run_bench_warm_add() {
+	local bench_name=$1
+
+	for i in "${!TOOLS[@]}"; do
+		local tool="${TOOLS[$i]}"
+		local project="${TOOL_PROJECTS[$i]}"
+		local bin="${TOOL_BINS[$i]}"
+		local home="${TOOL_HOMES[$i]}"
+		local store="${TOOL_STORES[$i]}"
+		local cache="${TOOL_CACHES[$i]}"
+		local lockfile="$BENCH_DIR/saved-lockfile-$tool"
+		local lockfile_dest
+		lockfile_dest="$project/$(lockfile_name_for "$tool")"
+
+		local cmd_tpl
+		cmd_tpl=$(cmd_template "$bench_name" "$tool")
+		if [ -z "$cmd_tpl" ]; then
+			echo "warning: no $bench_name command for $tool — skipping" >&2
+			continue
+		fi
+
+		# Reuse the tool's `gvs-warm` template as the settle install:
+		# it's whichever flavor of frozen-lockfile install the tool
+		# supports, so each PM ends up syncing `node_modules` to the
+		# restored lockfile via its own native code path.
+		local settle_tpl
+		settle_tpl=$(cmd_template "gvs-warm" "$tool")
+		if [ -z "$settle_tpl" ]; then
+			echo "warning: no gvs-warm settle command for $tool — skipping $bench_name" >&2
+			continue
+		fi
+
+		local cmd
+		cmd=$(expand_template "$cmd_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
+		local settle
+		settle=$(expand_template "$settle_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
+
+		local prepare="cp $BENCH_DIR/original-package.json $project/package.json && cp $lockfile $lockfile_dest && $settle"
+
+		local tool_runs
+		tool_runs=$(runs_for_tool "$tool")
+		echo ""
+		echo "  $tool:"
+		hyperfine \
+			--warmup "$WARMUP" \
+			--runs "$tool_runs" \
+			--ignore-failure \
+			--prepare "$prepare" \
+			--command-name "$tool" \
+			"$cmd" \
+			--export-json "$BENCH_DIR/${bench_name}-${tool}.json" ||
+			true
+	done
+}
+
 PHASES_FILE="$BENCH_DIR/aube-install-phases.jsonl"
 : >"$PHASES_FILE"
 
@@ -783,16 +846,17 @@ echo "━━━ Benchmark 5: install + run test (already installed) ━━━"
 run_scenario "install-test" run_bench_preinstall "install-test"
 
 # ── Benchmark 6: Add dependency ────────────────────────────────────────────
-# Lockfile present, add a new dependency to trigger re-resolution.
-# Store and cache warm. Exercises the incremental resolution path.
-# Kept last because the other scenarios are install-shaped and this
-# one is edit-shaped — it doesn't belong in the "install at various
-# warmth levels" progression above.
+# Lockfile, store, and node_modules all warm; the prepare step undoes
+# the previous iteration's `add is-odd` and re-syncs node_modules to
+# the saved lockfile, so the timed run measures only the incremental
+# add work (resolve, lockfile write, link) instead of folding a full
+# install into every iteration. Kept last because the other scenarios
+# are install-shaped and this one is edit-shaped — it doesn't belong
+# in the "install at various warmth levels" progression above.
 
 echo ""
 echo "━━━ Benchmark 6: Add dependency ━━━"
-run_scenario "add" run_bench "add" \
-	"$WARM_PREP && cp $BENCH_DIR/original-package.json {project}/package.json"
+run_scenario "add" run_bench_warm_add "add"
 
 # ── Summary ────────────────────────────────────────────────────────────────
 
