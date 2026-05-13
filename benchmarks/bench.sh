@@ -447,10 +447,16 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # apples-to-apples guarantee for any non-default override.
 #
 # `advisory_check=off` and `low_download_threshold=0` silence
-# aube's OSV and npm-downloads probes for the `add` scenario.
-# No other PM in the comparison set runs equivalent network probes
-# on add, so leaving them on turns the bench into a partial
-# supply-chain latency measurement: one OSV batch POST plus one
+# aube's OSV-advisory and npm-downloads probes. They only fire
+# inside `aube add`; the install / install-test / ci scenarios
+# never reach `run_gates`, so the env vars are no-ops there and
+# the only practical effect is on `add:aube`. Set on the base
+# `AUBE_ENV` rather than `add:aube` so the policy stays in one
+# place — no incentive to scatter `advisory_check=off` across
+# every future scenario that happens to chain into `add`.
+#
+# Disabled here because no other PM in the comparison set runs
+# equivalent network probes on add: one OSV batch POST plus one
 # downloads GET that other PMs don't pay for, ~200-500ms per run
 # when the public APIs respond and a full `PROBE_TIMEOUT` (8s)
 # when they don't. Off here, on by default in the shipped binary.
