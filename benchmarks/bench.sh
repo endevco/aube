@@ -658,13 +658,11 @@ run_bench_preinstall() {
 }
 
 # Like `run_bench`, but tailored to the `add` scenario: the prepare step
-# restores `package.json` + the saved lockfile (undoing the previous
-# iteration's `add is-odd`) and then runs each tool's frozen install so
-# `node_modules` ends up matching the pre-add lockfile state. The timed
-# iteration therefore measures only the *incremental* add work — resolve
-# is-odd, write to package.json + lockfile, link it in — instead of
-# folding a full install into every run, which is what wiping
-# `node_modules` between iterations did.
+# restores `package.json` + the saved lockfile, then runs each tool's
+# frozen install so `node_modules` matches the pre-add lockfile state.
+# The timed run therefore measures only the *incremental* add work —
+# resolve is-odd, write to package.json + lockfile, link it in — rather
+# than folding a full install into the measurement.
 run_bench_warm_add() {
 	local bench_name=$1
 
@@ -846,13 +844,13 @@ echo "━━━ Benchmark 5: install + run test (already installed) ━━━"
 run_scenario "install-test" run_bench_preinstall "install-test"
 
 # ── Benchmark 6: Add dependency ────────────────────────────────────────────
-# Lockfile, store, and node_modules all warm; the prepare step undoes
-# the previous iteration's `add is-odd` and re-syncs node_modules to
-# the saved lockfile, so the timed run measures only the incremental
-# add work (resolve, lockfile write, link) instead of folding a full
-# install into every iteration. Kept last because the other scenarios
-# are install-shaped and this one is edit-shaped — it doesn't belong
-# in the "install at various warmth levels" progression above.
+# Lockfile, store, and node_modules all warm; the prepare step restores
+# `package.json` + the saved lockfile and re-syncs node_modules to match,
+# so the timed run measures only the incremental add work (resolve,
+# lockfile write, link) instead of folding a full install into the
+# measurement. Kept last because the other scenarios are install-shaped
+# and this one is edit-shaped — it doesn't belong in the "install at
+# various warmth levels" progression above.
 
 echo ""
 echo "━━━ Benchmark 6: Add dependency ━━━"
