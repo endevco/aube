@@ -5745,7 +5745,7 @@ fn filter_graph_to_importers<const N: usize>(
 }
 
 #[cfg(test)]
-mod allow_build_review_tests {
+mod lifecycle_manifest_order_tests {
     use super::order_lifecycle_manifests;
 
     #[test]
