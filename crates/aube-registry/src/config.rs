@@ -1261,16 +1261,24 @@ pub fn registry_uri_key_pub(url: &str) -> String {
 /// registry). Lowercased + trailing-slash-tolerant so different
 /// equivalent spellings (`https://Registry.NPMJS.org/`, no slash,
 /// scheme-relative `//registry.npmjs.org/`) all resolve the same way.
-/// A scheme other than `https`/`http` is rejected — anything else
-/// (mirrors, replays, transports we don't speak) is by definition
-/// not the public registry.
+/// Scheme matching is case-insensitive per RFC 3986; `https`/`http`
+/// pass and anything else (mirrors, replays, transports we don't
+/// speak) is by definition not the public registry.
 fn is_public_npmjs_url(url: &str) -> bool {
     let url = url.trim();
-    let after_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
+    let after_scheme = strip_prefix_ignore_ascii_case(url, "https://")
+        .or_else(|| strip_prefix_ignore_ascii_case(url, "http://"))
         .or_else(|| url.strip_prefix("//"))
         .unwrap_or(url);
+    // No scheme stripped AND no scheme-relative `//` prefix means a
+    // bare authority like `registry.npmjs.org/`. We accept that, but
+    // reject anything whose prefix *looks* like a scheme we didn't
+    // recognise (`ftp:`, `file:`) — `unwrap_or(url)` would otherwise
+    // happily split `ftp://registry.npmjs.org/` on `/` and walk away
+    // believing the host matched.
+    if after_scheme == url && url.contains("://") {
+        return false;
+    }
     let host = after_scheme
         .split_once('/')
         .map(|(h, _)| h)
@@ -1278,6 +1286,19 @@ fn is_public_npmjs_url(url: &str) -> bool {
     let host = host.split_once('@').map(|(_, h)| h).unwrap_or(host);
     let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
     host.eq_ignore_ascii_case("registry.npmjs.org")
+}
+
+/// Strip a literal ASCII prefix from `s` ignoring case, returning the
+/// remainder. Matches the semantics of [`str::strip_prefix`] but
+/// folds case before comparing — used by [`is_public_npmjs_url`]
+/// so a user-supplied `.npmrc` entry like `HTTPS://...` doesn't
+/// fall through and accidentally disable the supply-chain gates.
+fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() < prefix.len() {
+        return None;
+    }
+    let (head, tail) = s.split_at(prefix.len());
+    head.eq_ignore_ascii_case(prefix).then_some(tail)
 }
 
 /// Ensure registry URL has a trailing slash.
@@ -2951,6 +2972,11 @@ mod tests {
             "https://Registry.NPMJS.org/",
             "http://registry.npmjs.org/",
             "//registry.npmjs.org/",
+            // URI schemes are case-insensitive per RFC 3986. A
+            // user-typed `HTTPS://...` in `.npmrc` must not silently
+            // fall through and disable the supply-chain gates.
+            "HTTPS://registry.npmjs.org/",
+            "Http://registry.npmjs.org/",
         ] {
             assert!(is_public_npmjs_url(url), "expected public for {url}");
         }
