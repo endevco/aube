@@ -111,6 +111,7 @@ export default defineConfig({
           { text: "Global virtual store", link: "/package-manager/global-virtual-store" },
           { text: "Lifecycle scripts", link: "/package-manager/lifecycle-scripts" },
           { text: "Jailed builds", link: "/package-manager/jailed-builds" },
+          { text: "Security scanner", link: "/package-manager/security-scanner" },
           { text: "Configuration", link: "/package-manager/configuration" },
           { text: "Registry and auth", link: "/package-manager/registry-auth" },
           { text: "Publishing", link: "/package-manager/publishing" },
@@ -121,6 +122,7 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/security" },
           { text: "Jailed builds", link: "/package-manager/jailed-builds" },
+          { text: "Security scanner", link: "/package-manager/security-scanner" },
         ],
       },
       {

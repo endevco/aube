@@ -232,109 +232,26 @@ scrubbed from the script environment unless explicitly granted via
 ## Pluggable security scanner
 
 `securityScanner` runs a [Bun-compatible security scanner](https://bun.sh/docs/pm/security-scanner-api)
-against the packages an install (or `add`) is about to introduce.
-Drop-in compatible with the existing Bun scanner ecosystem — point
-the setting at the same npm package name you'd put in
-`bunfig.toml#install.security.scanner` and aube loads the module
-through a `node` bridge that adapts Bun's in-process plugin
-contract to a subprocess + JSON-over-stdio shape.
-
-**Fires post-resolve.** Once the resolver has produced a finalized
-graph and before the fetch/link phase starts, aube extracts every
-resolved `(name, version)` pair (root direct deps + every
-transitive — same view Bun's scanner gets) and hands them to the
-scanner. A `fatal` advisory aborts before any tarball downloads
-happen. One `node` process per command invocation, regardless of
-how many packages are in the graph.
-
-`aube add` doesn't have a separate scanner hook — it mutates
-`package.json`, then runs the install pipeline where this gate
-fires.
-
-```yaml
-# aube-workspace.yaml
-securityScanner: "@acme/bun-security-scanner"
-# or a path to a local scanner:
-# securityScanner: ./scripts/scanner.mjs
-```
-
-The scanner module exports the standard Bun shape:
-
-```js
-export const scanner = {
-  version: '1',
-  async scan({ packages }) {
-    // packages: [{ name, version }, ...]
-    return [
-      {
-        level: 'fatal',                 // or 'warn'
-        package: 'evil-pkg',
-        description: 'Known malicious package',
-        url: 'https://socket.dev/...',
-      },
-    ];
-  },
-};
-```
-
-Bun's docs specify the return value is `Advisory[]`. Aube also
-accepts `{ advisories: [...] }` for friendliness.
-
-A `fatal` advisory fails the install with `ERR_AUBE_SECURITY_SCANNER_FATAL`.
-A `warn` advisory surfaces via `WARN_AUBE_SECURITY_SCANNER_FINDING`
-and the install continues. Any other level is logged at debug only.
-
-**Bun runtime APIs aube shims**:
-
-- `import Bun from 'bun'` resolves to aube's virtual module via a
-  Node module-loader hook. `globalThis.Bun` is also populated.
-- `Bun.env` (= `process.env`), `Bun.file(path)` with
-  `.exists() / .text() / .json() / .arrayBuffer() / .bytes()`,
-  and `Bun.write(path, data)`.
-- `Bun.semver.satisfies(version, range)` delegates to the
-  project's `semver` npm package (install it as a dev dep for
-  full compat; aube falls back to exact-equality with a warning
-  if it's not present).
-
-That's the surface real published scanners actually use — the
+against the resolved install graph. Point the setting at the same
+npm package you'd put in Bun's `bunfig.toml#install.security.scanner`
+and aube loads it through a `node` bridge — the
 [oven-sh template](https://github.com/oven-sh/security-scanner-template)
 and [`@socketsecurity/bun-security-scanner`](https://github.com/SocketDev/bun-security-scanner)
 both run unchanged.
 
-**Differences from Bun**:
+```yaml
+# aube-workspace.yaml
+securityScanner: "@acme/bun-security-scanner"
+```
 
-- Requires **Node 22.6+** so the bridge can pass
-  `--experimental-strip-types` to load `.ts` scanner entrypoints
-  directly (Socket's package, for example, ships raw TypeScript
-  with `"exports": "./src/index.ts"`).
-- Bun-runtime APIs outside the shim (`Bun.spawn`, `Bun.password`,
-  `Bun.serve`) will throw; the bridge surfaces this as
-  `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install **fails closed**.
-- A `fatal` advisory on `aube add` exits non-zero with
-  `package.json` still mutated (Bun behaves the same way). Revert
-  via `git checkout package.json` if you don't want to keep the
-  edit.
+The scanner fires post-resolve, sees the full transitive graph
+with resolved versions, and **fails closed** on any scanner
+failure (missing `node`, unresolvable module, timeout, etc.) —
+a configured scanner that can't run is a refusal, not a free
+pass. Requires Node 22.6+. Set `securityScanner: ""` to disable
+when bootstrapping.
 
-Failure modes — `node` missing, scanner module unresolvable,
-non-zero exit, timeout (30s), unparseable JSON — all **fail closed**
-with `ERR_AUBE_SECURITY_SCANNER_FAILED`. A configured scanner that
-can't run is treated as a refusal; silent bypass would defeat the
-point of opting in. Operators bootstrapping a project (scanner npm
-package not yet installed) or recovering from a broken scanner can
-set `securityScanner: ""` in workspace yaml to disable the
-integration until the scanner is back.
-
-Skipped entries: anything with a `local_source` in the resolved
-graph — `file:`, `link:`, workspace siblings, git fetches, remote
-tarballs. The scanner has no public-registry data for these, and
-including them would force every scanner author to special-case
-non-registry rows. Aliased entries
-(`{ "my-alias": "npm:real-pkg@^4" }`) are reported under
-`real-pkg` (the registry name), not the alias.
-
-Empty string (the default) disables the integration entirely.
-
-Settings: [`securityScanner`](/settings/#setting-securityscanner).
+Full reference: [Security scanner](/package-manager/security-scanner).
 
 ## Auditing installed dependencies
 
