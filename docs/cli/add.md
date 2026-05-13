@@ -40,6 +40,12 @@ Writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#
 
 Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore.
 
+### `--allow-low-downloads`
+
+Bypass the [`lowDownloadThreshold`] confirm prompt / refusal for this invocation.
+
+`aube add` looks up each candidate's weekly download count and prompts (interactive) or fails (CI) when the count is below [`lowDownloadThreshold`]. The flag is intended for the cases where you've already verified the package out-of-band — adding a brand-new niche tool, a fresh fork, an internal scratch package — and don't want the prompt to interrupt scripted workflows. Does not affect the OSV malicious-package check, which remains a hard block.
+
 ### `--no-save`
 
 Install without persisting the dependency to `package.json`.

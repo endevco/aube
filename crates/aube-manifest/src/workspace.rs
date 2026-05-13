@@ -440,6 +440,17 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub minimum_release_age_strict: Option<bool>,
 
+    /// OSV `MAL-*` advisory check policy for `aube add`. One of
+    /// `"on"` (default, fail open on fetch error), `"required"` (fail
+    /// closed on fetch error), or `"off"`.
+    #[serde(default)]
+    pub advisory_check: Option<String>,
+
+    /// Weekly-downloads floor for `aube add`. Below this, aube prompts
+    /// for confirmation (or fails non-interactively). 0 disables.
+    #[serde(default)]
+    pub low_download_threshold: Option<u64>,
+
     /// pnpm-style peer dependency escape hatches. Read by
     /// `PeerDependencyRules::resolve` during install; the actual matching
     /// logic lives in `aube`. We only need the container here so the

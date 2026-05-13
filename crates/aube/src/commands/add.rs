@@ -43,6 +43,19 @@ pub struct AddArgs {
         value_parser = parse_allow_build_value,
     )]
     pub allow_build: Vec<String>,
+    /// Bypass the [`lowDownloadThreshold`] confirm prompt / refusal for
+    /// this invocation.
+    ///
+    /// `aube add` looks up each candidate's weekly download count and
+    /// prompts (interactive) or fails (CI) when the count is below
+    /// [`lowDownloadThreshold`]. The flag is intended for the cases
+    /// where you've already verified the package out-of-band — adding
+    /// a brand-new niche tool, a fresh fork, an internal scratch
+    /// package — and don't want the prompt to interrupt scripted
+    /// workflows. Does not affect the OSV malicious-package check,
+    /// which remains a hard block.
+    #[arg(long)]
+    pub allow_low_downloads: bool,
     /// Skip lifecycle scripts (no-op; aube already skips by default).
     #[arg(long, hide = true)]
     pub ignore_scripts: bool,
@@ -658,6 +671,7 @@ pub async fn run(
         save_catalog,
         save_catalog_name,
         allow_build,
+        allow_low_downloads,
         lockfile,
         network,
         virtual_store,
@@ -675,7 +689,15 @@ pub async fn run(
     }
 
     if global {
-        return run_global(packages, allow_build, lockfile, network, virtual_store).await;
+        return run_global(
+            packages,
+            allow_build,
+            allow_low_downloads,
+            lockfile,
+            network,
+            virtual_store,
+        )
+        .await;
     }
 
     // `--workspace` / `-w`: redirect the add at the workspace root
@@ -796,6 +818,29 @@ pub async fn run(
     if !allow_build.is_empty() {
         apply_allow_build_flags(&cwd, &allow_build)?;
     }
+
+    // Supply-chain gates (OSV malicious-package advisories + weekly
+    // downloads floor) run *before* manifest mutation so a refusal
+    // leaves `package.json` untouched. Restricted to registry-bound
+    // names — git, local, workspace, and aliased specs all skip both
+    // checks because the public-registry signal doesn't apply. The
+    // call is no-op when the filtered list is empty.
+    let registry_names = registry_bound_names_for_supply_chain(&cwd, packages);
+    let (advisory_check, low_download_threshold) = super::with_settings_ctx(&cwd, |ctx| {
+        let policy = if aube_settings::resolved::paranoid(ctx) {
+            aube_settings::resolved::AdvisoryCheck::Required
+        } else {
+            aube_settings::resolved::advisory_check(ctx)
+        };
+        (policy, aube_settings::resolved::low_download_threshold(ctx))
+    });
+    super::add_supply_chain::run_gates(
+        &registry_names,
+        advisory_check,
+        low_download_threshold,
+        allow_low_downloads,
+    )
+    .await?;
 
     update_manifest_for_add(
         &cwd,
@@ -1817,6 +1862,63 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
     Ok(())
 }
 
+/// Filter the user-supplied package strings down to the names that
+/// will resolve via the public npm registry, so the supply-chain
+/// gates (`add_supply_chain::run_gates`) skip everything else.
+///
+/// Excluded: git/local/workspace/jsr specs — none of these route
+/// through a public-registry name where an OSV `MAL-*` advisory
+/// or a downloads count would apply.
+///
+/// **Aliased specs are included** on their real registry name
+/// (`my-alias@npm:real-pkg` checks `real-pkg`). Skipping these on
+/// the "user typed it on purpose" theory would let
+/// `my-alias@npm:malicious-pkg` walk past a hard block that's
+/// explicitly described as "not a judgement call."
+///
+/// **Scoped names** (`@scope/name`) are also included: OSV's
+/// batch API supports scoped queries, and the downloads probe
+/// naturally folds them into `DownloadCount::Unknown` so the
+/// prompt skips them without a per-name special case here.
+fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec<String> {
+    let mut names = Vec::with_capacity(packages.len());
+    let workspace_versions = collect_workspace_versions(cwd);
+    for raw in packages {
+        let Ok(spec) = parse_pkg_spec(raw) else {
+            // Parse failures get a richer diagnostic from
+            // `update_manifest_for_add` later — we don't want to
+            // double-report or block the gate on something that
+            // would already fail.
+            continue;
+        };
+        if spec.git_spec.is_some()
+            || spec.local_spec.is_some()
+            || spec.jsr_name.is_some()
+            || aube_util::pkg::is_workspace_spec(&spec.range)
+            || aube_util::pkg::is_catalog_spec(&spec.range)
+        {
+            continue;
+        }
+        // A bare `aube add my-pkg` against a local workspace sibling
+        // resolves locally — no public registry round-trip happens,
+        // so the OSV / downloads probes have nothing to say.
+        if workspace_versions.contains_key(&spec.name) {
+            continue;
+        }
+        // Scoped names (`@scope/name`) stay in the list. OSV's batch
+        // API supports scoped queries — skipping them here would let
+        // a `MAL-*` advisory against `@scope/evil` slip past the
+        // hard block. The downloads probe already folds scoped
+        // packages into `DownloadCount::Unknown` (npm's downloads
+        // API doesn't index them), so the prompt naturally skips
+        // them — no per-name special case needed in the gate.
+        names.push(spec.name);
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Resolve the on-disk lockfile path that a normal `add` would write
 /// to in `project_dir`. Mirrors the `LockfileKind` -> filename mapping
 /// inside `aube_lockfile::write_lockfile_as` so the snapshot/restore
@@ -1861,6 +1963,26 @@ async fn run_filtered(
     if !args.allow_build.is_empty() {
         apply_allow_build_flags(&root, &args.allow_build)?;
     }
+
+    // Supply-chain gates fire once against the workspace root —
+    // applies to every filter-matched importer because they all share
+    // the same set of `packages` strings.
+    let registry_names = registry_bound_names_for_supply_chain(&root, &args.packages);
+    let (advisory_check, low_download_threshold) = super::with_settings_ctx(&root, |ctx| {
+        let policy = if aube_settings::resolved::paranoid(ctx) {
+            aube_settings::resolved::AdvisoryCheck::Required
+        } else {
+            aube_settings::resolved::advisory_check(ctx)
+        };
+        (policy, aube_settings::resolved::low_download_threshold(ctx))
+    });
+    super::add_supply_chain::run_gates(
+        &registry_names,
+        advisory_check,
+        low_download_threshold,
+        args.allow_low_downloads,
+    )
+    .await?;
 
     let mut snapshots = Vec::new();
     let lockfile_path = lockfile_path_for_project(&root);
@@ -1976,6 +2098,7 @@ async fn run_filtered(
 async fn run_global(
     packages: &[String],
     allow_build: Vec<String>,
+    allow_low_downloads: bool,
     lockfile: crate::cli_args::LockfileArgs,
     network: crate::cli_args::NetworkArgs,
     virtual_store: crate::cli_args::VirtualStoreArgs,
@@ -2027,6 +2150,7 @@ async fn run_global(
     let result = run_global_inner(
         packages,
         allow_build,
+        allow_low_downloads,
         &layout,
         &install_dir,
         lockfile,
@@ -2062,9 +2186,11 @@ async fn run_global(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_global_inner(
     packages: &[String],
     allow_build: Vec<String>,
+    allow_low_downloads: bool,
     layout: &super::global::GlobalLayout,
     install_dir: &std::path::Path,
     lockfile: crate::cli_args::LockfileArgs,
@@ -2145,6 +2271,12 @@ async fn run_global_inner(
         // install" even when the user explicitly approved the dep
         // (see Discussion #617).
         allow_build,
+        // The synthetic inner `run()` is the one that actually fires
+        // the supply-chain gate (`add` only checks once, in the main
+        // path). Forward the outer caller's `--allow-low-downloads`
+        // through so `aube add -g --allow-low-downloads <pkg>` skips
+        // the prompt as expected.
+        allow_low_downloads,
         // Propagate the outer caller's flag groups through so the inner
         // run()'s `install_overrides()` calls reset the global slots to the
         // same values rather than wiping them — `set_registry_override`

@@ -66,6 +66,15 @@ _common_setup() {
 	if [ -n "${AUBE_TEST_REGISTRY:-}" ]; then
 		echo "registry=${AUBE_TEST_REGISTRY}" >"$TEST_TEMP_DIR/.npmrc"
 	fi
+
+	# `aube add` runs two supply-chain gates against public APIs
+	# (api.osv.dev for MAL-* advisories, api.npmjs.org for weekly
+	# downloads). Bats tests target the local Verdaccio mirror and
+	# can't depend on outbound network reachability, so disable
+	# both gates wholesale. Tests that specifically exercise the
+	# gates can re-enable them in-test.
+	export AUBE_ADVISORY_CHECK=off
+	export AUBE_LOW_DOWNLOAD_THRESHOLD=0
 }
 
 _common_teardown() {
