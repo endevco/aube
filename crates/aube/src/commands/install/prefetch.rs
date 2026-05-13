@@ -30,6 +30,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// Upper bound on the speculative primer-transitive expansion.
 /// Caps runaway speculative work on huge dep trees and keeps the
@@ -38,6 +39,20 @@ use std::sync::Arc;
 /// expansion is capped — direct deps are always included since the
 /// resolver definitely needs them.
 const MAX_PREFETCH: usize = 128;
+
+/// Cap on concurrent in-flight prefetch GETs. Prefetch is best-effort
+/// background work and must never starve the resolver's foreground
+/// fetches. Without this, a manifest with 88 direct deps + the
+/// 128-cap speculative expansion can dump 216 simultaneous requests
+/// at the registry the instant `aube install` boots — measured on a
+/// local Verdaccio with 50ms-throttle, that thundering herd queues
+/// the resolver's first packument waits behind 200+ siblings (single
+/// fetches blow up to 1.5–2.2s wall vs ~50ms with no prefetch). The
+/// resolver itself runs at `packumentNetworkConcurrency` (default
+/// 256), so a 16-slot prefetch budget gives plenty of headroom for
+/// the resolver's foreground work while still letting prefetch warm
+/// the on-disk cache.
+const PREFETCH_CONCURRENCY: usize = 16;
 
 const REGISTRY_LIKE_PREFIXES: &[&str] = &["npm:"];
 const NON_REGISTRY_SPEC_MARKERS: &[&str] = &[
@@ -114,13 +129,19 @@ pub fn spawn_direct_dep_prefetch(
     } else {
         super::super::packument_cache_dir()
     };
+    // Bound concurrent prefetch GETs so the install-start fanout
+    // doesn't thundering-herd the registry or starve the resolver's
+    // foreground packument fetches. See `PREFETCH_CONCURRENCY` for
+    // why 16 — hermetic Verdaccio measurements showed unbounded
+    // fanout inflating single-packument waits 30–40× under contention.
+    let limiter = Arc::new(Semaphore::new(PREFETCH_CONCURRENCY));
     let direct_count = direct_names.len();
     tracing::debug!(
         "prefetch: spawning {direct_count} direct-dep packument GETs (needs_time={needs_time})"
     );
 
     for name in &direct_names {
-        spawn_one(&client, &cache_dir, name.clone(), needs_time);
+        spawn_one(&client, &cache_dir, &limiter, name.clone(), needs_time);
     }
 
     if speculative_is_disabled() {
@@ -131,6 +152,7 @@ pub fn spawn_direct_dep_prefetch(
     // Running the walk in a background task keeps that cost off the
     // critical path; the single-flight gate in the registry client
     // handles any race with the resolver popping the same name.
+    let limiter = limiter.clone();
     tokio::spawn(async move {
         let mut budget = MAX_PREFETCH;
         let direct_set: BTreeSet<&str> = direct_names.iter().map(String::as_str).collect();
@@ -150,7 +172,7 @@ pub fn spawn_direct_dep_prefetch(
                 if direct_set.contains(t.as_str()) || !fired.insert(t.clone()) {
                     continue;
                 }
-                spawn_one(&client, &cache_dir, t, needs_time);
+                spawn_one(&client, &cache_dir, &limiter, t, needs_time);
                 budget -= 1;
                 transitive_count += 1;
             }
@@ -162,12 +184,21 @@ pub fn spawn_direct_dep_prefetch(
 fn spawn_one(
     client: &Arc<aube_registry::client::RegistryClient>,
     cache_dir: &Path,
+    limiter: &Arc<Semaphore>,
     name: String,
     needs_time: bool,
 ) {
     let client = client.clone();
     let cache_dir = cache_dir.to_path_buf();
+    let limiter = limiter.clone();
     tokio::spawn(async move {
+        // Permit-acquire failures are unreachable in practice
+        // (semaphore is never closed), but `acquire_owned` propagates
+        // the Result anyway — bail silently on the off chance the
+        // runtime is mid-shutdown.
+        let Ok(_permit) = limiter.acquire_owned().await else {
+            return;
+        };
         let result = if needs_time {
             client
                 .fetch_packument_with_time_cached(&name, &cache_dir)
