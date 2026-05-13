@@ -970,7 +970,7 @@ YAML
 		@pnpm.e2e/install-script-example@1.0.0
 	assert_success
 	# The yaml entry was flipped to `true`.
-	run grep -E '"@pnpm.e2e/install-script-example":\s*true' pnpm-workspace.yaml
+	run grep -E "@pnpm\.e2e/install-script-example['\"]?:\s*true" pnpm-workspace.yaml
 	assert_success
 	# And the dep is in the manifest.
 	run grep -F '"@pnpm.e2e/install-script-example"' package.json
