@@ -40,14 +40,29 @@
 //! `exports` at `./src/index.ts` and ships no compile step).
 //! Requires Node 22.6+.
 //!
+//! ## Fired from
+//!
+//! Post-resolve from `install::run` — once the resolver returns a
+//! `LockfileGraph`, [`resolved_packages_for_scanner`] extracts the
+//! full set of `(name, resolved_version)` pairs (root direct deps
+//! plus every transitive) and [`run_scanner`] hands them to the
+//! scanner before linking starts. Matches Bun, which also fires
+//! the scanner against the resolved graph on both `bun add` and
+//! `bun install`.
+//!
+//! `aube add` doesn't have its own scanner hook — it mutates
+//! `package.json` and then runs the same install pipeline, so the
+//! same post-resolve gate covers it. A `fatal` advisory on
+//! `aube add` exits the install non-zero with `package.json`
+//! still mutated (matches Bun); revert via `git checkout` if you
+//! don't want to keep the change.
+//!
+//! Pre-resolve, the manifest-level OSV / downloads gates in
+//! `add_supply_chain.rs` still run on the typed add args — those
+//! are aube-only checks that don't need resolved versions.
+//!
 //! ## Contract differences vs. Bun
 //!
-//! - **Aube fires pre-resolution**, so `packages[i].version` is
-//!   the requested range (`"^4.17.21"`, `"latest"`) rather than
-//!   the resolved version Bun would pass (`"4.17.21"`). Name-
-//!   matching scanners (typosquats, malware — the public-scanner
-//!   case) work identically; exact-version matchers degrade to
-//!   range-aware comparisons via `Bun.semver.satisfies`.
 //! - **`node` must be on PATH** (Bun runs the scanner in-process).
 //!   `node` ≥ 22.6 for TypeScript entrypoints; ≥ 20 for compiled
 //!   JS-only scanners.
@@ -59,14 +74,6 @@
 //!   closed; a configured scanner that can't run is treated as a
 //!   refusal. Set `securityScanner = ""` to disable the integration
 //!   when bootstrapping or recovering from a broken scanner.
-//!
-//! ## Fired from
-//!
-//! - `aube add` — the packages typed on the command line, via
-//!   [`run_scanner`] from `commands::add`.
-//! - `aube install` — direct deps from the root manifest (see
-//!   [`direct_deps_for_scanner`]), via the same [`run_scanner`]
-//!   entry point.
 
 use aube_codes::errors::{ERR_AUBE_SECURITY_SCANNER_FAILED, ERR_AUBE_SECURITY_SCANNER_FATAL};
 use aube_codes::warnings::WARN_AUBE_SECURITY_SCANNER_FINDING;
@@ -88,58 +95,48 @@ const LOADER_HOOK_SOURCE: &str = include_str!("security_scanner_js/loader_hook.m
 const RUNNER_SOURCE: &str = include_str!("security_scanner_js/runner.mjs");
 
 /// One package the scanner will see. Field names match
-/// `Bun.Security.Package`: `name` is the registry name, `version`
-/// is what Bun calls the version specifier (resolved version
-/// under Bun, requested range under aube — see the module-level
-/// note).
+/// `Bun.Security.Package`: `name` is the registry name (alias
+/// entries report the real registry name, not the alias),
+/// `version` is the *resolved* version string the resolver
+/// picked (e.g. `"4.17.21"`, not `"^4.17.21"`).
 #[derive(Debug, Clone, Serialize)]
 pub struct ScannerPackage {
     pub name: String,
     pub version: String,
 }
 
-/// Collect direct deps from a parsed root manifest into the
-/// scanner's input format. Skips workspace / catalog / git / file /
-/// link / jsr / npm-alias specs — the scanner runs against
-/// public-registry names, and none of those route through public
-/// registry names where an external advisory would apply.
-pub fn direct_deps_for_scanner(manifest: &aube_manifest::PackageJson) -> Vec<ScannerPackage> {
-    let mut out = Vec::new();
-    let chains = manifest
-        .dependencies
-        .iter()
-        .chain(manifest.dev_dependencies.iter())
-        .chain(manifest.optional_dependencies.iter());
-    for (name, spec) in chains {
-        if !is_registry_scannable(spec) {
-            continue;
-        }
-        out.push(ScannerPackage {
-            name: name.clone(),
-            version: spec.clone(),
-        });
-    }
-    // BTreeMap iteration is already sorted by key, but
-    // `dependencies` and `devDependencies` will produce duplicates
-    // for packages declared in both. Keep the first occurrence —
-    // `dependencies` outranks dev in the chain order above, so
-    // the production spec wins.
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out.dedup_by(|a, b| a.name == b.name);
+/// Collect the resolved registry packages from a `LockfileGraph`
+/// into the scanner's input format. Mirrors Bun's contract: the
+/// scanner sees the *full installation graph* (root manifest's
+/// direct deps + every transitive resolved by the resolver) with
+/// **resolved versions** (`"4.17.21"`) rather than user-typed
+/// ranges (`"^4.17.21"`).
+///
+/// Skips entries with a `local_source` — those are `file:` /
+/// `link:` / workspace links that resolve outside the public
+/// registry. The scanner has no advisory data for them.
+///
+/// `registry_name()` is used so npm-aliased entries
+/// (`{ "my-alias": "npm:real-pkg@^4" }`) report under the real
+/// registry name `real-pkg`, not the alias.
+///
+/// Order is sorted-by-key (the `BTreeMap` iteration), deduped by
+/// `(name, version)` so the scanner sees one entry per distinct
+/// resolved package even when peer-context produced multiple
+/// `dep_path` nodes that share the same `(name, version)` tuple.
+pub fn resolved_packages_for_scanner(graph: &aube_lockfile::LockfileGraph) -> Vec<ScannerPackage> {
+    let mut out: Vec<ScannerPackage> = graph
+        .packages
+        .values()
+        .filter(|pkg| pkg.local_source.is_none())
+        .map(|pkg| ScannerPackage {
+            name: pkg.registry_name().to_string(),
+            version: pkg.version.clone(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.version.cmp(&b.version)));
+    out.dedup_by(|a, b| a.name == b.name && a.version == b.version);
     out
-}
-
-/// Return `true` when `spec` is a public-registry version range
-/// (e.g. `^1.2.3`, `~4`, `latest`, `*`) and `false` for every
-/// non-registry routing form aube understands.
-fn is_registry_scannable(spec: &str) -> bool {
-    !(aube_util::pkg::is_workspace_spec(spec)
-        || aube_util::pkg::is_catalog_spec(spec)
-        || aube_util::pkg::is_jsr_spec(spec)
-        || aube_util::pkg::is_npm_spec(spec)
-        || aube_util::pkg::is_file_spec(spec)
-        || aube_util::pkg::is_link_spec(spec)
-        || aube_lockfile::parse_git_spec(spec).is_some())
 }
 
 #[derive(Debug, Serialize)]
@@ -448,56 +445,80 @@ mod tests {
         assert!(apply_advisories("scanner", &advs).is_ok());
     }
 
-    #[test]
-    fn registry_scannable_only_keeps_semver_specs() {
-        assert!(is_registry_scannable("^1.0.0"));
-        assert!(is_registry_scannable("~4.17"));
-        assert!(is_registry_scannable("latest"));
-        assert!(is_registry_scannable("*"));
-        assert!(is_registry_scannable("1.2.3 || 1.3.0"));
+    /// Build a minimal `LockedPackage` for graph-fixture tests.
+    /// `aliased_to=Some(real)` simulates an npm-alias entry where
+    /// the manifest key is `name` but the underlying registry
+    /// package is `real`.
+    fn locked(name: &str, version: &str, aliased_to: Option<&str>) -> aube_lockfile::LockedPackage {
+        aube_lockfile::LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            alias_of: aliased_to.map(str::to_string),
+            ..Default::default()
+        }
+    }
 
-        assert!(!is_registry_scannable("workspace:*"));
-        assert!(!is_registry_scannable("workspace:^"));
-        assert!(!is_registry_scannable("catalog:"));
-        assert!(!is_registry_scannable("catalog:default"));
-        assert!(!is_registry_scannable("file:./packages/foo"));
-        assert!(!is_registry_scannable("link:../sibling"));
-        assert!(!is_registry_scannable("jsr:@std/collections@^1"));
-        assert!(!is_registry_scannable("npm:other-pkg@^4"));
-        assert!(!is_registry_scannable("github:kevva/is-negative"));
-        assert!(!is_registry_scannable("git+https://example.com/r.git"));
+    /// Local (`file:` / `link:`) entries set `local_source` —
+    /// the scanner should skip them entirely.
+    fn locked_local(name: &str, version: &str) -> aube_lockfile::LockedPackage {
+        let mut pkg = locked(name, version, None);
+        pkg.local_source = Some(aube_lockfile::LocalSource::Link("./somewhere".into()));
+        pkg
     }
 
     #[test]
-    fn direct_deps_collects_across_dep_kinds_and_dedupes() {
-        let mut manifest = aube_manifest::PackageJson::default();
-        manifest
-            .dependencies
-            .insert("lodash".to_string(), "^4.17.21".to_string());
-        manifest
-            .dev_dependencies
-            .insert("lodash".to_string(), "^4.17.0".to_string());
-        manifest
-            .dev_dependencies
-            .insert("vitest".to_string(), "^2".to_string());
-        manifest
-            .optional_dependencies
-            .insert("fsevents".to_string(), "^2.3".to_string());
-        manifest
-            .dependencies
-            .insert("@my/pkg".to_string(), "workspace:^".to_string());
-        manifest
-            .dependencies
-            .insert("local-thing".to_string(), "file:./local".to_string());
-
-        let packages = direct_deps_for_scanner(&manifest);
-        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, vec!["fsevents", "lodash", "vitest"]);
-        let lodash = packages.iter().find(|p| p.name == "lodash").unwrap();
-        assert_eq!(
-            lodash.version, "^4.17.21",
-            "production spec should win over dev"
+    fn resolved_packages_uses_registry_name_and_skips_local() {
+        // Graph-fixture: one normal entry, one npm-alias entry,
+        // one `file:` entry. The scanner should see the normal +
+        // the alias-resolved real name with their resolved versions,
+        // and skip the local entry.
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph.packages.insert(
+            "lodash@4.17.21".to_string(),
+            locked("lodash", "4.17.21", None),
         );
+        graph.packages.insert(
+            "my-alias@1.2.3".to_string(),
+            locked("my-alias", "1.2.3", Some("real-pkg")),
+        );
+        graph.packages.insert(
+            "local-thing@0.0.0".to_string(),
+            locked_local("local-thing", "0.0.0"),
+        );
+
+        let packages = resolved_packages_for_scanner(&graph);
+        let view: Vec<(&str, &str)> = packages
+            .iter()
+            .map(|p| (p.name.as_str(), p.version.as_str()))
+            .collect();
+        assert_eq!(
+            view,
+            vec![("lodash", "4.17.21"), ("real-pkg", "1.2.3")],
+            "alias should report `real-pkg`, local entry should be filtered out",
+        );
+    }
+
+    #[test]
+    fn resolved_packages_dedupes_peer_context_duplicates() {
+        // Peer-context produces multiple `dep_path` nodes that share
+        // the same `(name, version)` tuple — e.g. styled-components
+        // appears once under `react@18.2.0` peer-suffix and once
+        // under `react@19.0.0`. The scanner only cares about the
+        // (name, version) pair, so the output should be deduped.
+        let mut graph = aube_lockfile::LockfileGraph::default();
+        graph.packages.insert(
+            "styled-components@6.1.0(react@18.2.0)".to_string(),
+            locked("styled-components", "6.1.0", None),
+        );
+        graph.packages.insert(
+            "styled-components@6.1.0(react@19.0.0)".to_string(),
+            locked("styled-components", "6.1.0", None),
+        );
+
+        let packages = resolved_packages_for_scanner(&graph);
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "styled-components");
+        assert_eq!(packages[0].version, "6.1.0");
     }
 
     /// Returns true iff `node --version` exits 0. e2e tests gate

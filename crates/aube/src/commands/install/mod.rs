@@ -2127,20 +2127,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let manifest = super::load_manifest_or_default(&cwd)?;
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
 
-    // Pluggable security scanner runs against the root manifest's
-    // direct deps *before* the resolver fires. Sits past both the
-    // warm-path short-circuits above so repeated no-op installs
-    // don't pay the subprocess cost — the gate is conceptually
-    // "your deps are about to materialize," not "you typed
-    // install." A `fatal` advisory aborts here, leaving the
-    // installed tree (if any) exactly as it was. Empty
-    // `securityScanner` (the default) is a free no-op.
-    let scanner = super::with_settings_ctx(&cwd, aube_settings::resolved::security_scanner);
-    if !scanner.is_empty() {
-        let scanner_packages = super::security_scanner::direct_deps_for_scanner(&manifest);
-        super::security_scanner::run_scanner(&scanner, &cwd, &scanner_packages).await?;
-    }
-
     // Pre-resolver packument prefetch. Reads `package.json` keys and
     // fires fire-and-forget GETs for every registry-shaped direct dep
     // before workspace yaml load, settings resolve, lockfile parse,
@@ -4012,6 +3998,22 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // chain back to the importer.
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
+
+            // Bun-compatible security scanner runs against the
+            // *resolved* graph — full transitive set with concrete
+            // versions, matching Bun's contract. Fires before fetch
+            // so a `fatal` advisory aborts without wasting bandwidth
+            // on tarball downloads. Fail-closed on any subprocess
+            // failure (see `commands::security_scanner`); empty
+            // `securityScanner` (the default) short-circuits to a
+            // no-op without spawning `node`.
+            let scanner = super::with_settings_ctx(&cwd, aube_settings::resolved::security_scanner);
+            if !scanner.is_empty() {
+                let scanner_packages =
+                    super::security_scanner::resolved_packages_for_scanner(&graph);
+                super::security_scanner::run_scanner(&scanner, &cwd, &scanner_packages).await?;
+            }
+
             if let Some(p) = prog_ref {
                 p.set_phase("fetching");
             }

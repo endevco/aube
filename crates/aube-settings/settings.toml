@@ -276,12 +276,17 @@ same npm package name (or path) you'd put under
 a `node` bridge that adapts Bun's in-process plugin contract to a
 subprocess + JSON-over-stdio shape.
 
-**Fired from**:
+**Fired post-resolve**: after the resolver returns a finalized
+graph and before the fetch/link phase. The scanner sees the full
+installation graph (root direct deps + every transitive) with
+*resolved versions* (`\"4.17.21\"`, not `\"^4.17.21\"`), exactly
+matching Bun's contract. A `fatal` advisory aborts before any
+tarball downloads happen.
 
-- `aube add` — the packages typed on the command line.
-- `aube install` — direct deps from the root `package.json`, past
-  the warm-path short-circuits (so repeated no-op installs don't pay
-  the subprocess cost).
+The single post-resolve gate covers both `aube install` and
+`aube add` — `aube add` runs the install pipeline internally,
+which is where the gate fires. One `node` process per command
+invocation, regardless of how many packages are being scanned.
 
 **Configuring an existing Bun scanner**:
 
@@ -335,14 +340,6 @@ accepts `{ advisories: [...] }` for friendliness.
 
 **Differences vs. Bun**:
 
-- Bun runs the scanner *after* the resolver, so
-  `packages[i].version` is the resolved version string
-  (`\"4.17.21\"`). Aube runs it *before* the resolver, so
-  `packages[i].version` is the requested range
-  (`\"^4.17.21\"`, `\"latest\"`). Scanners that match on package
-  *name* (the typosquat/malware case) work identically; scanners
-  that match on exact version strings degrade to range-aware
-  comparisons via `Bun.semver.satisfies`.
 - Aube spawns `node`; Bun runs the scanner in-process via its own
   JS runtime. Requires **Node 22.6+** for the
   `--experimental-strip-types` flag aube passes so that `.ts`
@@ -352,6 +349,12 @@ accepts `{ advisories: [...] }` for friendliness.
   `Bun.password`, `Bun.serve`, the web frameworks, etc.) will
   throw at runtime; the bridge surfaces this as
   `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install **fails closed**.
+- `aube add` doesn't have a separate scanner hook — it mutates
+  `package.json`, then runs the install pipeline where the
+  post-resolve gate fires. A `fatal` advisory exits non-zero with
+  `package.json` still mutated (Bun behaves the same way); revert
+  via `git checkout package.json` if you don't want to keep the
+  edit.
 
 **Levels**: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
 `warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues).

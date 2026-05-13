@@ -239,12 +239,17 @@ the setting at the same npm package name you'd put in
 through a `node` bridge that adapts Bun's in-process plugin
 contract to a subprocess + JSON-over-stdio shape.
 
-**Fires on**:
+**Fires post-resolve.** Once the resolver has produced a finalized
+graph and before the fetch/link phase starts, aube extracts every
+resolved `(name, version)` pair (root direct deps + every
+transitive — same view Bun's scanner gets) and hands them to the
+scanner. A `fatal` advisory aborts before any tarball downloads
+happen. One `node` process per command invocation, regardless of
+how many packages are in the graph.
 
-- `aube add` — the packages typed on the command line.
-- `aube install` — direct deps from the root `package.json`, past
-  the warm-path short-circuits so repeated no-op installs don't pay
-  the subprocess cost.
+`aube add` doesn't have a separate scanner hook — it mutates
+`package.json`, then runs the install pipeline where this gate
+fires.
 
 ```yaml
 # aube-workspace.yaml
@@ -298,12 +303,6 @@ both run unchanged.
 
 **Differences from Bun**:
 
-- Bun runs the scanner *after* the resolver, so `packages[i].version`
-  is the resolved version. Aube runs it *before* the resolver, so
-  `packages[i].version` is the requested range (`"^4.17.21"`,
-  `"latest"`). Name-matching scanners (typosquats, malware) work
-  identically; exact-version matchers degrade to range-aware
-  comparisons via `Bun.semver.satisfies`.
 - Requires **Node 22.6+** so the bridge can pass
   `--experimental-strip-types` to load `.ts` scanner entrypoints
   directly (Socket's package, for example, ships raw TypeScript
@@ -311,6 +310,10 @@ both run unchanged.
 - Bun-runtime APIs outside the shim (`Bun.spawn`, `Bun.password`,
   `Bun.serve`) will throw; the bridge surfaces this as
   `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install **fails closed**.
+- A `fatal` advisory on `aube add` exits non-zero with
+  `package.json` still mutated (Bun behaves the same way). Revert
+  via `git checkout package.json` if you don't want to keep the
+  edit.
 
 Failure modes — `node` missing, scanner module unresolvable,
 non-zero exit, timeout (30s), unparseable JSON — all **fail closed**
@@ -321,8 +324,13 @@ package not yet installed) or recovering from a broken scanner can
 set `securityScanner: ""` in workspace yaml to disable the
 integration until the scanner is back.
 
-Skipped specs: git, local, workspace, JSR, aliased. Those route
-through code paths a public-data scanner has no useful answer for.
+Skipped entries: anything with a `local_source` in the resolved
+graph — `file:`, `link:`, workspace siblings, git fetches, remote
+tarballs. The scanner has no public-registry data for these, and
+including them would force every scanner author to special-case
+non-registry rows. Aliased entries
+(`{ "my-alias": "npm:real-pkg@^4" }`) are reported under
+`real-pkg` (the registry name), not the alias.
 
 Empty string (the default) disables the integration entirely.
 
