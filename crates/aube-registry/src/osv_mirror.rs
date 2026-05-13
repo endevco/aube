@@ -303,9 +303,6 @@ fn is_stale(index: &IndexFile, max_age: Duration) -> bool {
     }
 }
 
-/// Perform the conditional GET + extract pass. On 304, returns the
-/// prior index with `fetched_at` bumped. On 200, downloads the
-/// zip, rebuilds the index, and writes both files atomically.
 /// Perform the conditional GET + extract pass against `url`
 /// (always [`OSV_BULK_URL`] in production; tests aim at a
 /// wiremock'd endpoint via [`OsvMirror::refresh_if_stale_from`]).
