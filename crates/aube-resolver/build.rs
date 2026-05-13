@@ -12,7 +12,14 @@ use primer_schema::Seed;
 
 const DEV_TOP: usize = 100;
 const RELEASE_TOP: usize = 2000;
-const DEFAULT_VERSION_CAP: usize = 1000;
+// 100 covers ≥97% of resolved versions across our 7 benchmark fixtures
+// (aube-bench plus the vlt-benchmarks set: astro, babylon, large, next,
+// svelte, vue). Bumping back to v=1000 only buys ~1.1pp of aggregate
+// hit-rate for +7 MB on the embedded primer; misses fall back cleanly
+// via `PickResult::NoMatch` in resolve.rs (one extra packument fetch
+// per long-tail version pick — typically old `react-is`, hoisted
+// `@typescript-eslint/*`, or stale `core-js@2.x` style versions).
+const DEFAULT_VERSION_CAP: usize = 100;
 const FAST_COMPRESSION_LEVEL: i32 = 10;
 const RELEASE_CI_COMPRESSION_LEVEL: i32 = 19;
 // Bump when the on-disk rkyv schema (`src/primer_schema.rs`) changes
