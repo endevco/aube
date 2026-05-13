@@ -277,7 +277,7 @@ pub const ALL: &[CodeMeta] = &[
         name: ERR_AUBE_ADVISORY_CHECK_FAILED,
         category: category::REGISTRY_NETWORK,
         description: "`aube add` couldn't reach the OSV advisory API and `advisoryCheck = required` is set. Distinct from `ERR_AUBE_MALICIOUS_PACKAGE` so CI tooling can tell a network outage from a confirmed malicious advisory.",
-        exit_code: Some(48),
+        exit_code: Some(49),
     },
     // Scripts / build
     CodeMeta {
