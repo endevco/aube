@@ -12,7 +12,11 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 
 const top = Number(args.get('top') ?? 2000)
-const versionsArg = args.get('versions') ?? '1000'
+// Keep this default in sync with `DEFAULT_VERSION_CAP` in
+// crates/aube-resolver/build.rs and AUBE_PRIMER_VERSION_CAP in
+// .github/workflows/release.yml — the calibrated trade-off is
+// documented in the build.rs comment.
+const versionsArg = args.get('versions') ?? '100'
 const versions = versionsArg === 'all' ? Infinity : Number(versionsArg)
 const out = resolve(args.get('out') ?? `crates/aube-resolver/data/primer-top${top}.json`)
 const namesFile = args.get('names')
