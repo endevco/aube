@@ -296,19 +296,36 @@ mod tests {
     fn bundled_primer_synthesizes_tarball_urls() {
         // The generator omits the tarball URL when it matches the
         // deterministic `{registry}/{name}/-/{unscoped}-{version}.tgz`
-        // pattern. Verify the runtime fills it in: every dist in the
-        // embedded primer must surface a non-empty tarball URL.
+        // pattern. Verify the runtime fills it in correctly: every
+        // dist must surface a tarball URL whose path segments match
+        // the package name + version we asked for, so a synthesis bug
+        // that drops or swaps either field can't pass silently.
         let Some((name, _, _)) = PRIMER_INDEX.first() else {
             return;
         };
         let packument = super::get(name).expect("primer hit").packument();
-        let dist = packument
+        let (version, meta) = packument
             .versions
-            .values()
-            .find_map(|v| v.dist.as_ref())
+            .iter()
+            .find(|(_, v)| v.dist.is_some())
             .expect("packument has at least one version with dist metadata");
-        assert!(dist.tarball.starts_with("https://"));
-        assert!(dist.tarball.ends_with(".tgz"));
+        let dist = meta.dist.as_ref().unwrap();
+        assert!(
+            dist.tarball.starts_with("https://"),
+            "tarball: {}",
+            dist.tarball
+        );
+        assert!(dist.tarball.ends_with(".tgz"), "tarball: {}", dist.tarball);
+        assert!(
+            dist.tarball.contains(*name),
+            "tarball {} missing package name {name}",
+            dist.tarball,
+        );
+        assert!(
+            dist.tarball.contains(version),
+            "tarball {} missing version {version}",
+            dist.tarball,
+        );
     }
 
     #[test]
