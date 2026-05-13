@@ -24,6 +24,11 @@ const PRIMER_DATA_SCHEMA: u32 = 2;
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("resolver crate lives under crates/aube-resolver")
+        .to_path_buf();
     let source = std::env::var_os("AUBE_PRIMER_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -38,6 +43,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_TOP");
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_VERSION_CAP");
     println!("cargo:rerun-if-env-changed=AUBE_REQUIRE_PRIMER");
+    println!("cargo:rerun-if-env-changed=AUBE_PRIMER_SUPPLEMENT");
+    println!("cargo:rerun-if-env-changed=AUBE_PRIMER_SUPPLEMENT_MIN_STACKS");
     println!("cargo:rerun-if-changed={}", source.display());
     let json = source.with_extension("json");
     println!("cargo:rerun-if-changed={}", json.display());
@@ -54,12 +61,8 @@ fn main() {
             let _ = std::fs::remove_file(&json);
             true
         } else {
-            let script = manifest_dir
-                .parent()
-                .and_then(Path::parent)
-                .map(|w| w.join("scripts/generate-primer.mjs"));
-            matches!(&script, Some(s) if s.is_file())
-                && generate(&manifest_dir, &source, primer_top())
+            let script = workspace.join("scripts/generate-primer.mjs");
+            script.is_file() && generate(&workspace, &source, primer_top())
         };
         if !generated {
             if primer_required() {
@@ -121,24 +124,31 @@ fn version_cap() -> usize {
     DEFAULT_VERSION_CAP
 }
 
-fn generate(manifest_dir: &Path, source: &Path, top: usize) -> bool {
-    let workspace = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("resolver crate lives under crates/aube-resolver");
+fn generate(workspace: &Path, source: &Path, top: usize) -> bool {
     let json = source.with_extension("json");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
 
-    let status = match Command::new("node")
-        .arg(workspace.join("scripts/generate-primer.mjs"))
+    let mut cmd = Command::new("node");
+    cmd.arg(workspace.join("scripts/generate-primer.mjs"))
         .arg("--top")
         .arg(top.to_string())
         .arg("--versions")
         .arg(version_cap().to_string())
         .arg("--out")
-        .arg(&json)
-        .status()
-    {
+        .arg(&json);
+
+    // Pass through supplement-override env vars. The script defaults to
+    // fetching the upstream `transitives.json` published by
+    // `endevco/aube-primer-packages`; setting `AUBE_PRIMER_SUPPLEMENT` to
+    // a URL, file path, or empty string overrides that.
+    if let Some(sup) = std::env::var_os("AUBE_PRIMER_SUPPLEMENT") {
+        cmd.arg("--supplement").arg(sup);
+    }
+    if let Some(min) = std::env::var_os("AUBE_PRIMER_SUPPLEMENT_MIN_STACKS") {
+        cmd.arg("--supplement-min-stacks").arg(min);
+    }
+
+    let status = match cmd.status() {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!(

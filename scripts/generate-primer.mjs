@@ -17,20 +17,60 @@ const versions = versionsArg === 'all' ? Infinity : Number(versionsArg)
 const out = resolve(args.get('out') ?? `crates/aube-resolver/data/primer-top${top}.json`)
 const namesFile = args.get('names')
 const namesUrl = args.get('names-url') ?? 'https://raw.githubusercontent.com/endevco/aube-primer-packages/main/data/packages.json'
+// The supplement is a JSON document (`{packages: [{name, score, ...}]}`
+// or a plain string array) that adds packages to the primer beyond the
+// popularity list. Mining and hosting live in
+// `endevco/aube-primer-packages` — this script just consumes the
+// rendered JSON. Pass a URL or local path via `--supplement`; pass an
+// empty value to disable. The default URL 404s harmlessly until
+// upstream publishes the file, at which point existing builds pick it
+// up automatically.
+const supplementUrl = args.get('supplement-url') ?? 'https://raw.githubusercontent.com/endevco/aube-primer-packages/main/data/transitives.json'
+const supplementArg = args.get('supplement')
+const supplementSource = supplementArg === '' ? null : (supplementArg ?? supplementUrl)
+const supplementMinStacks = Number(args.get('supplement-min-stacks') ?? 5)
 
 if (!Number.isInteger(top) || top < 1) throw new Error('--top must be a positive integer')
 if (versions !== Infinity && (!Number.isInteger(versions) || versions < 1)) {
   throw new Error('--versions must be a positive integer or "all"')
 }
+if (!Number.isInteger(supplementMinStacks) || supplementMinStacks < 1) {
+  throw new Error('--supplement-min-stacks must be a positive integer')
+}
 
-const names = namesFile
+const popularNames = namesFile
   ? parseNames(await readFile(namesFile, 'utf8'), namesFile)
   : await fetchPopularNames(namesUrl)
-if (!Array.isArray(names)) throw new Error('package-name source must be a JSON array')
+if (!Array.isArray(popularNames)) throw new Error('package-name source must be a JSON array')
+
+const names = popularNames.slice(0, top)
+const seen = new Set(names)
+let supplementAdded = 0
+if (supplementSource) {
+  const doc = await loadSupplement(supplementSource)
+  if (doc) {
+    const entries = Array.isArray(doc) ? doc : doc.packages
+    if (!Array.isArray(entries)) {
+      throw new Error(`supplement ${supplementSource} must be a JSON array or have a 'packages' array`)
+    }
+    for (const entry of entries) {
+      const name = typeof entry === 'string' ? entry : entry?.name
+      const score = typeof entry === 'string' ? Infinity : (entry?.score ?? Infinity)
+      if (typeof name !== 'string' || !name) continue
+      if (score < supplementMinStacks) continue
+      if (seen.has(name)) continue
+      names.push(name)
+      seen.add(name)
+      supplementAdded++
+    }
+    console.error(`supplement: added ${supplementAdded} packages from ${supplementSource} (min score ${supplementMinStacks})`)
+  }
+}
+const total = names.length
 
 const primer = {}
-for (const [index, name] of names.slice(0, top).entries()) {
-  console.error(`[${index + 1}/${top}] ${name} (${versions === Infinity ? 'all versions' : `latest ${versions}`})`)
+for (const [index, name] of names.entries()) {
+  console.error(`[${index + 1}/${total}] ${name} (${versions === Infinity ? 'all versions' : `latest ${versions}`})`)
   const seed = await packumentSeed(name, versions)
   if (seed) primer[name] = seed
 }
@@ -194,6 +234,22 @@ function hasTrustedPublisher(user) {
 function hasProvenance(attestations) {
   const predicate = attestations?.provenance?.predicateType
   return typeof predicate === 'string' && /^https:\/\/slsa\.dev\/provenance\/v\d+$/.test(predicate)
+}
+
+// Load the supplement from a URL or local path. A 404 (upstream hasn't
+// published the file yet) is treated as "no supplement" rather than an
+// error so the supplement plumbing can land before the upstream side.
+async function loadSupplement(source) {
+  if (/^https?:\/\//i.test(source)) {
+    const { res, body } = await fetchBodyWithRetry(source, undefined, (res) => res.text())
+    if (res.status === 404) {
+      console.error(`supplement: ${source} not found (404); proceeding without it`)
+      return null
+    }
+    if (!res.ok) throw new Error(`supplement ${source}: HTTP ${res.status}`)
+    return JSON.parse(body)
+  }
+  return JSON.parse(await readFile(resolve(source), 'utf8'))
 }
 
 async function fetchPopularNames(url) {
