@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-include = ["src/**/*.rs", "build.rs"]
+include = ["src/**/*.rs", "src/**/*.mjs", "build.rs"]
 
 [[bin]]
 name = "aube"
