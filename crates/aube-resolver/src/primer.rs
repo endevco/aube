@@ -143,6 +143,61 @@ pub(crate) fn get(name: &str) -> Option<Seed> {
     rkyv::from_bytes::<Seed, rkyv::rancor::Error>(&archived).ok()
 }
 
+/// Cheap existence probe against the static primer index. Doesn't
+/// decode the rkyv payload, just binary-searches the in-memory
+/// `(name, offset, len)` slice.
+pub fn contains(name: &str) -> bool {
+    PRIMER_INDEX
+        .binary_search_by(|(candidate, _, _)| candidate.cmp(&name))
+        .is_ok()
+}
+
+/// One-hop transitive dep names for the preferred version of `name`,
+/// filtered to those the primer doesn't already cover.
+///
+/// Used by the install command's speculative pre-resolver prefetch:
+/// names returned here are the packuments the resolver will likely
+/// fetch over the network once it pops past `name`, so warming the
+/// on-disk packument cache for them hides the round-trip behind
+/// downstream work.
+///
+/// The "preferred version" is `dist-tags.latest` when present,
+/// otherwise the lexicographically-largest version string (which
+/// is a reasonable approximation since primer entries are typically
+/// recent and don't carry pre-releases). Production, peer, and
+/// optional dep names are unioned; dev deps are excluded (the
+/// resolver never walks them transitively). Names the primer
+/// already covers are filtered out because the resolver short-
+/// circuits to the bundled metadata for those and never fetches
+/// a packument.
+///
+/// Returns `None` when `name` is not in the primer. Returns
+/// `Some(vec![])` when `name` is in the primer but every transitive
+/// is also primer-covered.
+pub fn one_hop_deps_outside_primer(name: &str) -> Option<Vec<String>> {
+    let seed = get(name)?;
+    let pack = &seed.packument;
+    let preferred = pack
+        .dist_tags
+        .get("latest")
+        .cloned()
+        .or_else(|| pack.versions.iter().map(|v| v.version.clone()).max())?;
+    let vm = pack.versions.iter().find(|v| v.version == preferred)?;
+    let meta = &vm.metadata;
+    let mut out = BTreeMap::<String, ()>::new();
+    for k in meta
+        .dependencies
+        .keys()
+        .chain(meta.peer_dependencies.keys())
+        .chain(meta.optional_dependencies.keys())
+    {
+        if !contains(k) {
+            out.insert(k.clone(), ());
+        }
+    }
+    Some(out.into_keys().collect())
+}
+
 pub(crate) fn covers_cutoff(cutoff: &str) -> bool {
     generated_at().is_some_and(|generated_at| generated_at.as_str() >= cutoff)
 }
@@ -273,6 +328,39 @@ mod tests {
             return;
         };
         assert!(super::get(name).is_some());
+    }
+
+    #[test]
+    fn contains_matches_primer_index_membership() {
+        let Some((name, _, _)) = PRIMER_INDEX.first() else {
+            return;
+        };
+        assert!(contains(name));
+        assert!(!contains("\0not-a-real-primer-package\0"));
+    }
+
+    #[test]
+    fn one_hop_deps_outside_primer_is_none_for_unknown_name() {
+        assert!(one_hop_deps_outside_primer("\0not-a-real-primer-package\0").is_none());
+    }
+
+    #[test]
+    fn one_hop_deps_outside_primer_excludes_primer_covered_names() {
+        // Walk the index until we find a primer entry with at least
+        // one non-empty preferred version, then assert no returned
+        // name appears in the primer (the filter contract).
+        for (name, _, _) in PRIMER_INDEX.iter() {
+            let Some(deps) = one_hop_deps_outside_primer(name) else {
+                continue;
+            };
+            for dep in &deps {
+                assert!(
+                    !contains(dep),
+                    "{name}: returned dep {dep} is primer-covered and should have been filtered"
+                );
+            }
+            return;
+        }
     }
 
     #[test]

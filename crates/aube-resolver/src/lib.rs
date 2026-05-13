@@ -21,7 +21,10 @@ pub use peer_context::{
     hoist_auto_installed_peers,
 };
 pub use platform::{SupportedArchitectures, is_supported};
-pub use primer::{PruneStats as PrimerPruneStats, prune_cache as prune_primer_cache};
+pub use primer::{
+    PruneStats as PrimerPruneStats, one_hop_deps_outside_primer as primer_one_hop_deps,
+    prune_cache as prune_primer_cache,
+};
 pub use trust::{MissingTimeDetails as MissingTrustTimeDetails, TrustDowngradeDetails};
 pub use trust::{TrustEvidence, TrustExcludeParseError, TrustExcludeRules};
 pub use types::{
