@@ -28,6 +28,7 @@
 //! but skips the primer-transitive expansion.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Upper bound on the speculative primer-transitive expansion.
@@ -74,6 +75,13 @@ fn speculative_is_disabled() -> bool {
 /// integrity-keyed lockfile fast path and never request packuments,
 /// so prefetch is pure bandwidth waste). Spec parsing skips
 /// workspace/file/link/git/http/catalog protocols and `npm:` aliases.
+///
+/// Direct-dep GETs are fired synchronously (no per-name decode cost).
+/// The speculative primer-transitive expansion runs in a separate
+/// background task so the zstd decode of primer entries doesn't sit
+/// on install startup; the registry client's single-flight gate keeps
+/// the deferred prefetches from racing the resolver into duplicate
+/// GETs.
 pub fn spawn_direct_dep_prefetch(
     manifest: &aube_manifest::PackageJson,
     cwd: &std::path::Path,
@@ -92,55 +100,59 @@ pub fn spawn_direct_dep_prefetch(
     if direct_names.is_empty() {
         return;
     }
-    let names = expand_with_primer_transitives(&direct_names);
     let client = Arc::new(super::super::make_client(cwd).with_network_mode(network_mode));
     let cache_dir = super::super::packument_cache_dir();
-    let total = names.len();
     let direct_count = direct_names.len();
-    tracing::debug!(
-        "prefetch: spawning {total} packument GETs ({direct_count} direct + {} primer-transitive)",
-        total.saturating_sub(direct_count)
-    );
+    tracing::debug!("prefetch: spawning {direct_count} direct-dep packument GETs");
 
-    for name in names {
-        let client = client.clone();
-        let cache_dir = cache_dir.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client.fetch_packument_cached(&name, &cache_dir).await {
-                tracing::debug!(name = %name, error = %e, "prefetch fetch failed");
-            }
-        });
+    for name in &direct_names {
+        spawn_one(&client, &cache_dir, name.clone());
     }
-}
 
-/// Union direct deps with their one-hop primer-covered transitives.
-/// Direct deps are always included unconditionally — they're
-/// known-needed work, not speculation. The [`MAX_PREFETCH`] cap only
-/// limits the primer-transitive expansion, so a manifest with
-/// hundreds of direct deps simply skips speculative work rather than
-/// dropping packuments the resolver will definitely ask for. Honors
-/// `AUBE_DISABLE_SPECULATIVE_PREFETCH=1` for users that want the
-/// pre-expansion behavior back.
-fn expand_with_primer_transitives(direct_names: &[String]) -> Vec<String> {
-    let mut out: BTreeSet<String> = direct_names.iter().cloned().collect();
-    if speculative_is_disabled() || out.len() >= MAX_PREFETCH {
-        return out.into_iter().collect();
+    if speculative_is_disabled() {
+        return;
     }
-    for name in direct_names {
-        if out.len() >= MAX_PREFETCH {
-            break;
-        }
-        let Some(transitives) = aube_resolver::primer_one_hop_deps(name) else {
-            continue;
-        };
-        for t in transitives {
-            if out.len() >= MAX_PREFETCH {
+    // Defer the primer-transitive expansion: each `primer::get` decodes
+    // a zstd-compressed rkyv entry, which adds up across N direct deps.
+    // Running the walk in a background task keeps that cost off the
+    // critical path; the single-flight gate in the registry client
+    // handles any race with the resolver popping the same name.
+    tokio::spawn(async move {
+        let mut budget = MAX_PREFETCH;
+        let direct_set: BTreeSet<&str> = direct_names.iter().map(String::as_str).collect();
+        let mut fired: BTreeSet<String> = BTreeSet::new();
+        let mut transitive_count = 0usize;
+        for name in &direct_names {
+            if budget == 0 {
                 break;
             }
-            out.insert(t);
+            let Some(transitives) = aube_resolver::primer_one_hop_deps(name) else {
+                continue;
+            };
+            for t in transitives {
+                if budget == 0 {
+                    break;
+                }
+                if direct_set.contains(t.as_str()) || !fired.insert(t.clone()) {
+                    continue;
+                }
+                spawn_one(&client, &cache_dir, t);
+                budget -= 1;
+                transitive_count += 1;
+            }
         }
-    }
-    out.into_iter().collect()
+        tracing::debug!("prefetch: spawned {transitive_count} primer-transitive packument GETs");
+    });
+}
+
+fn spawn_one(client: &Arc<aube_registry::client::RegistryClient>, cache_dir: &Path, name: String) {
+    let client = client.clone();
+    let cache_dir = cache_dir.to_path_buf();
+    tokio::spawn(async move {
+        if let Err(e) = client.fetch_packument_cached(&name, &cache_dir).await {
+            tracing::debug!(name = %name, error = %e, "prefetch fetch failed");
+        }
+    });
 }
 
 fn has_lockfile(cwd: &std::path::Path) -> bool {
@@ -210,32 +222,6 @@ mod tests {
         assert!(is_registry_spec("*"));
         assert!(is_registry_spec("latest"));
         assert!(is_registry_spec(">=1.0 <2.0"));
-    }
-
-    #[test]
-    fn expand_preserves_all_direct_names_under_cap() {
-        let direct = vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()];
-        let expanded = expand_with_primer_transitives(&direct);
-        for name in &direct {
-            assert!(expanded.contains(name), "missing direct dep {name}");
-        }
-    }
-
-    #[test]
-    fn expand_preserves_all_direct_names_even_above_cap() {
-        // Direct deps are always included unconditionally — the cap
-        // only limits speculative primer-transitive expansion.
-        let n = MAX_PREFETCH + 50;
-        let direct: Vec<String> = (0..n).map(|i| format!("pkg-{i:04}")).collect();
-        let expanded = expand_with_primer_transitives(&direct);
-        assert_eq!(
-            expanded.len(),
-            n,
-            "every direct dep must survive the expansion"
-        );
-        for name in &direct {
-            assert!(expanded.contains(name));
-        }
     }
 
     #[test]
