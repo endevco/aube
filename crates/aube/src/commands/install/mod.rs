@@ -3990,6 +3990,28 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
 
+            // Mirror-backed transitive OSV `MAL-*` gate. Off by
+            // default (`advisoryCheckOnInstall = off`); when the
+            // user opts in, the post-resolve transitive set is
+            // checked against the locally synced OSV `MAL-*`
+            // dump. Fires before the pluggable scanner because a
+            // confirmed-malicious advisory is a stronger signal
+            // than a scanner finding and the error message is
+            // more actionable. `aube add` itself runs its
+            // CLI-name gate against the live OSV API at the
+            // command-handler boundary — this gate is the
+            // catch-all that covers every install entry point
+            // including `add`'s chained install, so a malicious
+            // transitive dep still gets blocked there.
+            let aoi = super::with_settings_ctx(
+                &cwd,
+                aube_settings::resolved::advisory_check_on_install,
+            );
+            if !matches!(aoi, aube_settings::resolved::AdvisoryCheckOnInstall::Off) {
+                super::add_supply_chain::run_transitive_osv_gate_via_mirror(&cwd, &graph, aoi)
+                    .await?;
+            }
+
             // Bun-compatible security scanner runs against the
             // *resolved* graph — full transitive set with concrete
             // versions, matching Bun's contract. Fires before fetch

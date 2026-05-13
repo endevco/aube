@@ -24,6 +24,7 @@ Aube generates this page from [`settings.toml`](https://github.com/endevco/aube/
 | [`minimumReleaseAgeStrict`](#setting-minimumreleaseagestrict) | `bool` | Fail the install when no version satisfies the minimumReleaseAge cutoff. |
 | [`securityScanner`](#setting-securityscanner) | `string` | Bun-compatible security scanner module. |
 | [`advisoryCheck`](#setting-advisorycheck) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check on `aube add`. |
+| [`advisoryCheckOnInstall`](#setting-advisorycheckoninstall) | `"on" \| "required" \| "off"` | OSV `MAL-*` advisory check on every install (uses a local mirror). |
 | [`lowDownloadThreshold`](#setting-lowdownloadthreshold) | `int` | Weekly-download floor for `aube add` (typosquat prompt). |
 | [`allowedUnpopularPackages`](#setting-allowedunpopularpackages) | `list<string>` | Glob patterns exempted from the `lowDownloadThreshold` gate. |
 | [`paranoid`](#setting-paranoid) | `bool` | Turn on the strict-security setting bundle in one switch. |
@@ -376,10 +377,16 @@ OSV `MAL-*` advisory check on `aube add`.
 - Workspace YAML keys: `advisoryCheck`
 
 `aube add` batch-queries [OSV](https://osv.dev) for malicious-package
-advisories (`MAL-*`) on every package about to land in `package.json`.
-A hit fails the install with `ERR_AUBE_MALICIOUS_PACKAGE` and a link to
-the advisory. Transitive deps and packages already in the lockfile are
-not re-checked — the gate is the moment of human intent.
+advisories (`MAL-*`) on every package about to land in `package.json`,
+then runs the same batch once more after resolution against the full
+transitive closure. A hit at either step fails the install with
+`ERR_AUBE_MALICIOUS_PACKAGE` and a link to the advisory.
+
+`aube add` always queries the live OSV API directly — by design, since
+the gate is the moment of human intent and the freshest signals matter
+most then. For OSV-checking every `aube install` against the resolved
+graph (not just `aube add`), see `advisoryCheckOnInstall`, which uses a
+locally synced mirror to avoid per-install network round-trips.
 
 - `on` (default): fail closed on a malicious-package hit; fail open
   (continue with a `WARN_AUBE_ADVISORY_CHECK_FAILED`) when the API can't
@@ -387,6 +394,41 @@ not re-checked — the gate is the moment of human intent.
 - `required`: same fail-closed behavior on hits, plus fail closed on
   fetch errors. Use in hardened CI. Included in the `paranoid` bundle.
 - `off`: skip the check entirely.
+
+### `advisoryCheckOnInstall` {#setting-advisorycheckoninstall}
+
+OSV `MAL-*` advisory check on every install (uses a local mirror).
+
+- Type: `"on" | "required" | "off"`
+- Default: `"off"`
+- Environment: `npm_config_advisory_check_on_install`, `NPM_CONFIG_ADVISORY_CHECK_ON_INSTALL`, `AUBE_ADVISORY_CHECK_ON_INSTALL`
+- .npmrc keys: `advisoryCheckOnInstall`, `advisory-check-on-install`
+- Workspace YAML keys: `advisoryCheckOnInstall`
+
+When enabled, every `aube install` runs the same OSV `MAL-*` advisory
+check that `aube add` does against the post-resolve transitive graph,
+backed by a local mirror of OSV's npm advisory dump. A hit fails the
+install with `ERR_AUBE_MALICIOUS_PACKAGE` — the same exit as
+`advisoryCheck`. `aube add` itself ignores this setting and continues
+to query the live API for the freshest signal at the moment of
+human intent.
+
+The mirror lives at `$XDG_CACHE_HOME/aube/osv/npm/` and lazily
+refreshes from
+`https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip`
+(roughly tens of MB) with an `If-None-Match` revalidation. A miss
+between refreshes won't catch an advisory published in the last
+~day; for the latest signals at add time, keep using `advisoryCheck`
+and run `aube add` for new deps.
+
+- `off` (default): plain `aube install` skips the OSV check. `aube add`
+  is unaffected.
+- `on`: every install checks the resolved graph against the mirror.
+  Fail open (continue with `WARN_AUBE_OSV_MIRROR_REFRESH_FAILED`) when
+  the mirror can't be refreshed.
+- `required`: as `on`, plus fail closed on mirror refresh failures
+  with `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use in hardened CI where a
+  stale or unreachable mirror should block the install.
 
 ### `lowDownloadThreshold` {#setting-lowdownloadthreshold}
 

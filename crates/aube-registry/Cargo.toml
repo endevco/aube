@@ -28,6 +28,7 @@ sonic-rs = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -37,3 +38,4 @@ tar = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = "0.6"
 proptest = "1"
+zip = { workspace = true }

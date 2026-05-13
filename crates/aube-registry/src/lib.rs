@@ -147,6 +147,7 @@ where
 pub mod client;
 pub mod config;
 pub mod jsr;
+pub mod osv_mirror;
 pub mod slow_metadata;
 pub mod supply_chain;
 

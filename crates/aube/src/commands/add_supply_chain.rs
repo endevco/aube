@@ -25,11 +25,15 @@
 use aube_codes::errors::{
     ERR_AUBE_ADVISORY_CHECK_FAILED, ERR_AUBE_LOW_DOWNLOAD_PACKAGE, ERR_AUBE_MALICIOUS_PACKAGE,
 };
-use aube_codes::warnings::{WARN_AUBE_ADVISORY_CHECK_FAILED, WARN_AUBE_LOW_DOWNLOAD_PACKAGE};
+use aube_codes::warnings::{
+    WARN_AUBE_ADVISORY_CHECK_FAILED, WARN_AUBE_LOW_DOWNLOAD_PACKAGE,
+    WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
+};
+use aube_registry::osv_mirror::OsvMirror;
 use aube_registry::supply_chain::{
     DownloadCount, advisory_url, fetch_malicious_advisories, fetch_weekly_downloads_with,
 };
-use aube_settings::resolved::AdvisoryCheck;
+use aube_settings::resolved::{AdvisoryCheck, AdvisoryCheckOnInstall};
 use miette::miette;
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -103,6 +107,149 @@ pub async fn run_gates(
         }
     }
     Ok(())
+}
+
+/// Mirror-backed transitive OSV `MAL-*` check for every install.
+///
+/// `aube add` already runs the [live-API CLI-name gate](`run_gates`)
+/// for the freshest signal at the moment of human intent. This one
+/// runs on every install (`aube install`, `aube ci`, `aube add`'s
+/// chained install, frozen reinstalls, …) when
+/// `advisoryCheckOnInstall != off`, trading sub-day freshness for a
+/// local lookup that doesn't hit `api.osv.dev` on every reinstall.
+///
+/// Policy mapping (mirrors the live-API gate's shape so CI configs
+/// that have `advisoryCheck = required` can mirror that bit onto
+/// `advisoryCheckOnInstall = required` without surprise):
+/// - `Off` → no-op.
+/// - `On` → mirror refresh failures degrade to `WARN_AUBE_OSV_MIRROR_REFRESH_FAILED`
+///   and a `tracing::warn!`; install continues against the prior
+///   (possibly empty) on-disk index.
+/// - `Required` → mirror refresh failures map to
+///   `ERR_AUBE_ADVISORY_CHECK_FAILED`. Hits map to
+///   `ERR_AUBE_MALICIOUS_PACKAGE` under both `On` and `Required`,
+///   same as the live-API gate.
+pub async fn run_transitive_osv_gate_via_mirror(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    policy: AdvisoryCheckOnInstall,
+) -> miette::Result<()> {
+    if matches!(policy, AdvisoryCheckOnInstall::Off) {
+        return Ok(());
+    }
+    let names = transitive_registry_names(cwd, graph);
+    if names.is_empty() {
+        return Ok(());
+    }
+    let Some(cache_dir) = aube_store::dirs::cache_dir() else {
+        // `$HOME` (or platform equivalent) is unset, so we can't
+        // open the mirror. Same policy split as a refresh failure
+        // — `Required` is a hard stop, `On` is a warning.
+        tracing::warn!(
+            code = WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
+            "OSV mirror cache dir unavailable (HOME/XDG_CACHE_HOME unset); skipping install-time advisory check"
+        );
+        if matches!(policy, AdvisoryCheckOnInstall::Required) {
+            return Err(miette!(
+                code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                "OSV mirror cache dir unavailable and `advisoryCheckOnInstall = required` is set"
+            ));
+        }
+        return Ok(());
+    };
+    let mirror = OsvMirror::open(&cache_dir);
+    let client = match OsvMirror::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                code = WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
+                "OSV mirror probe client init failed: {e}"
+            );
+            if matches!(policy, AdvisoryCheckOnInstall::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "OSV mirror probe client could not be initialised and `advisoryCheckOnInstall = required` is set: {e}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    if let Err(e) = mirror.refresh_if_stale_default(&client).await {
+        tracing::warn!(
+            code = WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
+            "OSV mirror refresh failed: {e}"
+        );
+        if matches!(policy, AdvisoryCheckOnInstall::Required) {
+            return Err(miette!(
+                code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                "OSV mirror refresh failed and `advisoryCheckOnInstall = required` is set: {e}"
+            ));
+        }
+        // Fall through: the in-memory cache is still empty on a
+        // first-time-ever refresh failure, in which case
+        // `lookup_advisories` returns `NotInitialized` below and
+        // we apply the same fail-open semantics.
+    }
+    let hits = match mirror.lookup_advisories(&names) {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::warn!(
+                code = WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
+                "OSV mirror lookup failed: {e}"
+            );
+            if matches!(policy, AdvisoryCheckOnInstall::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "OSV mirror lookup failed and `advisoryCheckOnInstall = required` is set: {e}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    if hits.is_empty() {
+        return Ok(());
+    }
+    let mut lines = vec!["refusing to install malicious package(s):".to_string()];
+    for hit in &hits {
+        lines.push(format!(
+            "  - {} ({}: {})",
+            hit.package,
+            hit.advisory_id,
+            advisory_url(&hit.advisory_id),
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Set `advisoryCheckOnInstall = off` to bypass (not recommended).".to_string());
+    Err(miette!(
+        code = ERR_AUBE_MALICIOUS_PACKAGE,
+        "{}",
+        lines.join("\n")
+    ))
+}
+
+/// Distinct public-npmjs registry names in `graph`, filtered to
+/// match the CLI-name gate's `registry_bound_names_for_supply_chain`
+/// shape so a scoped registry override (`@myorg:registry=...`) or a
+/// swapped default registry doesn't ship internal package names to
+/// OSV. Workspace / `link:` / `file:` entries drop out via
+/// `LockedPackage::local_source.is_none()`. Sorted + deduped so
+/// aliased entries (`{"my-alias": "npm:lodash@^4"}`) collapse onto
+/// their real registry name.
+fn transitive_registry_names(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+) -> Vec<String> {
+    let npm_config = aube_registry::config::NpmConfig::load(cwd);
+    let mut names: Vec<String> = graph
+        .packages
+        .values()
+        .filter(|pkg| pkg.local_source.is_none())
+        .map(|pkg| pkg.registry_name().to_string())
+        .filter(|name| npm_config.is_public_npmjs(name))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Parse `allowedUnpopularPackages` entries into compiled
@@ -327,5 +474,99 @@ mod tests {
         assert!(pats[0].matches("@myorg/nested-name"));
         assert!(!pats[0].matches("@otherorg/utils"));
         assert!(!pats[0].matches("myorg-utils"));
+    }
+
+    fn registry_pkg(name: &str, version: &str) -> aube_lockfile::LockedPackage {
+        aube_lockfile::LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn transitive_registry_names_skips_local_source_entries() {
+        // `file:` / `link:` / workspace edges resolve outside the
+        // public registry — OSV has nothing to say about them, and
+        // forwarding the workspace package name to OSV could leak
+        // an internal name to a public API.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let mut linked = registry_pkg("@workspace/util", "1.0.0");
+        linked.local_source = Some(aube_lockfile::LocalSource::Link("../util".into()));
+        packages.insert("@workspace/util@1.0.0".to_string(), linked);
+        let graph = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let names = transitive_registry_names(tmp.path(), &graph);
+        assert_eq!(names, vec!["lodash".to_string()]);
+    }
+
+    #[test]
+    fn transitive_registry_names_dedups_by_registry_name() {
+        // Alias entries (`{"my-alias": "npm:lodash@^4"}`) and the
+        // real package both report under `registry_name() = "lodash"`.
+        // The mirror lookup shouldn't see duplicates — and shouldn't
+        // surface the alias name to the public API either.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let mut aliased = registry_pkg("my-alias", "4.17.21");
+        aliased.alias_of = Some("lodash".to_string());
+        packages.insert("my-alias@4.17.21".to_string(), aliased);
+        let graph = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let names = transitive_registry_names(tmp.path(), &graph);
+        assert_eq!(names, vec!["lodash".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn run_transitive_osv_gate_via_mirror_off_short_circuits() {
+        // `advisoryCheckOnInstall = off` is the default for every
+        // user that hasn't opted in. A `LockfileGraph` with real
+        // entries must not refresh the on-disk mirror or hit the
+        // network — that would defeat the "no per-install network
+        // cost" promise of the install-time gate.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let graph = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            run_transitive_osv_gate_via_mirror(tmp.path(), &graph, AdvisoryCheckOnInstall::Off,)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_transitive_osv_gate_via_mirror_empty_graph_is_noop() {
+        // No public-npmjs entries → nothing to check. The mirror
+        // should not even be opened, much less refreshed.
+        let graph = aube_lockfile::LockfileGraph::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            run_transitive_osv_gate_via_mirror(tmp.path(), &graph, AdvisoryCheckOnInstall::On,)
+                .await
+                .is_ok()
+        );
     }
 }

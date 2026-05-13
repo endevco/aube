@@ -446,6 +446,15 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub advisory_check: Option<String>,
 
+    /// OSV `MAL-*` advisory check policy for every `aube install`,
+    /// backed by a local mirror of OSV's npm dump. Independent of
+    /// `advisory_check`, which only fires on `aube add`. Values:
+    /// `"on"` (refresh-on-stale, fail-open on refresh error),
+    /// `"required"` (fail-closed on refresh error), or `"off"`
+    /// (default).
+    #[serde(default)]
+    pub advisory_check_on_install: Option<String>,
+
     /// Weekly-downloads floor for `aube add`. Below this, aube prompts
     /// for confirmation (or fails non-interactively). 0 disables.
     #[serde(default)]

@@ -149,7 +149,9 @@ Settings: [`minimumReleaseAge`](/settings/#setting-minimumreleaseage),
 
 `aube add` checks every package you name on the command line before adding
 it to your manifest. Transitive deps and packages already in the lockfile
-aren't re-checked.
+aren't re-checked at add time. (For an opt-in install-time OSV check that
+also covers the transitive set on every install, see [Install-time OSV
+check](#install-time-osv-check) below.)
 
 Two signals, with different response levels:
 
@@ -204,6 +206,42 @@ independently.
 Settings: [`advisoryCheck`](/settings/#setting-advisorycheck),
 [`lowDownloadThreshold`](/settings/#setting-lowdownloadthreshold),
 [`allowedUnpopularPackages`](/settings/#setting-allowedunpopularpackages).
+
+## Install-time OSV check
+
+`advisoryCheck` only runs on `aube add` — the moment of human intent. To
+also OSV-check every `aube install` (CI runs, fresh clones, re-installs
+after pulling main, …) against the post-resolve transitive graph, opt
+into `advisoryCheckOnInstall`:
+
+```yaml
+advisoryCheckOnInstall: on   # off by default
+```
+
+When enabled, aube maintains a local mirror of OSV's npm advisory
+dump at `$XDG_CACHE_HOME/aube/osv/npm/` (the bulk zip at
+`osv-vulnerabilities.storage.googleapis.com/npm/all.zip`, roughly
+tens of MB) and lazily refreshes it with an ETag-conditional GET
+every 24 hours. Hits map to the same `ERR_AUBE_MALICIOUS_PACKAGE`
+exit as `advisoryCheck`. The mirror means there's no per-install
+network round-trip to `api.osv.dev` — most installs hit a cached
+JSON index that loads in milliseconds.
+
+Trade-off: the mirror lags reality by up to ~24h. An advisory
+published in the last day won't be in your local index unless a
+refresh happens to fall after it. For the latest signal at add
+time, keep using `advisoryCheck` — it always queries the live API.
+
+- `off` (default): plain `aube install` skips the OSV check entirely.
+  `aube add` and `advisoryCheck` are unaffected.
+- `on`: refresh-on-stale; install proceeds against the prior index
+  if the mirror can't be refreshed
+  (`WARN_AUBE_OSV_MIRROR_REFRESH_FAILED`).
+- `required`: as `on`, but mirror refresh failures map to
+  `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use in hardened CI where a
+  stale or unreachable mirror should block.
+
+Settings: [`advisoryCheckOnInstall`](/settings/#setting-advisorycheckoninstall).
 
 ## Block exotic transitive dependencies
 
