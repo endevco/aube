@@ -228,19 +228,38 @@ A `fatal` advisory fails the install with `ERR_AUBE_SECURITY_SCANNER_FATAL`.
 A `warn` advisory surfaces via `WARN_AUBE_SECURITY_SCANNER_FINDING`
 and the install continues. Any other level is logged at debug only.
 
+**Bun runtime APIs aube shims**:
+
+- `import Bun from 'bun'` resolves to aube's virtual module via a
+  Node module-loader hook. `globalThis.Bun` is also populated.
+- `Bun.env` (= `process.env`), `Bun.file(path)` with
+  `.exists() / .text() / .json() / .arrayBuffer() / .bytes()`,
+  and `Bun.write(path, data)`.
+- `Bun.semver.satisfies(version, range)` delegates to the
+  project's `semver` npm package (install it as a dev dep for
+  full compat; aube falls back to exact-equality with a warning
+  if it's not present).
+
+That's the surface real published scanners actually use — the
+[oven-sh template](https://github.com/oven-sh/security-scanner-template)
+and [`@socketsecurity/bun-security-scanner`](https://github.com/SocketDev/bun-security-scanner)
+both run unchanged.
+
 **Differences from Bun**:
 
 - Bun runs the scanner *after* the resolver, so `packages[i].version`
   is the resolved version. Aube runs it *before* the resolver, so
   `packages[i].version` is the requested range (`"^4.17.21"`,
-  `"latest"`). Scanners that match on package *name* (typosquats,
-  malware) work identically; scanners that match on exact version
-  strings will see misses.
-- Aube spawns `node` rather than running the scanner in-process,
-  so `node` must be on `PATH`. TypeScript scanners must be compiled
-  to JS — published Bun-scanner npm packages already are.
-- Aube can't run scanners that depend on Bun-specific runtime
-  APIs (`Bun.spawn`, `Bun.file`).
+  `"latest"`). Name-matching scanners (typosquats, malware) work
+  identically; exact-version matchers degrade to range-aware
+  comparisons via `Bun.semver.satisfies`.
+- Requires **Node 22.6+** so the bridge can pass
+  `--experimental-strip-types` to load `.ts` scanner entrypoints
+  directly (Socket's package, for example, ships raw TypeScript
+  with `"exports": "./src/index.ts"`).
+- Bun-runtime APIs outside the shim (`Bun.spawn`, `Bun.password`,
+  `Bun.serve`) will throw; the bridge surfaces this as
+  `WARN_AUBE_SECURITY_SCANNER_FAILED` and the install fails open.
 
 Failure modes — `node` missing, scanner module unresolvable,
 non-zero exit, timeout (30s), unparseable JSON — emit

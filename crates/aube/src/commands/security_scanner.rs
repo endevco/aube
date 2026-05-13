@@ -1,45 +1,69 @@
 //! Bun-compatible pluggable security scanner.
 //!
 //! Loads and runs a [Bun Security Scanner](https://bun.sh/docs/pm/security-scanner-api)
-//! module. Drop-in compatible with the existing Bun ecosystem of
-//! scanner packages — the user configures the same npm package
-//! name in `aube-workspace.yaml#securityScanner` that they would
-//! in Bun's `bunfig.toml#install.security.scanner`, and aube loads
-//! the module through a `node` bridge that adapts Bun's in-process
-//! plugin API to a subprocess + JSON-over-stdio shape.
+//! module under `node` with the Bun runtime APIs the public
+//! scanner ecosystem actually uses (`Bun.semver.satisfies`,
+//! `Bun.env`, `Bun.file`, `import Bun from 'bun'`) shimmed in.
+//! Drop-in compatible with the
+//! [official template](https://github.com/oven-sh/security-scanner-template)
+//! and SocketDev's `@socketsecurity/bun-security-scanner`.
 //!
-//! **Fired from**:
+//! ## Architecture
+//!
+//! Each invocation drops three small `.mjs` files into a fresh
+//! temp dir:
+//!
+//! - `bun_shim.mjs` — runtime values for `Bun.env` / `Bun.file` /
+//!   `Bun.semver.satisfies` / `Bun.write`. `Bun.semver` tries to
+//!   delegate to the project's `semver` npm package (near-universal
+//!   transitive dep) and falls back to a naive comparator with a
+//!   one-time stderr warning.
+//! - `loader_hook.mjs` — Node module-loader hook registered via
+//!   `module.register()`. Intercepts the `'bun'` specifier so
+//!   `import Bun from 'bun'` in the scanner resolves to the shim.
+//! - `runner.mjs` — the bridge entry. Installs the hook, eagerly
+//!   loads the shim (so `globalThis.Bun` is populated for scanners
+//!   that don't import explicitly), dynamic-imports the user's
+//!   scanner module, reads `{packages}` on stdin, calls
+//!   `scanner.scan()`, writes the `Advisory[]` on stdout.
+//!
+//! aube spawns:
+//!
+//! ```text
+//! node --experimental-strip-types <runner.mjs>
+//!   AUBE_SCANNER_SPEC=<spec>
+//!   AUBE_BRIDGE_DIR=<temp>
+//! ```
+//!
+//! `--experimental-strip-types` lets node load `.ts` scanner
+//! entrypoints directly (Socket's package, for example, points
+//! `exports` at `./src/index.ts` and ships no compile step).
+//! Requires Node 22.6+.
+//!
+//! ## Contract differences vs. Bun
+//!
+//! - **Aube fires pre-resolution**, so `packages[i].version` is
+//!   the requested range (`"^4.17.21"`, `"latest"`) rather than
+//!   the resolved version Bun would pass (`"4.17.21"`). Name-
+//!   matching scanners (typosquats, malware — the public-scanner
+//!   case) work identically; exact-version matchers degrade to
+//!   range-aware comparisons via `Bun.semver.satisfies`.
+//! - **`node` must be on PATH** (Bun runs the scanner in-process).
+//!   `node` ≥ 22.6 for TypeScript entrypoints; ≥ 20 for compiled
+//!   JS-only scanners.
+//! - **Bun-runtime APIs outside the shim's scope** aren't
+//!   available — calls like `Bun.spawn`, `Bun.password`, or
+//!   `Bun.serve` will throw at runtime and the scanner subprocess
+//!   exits non-zero. The bridge surfaces this as
+//!   `WARN_AUBE_SECURITY_SCANNER_FAILED`; install fails open.
+//!
+//! ## Fired from
+//!
 //! - `aube add` — the packages typed on the command line, via
 //!   [`run_scanner`] from `commands::add`.
 //! - `aube install` — direct deps from the root manifest (see
 //!   [`direct_deps_for_scanner`]), via the same [`run_scanner`]
 //!   entry point.
-//!
-//! `add` is the moment-of-human-intent gate; `install` is the
-//! "your project's deps are about to materialize" gate. Matches
-//! Bun, which runs its scanner on both `bun add` and `bun install`.
-//!
-//! ## Contract differences vs. Bun
-//!
-//! Bun runs the scanner *after* the resolver picks concrete
-//! versions, so `package.version` is the resolved version string
-//! (e.g. `"4.17.21"`). aube runs it *before* the resolver, so
-//! `package.version` is the requested range verbatim from the
-//! manifest (e.g. `"^4.17.21"`, `"latest"`). Scanners that match
-//! on exact version strings will see misses they wouldn't under
-//! Bun; scanners that match on package *name* (the
-//! typosquat/malware case, which is the vast majority of public
-//! scanners) work identically.
-//!
-//! Bun loads the scanner module in-process via its own JS runtime;
-//! aube spawns `node` because aube is Rust and can't host JS
-//! itself. Functionally equivalent for any scanner that doesn't
-//! depend on Bun-specific runtime APIs (`Bun.spawn`, `Bun.file`,
-//! etc.). TypeScript scanners must be compiled to JS before use —
-//! `node` doesn't strip type annotations natively. The official
-//! [security-scanner-template](https://github.com/oven-sh/security-scanner-template)
-//! already ships compiled JS in its npm tarball, as do all the
-//! commercial scanners.
 
 use aube_codes::errors::ERR_AUBE_SECURITY_SCANNER_FATAL;
 use aube_codes::warnings::{WARN_AUBE_SECURITY_SCANNER_FAILED, WARN_AUBE_SECURITY_SCANNER_FINDING};
@@ -49,100 +73,22 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-/// Hard upper bound on how long the scanner may run. A scanner
-/// that hangs forever shouldn't be able to wedge `aube install`.
-/// 30s mirrors what npm and bun use for similar install-time hooks.
+/// Hard upper bound on how long the scanner may run. 30s mirrors
+/// what npm and Bun use for similar install-time hooks.
 const SCANNER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Inline ESM runner that aube hands to `node` via `-e`. Resolves
-/// the user's scanner module (npm package name → node_modules
-/// lookup; relative path → file URL), reads the JSON payload from
-/// stdin, calls `scanner.scan(payload)`, and writes the resulting
-/// advisory array to stdout. Mirrors Bun's in-process plugin
-/// contract so the user's scanner module sees the exact same call
-/// shape it'd see under `bun install`.
-///
-/// Failures (resolution error, missing `scan()`, thrown exception)
-/// exit non-zero with a stderr line — `invoke()` then surfaces
-/// `WARN_AUBE_SECURITY_SCANNER_FAILED` and the install fails open.
-///
-/// Bun's docs specify the return value is `Advisory[]`. We also
-/// accept `{ advisories: [...] }` as a friendly fallback for
-/// scanners that wrap their result.
-const NODE_BRIDGE_RUNNER: &str = r#"
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
-import { resolve as pathResolve } from 'node:path';
-
-const spec = process.env.AUBE_SCANNER_SPEC;
-if (!spec) {
-  console.error('AUBE_SCANNER_SPEC env not set');
-  process.exit(2);
-}
-const cwd = process.cwd();
-
-async function loadScanner(spec) {
-  // Path-like specs (`./foo`, `/foo`, `C:\\foo`) → resolve to a
-  // file URL so dynamic import sees an unambiguous target.
-  if (spec.startsWith('.') || spec.startsWith('/') || /^[a-zA-Z]:[/\\]/.test(spec)) {
-    const abs = pathResolve(cwd, spec);
-    return import(pathToFileURL(abs).href);
-  }
-  // Bare npm package name → node resolves from cwd's
-  // `node_modules`. Try ESM first; fall back to CJS via
-  // `createRequire` for older scanner packages that haven't
-  // shipped an ESM export.
-  try {
-    return await import(spec);
-  } catch (e) {
-    try {
-      const require = createRequire(pathResolve(cwd, 'package.json'));
-      return require(spec);
-    } catch {
-      throw e;
-    }
-  }
-}
-
-let mod;
-try {
-  mod = await loadScanner(spec);
-} catch (e) {
-  console.error(`failed to load scanner ${spec}: ${e?.message ?? e}`);
-  process.exit(3);
-}
-
-// Accept the canonical Bun shape (`export const scanner = {...}`)
-// plus a couple of common variants — `export default scanner`,
-// default-export-is-the-scanner, or default-export-has-a-scanner-
-// property. Keeps the bridge from breaking when scanner authors
-// rearrange their entry points.
-const scanner = mod?.scanner ?? mod?.default?.scanner ?? mod?.default ?? mod;
-if (!scanner || typeof scanner.scan !== 'function') {
-  console.error(`scanner ${spec} does not export a 'scan' function`);
-  process.exit(4);
-}
-
-let buf = '';
-for await (const chunk of process.stdin) buf += chunk;
-const payload = JSON.parse(buf);
-
-let result;
-try {
-  result = await scanner.scan(payload);
-} catch (e) {
-  console.error(`scanner.scan() threw: ${e?.message ?? e}`);
-  process.exit(5);
-}
-
-const advisories = Array.isArray(result) ? result : (result?.advisories ?? []);
-process.stdout.write(JSON.stringify(advisories));
-"#;
+/// Bridge JS payloads, embedded at compile time so the install
+/// pipeline has no on-disk runtime dependency on these files
+/// living next to the binary.
+const BUN_SHIM_SOURCE: &str = include_str!("security_scanner_js/bun_shim.mjs");
+const LOADER_HOOK_SOURCE: &str = include_str!("security_scanner_js/loader_hook.mjs");
+const RUNNER_SOURCE: &str = include_str!("security_scanner_js/runner.mjs");
 
 /// One package the scanner will see. Field names match
 /// `Bun.Security.Package`: `name` is the registry name, `version`
-/// is what Bun calls the version specifier (resolved version under
-/// Bun, requested range under aube — see the module-level note).
+/// is what Bun calls the version specifier (resolved version
+/// under Bun, requested range under aube — see the module-level
+/// note).
 #[derive(Debug, Clone, Serialize)]
 pub struct ScannerPackage {
     pub name: String,
@@ -154,11 +100,6 @@ pub struct ScannerPackage {
 /// link / jsr / npm-alias specs — the scanner runs against
 /// public-registry names, and none of those route through public
 /// registry names where an external advisory would apply.
-///
-/// Used by `aube install` to feed every direct dep through the
-/// scanner on a manifest-driven install. `aube add` has its own
-/// per-spec parsing path that produces the same `ScannerPackage`
-/// shape but starts from the user-typed argument list.
 pub fn direct_deps_for_scanner(manifest: &aube_manifest::PackageJson) -> Vec<ScannerPackage> {
     let mut out = Vec::new();
     let chains = manifest
@@ -178,8 +119,8 @@ pub fn direct_deps_for_scanner(manifest: &aube_manifest::PackageJson) -> Vec<Sca
     // BTreeMap iteration is already sorted by key, but
     // `dependencies` and `devDependencies` will produce duplicates
     // for packages declared in both. Keep the first occurrence —
-    // `dependencies` outranks dev in the chain order above, so the
-    // production spec wins.
+    // `dependencies` outranks dev in the chain order above, so
+    // the production spec wins.
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.dedup_by(|a, b| a.name == b.name);
     out
@@ -216,8 +157,7 @@ struct Advisory {
 /// Outcome categories used when classifying scanner advisories.
 /// `Fatal` blocks the install; `Warn` emits a warning and
 /// continues; `Other` is logged at debug level and otherwise
-/// ignored — future-proof for additional levels without changing
-/// the contract.
+/// ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Fatal,
@@ -233,11 +173,9 @@ fn classify(level: &str) -> Severity {
     }
 }
 
-/// Run `scanner_spec` against the candidate `packages`. Empty
-/// `scanner_spec` or empty `packages` short-circuits to `Ok(())`
-/// without spawning `node` — the caller already filtered to
-/// registry-bound names, and there's nothing useful to scan
-/// beyond that.
+/// Run `scanner_spec` against `packages`. Empty `scanner_spec` or
+/// empty `packages` short-circuits to `Ok(())` without spawning
+/// `node`.
 pub async fn run_scanner(
     scanner_spec: &str,
     cwd: &Path,
@@ -250,11 +188,10 @@ pub async fn run_scanner(
         Ok(a) => a,
         Err(e) => {
             // Fail open: a misconfigured scanner (node not
-            // installed, module not in `node_modules` yet,
-            // scanner threw) shouldn't break every install in
-            // the project. The operator sees the warning and
-            // can fix their setup; the install continues using
-            // whatever other gates are configured.
+            // installed, module not in node_modules yet, scanner
+            // threw) shouldn't break every install in the
+            // project. Surface a warning and let the install
+            // continue using whatever other gates are configured.
             tracing::warn!(
                 code = WARN_AUBE_SECURITY_SCANNER_FAILED,
                 "securityScanner `{scanner_spec}` failed: {e}"
@@ -263,6 +200,26 @@ pub async fn run_scanner(
         }
     };
     apply_advisories(scanner_spec, &advisories)
+}
+
+/// Materialize the bridge `.mjs` files into a fresh temp dir.
+/// Each invocation gets its own dir so concurrent scanners don't
+/// race on a shared temp file, and so a stale temp from a crash
+/// can't leak state into the next run. The dir is cleaned up by
+/// `tempfile::TempDir` going out of scope after the subprocess
+/// finishes.
+fn write_bridge_dir() -> Result<tempfile::TempDir, String> {
+    let dir = tempfile::Builder::new()
+        .prefix("aube-bun-scanner-")
+        .tempdir()
+        .map_err(|e| format!("failed to create bridge temp dir: {e}"))?;
+    let write = |name: &str, body: &str| -> Result<(), String> {
+        std::fs::write(dir.path().join(name), body)
+            .map_err(|e| format!("failed to write bridge file {name}: {e}"))
+    };
+    write("bun_shim.mjs", BUN_SHIM_SOURCE)?;
+    write("loader_hook.mjs", LOADER_HOOK_SOURCE)?;
+    Ok(dir)
 }
 
 async fn invoke(
@@ -274,18 +231,28 @@ async fn invoke(
     let body = serde_json::to_vec(&request)
         .map_err(|e| format!("failed to encode scanner request: {e}"))?;
 
+    let bridge = write_bridge_dir()?;
     let mut cmd = tokio::process::Command::new("node");
     cmd.current_dir(cwd)
+        // `--experimental-strip-types` lets node import `.ts`
+        // entrypoints (Socket's scanner package is the canonical
+        // example — ships raw TS with `"exports": "./src/index.ts"`).
+        // No-op on node ≥ 23.6 where it's default-on. Errors on
+        // < 22.6 with a clear "unknown flag" message that the
+        // operator can act on. We don't condition on a version
+        // probe here — the failure path already fails open.
+        .arg("--experimental-strip-types")
         .arg("--input-type=module")
         .arg("-e")
-        .arg(NODE_BRIDGE_RUNNER)
+        .arg(RUNNER_SOURCE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Pass the scanner spec via env (not argv) so we don't
-        // have to fight node's `-e <script>` argv handling, which
-        // varies across versions and `--input-type=module`.
+        // Pass the scanner spec and bridge dir via env (not argv)
+        // so we sidestep node's `-e` argv handling quirks across
+        // `--input-type` modes.
         .env("AUBE_SCANNER_SPEC", scanner_spec)
+        .env("AUBE_BRIDGE_DIR", bridge.path())
         // The scanner runs against unresolved package specs — it
         // has no business with npm auth tokens or registry
         // credentials. Scrubbing them keeps a hostile or buggy
@@ -302,9 +269,6 @@ async fn invoke(
         format!("failed to spawn `node` for scanner bridge: {e}")
     })?;
 
-    // Take stdin out of the child so we can write to it. The
-    // bridge runner reads stdin to EOF before invoking the
-    // scanner; closing it here is what triggers that.
     let mut stdin = child
         .stdin
         .take()
@@ -327,11 +291,11 @@ async fn invoke(
         })?
         .map_err(|e| format!("failed to wait for scanner subprocess: {e}"))?;
 
+    // Keep the bridge dir alive until after the child exits so
+    // the runner can still readFile the shim during teardown.
+    drop(bridge);
+
     if !output.status.success() {
-        // Surface stderr (truncated) so the operator can diagnose
-        // what's wrong with their scanner. The bridge runner
-        // writes a single-line diagnostic before exiting; node
-        // appends a stack trace if the scanner threw.
         let stderr = String::from_utf8_lossy(&output.stderr);
         let trimmed = stderr.trim();
         let snippet = if trimmed.len() > 500 {
@@ -423,10 +387,6 @@ mod tests {
 
     #[test]
     fn classify_is_case_insensitive() {
-        // Bun's docs are case-sensitive (`fatal`, `warn`), but
-        // scanner authors are inconsistent in practice. Accept
-        // `FATAL` / `Warning` / `warn` interchangeably so a
-        // scanner that loosely matches the spec still works.
         assert_eq!(classify("FATAL"), Severity::Fatal);
         assert_eq!(classify("fatal"), Severity::Fatal);
         assert_eq!(classify("Warning"), Severity::Warn);
@@ -437,52 +397,38 @@ mod tests {
 
     #[test]
     fn apply_advisories_empty_is_ok() {
-        // No advisories ⇒ no block, no warning emitted.
         assert!(apply_advisories("/some/scanner", &[]).is_ok());
     }
 
     #[test]
     fn apply_advisories_warn_only_does_not_block() {
-        // A scanner that reports only `warn`-level findings lets
-        // the install through. Warnings surface via tracing; the
-        // miette error path is reserved for `fatal`.
         let advs = vec![adv("pkg-a", "warn"), adv("pkg-b", "warning")];
         assert!(apply_advisories("scanner", &advs).is_ok());
     }
 
     #[test]
     fn apply_advisories_fatal_blocks() {
-        // One fatal advisory is enough — install refused.
         let advs = vec![adv("pkg-a", "warn"), adv("evil", "fatal")];
         let err = apply_advisories("scanner", &advs).unwrap_err();
         let msg = format!("{err:?}");
-        // Both package and scanner identity should be in the
-        // error message so the user knows what blocked and why.
         assert!(msg.contains("evil"), "missing package name: {msg}");
         assert!(msg.contains("scanner"), "missing scanner ref: {msg}");
     }
 
     #[test]
     fn unknown_severity_falls_through() {
-        // A future-dated scanner emitting an unrecognized level
-        // (e.g. `info`) should not block or warn — we don't know
-        // if it's a structural issue or just chatter, and the
-        // contract is explicit that only `fatal` blocks and `warn`
-        // surfaces.
         let advs = vec![adv("pkg-a", "info"), adv("pkg-b", "trace")];
         assert!(apply_advisories("scanner", &advs).is_ok());
     }
 
     #[test]
     fn registry_scannable_only_keeps_semver_specs() {
-        // Specs that should reach the scanner.
         assert!(is_registry_scannable("^1.0.0"));
         assert!(is_registry_scannable("~4.17"));
         assert!(is_registry_scannable("latest"));
         assert!(is_registry_scannable("*"));
         assert!(is_registry_scannable("1.2.3 || 1.3.0"));
 
-        // Specs that route through non-public-registry paths.
         assert!(!is_registry_scannable("workspace:*"));
         assert!(!is_registry_scannable("workspace:^"));
         assert!(!is_registry_scannable("catalog:"));
@@ -497,9 +443,6 @@ mod tests {
 
     #[test]
     fn direct_deps_collects_across_dep_kinds_and_dedupes() {
-        // A package declared in both `dependencies` and
-        // `devDependencies` should appear once, with the
-        // `dependencies` spec winning (chain order).
         let mut manifest = aube_manifest::PackageJson::default();
         manifest
             .dependencies
@@ -513,7 +456,6 @@ mod tests {
         manifest
             .optional_dependencies
             .insert("fsevents".to_string(), "^2.3".to_string());
-        // Non-scannable specs that must be filtered out.
         manifest
             .dependencies
             .insert("@my/pkg".to_string(), "workspace:^".to_string());
@@ -531,10 +473,8 @@ mod tests {
         );
     }
 
-    /// Returns true iff `node` is on PATH and responsive. e2e
-    /// tests that invoke the real bridge gate themselves on this
-    /// — the dev box / CI runner might not have node installed,
-    /// and the scanner is opt-in anyway.
+    /// Returns true iff `node --version` exits 0. e2e tests gate
+    /// on this — CI runners without node skip rather than fail.
     fn node_available() -> bool {
         std::process::Command::new("node")
             .arg("--version")
@@ -545,12 +485,11 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// Write a minimal Bun-shape scanner module to `path`. The
-    /// scanner reads `payload.packages`, scans for `target_name`
-    /// (case-sensitive), and emits one advisory of the given
-    /// level when it matches. Keeps the fixture small enough to
-    /// inline so the test reads top-to-bottom.
-    fn write_bun_scanner(path: &Path, target_name: &str, level: &str) {
+    /// Write a minimal Bun-shape scanner module that matches by
+    /// name and emits one advisory of the given level. Mirrors
+    /// the simplest realistic scanner — what the oven-sh template
+    /// degenerates to once you strip the type annotations.
+    fn write_simple_scanner(path: &Path, target_name: &str, level: &str) {
         let body = format!(
             r#"export const scanner = {{
   version: '1',
@@ -576,12 +515,11 @@ mod tests {
         std::fs::write(path, body).unwrap();
     }
 
-    /// End-to-end: drop a real Bun-shape `.mjs` module on disk,
-    /// run the bridge against it, and verify the fatal path
-    /// surfaces `ERR_AUBE_SECURITY_SCANNER_FATAL` with the
-    /// expected package + description content. Exercises the
-    /// inline node runner script, stdin piping, JSON parsing,
-    /// and policy layer end-to-end.
+    /// End-to-end: drop a real `.mjs` scanner on disk, run the
+    /// bridge, verify the fatal path surfaces with the expected
+    /// package and description. Exercises temp-dir bridge file
+    /// extraction, module-loader hook registration, stdin/stdout
+    /// JSON plumbing, and the policy layer end-to-end.
     #[tokio::test]
     async fn end_to_end_blocks_on_fatal_advisory() {
         if !node_available() {
@@ -590,7 +528,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let scanner_path = tmp.path().join("scanner.mjs");
-        write_bun_scanner(&scanner_path, "evil", "fatal");
+        write_simple_scanner(&scanner_path, "evil", "fatal");
 
         let pkgs = vec![ScannerPackage {
             name: "evil".to_string(),
@@ -604,9 +542,7 @@ mod tests {
         assert!(msg.contains("mock"), "missing description in error: {msg}");
     }
 
-    /// Companion: a scanner emitting only `warn` lets the install
-    /// through. Same fixture, different level — catches a
-    /// regression where the fatal/warn branch wired up wrong.
+    /// Companion: `warn`-only output lets the install through.
     #[tokio::test]
     async fn end_to_end_passes_on_warn_only() {
         if !node_available() {
@@ -615,7 +551,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let scanner_path = tmp.path().join("scanner.mjs");
-        write_bun_scanner(&scanner_path, "meh", "warn");
+        write_simple_scanner(&scanner_path, "meh", "warn");
 
         let pkgs = vec![ScannerPackage {
             name: "meh".to_string(),
@@ -628,11 +564,9 @@ mod tests {
         );
     }
 
-    /// A scanner module that doesn't resolve must surface as
+    /// Missing scanner module must surface as
     /// `WARN_AUBE_SECURITY_SCANNER_FAILED` and let the install
     /// proceed — a broken scanner shouldn't gate every install.
-    /// `run_scanner` therefore returns `Ok(())` on resolve
-    /// failure; the operator sees the warning via tracing.
     #[tokio::test]
     async fn missing_scanner_fails_open() {
         if !node_available() {
@@ -652,11 +586,8 @@ mod tests {
         assert!(result.is_ok(), "fail-open contract broken: {result:?}");
     }
 
-    /// Bun's docs specify the scanner returns an `Advisory[]`,
-    /// but we also accept `{ advisories: [...] }` as a friendly
-    /// fallback for scanners that wrap their result. This test
-    /// uses a scanner that returns the wrapped shape to make
-    /// sure the bridge's array-or-object handling stays wired.
+    /// `{ advisories: [...] }` response shape is accepted in
+    /// addition to the canonical `Advisory[]`.
     #[tokio::test]
     async fn accepts_wrapped_advisories_response() {
         if !node_available() {
@@ -689,5 +620,181 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:?}").contains("wrapped"));
+    }
+
+    /// Bun-compat test: a scanner that does `import Bun from 'bun'`
+    /// and calls `Bun.semver.satisfies` + `Bun.env` works
+    /// unchanged. Mirrors the shape of the oven-sh template
+    /// (semver) and the SocketDev scanner (env). Uses the naive
+    /// `Bun.semver` fallback path since the test temp project has
+    /// no `semver` package installed; that fallback handles
+    /// `version === "1.0.0", range === "1.0.0"` correctly via
+    /// exact equality. The shim emits a one-time stderr warning
+    /// when it falls back — we don't assert on it here since
+    /// stderr also carries unrelated node bootstrap chatter.
+    #[tokio::test]
+    async fn bun_shim_exposes_env_and_semver() {
+        if !node_available() {
+            eprintln!("skipping: `node` not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let scanner_path = tmp.path().join("scanner.mjs");
+        std::fs::write(
+            &scanner_path,
+            r#"import Bun from 'bun';
+export const scanner = {
+  version: '1',
+  async scan({ packages }) {
+    const hits = [];
+    for (const p of packages) {
+      // Use Bun.semver.satisfies (the oven-sh template pattern).
+      // With the naive fallback the exact-equality branch fires;
+      // both `"1.0.0"` and `"1.0.0"` match.
+      if (Bun.semver.satisfies(p.version, '1.0.0')) {
+        // Touch Bun.env to ensure the env shim is wired.
+        const tag = Bun.env.AUBE_TEST_TAG ?? 'no-tag';
+        hits.push({
+          level: 'fatal',
+          package: p.name,
+          description: `matched via Bun.semver; tag=${tag}`,
+        });
+      }
+    }
+    return hits;
+  },
+};
+"#,
+        )
+        .unwrap();
+
+        // SAFETY: `set_var` is safe on a single-threaded test
+        // body; the env is read by the *child* process via env we
+        // explicitly pass on the Command, not the parent's env at
+        // read time. Use a Command-level env override instead of
+        // process-wide mutation to keep the test thread-safe.
+        let pkgs = vec![ScannerPackage {
+            name: "target".to_string(),
+            version: "1.0.0".to_string(),
+        }];
+
+        // The shim reads `Bun.env.AUBE_TEST_TAG` from
+        // `process.env`, which the child inherits from this
+        // process unless we override. We don't override here:
+        // `Bun.env.AUBE_TEST_TAG` will be `undefined` and the
+        // scanner falls back to `'no-tag'`, which is enough to
+        // confirm `Bun.env` is a live object.
+        let err = run_scanner(scanner_path.to_str().unwrap(), tmp.path(), &pkgs)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("matched via Bun.semver"),
+            "Bun.semver.satisfies didn't fire: {msg}"
+        );
+        assert!(
+            msg.contains("tag=no-tag"),
+            "Bun.env wasn't a live object: {msg}"
+        );
+    }
+
+    /// Bun-compat test: scanner uses `Bun.file()` to read a
+    /// fixture and incorporates the content into its advisory.
+    /// Mirrors what the SocketDev scanner does with its settings
+    /// file lookup.
+    #[tokio::test]
+    async fn bun_shim_file_reads_local_fixture() {
+        if !node_available() {
+            eprintln!("skipping: `node` not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("policy.json"), r#"{"badName":"evil"}"#).unwrap();
+        let scanner_path = tmp.path().join("scanner.mjs");
+        std::fs::write(
+            &scanner_path,
+            r#"import Bun from 'bun';
+export const scanner = {
+  version: '1',
+  async scan({ packages }) {
+    const policy = await Bun.file('policy.json').json();
+    return packages
+      .filter(p => p.name === policy.badName)
+      .map(p => ({ level: 'fatal', package: p.name, description: 'matched policy' }));
+  },
+};
+"#,
+        )
+        .unwrap();
+
+        let pkgs = vec![ScannerPackage {
+            name: "evil".to_string(),
+            version: "1".to_string(),
+        }];
+        let err = run_scanner(scanner_path.to_str().unwrap(), tmp.path(), &pkgs)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("matched policy"));
+    }
+
+    /// Bun-compat test: a `.ts` scanner entrypoint (Socket's
+    /// distribution shape — `"exports": "./src/index.ts"`) loads
+    /// via `--experimental-strip-types`. Gates on the node binary
+    /// supporting the flag — older nodes will exit with "unknown
+    /// flag" and the test reads that exit-code 1 as a skip rather
+    /// than a failure.
+    #[tokio::test]
+    async fn bun_shim_loads_typescript_entrypoint() {
+        if !node_available() {
+            eprintln!("skipping: `node` not on PATH");
+            return;
+        }
+        // Detect whether the installed node supports
+        // --experimental-strip-types. Cheap probe: `node
+        // --experimental-strip-types -e ''` is a no-op on
+        // supported versions and exits non-zero on unsupported.
+        let probe = std::process::Command::new("node")
+            .arg("--experimental-strip-types")
+            .arg("-e")
+            .arg("''")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if !probe.is_ok_and(|s| s.success()) {
+            eprintln!("skipping: node lacks --experimental-strip-types (< 22.6)");
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let scanner_path = tmp.path().join("scanner.ts");
+        // TS-only construct (type annotation on the destructured
+        // parameter) — must be stripped before evaluation. If
+        // strip-types is mis-wired this fails to parse.
+        std::fs::write(
+            &scanner_path,
+            r#"export const scanner = {
+  version: '1' as const,
+  async scan({ packages }: { packages: Array<{ name: string; version: string }> }) {
+    const hits: Array<{ level: string; package: string; description: string }> = [];
+    for (const p of packages) {
+      if (p.name === 'evil') {
+        hits.push({ level: 'fatal', package: p.name, description: 'ts ok' });
+      }
+    }
+    return hits;
+  },
+};
+"#,
+        )
+        .unwrap();
+
+        let pkgs = vec![ScannerPackage {
+            name: "evil".to_string(),
+            version: "1".to_string(),
+        }];
+        let err = run_scanner(scanner_path.to_str().unwrap(), tmp.path(), &pkgs)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("ts ok"));
     }
 }

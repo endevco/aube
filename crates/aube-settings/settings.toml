@@ -318,6 +318,21 @@ export const scanner = {
 Bun's docs specify the return value is `Advisory[]`. Aube also
 accepts `{ advisories: [...] }` for friendliness.
 
+**Bun runtime APIs aube shims**:
+
+- `import Bun from 'bun'` — resolves to an aube-provided virtual
+  module via a Node module-loader hook. `globalThis.Bun` is also
+  populated for scanners that don't import explicitly.
+- `Bun.env` — alias for `process.env`.
+- `Bun.file(path)` — returns `{ exists(), text(), json(),
+  arrayBuffer(), bytes() }`.
+- `Bun.write(path, data)` — writes a file.
+- `Bun.semver.satisfies(version, range)` — delegates to the
+  project-installed `semver` npm package (near-universal
+  transitive dep). Falls back to exact-equality comparison with a
+  one-time stderr warning if `semver` isn't resolvable; install
+  it as a dev dep for full Bun-compat semantics.
+
 **Differences vs. Bun**:
 
 - Bun runs the scanner *after* the resolver, so
@@ -326,15 +341,17 @@ accepts `{ advisories: [...] }` for friendliness.
   `packages[i].version` is the requested range
   (`\"^4.17.21\"`, `\"latest\"`). Scanners that match on package
   *name* (the typosquat/malware case) work identically; scanners
-  that match on exact version strings will see misses.
+  that match on exact version strings degrade to range-aware
+  comparisons via `Bun.semver.satisfies`.
 - Aube spawns `node`; Bun runs the scanner in-process via its own
-  JS runtime. `node` must be on `PATH`. TypeScript scanners must
-  be compiled to JS — `node` doesn't strip type annotations
-  natively. (Published Bun-scanner npm packages already ship
-  compiled JS.)
-- Aube can't run scanners that depend on Bun-specific runtime
-  APIs (`Bun.spawn`, `Bun.file`, etc.). Public scanners avoid
-  these.
+  JS runtime. Requires **Node 22.6+** for the
+  `--experimental-strip-types` flag aube passes so that `.ts`
+  scanner entrypoints load directly (e.g.
+  `@socketsecurity/bun-security-scanner` ships raw TS).
+- Bun-runtime APIs **not** in the shim (`Bun.spawn`,
+  `Bun.password`, `Bun.serve`, the web frameworks, etc.) will
+  throw at runtime; the bridge surfaces this as
+  `WARN_AUBE_SECURITY_SCANNER_FAILED` and the install fails open.
 
 **Levels**: `fatal` (blocks with `ERR_AUBE_SECURITY_SCANNER_FATAL`),
 `warn` (emits `WARN_AUBE_SECURITY_SCANNER_FINDING`, continues).
