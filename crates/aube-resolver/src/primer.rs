@@ -1,6 +1,7 @@
+use crate::FxHashSet;
 use aube_manifest::BundledDependencies;
 use aube_registry::{Attestations, Dist, NpmUser, Packument, PeerDepMeta, VersionMetadata};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -141,6 +142,93 @@ pub(crate) fn get(name: &str) -> Option<Seed> {
     let compressed = PRIMER_BLOB.get(*offset..end)?;
     let archived = zstd::stream::decode_all(Cursor::new(compressed)).ok()?;
     rkyv::from_bytes::<Seed, rkyv::rancor::Error>(&archived).ok()
+}
+
+/// Cap on how many primer names the speculative walk decompresses
+/// per `aube install`. The primer carries ~10k packages, but a real
+/// dep graph reaches only a few hundred of them — this is a safety
+/// guard so a pathological dep graph can't pin a core on rkyv decode
+/// before the resolver pops its first task.
+const SPECULATIVE_WALK_VISIT_LIMIT: usize = 2048;
+
+/// Walk the bundled primer's dep graph from the manifest's direct
+/// deps and return every transitively-reachable package name that
+/// the primer does NOT cover.
+///
+/// The returned names are the speculative prefetch targets: their
+/// packuments are not bundled, so the resolver will eventually pay
+/// a real network RTT for each one once BFS reaches it. Firing
+/// those GETs at install start (before lockfile parse, settings
+/// resolve, pnpmfile setup, workspace yaml load, resolver
+/// construction) collapses the BFS-depth RTT chain into a single
+/// parallel fan-out.
+///
+/// Primer-covered names are intentionally excluded — the resolver
+/// skips the network entirely for those (see `packument_primer_hit`
+/// short-circuit in `resolve.rs`), so prefetching them is pure
+/// bandwidth waste.
+///
+/// The walk uses the latest available primer version of each
+/// covered package, including its `dependencies`, `peerDependencies`,
+/// and `optionalDependencies`. Versions are not range-resolved
+/// against the manifest's specs: the goal is to warm the packument
+/// cache with plausible candidates, not to perfectly mirror the
+/// resolver's BFS. Bounded by `SPECULATIVE_WALK_VISIT_LIMIT`.
+pub fn collect_speculative_prefetch_targets<I, N>(direct_deps: I) -> Vec<String>
+where
+    I: IntoIterator<Item = N>,
+    N: Into<String>,
+{
+    let mut seen: FxHashSet<String> = FxHashSet::default();
+    let mut targets: Vec<String> = Vec::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    for name in direct_deps {
+        let name = name.into();
+        if seen.insert(name.clone()) {
+            queue.push_back(name);
+        }
+    }
+    let mut visits = 0usize;
+    while let Some(name) = queue.pop_front() {
+        if visits >= SPECULATIVE_WALK_VISIT_LIMIT {
+            break;
+        }
+        visits += 1;
+        let Some(seed) = get(&name) else {
+            // Not bundled — this is a name the resolver would
+            // otherwise pay a network RTT for. Skip if the name
+            // looks unfetchable (scoped/registry-shaped names
+            // pass; the resolver applies its own validation).
+            targets.push(name);
+            continue;
+        };
+        let packument = seed.packument();
+        // Prefer `dist-tags.latest` over BTreeMap-tail because the
+        // version map is sorted lexicographically, not by semver:
+        // "1.9.0" sorts after "1.10.0", so `next_back()` would pick
+        // the WRONG version on any package with double-digit minors.
+        // `dist-tags.latest` is the publisher's stated "latest" and
+        // matches what the resolver picks for `*`/`latest` specs.
+        let latest = packument
+            .dist_tags
+            .get("latest")
+            .and_then(|v| packument.versions.get(v))
+            .or_else(|| packument.versions.values().next_back());
+        let Some(latest) = latest else {
+            continue;
+        };
+        let deps = latest
+            .dependencies
+            .keys()
+            .chain(latest.peer_dependencies.keys())
+            .chain(latest.optional_dependencies.keys());
+        for dep_name in deps {
+            if seen.insert(dep_name.clone()) {
+                queue.push_back(dep_name.clone());
+            }
+        }
+    }
+    targets
 }
 
 pub(crate) fn covers_cutoff(cutoff: &str) -> bool {
@@ -293,6 +381,42 @@ mod tests {
         assert_eq!(stats.files, 1);
         assert!(!dir.join("rkyv-v1-old-0-old.rkyv").exists());
         assert!(dir.join("packument.json").exists());
+    }
+
+    #[test]
+    fn speculative_targets_excludes_primer_covered_seeds() {
+        // Seeds are by definition primer-covered, so they must not
+        // appear in the speculative target list — the resolver
+        // skips the network for them.
+        let Some((seed_name, _, _)) = PRIMER_INDEX.first() else {
+            return;
+        };
+        let targets =
+            collect_speculative_prefetch_targets(std::iter::once((*seed_name).to_string()));
+        assert!(
+            !targets.contains(&seed_name.to_string()),
+            "primer-covered seed leaked into speculative targets: {seed_name}"
+        );
+    }
+
+    #[test]
+    fn speculative_targets_returns_unknown_input_unchanged() {
+        // An input name that isn't primer-covered is itself a
+        // valid speculative prefetch target — the resolver would
+        // pay a network RTT for it otherwise.
+        let unknown = "zzz-aube-not-in-primer-zzz";
+        assert!(get(unknown).is_none());
+        let targets = collect_speculative_prefetch_targets(std::iter::once(unknown.to_string()));
+        assert_eq!(targets, vec![unknown.to_string()]);
+    }
+
+    #[test]
+    fn speculative_targets_deduplicates() {
+        // Same name supplied twice must only produce one target.
+        let unknown = "zzz-aube-dup-zzz";
+        let targets =
+            collect_speculative_prefetch_targets(vec![unknown.to_string(), unknown.to_string()]);
+        assert_eq!(targets, vec![unknown.to_string()]);
     }
 
     #[test]
