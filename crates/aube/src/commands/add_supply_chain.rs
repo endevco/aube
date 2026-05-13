@@ -121,13 +121,16 @@ async fn osv_gate(
                 code = WARN_AUBE_ADVISORY_CHECK_FAILED,
                 "OSV advisory check failed: {e}"
             );
-            match policy {
-                AdvisoryCheck::Required => Err(miette!(
+            // `AdvisoryCheck::Off` short-circuits at the top of
+            // `osv_gate` and never reaches this branch — only the
+            // `On` / `Required` split needs handling here.
+            if matches!(policy, AdvisoryCheck::Required) {
+                return Err(miette!(
                     code = ERR_AUBE_ADVISORY_CHECK_FAILED,
                     "OSV advisory check failed and `advisoryCheck = required` is set: {e}"
-                )),
-                AdvisoryCheck::On | AdvisoryCheck::Off => Ok(()),
+                ));
             }
+            Ok(())
         }
     }
 }

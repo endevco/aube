@@ -1870,15 +1870,20 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
 /// will resolve via the public npm registry, so the supply-chain
 /// gates (`add_supply_chain::run_gates`) skip everything else.
 ///
-/// Excluded: git/local/workspace/jsr specs (no public-registry
-/// signal), aliased specs (`my-alias@real-pkg` — the user typed the
-/// real name on purpose and the gate would re-prompt on every
-/// rename).
+/// Excluded: git/local/workspace/jsr specs — none of these route
+/// through a public-registry name where an OSV `MAL-*` advisory
+/// or a downloads count would apply.
 ///
-/// Scoped names (`@scope/name`) are **included**: OSV's batch API
-/// supports scoped queries, and the downloads probe naturally
-/// folds them into `DownloadCount::Unknown` so the prompt skips
-/// them without a per-name special case here.
+/// **Aliased specs are included** on their real registry name
+/// (`my-alias@npm:real-pkg` checks `real-pkg`). Skipping these on
+/// the "user typed it on purpose" theory would let
+/// `my-alias@npm:malicious-pkg` walk past a hard block that's
+/// explicitly described as "not a judgement call."
+///
+/// **Scoped names** (`@scope/name`) are also included: OSV's
+/// batch API supports scoped queries, and the downloads probe
+/// naturally folds them into `DownloadCount::Unknown` so the
+/// prompt skips them without a per-name special case here.
 fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec<String> {
     let mut names = Vec::with_capacity(packages.len());
     let workspace_versions = collect_workspace_versions(cwd);
@@ -1893,14 +1898,14 @@ fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec
         if spec.git_spec.is_some()
             || spec.local_spec.is_some()
             || spec.jsr_name.is_some()
-            || spec.alias.is_some()
             || aube_util::pkg::is_workspace_spec(&spec.range)
             || aube_util::pkg::is_catalog_spec(&spec.range)
         {
             continue;
         }
         // A bare `aube add my-pkg` against a local workspace sibling
-        // resolves locally — same reason as the alias case.
+        // resolves locally — no public registry round-trip happens,
+        // so the OSV / downloads probes have nothing to say.
         if workspace_versions.contains_key(&spec.name) {
             continue;
         }
