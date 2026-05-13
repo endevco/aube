@@ -463,8 +463,7 @@ pub fn remove_package(info: &GlobalPackageInfo, layout: &GlobalLayout) -> miette
     // `Access is denied`; we created the pointer via `create_dir_link`
     // (NTFS junction), so a plain `remove_file` here would leak it.
     let hash_ptr = hash_link(&layout.pkg_dir, &info.hash);
-    super::remove_existing(&hash_ptr)
-        .wrap_err_with(|| format!("failed to remove hash pointer {}", hash_ptr.display()))?;
+    super::remove_existing(&hash_ptr)?;
 
     // `crate::dirs::canonicalize` so `pkg_canon` is comparable with the
     // `info.install_dir` `scan_packages` produced — both must be in the
