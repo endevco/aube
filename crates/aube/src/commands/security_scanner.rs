@@ -1,17 +1,32 @@
 //! Bun-style pluggable security scanner.
 //!
-//! When `securityScanner` is set, `aube add` spawns the configured
-//! executable, pipes the package list in as JSON on stdin, and reads
-//! advisories back on stdout. A `fatal`-level advisory blocks the
-//! add with `ERR_AUBE_SECURITY_SCANNER_FATAL`; `warn`-level emits
-//! `WARN_AUBE_SECURITY_SCANNER_FINDING` and continues. Any failure
-//! mode in between (missing binary, non-zero exit, timeout,
-//! unparseable JSON) emits `WARN_AUBE_SECURITY_SCANNER_FAILED` and
-//! falls through — a broken scanner shouldn't be able to block
-//! every add.
+//! When `securityScanner` is set, aube spawns the configured
+//! executable, pipes a list of registry-bound packages in as JSON
+//! on stdin, and reads advisories back on stdout. A `fatal`-level
+//! advisory blocks the install with `ERR_AUBE_SECURITY_SCANNER_FATAL`;
+//! `warn`-level emits `WARN_AUBE_SECURITY_SCANNER_FINDING` and
+//! continues. Any failure mode in between (missing binary, non-zero
+//! exit, timeout, unparseable JSON) emits
+//! `WARN_AUBE_SECURITY_SCANNER_FAILED` and falls through — a broken
+//! scanner shouldn't be able to block every install.
+//!
+//! **Fired from**:
+//! - `aube add` — the packages typed on the command line, via
+//!   [`run_scanner`] from `commands::add`.
+//! - `aube install` — direct deps from the root manifest (see
+//!   [`direct_deps_for_scanner`]), via the same [`run_scanner`]
+//!   entry point.
+//!
+//! `add` is the moment-of-human-intent gate; `install` is the
+//! "your project's deps are about to materialize" gate. The OSV
+//! and download-count checks in `add_supply_chain.rs` deliberately
+//! only run on `add` (they're noisy or expensive for every install),
+//! but the scanner is opt-in and the operator chooses what to check
+//! — so it makes sense to expose the install path too. Matches
+//! Bun, which runs its scanner on both `bun add` and `bun install`.
 //!
 //! Contract is modeled on [Bun's Security Scanner
-//! API](https://bun.sh/docs/install/security-scanner). Bun's
+//! API](https://bun.sh/docs/pm/security-scanner-api#security-scanner-api). Bun's
 //! scanner is an in-process JS plugin; aube's is a subprocess
 //! because aube is Rust and doesn't host a JS runtime. The
 //! semantic shape — `{packages} → {advisories}` with levels
@@ -37,14 +52,65 @@ const SCANNER_TIMEOUT: Duration = Duration::from_secs(30);
 /// multiple versions should branch on this field.
 const PROTOCOL_VERSION: u32 = 1;
 
-/// One package about to be added, as the scanner sees it.
-/// `spec` is whatever the user typed after `@` (e.g. `^4.17.21`,
-/// `latest`, a JSR/npm spec) — passed verbatim so the scanner
-/// can apply version-range policy if it wants to.
+/// One package about to be added or installed, as the scanner sees
+/// it. `spec` is the raw specifier (e.g. `^4.17.21`, `latest`) —
+/// passed verbatim so the scanner can apply version-range policy
+/// if it wants to.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScannerPackage {
     pub name: String,
     pub spec: String,
+}
+
+/// Collect direct deps from a parsed root manifest into the
+/// scanner's input format. Skips workspace / catalog / git / file /
+/// link / jsr / npm-alias specs — the scanner is a public-data
+/// advisory check, and none of those route through public registry
+/// names where an external advisory would apply.
+///
+/// Used by `aube install` to feed every direct dep through the
+/// scanner on a manifest-driven install. `aube add` has its own
+/// per-spec parsing path that produces the same `ScannerPackage`
+/// shape but starts from the user-typed argument list.
+pub fn direct_deps_for_scanner(manifest: &aube_manifest::PackageJson) -> Vec<ScannerPackage> {
+    let mut out = Vec::new();
+    let chains = manifest
+        .dependencies
+        .iter()
+        .chain(manifest.dev_dependencies.iter())
+        .chain(manifest.optional_dependencies.iter());
+    for (name, spec) in chains {
+        if !is_registry_scannable(spec) {
+            continue;
+        }
+        out.push(ScannerPackage {
+            name: name.clone(),
+            spec: spec.clone(),
+        });
+    }
+    // BTreeMap iteration is already sorted by key, but
+    // `dependencies` and `devDependencies` will produce duplicates
+    // for packages declared in both. Keep the first occurrence —
+    // `dependencies` outranks dev in the chain order above, so the
+    // production spec wins.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
+    out
+}
+
+/// Return `true` when `spec` is a public-registry version range
+/// (e.g. `^1.2.3`, `~4`, `latest`, `*`) and `false` for every
+/// non-registry routing form aube understands. The scanner has no
+/// useful answer for workspace siblings, git URLs, local paths,
+/// JSR / npm aliases, etc.
+fn is_registry_scannable(spec: &str) -> bool {
+    !(aube_util::pkg::is_workspace_spec(spec)
+        || aube_util::pkg::is_catalog_spec(spec)
+        || aube_util::pkg::is_jsr_spec(spec)
+        || aube_util::pkg::is_npm_spec(spec)
+        || aube_util::pkg::is_file_spec(spec)
+        || aube_util::pkg::is_link_spec(spec)
+        || aube_lockfile::parse_git_spec(spec).is_some())
 }
 
 #[derive(Debug, Serialize)]
@@ -392,9 +458,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn registry_scannable_only_keeps_semver_specs() {
+        // Specs that should reach the scanner — version ranges,
+        // dist-tags, the catch-all wildcard. The scanner can apply
+        // its own per-version policy on these.
+        assert!(is_registry_scannable("^1.0.0"));
+        assert!(is_registry_scannable("~4.17"));
+        assert!(is_registry_scannable("latest"));
+        assert!(is_registry_scannable("*"));
+        assert!(is_registry_scannable("1.2.3 || 1.3.0"));
+
+        // Specs that route through non-public-registry paths —
+        // the scanner has no useful answer, so we skip them.
+        assert!(!is_registry_scannable("workspace:*"));
+        assert!(!is_registry_scannable("workspace:^"));
+        assert!(!is_registry_scannable("catalog:"));
+        assert!(!is_registry_scannable("catalog:default"));
+        assert!(!is_registry_scannable("file:./packages/foo"));
+        assert!(!is_registry_scannable("link:../sibling"));
+        assert!(!is_registry_scannable("jsr:@std/collections@^1"));
+        assert!(!is_registry_scannable("npm:other-pkg@^4"));
+        assert!(!is_registry_scannable("github:kevva/is-negative"));
+        assert!(!is_registry_scannable("git+https://example.com/r.git"));
+    }
+
+    #[test]
+    fn direct_deps_collects_across_dep_kinds_and_dedupes() {
+        // A package declared in both `dependencies` and
+        // `devDependencies` should appear once, with the
+        // `dependencies` spec winning (chain order). Catches a
+        // regression where dedupe pulls the dev entry by accident.
+        let mut manifest = aube_manifest::PackageJson::default();
+        manifest
+            .dependencies
+            .insert("lodash".to_string(), "^4.17.21".to_string());
+        manifest
+            .dev_dependencies
+            .insert("lodash".to_string(), "^4.17.0".to_string());
+        manifest
+            .dev_dependencies
+            .insert("vitest".to_string(), "^2".to_string());
+        manifest
+            .optional_dependencies
+            .insert("fsevents".to_string(), "^2.3".to_string());
+        // Non-scannable specs that must be filtered out before the
+        // scanner sees them.
+        manifest
+            .dependencies
+            .insert("@my/pkg".to_string(), "workspace:^".to_string());
+        manifest
+            .dependencies
+            .insert("local-thing".to_string(), "file:./local".to_string());
+        manifest.dependencies.insert(
+            "from-jsr".to_string(),
+            "jsr:@std/collections@^1".to_string(),
+        );
+
+        let packages = direct_deps_for_scanner(&manifest);
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["fsevents", "lodash", "vitest"]);
+        let lodash = packages.iter().find(|p| p.name == "lodash").unwrap();
+        assert_eq!(
+            lodash.spec, "^4.17.21",
+            "production spec should win over dev"
+        );
+    }
+
     /// A scanner that doesn't exist on disk must surface as
-    /// `WARN_AUBE_SECURITY_SCANNER_FAILED` and let the add
-    /// proceed — a broken scanner shouldn't gate every add.
+    /// `WARN_AUBE_SECURITY_SCANNER_FAILED` and let the install
+    /// proceed — a broken scanner shouldn't gate every install.
     /// `run_scanner` therefore returns `Ok(())` even on spawn
     /// failure; the operator sees the warning via tracing.
     #[tokio::test]

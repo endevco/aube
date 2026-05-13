@@ -180,14 +180,21 @@ scrubbed from the script environment unless explicitly granted via
 
 ## Pluggable security scanner
 
-`securityScanner` points `aube add` at an executable that vets every
-package about to land in `package.json`. Modeled on
-[Bun's Security Scanner API](https://bun.sh/docs/install/security-scanner)
+`securityScanner` points aube at an executable that vets the
+packages an install (or `add`) is about to introduce. Modeled on
+[Bun's Security Scanner API](https://bun.sh/docs/pm/security-scanner-api#security-scanner-api)
 — same `{packages} → {advisories}` contract with `fatal` / `warn`
 levels — but invoked as a subprocess rather than an in-process JS
 plugin (since aube is Rust, not a JS runtime). The same logical
 scanner module that ships to Bun users can run under aube via a thin
 wrapper.
+
+**Fires on**:
+
+- `aube add` — the packages typed on the command line.
+- `aube install` — direct deps from the root `package.json`, past
+  the warm-path short-circuits so repeated no-op installs don't pay
+  the subprocess cost.
 
 ```yaml
 # aube-workspace.yaml
@@ -222,7 +229,7 @@ The scanner reads a JSON request on stdin:
 }
 ```
 
-A `fatal` advisory fails the add with `ERR_AUBE_SECURITY_SCANNER_FATAL`.
+A `fatal` advisory fails the install with `ERR_AUBE_SECURITY_SCANNER_FATAL`.
 A `warn` advisory surfaces via `WARN_AUBE_SECURITY_SCANNER_FINDING`
 and the install continues. Any other level (`info`, custom) is logged
 at debug level only.
@@ -230,8 +237,8 @@ at debug level only.
 Failure modes — scanner missing, non-zero exit, timeout (30s),
 unparseable JSON — emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and let
 the install proceed. The reasoning: a broken scanner shouldn't be
-able to block every `aube add` in the project. Operators who'd
-rather fail closed can wrap their scanner in a script that converts
+able to block every install in the project. Operators who'd rather
+fail closed can wrap their scanner in a script that converts
 internal failures into a `fatal` advisory.
 
 Skipped specs: git, local, workspace, JSR, aliased. Those route

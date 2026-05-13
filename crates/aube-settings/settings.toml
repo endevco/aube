@@ -269,13 +269,20 @@ description = "Path to a pluggable security scanner (Bun-style contract)."
 type = "string"
 default = "\"\""
 docs = """
-Aube spawns the configured executable at `aube add` time, pipes the
-list of packages-to-be-added in as JSON on stdin, and reads back a
-JSON list of advisories on stdout. A `fatal`-level advisory blocks
-the add; `warn`-level surfaces as `WARN_AUBE_SECURITY_SCANNER_FINDING`
+Aube spawns the configured executable at install time, pipes a list
+of registry-bound packages in as JSON on stdin, and reads back a JSON
+list of advisories on stdout. A `fatal`-level advisory blocks the
+install; `warn`-level surfaces as `WARN_AUBE_SECURITY_SCANNER_FINDING`
 and the install continues.
 
-Modeled on [Bun's Security Scanner API](https://bun.sh/docs/install/security-scanner) —
+**Fired from**:
+
+- `aube add` — the packages typed on the command line.
+- `aube install` — direct deps from the root `package.json`, past
+  the warm-path short-circuits (so repeated no-op installs don't pay
+  the subprocess cost).
+
+Modeled on [Bun's Security Scanner API](https://bun.sh/docs/pm/security-scanner-api#security-scanner-api) —
 the contract is intentionally executable-agnostic (any binary on
 `PATH` or a path to a script) so the same scanner module that ships
 to Bun users via npm can run under aube with a thin wrapper. Where
@@ -316,7 +323,7 @@ other level is logged at debug level and otherwise ignored.
 
 Failure modes (scanner missing, non-zero exit, timeout >30s,
 unparseable JSON) emit `WARN_AUBE_SECURITY_SCANNER_FAILED` and fall
-through — a broken scanner shouldn't be able to block every add.
+through — a broken scanner shouldn't be able to block every install.
 Operators can wrap their scanner in a thin shell to fail loudly if
 they prefer.
 
