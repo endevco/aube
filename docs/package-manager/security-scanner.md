@@ -163,10 +163,10 @@ at all.
 
 ## Security hardening
 
-- The subprocess environment is scrubbed of `NPM_TOKEN`,
-  `NODE_AUTH_TOKEN`, `GITHUB_TOKEN`, and `GH_TOKEN` before exec.
-  A hostile or compromised scanner package can't read those out
-  of `process.env`.
+- The subprocess environment is scrubbed of `AUBE_AUTH_TOKEN`,
+  `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `GITHUB_TOKEN`, and `GH_TOKEN`
+  before exec. A hostile or compromised scanner package can't
+  read those out of `process.env`.
 - `kill_on_drop(true)` on the spawn ensures a hung scanner is
   SIGKILLed at the 30 s timeout instead of leaking as an orphan
   process.

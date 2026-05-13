@@ -263,13 +263,19 @@ async fn invoke(
         // `--input-type` modes.
         .env("AUBE_SCANNER_SPEC", scanner_spec)
         .env("AUBE_BRIDGE_DIR", bridge.path())
-        // The scanner runs against unresolved package specs — it
-        // has no business with npm auth tokens or registry
-        // credentials. Scrubbing them keeps a hostile or buggy
-        // scanner from exfiltrating them as a side effect.
-        // `GH_TOKEN` is the GitHub CLI's PAT env var, commonly
-        // set alongside `GITHUB_TOKEN` in CI — scrubbing one
-        // without the other defeats the point.
+        // Strip credentials before the scanner can read them via
+        // `process.env`. The scanner has no legitimate reason to
+        // talk to a registry or to GitHub — these are all
+        // exfiltration vectors for a compromised scanner package.
+        //
+        // `AUBE_AUTH_TOKEN` matches what `aube-scripts` scrubs
+        // from every lifecycle script. `NPM_TOKEN` /
+        // `NODE_AUTH_TOKEN` stay scrubbed unconditionally for the
+        // scanner (unlike in lifecycle scripts, where a
+        // `postpublish` hook may genuinely need them — the
+        // scanner never does). `GH_TOKEN` is the GitHub CLI's
+        // PAT env var, commonly set alongside `GITHUB_TOKEN`.
+        .env_remove("AUBE_AUTH_TOKEN")
         .env_remove("NPM_TOKEN")
         .env_remove("NODE_AUTH_TOKEN")
         .env_remove("GITHUB_TOKEN")
