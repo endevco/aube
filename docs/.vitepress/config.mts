@@ -110,8 +110,6 @@ export default defineConfig({
           { text: "node_modules layout", link: "/package-manager/node-modules" },
           { text: "Global virtual store", link: "/package-manager/global-virtual-store" },
           { text: "Lifecycle scripts", link: "/package-manager/lifecycle-scripts" },
-          { text: "Jailed builds", link: "/package-manager/jailed-builds" },
-          { text: "Security scanner", link: "/package-manager/security-scanner" },
           { text: "Configuration", link: "/package-manager/configuration" },
           { text: "Registry and auth", link: "/package-manager/registry-auth" },
           { text: "Publishing", link: "/package-manager/publishing" },
