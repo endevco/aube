@@ -35,16 +35,14 @@ function legendLabel(pm: string): string {
 
 const nodeVersion = computed(() => props.versions?.node ?? "");
 
-const max = computed(() => {
+function rowMax(row: Row): number {
   let m = 0;
-  for (const r of props.rows) {
-    for (const pm of props.managers) {
-      const v = r.values[pm];
-      if (v != null && v > m) m = v;
-    }
+  for (const pm of props.managers) {
+    const v = row.values[pm];
+    if (v != null && v > m) m = v;
   }
   return m || 1;
-});
+}
 
 function format(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
@@ -86,7 +84,7 @@ function winner(row: Row): string | null {
                 class="bar"
                 :class="{ winner: winner(row) === pm }"
                 :style="{
-                  width: ((row.values[pm]! / max) * 100) + '%',
+                  width: ((row.values[pm]! / rowMax(row)) * 100) + '%',
                   background: COLORS[pm] || '#888',
                 }"
               ></div>
