@@ -445,7 +445,16 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # compiled-in default (1440) regardless of
 # `BENCH_MIN_RELEASE_AGE_MINUTES`, silently breaking the
 # apples-to-apples guarantee for any non-default override.
-AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share npm_config_minimum_release_age=${MIN_RELEASE_AGE_MINUTES}"
+#
+# `advisory_check=off` and `low_download_threshold=0` silence
+# aube's OSV and npm-downloads probes for the `add` scenario.
+# No other PM in the comparison set runs equivalent network probes
+# on add, so leaving them on turns the bench into a partial
+# supply-chain latency measurement: one OSV batch POST plus one
+# downloads GET that other PMs don't pay for, ~200-500ms per run
+# when the public APIs respond and a full `PROBE_TIMEOUT` (8s)
+# when they don't. Off here, on by default in the shipped binary.
+AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share npm_config_minimum_release_age=${MIN_RELEASE_AGE_MINUTES} npm_config_advisory_check=off npm_config_low_download_threshold=0"
 
 # Per-scenario AUBE_ENV variants that pin aube's global virtual store mode
 # via the `enableGlobalVirtualStore` setting's auto-synthesized env-var
