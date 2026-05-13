@@ -1294,10 +1294,12 @@ fn is_public_npmjs_url(url: &str) -> bool {
 /// so a user-supplied `.npmrc` entry like `HTTPS://...` doesn't
 /// fall through and accidentally disable the supply-chain gates.
 fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() < prefix.len() {
-        return None;
-    }
-    let (head, tail) = s.split_at(prefix.len());
+    // `split_at_checked` returns `None` rather than panicking when the
+    // byte offset isn't a UTF-8 char boundary, so a malformed
+    // `.npmrc` value like `https:/ñ...` (multi-byte char straddling
+    // the prefix length) gracefully fails the prefix match instead
+    // of crashing `aube add`.
+    let (head, tail) = s.split_at_checked(prefix.len())?;
     head.eq_ignore_ascii_case(prefix).then_some(tail)
 }
 
@@ -2997,6 +2999,20 @@ mod tests {
         ] {
             assert!(!is_public_npmjs_url(url), "expected private for {url}");
         }
+    }
+
+    #[test]
+    fn is_public_npmjs_does_not_panic_on_multibyte_char_at_prefix_boundary() {
+        // `https:/ñ...` — the `ñ` straddles byte offset 8 (the
+        // length of `"https://"`). A naive `split_at(8)` would
+        // panic; the helper has to use `split_at_checked` and
+        // return `None` so `aube add` doesn't crash on a typo'd
+        // `.npmrc` value.
+        assert!(!is_public_npmjs_url("https:/ñregistry.npmjs.org/"));
+        // Also exercise a multi-byte char inside what looks like a
+        // valid scheme — we should reject this as non-public
+        // without crashing.
+        assert!(!is_public_npmjs_url("htñps://registry.npmjs.org/"));
     }
 
     #[test]
