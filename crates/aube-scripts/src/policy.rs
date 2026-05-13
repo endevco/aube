@@ -103,10 +103,11 @@ impl BuildPolicy {
                 AllowBuildRaw::Bool(b) => *b,
                 AllowBuildRaw::Other(raw) => {
                     // The canonical "set this to true or false" placeholder
-                    // is what aube itself writes when it auto-seeds an
-                    // unreviewed build into the user's allowBuilds. Treat
-                    // it as Unspecified (skip silently) — strict-dep-builds
-                    // will surface it via `unreviewed_dep_builds` instead.
+                    // is what pnpm auto-seeds for unreviewed builds. Aube
+                    // doesn't write it (we leave the manifest alone), but
+                    // pnpm-managed projects can still carry these strings.
+                    // Treat as Unspecified (skip silently); strict-dep-builds
+                    // surfaces the dep via `unreviewed_dep_builds` instead.
                     // Any other string is a user-authored value we don't
                     // understand; warn so it isn't silently misread.
                     if raw == aube_manifest::workspace::ALLOW_BUILDS_REVIEW_PLACEHOLDER {

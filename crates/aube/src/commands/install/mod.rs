@@ -4770,16 +4770,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             placements_ref,
         )?;
         if !unreviewed.is_empty() {
-            let review_names = allow_build_review_names(&unreviewed);
-            aube_manifest::workspace::add_to_allow_builds(
-                &cwd,
-                &review_names,
-                aube_manifest::workspace::AllowBuildsWriteMode::ReviewPlaceholder,
-            )
-            .into_diagnostic()
-            .wrap_err("failed to update allowBuilds review entries")?;
             return Err(miette!(
-                "dependencies with build scripts must be reviewed before install:\n{}\nhelp: set them to true or false in `allowBuilds`, or set `strictDepBuilds=false`",
+                "dependencies with build scripts must be reviewed before install:\n{}\nhelp: add the package(s) to `allowBuilds` with `true`/`false`, or set `strictDepBuilds=false`",
                 unreviewed
                     .into_iter()
                     .map(|pkg| format!("  - {pkg}"))
@@ -5130,14 +5122,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // Skipped under `--ignore-scripts`, `virtualStoreOnly`, and
     // `strictDepBuilds=true` (the strict path already errored above).
     if !unreviewed_builds.is_empty() {
-        let review_names = allow_build_review_names(&unreviewed_builds);
-        aube_manifest::workspace::add_to_allow_builds(
-            &cwd,
-            &review_names,
-            aube_manifest::workspace::AllowBuildsWriteMode::ReviewPlaceholder,
-        )
-        .into_diagnostic()
-        .wrap_err("failed to update allowBuilds review entries")?;
         emit_unreviewed_builds_warning(&unreviewed_builds);
     }
 
@@ -5174,29 +5158,6 @@ fn emit_unreviewed_builds_warning(unreviewed: &[String]) {
         unreviewed.len(),
         list
     );
-}
-
-fn allow_build_review_names(specs: &[String]) -> Vec<String> {
-    specs
-        .iter()
-        .map(|spec| package_name_from_spec_key(spec))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn package_name_from_spec_key(spec: &str) -> String {
-    if spec.starts_with('@') {
-        if let Some((name, _)) = spec.rsplit_once('@')
-            && !name.is_empty()
-        {
-            return name.to_string();
-        }
-        return spec.to_string();
-    }
-    spec.split_once('@')
-        .map(|(name, _)| name.to_string())
-        .unwrap_or_else(|| spec.to_string())
 }
 
 /// Read a lockfile from `lockfile_dir` and remap its importer key
@@ -5785,19 +5746,7 @@ fn filter_graph_to_importers<const N: usize>(
 
 #[cfg(test)]
 mod allow_build_review_tests {
-    use super::{order_lifecycle_manifests, package_name_from_spec_key};
-
-    #[test]
-    fn package_name_from_spec_key_handles_scoped_names() {
-        assert_eq!(package_name_from_spec_key("@scope/pkg@1.2.3"), "@scope/pkg");
-        assert_eq!(package_name_from_spec_key("@scope/pkg"), "@scope/pkg");
-    }
-
-    #[test]
-    fn package_name_from_spec_key_handles_unscoped_names() {
-        assert_eq!(package_name_from_spec_key("esbuild@1.2.3"), "esbuild");
-        assert_eq!(package_name_from_spec_key("esbuild"), "esbuild");
-    }
+    use super::order_lifecycle_manifests;
 
     #[test]
     fn lifecycle_manifests_follow_workspace_dependency_order() {

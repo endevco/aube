@@ -1811,13 +1811,9 @@ fn parse_allow_build_value(s: &str) -> Result<String, String> {
 /// explicit `false` is treated as something the user is now flipping
 /// on purpose, not a conflict.
 fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::Result<()> {
-    aube_manifest::workspace::add_to_allow_builds(
-        cwd,
-        names,
-        aube_manifest::workspace::AllowBuildsWriteMode::Approve,
-    )
-    .into_diagnostic()
-    .wrap_err("failed to write --allow-build entries")?;
+    aube_manifest::workspace::add_to_allow_builds(cwd, names)
+        .into_diagnostic()
+        .wrap_err("failed to write --allow-build entries")?;
     Ok(())
 }
 
