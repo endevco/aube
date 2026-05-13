@@ -164,6 +164,20 @@ pub struct RegistryClient {
     /// for the lifetime of the process (helpers are already memoized
     /// in `token_helper_cache`), so per-URL caching is safe.
     auth_token_by_url: Mutex<BTreeMap<String, Option<String>>>,
+    /// Single-flight gate for concurrent packument fetches. Keyed by
+    /// `<variant>:<registry_url>:<name>` so corgi and full lookups
+    /// against the same name are independently coalesced. The first
+    /// task to acquire the per-key tokio Mutex does the real network
+    /// fetch + cache write; later tasks block on the same mutex and
+    /// re-read the (now warm) disk cache on wake-up, skipping the
+    /// duplicate GET. Without this, a pre-resolver speculative
+    /// prefetch races against the resolver's own BFS fetches for the
+    /// same name and we pay 2× bandwidth + 2× server load on every
+    /// overlap. Entries are never removed — the lock itself is tiny
+    /// (`Arc<tokio::sync::Mutex<()>>`) and bounded by the dep graph
+    /// size for the install duration.
+    packument_in_flight:
+        Mutex<aube_util::collections::FxMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     config: NpmConfig,
     network_mode: NetworkMode,
     fetch_policy: FetchPolicy,
@@ -229,11 +243,29 @@ impl RegistryClient {
             http_tarball,
             token_helper_cache: Mutex::new(BTreeMap::new()),
             auth_token_by_url: Mutex::new(BTreeMap::new()),
+            packument_in_flight: Mutex::new(aube_util::collections::FxMap::default()),
             config,
             network_mode: NetworkMode::Online,
             fetch_policy,
             default_registry_parsed: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Return (and lazily insert) the per-name mutex from
+    /// `packument_in_flight`. Held in a `Mutex<FxMap>`: the std lock
+    /// is only held for the find-or-insert, not for the actual network
+    /// fetch — that's gated by the returned tokio `Mutex`. Callers
+    /// pass a `key` distinct per cache variant (corgi vs full) per
+    /// registry URL so concurrent fetches of the same name against
+    /// different caches don't serialize through each other.
+    fn packument_singleflight_mutex(&self, key: String) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        let mut map = self
+            .packument_in_flight
+            .lock()
+            .expect("packument_in_flight mutex poisoned");
+        map.entry(key)
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Force this client into a given network mode (online, prefer-offline,
@@ -909,7 +941,19 @@ impl RegistryClient {
             return Err(Error::Offline(format!("packument for {name}")));
         }
 
+        // Single-flight: same shape as `fetch_packument_cached_with_entry`.
+        // See that method's comment for the why. Keyed `full:<registry>:<name>`
+        // so the full and corgi paths don't serialize through each other.
         let (url, registry_url) = self.packument_url(name);
+        let sf_key = format!("full:{registry_url}:{name}");
+        let sf_mutex = self.packument_singleflight_mutex(sf_key);
+        let _sf_guard = sf_mutex.lock().await;
+        let cached = match read_cached_full_packument(&cache_path) {
+            Some(c) if force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs) => {
+                return Ok(c.packument);
+            }
+            recheck => recheck.or(cached),
+        };
         let started = std::time::Instant::now();
 
         // Rebuild the conditional request on each retry. Held in a
@@ -1123,6 +1167,17 @@ impl RegistryClient {
         let cache_path = packument_full_cache_path(cache_dir, name, &registry_url)
             .ok_or_else(|| Error::InvalidName(name.to_string()))?;
         let (url, registry_url) = self.packument_url(name);
+
+        // Single-flight: see `fetch_packument_cached_with_entry`.
+        // Coalesce concurrent revalidations for the same name into one
+        // network conditional-GET; later waiters re-read the warm cache.
+        let sf_key = format!("full:{registry_url}:{name}");
+        let sf_mutex = self.packument_singleflight_mutex(sf_key);
+        let _sf_guard = sf_mutex.lock().await;
+        if let Some(refreshed) = read_cached_full_packument_typed(&cache_path, force_cache) {
+            return Ok(refreshed);
+        }
+
         let label = format!("packument {name}");
         let started = std::time::Instant::now();
         let max_attempts = self.fetch_policy.retries.saturating_add(1);
@@ -1444,7 +1499,28 @@ impl RegistryClient {
             return Err(Error::Offline(format!("packument for {name}")));
         }
 
+        // Single-flight: when a pre-resolver speculative prefetch and
+        // the resolver's BFS both ask for the same name within the
+        // same install, the first one to land here does the network
+        // fetch + cache write. The second one blocks on the per-name
+        // tokio Mutex and re-reads the (now warm) disk cache on
+        // wake-up, skipping the duplicate GET entirely. Keyed by
+        // `corgi:<registry>:<name>` so corgi and full caches stay
+        // independent. Drops the std lock immediately — only the
+        // tokio Mutex is held across the network await.
         let (url, registry_url) = self.packument_url(name);
+        let sf_key = format!("corgi:{registry_url}:{name}");
+        let sf_mutex = self.packument_singleflight_mutex(sf_key);
+        let _sf_guard = sf_mutex.lock().await;
+        // Re-read the cache under the lock — another task may have
+        // populated it while we waited. Costs one disk read per
+        // coalesced caller but saves a full HTTP round-trip.
+        let cached = match read_cached_packument(&cache_path) {
+            Some(c) if force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs) => {
+                return Ok(c.packument);
+            }
+            recheck => recheck.or(cached),
+        };
 
         // Normally we ask for the abbreviated (corgi) response so we
         // get a smaller payload. See `force_full_packument()` for why
@@ -3357,6 +3433,104 @@ mod retry_tests {
 
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2, "expected retry after decode error");
+    }
+
+    #[tokio::test]
+    async fn concurrent_corgi_fetches_for_same_name_coalesce_to_one_request() {
+        // Two concurrent `fetch_packument_cached` calls for "demo"
+        // must hit the registry exactly once: the second caller
+        // waits on the per-name single-flight mutex and re-reads
+        // the warmed disk cache on wake-up. The mock injects a
+        // 100ms delay so both callers land inside the singleflight
+        // window deterministically.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/demo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(100))
+                    .set_body_json(make_packument_json()),
+            )
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 5_000,
+            ..FetchPolicy::default()
+        };
+        let client = std::sync::Arc::new(client_with(&server, policy));
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let c1 = std::sync::Arc::clone(&client);
+        let c2 = std::sync::Arc::clone(&client);
+        let d1 = dir.clone();
+        let d2 = dir.clone();
+        let h1 = tokio::spawn(async move { c1.fetch_packument_cached("demo", &d1).await });
+        let h2 = tokio::spawn(async move { c2.fetch_packument_cached("demo", &d2).await });
+        let (r1, r2) = tokio::join!(h1, h2);
+        let p1 = r1.unwrap().expect("first fetch ok");
+        let p2 = r2.unwrap().expect("second fetch ok");
+        assert_eq!(p1.name, "demo");
+        assert_eq!(p2.name, "demo");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected single-flight to coalesce concurrent fetches into one network call"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_full_fetches_for_same_name_coalesce_to_one_request() {
+        // Mirror of the corgi test for the full-packument path:
+        // `fetch_packument_full_cached` must also dedup concurrent
+        // calls. The resolver hits this variant whenever
+        // `trustPolicy=no-downgrade` or `minimumReleaseAge` requires
+        // the `time` field — which is the default for npmjs.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/demo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "name": "demo",
+                        "versions": {},
+                        "dist-tags": {},
+                        "time": {},
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 5_000,
+            ..FetchPolicy::default()
+        };
+        let client = std::sync::Arc::new(client_with(&server, policy));
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let c1 = std::sync::Arc::clone(&client);
+        let c2 = std::sync::Arc::clone(&client);
+        let d1 = dir.clone();
+        let d2 = dir.clone();
+        let h1 = tokio::spawn(async move { c1.fetch_packument_full_cached("demo", &d1).await });
+        let h2 = tokio::spawn(async move { c2.fetch_packument_full_cached("demo", &d2).await });
+        let (r1, r2) = tokio::join!(h1, h2);
+        let v1 = r1.unwrap().expect("first fetch ok");
+        let v2 = r2.unwrap().expect("second fetch ok");
+        assert_eq!(v1["name"], "demo");
+        assert_eq!(v2["name"], "demo");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected single-flight to coalesce concurrent full-packument fetches"
+        );
     }
 
     #[tokio::test]
