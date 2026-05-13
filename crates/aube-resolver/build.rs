@@ -15,6 +15,11 @@ const RELEASE_TOP: usize = 2000;
 const DEFAULT_VERSION_CAP: usize = 1000;
 const FAST_COMPRESSION_LEVEL: i32 = 10;
 const RELEASE_CI_COMPRESSION_LEVEL: i32 = 19;
+// Bump when the on-disk rkyv schema (`src/primer_schema.rs`) changes
+// in a layout-breaking way. The on-disk `primer-topN-vM-sK.rkyv.zst`
+// artifact is gitignored, so older `sK` files orphan harmlessly and
+// the new `sK+1` is regenerated on the next build.
+const PRIMER_DATA_SCHEMA: u32 = 2;
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -24,9 +29,9 @@ fn main() {
         .unwrap_or_else(|| {
             let top = primer_top();
             let version_cap = version_cap();
-            manifest_dir
-                .join("data")
-                .join(format!("primer-top{top}-v{version_cap}.rkyv.zst"))
+            manifest_dir.join("data").join(format!(
+                "primer-top{top}-v{version_cap}-s{PRIMER_DATA_SCHEMA}.rkyv.zst"
+            ))
         });
 
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_PATH");

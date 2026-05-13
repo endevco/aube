@@ -83,12 +83,15 @@ pub(super) enum PrimerBundledDependencies {
 
 #[derive(Archive, Clone, RkyvSerialize, RkyvDeserialize, serde::Deserialize)]
 pub(super) struct PrimerDist {
-    #[serde(rename = "t")]
-    pub(super) tarball: String,
+    /// `None` for npm publishes whose tarball URL matches the
+    /// deterministic `{registry}/{name}/-/{unscoped}-{version}.tgz`
+    /// pattern (the generator omits the field). Carried explicitly
+    /// only for the legacy outliers (e.g. `handlebars@1.0.2-beta`
+    /// publishes as `handlebars-1.0.2beta.tgz`) that diverge.
+    #[serde(default, rename = "t")]
+    pub(super) tarball: Option<String>,
     #[serde(default, rename = "i")]
     pub(super) integrity: Option<String>,
-    #[serde(default, rename = "s")]
-    pub(super) shasum: Option<String>,
     #[serde(default, rename = "a")]
     pub(super) provenance: bool,
 }

@@ -104,9 +104,15 @@ function trimVersion(v = {}) {
     dt:
       typeof v.dist?.tarball === 'string'
         ? {
-            t: v.dist.tarball,
+            // Omit the tarball URL when it matches the deterministic
+            // `{registry}/{name}/-/{unscoped}-{version}.tgz` pattern.
+            // The runtime synthesizes that form from name+version, so
+            // dropping it shaves ~20% of primer bytes. A handful of
+            // legacy publishes (e.g. handlebars@1.0.2-beta -> `1.0.2beta`
+            // in the basename) diverge from the pattern and still need
+            // the field.
+            t: deterministicTarball(v.name, v.version) === v.dist.tarball ? undefined : v.dist.tarball,
             i: typeof v.dist.integrity === 'string' ? v.dist.integrity : undefined,
-            s: typeof v.dist.shasum === 'string' ? v.dist.shasum : undefined,
             a: hasProvenance(v.dist.attestations),
           }
         : undefined,
@@ -160,6 +166,11 @@ function binMap(name, bin) {
 
 function unscopedName(name = '') {
   return name.split('/').pop() || name
+}
+
+function deterministicTarball(name, version) {
+  if (typeof name !== 'string' || typeof version !== 'string') return undefined
+  return `https://registry.npmjs.org/${name}/-/${unscopedName(name)}-${version}.tgz`
 }
 
 function fundingUrl(funding) {

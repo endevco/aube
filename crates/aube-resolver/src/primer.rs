@@ -78,7 +78,7 @@ impl PrimerVersionMetadata {
                 .bundled_dependencies
                 .as_ref()
                 .map(PrimerBundledDependencies::to_bundled_dependencies),
-            dist: self.dist.as_ref().map(PrimerDist::to_dist),
+            dist: self.dist.as_ref().map(|d| d.to_dist(name, version)),
             os: self.os.clone(),
             cpu: self.cpu.clone(),
             libc: self.libc.clone(),
@@ -113,11 +113,14 @@ impl PrimerBundledDependencies {
 }
 
 impl PrimerDist {
-    fn to_dist(&self) -> Dist {
+    fn to_dist(&self, name: &str, version: &str) -> Dist {
         Dist {
-            tarball: self.tarball.clone(),
+            tarball: self
+                .tarball
+                .clone()
+                .unwrap_or_else(|| deterministic_tarball_url(name, version)),
             integrity: self.integrity.clone(),
-            shasum: self.shasum.clone(),
+            shasum: None,
             unpacked_size: None,
             attestations: self.provenance.then(|| Attestations {
                 provenance: Some(serde_json::json!({
@@ -126,6 +129,20 @@ impl PrimerDist {
             }),
         }
     }
+}
+
+/// Reconstruct the npmjs tarball URL when the primer omitted it
+/// (the common case — see PrimerDist::tarball docs). Mirrors
+/// `RegistryClient::tarball_url`'s format for `registry.npmjs.org`.
+/// In force-metadata-primer mode the URL is rewritten to the active
+/// registry by the resolver, so this default is only consulted on
+/// the default-registry path.
+fn deterministic_tarball_url(name: &str, version: &str) -> String {
+    let unscoped = name
+        .strip_prefix('@')
+        .and_then(|rest| rest.split('/').nth(1))
+        .unwrap_or(name);
+    format!("https://registry.npmjs.org/{name}/-/{unscoped}-{version}.tgz")
 }
 
 static GENERATED_AT: OnceLock<Option<String>> = OnceLock::new();
@@ -273,6 +290,37 @@ mod tests {
             return;
         };
         assert!(super::get(name).is_some());
+    }
+
+    #[test]
+    fn bundled_primer_synthesizes_tarball_urls() {
+        // The generator omits the tarball URL when it matches the
+        // deterministic `{registry}/{name}/-/{unscoped}-{version}.tgz`
+        // pattern. Verify the runtime fills it in: every dist in the
+        // embedded primer must surface a non-empty tarball URL.
+        let Some((name, _, _)) = PRIMER_INDEX.first() else {
+            return;
+        };
+        let packument = super::get(name).expect("primer hit").packument();
+        let dist = packument
+            .versions
+            .values()
+            .find_map(|v| v.dist.as_ref())
+            .expect("packument has at least one version with dist metadata");
+        assert!(dist.tarball.starts_with("https://"));
+        assert!(dist.tarball.ends_with(".tgz"));
+    }
+
+    #[test]
+    fn deterministic_tarball_url_handles_scoped_names() {
+        assert_eq!(
+            deterministic_tarball_url("react", "18.2.0"),
+            "https://registry.npmjs.org/react/-/react-18.2.0.tgz"
+        );
+        assert_eq!(
+            deterministic_tarball_url("@types/node", "20.10.0"),
+            "https://registry.npmjs.org/@types/node/-/node-20.10.0.tgz"
+        );
     }
 
     #[test]
