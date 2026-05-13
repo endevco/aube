@@ -1934,9 +1934,12 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
 /// Excluded: git/local/workspace/jsr specs (no public-registry
 /// signal), aliased specs (`my-alias@real-pkg` — the user typed the
 /// real name on purpose and the gate would re-prompt on every
-/// rename), scoped names (`@scope/name` — the npm downloads API
-/// doesn't index them, and OSV `MAL-*` hits on scoped names are
-/// rare enough that not querying them isn't a real loss).
+/// rename).
+///
+/// Scoped names (`@scope/name`) are **included**: OSV's batch API
+/// supports scoped queries, and the downloads probe naturally
+/// folds them into `DownloadCount::Unknown` so the prompt skips
+/// them without a per-name special case here.
 fn registry_bound_names_for_supply_chain(cwd: &Path, packages: &[String]) -> Vec<String> {
     let mut names = Vec::with_capacity(packages.len());
     let workspace_versions = collect_workspace_versions(cwd);

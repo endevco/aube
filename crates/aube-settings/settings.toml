@@ -300,8 +300,8 @@ confirmation when the count falls below this threshold — the floor
 catches typosquats and impersonations, which have near-zero downloads
 on day one regardless of how cleverly they're named.
 
-Interactive sessions get a `[y/N]` prompt with package age and
-maintainer context. Non-interactive contexts fail with
+Interactive sessions get a `[y/N]` prompt showing the weekly
+download count. Non-interactive contexts fail with
 `ERR_AUBE_LOW_DOWNLOAD_PACKAGE` unless `--allow-low-downloads` is
 passed. Scoped private packages and workspace deps are skipped (no
 public-registry signal → no false positive).
