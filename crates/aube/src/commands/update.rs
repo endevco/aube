@@ -754,6 +754,13 @@ pub async fn run(
     chained.ignore_pnpmfile = args.ignore_pnpmfile;
     chained.pnpmfile = args.pnpmfile.clone();
     chained.global_pnpmfile = args.global_pnpmfile.clone();
+    // `aube update` is one of the canonical fresh-resolution
+    // entry points — by design it pulls newer versions than the
+    // lockfile pins. Route the post-resolve transitive set
+    // through the live OSV API so the freshest `MAL-*` advisories
+    // apply at the moment a human is changing what's installed,
+    // matching `aube add`'s behavior.
+    chained.osv_transitive_check = true;
     // `--lockfile-only`: lockfile is already written above; tell the
     // chained install to skip linking `node_modules` so the on-disk
     // tree stays as-is. Mirrors `aube install --lockfile-only` and

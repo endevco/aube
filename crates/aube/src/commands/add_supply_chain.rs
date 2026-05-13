@@ -109,14 +109,62 @@ pub async fn run_gates(
     Ok(())
 }
 
-/// Mirror-backed transitive OSV `MAL-*` check for every install.
+/// Live-API transitive OSV `MAL-*` check.
 ///
-/// `aube add` already runs the [live-API CLI-name gate](`run_gates`)
-/// for the freshest signal at the moment of human intent. This one
-/// runs on every install (`aube install`, `aube ci`, `aube add`'s
-/// chained install, frozen reinstalls, …) when
-/// `advisoryCheckOnInstall != off`, trading sub-day freshness for a
-/// local lookup that doesn't hit `api.osv.dev` on every reinstall.
+/// Runs against the full post-resolve transitive set, batch-querying
+/// `api.osv.dev`. Used by the fresh-resolution install paths —
+/// `aube add`, `aube update`, missing-lockfile installs, and any
+/// install where the resolver picked a `(name, version)` the
+/// lockfile didn't already pin. The companion
+/// [`run_transitive_osv_gate_via_mirror`] is the local-mirror
+/// fallback for plain reinstalls where the lockfile was authoritative.
+///
+/// Policy mapping (same shape as the existing CLI-name gate):
+/// - `Off` → no-op.
+/// - `On` → OSV fetch failures degrade to
+///   `WARN_AUBE_ADVISORY_CHECK_FAILED` and install proceeds.
+/// - `Required` → fetch failures map to
+///   `ERR_AUBE_ADVISORY_CHECK_FAILED`. Hits map to
+///   `ERR_AUBE_MALICIOUS_PACKAGE` under both `On` and `Required`.
+pub async fn run_transitive_osv_gate(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    policy: AdvisoryCheck,
+) -> miette::Result<()> {
+    if matches!(policy, AdvisoryCheck::Off) {
+        return Ok(());
+    }
+    let names = transitive_registry_names(cwd, graph);
+    if names.is_empty() {
+        return Ok(());
+    }
+    let client = match aube_registry::supply_chain::build_probe_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                code = WARN_AUBE_ADVISORY_CHECK_FAILED,
+                "supply-chain probe client init failed: {e}"
+            );
+            if matches!(policy, AdvisoryCheck::Required) {
+                return Err(miette!(
+                    code = ERR_AUBE_ADVISORY_CHECK_FAILED,
+                    "supply-chain probe client could not be initialised and `advisoryCheck = required` is set: {e}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    osv_gate(&client, &names, policy).await
+}
+
+/// Mirror-backed transitive OSV `MAL-*` check for plain reinstalls.
+///
+/// Counterpart to [`run_transitive_osv_gate`]. Fires when none of
+/// the fresh-resolution triggers apply (no `aube add` / `aube
+/// update`, no `advisoryCheckEveryInstall`, no lockfile drift) — so
+/// the live-API gate is dormant and the mirror picks up the slack
+/// against the post-resolve graph without an `api.osv.dev`
+/// round-trip on every reinstall. Off by default.
 ///
 /// Policy mapping (mirrors the live-API gate's shape so CI configs
 /// that have `advisoryCheck = required` can mirror that bit onto
@@ -228,6 +276,43 @@ pub async fn run_transitive_osv_gate_via_mirror(
         "{}",
         lines.join("\n")
     ))
+}
+
+/// True when the resolved graph contains at least one
+/// `(registry_name, version)` pair the pre-existing lockfile
+/// didn't already pin — meaning the resolver did fresh work and
+/// the result deserves a live-API OSV pass rather than the
+/// mirror-backed fallback. A missing pre-existing lockfile
+/// (`None`) is treated as drift by definition: nothing on disk
+/// vouched for what just got resolved.
+///
+/// Filtered to public-npmjs registry names so private / workspace
+/// / git / file deps don't get classified as "new" just because
+/// they aren't in a public-npmjs comparison set.
+pub fn lockfile_has_new_picks(
+    cwd: &std::path::Path,
+    prior: Option<&aube_lockfile::LockfileGraph>,
+    resolved: &aube_lockfile::LockfileGraph,
+) -> bool {
+    let Some(prior) = prior else {
+        // No lockfile before resolve: every resolved entry is a
+        // fresh pick. Skip the loop and short-circuit.
+        return !resolved.packages.is_empty();
+    };
+    let npm_config = aube_registry::config::NpmConfig::load(cwd);
+    use std::collections::HashSet;
+    let prior_pairs: HashSet<(&str, &str)> = prior
+        .packages
+        .values()
+        .filter(|p| p.local_source.is_none())
+        .map(|p| (p.registry_name(), p.version.as_str()))
+        .collect();
+    resolved
+        .packages
+        .values()
+        .filter(|p| p.local_source.is_none())
+        .filter(|p| npm_config.is_public_npmjs(p.registry_name()))
+        .any(|p| !prior_pairs.contains(&(p.registry_name(), p.version.as_str())))
 }
 
 /// Distinct public-npmjs registry names in `graph`, filtered to
@@ -533,6 +618,121 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let names = transitive_registry_names(tmp.path(), &graph);
         assert_eq!(names, vec!["lodash".to_string()]);
+    }
+
+    #[test]
+    fn lockfile_drift_no_prior_lockfile_is_drift_when_resolved_has_entries() {
+        // No on-disk lockfile + non-empty resolve = fresh
+        // resolution by definition. The router needs this to flip
+        // to the live API even though the user typed plain
+        // `aube install`.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let resolved = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(lockfile_has_new_picks(tmp.path(), None, &resolved));
+    }
+
+    #[test]
+    fn lockfile_drift_empty_resolve_and_no_prior_is_not_drift() {
+        // No lockfile + nothing resolved (e.g. a workspace with no
+        // deps) shouldn't flip the live-API gate on — there's
+        // nothing to check anyway.
+        let resolved = aube_lockfile::LockfileGraph::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(!lockfile_has_new_picks(tmp.path(), None, &resolved));
+    }
+
+    #[test]
+    fn lockfile_drift_fully_pinned_is_not_drift() {
+        // Prior and resolved hold the same (registry_name, version)
+        // pair: the lockfile was authoritative, fall through to the
+        // mirror path.
+        use std::collections::BTreeMap;
+        let mut prior_packages = BTreeMap::new();
+        prior_packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let prior = aube_lockfile::LockfileGraph {
+            packages: prior_packages.clone(),
+            ..Default::default()
+        };
+        let resolved = aube_lockfile::LockfileGraph {
+            packages: prior_packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(!lockfile_has_new_picks(tmp.path(), Some(&prior), &resolved));
+    }
+
+    #[test]
+    fn lockfile_drift_new_version_is_drift() {
+        // Resolver picked a version the lockfile didn't pin — the
+        // canonical fresh-resolution signal. Same name, different
+        // version, both public-npmjs.
+        use std::collections::BTreeMap;
+        let mut prior_packages = BTreeMap::new();
+        prior_packages.insert(
+            "lodash@4.17.21".to_string(),
+            registry_pkg("lodash", "4.17.21"),
+        );
+        let prior = aube_lockfile::LockfileGraph {
+            packages: prior_packages,
+            ..Default::default()
+        };
+        let mut resolved_packages = BTreeMap::new();
+        resolved_packages.insert(
+            "lodash@4.17.22".to_string(),
+            registry_pkg("lodash", "4.17.22"),
+        );
+        let resolved = aube_lockfile::LockfileGraph {
+            packages: resolved_packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(lockfile_has_new_picks(tmp.path(), Some(&prior), &resolved));
+    }
+
+    #[test]
+    fn lockfile_drift_ignores_local_source_entries() {
+        // Workspace / link: / file: entries shouldn't trigger
+        // drift detection even when they aren't in the prior
+        // lockfile — they don't resolve through the public
+        // registry, so OSV has no signal on them.
+        use std::collections::BTreeMap;
+        let mut resolved_packages = BTreeMap::new();
+        let mut linked = registry_pkg("@workspace/util", "1.0.0");
+        linked.local_source = Some(aube_lockfile::LocalSource::Link("../util".into()));
+        resolved_packages.insert("@workspace/util@1.0.0".to_string(), linked);
+        let resolved = aube_lockfile::LockfileGraph {
+            packages: resolved_packages,
+            ..Default::default()
+        };
+        let prior = aube_lockfile::LockfileGraph::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(!lockfile_has_new_picks(tmp.path(), Some(&prior), &resolved));
+    }
+
+    #[tokio::test]
+    async fn run_transitive_osv_gate_off_skips_network() {
+        // Mirror of the live-API gate's off-policy test: `Off`
+        // must short-circuit before any client construction or
+        // network access.
+        let graph = aube_lockfile::LockfileGraph::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            run_transitive_osv_gate(tmp.path(), &graph, AdvisoryCheck::Off)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

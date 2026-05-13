@@ -147,11 +147,14 @@ Settings: [`minimumReleaseAge`](/settings/#setting-minimumreleaseage),
 
 ## Typosquat and impersonation protection
 
-`aube add` checks every package you name on the command line before adding
-it to your manifest. Transitive deps and packages already in the lockfile
-aren't re-checked at add time. (For an opt-in install-time OSV check that
-also covers the transitive set on every install, see [Install-time OSV
-check](#install-time-osv-check) below.)
+`aube add` checks every package you name on the command line *and* the
+full post-resolve transitive closure against [OSV](https://osv.dev) for
+`MAL-*` malicious-package advisories — same check `aube update` and any
+other install path runs where the resolver picks a version that wasn't
+already pinned by the lockfile. Plain reinstalls (the lockfile was
+authoritative) skip the live API for latency; an opt-in local mirror
+(see [Install-time OSV check](#install-time-osv-check) below) covers
+that path.
 
 Two signals, with different response levels:
 
@@ -209,39 +212,64 @@ Settings: [`advisoryCheck`](/settings/#setting-advisorycheck),
 
 ## Install-time OSV check
 
-`advisoryCheck` only runs on `aube add` — the moment of human intent. To
-also OSV-check every `aube install` (CI runs, fresh clones, re-installs
-after pulling main, …) against the post-resolve transitive graph, opt
-into `advisoryCheckOnInstall`:
+OSV `MAL-*` checks are routed three ways post-resolve so the freshest
+signal lands when it matters most without paying for a per-install
+network round-trip when it doesn't:
+
+| Install path                                      | Backend       | Setting                       |
+| ------------------------------------------------- | ------------- | ----------------------------- |
+| `aube add`, `aube update`                         | Live API      | `advisoryCheck` (default `on`)|
+| Missing lockfile / resolver picked new version    | Live API      | `advisoryCheck` (default `on`)|
+| `advisoryCheckEveryInstall = true`                | Live API      | `advisoryCheck` (default `on`)|
+| Plain reinstall (lockfile authoritative)          | Local mirror  | `advisoryCheckOnInstall` (default `off`) |
+| Anything else                                     | No check      | —                             |
+
+The mirror lives at `$XDG_CACHE_HOME/aube/osv/npm/` (the bulk zip from
+`osv-vulnerabilities.storage.googleapis.com/npm/all.zip`, roughly tens
+of MB) and lazily refreshes with an ETag-conditional GET every 24
+hours. Hits map to the same `ERR_AUBE_MALICIOUS_PACKAGE` exit as the
+live-API gate.
+
+Trade-off: the mirror lags reality by up to ~24h. An advisory published
+in the last day won't be in your local index unless a refresh happens to
+fall after it. Fresh-resolution installs always go through the live API
+so that lag doesn't matter for new picks; plain reinstalls trade
+sub-day staleness for sub-millisecond lookups.
 
 ```yaml
-advisoryCheckOnInstall: on   # off by default
+# Default: live API on aube add / update / fresh-resolution. Mirror
+# disabled — plain reinstalls skip OSV entirely.
+advisoryCheck: on
+advisoryCheckOnInstall: off
+advisoryCheckEveryInstall: false
 ```
 
-When enabled, aube maintains a local mirror of OSV's npm advisory
-dump at `$XDG_CACHE_HOME/aube/osv/npm/` (the bulk zip at
-`osv-vulnerabilities.storage.googleapis.com/npm/all.zip`, roughly
-tens of MB) and lazily refreshes it with an ETag-conditional GET
-every 24 hours. Hits map to the same `ERR_AUBE_MALICIOUS_PACKAGE`
-exit as `advisoryCheck`. The mirror means there's no per-install
-network round-trip to `api.osv.dev` — most installs hit a cached
-JSON index that loads in milliseconds.
+```yaml
+# Hardened CI: live API on every install, fail-closed on fetch errors.
+advisoryCheck: required
+advisoryCheckEveryInstall: true
+```
 
-Trade-off: the mirror lags reality by up to ~24h. An advisory
-published in the last day won't be in your local index unless a
-refresh happens to fall after it. For the latest signal at add
-time, keep using `advisoryCheck` — it always queries the live API.
+```yaml
+# Cheap fallback: live API on fresh-resolution, local mirror covers
+# plain reinstalls so even CI re-runs see SOME OSV coverage.
+advisoryCheck: on
+advisoryCheckOnInstall: on
+```
 
-- `off` (default): plain `aube install` skips the OSV check entirely.
-  `aube add` and `advisoryCheck` are unaffected.
-- `on`: refresh-on-stale; install proceeds against the prior index
-  if the mirror can't be refreshed
-  (`WARN_AUBE_OSV_MIRROR_REFRESH_FAILED`).
-- `required`: as `on`, but mirror refresh failures map to
-  `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use in hardened CI where a
-  stale or unreachable mirror should block.
+Refresh-failure semantics for the mirror:
 
-Settings: [`advisoryCheckOnInstall`](/settings/#setting-advisorycheckoninstall).
+- `advisoryCheckOnInstall = on`: `WARN_AUBE_OSV_MIRROR_REFRESH_FAILED`,
+  install continues against the prior on-disk index (or empty on first
+  sync).
+- `advisoryCheckOnInstall = required`: mirror refresh failures map to
+  `ERR_AUBE_ADVISORY_CHECK_FAILED`. Use when a stale or unreachable
+  mirror should block.
+
+Settings:
+[`advisoryCheck`](/settings/#setting-advisorycheck),
+[`advisoryCheckOnInstall`](/settings/#setting-advisorycheckoninstall),
+[`advisoryCheckEveryInstall`](/settings/#setting-advisorycheckeveryinstall).
 
 ## Block exotic transitive dependencies
 

@@ -880,10 +880,14 @@ pub async fn run(
     // `with_mode()` already skips root lifecycle hooks (chained-call
     // contract) so `aube add` doesn't re-run the root postinstall /
     // prepare on every invocation.
-    let pipeline_result: miette::Result<()> = install::run(install::InstallOptions::with_mode(
-        super::chained_frozen_mode(install::FrozenMode::Fix),
-    ))
-    .await;
+    // `osv_transitive_check = true` routes the resolved transitive
+    // set through OSV's `MAL-*` batch query post-resolve, so a
+    // malicious dep-of-dep fails the install with the same
+    // `ERR_AUBE_MALICIOUS_PACKAGE` as the CLI-name gate above.
+    let mut install_opts =
+        install::InstallOptions::with_mode(super::chained_frozen_mode(install::FrozenMode::Fix));
+    install_opts.osv_transitive_check = true;
+    let pipeline_result: miette::Result<()> = install::run(install_opts).await;
 
     // 5. Under `--no-save`, restore the snapshotted `package.json` and
     // lockfile so neither shows up in `git status`. The user's
@@ -2039,6 +2043,9 @@ async fn run_filtered(
             install::FrozenMode::Fix,
         ));
         install_opts.workspace_filter = filter.clone();
+        // See the sibling `aube add` codepath above for why this
+        // flag is set — live OSV API on the resolved transitives.
+        install_opts.osv_transitive_check = true;
         install::run(install_opts).await?;
         Ok(())
     }

@@ -446,14 +446,23 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub advisory_check: Option<String>,
 
-    /// OSV `MAL-*` advisory check policy for every `aube install`,
+    /// OSV `MAL-*` advisory check policy for plain reinstalls,
     /// backed by a local mirror of OSV's npm dump. Independent of
-    /// `advisory_check`, which only fires on `aube add`. Values:
-    /// `"on"` (refresh-on-stale, fail-open on refresh error),
-    /// `"required"` (fail-closed on refresh error), or `"off"`
-    /// (default).
+    /// `advisory_check`, which fires on `aube add`, `aube update`,
+    /// and other fresh-resolution paths via the live OSV API.
+    /// Values: `"on"` (refresh-on-stale, fail-open on refresh
+    /// error), `"required"` (fail-closed on refresh error), or
+    /// `"off"` (default).
     #[serde(default)]
     pub advisory_check_on_install: Option<String>,
+
+    /// Force the live-API OSV `MAL-*` check on every install
+    /// (including frozen reinstalls). Default `false`. Set to
+    /// `true` for hardened CI where every install must observe
+    /// the latest advisories regardless of whether the lockfile
+    /// changed. Trades per-install latency for freshness.
+    #[serde(default)]
+    pub advisory_check_every_install: Option<bool>,
 
     /// Weekly-downloads floor for `aube add`. Below this, aube prompts
     /// for confirmation (or fails non-interactively). 0 disables.

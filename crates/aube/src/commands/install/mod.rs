@@ -334,6 +334,14 @@ impl InstallArgs {
             // chained-call constructor (`with_mode`) is where commands
             // with package args opt into skipping them.
             skip_root_lifecycle: false,
+            // Argumentless `aube install` doesn't force the live-API
+            // transitive gate by itself. `install::run` still runs
+            // the gate when it detects fresh resolution (no
+            // pre-existing lockfile, or the resolver picked a
+            // version the lockfile didn't pin), and the
+            // `advisoryCheckEveryInstall` setting flips it on for
+            // every install — neither needs the caller to opt in.
+            osv_transitive_check: false,
         }
     }
 }
@@ -445,6 +453,17 @@ pub struct InstallOptions {
     /// git-prepare install — that one's "root" IS the git dep itself and
     /// running its `prepare` is the whole point.
     pub skip_root_lifecycle: bool,
+    /// Run the post-resolve transitive OSV `MAL-*` gate against
+    /// the live OSV API (not the mirror). Flipped on by commands
+    /// whose whole point is fresh resolution — `aube add` and
+    /// `aube update` — so the freshest signal lands at the moment
+    /// the user is changing what's installed. Default `false` for
+    /// every other entry point; `install::run` also flips it on
+    /// internally when `advisoryCheckEveryInstall` is set, when
+    /// no lockfile existed before resolve, or when the resolver
+    /// picked a `(name, version)` pair the lockfile didn't
+    /// already pin.
+    pub osv_transitive_check: bool,
 }
 
 #[derive(Default)]
@@ -558,6 +577,13 @@ impl InstallOptions {
             // the only construction path that runs them and it goes
             // through `InstallArgs::into_options`, not here.
             skip_root_lifecycle: true,
+            // Default `false`. `aube add` and `aube update` flip
+            // this on at construction. Other chained callers
+            // (remove, dedupe, patch_commit, …) leave it off so
+            // their chained install relies on the install-time
+            // routing (fresh-resolution detection / mirror
+            // fallback) instead of an unconditional API hit.
+            osv_transitive_check: false,
         }
     }
 }
@@ -3990,24 +4016,57 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
 
-            // Mirror-backed transitive OSV `MAL-*` gate. Off by
-            // default (`advisoryCheckOnInstall = off`); when the
-            // user opts in, the post-resolve transitive set is
-            // checked against the locally synced OSV `MAL-*`
-            // dump. Fires before the pluggable scanner because a
+            // Post-resolve transitive OSV `MAL-*` gate. Three-way
+            // routing so the live API fires when the freshest
+            // signal is worth a per-install network round-trip,
+            // and the local mirror picks up plain reinstalls
+            // where the lockfile already vetted what's installed:
+            //
+            // 1. Live API fires when any of these is true:
+            //    - `opts.osv_transitive_check` (aube add / update)
+            //    - `advisoryCheckEveryInstall = true`
+            //    - the resolver picked a `(name, version)` the
+            //      pre-existing lockfile didn't already pin, OR
+            //      no lockfile existed before resolve (treated
+            //      as drift by definition).
+            // 2. Otherwise, mirror fires when
+            //    `advisoryCheckOnInstall != Off`.
+            // 3. Otherwise, no OSV check at all.
+            //
+            // Fires before the pluggable scanner because a
             // confirmed-malicious advisory is a stronger signal
             // than a scanner finding and the error message is
-            // more actionable. `aube add` itself runs its
-            // CLI-name gate against the live OSV API at the
-            // command-handler boundary — this gate is the
-            // catch-all that covers every install entry point
-            // including `add`'s chained install, so a malicious
-            // transitive dep still gets blocked there.
-            let aoi =
-                super::with_settings_ctx(&cwd, aube_settings::resolved::advisory_check_on_install);
-            if !matches!(aoi, aube_settings::resolved::AdvisoryCheckOnInstall::Off) {
-                super::add_supply_chain::run_transitive_osv_gate_via_mirror(&cwd, &graph, aoi)
-                    .await?;
+            // more actionable.
+            let prior_lockfile = lockfile_pre_parse.as_ref().map(|(g, _)| g);
+            let has_drift =
+                super::add_supply_chain::lockfile_has_new_picks(&cwd, prior_lockfile, &graph);
+            let advisory_check_every_install = super::with_settings_ctx(
+                &cwd,
+                aube_settings::resolved::advisory_check_every_install,
+            );
+            let needs_live_api =
+                opts.osv_transitive_check || advisory_check_every_install || has_drift;
+            if needs_live_api {
+                let advisory_check = super::with_settings_ctx(&cwd, |ctx| {
+                    if aube_settings::resolved::paranoid(ctx) {
+                        aube_settings::resolved::AdvisoryCheck::Required
+                    } else {
+                        aube_settings::resolved::advisory_check(ctx)
+                    }
+                });
+                if !matches!(advisory_check, aube_settings::resolved::AdvisoryCheck::Off) {
+                    super::add_supply_chain::run_transitive_osv_gate(&cwd, &graph, advisory_check)
+                        .await?;
+                }
+            } else {
+                let aoi = super::with_settings_ctx(
+                    &cwd,
+                    aube_settings::resolved::advisory_check_on_install,
+                );
+                if !matches!(aoi, aube_settings::resolved::AdvisoryCheckOnInstall::Off) {
+                    super::add_supply_chain::run_transitive_osv_gate_via_mirror(&cwd, &graph, aoi)
+                        .await?;
+                }
             }
 
             // Bun-compatible security scanner runs against the
