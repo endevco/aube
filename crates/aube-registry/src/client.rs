@@ -944,10 +944,12 @@ impl RegistryClient {
         // Single-flight: same shape as `fetch_packument_cached_with_entry`.
         // See that method's comment for the why. Keyed `full:<registry>:<name>`
         // so the full and corgi paths don't serialize through each other.
+        // Released before any retry backoff sleep so waiters don't pay
+        // a serialized recovery cost when the winner hits transient errors.
         let (url, registry_url) = self.packument_url(name);
         let sf_key = format!("full:{registry_url}:{name}");
         let sf_mutex = self.packument_singleflight_mutex(sf_key);
-        let _sf_guard = sf_mutex.lock().await;
+        let mut sf_guard = Some(sf_mutex.lock().await);
         let cached = match read_cached_full_packument(&cache_path) {
             Some(c) if force_cache || cached_is_fresh(c.fetched_at, c.max_age_secs) => {
                 return Ok(c.packument);
@@ -1004,6 +1006,7 @@ impl RegistryClient {
                         code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
+                    drop(sf_guard.take());
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) => {
@@ -1069,6 +1072,7 @@ impl RegistryClient {
                                     code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
                             "retrying HTTP request after response body decode error",
                                 );
+                            drop(sf_guard.take());
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -1085,6 +1089,7 @@ impl RegistryClient {
                         code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
+                    drop(sf_guard.take());
                     tokio::time::sleep(wait).await;
                 }
                 Err(err) => return Err(err.into()),
@@ -1171,9 +1176,11 @@ impl RegistryClient {
         // Single-flight: see `fetch_packument_cached_with_entry`.
         // Coalesce concurrent revalidations for the same name into one
         // network conditional-GET; later waiters re-read the warm cache.
+        // Released before any retry backoff sleep so waiters don't pay
+        // a serialized recovery cost when the winner hits transient errors.
         let sf_key = format!("full:{registry_url}:{name}");
         let sf_mutex = self.packument_singleflight_mutex(sf_key);
-        let _sf_guard = sf_mutex.lock().await;
+        let mut sf_guard = Some(sf_mutex.lock().await);
         if let Some(refreshed) = read_cached_full_packument_typed(&cache_path, force_cache) {
             return Ok(refreshed);
         }
@@ -1211,6 +1218,7 @@ impl RegistryClient {
                         code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
+                    drop(sf_guard.take());
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
@@ -1293,6 +1301,7 @@ impl RegistryClient {
                                     code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
                             "retrying HTTP request after response body decode error",
                                 );
+                            drop(sf_guard.take());
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -1309,6 +1318,7 @@ impl RegistryClient {
                         code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSPORT,
                         "retrying HTTP request after transport error",
                     );
+                    drop(sf_guard.take());
                     tokio::time::sleep(wait).await;
                 }
                 Err(err) => return Err(err.into()),
@@ -1508,10 +1518,14 @@ impl RegistryClient {
         // `corgi:<registry>:<name>` so corgi and full caches stay
         // independent. Drops the std lock immediately — only the
         // tokio Mutex is held across the network await.
+        //
+        // Released before any retry backoff sleep so a winner stuck
+        // in exponential backoff against a flaky registry doesn't
+        // serialize the recovery of N concurrent waiters behind it.
         let (url, registry_url) = self.packument_url(name);
         let sf_key = format!("corgi:{registry_url}:{name}");
         let sf_mutex = self.packument_singleflight_mutex(sf_key);
-        let _sf_guard = sf_mutex.lock().await;
+        let mut sf_guard = Some(sf_mutex.lock().await);
         // Re-read the cache under the lock — another task may have
         // populated it while we waited. Costs one disk read per
         // coalesced caller but saves a full HTTP round-trip.
@@ -1573,6 +1587,7 @@ impl RegistryClient {
                         code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_TRANSIENT,
                         "retrying HTTP request after transient failure",
                     );
+                    drop(sf_guard.take());
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
@@ -1637,6 +1652,7 @@ impl RegistryClient {
                                     code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
                             "retrying HTTP request after response body decode error",
                                 );
+                            drop(sf_guard.take());
                             tokio::time::sleep(wait).await;
                         }
                         Err(err) => return Err(err),
@@ -1653,6 +1669,7 @@ impl RegistryClient {
                         code = aube_codes::warnings::WARN_AUBE_HTTP_RETRY_BODY_DECODE,
                         "retrying HTTP request after response body decode error",
                     );
+                    drop(sf_guard.take());
                     tokio::time::sleep(wait).await;
                 }
                 Err(err) => return Err(err.into()),
@@ -3530,6 +3547,80 @@ mod retry_tests {
             requests.len(),
             1,
             "expected single-flight to coalesce concurrent full-packument fetches"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_typed_revalidations_for_same_name_coalesce_to_one_request() {
+        // Companion to the corgi/full tests for the typed
+        // revalidation path. Seeds a stale full-cache entry so
+        // `cached_packument_lookup` hands back `Some(Full(...))`,
+        // which routes both concurrent callers through
+        // `revalidate_full_packument_typed`. The winner does the
+        // conditional GET and writes a fresh cache; the loser
+        // re-reads the now-warm cache via the typed deserializer
+        // and skips the network entirely.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/demo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "name": "demo",
+                        "versions": {},
+                        "dist-tags": {},
+                        "time": {},
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let policy = FetchPolicy {
+            timeout_ms: 5_000,
+            ..FetchPolicy::default()
+        };
+        let client = std::sync::Arc::new(client_with(&server, policy));
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+
+        let seed = Packument {
+            name: "demo".to_owned(),
+            modified: None,
+            versions: BTreeMap::new(),
+            dist_tags: BTreeMap::new(),
+            time: BTreeMap::new(),
+        };
+        client.seed_full_packument_cache("demo", &dir, &seed, None, None, false);
+
+        let lookup1 = client.cached_packument_lookup("demo", &dir);
+        let lookup2 = client.cached_packument_lookup("demo", &dir);
+        assert!(lookup1.stale, "seed should be reported as stale");
+        assert!(lookup2.stale, "seed should be reported as stale");
+
+        let c1 = std::sync::Arc::clone(&client);
+        let c2 = std::sync::Arc::clone(&client);
+        let d1 = dir.clone();
+        let d2 = dir.clone();
+        let h1 = tokio::spawn(async move {
+            c1.fetch_packument_with_time_cached_after_lookup("demo", &d1, lookup1)
+                .await
+        });
+        let h2 = tokio::spawn(async move {
+            c2.fetch_packument_with_time_cached_after_lookup("demo", &d2, lookup2)
+                .await
+        });
+        let (r1, r2) = tokio::join!(h1, h2);
+        let p1 = r1.unwrap().expect("first revalidate ok");
+        let p2 = r2.unwrap().expect("second revalidate ok");
+        assert_eq!(p1.name, "demo");
+        assert_eq!(p2.name, "demo");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "expected single-flight to coalesce concurrent typed revalidations into one network call"
         );
     }
 
