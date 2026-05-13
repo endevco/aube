@@ -439,7 +439,13 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # a host that already has `XDG_DATA_HOME` set in its environment
 # would leak the benchmark's store out of the isolated `{home}`,
 # and `COLD_WIPE` wouldn't find it to clean up between iterations.
-AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share"
+# `npm_config_minimum_release_age` propagates the bench's
+# minimum-release-age value into aube (aube reads this env var via
+# its npm-compatible settings layer). Without it, aube uses its
+# compiled-in default (1440) regardless of
+# `BENCH_MIN_RELEASE_AGE_MINUTES`, silently breaking the
+# apples-to-apples guarantee for any non-default override.
+AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share npm_config_minimum_release_age=${MIN_RELEASE_AGE_MINUTES}"
 
 # Per-scenario AUBE_ENV variants that pin aube's global virtual store mode
 # via the `enableGlobalVirtualStore` setting's auto-synthesized env-var
