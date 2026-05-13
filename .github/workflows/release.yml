@@ -50,7 +50,7 @@ env:
   AUBE_PRIMER_TOP: "2000"
   # See `DEFAULT_VERSION_CAP` in crates/aube-resolver/build.rs for the
   # rationale — 100 covers ≥97% of resolved versions across the benchmark
-  # fixtures while shrinking the embedded primer by ~38%.
+  # fixtures while shrinking the embedded primer by ~54% (9.04 MB vs ~19.6 MB).
   AUBE_PRIMER_VERSION_CAP: "100"
   AUBE_REQUIRE_PRIMER: "1"
 
