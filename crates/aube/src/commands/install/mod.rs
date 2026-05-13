@@ -15,7 +15,6 @@ mod frozen;
 mod git_prepare;
 mod lifecycle;
 pub(crate) mod node_gyp_bootstrap;
-mod prefetch;
 mod settings;
 mod side_effects_cache;
 
@@ -2126,14 +2125,6 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // no direct deps would.
     let manifest = super::load_manifest_or_default(&cwd)?;
     let project_name = manifest.name.as_deref().unwrap_or("(unnamed)");
-
-    // Pre-resolver packument prefetch. Reads `package.json` keys and
-    // fires fire-and-forget GETs for every registry-shaped direct dep
-    // before workspace yaml load, settings resolve, lockfile parse,
-    // pnpmfile setup, and resolver construction run. By the time the
-    // resolver pops its first task, the packument is in the on-disk
-    // cache and the reqwest pool is hot. Honors `AUBE_DISABLE_PREFETCH=1`.
-    prefetch::spawn_direct_dep_prefetch(&manifest, &cwd, opts.network_mode);
 
     // Load the workspace yaml *once* — both as the typed
     // `WorkspaceConfig` (used below for `allow_builds_raw` and
