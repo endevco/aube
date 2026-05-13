@@ -86,16 +86,31 @@ jobs:
         with:
           node-version: '24'
       - name: Generate metadata primer
+        id: primer
         shell: bash
+        # File name has to include the `-sK` schema suffix so `build.rs`
+        # picks the artifact up directly (`source.with_extension("json")`
+        # branch); otherwise it falls back to spawning `node` to regenerate
+        # in-tree, which fails inside `cross` Docker containers where node
+        # isn't on PATH. Schema is parsed out of build.rs so a bump there
+        # (and the matching `.gitignore` entry) propagates automatically.
         run: |
+          schema=$(grep -E '^const PRIMER_DATA_SCHEMA: u32 = [0-9]+;' \
+            crates/aube-resolver/build.rs | awk -F'= ' '{print $2}' | tr -d ';')
+          if [ -z "$schema" ]; then
+            echo "::error::failed to parse PRIMER_DATA_SCHEMA from crates/aube-resolver/build.rs"
+            exit 1
+          fi
+          out="crates/aube-resolver/data/primer-top${AUBE_PRIMER_TOP}-v${AUBE_PRIMER_VERSION_CAP}-s${schema}.rkyv.json"
           node scripts/generate-primer.mjs \
             --top "$AUBE_PRIMER_TOP" \
             --versions "$AUBE_PRIMER_VERSION_CAP" \
-            --out "crates/aube-resolver/data/primer-top${AUBE_PRIMER_TOP}-v${AUBE_PRIMER_VERSION_CAP}.rkyv.json"
+            --out "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: metadata-primer
-          path: crates/aube-resolver/data/primer-top${{ env.AUBE_PRIMER_TOP }}-v${{ env.AUBE_PRIMER_VERSION_CAP }}.rkyv.json
+          path: ${{ steps.primer.outputs.path }}
 
   # Non-PGO Windows targets (untested PGO toolchain). Built via taiki-e
   # straight from the release profile. `aarch64-unknown-linux-musl` lives
