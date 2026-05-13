@@ -400,6 +400,42 @@ fn resolve_registry_supports_time_field(ctx: &aube_settings::ResolveCtx<'_>) -> 
     aube_settings::resolved::registry_supports_time_field(ctx)
 }
 
+/// Mirror the resolver's `needs_time` decision (see
+/// `aube-resolver/src/resolve.rs` near the `needs_time` binding) so
+/// the pre-resolver prefetch can pick the cache the resolver will
+/// actually read from. Bigger packuments cost more to fetch, but
+/// fetching corgi when the resolver will read full (or vice versa)
+/// means the prefetch lands in a cache the resolver ignores — pure
+/// bandwidth waste.
+///
+/// Returns true when any of `resolutionMode=time-based`,
+/// `minimumReleaseAge>0`, or `trustPolicy=no-downgrade`/`paranoid`
+/// is set AND the configured registry does NOT advertise corgi
+/// `time` field support. Default-aube against npmjs returns true
+/// because the bundled defaults are `trustPolicy=no-downgrade` +
+/// `minimumReleaseAge=1440` + `registrySupportsTimeField=false`.
+pub(super) fn needs_time_for_prefetch(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
+    if resolve_registry_supports_time_field(ctx) {
+        return false;
+    }
+    if matches!(
+        resolve_resolution_mode(ctx),
+        aube_resolver::ResolutionMode::TimeBased
+    ) {
+        return true;
+    }
+    if aube_settings::resolved::minimum_release_age(ctx) > 0 {
+        return true;
+    }
+    if aube_settings::resolved::paranoid(ctx) {
+        return true;
+    }
+    matches!(
+        aube_settings::resolved::trust_policy(ctx),
+        aube_settings::resolved::TrustPolicy::NoDowngrade
+    )
+}
+
 pub(crate) fn resolve_force_metadata_primer(ctx: &aube_settings::ResolveCtx<'_>) -> bool {
     aube_settings::resolved::force_metadata_primer(ctx)
 }
