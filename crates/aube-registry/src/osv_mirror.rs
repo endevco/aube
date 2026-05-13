@@ -348,7 +348,7 @@ async fn fetch_and_extract_from(
     // Persist the raw zip atomically so an interrupted write
     // doesn't leave a corrupt half-zip that survives across runs.
     let zip_path = root.join(ZIP_FILENAME);
-    write_atomic(&zip_path, &body)?;
+    aube_util::fs_atomic::atomic_write(&zip_path, &body)?;
 
     let advisories = build_index_from_zip(&body)?;
     let index = IndexFile {
@@ -444,33 +444,14 @@ struct OsvPackage {
 
 fn write_index(path: &Path, index: &IndexFile) -> Result<(), MirrorError> {
     let bytes = serde_json::to_vec(index)?;
-    write_atomic(path, &bytes)?;
+    // Defer to the workspace utility — its sibling-tempfile naming
+    // mixes a per-process `AtomicU64`, PID, and nanoseconds so two
+    // calls within the same nanosecond can't collide; the rename
+    // path has Windows-friendly transient-error retry; and it
+    // cleans up the orphan tmp on a final rename failure. Rolling
+    // a parallel impl here would inherit none of those properties.
+    aube_util::fs_atomic::atomic_write(path, &bytes)?;
     Ok(())
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    // Per-writer-unique tmp filename. A fixed `.tmp` extension
-    // races between concurrent `aube install` processes sharing a
-    // cache volume (CI matrix jobs are the canonical case): both
-    // would open the same path with `O_TRUNC`, and the second
-    // open truncates the first writer's content mid-write,
-    // leaving a corrupt zip or JSON on disk until the next
-    // successful refresh. PID alone collides across containers
-    // with PID-namespacing, so we mix in a nanosecond timestamp
-    // too.
-    let nonce = format!(
-        "{}.{}.tmp",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    );
-    let tmp = path.with_extension(nonce);
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
 }
 
 fn now_rfc3339() -> String {
@@ -797,49 +778,6 @@ mod tests {
         let now = SystemTime::now();
         let delta = now.duration_since(parsed).unwrap_or_default();
         assert!(delta < Duration::from_secs(2), "got {delta:?}");
-    }
-
-    /// Regression: concurrent `write_atomic` calls against the
-    /// same final path must not corrupt each other's content. The
-    /// older fixed-`.tmp`-suffix implementation had two writers
-    /// truncating each other's bytes mid-write; the per-PID +
-    /// nanosecond tmp suffix prevents that, and last-writer-wins
-    /// on the final rename leaves a coherent file on disk.
-    #[test]
-    fn write_atomic_survives_concurrent_writers() {
-        let tmp = tempdir().unwrap();
-        let target = tmp.path().join("out.bin");
-        // Two contents of identical length so any cross-write
-        // corruption shows up as a byte-level mismatch — not just
-        // a truncation.
-        let a = vec![b'A'; 64 * 1024];
-        let b = vec![b'B'; 64 * 1024];
-
-        std::thread::scope(|s| {
-            for _ in 0..8 {
-                let path = target.clone();
-                let bytes = a.clone();
-                s.spawn(move || {
-                    let _ = write_atomic(&path, &bytes);
-                });
-                let path = target.clone();
-                let bytes = b.clone();
-                s.spawn(move || {
-                    let _ = write_atomic(&path, &bytes);
-                });
-            }
-        });
-
-        let read_back = std::fs::read(&target).expect("final file present");
-        assert_eq!(
-            read_back.len(),
-            a.len(),
-            "concurrent writers must not produce a truncated/corrupt file"
-        );
-        assert!(
-            read_back == a || read_back == b,
-            "final contents must be exactly one writer's payload, byte-for-byte"
-        );
     }
 
     #[test]

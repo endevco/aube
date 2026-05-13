@@ -336,19 +336,26 @@ pub fn lockfile_has_new_picks(
     prior: Option<&aube_lockfile::LockfileGraph>,
     resolved: &aube_lockfile::LockfileGraph,
 ) -> bool {
-    let Some(prior) = prior else {
-        // No lockfile before resolve: every resolved entry is a
-        // fresh pick. Skip the loop and short-circuit.
-        return !resolved.packages.is_empty();
-    };
-    let npm_config = aube_registry::config::NpmConfig::load(cwd);
     use std::collections::HashSet;
+    let npm_config = aube_registry::config::NpmConfig::load(cwd);
+    // Both the prior-pairs set and the resolved walk filter by
+    // `local_source.is_none()` + `is_public_npmjs`. Building the
+    // prior set as empty when `prior` is `None` means a
+    // workspace-only project (all `link:` / `file:` / workspace
+    // deps, no public npm) doesn't get classified as drift just
+    // because there's no lockfile — the resolved walk also drops
+    // those entries, so no fresh pair survives and the function
+    // returns `false`. Public-npmjs entries against `None` prior
+    // are real fresh picks and surface correctly.
     let prior_pairs: HashSet<(&str, &str)> = prior
-        .packages
-        .values()
-        .filter(|p| p.local_source.is_none())
-        .map(|p| (p.registry_name(), p.version.as_str()))
-        .collect();
+        .map(|g| {
+            g.packages
+                .values()
+                .filter(|p| p.local_source.is_none())
+                .map(|p| (p.registry_name(), p.version.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
     resolved
         .packages
         .values()
@@ -680,6 +687,28 @@ mod tests {
         };
         let tmp = tempfile::tempdir().expect("tempdir");
         assert!(lockfile_has_new_picks(tmp.path(), None, &resolved));
+    }
+
+    #[test]
+    fn lockfile_drift_no_prior_with_only_workspace_entries_is_not_drift() {
+        // Workspace-only project (all `link:` / `file:` / workspace
+        // deps, no public npm) with no lockfile must NOT be classified
+        // as fresh-resolution drift — the live-API OSV gate has
+        // nothing to check against a graph of internal-only entries.
+        // Regression: the `None`-prior short-circuit used to ignore
+        // the local-source / public-npmjs filter and surfaced workspace
+        // graphs as drift, forcing an unnecessary live-API hit.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        let mut linked = registry_pkg("@workspace/util", "1.0.0");
+        linked.local_source = Some(aube_lockfile::LocalSource::Link("../util".into()));
+        packages.insert("@workspace/util@1.0.0".to_string(), linked);
+        let resolved = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(!lockfile_has_new_picks(tmp.path(), None, &resolved));
     }
 
     #[test]
