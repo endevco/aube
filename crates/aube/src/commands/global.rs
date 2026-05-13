@@ -455,20 +455,16 @@ pub fn remove_package(info: &GlobalPackageInfo, layout: &GlobalLayout) -> miette
     let bins = bin_names_for(&info.install_dir, &info.aliases);
     unlink_bins(&info.install_dir, &layout.bin_dir, &bins);
 
-    // Remove the hash pointer first. Propagate errors other than
-    // NotFound — a missing pointer is fine (the caller may have already
-    // cleaned it up), but permission denied or similar means the package
-    // is still findable and we must not report success.
+    // Remove the hash pointer first. A missing pointer is fine (the
+    // caller may have already cleaned it up), but permission denied or
+    // similar means the package is still findable and we must not
+    // report success. `super::remove_existing` handles the Windows
+    // directory-junction case where `remove_file` fails with
+    // `Access is denied`; we created the pointer via `create_dir_link`
+    // (NTFS junction), so a plain `remove_file` here would leak it.
     let hash_ptr = hash_link(&layout.pkg_dir, &info.hash);
-    match std::fs::remove_file(&hash_ptr) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(e)
-                .into_diagnostic()
-                .wrap_err_with(|| format!("failed to remove hash pointer {}", hash_ptr.display()));
-        }
-    }
+    super::remove_existing(&hash_ptr)
+        .wrap_err_with(|| format!("failed to remove hash pointer {}", hash_ptr.display()))?;
 
     // `crate::dirs::canonicalize` so `pkg_canon` is comparable with the
     // `info.install_dir` `scan_packages` produced — both must be in the
