@@ -109,6 +109,48 @@ pub async fn run_gates(
     Ok(())
 }
 
+/// Single entry point for the post-resolve OSV `MAL-*` routing
+/// `install::run` uses from both lockfile branches.
+///
+/// Pre-PR the routing block was inline in the no-lockfile (Err)
+/// match arm only, so `aube ci` and any `aube install` that
+/// matched the lockfile cleanly silently skipped OSV entirely —
+/// `advisoryCheckEveryInstall = true` and `advisoryCheckOnInstall`
+/// were designed for exactly that path. Extracted here so both
+/// arms call the same helper and the routing table actually
+/// applies to every install entry point.
+///
+/// Decision table:
+/// - `fresh_resolution || osv_transitive_check || advisory_check_every_install`
+///   → live OSV API (`run_transitive_osv_gate`)
+/// - otherwise, when `advisory_check_on_install != Off`
+///   → local mirror (`run_transitive_osv_gate_via_mirror`)
+/// - otherwise → no OSV check
+///
+/// `advisory_check` is the caller's already-upgraded policy
+/// (paranoid → `Required`). Both gates internally short-circuit
+/// on `Off`, but skip the call entirely so an empty graph
+/// doesn't get a useless `transitive_registry_names` walk.
+pub async fn run_post_resolve_osv_routing(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    fresh_resolution: bool,
+    osv_transitive_check: bool,
+    advisory_check: AdvisoryCheck,
+    advisory_check_on_install: AdvisoryCheckOnInstall,
+    advisory_check_every_install: bool,
+) -> miette::Result<()> {
+    let needs_live_api = osv_transitive_check || advisory_check_every_install || fresh_resolution;
+    if needs_live_api {
+        if !matches!(advisory_check, AdvisoryCheck::Off) {
+            run_transitive_osv_gate(cwd, graph, advisory_check).await?;
+        }
+    } else if !matches!(advisory_check_on_install, AdvisoryCheckOnInstall::Off) {
+        run_transitive_osv_gate_via_mirror(cwd, graph, advisory_check_on_install).await?;
+    }
+    Ok(())
+}
+
 /// Live-API transitive OSV `MAL-*` check.
 ///
 /// Runs against the full post-resolve transitive set, batch-querying

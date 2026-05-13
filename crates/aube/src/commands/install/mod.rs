@@ -3322,6 +3322,28 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
 
+            // Post-resolve OSV `MAL-*` routing — lockfile-found
+            // branch. `fresh_resolution = false` here because the
+            // graph came from the lockfile and we never ran the
+            // resolver, so the router falls through to the mirror
+            // backend unless `osv_transitive_check` or
+            // `advisoryCheckEveryInstall` forces the live API.
+            // Same helper as the no-lockfile branch — kept here so
+            // `aube ci`, `aube install --frozen-lockfile`, and
+            // every frozen reinstall actually run the routing
+            // (previously skipped, surfaced by review).
+            let osv_settings = resolve_osv_routing_settings(&cwd);
+            super::add_supply_chain::run_post_resolve_osv_routing(
+                &cwd,
+                &graph,
+                /*fresh_resolution=*/ false,
+                opts.osv_transitive_check,
+                osv_settings.advisory_check,
+                osv_settings.advisory_check_on_install,
+                osv_settings.advisory_check_every_install,
+            )
+            .await?;
+
             // Check index cache, fetch missing tarballs. Tarball client
             // is lazy because eager construction costs ~20ms even when
             // no request gets sent, dominating no-op install time.
@@ -4016,58 +4038,28 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             crate::dep_chain::set_active(&graph);
             aube_registry::slow_metadata::flush_summary();
 
-            // Post-resolve transitive OSV `MAL-*` gate. Three-way
-            // routing so the live API fires when the freshest
-            // signal is worth a per-install network round-trip,
-            // and the local mirror picks up plain reinstalls
-            // where the lockfile already vetted what's installed:
-            //
-            // 1. Live API fires when any of these is true:
-            //    - `opts.osv_transitive_check` (aube add / update)
-            //    - `advisoryCheckEveryInstall = true`
-            //    - the resolver picked a `(name, version)` the
-            //      pre-existing lockfile didn't already pin, OR
-            //      no lockfile existed before resolve (treated
-            //      as drift by definition).
-            // 2. Otherwise, mirror fires when
-            //    `advisoryCheckOnInstall != Off`.
-            // 3. Otherwise, no OSV check at all.
-            //
-            // Fires before the pluggable scanner because a
-            // confirmed-malicious advisory is a stronger signal
-            // than a scanner finding and the error message is
-            // more actionable.
+            // Post-resolve OSV `MAL-*` routing — no-lockfile /
+            // re-resolve branch. The lockfile-found branch has the
+            // parallel call before its own fetch so both paths
+            // run through the same router. See
+            // `add_supply_chain::run_post_resolve_osv_routing` for
+            // the decision table. Fires before the pluggable
+            // scanner so a confirmed-malicious advisory aborts
+            // without spawning the scanner.
             let prior_lockfile = lockfile_pre_parse.as_ref().map(|(g, _)| g);
-            let has_drift =
+            let fresh_resolution =
                 super::add_supply_chain::lockfile_has_new_picks(&cwd, prior_lockfile, &graph);
-            let advisory_check_every_install = super::with_settings_ctx(
+            let osv_settings = resolve_osv_routing_settings(&cwd);
+            super::add_supply_chain::run_post_resolve_osv_routing(
                 &cwd,
-                aube_settings::resolved::advisory_check_every_install,
-            );
-            let needs_live_api =
-                opts.osv_transitive_check || advisory_check_every_install || has_drift;
-            if needs_live_api {
-                let advisory_check = super::with_settings_ctx(&cwd, |ctx| {
-                    if aube_settings::resolved::paranoid(ctx) {
-                        aube_settings::resolved::AdvisoryCheck::Required
-                    } else {
-                        aube_settings::resolved::advisory_check(ctx)
-                    }
-                });
-                if !matches!(advisory_check, aube_settings::resolved::AdvisoryCheck::Off) {
-                    super::add_supply_chain::run_transitive_osv_gate(&cwd, &graph, advisory_check)
-                        .await?;
-                }
-            } else {
-                let aoi = super::with_settings_ctx(
-                    &cwd,
-                    aube_settings::resolved::advisory_check_on_install,
-                );
-                if !matches!(aoi, aube_settings::resolved::AdvisoryCheckOnInstall::Off) {
-                    super::add_supply_chain::run_transitive_osv_gate_via_mirror(&cwd, &graph, aoi)
-                        .await?;
-                }
-            }
+                &graph,
+                fresh_resolution,
+                opts.osv_transitive_check,
+                osv_settings.advisory_check,
+                osv_settings.advisory_check_on_install,
+                osv_settings.advisory_check_every_install,
+            )
+            .await?;
 
             // Bun-compatible security scanner runs against the
             // *resolved* graph — full transitive set with concrete
@@ -5212,6 +5204,34 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     }
 
     Ok(())
+}
+
+/// Three resolved OSV-routing settings, fetched in one
+/// `with_settings_ctx` pass so the lockfile-found and no-lockfile
+/// arms can call the routing helper with the same shape. Paranoid
+/// upgrade for `advisoryCheck` is applied here so the router sees
+/// the final policy.
+struct OsvRoutingSettings {
+    advisory_check: aube_settings::resolved::AdvisoryCheck,
+    advisory_check_on_install: aube_settings::resolved::AdvisoryCheckOnInstall,
+    advisory_check_every_install: bool,
+}
+
+fn resolve_osv_routing_settings(cwd: &std::path::Path) -> OsvRoutingSettings {
+    super::with_settings_ctx(cwd, |ctx| {
+        let advisory_check = if aube_settings::resolved::paranoid(ctx) {
+            aube_settings::resolved::AdvisoryCheck::Required
+        } else {
+            aube_settings::resolved::advisory_check(ctx)
+        };
+        OsvRoutingSettings {
+            advisory_check,
+            advisory_check_on_install: aube_settings::resolved::advisory_check_on_install(ctx),
+            advisory_check_every_install: aube_settings::resolved::advisory_check_every_install(
+                ctx,
+            ),
+        }
+    })
 }
 
 /// Emit the `ignored build scripts for ...` warning. Same wording
