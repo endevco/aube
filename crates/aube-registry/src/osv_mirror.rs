@@ -159,10 +159,30 @@ impl OsvMirror {
     ///
     /// Returns `Ok(())` on success (including 304s). Any network /
     /// IO / parse error bubbles up so the caller can apply the
-    /// configured `advisoryCheckOnInstall` policy.
+    /// configured `advisoryCheckOnInstall` policy. On a refresh
+    /// error the in-memory cache is *still* seeded with whatever
+    /// the on-disk index held going in, so a subsequent
+    /// [`Self::lookup_advisories`] call under the `On` policy can
+    /// proceed against the previously cached data rather than
+    /// silently returning [`MirrorError::NotInitialized`].
     pub async fn refresh_if_stale(
         &self,
         client: &reqwest::Client,
+        max_age: Duration,
+    ) -> Result<(), MirrorError> {
+        self.refresh_if_stale_from(client, OSV_BULK_URL, max_age)
+            .await
+    }
+
+    /// Implementation of [`Self::refresh_if_stale`] with an
+    /// explicit source URL — the production entry point pins the
+    /// URL to OSV's public bucket; tests aim it at a wiremock'd
+    /// endpoint to exercise refresh-failure paths without
+    /// depending on network reachability.
+    async fn refresh_if_stale_from(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
         max_age: Duration,
     ) -> Result<(), MirrorError> {
         let on_disk = self.load_or_default();
@@ -175,12 +195,30 @@ impl OsvMirror {
             }
             return Ok(());
         }
+        // Clone the on-disk index before the fetch attempt so we
+        // can seed the `OnceCell` with prior data on refresh
+        // failure — otherwise the `?` below moves `on_disk` into
+        // `fetch_and_extract` and the empty `OnceCell` makes every
+        // subsequent lookup return `NotInitialized`, which the `On`
+        // caller treats as a fail-open *no-op*, silently skipping
+        // the gate instead of the documented "proceed against the
+        // previously cached index" behavior.
         let prior_etag = on_disk.etag.clone();
-        let refreshed = fetch_and_extract(client, &self.root, prior_etag, on_disk).await?;
-        if self.index.get().is_none() {
-            let _ = self.index.set(refreshed);
+        let fallback = on_disk.clone();
+        match fetch_and_extract_from(client, url, &self.root, prior_etag, on_disk).await {
+            Ok(refreshed) => {
+                if self.index.get().is_none() {
+                    let _ = self.index.set(refreshed);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if self.index.get().is_none() {
+                    let _ = self.index.set(fallback);
+                }
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     /// Same as [`refresh_if_stale`] with [`DEFAULT_MAX_AGE`].
@@ -268,15 +306,22 @@ fn is_stale(index: &IndexFile, max_age: Duration) -> bool {
 /// Perform the conditional GET + extract pass. On 304, returns the
 /// prior index with `fetched_at` bumped. On 200, downloads the
 /// zip, rebuilds the index, and writes both files atomically.
-async fn fetch_and_extract(
+/// Perform the conditional GET + extract pass against `url`
+/// (always [`OSV_BULK_URL`] in production; tests aim at a
+/// wiremock'd endpoint via [`OsvMirror::refresh_if_stale_from`]).
+/// On 304, returns the prior index with `fetched_at` bumped. On
+/// 200, downloads the zip, rebuilds the index, and writes both
+/// files atomically.
+async fn fetch_and_extract_from(
     client: &reqwest::Client,
+    url: &str,
     root: &Path,
     prior_etag: Option<String>,
     prior_index: IndexFile,
 ) -> Result<IndexFile, MirrorError> {
     std::fs::create_dir_all(root)?;
 
-    let mut req = client.get(OSV_BULK_URL);
+    let mut req = client.get(url);
     if let Some(etag) = prior_etag.as_deref() {
         req = req.header(reqwest::header::IF_NONE_MATCH, etag);
     }
@@ -741,6 +786,102 @@ mod tests {
         let parsed = parse_rfc3339("2024-01-01T00:00:00Z").expect("parses");
         let expected = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
         assert_eq!(parsed, expected);
+    }
+
+    /// Regression: when the on-disk index is stale and the
+    /// network refresh fails, the in-memory cache must still be
+    /// seeded with the prior on-disk data so a follow-up
+    /// `lookup_advisories` returns the previously cached
+    /// advisories rather than `NotInitialized`. Otherwise the
+    /// caller's `On` policy silently no-ops the gate instead of
+    /// "proceeding against the previously cached index".
+    #[tokio::test(flavor = "current_thread", start_paused = false)]
+    async fn refresh_failure_seeds_in_memory_cache_with_prior_data() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Stand up a mock that always returns 500 — exercises
+        // the refresh-failure path deterministically without
+        // depending on the live OSV bucket.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/npm/all.zip"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let tmp = tempdir().unwrap();
+        let mirror = OsvMirror::open(tmp.path());
+        std::fs::create_dir_all(&mirror.root).unwrap();
+
+        // Seed disk with a stale-but-populated index. Stale =
+        // `fetched_at` far enough in the past that `is_stale`
+        // returns true under any reasonable `max_age`.
+        let prior = IndexFile {
+            etag: Some("\"v0\"".to_string()),
+            fetched_at: Some("2000-01-01T00:00:00Z".to_string()),
+            format: CURRENT_FORMAT,
+            advisories: HashMap::from([("evilpkg".to_string(), vec!["MAL-2024-9999".to_string()])]),
+        };
+        std::fs::write(mirror.index_path(), serde_json::to_vec(&prior).unwrap()).unwrap();
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = format!("{}/npm/all.zip", server.uri());
+
+        let res = mirror
+            .refresh_if_stale_from(&client, &url, Duration::from_secs(1))
+            .await;
+        assert!(res.is_err(), "expected refresh failure on 500");
+
+        // Critical: the prior advisories survived the failure.
+        let hits = mirror
+            .lookup_advisories(&["evilpkg".to_string()])
+            .expect("cache seeded with prior on-disk data");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].advisory_id, "MAL-2024-9999");
+    }
+
+    /// Companion to the regression test above: when the on-disk
+    /// index is missing entirely (first-time sync) AND the
+    /// refresh fails, the in-memory cache is seeded with an
+    /// empty `IndexFile` rather than left as `None`. Lookup
+    /// returns an empty hit list instead of `NotInitialized`,
+    /// matching the `On` caller's no-op fall-through.
+    #[tokio::test(flavor = "current_thread", start_paused = false)]
+    async fn refresh_failure_seeds_empty_cache_on_first_time_sync() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/npm/all.zip"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let tmp = tempdir().unwrap();
+        let mirror = OsvMirror::open(tmp.path());
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = format!("{}/npm/all.zip", server.uri());
+
+        let res = mirror
+            .refresh_if_stale_from(&client, &url, Duration::from_secs(1))
+            .await;
+        assert!(res.is_err());
+
+        // Empty fallback — not `NotInitialized` — so the `On`
+        // caller can issue a lookup, get zero hits, and proceed.
+        let hits = mirror
+            .lookup_advisories(&["whatever".to_string()])
+            .expect("empty fallback cache, not NotInitialized");
+        assert!(hits.is_empty());
     }
 
     /// End-to-end fetch path against a wiremock'd OSV endpoint —

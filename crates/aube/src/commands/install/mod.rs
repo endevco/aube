@@ -4003,10 +4003,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             // catch-all that covers every install entry point
             // including `add`'s chained install, so a malicious
             // transitive dep still gets blocked there.
-            let aoi = super::with_settings_ctx(
-                &cwd,
-                aube_settings::resolved::advisory_check_on_install,
-            );
+            let aoi =
+                super::with_settings_ctx(&cwd, aube_settings::resolved::advisory_check_on_install);
             if !matches!(aoi, aube_settings::resolved::AdvisoryCheckOnInstall::Off) {
                 super::add_supply_chain::run_transitive_osv_gate_via_mirror(&cwd, &graph, aoi)
                     .await?;

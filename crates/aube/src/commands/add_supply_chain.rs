@@ -185,10 +185,13 @@ pub async fn run_transitive_osv_gate_via_mirror(
                 "OSV mirror refresh failed and `advisoryCheckOnInstall = required` is set: {e}"
             ));
         }
-        // Fall through: the in-memory cache is still empty on a
-        // first-time-ever refresh failure, in which case
-        // `lookup_advisories` returns `NotInitialized` below and
-        // we apply the same fail-open semantics.
+        // Fall through under `On`: `refresh_if_stale` already
+        // seeded the in-memory cache with whatever the on-disk
+        // index held going in, so `lookup_advisories` below
+        // checks against the previously cached data. When the
+        // mirror has never been synced successfully the prior
+        // data is empty and lookup is a no-op — the warning is
+        // the only user-visible signal in that case.
     }
     let hits = match mirror.lookup_advisories(&names) {
         Ok(hits) => hits,
