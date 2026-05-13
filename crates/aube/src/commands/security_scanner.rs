@@ -245,9 +245,9 @@ async fn invoke(
         // entrypoints (Socket's scanner package is the canonical
         // example — ships raw TS with `"exports": "./src/index.ts"`).
         // No-op on node ≥ 23.6 where it's default-on. Errors on
-        // < 22.6 with a clear "unknown flag" message that the
-        // operator can act on. We don't condition on a version
-        // probe here — the failure path already fails open.
+        // < 22.6 with a clear "unknown flag" message; the
+        // fail-closed failure path then surfaces that error and
+        // refuses the install rather than letting it through.
         .arg("--experimental-strip-types")
         .arg("--input-type=module")
         .arg("-e")
@@ -255,6 +255,12 @@ async fn invoke(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // `wait_with_output` consumes the `Child`; if `timeout`
+        // fires and we drop the wait future, tokio does *not*
+        // send SIGKILL by default. `.kill_on_drop(true)` is what
+        // pnpmfile.rs uses for the same pattern — without it a
+        // hung scanner survives its 30s timeout and keeps running.
+        .kill_on_drop(true)
         // Pass the scanner spec and bridge dir via env (not argv)
         // so we sidestep node's `-e` argv handling quirks across
         // `--input-type` modes.
@@ -264,9 +270,13 @@ async fn invoke(
         // has no business with npm auth tokens or registry
         // credentials. Scrubbing them keeps a hostile or buggy
         // scanner from exfiltrating them as a side effect.
+        // `GH_TOKEN` is the GitHub CLI's PAT env var, commonly
+        // set alongside `GITHUB_TOKEN` in CI — scrubbing one
+        // without the other defeats the point.
         .env_remove("NPM_TOKEN")
         .env_remove("NODE_AUTH_TOKEN")
-        .env_remove("GITHUB_TOKEN");
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN");
 
     let mut child = cmd.spawn().map_err(|e| {
         // Most common cause: `node` isn't on PATH. The error
@@ -305,8 +315,18 @@ async fn invoke(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let trimmed = stderr.trim();
-        let snippet = if trimmed.len() > 500 {
-            format!("{}…", &trimmed[..500])
+        // Truncate by *character* count, not byte count — slicing
+        // `&trimmed[..500]` directly panics when byte 500 lands in
+        // the middle of a multi-byte UTF-8 sequence (localized
+        // error messages, emoji, the `U+FFFD` replacement char
+        // emitted by `from_utf8_lossy`).
+        let snippet = if trimmed.chars().count() > 500 {
+            let end = trimmed
+                .char_indices()
+                .nth(500)
+                .map(|(i, _)| i)
+                .unwrap_or(trimmed.len());
+            format!("{}…", &trimmed[..end])
         } else {
             trimmed.to_string()
         };
@@ -608,10 +628,7 @@ mod tests {
             chain.contains("scanner.mjs"),
             "missing scanner spec in error: {chain}"
         );
-        assert!(
-            chain.contains("disable"),
-            "missing bootstrap hint: {chain}"
-        );
+        assert!(chain.contains("disable"), "missing bootstrap hint: {chain}");
     }
 
     /// `{ advisories: [...] }` response shape is accepted in

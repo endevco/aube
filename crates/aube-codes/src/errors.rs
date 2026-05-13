@@ -99,6 +99,9 @@ pub mod category {
     pub const MANIFEST_WORKSPACE: &str = "Manifest / workspace";
     pub const ENGINE_CLI: &str = "Engine / CLI";
     pub const MISC_SAFETY: &str = "Misc / safety";
+    /// Add-time / install-time supply-chain policy errors. Paired
+    /// with [`crate::warnings::category::SUPPLY_CHAIN`].
+    pub const SUPPLY_CHAIN: &str = "Supply chain (add-time)";
 }
 
 /// Registry of every error code with its category, description, and
@@ -262,13 +265,13 @@ pub const ALL: &[CodeMeta] = &[
     },
     CodeMeta {
         name: ERR_AUBE_SECURITY_SCANNER_FATAL,
-        category: category::REGISTRY_NETWORK,
+        category: category::SUPPLY_CHAIN,
         description: "User-configured `securityScanner` returned a `fatal`-level advisory against a package the user is trying to add. Bun-style pluggable scanner contract; the scanner itself decides what counts as fatal.",
         exit_code: Some(48),
     },
     CodeMeta {
         name: ERR_AUBE_SECURITY_SCANNER_FAILED,
-        category: category::REGISTRY_NETWORK,
+        category: category::SUPPLY_CHAIN,
         description: "User-configured `securityScanner` couldn't be spawned, exited non-zero, timed out, or emitted unparseable JSON. Fail-closed by design: a configured scanner that can't run is treated as a refusal, not a free pass. Set `securityScanner = \"\"` to disable the integration when bootstrapping or recovering from a broken scanner.",
         exit_code: None,
     },
