@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0](https://github.com/endevco/aube/compare/aube-settings-v1.13.1...aube-settings-v1.14.0) - 2026-05-14
+
+### Added
+
+- *(install)* add OSV bloom-filter prefilter for lockfile installs ([#680](https://github.com/endevco/aube/pull/680))
+
+### Other
+
+- refresh benchmarks for v1.13.1 ([#687](https://github.com/endevco/aube/pull/687))
+
 ## [1.13.0](https://github.com/endevco/aube/compare/aube-settings-v1.12.0...aube-settings-v1.13.0) - 2026-05-13
 
 ### Added
