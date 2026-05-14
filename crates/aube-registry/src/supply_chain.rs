@@ -19,6 +19,7 @@
 //! with packument fetch retries.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// HTTP timeout applied to every supply-chain probe. Keep tight: these
@@ -29,6 +30,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Public host for OSV's batch-query endpoint.
 const OSV_ENDPOINT: &str = "https://api.osv.dev/v1/querybatch";
+
+/// Public host for OSV's vulnerability detail endpoint.
+const OSV_VULN_BASE: &str = "https://api.osv.dev/v1/vulns";
 
 /// Max queries per OSV `/querybatch` request. OSV's documented
 /// limit is 1000; staying well under that lets transitive-graph
@@ -118,6 +122,28 @@ struct OsvResult {
 #[derive(Debug, Deserialize)]
 struct OsvVuln {
     id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct OsvVulnDetails {
+    #[serde(default)]
+    affected: Vec<OsvAffected>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct OsvAffected {
+    #[serde(default)]
+    package: OsvAffectedPackage,
+    #[serde(default)]
+    versions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct OsvAffectedPackage {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    ecosystem: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,7 +265,8 @@ async fn fetch_malicious_advisories_versioned_chunk(
             .collect(),
     };
     let parsed = post_osv_batch(client, &body, pairs.len()).await?;
-    Ok(extract_malicious_versioned(pairs, &parsed))
+    let hits = extract_malicious_versioned(pairs, &parsed);
+    filter_malicious_versioned_hits(client, hits).await
 }
 
 async fn post_osv_batch(
@@ -306,6 +333,67 @@ fn extract_malicious_versioned(
         }
     }
     hits
+}
+
+async fn filter_malicious_versioned_hits(
+    client: &reqwest::Client,
+    hits: Vec<MaliciousAdvisory>,
+) -> Result<Vec<MaliciousAdvisory>, SupplyChainError> {
+    let mut details = HashMap::new();
+    let mut filtered = Vec::new();
+    for hit in hits {
+        let Some(version) = hit.version.as_deref() else {
+            filtered.push(hit);
+            continue;
+        };
+        if !details.contains_key(&hit.advisory_id) {
+            details.insert(
+                hit.advisory_id.clone(),
+                fetch_osv_vuln_details(client, &hit.advisory_id).await.ok(),
+            );
+        }
+        let affects = details
+            .get(&hit.advisory_id)
+            .and_then(Option::as_ref)
+            .is_none_or(|d| versioned_hit_affects_resolved_version(d, &hit.package, version));
+        if affects {
+            filtered.push(hit);
+        }
+    }
+    Ok(filtered)
+}
+
+async fn fetch_osv_vuln_details(
+    client: &reqwest::Client,
+    advisory_id: &str,
+) -> Result<OsvVulnDetails, SupplyChainError> {
+    let url = format!("{OSV_VULN_BASE}/{advisory_id}");
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(SupplyChainError::Status(resp.status()));
+    }
+    let bytes = resp.bytes().await?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn versioned_hit_affects_resolved_version(
+    details: &OsvVulnDetails,
+    package: &str,
+    version: &str,
+) -> bool {
+    let mut matched_package = false;
+    for affected in &details.affected {
+        if !affected.package.ecosystem.eq_ignore_ascii_case("npm")
+            || affected.package.name != package
+        {
+            continue;
+        }
+        matched_package = true;
+        if affected.versions.is_empty() || affected.versions.iter().any(|v| v == version) {
+            return true;
+        }
+    }
+    !matched_package
 }
 
 /// Lookup result for a single package on npm's downloads API.
@@ -421,6 +509,51 @@ mod tests {
         assert_eq!(hits[0].package, "ansi-regex");
         assert_eq!(hits[0].version.as_deref(), Some("6.2.1"));
         assert_eq!(hits[0].advisory_id, "MAL-2025-46966");
+    }
+
+    #[test]
+    fn versioned_hit_prefers_explicit_affected_versions_over_broad_range() {
+        let details = OsvVulnDetails {
+            affected: vec![OsvAffected {
+                package: OsvAffectedPackage {
+                    name: "@mistralai/mistralai".to_string(),
+                    ecosystem: "npm".to_string(),
+                },
+                versions: vec![
+                    "2.2.4".to_string(),
+                    "2.2.3".to_string(),
+                    "2.2.2".to_string(),
+                ],
+            }],
+        };
+
+        assert!(!versioned_hit_affects_resolved_version(
+            &details,
+            "@mistralai/mistralai",
+            "2.2.1",
+        ));
+        assert!(versioned_hit_affects_resolved_version(
+            &details,
+            "@mistralai/mistralai",
+            "2.2.2",
+        ));
+    }
+
+    #[test]
+    fn versioned_hit_without_explicit_versions_still_blocks() {
+        let details = OsvVulnDetails {
+            affected: vec![OsvAffected {
+                package: OsvAffectedPackage {
+                    name: "evil-pkg".to_string(),
+                    ecosystem: "npm".to_string(),
+                },
+                versions: Vec::new(),
+            }],
+        };
+
+        assert!(versioned_hit_affects_resolved_version(
+            &details, "evil-pkg", "1.0.0",
+        ));
     }
 
     #[test]
