@@ -225,7 +225,7 @@ pub async fn fetch_malicious_advisories_versioned(
     for chunk in pairs.chunks(OSV_BATCH_LIMIT) {
         hits.extend(fetch_malicious_advisories_versioned_chunk(client, chunk).await?);
     }
-    Ok(hits)
+    filter_malicious_versioned_hits(client, hits).await
 }
 
 async fn fetch_malicious_advisories_chunk(
@@ -265,8 +265,7 @@ async fn fetch_malicious_advisories_versioned_chunk(
             .collect(),
     };
     let parsed = post_osv_batch(client, &body, pairs.len()).await?;
-    let hits = extract_malicious_versioned(pairs, &parsed);
-    filter_malicious_versioned_hits(client, hits).await
+    Ok(extract_malicious_versioned(pairs, &parsed))
 }
 
 async fn post_osv_batch(
@@ -340,22 +339,36 @@ async fn filter_malicious_versioned_hits(
     hits: Vec<MaliciousAdvisory>,
 ) -> Result<Vec<MaliciousAdvisory>, SupplyChainError> {
     let mut details = HashMap::new();
+    let mut tasks = tokio::task::JoinSet::new();
+    for hit in &hits {
+        if hit.version.is_none() || details.contains_key(&hit.advisory_id) {
+            continue;
+        }
+        details.insert(hit.advisory_id.clone(), None);
+        let client = client.clone();
+        let advisory_id = hit.advisory_id.clone();
+        tasks.spawn(async move {
+            let details = fetch_osv_vuln_details(&client, &advisory_id).await.ok();
+            (advisory_id, details)
+        });
+    }
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((advisory_id, fetched)) = joined {
+            details.insert(advisory_id, fetched);
+        }
+    }
+
     let mut filtered = Vec::new();
     for hit in hits {
-        let Some(version) = hit.version.as_deref() else {
-            filtered.push(hit);
-            continue;
-        };
-        if !details.contains_key(&hit.advisory_id) {
-            details.insert(
-                hit.advisory_id.clone(),
-                fetch_osv_vuln_details(client, &hit.advisory_id).await.ok(),
-            );
-        }
         let affects = details
             .get(&hit.advisory_id)
             .and_then(Option::as_ref)
-            .is_none_or(|d| versioned_hit_affects_resolved_version(d, &hit.package, version));
+            .is_none_or(|d| {
+                let Some(version) = hit.version.as_deref() else {
+                    return true;
+                };
+                versioned_hit_affects_resolved_version(d, &hit.package, version)
+            });
         if affects {
             filtered.push(hit);
         }
@@ -548,6 +561,23 @@ mod tests {
                     ecosystem: "npm".to_string(),
                 },
                 versions: Vec::new(),
+            }],
+        };
+
+        assert!(versioned_hit_affects_resolved_version(
+            &details, "evil-pkg", "1.0.0",
+        ));
+    }
+
+    #[test]
+    fn versioned_hit_without_matching_package_still_blocks() {
+        let details = OsvVulnDetails {
+            affected: vec![OsvAffected {
+                package: OsvAffectedPackage {
+                    name: "evil-pkg".to_string(),
+                    ecosystem: "PyPI".to_string(),
+                },
+                versions: vec!["1.0.0".to_string()],
             }],
         };
 
