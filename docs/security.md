@@ -57,6 +57,40 @@ Settings: [`allowBuilds`](/settings/#setting-allowbuilds). Install adds
 unreviewed build packages to `aube-workspace.yaml` (or `pnpm-workspace.yaml`
 if one already exists) as `false`; approving them flips the entry to `true`.
 
+### Suspicious-script content sniff
+
+Before the warm-up nudge to run `aube approve-builds`, aube runs a
+small pattern matcher against each unreviewed dep's `preinstall` /
+`install` / `postinstall` script bodies and surfaces a
+`WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT` for any that match a
+known-dangerous shape:
+
+- `curl … | sh` / `wget … | bash` — fetch-and-pipe-to-shell.
+- `eval(atob(…))` / `Function(atob(…))` / `eval(Buffer.from(…))` —
+  base64-decode-then-evaluate. Common dropper shape.
+- Reads of `~/.ssh`, `~/.aws`, `~/.npmrc`, `~/.config/gh` —
+  credential files a lifecycle script has no business touching.
+- `process.env.*TOKEN`, `*SECRET`, `*API_KEY`, etc. — secret-shaped
+  env vars exfilled from CI.
+- Discord webhooks, Telegram bot API, OAST collaborator hosts —
+  known exfil channels.
+- `http://1.2.3.4/…` bare-IP HTTP targets.
+
+The sniff is **advisory** — it never blocks an install or write.
+The `allowBuilds` allowlist remains the only gate on whether
+scripts actually execute. The signal is intended to give the user
+something more than `name@version` to judge by when deciding
+whether to approve a build. `aube approve-builds` repeats the same
+warnings inline next to each picker entry, and `aube
+ignored-builds` lists them under each `name@version` line.
+
+False positives are possible (an SDK that legitimately hits a
+Discord webhook from a `postinstall` would flag), but lifecycle
+script bodies are short and almost never contain bare
+`curl … | sh` legitimately. To bypass for a known-good package,
+add it to `allowBuilds: true` once you've inspected the script —
+the warning has done its job.
+
 ## Jailed lifecycle scripts
 
 When a dependency is approved to build, jailing keeps it from getting your

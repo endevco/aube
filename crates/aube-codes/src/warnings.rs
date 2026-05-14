@@ -17,6 +17,7 @@ pub const WARN_AUBE_HOOK_PACKAGE_ADDED: &str = "WARN_AUBE_HOOK_PACKAGE_ADDED";
 
 // ── install lifecycle ───────────────────────────────────────────────
 pub const WARN_AUBE_IGNORED_BUILD_SCRIPTS: &str = "WARN_AUBE_IGNORED_BUILD_SCRIPTS";
+#[rustfmt::skip] pub const WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT: &str = "WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT";
 #[rustfmt::skip] pub const WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE: &str = "WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE";
 pub const WARN_AUBE_MISSING_INTEGRITY: &str = "WARN_AUBE_MISSING_INTEGRITY";
 pub const WARN_AUBE_CACHE_WRITE_FAILED: &str = "WARN_AUBE_CACHE_WRITE_FAILED";
@@ -92,6 +93,7 @@ pub const WARN_AUBE_WORKSPACE_TOPO_CYCLE: &str = "WARN_AUBE_WORKSPACE_TOPO_CYCLE
 pub const WARN_AUBE_LOW_DOWNLOAD_PACKAGE: &str = "WARN_AUBE_LOW_DOWNLOAD_PACKAGE";
 pub const WARN_AUBE_ADVISORY_CHECK_FAILED: &str = "WARN_AUBE_ADVISORY_CHECK_FAILED";
 pub const WARN_AUBE_OSV_MIRROR_REFRESH_FAILED: &str = "WARN_AUBE_OSV_MIRROR_REFRESH_FAILED";
+pub const WARN_AUBE_OSV_BLOOM_REFRESH_FAILED: &str = "WARN_AUBE_OSV_BLOOM_REFRESH_FAILED";
 pub const WARN_AUBE_SECURITY_SCANNER_FINDING: &str = "WARN_AUBE_SECURITY_SCANNER_FINDING";
 
 /// Stable category labels that group codes in the generated docs.
@@ -159,6 +161,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_IGNORED_BUILD_SCRIPTS,
         category: category::INSTALL_LIFECYCLE,
         description: "Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT,
+        category: category::INSTALL_LIFECYCLE,
+        description: "A dependency's lifecycle script matched a dangerous-shape heuristic (curl|sh, eval+atob, credential-file read, secret-env exfil, exfil endpoint, bare-IP HTTP). Advisory only; the `allowBuilds` allowlist still gates execution. Inspect the script before approving the build.",
         exit_code: None,
     },
     CodeMeta {
@@ -471,6 +479,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_OSV_MIRROR_REFRESH_FAILED,
         category: category::SUPPLY_CHAIN,
         description: "OSV advisory mirror used by `advisoryCheckOnInstall` failed to refresh (download, ETag, or zip parse error). With `advisoryCheckOnInstall=on` install proceeds against the previously cached index if any; with `advisoryCheckOnInstall=required` install fails closed with `ERR_AUBE_ADVISORY_CHECK_FAILED`.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_OSV_BLOOM_REFRESH_FAILED,
+        category: category::SUPPLY_CHAIN,
+        description: "OSV bloom-filter prefilter used by `advisoryBloomCheck` failed to refresh (download or format-decode error). With `advisoryBloomCheck=on` install proceeds against the previously cached filter if any; with `advisoryBloomCheck=required` install fails closed with `ERR_AUBE_ADVISORY_CHECK_FAILED`.",
         exit_code: None,
     },
     CodeMeta {

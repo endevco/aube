@@ -152,6 +152,18 @@ fn parse_classic_str(
                 ),
             )
         })?;
+        // npm-protocol alias: `<alias>@npm:<real-name>@<version>`. `name`
+        // stays the alias (matches the npm parser's convention — it keys
+        // node_modules/<alias>/ and is what consumers refer to); the real
+        // registry name lives in `alias_of` so registry_name() returns it.
+        // Scan every spec — our writer emits the canonical `name@version`
+        // first and the npm-alias spec alongside it, so checking only
+        // specs[0] would miss the alias on round-trips.
+        let alias_of = block
+            .specs
+            .iter()
+            .find_map(|s| parse_npm_alias_real_name(s))
+            .filter(|real| real.as_str() != name);
 
         let dep_path = format!("{name}@{version}");
 
@@ -185,6 +197,7 @@ fn parse_classic_str(
                         .collect(),
                     dep_path,
                     declared_dependencies: declared,
+                    alias_of: alias_of.clone(),
                     ..Default::default()
                 },
             );
@@ -387,6 +400,37 @@ fn parse_spec_name(spec: &str) -> Option<String> {
     } else {
         let at = spec.find('@')?;
         Some(spec[..at].to_string())
+    }
+}
+
+/// Detect a yarn npm-protocol alias spec like
+/// `<alias>@npm:<real-name>@<version-or-range>` and return the real
+/// registry name. Returns `None` for non-aliased specs (the common case).
+///
+/// Yarn lets a consumer rename a dep on import — `react-loadable: "npm:@docusaurus/react-loadable@5.5.2"`
+/// installs `@docusaurus/react-loadable` under `node_modules/react-loadable/`.
+/// The lockfile records the alias as the spec key; without surfacing the
+/// real name into [`LockedPackage::alias_of`], every registry/store call
+/// site would hit the alias-qualified URL and 404.
+fn parse_npm_alias_real_name(spec: &str) -> Option<String> {
+    let after_alias = if let Some(rest) = spec.strip_prefix('@') {
+        let slash = rest.find('/')?;
+        let after_slash = &rest[slash + 1..];
+        let at = after_slash.find('@')?;
+        &after_slash[at + 1..]
+    } else {
+        let at = spec.find('@')?;
+        &spec[at + 1..]
+    };
+    let after_protocol = after_alias.strip_prefix("npm:")?;
+    if let Some(rest) = after_protocol.strip_prefix('@') {
+        let slash = rest.find('/')?;
+        let after_slash = &rest[slash + 1..];
+        let at = after_slash.find('@')?;
+        Some(format!("@{}", &rest[..slash + 1 + at]))
+    } else {
+        let at = after_protocol.find('@')?;
+        Some(after_protocol[..at].to_string())
     }
 }
 
@@ -1415,6 +1459,101 @@ bar@^2.0.0:
         let root = graph.importers.get(".").unwrap();
         assert_eq!(root[0].name, "@scope/pkg");
         assert_eq!(root[0].dep_path, "@scope/pkg@1.1.0");
+    }
+
+    /// Yarn classic supports the `npm:` protocol to rename a dep on
+    /// import — `react-loadable: "npm:@docusaurus/react-loadable@5.5.2"`
+    /// installs `@docusaurus/react-loadable` under
+    /// `node_modules/react-loadable/`. The lockfile records the alias
+    /// in the spec key and the real name only behind the `npm:` value.
+    /// Without surfacing the real name into `LockedPackage.alias_of`,
+    /// the install path would fetch the alias-qualified URL and 404
+    /// (https://github.com/endevco/aube/discussions/681).
+    #[test]
+    fn test_parse_npm_protocol_alias_transitive() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"# yarn lockfile v1
+
+"@docusaurus/core@2.1.0":
+  version "2.1.0"
+  integrity sha512-aaa
+  dependencies:
+    react-loadable "npm:@docusaurus/react-loadable@5.5.2"
+
+"react-loadable@npm:@docusaurus/react-loadable@5.5.2":
+  version "5.5.2"
+  integrity sha512-bbb
+"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let manifest = make_manifest(&[("@docusaurus/core", "2.1.0")], &[]);
+        let graph = parse(tmp.path(), &manifest).unwrap();
+
+        let aliased = graph
+            .packages
+            .get("react-loadable@5.5.2")
+            .expect("aliased entry should be keyed by the alias dep_path");
+        assert_eq!(aliased.name, "react-loadable");
+        assert_eq!(aliased.version, "5.5.2");
+        assert_eq!(
+            aliased.alias_of.as_deref(),
+            Some("@docusaurus/react-loadable")
+        );
+        assert_eq!(aliased.registry_name(), "@docusaurus/react-loadable");
+
+        // The parent must still resolve the transitive ref to the
+        // alias dep_path — symlinks under node_modules/.aube/<parent>/
+        // key on the alias, not the real name.
+        let core = &graph.packages["@docusaurus/core@2.1.0"];
+        assert_eq!(
+            core.dependencies.get("react-loadable").map(String::as_str),
+            Some("react-loadable@5.5.2")
+        );
+    }
+
+    /// Round-trip safety: our writer emits the canonical
+    /// `"name@version"` spec first and the npm-alias spec alongside it.
+    /// On reparse the `[0]` spec carries no `npm:`, so the alias must
+    /// be detected by scanning every spec in the header — not just the
+    /// first one.
+    #[test]
+    fn test_parse_npm_protocol_alias_canonical_spec_first() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"# yarn lockfile v1
+
+"react-loadable@5.5.2", "react-loadable@npm:@docusaurus/react-loadable@5.5.2":
+  version "5.5.2"
+  integrity sha512-bbb
+"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let manifest = make_manifest(&[], &[]);
+        let graph = parse(tmp.path(), &manifest).unwrap();
+
+        let aliased = &graph.packages["react-loadable@5.5.2"];
+        assert_eq!(
+            aliased.alias_of.as_deref(),
+            Some("@docusaurus/react-loadable")
+        );
+    }
+
+    #[test]
+    fn test_parse_npm_alias_real_name_helper() {
+        assert_eq!(
+            parse_npm_alias_real_name("react-loadable@npm:@docusaurus/react-loadable@5.5.2"),
+            Some("@docusaurus/react-loadable".to_string())
+        );
+        assert_eq!(
+            parse_npm_alias_real_name("h3-v2@npm:h3@2.0.1-rc.20"),
+            Some("h3".to_string())
+        );
+        assert_eq!(
+            parse_npm_alias_real_name("@my-scope/alias@npm:@upstream/pkg@^1.0.0"),
+            Some("@upstream/pkg".to_string())
+        );
+        // No npm: protocol — the common case.
+        assert_eq!(parse_npm_alias_real_name("foo@^1.0.0"), None);
+        assert_eq!(parse_npm_alias_real_name("@scope/pkg@^1.0.0"), None);
+        // Other protocols pass through as non-aliases (workspace:, file:, …).
+        assert_eq!(parse_npm_alias_real_name("foo@workspace:*"), None);
     }
 
     #[test]

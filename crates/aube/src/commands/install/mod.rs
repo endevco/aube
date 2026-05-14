@@ -28,8 +28,8 @@ pub(crate) use lifecycle::{
     run_dep_lifecycle_scripts,
 };
 use lifecycle::{
-    resolve_link_strategy, run_import_on_blocking, run_root_lifecycle, unreviewed_dep_builds,
-    validate_required_scripts,
+    UnreviewedBuild, resolve_link_strategy, run_import_on_blocking, run_root_lifecycle,
+    unreviewed_dep_builds, validate_required_scripts,
 };
 pub(crate) use settings::PeerDependencyRules;
 pub(crate) use settings::{ResolverConfigInputs, configure_resolver};
@@ -2103,7 +2103,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         && state::restore_missing_lockfile_if_fresh(&cwd, &opts.cli_flags);
 
     if missing_lockfile_restore_eligible {
-        emit_unreviewed_builds_warning(&state::read_state_unreviewed_builds(&cwd));
+        emit_unreviewed_builds_warning(&unreviewed_builds_from_state(&cwd));
         print_already_up_to_date();
         return Ok(());
     }
@@ -2134,7 +2134,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // `print_install_summary` is never called. `--silent` additionally
         // has its `SilentStderrGuard` redirect fd 2 to /dev/null, so this
         // check is belt-and-suspenders for `-v` and the JSON reporters.
-        emit_unreviewed_builds_warning(&state::read_state_unreviewed_builds(&cwd));
+        emit_unreviewed_builds_warning(&unreviewed_builds_from_state(&cwd));
         print_already_up_to_date();
         let _ = start;
         return Ok(());
@@ -3340,6 +3340,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.osv_transitive_check,
                 osv_settings.advisory_check,
                 osv_settings.advisory_check_on_install,
+                osv_settings.advisory_bloom_check,
                 osv_settings.advisory_check_every_install,
             )
             .await?;
@@ -4057,6 +4058,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 opts.osv_transitive_check,
                 osv_settings.advisory_check,
                 osv_settings.advisory_check_on_install,
+                osv_settings.advisory_bloom_check,
                 osv_settings.advisory_check_every_install,
             )
             .await?;
@@ -4852,7 +4854,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                 "dependencies with build scripts must be reviewed before install:\n{}\nhelp: add the package(s) to `allowBuilds` with `true`/`false`, or set `strictDepBuilds=false`",
                 unreviewed
                     .into_iter()
-                    .map(|pkg| format!("  - {pkg}"))
+                    .map(|b| format!("  - {}", b.spec_key))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -5081,8 +5083,14 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         }
         // Persist the unreviewed-builds set so the warm-path
         // short-circuit can re-emit the warning on repeat installs.
-        // Computed once above and reused here.
-        let unreviewed_builds_for_state = unreviewed_builds.clone();
+        // Computed once above and reused here. The state file
+        // carries only spec_keys; per-package suspicion data is
+        // re-derived from the live tree on each install rather
+        // than persisted, since the regex set evolves with aube.
+        let unreviewed_builds_for_state: Vec<String> = unreviewed_builds
+            .iter()
+            .map(|b| b.spec_key.clone())
+            .collect();
         state::write_state(
             &cwd,
             state::WriteStateInput {
@@ -5214,6 +5222,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
 struct OsvRoutingSettings {
     advisory_check: aube_settings::resolved::AdvisoryCheck,
     advisory_check_on_install: aube_settings::resolved::AdvisoryCheckOnInstall,
+    advisory_bloom_check: aube_settings::resolved::AdvisoryBloomCheck,
     advisory_check_every_install: bool,
 }
 
@@ -5227,6 +5236,7 @@ fn resolve_osv_routing_settings(cwd: &std::path::Path) -> OsvRoutingSettings {
         OsvRoutingSettings {
             advisory_check,
             advisory_check_on_install: aube_settings::resolved::advisory_check_on_install(ctx),
+            advisory_bloom_check: aube_settings::resolved::advisory_bloom_check(ctx),
             advisory_check_every_install: aube_settings::resolved::advisory_check_every_install(
                 ctx,
             ),
@@ -5234,11 +5244,34 @@ fn resolve_osv_routing_settings(cwd: &std::path::Path) -> OsvRoutingSettings {
     })
 }
 
+/// Materialize the warm-path replay set. The on-disk state file
+/// stores spec_keys only; suspicion data is re-derived per-install
+/// from the live tree and not persisted, so warm-path replays
+/// always carry empty `suspicions`. Live installs that need
+/// content-sniff data build `UnreviewedBuild`s directly from
+/// `unreviewed_dep_builds`.
+fn unreviewed_builds_from_state(cwd: &std::path::Path) -> Vec<UnreviewedBuild> {
+    state::read_state_unreviewed_builds(cwd)
+        .into_iter()
+        .map(|spec_key| UnreviewedBuild {
+            spec_key,
+            suspicions: Vec::new(),
+        })
+        .collect()
+}
+
 /// Emit the `ignored build scripts for ...` warning. Same wording
 /// fires from the full install path and the warm-path short-circuit
 /// so users see the nudge on every repeat install while
 /// `allowBuilds` placeholders are still pending review.
-fn emit_unreviewed_builds_warning(unreviewed: &[String]) {
+///
+/// When any entry carries non-empty `suspicions` (live-install path
+/// only — the warm-path replay reads spec_keys from disk state and
+/// has no script bodies to scan), an additional
+/// `WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT` is emitted per flagged
+/// package listing the matched shape and the lifecycle hook it
+/// fired from. Advisory only — `allowBuilds` still gates execution.
+fn emit_unreviewed_builds_warning(unreviewed: &[UnreviewedBuild]) {
     if unreviewed.is_empty() {
         return;
     }
@@ -5247,23 +5280,46 @@ fn emit_unreviewed_builds_warning(unreviewed: &[String]) {
     // one hard-to-scan line. Users who want the full list run
     // `aube ignored-builds`.
     const MAX_INLINE: usize = 5;
-    let list = if unreviewed.len() <= MAX_INLINE {
-        unreviewed.join(", ")
+    let spec_keys: Vec<&str> = unreviewed.iter().map(|b| b.spec_key.as_str()).collect();
+    let list = if spec_keys.len() <= MAX_INLINE {
+        spec_keys.join(", ")
     } else {
         format!(
             "{}, and {} more",
-            unreviewed[..MAX_INLINE].join(", "),
-            unreviewed.len() - MAX_INLINE
+            spec_keys[..MAX_INLINE].join(", "),
+            spec_keys.len() - MAX_INLINE
         )
     };
     tracing::warn!(
         code = aube_codes::warnings::WARN_AUBE_IGNORED_BUILD_SCRIPTS,
         count = unreviewed.len(),
-        packages = ?unreviewed,
+        packages = ?spec_keys,
         "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
         unreviewed.len(),
         list
     );
+    for build in unreviewed {
+        if build.suspicions.is_empty() {
+            continue;
+        }
+        // Aggregate `(hook, category)` pairs into a stable list for
+        // the user-facing line. Each Suspicion already carries the
+        // hook + kind, so this is a presentation join — no extra
+        // logic about which signals matter.
+        let detail: Vec<String> = build
+            .suspicions
+            .iter()
+            .map(|s| format!("{}: {}", s.hook, s.kind.description()))
+            .collect();
+        tracing::warn!(
+            code = aube_codes::warnings::WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT,
+            package = build.spec_key.as_str(),
+            findings = ?detail,
+            "suspicious lifecycle script in {}: {}. Inspect the script in `node_modules/.aube/<dep_path>/node_modules/<name>/package.json` before approving the build.",
+            build.spec_key,
+            detail.join("; ")
+        );
+    }
 }
 
 /// Read a lockfile from `lockfile_dir` and remap its importer key

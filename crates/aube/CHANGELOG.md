@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1](https://github.com/endevco/aube/compare/v1.13.0...v1.13.1) - 2026-05-14
+
+### Fixed
+
+- *(install)* pass version to OSV in transitive MAL-* check ([#682](https://github.com/endevco/aube/pull/682))
+
 ## [1.13.0](https://github.com/endevco/aube/compare/v1.12.0...v1.13.0) - 2026-05-13
 
 ### Added

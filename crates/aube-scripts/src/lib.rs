@@ -12,6 +12,7 @@
 //!   escape-hatch `--dangerously-allow-all-builds` flag.
 //! - `--ignore-scripts` forces everything off, matching pnpm/npm.
 
+pub mod content_sniff;
 pub mod policy;
 
 #[cfg(target_os = "linux")]
@@ -20,6 +21,7 @@ mod linux_jail;
 #[cfg(windows)]
 mod windows_job;
 
+pub use content_sniff::{Suspicion, SuspicionKind, sniff_lifecycle};
 pub use policy::{AllowDecision, BuildPolicy, BuildPolicyError, pattern_matches};
 
 use aube_manifest::PackageJson;

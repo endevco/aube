@@ -18,7 +18,7 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.package]
-version = "1.13.0"
+version = "1.13.1"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
@@ -121,6 +121,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 log = "0.4"
 
+# Pattern matching. Used by aube-scripts/src/content_sniff.rs to detect
+# dangerous shapes (curl|sh, eval+atob, secret-env exfil, webhook
+# endpoints, …) in dependency lifecycle script bodies before the user
+# is prompted to allow them. Already a transitive via pluralizer +
+# yamlpatch, so adding as a direct dep here is free at compile time.
+regex = "1"
+
 # Archive extraction
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
 tar = "0.4"
@@ -141,18 +148,18 @@ diffy = "0.4"
 # Internal crates — `version` is required so `cargo publish` can resolve
 # transitive crate dependencies via crates.io. release-plz keeps these
 # versions in sync with [workspace.package].version during release PRs.
-aube = { path = "crates/aube", version = "1.13.0" }
-aube-codes = { path = "crates/aube-codes", version = "1.13.0" }
-aube-settings = { path = "crates/aube-settings", version = "1.13.0" }
-aube-resolver = { path = "crates/aube-resolver", version = "1.13.0" }
-aube-registry = { path = "crates/aube-registry", version = "1.13.0" }
-aube-store = { path = "crates/aube-store", version = "1.13.0" }
-aube-linker = { path = "crates/aube-linker", version = "1.13.0" }
-aube-lockfile = { path = "crates/aube-lockfile", version = "1.13.0" }
-aube-manifest = { path = "crates/aube-manifest", version = "1.13.0" }
-aube-scripts = { path = "crates/aube-scripts", version = "1.13.0" }
-aube-workspace = { path = "crates/aube-workspace", version = "1.13.0" }
-aube-util = { path = "crates/aube-util", version = "1.13.0" }
+aube = { path = "crates/aube", version = "1.13.1" }
+aube-codes = { path = "crates/aube-codes", version = "1.13.1" }
+aube-settings = { path = "crates/aube-settings", version = "1.13.1" }
+aube-resolver = { path = "crates/aube-resolver", version = "1.13.1" }
+aube-registry = { path = "crates/aube-registry", version = "1.13.1" }
+aube-store = { path = "crates/aube-store", version = "1.13.1" }
+aube-linker = { path = "crates/aube-linker", version = "1.13.1" }
+aube-lockfile = { path = "crates/aube-lockfile", version = "1.13.1" }
+aube-manifest = { path = "crates/aube-manifest", version = "1.13.1" }
+aube-scripts = { path = "crates/aube-scripts", version = "1.13.1" }
+aube-workspace = { path = "crates/aube-workspace", version = "1.13.1" }
+aube-util = { path = "crates/aube-util", version = "1.13.1" }
 
 [profile.dev]
 debug = 1
