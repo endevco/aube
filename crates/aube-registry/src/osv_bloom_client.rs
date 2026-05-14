@@ -34,9 +34,10 @@
 //!   schema.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tokio::sync::OnceCell;
 
 /// Upstream URLs. Pinned to `main` on `endevco/osv-bloom` — the
 /// repo's refresh workflow commits new artifacts there every 10
@@ -84,6 +85,20 @@ pub enum BloomError {
     Decode(#[from] serde_json::Error),
     #[error("OSV bloom binary format error: {0}")]
     BadFormat(&'static str),
+    /// SHA-256 of the bloom bytes does not match
+    /// `manifest.filter_sha256`. Either the download is corrupt or
+    /// the on-disk pair was tampered with — refuse to trust either
+    /// rather than risk a structurally-valid filter with bits
+    /// silently cleared.
+    #[error("OSV bloom filter SHA-256 mismatch: expected {expected}, computed {actual} ({origin})")]
+    Integrity {
+        expected: String,
+        actual: String,
+        /// Names the call site so the recovery action is obvious:
+        /// `"downloaded"` → re-fetch from upstream;
+        /// `"on-disk cache"` → blow away and re-fetch.
+        origin: &'static str,
+    },
     #[error("OSV bloom not yet initialized — call refresh_if_stale first")]
     NotInitialized,
 }
@@ -222,14 +237,21 @@ fn bucket_of(version: &str) -> Option<String> {
 #[derive(Debug)]
 pub struct OsvBloomClient {
     root: PathBuf,
-    bloom: OnceCell<Bloom>,
+    /// In-memory bloom. `Mutex<Option<Bloom>>` rather than `OnceCell`
+    /// because [`Self::refresh_if_stale_from`] needs to *replace*
+    /// the bloom when a fresh download lands — pre-seeded
+    /// last-known-good data has to give way to the new filter, and
+    /// `OnceCell::set` rejects the second write. Locking cost is
+    /// negligible: probes happen once per install on the order of
+    /// thousands of entries and complete in microseconds.
+    bloom: Mutex<Option<Bloom>>,
 }
 
 impl OsvBloomClient {
     pub fn open(cache_dir: &Path) -> Self {
         Self {
             root: cache_dir.join(SUBDIR),
-            bloom: OnceCell::new(),
+            bloom: Mutex::new(None),
         }
     }
 
@@ -271,9 +293,17 @@ impl OsvBloomClient {
         max_age: Duration,
     ) -> Result<(), BloomError> {
         std::fs::create_dir_all(&self.root)?;
+        // Seed the in-memory bloom from the cached pair *before* the
+        // network round-trip. If the refresh below errors under the
+        // `On` policy, the caller's `probe_lockfile` still has
+        // last-known-good data to probe against — matching the
+        // contract documented on `BloomError` and
+        // `WARN_AUBE_OSV_BLOOM_REFRESH_FAILED`. A missing or
+        // mismatched on-disk pair is *not* an error here; the
+        // network refresh is the authoritative recovery path.
+        let _ = self.try_load_from_disk();
         let state = self.load_state();
-        if !is_stale(&state, max_age) && self.filter_path().exists() {
-            self.seed_from_disk()?;
+        if !is_stale(&state, max_age) && self.is_loaded() {
             return Ok(());
         }
 
@@ -286,14 +316,27 @@ impl OsvBloomClient {
 
         let needs_filter_download = state.set_digest_sha256.as_deref()
             != Some(manifest.set_digest_sha256.as_str())
-            || !self.filter_path().exists();
+            || !self.filter_path().exists()
+            || !self.is_loaded();
 
         if needs_filter_download {
             let bytes = fetch_filter(client, filter_url).await?;
+            // Verify against `manifest.filter_sha256` BEFORE decode.
+            // `Bloom::decode` only checks structural integrity; a
+            // tampered filter with selected bits cleared (e.g. for
+            // known-malicious packages) would decode cleanly and
+            // silently suppress probe hits. SHA-256 over the raw
+            // bytes is the only thing tying the bitset to the
+            // upstream-attested set digest.
+            verify_filter_sha256(&bytes, &manifest.filter_sha256, "downloaded")?;
             // Decode before persisting so a corrupt download doesn't
-            // poison the on-disk cache. Bloom::decode is cheap.
-            let _verified = Bloom::decode(&bytes)?;
+            // poison the on-disk cache. `Bloom::decode` is cheap.
+            let bloom = Bloom::decode(&bytes)?;
             atomic_write(&self.filter_path(), &bytes)?;
+            // Replace any pre-seeded last-known-good bloom with the
+            // freshly downloaded one. Mutex (not `OnceCell`) is
+            // specifically what makes this assignment work.
+            *self.bloom.lock().expect("bloom mutex poisoned") = Some(bloom);
         }
 
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
@@ -304,7 +347,6 @@ impl OsvBloomClient {
         };
         let state_bytes = serde_json::to_vec_pretty(&new_state)?;
         atomic_write(&self.state_path(), &state_bytes)?;
-        self.seed_from_disk()?;
         Ok(())
     }
 
@@ -315,13 +357,30 @@ impl OsvBloomClient {
         self.refresh_if_stale(client, DEFAULT_MAX_AGE).await
     }
 
-    fn seed_from_disk(&self) -> Result<(), BloomError> {
-        if self.bloom.get().is_some() {
+    pub fn is_loaded(&self) -> bool {
+        self.bloom.lock().expect("bloom mutex poisoned").is_some()
+    }
+
+    /// Best-effort load of the on-disk `(filter.bin, manifest.json)`
+    /// pair into memory. Verifies that `filter.bin`'s SHA-256
+    /// matches the cached `manifest.filter_sha256` — a desynced
+    /// pair (partial write, concurrent process, manual tamper)
+    /// fails closed and the caller falls back to the network
+    /// refresh path. Missing files are treated as "nothing to load"
+    /// rather than an error; SHA mismatch / decode failure
+    /// propagates so the caller can decide to log and continue.
+    fn try_load_from_disk(&self) -> Result<(), BloomError> {
+        let manifest_path = self.manifest_path();
+        let filter_path = self.filter_path();
+        if !manifest_path.exists() || !filter_path.exists() {
             return Ok(());
         }
-        let bytes = std::fs::read(self.filter_path())?;
-        let bloom = Bloom::decode(&bytes)?;
-        let _ = self.bloom.set(bloom);
+        let manifest_bytes = std::fs::read(&manifest_path)?;
+        let manifest: UpstreamManifest = serde_json::from_slice(&manifest_bytes)?;
+        let filter_bytes = std::fs::read(&filter_path)?;
+        verify_filter_sha256(&filter_bytes, &manifest.filter_sha256, "on-disk cache")?;
+        let bloom = Bloom::decode(&filter_bytes)?;
+        *self.bloom.lock().expect("bloom mutex poisoned") = Some(bloom);
         Ok(())
     }
 
@@ -340,7 +399,8 @@ impl OsvBloomClient {
         &self,
         pkgs: &[(String, String)],
     ) -> Result<Vec<(String, String)>, BloomError> {
-        let bloom = self.bloom.get().ok_or(BloomError::NotInitialized)?;
+        let guard = self.bloom.lock().expect("bloom mutex poisoned");
+        let bloom = guard.as_ref().ok_or(BloomError::NotInitialized)?;
         let mut hits = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (name, version) in pkgs {
@@ -371,6 +431,41 @@ impl OsvBloomClient {
         };
         serde_json::from_slice(&bytes).unwrap_or_default()
     }
+}
+
+/// Compare `actual_bytes`' SHA-256 against the hex-encoded
+/// `expected_hex` from the manifest. Hex-encoding mismatches are
+/// surfaced via [`BloomError::Integrity`] with `source` naming the
+/// site so failures point at the right recovery action ("downloaded"
+/// → re-fetch, "on-disk cache" → blow away and re-fetch).
+fn verify_filter_sha256(
+    actual_bytes: &[u8],
+    expected_hex: &str,
+    origin: &'static str,
+) -> Result<(), BloomError> {
+    let mut hasher = Sha256::new();
+    hasher.update(actual_bytes);
+    let actual_hex = hex_encode(&hasher.finalize());
+    // Case-insensitive compare so a manifest written with uppercase
+    // hex still validates.
+    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
+        return Err(BloomError::Integrity {
+            expected: expected_hex.to_lowercase(),
+            actual: actual_hex,
+            origin,
+        });
+    }
+    Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 async fn fetch_manifest(
@@ -443,10 +538,6 @@ fn ymdhms_to_unix(year: i64, month: u32, day: u32, hour: u32, min: u32, sec: u32
     if !(1..=12).contains(&month) || day == 0 || hour > 23 || min > 59 || sec > 59 {
         return None;
     }
-    let mut days: i64 = 0;
-    for y in 1970..year {
-        days += if is_leap(y) { 366 } else { 365 };
-    }
     let dim = [
         31,
         if is_leap(year) { 29 } else { 28 },
@@ -461,6 +552,16 @@ fn ymdhms_to_unix(year: i64, month: u32, day: u32, hour: u32, min: u32, sec: u32
         30,
         31,
     ];
+    // Reject e.g. `2024-02-30` — otherwise the field overflows
+    // silently into March and we'd accept a manifest written with
+    // a malformed `fetched_at` as fresh.
+    if day > dim[(month - 1) as usize] {
+        return None;
+    }
+    let mut days: i64 = 0;
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
     for &md in dim.iter().take((month - 1) as usize) {
         days += md as i64;
     }
@@ -606,7 +707,7 @@ mod tests {
         let bytes = synth_filter(&[("evil", "1"), ("evil", "2")]);
         let client = OsvBloomClient {
             root: PathBuf::from("/tmp/osv-bloom-test"),
-            bloom: OnceCell::new_with(Some(Bloom::decode(&bytes).unwrap())),
+            bloom: Mutex::new(Some(Bloom::decode(&bytes).unwrap())),
         };
         let pkgs = vec![
             ("evil".to_string(), "1.4.0".to_string()),
@@ -625,7 +726,7 @@ mod tests {
         let bytes = synth_filter(&[("worm", WILDCARD_BUCKET)]);
         let client = OsvBloomClient {
             root: PathBuf::from("/tmp/osv-bloom-test"),
-            bloom: OnceCell::new_with(Some(Bloom::decode(&bytes).unwrap())),
+            bloom: Mutex::new(Some(Bloom::decode(&bytes).unwrap())),
         };
         let pkgs = vec![("worm".to_string(), "5.4.2".to_string())];
         let hits = client.probe_lockfile(&pkgs).expect("probe");
@@ -637,7 +738,7 @@ mod tests {
         let bytes = synth_filter(&[("evil", "1")]);
         let client = OsvBloomClient {
             root: PathBuf::from("/tmp/osv-bloom-test"),
-            bloom: OnceCell::new_with(Some(Bloom::decode(&bytes).unwrap())),
+            bloom: Mutex::new(Some(Bloom::decode(&bytes).unwrap())),
         };
         let pkgs = vec![("safe-but-weird".to_string(), "git+ssh://x".to_string())];
         let hits = client.probe_lockfile(&pkgs).expect("probe");
@@ -653,7 +754,7 @@ mod tests {
     fn probe_lockfile_without_refresh_returns_not_initialized() {
         let client = OsvBloomClient {
             root: PathBuf::from("/tmp/osv-bloom-test"),
-            bloom: OnceCell::new(),
+            bloom: Mutex::new(None),
         };
         assert!(matches!(
             client.probe_lockfile(&[("x".to_string(), "1.0.0".to_string())]),
@@ -687,6 +788,52 @@ mod tests {
         assert_eq!(format_rfc3339(elapsed.as_secs()), s);
     }
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        hex_encode(&h.finalize())
+    }
+
+    fn synth_manifest(filter_bytes: &[u8], set_digest: &str) -> Vec<u8> {
+        let manifest = UpstreamManifest {
+            format_version: 1,
+            set_digest_sha256: set_digest.into(),
+            filter_sha256: sha256_hex(filter_bytes),
+            bloom_byte_len: filter_bytes.len() as u64,
+            entry_count: 1,
+            built_at_unix: 0,
+        };
+        serde_json::to_vec(&manifest).expect("manifest json")
+    }
+
+    #[test]
+    fn verify_filter_sha256_accepts_matching_hash() {
+        let bytes = b"hello world";
+        verify_filter_sha256(bytes, &sha256_hex(bytes), "test").expect("hash matches");
+    }
+
+    #[test]
+    fn verify_filter_sha256_rejects_mismatched_hash() {
+        let bytes = b"hello world";
+        let result = verify_filter_sha256(bytes, "00".repeat(32).as_str(), "downloaded");
+        match result {
+            Err(BloomError::Integrity {
+                origin, expected, ..
+            }) => {
+                assert_eq!(origin, "downloaded");
+                assert_eq!(expected, "0".repeat(64));
+            }
+            other => panic!("expected Integrity error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_filter_sha256_is_case_insensitive() {
+        let bytes = b"hello world";
+        let upper = sha256_hex(bytes).to_uppercase();
+        verify_filter_sha256(bytes, &upper, "test").expect("uppercase hex matches");
+    }
+
     #[tokio::test]
     async fn refresh_seeds_bloom_from_mock_endpoints() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -694,15 +841,7 @@ mod tests {
         let mock = wiremock::MockServer::start().await;
 
         let filter_bytes = synth_filter(&[("evil", "1")]);
-        let manifest = UpstreamManifest {
-            format_version: 1,
-            set_digest_sha256: "deadbeef".into(),
-            filter_sha256: "cafef00d".into(),
-            bloom_byte_len: filter_bytes.len() as u64,
-            entry_count: 1,
-            built_at_unix: 0,
-        };
-        let manifest_json = serde_json::to_vec(&manifest).expect("manifest json");
+        let manifest_json = synth_manifest(&filter_bytes, "deadbeef");
 
         wiremock::Mock::given(wiremock::matchers::path("/manifest.json"))
             .respond_with(
@@ -743,16 +882,7 @@ mod tests {
         let mock = wiremock::MockServer::start().await;
 
         let filter_bytes = synth_filter(&[("evil", "1")]);
-        let digest = "stable-digest";
-        let manifest = UpstreamManifest {
-            format_version: 1,
-            set_digest_sha256: digest.into(),
-            filter_sha256: "cafef00d".into(),
-            bloom_byte_len: filter_bytes.len() as u64,
-            entry_count: 1,
-            built_at_unix: 0,
-        };
-        let manifest_json = serde_json::to_vec(&manifest).expect("manifest json");
+        let manifest_json = synth_manifest(&filter_bytes, "stable-digest");
 
         wiremock::Mock::given(wiremock::matchers::path("/manifest.json"))
             .respond_with(
@@ -782,5 +912,138 @@ mod tests {
             .refresh_if_stale_from(&http, &filter_url, &manifest_url, Duration::from_secs(0))
             .await
             .expect("second refresh");
+    }
+
+    /// Tampered download: manifest declares one SHA but the filter
+    /// bytes hash to another. Must surface as
+    /// `BloomError::Integrity` rather than silently writing the
+    /// poisoned bytes to disk and treating it as a valid bloom.
+    #[tokio::test]
+    async fn refresh_rejects_download_with_mismatched_sha() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let client = OsvBloomClient::open(tmp.path());
+        let mock = wiremock::MockServer::start().await;
+
+        let real_bytes = synth_filter(&[("evil", "1")]);
+        // Build the manifest from a *different* synth filter so its
+        // declared SHA-256 won't match what we actually serve.
+        let other_bytes = synth_filter(&[("safe", "1")]);
+        let manifest_json = synth_manifest(&other_bytes, "deadbeef");
+
+        wiremock::Mock::given(wiremock::matchers::path("/manifest.json"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(manifest_json))
+            .mount(&mock)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::path("/filter.bin"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(real_bytes))
+            .mount(&mock)
+            .await;
+
+        let http = reqwest::Client::new();
+        let err = client
+            .refresh_if_stale_from(
+                &http,
+                &format!("{}/filter.bin", mock.uri()),
+                &format!("{}/manifest.json", mock.uri()),
+                Duration::from_secs(0),
+            )
+            .await
+            .expect_err("must reject mismatched SHA");
+        assert!(
+            matches!(err, BloomError::Integrity { origin, .. } if origin == "downloaded"),
+            "expected Integrity{{origin=\"downloaded\"}}, got {err:?}"
+        );
+        // Mismatched download must not poison the on-disk cache.
+        assert!(!client.filter_path().exists());
+    }
+
+    /// On-disk pair survives a network failure: pre-seed before the
+    /// network call means a refresh failure under the `On` policy
+    /// still leaves a valid bloom in memory for `probe_lockfile`.
+    #[tokio::test]
+    async fn refresh_falls_back_to_cached_filter_on_network_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Pre-populate the cache directory as if a successful prior
+        // refresh had landed.
+        let filter_bytes = synth_filter(&[("evil", "1")]);
+        let manifest_json = synth_manifest(&filter_bytes, "prior-digest");
+        let root = tmp.path().join(SUBDIR);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join(FILTER_FILENAME), &filter_bytes).expect("write filter");
+        std::fs::write(root.join(MANIFEST_FILENAME), &manifest_json).expect("write manifest");
+
+        let client = OsvBloomClient::open(tmp.path());
+        let mock = wiremock::MockServer::start().await;
+        // 503 on the manifest URL → refresh fails outright.
+        wiremock::Mock::given(wiremock::matchers::path("/manifest.json"))
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .mount(&mock)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::path("/filter.bin"))
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .mount(&mock)
+            .await;
+
+        let http = reqwest::Client::new();
+        let err = client
+            .refresh_if_stale_from(
+                &http,
+                &format!("{}/filter.bin", mock.uri()),
+                &format!("{}/manifest.json", mock.uri()),
+                Duration::from_secs(0),
+            )
+            .await
+            .expect_err("503 → refresh error");
+        assert!(
+            matches!(err, BloomError::Status(_)),
+            "expected Status error, got {err:?}"
+        );
+
+        // Despite the refresh failure, the pre-seed should have
+        // landed and `probe_lockfile` returns the cached hits.
+        assert!(client.is_loaded(), "cached filter must be in memory");
+        let hits = client
+            .probe_lockfile(&[("evil".to_string(), "1.4.0".to_string())])
+            .expect("probe against cached bloom");
+        assert_eq!(hits, vec![("evil".to_string(), "1.4.0".to_string())]);
+    }
+
+    /// Desynced disk: filter.bin's bytes hash to something other than
+    /// what manifest.json claims. The on-disk pre-seed must reject
+    /// the pair (`Integrity` error from `try_load_from_disk`) rather
+    /// than poisoning memory with a bloom whose provenance we can't
+    /// vouch for.
+    #[tokio::test]
+    async fn try_load_from_disk_rejects_desynced_sha() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let filter_bytes = synth_filter(&[("evil", "1")]);
+        // Manifest claims a different filter's hash.
+        let other_bytes = synth_filter(&[("safe", "1")]);
+        let manifest_json = synth_manifest(&other_bytes, "any");
+        let root = tmp.path().join(SUBDIR);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join(FILTER_FILENAME), &filter_bytes).expect("write filter");
+        std::fs::write(root.join(MANIFEST_FILENAME), &manifest_json).expect("write manifest");
+        let client = OsvBloomClient::open(tmp.path());
+        let err = client.try_load_from_disk().expect_err("desynced");
+        assert!(
+            matches!(err, BloomError::Integrity { origin, .. } if origin == "on-disk cache"),
+            "expected Integrity{{origin=\"on-disk cache\"}}, got {err:?}"
+        );
+        assert!(
+            !client.is_loaded(),
+            "must not seed memory with un-vouched bytes"
+        );
+    }
+
+    #[test]
+    fn rfc3339_rejects_feb_30() {
+        assert!(parse_rfc3339("2024-02-30T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn rfc3339_rejects_apr_31() {
+        assert!(parse_rfc3339("2024-04-31T00:00:00Z").is_none());
     }
 }

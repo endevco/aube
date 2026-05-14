@@ -447,8 +447,13 @@ pub async fn run_transitive_osv_gate_via_bloom(
     // live API confirms or clears each pair against its exact
     // pinned version. Name-only escalation here would collapse a
     // version-specific compromise (e.g. `ansi-regex@6.2.1`) into a
-    // permanent name-level block of every release.
-    osv_gate_versioned(&live_client, &bloom_hits, live_policy).await
+    // permanent name-level block of every release. The bloom path's
+    // `On`/`Required` policy is `advisoryBloomCheck`, not
+    // `advisoryCheck` — `osv_gate_versioned_with_bypass` threads
+    // that setting name through to the `ERR_AUBE_MALICIOUS_PACKAGE`
+    // footer and the required-failure message.
+    osv_gate_versioned_with_bypass(&live_client, &bloom_hits, live_policy, "advisoryBloomCheck")
+        .await
 }
 
 /// True when the resolved graph contains at least one
@@ -555,6 +560,7 @@ async fn osv_gate(
         fetch_malicious_advisories(client, names).await,
         policy,
         "refusing to add malicious package(s):",
+        "advisoryCheck",
     )
 }
 
@@ -563,6 +569,21 @@ async fn osv_gate_versioned(
     pairs: &[(String, String)],
     policy: AdvisoryCheck,
 ) -> miette::Result<()> {
+    osv_gate_versioned_with_bypass(client, pairs, policy, "advisoryCheck").await
+}
+
+/// Versioned-OSV gate with an overridable bypass-setting name.
+/// Used by the bloom-prefilter escalation path so the
+/// `ERR_AUBE_MALICIOUS_PACKAGE` footer and
+/// `ERR_AUBE_ADVISORY_CHECK_FAILED` message point the user at
+/// `advisoryBloomCheck` — the setting that actually controls that
+/// install gate — rather than `advisoryCheck`, which doesn't.
+async fn osv_gate_versioned_with_bypass(
+    client: &reqwest::Client,
+    pairs: &[(String, String)],
+    policy: AdvisoryCheck,
+    bypass_setting: &str,
+) -> miette::Result<()> {
     if matches!(policy, AdvisoryCheck::Off) {
         return Ok(());
     }
@@ -570,6 +591,7 @@ async fn osv_gate_versioned(
         fetch_malicious_advisories_versioned(client, pairs).await,
         policy,
         "refusing to install malicious package(s):",
+        bypass_setting,
     )
 }
 
@@ -577,6 +599,7 @@ fn handle_osv_result(
     result: Result<Vec<MaliciousAdvisory>, aube_registry::supply_chain::SupplyChainError>,
     policy: AdvisoryCheck,
     refusal_header: &str,
+    bypass_setting: &str,
 ) -> miette::Result<()> {
     match result {
         Ok(hits) if hits.is_empty() => Ok(()),
@@ -586,7 +609,7 @@ fn handle_osv_result(
             format_malicious_message(
                 refusal_header,
                 &hits,
-                "Set `advisoryCheck = off` to bypass (not recommended).",
+                &format!("Set `{bypass_setting} = off` to bypass (not recommended)."),
             ),
         )),
         Err(e) => {
@@ -600,7 +623,7 @@ fn handle_osv_result(
             if matches!(policy, AdvisoryCheck::Required) {
                 return Err(miette!(
                     code = ERR_AUBE_ADVISORY_CHECK_FAILED,
-                    "OSV advisory check failed and `advisoryCheck = required` is set: {e}"
+                    "OSV advisory check failed and `{bypass_setting} = required` is set: {e}"
                 ));
             }
             Ok(())
