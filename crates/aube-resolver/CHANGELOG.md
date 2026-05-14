@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0](https://github.com/endevco/aube/compare/aube-resolver-v1.13.1...aube-resolver-v1.14.0) - 2026-05-14
+
+### Other
+
+- refresh benchmarks for v1.13.1 ([#687](https://github.com/endevco/aube/pull/687))
+
 ## [1.13.0](https://github.com/endevco/aube/compare/aube-resolver-v1.12.0...aube-resolver-v1.13.0) - 2026-05-13
 
 ### Fixed
