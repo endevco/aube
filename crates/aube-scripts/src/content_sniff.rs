@@ -28,7 +28,11 @@ use std::sync::OnceLock;
 /// `description` for the user-facing warning and a `category` tag
 /// used by interactive surfaces (`aube approve-builds` picker
 /// labels) that need a short marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Ord` / `PartialOrd` are derived (variant declaration order) so
+/// containers of `Suspicion` are sortable — needed by `Vec<Suspicion>:
+/// Ord` which in turn is needed by `IgnoredEntry`'s derived `Ord`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SuspicionKind {
     /// `curl … | sh`, `wget … | bash`, and friends — fetch a remote
     /// payload and pipe it to a shell.
@@ -77,7 +81,7 @@ impl SuspicionKind {
 }
 
 /// One match against a script body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Suspicion {
     pub kind: SuspicionKind,
     /// Name of the lifecycle hook whose body matched

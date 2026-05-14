@@ -109,25 +109,19 @@ fn run_global() -> miette::Result<()> {
 /// clean, populated when one or more dangerous-shape heuristics
 /// fired. Used by the `approve-builds` picker to flag suspicious
 /// entries so the user has more than `name@version` to judge by.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Field order matters: derived `Ord` compares by declaration
+/// order, so `(name, version)` orders identically to the prior
+/// manual impl. `collect_ignored` already deduplicates on
+/// `(name, version)`, so the `suspicions` tiebreak is unreachable
+/// in practice — keeping the derived shape avoids the
+/// `Eq`/`Ord` inconsistency that an explicit Ord-on-prefix impl
+/// would introduce.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct IgnoredEntry {
     pub name: String,
     pub version: String,
     pub suspicions: Vec<aube_scripts::Suspicion>,
-}
-
-impl std::cmp::Ord for IgnoredEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name
-            .cmp(&other.name)
-            .then_with(|| self.version.cmp(&other.version))
-    }
-}
-
-impl std::cmp::PartialOrd for IgnoredEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 /// Load the lockfile and build policy for `project_dir`, then return the
