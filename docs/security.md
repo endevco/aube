@@ -139,7 +139,7 @@ minimumReleaseAge: 4320  # 3 days
 the range; otherwise the resolver falls back to the lowest satisfying version
 ignoring the cutoff for that pick only.
 
-Default: `0` (disabled).
+Default: `1440` (24 hours). Set `minimumReleaseAge: 0` to disable.
 
 Settings: [`minimumReleaseAge`](/settings/#setting-minimumreleaseage),
 [`minimumReleaseAgeExclude`](/settings/#setting-minimumreleaseageexclude),
