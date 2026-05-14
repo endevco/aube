@@ -1,6 +1,6 @@
 //! Compact bloom-filter prefilter for OSV `MAL-*` advisories.
 //!
-//! Fetches `endevco/osv-bloom`'s published `dist/filter.bin` (sub-MB)
+//! Fetches `endevco/osv-bloom`'s Pages-hosted `filter.bin` (sub-MB)
 //! and decodes it on demand. `probe_lockfile` returns the subset of
 //! `(name, version)` pairs that *probably* land on a malicious
 //! advisory; the caller escalates each to the live OSV API for a
@@ -39,12 +39,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-/// Upstream URLs. Pinned to `main` on `endevco/osv-bloom` — the
-/// repo's refresh workflow commits new artifacts there every 10
-/// minutes and the CDN serves them with `Cache-Control: max-age=300`.
-const FILTER_URL: &str = "https://raw.githubusercontent.com/endevco/osv-bloom/main/dist/filter.bin";
-const MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/endevco/osv-bloom/main/dist/manifest.json";
+/// Upstream URLs. `endevco/osv-bloom` deploys the refreshed pair
+/// to GitHub Pages every 10 minutes via an orphan-commit to its
+/// `gh-pages` branch — no binary history accumulates in git and
+/// Pages serves both files with strong ETags from the GitHub CDN.
+const FILTER_URL: &str = "https://endevco.github.io/osv-bloom/filter.bin";
+const MANIFEST_URL: &str = "https://endevco.github.io/osv-bloom/manifest.json";
 
 /// Subdirectory under `$XDG_CACHE_HOME/aube/`. Sibling to `osv/` so
 /// the two checks can coexist without colliding.
