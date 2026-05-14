@@ -17,6 +17,7 @@ pub const WARN_AUBE_HOOK_PACKAGE_ADDED: &str = "WARN_AUBE_HOOK_PACKAGE_ADDED";
 
 // ── install lifecycle ───────────────────────────────────────────────
 pub const WARN_AUBE_IGNORED_BUILD_SCRIPTS: &str = "WARN_AUBE_IGNORED_BUILD_SCRIPTS";
+#[rustfmt::skip] pub const WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT: &str = "WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT";
 #[rustfmt::skip] pub const WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE: &str = "WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE";
 pub const WARN_AUBE_MISSING_INTEGRITY: &str = "WARN_AUBE_MISSING_INTEGRITY";
 pub const WARN_AUBE_CACHE_WRITE_FAILED: &str = "WARN_AUBE_CACHE_WRITE_FAILED";
@@ -159,6 +160,12 @@ pub const ALL: &[CodeMeta] = &[
         name: WARN_AUBE_IGNORED_BUILD_SCRIPTS,
         category: category::INSTALL_LIFECYCLE,
         description: "Dep had `preinstall`/`install`/`postinstall` scripts but isn't on the `allowBuilds` allowlist. Run `aube approve-builds`.",
+        exit_code: None,
+    },
+    CodeMeta {
+        name: WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT,
+        category: category::INSTALL_LIFECYCLE,
+        description: "A dependency's lifecycle script matched a dangerous-shape heuristic (curl|sh, eval+atob, credential-file read, secret-env exfil, exfil endpoint, bare-IP HTTP). Advisory only; the `allowBuilds` allowlist still gates execution. Inspect the script before approving the build.",
         exit_code: None,
     },
     CodeMeta {

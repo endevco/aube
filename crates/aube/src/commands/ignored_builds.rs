@@ -51,9 +51,19 @@ pub async fn run(args: IgnoredBuildsArgs) -> miette::Result<()> {
 
     println!("The following builds were ignored during install:");
     for entry in &ignored {
-        println!("  {}@{}", entry.name, entry.version);
+        print_entry_line("  ", entry);
     }
     Ok(())
+}
+
+/// Render one `IgnoredEntry` to stdout: `<indent><name>@<version>`,
+/// followed by `<indent>  ⚠ <hook>: <description>` lines for each
+/// content-sniff match against the package's lifecycle scripts.
+fn print_entry_line(indent: &str, entry: &IgnoredEntry) {
+    println!("{indent}{}@{}", entry.name, entry.version);
+    for sus in &entry.suspicions {
+        println!("{indent}  ⚠ {} — {}", sus.hook, sus.kind.description());
+    }
 }
 
 fn run_global() -> miette::Result<()> {
@@ -81,7 +91,7 @@ fn run_global() -> miette::Result<()> {
             info.install_dir.display()
         );
         for entry in &ignored {
-            println!("    {}@{}", entry.name, entry.version);
+            print_entry_line("    ", entry);
         }
     }
 
@@ -93,11 +103,17 @@ fn run_global() -> miette::Result<()> {
 
 /// One package whose lifecycle scripts were skipped because it was not
 /// allowed by the current `BuildPolicy`. `name` is the pnpm package name,
-/// `version` is the resolved version from the lockfile.
+/// `version` is the resolved version from the lockfile. `suspicions`
+/// is the result of running the content-sniff against the stored
+/// manifest's lifecycle script bodies — empty when the scripts look
+/// clean, populated when one or more dangerous-shape heuristics
+/// fired. Used by the `approve-builds` picker to flag suspicious
+/// entries so the user has more than `name@version` to judge by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct IgnoredEntry {
     pub name: String,
     pub version: String,
+    pub suspicions: Vec<aube_scripts::Suspicion>,
 }
 
 impl std::cmp::Ord for IgnoredEntry {
@@ -153,12 +169,18 @@ pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<V
         ) {
             continue;
         }
-        if !has_lifecycle_scripts(&store, &pkg.name, &pkg.version, pkg.integrity.as_deref()) {
+        let Some(suspicions) = lifecycle_scripts_with_suspicions(
+            &store,
+            &pkg.name,
+            &pkg.version,
+            pkg.integrity.as_deref(),
+        ) else {
             continue;
-        }
+        };
         out.push(IgnoredEntry {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
+            suspicions,
         });
     }
 
@@ -167,49 +189,45 @@ pub(super) fn collect_ignored(project_dir: &std::path::Path) -> miette::Result<V
 }
 
 /// Read `<name>@<version>`'s stored `package.json` from the global store
-/// index and return true when any dep-lifecycle script (preinstall /
-/// install / postinstall) is declared — or when the package ships a
-/// top-level `binding.gyp` with no install/preinstall script, which
-/// means the install pipeline would have fallen back to the implicit
-/// `node-gyp rebuild` default.
+/// and decide whether the install pipeline would have run dep
+/// lifecycle scripts for it. Returns `Some(suspicions)` when scripts
+/// (or the implicit `node-gyp rebuild` fallback) would have fired;
+/// `None` when nothing to do. Suspicions are the content-sniff
+/// matches against the declared script bodies — empty in the common
+/// case, populated when one or more dangerous-shape heuristics fired.
 ///
-/// Missing / unreadable manifests conservatively return `false` — the
+/// Missing / unreadable manifests conservatively return `None` — the
 /// package might have scripts we can't see, but reporting them as
 /// "ignored" would be noise since the install pipeline also skipped
 /// them for the same reason.
-fn has_lifecycle_scripts(
+fn lifecycle_scripts_with_suspicions(
     store: &aube_store::Store,
     name: &str,
     version: &str,
     integrity: Option<&str>,
-) -> bool {
+) -> Option<Vec<aube_scripts::Suspicion>> {
     // Cache lookup is integrity-keyed when available (prevents
     // same-(name, version) entries from different sources colliding)
     // and falls back to the plain (name, version) key when integrity
     // is absent so proxy-served packages without `dist.integrity` are
     // still classifiable.
-    let Some(index) = store.load_index(name, version, integrity) else {
-        return false;
-    };
-    let Some(stored) = index.get("package.json") else {
-        return false;
-    };
-    let Ok(content) = std::fs::read_to_string(&stored.store_path) else {
-        return false;
-    };
-    let Ok(manifest) = serde_json::from_str::<aube_manifest::PackageJson>(&content) else {
-        return false;
-    };
-    if aube_scripts::DEP_LIFECYCLE_HOOKS
+    let index = store.load_index(name, version, integrity)?;
+    let stored = index.get("package.json")?;
+    let content = std::fs::read_to_string(&stored.store_path).ok()?;
+    let manifest = serde_json::from_str::<aube_manifest::PackageJson>(&content).ok()?;
+    let has_declared = aube_scripts::DEP_LIFECYCLE_HOOKS
         .iter()
-        .any(|h| manifest.scripts.contains_key(h.script_name()))
-    {
-        return true;
-    }
+        .any(|h| manifest.scripts.contains_key(h.script_name()));
     // Delegate the implicit-rebuild gate to `aube-scripts` so this
     // stays in lockstep with what the install pipeline actually runs.
     // Presence comes from the store index here (the package isn't
     // materialized yet at this point in the command), but the
     // condition itself lives in exactly one place.
-    aube_scripts::implicit_install_script(&manifest, index.contains_key("binding.gyp")).is_some()
+    let has_implicit =
+        aube_scripts::implicit_install_script(&manifest, index.contains_key("binding.gyp"))
+            .is_some();
+    if !has_declared && !has_implicit {
+        return None;
+    }
+    Some(aube_scripts::sniff_lifecycle(&manifest))
 }

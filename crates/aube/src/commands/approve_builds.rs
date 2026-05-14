@@ -14,7 +14,7 @@
 use clap::Args;
 use miette::{Context, IntoDiagnostic, miette};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 const INTERACTIVE_TTY_ERROR: &str = "approve-builds needs stdin and stderr to be TTYs for the interactive picker; pass `--all` or name packages positionally to approve non-interactively";
@@ -249,14 +249,21 @@ fn dedupe(packages: Vec<String>) -> Vec<String> {
 /// `name@version`) keeps the written allowBuilds entry broad, so the
 /// next resolution with a patch-level bump doesn't silently drop back
 /// into the ignored set.
+///
+/// When any entry carries content-sniff suspicions, a one-shot summary
+/// is printed to stderr before the picker opens so the user sees the
+/// full list of flagged signals (the picker label only has room for
+/// a short tag). The picker entry itself is annotated with `⚠
+/// suspicious: <category>` so flagged rows stand out while scrolling.
 fn pick_interactively(
     ignored: &[super::ignored_builds::IgnoredEntry],
 ) -> miette::Result<Vec<String>> {
+    print_suspicion_summary(ignored);
     let mut picker = demand::MultiSelect::new("Choose which packages to allow building")
         .description("Space to toggle, Enter to confirm")
         .min(1);
     for entry in ignored {
-        let label = format!("{}@{}", entry.name, entry.version);
+        let label = format_picker_label(&entry.name, &entry.version, &entry.suspicions);
         picker = picker.option(demand::DemandOption::new(entry.name.clone()).label(&label));
     }
     picker
@@ -265,9 +272,63 @@ fn pick_interactively(
         .wrap_err("failed to read approve-builds selection")
 }
 
+/// `name@version` plus a compact suspicious-shape tag when the
+/// content-sniff fired against any of the package's lifecycle
+/// scripts. One picker row is narrow, so only the first match's
+/// category gets a tag; `+N more` follows when more than one
+/// matched. The full breakdown lives in `print_suspicion_summary`.
+fn format_picker_label(
+    name: &str,
+    version: &str,
+    suspicions: &[aube_scripts::Suspicion],
+) -> String {
+    if suspicions.is_empty() {
+        return format!("{name}@{version}");
+    }
+    let first = suspicions[0].kind.category();
+    let extra = suspicions.len() - 1;
+    if extra == 0 {
+        format!("{name}@{version}  ⚠ suspicious: {first}")
+    } else {
+        format!("{name}@{version}  ⚠ suspicious: {first} +{extra} more")
+    }
+}
+
+/// Print every flagged package's full suspicion list to stderr before
+/// the picker takes over the screen. No-op when nothing flagged so
+/// the clean case stays terse.
+fn print_suspicion_summary(ignored: &[super::ignored_builds::IgnoredEntry]) {
+    let flagged: Vec<&super::ignored_builds::IgnoredEntry> = ignored
+        .iter()
+        .filter(|e| !e.suspicions.is_empty())
+        .collect();
+    if flagged.is_empty() {
+        return;
+    }
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(
+        stderr,
+        "⚠ {} package(s) have lifecycle scripts that matched dangerous-shape heuristics:",
+        flagged.len()
+    );
+    for entry in flagged {
+        let _ = writeln!(stderr, "  {}@{}", entry.name, entry.version);
+        for sus in &entry.suspicions {
+            let _ = writeln!(stderr, "    • {} — {}", sus.hook, sus.kind.description());
+        }
+    }
+    let _ = writeln!(
+        stderr,
+        "  Inspect each script in `node_modules/.aube/<dep_path>/node_modules/<name>/package.json` before approving."
+    );
+}
+
 fn pick_global_interactively(
     global_ignored: &[GlobalIgnored],
 ) -> miette::Result<BTreeMap<std::path::PathBuf, Vec<String>>> {
+    for entry in global_ignored {
+        print_suspicion_summary(&entry.ignored);
+    }
     let mut picker = demand::MultiSelect::new("Choose which global packages to allow building")
         .description("Space to toggle, Enter to confirm")
         .min(1);
@@ -277,7 +338,8 @@ fn pick_global_interactively(
             // split_once below keeps the full package name even if a
             // private registry allows ':' inside it.
             let value = format!("{idx}:{}", ignored.name);
-            let label = format!("{aliases}: {}@{}", ignored.name, ignored.version);
+            let base = format_picker_label(&ignored.name, &ignored.version, &ignored.suspicions);
+            let label = format!("{aliases}: {base}");
             picker = picker.option(demand::DemandOption::new(value).label(&label));
         }
     }
@@ -303,4 +365,52 @@ fn pick_global_interactively(
             .push(name.to_string());
     }
     Ok(selected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_picker_label;
+    use aube_scripts::{Suspicion, SuspicionKind};
+
+    #[test]
+    fn label_for_clean_package_is_bare_spec() {
+        assert_eq!(
+            format_picker_label("esbuild", "0.20.2", &[]),
+            "esbuild@0.20.2"
+        );
+    }
+
+    #[test]
+    fn label_for_single_suspicion_shows_category() {
+        let s = vec![Suspicion {
+            kind: SuspicionKind::ShellPipe,
+            hook: "postinstall",
+        }];
+        assert_eq!(
+            format_picker_label("lodass", "1.0.0", &s),
+            "lodass@1.0.0  ⚠ suspicious: curl|sh"
+        );
+    }
+
+    #[test]
+    fn label_for_multiple_suspicions_shows_first_plus_count() {
+        let s = vec![
+            Suspicion {
+                kind: SuspicionKind::ShellPipe,
+                hook: "postinstall",
+            },
+            Suspicion {
+                kind: SuspicionKind::SecretEnvRead,
+                hook: "postinstall",
+            },
+            Suspicion {
+                kind: SuspicionKind::ExfilEndpoint,
+                hook: "postinstall",
+            },
+        ];
+        assert_eq!(
+            format_picker_label("evil-pkg", "9.9.9", &s),
+            "evil-pkg@9.9.9  ⚠ suspicious: curl|sh +2 more"
+        );
+    }
 }

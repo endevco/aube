@@ -1082,13 +1082,25 @@ fn collect_missing_required_scripts(
     }
 }
 
+/// One dependency whose build scripts were skipped because it's not
+/// on the `allowBuilds` allowlist. `suspicions` is the result of
+/// running the content sniff against the dep's lifecycle script
+/// bodies; empty when the scripts looked clean (the common case).
+/// The sniff is derived from the live materialized tree and not
+/// persisted to install state.
+#[derive(Debug, Clone)]
+pub(super) struct UnreviewedBuild {
+    pub spec_key: String,
+    pub suspicions: Vec<aube_scripts::Suspicion>,
+}
+
 pub(super) fn unreviewed_dep_builds(
     aube_dir: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
     policy: &aube_scripts::BuildPolicy,
     virtual_store_dir_max_length: usize,
     placements: Option<&aube_linker::HoistedPlacements>,
-) -> miette::Result<Vec<String>> {
+) -> miette::Result<Vec<UnreviewedBuild>> {
     let mut unreviewed = Vec::new();
     for (dep_path, pkg) in &graph.packages {
         if !matches!(
@@ -1130,11 +1142,14 @@ pub(super) fn unreviewed_dep_builds(
                 )
             })?;
         if aube_scripts::has_dep_lifecycle_work(&package_dir, &dep_manifest) {
-            unreviewed.push(pkg.spec_key());
+            unreviewed.push(UnreviewedBuild {
+                spec_key: pkg.spec_key(),
+                suspicions: aube_scripts::sniff_lifecycle(&dep_manifest),
+            });
         }
     }
-    unreviewed.sort();
-    unreviewed.dedup();
+    unreviewed.sort_by(|a, b| a.spec_key.cmp(&b.spec_key));
+    unreviewed.dedup_by(|a, b| a.spec_key == b.spec_key);
     Ok(unreviewed)
 }
 

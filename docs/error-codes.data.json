@@ -375,6 +375,12 @@
       "exit_code": null
     },
     {
+      "name": "WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT",
+      "category": "Install lifecycle",
+      "description": "A dependency's lifecycle script matched a dangerous-shape heuristic (curl|sh, eval+atob, credential-file read, secret-env exfil, exfil endpoint, bare-IP HTTP). Advisory only; the `allowBuilds` allowlist still gates execution. Inspect the script before approving the build.",
+      "exit_code": null
+    },
+    {
       "name": "WARN_AUBE_WINDOWS_JOB_OBJECT_UNAVAILABLE",
       "category": "Install lifecycle",
       "description": "Windows: couldn't create or assign a kill-on-job-close job object for a lifecycle script. The script still runs, but on abort/failure its grandchildren (node-gyp / MSBuild / node) may be orphaned. Usually caused by a restrictive parent job or enterprise policy.",
