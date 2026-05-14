@@ -23,6 +23,11 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 tracing = { workspace = true }
+# content_sniff.rs compiles a fixed set of patterns once via OnceLock
+# and matches them against dependency lifecycle script bodies. Already
+# in the dep graph transitively via pluralizer + yamlpatch — adding as
+# a direct dep keeps the workspace honest about who actually uses it.
+regex = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = { workspace = true }

@@ -121,6 +121,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 log = "0.4"
 
+# Pattern matching. Used by aube-scripts/src/content_sniff.rs to detect
+# dangerous shapes (curl|sh, eval+atob, secret-env exfil, webhook
+# endpoints, …) in dependency lifecycle script bodies before the user
+# is prompted to allow them. Already a transitive via pluralizer +
+# yamlpatch, so adding as a direct dep here is free at compile time.
+regex = "1"
+
 # Archive extraction
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
 tar = "0.4"
