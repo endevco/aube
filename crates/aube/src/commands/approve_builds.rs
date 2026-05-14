@@ -387,8 +387,8 @@ mod tests {
             hook: "postinstall",
         }];
         assert_eq!(
-            format_picker_label("lodass", "1.0.0", &s),
-            "lodass@1.0.0  ⚠ suspicious: curl|sh"
+            format_picker_label("lodash", "1.0.0", &s),
+            "lodash@1.0.0  ⚠ suspicious: curl|sh"
         );
     }
 

