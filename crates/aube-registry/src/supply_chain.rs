@@ -45,10 +45,18 @@ const NPM_DOWNLOADS_BASE: &str = "https://api.npmjs.org/downloads/point/last-wee
 /// One malicious-package advisory hit. We surface the OSV id and the
 /// candidate package name; the caller composes a link of the form
 /// `https://osv.dev/vulnerability/{id}`.
+///
+/// `version` is populated by the post-resolve probes
+/// ([`fetch_malicious_advisories_versioned`] and
+/// [`crate::osv_mirror::OsvMirror::lookup_advisories_versioned`])
+/// where each name is paired with a resolved version. The pre-resolve
+/// `aube add` name-gate leaves it `None` because no resolver has run
+/// yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaliciousAdvisory {
     pub package: String,
     pub advisory_id: String,
+    pub version: Option<String>,
 }
 
 /// Errors raised by the supply-chain probes. Distinct from
@@ -76,6 +84,12 @@ pub enum SupplyChainError {
 #[derive(Debug, serde::Serialize)]
 struct OsvQuery<'a> {
     package: OsvPackage<'a>,
+    /// Resolved version. Omitted (`None`) by the pre-resolve
+    /// `aube add` name-gate; populated by the post-resolve
+    /// transitive gate so OSV can filter advisories down to those
+    /// that actually affect the version the resolver picked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<&'a str>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -133,6 +147,12 @@ pub fn build_probe_client() -> Result<reqwest::Client, SupplyChainError> {
 /// are usually malicious in every published version, and we
 /// haven't run the resolver yet when this fires.
 ///
+/// Use [`fetch_malicious_advisories_versioned`] for post-resolve
+/// transitive checks where each name has a resolved version —
+/// otherwise a version-specific compromise (e.g. the Sep 2025
+/// shai-hulud worm that affected `ansi-regex@6.2.1` only) would
+/// collapse into a name-level block of every published release.
+///
 /// Returns the subset of input names that hit a `MAL-*` advisory.
 /// An `Err` is a fetch / decode / truncated-response failure — the
 /// caller decides whether to surface it (`advisoryCheck=required`)
@@ -156,6 +176,32 @@ pub async fn fetch_malicious_advisories(
     Ok(hits)
 }
 
+/// Version-aware sibling of [`fetch_malicious_advisories`] for the
+/// post-resolve transitive gate. Each pair becomes an OSV query that
+/// includes both `package.name` and `version`, so a `MAL-*` advisory
+/// only surfaces when it actually covers the resolved version.
+///
+/// Why this matters: the Sep 2025 shai-hulud worm compromised
+/// specific versions of widely-used names (`ansi-regex@6.2.1`,
+/// `strip-ansi@7.1.1`, etc.). The name-only query treats every
+/// release of those packages as malicious, which transitively
+/// breaks every install that pulls in an older, untouched version
+/// of the same name. Including the version flips OSV's filter on
+/// so only the actually-compromised pair fires.
+pub async fn fetch_malicious_advisories_versioned(
+    client: &reqwest::Client,
+    pairs: &[(String, String)],
+) -> Result<Vec<MaliciousAdvisory>, SupplyChainError> {
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut hits = Vec::new();
+    for chunk in pairs.chunks(OSV_BATCH_LIMIT) {
+        hits.extend(fetch_malicious_advisories_versioned_chunk(client, chunk).await?);
+    }
+    Ok(hits)
+}
+
 async fn fetch_malicious_advisories_chunk(
     client: &reqwest::Client,
     names: &[String],
@@ -168,10 +214,40 @@ async fn fetch_malicious_advisories_chunk(
                     name: n.as_str(),
                     ecosystem: "npm",
                 },
+                version: None,
             })
             .collect(),
     };
-    let resp = client.post(OSV_ENDPOINT).json(&body).send().await?;
+    let parsed = post_osv_batch(client, &body, names.len()).await?;
+    Ok(extract_malicious(names, &parsed))
+}
+
+async fn fetch_malicious_advisories_versioned_chunk(
+    client: &reqwest::Client,
+    pairs: &[(String, String)],
+) -> Result<Vec<MaliciousAdvisory>, SupplyChainError> {
+    let body = OsvBatchRequest {
+        queries: pairs
+            .iter()
+            .map(|(name, version)| OsvQuery {
+                package: OsvPackage {
+                    name: name.as_str(),
+                    ecosystem: "npm",
+                },
+                version: Some(version.as_str()),
+            })
+            .collect(),
+    };
+    let parsed = post_osv_batch(client, &body, pairs.len()).await?;
+    Ok(extract_malicious_versioned(pairs, &parsed))
+}
+
+async fn post_osv_batch(
+    client: &reqwest::Client,
+    body: &OsvBatchRequest<'_>,
+    expected: usize,
+) -> Result<OsvBatchResponse, SupplyChainError> {
+    let resp = client.post(OSV_ENDPOINT).json(body).send().await?;
     if !resp.status().is_success() {
         return Err(SupplyChainError::Status(resp.status()));
     }
@@ -179,16 +255,16 @@ async fn fetch_malicious_advisories_chunk(
     let parsed: OsvBatchResponse = serde_json::from_slice(&bytes)?;
     // Enforce the OSV `results[i] ↔ queries[i]` parity contract.
     // A short response is treated as a probe failure (not "no
-    // advisories") so the trailing names aren't silently skipped —
+    // advisories") so the trailing entries aren't silently skipped —
     // the `advisoryCheck` policy then decides whether to warn-and-
     // continue or fail closed.
-    if parsed.results.len() != names.len() {
+    if parsed.results.len() != expected {
         return Err(SupplyChainError::TruncatedOsvResponse {
-            expected: names.len(),
+            expected,
             got: parsed.results.len(),
         });
     }
-    Ok(extract_malicious(names, &parsed))
+    Ok(parsed)
 }
 
 fn extract_malicious(names: &[String], resp: &OsvBatchResponse) -> Vec<MaliciousAdvisory> {
@@ -205,6 +281,26 @@ fn extract_malicious(names: &[String], resp: &OsvBatchResponse) -> Vec<Malicious
                 hits.push(MaliciousAdvisory {
                     package: name.clone(),
                     advisory_id: vuln.id.clone(),
+                    version: None,
+                });
+            }
+        }
+    }
+    hits
+}
+
+fn extract_malicious_versioned(
+    pairs: &[(String, String)],
+    resp: &OsvBatchResponse,
+) -> Vec<MaliciousAdvisory> {
+    let mut hits = Vec::new();
+    for ((name, version), result) in pairs.iter().zip(resp.results.iter()) {
+        for vuln in &result.vulns {
+            if vuln.id.starts_with("MAL-") {
+                hits.push(MaliciousAdvisory {
+                    package: name.clone(),
+                    advisory_id: vuln.id.clone(),
+                    version: Some(version.clone()),
                 });
             }
         }
@@ -303,6 +399,28 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].package, "evil-pkg");
         assert_eq!(hits[0].advisory_id, "MAL-2026-3652");
+        assert_eq!(hits[0].version, None);
+    }
+
+    #[test]
+    fn extract_malicious_versioned_carries_resolved_version() {
+        // The versioned path pairs each query with the resolved
+        // version, so callers can show `name@version` in the refusal
+        // message and reason about per-version compromise (e.g. the
+        // ansi-regex@6.2.1-only shai-hulud advisory).
+        let pairs = vec![("ansi-regex".to_string(), "6.2.1".to_string())];
+        let resp = OsvBatchResponse {
+            results: vec![OsvResult {
+                vulns: vec![OsvVuln {
+                    id: "MAL-2025-46966".to_string(),
+                }],
+            }],
+        };
+        let hits = extract_malicious_versioned(&pairs, &resp);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].package, "ansi-regex");
+        assert_eq!(hits[0].version.as_deref(), Some("6.2.1"));
+        assert_eq!(hits[0].advisory_id, "MAL-2025-46966");
     }
 
     #[test]

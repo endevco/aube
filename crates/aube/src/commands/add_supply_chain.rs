@@ -31,7 +31,8 @@ use aube_codes::warnings::{
 };
 use aube_registry::osv_mirror::OsvMirror;
 use aube_registry::supply_chain::{
-    DownloadCount, advisory_url, fetch_malicious_advisories, fetch_weekly_downloads_with,
+    DownloadCount, MaliciousAdvisory, advisory_url, fetch_malicious_advisories,
+    fetch_malicious_advisories_versioned, fetch_weekly_downloads_with,
 };
 use aube_settings::resolved::{AdvisoryCheck, AdvisoryCheckOnInstall};
 use miette::miette;
@@ -130,7 +131,7 @@ pub async fn run_gates(
 /// `advisory_check` is the caller's already-upgraded policy
 /// (paranoid → `Required`). Both gates internally short-circuit
 /// on `Off`, but skip the call entirely so an empty graph
-/// doesn't get a useless `transitive_registry_names` walk.
+/// doesn't get a useless `transitive_registry_pairs` walk.
 pub async fn run_post_resolve_osv_routing(
     cwd: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
@@ -176,8 +177,8 @@ pub async fn run_transitive_osv_gate(
     if matches!(policy, AdvisoryCheck::Off) {
         return Ok(());
     }
-    let names = transitive_registry_names(cwd, graph);
-    if names.is_empty() {
+    let pairs = transitive_registry_pairs(cwd, graph);
+    if pairs.is_empty() {
         return Ok(());
     }
     let client = match aube_registry::supply_chain::build_probe_client() {
@@ -196,7 +197,7 @@ pub async fn run_transitive_osv_gate(
             return Ok(());
         }
     };
-    osv_gate(&client, &names, policy).await
+    osv_gate_versioned(&client, &pairs, policy).await
 }
 
 /// Mirror-backed transitive OSV `MAL-*` check for plain reinstalls.
@@ -227,8 +228,8 @@ pub async fn run_transitive_osv_gate_via_mirror(
     if matches!(policy, AdvisoryCheckOnInstall::Off) {
         return Ok(());
     }
-    let names = transitive_registry_names(cwd, graph);
-    if names.is_empty() {
+    let pairs = transitive_registry_pairs(cwd, graph);
+    if pairs.is_empty() {
         return Ok(());
     }
     let Some(cache_dir) = aube_store::dirs::cache_dir() else {
@@ -283,7 +284,7 @@ pub async fn run_transitive_osv_gate_via_mirror(
         // data is empty and lookup is a no-op — the warning is
         // the only user-visible signal in that case.
     }
-    let hits = match mirror.lookup_advisories(&names) {
+    let hits = match mirror.lookup_advisories_versioned(&pairs) {
         Ok(hits) => hits,
         Err(e) => {
             tracing::warn!(
@@ -302,21 +303,14 @@ pub async fn run_transitive_osv_gate_via_mirror(
     if hits.is_empty() {
         return Ok(());
     }
-    let mut lines = vec!["refusing to install malicious package(s):".to_string()];
-    for hit in &hits {
-        lines.push(format!(
-            "  - {} ({}: {})",
-            hit.package,
-            hit.advisory_id,
-            advisory_url(&hit.advisory_id),
-        ));
-    }
-    lines.push(String::new());
-    lines.push("Set `advisoryCheckOnInstall = off` to bypass (not recommended).".to_string());
     Err(miette!(
         code = ERR_AUBE_MALICIOUS_PACKAGE,
         "{}",
-        lines.join("\n")
+        format_malicious_message(
+            "refusing to install malicious package(s):",
+            &hits,
+            "Set `advisoryCheckOnInstall = off` to bypass (not recommended).",
+        ),
     ))
 }
 
@@ -364,29 +358,36 @@ pub fn lockfile_has_new_picks(
         .any(|p| !prior_pairs.contains(&(p.registry_name(), p.version.as_str())))
 }
 
-/// Distinct public-npmjs registry names in `graph`, filtered to
-/// match the CLI-name gate's `registry_bound_names_for_supply_chain`
-/// shape so a scoped registry override (`@myorg:registry=...`) or a
-/// swapped default registry doesn't ship internal package names to
-/// OSV. Workspace / `link:` / `file:` entries drop out via
+/// Distinct public-npmjs `(registry_name, version)` pairs in
+/// `graph`, filtered to match the CLI-name gate's
+/// `registry_bound_names_for_supply_chain` shape so a scoped
+/// registry override (`@myorg:registry=...`) or a swapped default
+/// registry doesn't ship internal package names to OSV. Workspace /
+/// `link:` / `file:` entries drop out via
 /// `LockedPackage::local_source.is_none()`. Sorted + deduped so
 /// aliased entries (`{"my-alias": "npm:lodash@^4"}`) collapse onto
 /// their real registry name.
-fn transitive_registry_names(
+///
+/// Pairs (not just names) because the post-resolve OSV check
+/// needs to ask "is *this specific version* malicious?" — a
+/// name-only query collapses version-specific compromises (e.g.
+/// the Sep 2025 `ansi-regex@6.2.1` worm) into a permanent
+/// name-level block of every published release.
+fn transitive_registry_pairs(
     cwd: &std::path::Path,
     graph: &aube_lockfile::LockfileGraph,
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     let npm_config = aube_registry::config::NpmConfig::load(cwd);
-    let mut names: Vec<String> = graph
+    let mut pairs: Vec<(String, String)> = graph
         .packages
         .values()
         .filter(|pkg| pkg.local_source.is_none())
-        .map(|pkg| pkg.registry_name().to_string())
-        .filter(|name| npm_config.is_public_npmjs(name))
+        .filter(|pkg| npm_config.is_public_npmjs(pkg.registry_name()))
+        .map(|pkg| (pkg.registry_name().to_string(), pkg.version.clone()))
         .collect();
-    names.sort();
-    names.dedup();
-    names
+    pairs.sort();
+    pairs.dedup();
+    pairs
 }
 
 /// Parse `allowedUnpopularPackages` entries into compiled
@@ -413,36 +414,51 @@ async fn osv_gate(
     if matches!(policy, AdvisoryCheck::Off) {
         return Ok(());
     }
-    match fetch_malicious_advisories(client, names).await {
+    handle_osv_result(
+        fetch_malicious_advisories(client, names).await,
+        policy,
+        "refusing to add malicious package(s):",
+    )
+}
+
+async fn osv_gate_versioned(
+    client: &reqwest::Client,
+    pairs: &[(String, String)],
+    policy: AdvisoryCheck,
+) -> miette::Result<()> {
+    if matches!(policy, AdvisoryCheck::Off) {
+        return Ok(());
+    }
+    handle_osv_result(
+        fetch_malicious_advisories_versioned(client, pairs).await,
+        policy,
+        "refusing to install malicious package(s):",
+    )
+}
+
+fn handle_osv_result(
+    result: Result<Vec<MaliciousAdvisory>, aube_registry::supply_chain::SupplyChainError>,
+    policy: AdvisoryCheck,
+    refusal_header: &str,
+) -> miette::Result<()> {
+    match result {
         Ok(hits) if hits.is_empty() => Ok(()),
-        Ok(hits) => {
-            // First hit drives the error message; subsequent hits are
-            // chained in for visibility. Confirmed-malicious is a hard
-            // block — we don't care whether the user is interactive.
-            let mut lines = vec!["refusing to add malicious package(s):".to_string()];
-            for hit in &hits {
-                lines.push(format!(
-                    "  - {} ({}: {})",
-                    hit.package,
-                    hit.advisory_id,
-                    advisory_url(&hit.advisory_id),
-                ));
-            }
-            lines.push(String::new());
-            lines.push("Set `advisoryCheck = off` to bypass (not recommended).".to_string());
-            Err(miette!(
-                code = ERR_AUBE_MALICIOUS_PACKAGE,
-                "{}",
-                lines.join("\n")
-            ))
-        }
+        Ok(hits) => Err(miette!(
+            code = ERR_AUBE_MALICIOUS_PACKAGE,
+            "{}",
+            format_malicious_message(
+                refusal_header,
+                &hits,
+                "Set `advisoryCheck = off` to bypass (not recommended).",
+            ),
+        )),
         Err(e) => {
             tracing::warn!(
                 code = WARN_AUBE_ADVISORY_CHECK_FAILED,
                 "OSV advisory check failed: {e}"
             );
-            // `AdvisoryCheck::Off` short-circuits at the top of
-            // `osv_gate` and never reaches this branch — only the
+            // `AdvisoryCheck::Off` short-circuits at the top of the
+            // caller and never reaches this branch — only the
             // `On` / `Required` split needs handling here.
             if matches!(policy, AdvisoryCheck::Required) {
                 return Err(miette!(
@@ -453,6 +469,29 @@ async fn osv_gate(
             Ok(())
         }
     }
+}
+
+/// Format the user-facing refusal message. Versioned hits surface
+/// as `name@version (MAL-…)`; name-only hits (the pre-resolve `aube
+/// add` gate) surface as `name (MAL-…)` since no version was
+/// queried.
+fn format_malicious_message(header: &str, hits: &[MaliciousAdvisory], footer: &str) -> String {
+    let mut lines = vec![header.to_string()];
+    for hit in hits {
+        let display_name = match &hit.version {
+            Some(v) => format!("{}@{}", hit.package, v),
+            None => hit.package.clone(),
+        };
+        lines.push(format!(
+            "  - {} ({}: {})",
+            display_name,
+            hit.advisory_id,
+            advisory_url(&hit.advisory_id),
+        ));
+    }
+    lines.push(String::new());
+    lines.push(footer.to_string());
+    lines.join("\n")
 }
 
 async fn downloads_gate(
@@ -622,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn transitive_registry_names_skips_local_source_entries() {
+    fn transitive_registry_pairs_skips_local_source_entries() {
         // `file:` / `link:` / workspace edges resolve outside the
         // public registry — OSV has nothing to say about them, and
         // forwarding the workspace package name to OSV could leak
@@ -641,12 +680,12 @@ mod tests {
             ..Default::default()
         };
         let tmp = tempfile::tempdir().expect("tempdir");
-        let names = transitive_registry_names(tmp.path(), &graph);
-        assert_eq!(names, vec!["lodash".to_string()]);
+        let pairs = transitive_registry_pairs(tmp.path(), &graph);
+        assert_eq!(pairs, vec![("lodash".to_string(), "4.17.21".to_string())],);
     }
 
     #[test]
-    fn transitive_registry_names_dedups_by_registry_name() {
+    fn transitive_registry_pairs_dedups_by_registry_name_and_version() {
         // Alias entries (`{"my-alias": "npm:lodash@^4"}`) and the
         // real package both report under `registry_name() = "lodash"`.
         // The mirror lookup shouldn't see duplicates — and shouldn't
@@ -665,8 +704,65 @@ mod tests {
             ..Default::default()
         };
         let tmp = tempfile::tempdir().expect("tempdir");
-        let names = transitive_registry_names(tmp.path(), &graph);
-        assert_eq!(names, vec!["lodash".to_string()]);
+        let pairs = transitive_registry_pairs(tmp.path(), &graph);
+        assert_eq!(pairs, vec![("lodash".to_string(), "4.17.21".to_string())],);
+    }
+
+    #[test]
+    fn transitive_registry_pairs_keeps_distinct_versions_of_one_name() {
+        // Two pinned versions of the same name (common when a peer
+        // pulls in an older copy) must both reach OSV — checking
+        // only one would leave the other's per-version compromise
+        // status unanswered.
+        use std::collections::BTreeMap;
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            "ansi-regex@3.0.1".to_string(),
+            registry_pkg("ansi-regex", "3.0.1"),
+        );
+        packages.insert(
+            "ansi-regex@6.2.1".to_string(),
+            registry_pkg("ansi-regex", "6.2.1"),
+        );
+        let graph = aube_lockfile::LockfileGraph {
+            packages,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pairs = transitive_registry_pairs(tmp.path(), &graph);
+        assert_eq!(
+            pairs,
+            vec![
+                ("ansi-regex".to_string(), "3.0.1".to_string()),
+                ("ansi-regex".to_string(), "6.2.1".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn format_malicious_message_includes_version_when_present() {
+        // Versioned hits should surface as `name@version` so the
+        // user can see which pinned version OSV flagged. The
+        // pre-resolve gate (no version) keeps the bare name shape
+        // it had before.
+        let hits = vec![
+            MaliciousAdvisory {
+                package: "ansi-regex".to_string(),
+                advisory_id: "MAL-2025-46966".to_string(),
+                version: Some("6.2.1".to_string()),
+            },
+            MaliciousAdvisory {
+                package: "evil".to_string(),
+                advisory_id: "MAL-9999".to_string(),
+                version: None,
+            },
+        ];
+        let msg = format_malicious_message("header:", &hits, "footer.");
+        assert!(msg.contains("ansi-regex@6.2.1"));
+        assert!(msg.contains("MAL-2025-46966"));
+        assert!(msg.contains("- evil ("), "name-only hit keeps bare name");
+        assert!(msg.starts_with("header:"));
+        assert!(msg.ends_with("footer."));
     }
 
     #[test]

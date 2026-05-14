@@ -14,9 +14,11 @@
 //!   `https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip`.
 //!   Kept on disk so we can rebuild the derived index without
 //!   re-downloading when the on-disk index format changes.
-//! - `index.json` — derived `{name → [advisory_id]}` map for
+//! - `index.json` — derived `{name → [{id, versions}]}` map for
 //!   `MAL-*` advisories only, plus the source ETag and a fetched
-//!   timestamp. Sub-MB, loads in milliseconds.
+//!   timestamp. Per-advisory `versions` lets the install-time
+//!   gate filter to the resolver-picked version rather than
+//!   name-level block every release. Sub-MB, loads in milliseconds.
 //!
 //! Refresh policy: lazy and ETag-conditional. A `refresh_if_stale`
 //! call older than `max_age` performs `GET … If-None-Match: <etag>`;
@@ -84,7 +86,7 @@ pub enum MirrorError {
     NotInitialized,
 }
 
-/// In-memory `name → [advisory_id]` lookup over the most recently
+/// In-memory `name → [AdvisoryEntry]` lookup over the most recently
 /// loaded `MAL-*` set, plus the metadata needed to decide whether
 /// the next refresh round-trip needs to fetch or just revalidate.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -102,16 +104,38 @@ struct IndexFile {
     #[serde(default = "default_format")]
     format: u32,
     /// `MAL-*` advisories per npm package name. A single name can
-    /// carry multiple advisory IDs across the dataset.
+    /// carry multiple advisory IDs across the dataset; each entry
+    /// records the affected versions so [`OsvMirror::lookup_advisories_versioned`]
+    /// can filter to the resolver's actual pick.
     #[serde(default)]
-    advisories: HashMap<String, Vec<String>>,
+    advisories: HashMap<String, Vec<AdvisoryEntry>>,
+}
+
+/// One `MAL-*` advisory mapped to the exact npm versions it covers.
+///
+/// `versions` is the union of `affected[*].versions` for that
+/// (name, advisory) pair across the OSV dump. An empty list means
+/// the advisory didn't enumerate versions explicitly (range-only,
+/// or schema variant) — [`OsvMirror::lookup_advisories_versioned`]
+/// treats that as "affects every version" so we fail-closed on
+/// unknown shapes rather than silently skipping a malicious entry.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AdvisoryEntry {
+    id: String,
+    #[serde(default)]
+    versions: Vec<String>,
 }
 
 fn default_format() -> u32 {
-    1
+    2
 }
 
-const CURRENT_FORMAT: u32 = 1;
+/// Bumped to `2` when per-advisory `versions` were added so the
+/// `MAL-*` mirror could filter by resolver-picked version. A v1
+/// index loads as empty via [`OsvMirror::load_or_default`], which
+/// forces a one-time re-extract from the cached `all.zip` (or a
+/// fresh fetch if that's gone too).
+const CURRENT_FORMAT: u32 = 2;
 
 /// Materialized OSV mirror handle.
 ///
@@ -230,9 +254,12 @@ impl OsvMirror {
     }
 
     /// Look up `names` against the loaded index, returning every
-    /// `(name, MAL-*)` hit. Mirrors the contract of
-    /// [`crate::supply_chain::fetch_malicious_advisories`] so the
-    /// install-time gate can swap one for the other.
+    /// `(name, MAL-*)` hit regardless of version. Kept for tests
+    /// and for callers that genuinely want a name-level check; the
+    /// install-time gate uses [`Self::lookup_advisories_versioned`]
+    /// instead so a version-specific compromise (e.g. the Sep 2025
+    /// `ansi-regex@6.2.1` worm) doesn't collapse into a name-level
+    /// block of every published release.
     ///
     /// Requires a successful [`refresh_if_stale`] earlier in the
     /// process; otherwise returns [`MirrorError::NotInitialized`].
@@ -245,14 +272,53 @@ impl OsvMirror {
         let index = self.index.get().ok_or(MirrorError::NotInitialized)?;
         let mut hits = Vec::new();
         for name in names {
-            let Some(ids) = index.advisories.get(name) else {
+            let Some(entries) = index.advisories.get(name) else {
                 continue;
             };
-            for id in ids {
+            for entry in entries {
                 hits.push(MaliciousAdvisory {
                     package: name.clone(),
-                    advisory_id: id.clone(),
+                    advisory_id: entry.id.clone(),
+                    version: None,
                 });
+            }
+        }
+        Ok(hits)
+    }
+
+    /// Version-aware sibling of [`Self::lookup_advisories`] for the
+    /// post-resolve install-time gate. Each `(name, version)` pair
+    /// only hits when the resolver-picked version is in the
+    /// advisory's `affected.versions` list.
+    ///
+    /// Empty `versions` on an advisory entry (range-only schema or
+    /// missing data) is treated as "affects every version" — same
+    /// fail-closed default as the index builder records, so an
+    /// unparseable OSV schema doesn't silently skip a malicious
+    /// package.
+    ///
+    /// Requires a successful [`refresh_if_stale`] earlier in the
+    /// process; otherwise returns [`MirrorError::NotInitialized`].
+    pub fn lookup_advisories_versioned(
+        &self,
+        pairs: &[(String, String)],
+    ) -> Result<Vec<MaliciousAdvisory>, MirrorError> {
+        let index = self.index.get().ok_or(MirrorError::NotInitialized)?;
+        let mut hits = Vec::new();
+        for (name, version) in pairs {
+            let Some(entries) = index.advisories.get(name) else {
+                continue;
+            };
+            for entry in entries {
+                let affects =
+                    entry.versions.is_empty() || entry.versions.iter().any(|v| v == version);
+                if affects {
+                    hits.push(MaliciousAdvisory {
+                        package: name.clone(),
+                        advisory_id: entry.id.clone(),
+                        version: Some(version.clone()),
+                    });
+                }
             }
         }
         Ok(hits)
@@ -362,14 +428,23 @@ async fn fetch_and_extract_from(
 }
 
 /// Walk the zip dump, parse each `MAL-*.json` advisory, and emit a
-/// `name → [id]` map keyed on the per-advisory npm package names.
+/// `name → [AdvisoryEntry]` map keyed on the per-advisory npm
+/// package names. Each entry carries the union of affected
+/// `versions` for that (name, advisory) pair so
+/// [`OsvMirror::lookup_advisories_versioned`] can filter to the
+/// resolver-picked version.
+///
 /// Non-`MAL-*` entries (CVE-*, GHSA-*) are skipped — the install-
 /// time gate is malicious-package-only, matching the live OSV API
 /// check the add-time gate already runs.
-fn build_index_from_zip(bytes: &[u8]) -> Result<HashMap<String, Vec<String>>, MirrorError> {
+fn build_index_from_zip(bytes: &[u8]) -> Result<HashMap<String, Vec<AdvisoryEntry>>, MirrorError> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    // Per (name, advisory_id) we collect the union of affected
+    // versions across every `affected` block. Same advisory id can
+    // appear multiple times against one name if the dump lists
+    // separate version ranges; merging keeps lookup simple.
+    let mut acc: HashMap<(String, String), Vec<String>> = HashMap::new();
     for i in 0..archive.len() {
         // `by_index` is the only way to iterate the central
         // directory in order without re-cloning the archive
@@ -404,12 +479,21 @@ fn build_index_from_zip(bytes: &[u8]) -> Result<HashMap<String, Vec<String>>, Mi
             if name.is_empty() {
                 continue;
             }
-            out.entry(name).or_default().push(adv.id.clone());
+            acc.entry((name, adv.id.clone()))
+                .or_default()
+                .extend(affected.versions);
         }
     }
-    for ids in out.values_mut() {
-        ids.sort();
-        ids.dedup();
+    let mut out: HashMap<String, Vec<AdvisoryEntry>> = HashMap::new();
+    for ((name, id), mut versions) in acc {
+        versions.sort();
+        versions.dedup();
+        out.entry(name)
+            .or_default()
+            .push(AdvisoryEntry { id, versions });
+    }
+    for entries in out.values_mut() {
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
     }
     Ok(out)
 }
@@ -432,6 +516,14 @@ struct OsvAdvisory {
 #[derive(Debug, Deserialize)]
 struct OsvAffected {
     package: OsvPackage,
+    /// Exact-version list. Populated by the npm `MAL-*` advisories
+    /// (Open Source Insights / ghsa-malware), which track specific
+    /// compromised releases rather than semver ranges. Absent /
+    /// empty means the schema variant we can't filter on — see
+    /// [`OsvMirror::lookup_advisories_versioned`] for the
+    /// fail-closed handling.
+    #[serde(default)]
+    versions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -583,6 +675,13 @@ mod tests {
         assert!(!is_mal_filename("README.md"));
     }
 
+    fn entry(id: &str, versions: &[&str]) -> AdvisoryEntry {
+        AdvisoryEntry {
+            id: id.to_string(),
+            versions: versions.iter().map(|v| (*v).to_string()).collect(),
+        }
+    }
+
     #[test]
     fn build_index_extracts_only_npm_mal_advisories() {
         // Three entries: one MAL-* for npm (should keep), one
@@ -591,7 +690,7 @@ mod tests {
         let zip = write_zip(&[
             (
                 "MAL-2024-0001.json",
-                r#"{"id":"MAL-2024-0001","affected":[{"package":{"name":"lodashh","ecosystem":"npm"}}]}"#,
+                r#"{"id":"MAL-2024-0001","affected":[{"package":{"name":"lodashh","ecosystem":"npm"},"versions":["1.2.3"]}]}"#,
             ),
             (
                 "MAL-2024-0002.json",
@@ -604,34 +703,56 @@ mod tests {
         ]);
         let idx = build_index_from_zip(&zip).expect("parse ok");
         assert_eq!(idx.len(), 1);
-        assert_eq!(idx["lodashh"], vec!["MAL-2024-0001"]);
+        assert_eq!(idx["lodashh"], vec![entry("MAL-2024-0001", &["1.2.3"])]);
     }
 
     #[test]
     fn build_index_collects_multiple_ids_per_name() {
         // Same package surfacing in two different MAL-* advisories
-        // should produce a single key with both IDs (sorted +
-        // deduped). Two separate authors flagging the same squat
-        // is a normal real-world shape.
+        // should produce a single key with both IDs (sorted by id).
+        // Two separate authors flagging the same squat is a normal
+        // real-world shape.
         let zip = write_zip(&[
             (
                 "MAL-2024-0001.json",
-                r#"{"id":"MAL-2024-0001","affected":[{"package":{"name":"evil","ecosystem":"npm"}}]}"#,
+                r#"{"id":"MAL-2024-0001","affected":[{"package":{"name":"evil","ecosystem":"npm"},"versions":["1.0.0"]}]}"#,
             ),
             (
                 "MAL-2024-0002.json",
-                r#"{"id":"MAL-2024-0002","affected":[{"package":{"name":"evil","ecosystem":"npm"}}]}"#,
+                r#"{"id":"MAL-2024-0002","affected":[{"package":{"name":"evil","ecosystem":"npm"},"versions":["2.0.0"]}]}"#,
             ),
             (
                 "MAL-2024-0003.json",
-                r#"{"id":"MAL-2024-0003","affected":[{"package":{"name":"evil","ecosystem":"npm"}},{"package":{"name":"evil","ecosystem":"npm"}}]}"#,
+                r#"{"id":"MAL-2024-0003","affected":[{"package":{"name":"evil","ecosystem":"npm"},"versions":["3.0.0"]},{"package":{"name":"evil","ecosystem":"npm"},"versions":["3.0.0"]}]}"#,
             ),
         ]);
         let idx = build_index_from_zip(&zip).expect("parse ok");
         assert_eq!(
             idx["evil"],
-            vec!["MAL-2024-0001", "MAL-2024-0002", "MAL-2024-0003"],
-            "ids sorted + deduped"
+            vec![
+                entry("MAL-2024-0001", &["1.0.0"]),
+                entry("MAL-2024-0002", &["2.0.0"]),
+                entry("MAL-2024-0003", &["3.0.0"]),
+            ],
+            "entries sorted by id, versions deduped within an id"
+        );
+    }
+
+    #[test]
+    fn build_index_merges_versions_across_affected_blocks() {
+        // One advisory listing the same name in two `affected`
+        // blocks with different versions: the per-(name, advisory)
+        // version list should be the union, sorted + deduped. The
+        // real OSV dump occasionally splits a multi-version
+        // compromise this way.
+        let zip = write_zip(&[(
+            "MAL-2024-0001.json",
+            r#"{"id":"MAL-2024-0001","affected":[{"package":{"name":"evil","ecosystem":"npm"},"versions":["1.0.0","1.0.1"]},{"package":{"name":"evil","ecosystem":"npm"},"versions":["1.0.1","1.0.2"]}]}"#,
+        )]);
+        let idx = build_index_from_zip(&zip).expect("parse ok");
+        assert_eq!(
+            idx["evil"],
+            vec![entry("MAL-2024-0001", &["1.0.0", "1.0.1", "1.0.2"])],
         );
     }
 
@@ -647,7 +768,7 @@ mod tests {
                 etag: None,
                 fetched_at: Some(now_rfc3339()),
                 format: CURRENT_FORMAT,
-                advisories: HashMap::from([("evil".to_string(), vec!["MAL-X".to_string()])]),
+                advisories: HashMap::from([("evil".to_string(), vec![entry("MAL-X", &["1.0.0"])])]),
             })
             .unwrap();
         let hits = mirror
@@ -668,7 +789,10 @@ mod tests {
                 format: CURRENT_FORMAT,
                 advisories: HashMap::from([(
                     "evil".to_string(),
-                    vec!["MAL-2024-0001".to_string(), "MAL-2024-0002".to_string()],
+                    vec![
+                        entry("MAL-2024-0001", &["1.0.0"]),
+                        entry("MAL-2024-0002", &["2.0.0"]),
+                    ],
                 )]),
             })
             .unwrap();
@@ -678,6 +802,60 @@ mod tests {
         assert_eq!(hits[0].package, "evil");
         assert_eq!(hits[0].advisory_id, "MAL-2024-0001");
         assert_eq!(hits[1].advisory_id, "MAL-2024-0002");
+    }
+
+    #[test]
+    fn lookup_versioned_filters_to_resolver_picked_version() {
+        // The regression that triggered the per-version split: an
+        // advisory covers only `6.2.1`, but an install pulls in
+        // `3.0.1` transitively. The mirror must NOT report a hit
+        // on the clean version.
+        let tmp = tempdir().unwrap();
+        let mirror = OsvMirror::open(tmp.path());
+        mirror
+            .index
+            .set(IndexFile {
+                etag: None,
+                fetched_at: Some(now_rfc3339()),
+                format: CURRENT_FORMAT,
+                advisories: HashMap::from([(
+                    "ansi-regex".to_string(),
+                    vec![entry("MAL-2025-46966", &["6.2.1"])],
+                )]),
+            })
+            .unwrap();
+        let clean = mirror
+            .lookup_advisories_versioned(&[("ansi-regex".to_string(), "3.0.1".to_string())])
+            .unwrap();
+        assert!(clean.is_empty(), "3.0.1 predates the compromise");
+        let compromised = mirror
+            .lookup_advisories_versioned(&[("ansi-regex".to_string(), "6.2.1".to_string())])
+            .unwrap();
+        assert_eq!(compromised.len(), 1);
+        assert_eq!(compromised[0].version.as_deref(), Some("6.2.1"));
+    }
+
+    #[test]
+    fn lookup_versioned_empty_versions_blocks_every_version() {
+        // Fail-closed default: an advisory entry with no version
+        // data (range-only schema or missing field) must still
+        // report a hit so the gate doesn't silently skip an
+        // unparseable malicious entry.
+        let tmp = tempdir().unwrap();
+        let mirror = OsvMirror::open(tmp.path());
+        mirror
+            .index
+            .set(IndexFile {
+                etag: None,
+                fetched_at: Some(now_rfc3339()),
+                format: CURRENT_FORMAT,
+                advisories: HashMap::from([("evil".to_string(), vec![entry("MAL-X", &[])])]),
+            })
+            .unwrap();
+        let hits = mirror
+            .lookup_advisories_versioned(&[("evil".to_string(), "9.9.9".to_string())])
+            .unwrap();
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]
@@ -750,9 +928,10 @@ mod tests {
 
     #[test]
     fn load_or_default_ignores_stale_format() {
-        // A `format` field bumped past CURRENT_FORMAT (e.g. an
-        // upgrade-then-downgrade) must NOT be treated as the new
-        // schema — fall back to empty so the next refresh
+        // A `format` field that doesn't match CURRENT_FORMAT (an
+        // upgrade-then-downgrade, or the v1 → v2 transition that
+        // added per-advisory versions) must NOT be treated as the
+        // current schema — fall back to empty so the next refresh
         // rebuilds from `all.zip` against the current shape.
         let tmp = tempdir().unwrap();
         let mirror = OsvMirror::open(tmp.path());
@@ -760,7 +939,7 @@ mod tests {
             etag: None,
             fetched_at: Some(now_rfc3339()),
             format: 99,
-            advisories: HashMap::from([("evil".to_string(), vec!["MAL-X".to_string()])]),
+            advisories: HashMap::from([("evil".to_string(), vec![entry("MAL-X", &["1.0.0"])])]),
         };
         std::fs::create_dir_all(&mirror.root).unwrap();
         std::fs::write(mirror.index_path(), serde_json::to_vec(&stale).unwrap()).unwrap();
@@ -820,7 +999,10 @@ mod tests {
             etag: Some("\"v0\"".to_string()),
             fetched_at: Some("2000-01-01T00:00:00Z".to_string()),
             format: CURRENT_FORMAT,
-            advisories: HashMap::from([("evilpkg".to_string(), vec!["MAL-2024-9999".to_string()])]),
+            advisories: HashMap::from([(
+                "evilpkg".to_string(),
+                vec![entry("MAL-2024-9999", &["1.0.0"])],
+            )]),
         };
         std::fs::write(mirror.index_path(), serde_json::to_vec(&prior).unwrap()).unwrap();
 
@@ -902,7 +1084,7 @@ mod tests {
         let server = MockServer::start().await;
         let zip = write_zip(&[(
             "MAL-2024-9999.json",
-            r#"{"id":"MAL-2024-9999","affected":[{"package":{"name":"evilpkg","ecosystem":"npm"}}]}"#,
+            r#"{"id":"MAL-2024-9999","affected":[{"package":{"name":"evilpkg","ecosystem":"npm"},"versions":["1.0.0"]}]}"#,
         )]);
         // First request: full body + ETag.
         Mock::given(method("GET"))
@@ -943,7 +1125,10 @@ mod tests {
             .await
             .unwrap();
         let advisories = build_index_from_zip(&body).expect("parse ok");
-        assert_eq!(advisories["evilpkg"], vec!["MAL-2024-9999"]);
+        assert_eq!(
+            advisories["evilpkg"],
+            vec![entry("MAL-2024-9999", &["1.0.0"])],
+        );
 
         // ETag-conditional follow-up: server returns 304, we keep
         // prior advisories and bump the timestamp.
