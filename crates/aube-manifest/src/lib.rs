@@ -532,6 +532,25 @@ impl PackageJson {
         out
     }
 
+    /// Extract Bun's top-level `patchedDependencies` as a map of
+    /// `name@version` -> patch file path (relative to the project root).
+    /// Empty when the field is missing or malformed.
+    pub fn bun_patched_dependencies(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        if let Some(map) = self
+            .extra
+            .get("patchedDependencies")
+            .and_then(|v| v.as_object())
+        {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+        out
+    }
+
     /// Extract `pnpm.patchedDependencies` / `aube.patchedDependencies`
     /// as a map of `name@version` -> patch file path (relative to the
     /// project root). Empty when the field is missing or malformed.
@@ -1742,6 +1761,24 @@ mod tests {
     fn trusted_dependencies_wrong_shape_returns_empty() {
         let p = parse(r#"{"trustedDependencies": {"esbuild": true}}"#);
         assert!(p.trusted_dependencies().is_empty());
+    }
+
+    #[test]
+    fn bun_patched_dependencies_reads_top_level_field() {
+        let p = parse(
+            r#"{
+                "patchedDependencies": {
+                    "is-number@7.0.0": "patches/is-number.patch",
+                    "ignored@1.0.0": false
+                }
+            }"#,
+        );
+        let got = p.bun_patched_dependencies();
+        assert_eq!(
+            got.get("is-number@7.0.0").unwrap(),
+            "patches/is-number.patch"
+        );
+        assert!(!got.contains_key("ignored@1.0.0"));
     }
 
     #[test]

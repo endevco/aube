@@ -2,9 +2,10 @@
 //! commands and the install-time patch application path.
 //!
 //! Patches are stored alongside the project (default `patches/`) and
-//! tracked in `package.json` under `pnpm.patchedDependencies` —
-//! `{ "name@version": "patches/name@version.patch" }`. We mirror pnpm's
-//! shape exactly so the field round-trips between the two tools.
+//! tracked as `{ "name@version": "patches/name@version.patch" }`.
+//! Sources are merged from Bun's top-level `patchedDependencies`,
+//! `pnpm.patchedDependencies` / `aube.patchedDependencies`, then
+//! workspace-yaml `patchedDependencies`, in that precedence order.
 
 use miette::{Context, IntoDiagnostic, Result, miette};
 use sha2::{Digest, Sha256};
@@ -150,6 +151,7 @@ pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
         let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
             .map_err(miette::Report::new)
             .wrap_err("failed to read package.json")?;
+        entries.extend(manifest.bun_patched_dependencies());
         entries.extend(manifest.pnpm_patched_dependencies());
     }
 
@@ -271,7 +273,9 @@ fn read_package_json_patched_dependencies(cwd: &Path) -> Result<BTreeMap<String,
     let manifest = aube_manifest::PackageJson::from_path(&manifest_path)
         .map_err(miette::Report::new)
         .wrap_err("failed to read package.json")?;
-    Ok(manifest.pnpm_patched_dependencies())
+    let mut out = manifest.bun_patched_dependencies();
+    out.extend(manifest.pnpm_patched_dependencies());
+    Ok(out)
 }
 
 /// Recursively copy `src` into `dst`, following file content but
@@ -374,6 +378,35 @@ mod tests {
             "should not introduce pnpm namespace, got:\n{manifest}"
         );
         assert!(manifest.contains("\"patchedDependencies\""));
+    }
+
+    #[test]
+    fn load_reads_bun_top_level_patched_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("patches")).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{
+  "patchedDependencies": {
+    "is-number@7.0.0": "patches/is-number.patch"
+  }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("patches/is-number.patch"),
+            "diff --git a/index.js b/index.js\n",
+        )
+        .unwrap();
+
+        let patches = load_patches(dir.path()).unwrap();
+        assert_eq!(
+            patches
+                .get("is-number@7.0.0")
+                .map(|p| p.path.strip_prefix(dir.path()).unwrap()),
+            Some(Path::new("patches/is-number.patch"))
+        );
     }
 
     #[test]
