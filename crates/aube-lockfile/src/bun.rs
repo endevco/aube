@@ -627,12 +627,13 @@ fn classify_bun_ident(
         // `workspace:*` / `workspace:^` / `workspace:~` are version-
         // range selectors, not directory paths — a `PathBuf::from("*")`
         // would silently become `{project_root}/*` under any caller
-        // that does `project_root.join(link.path())`. Only treat the
-        // tail as a path when it looks like one (leading `.` or `/`);
-        // otherwise fall back to `.` so the link points at the
+        // that does `project_root.join(link.path())`. Bun's `packages`
+        // entries for workspace members use root-relative paths like
+        // `workspace:packages/lib`, so keep slash-bearing tails as paths.
+        // Otherwise fall back to `.` so range selectors point at the
         // workspace root and the caller resolves the actual location
         // from the graph's workspace map.
-        let is_path = rel.starts_with('.') || rel.starts_with('/');
+        let is_path = rel.starts_with('.') || rel.starts_with('/') || rel.contains('/');
         let path_buf = std::path::PathBuf::from(if rel.is_empty() || !is_path { "." } else { rel });
         return Ok((
             name,
@@ -3005,6 +3006,37 @@ mod tests {
             "https://*.tgz must be LocalSource::RemoteTarball, got {:?}",
             remote.local_source
         );
+    }
+
+    #[test]
+    fn test_parse_bun_workspace_package_path_as_link_target() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root" },
+    "packages/app": {
+      "name": "app",
+      "dependencies": { "lib": "workspace:*" }
+    },
+    "packages/lib": { "name": "lib" }
+  },
+  "packages": {
+    "app": ["app@workspace:packages/app"],
+    "lib": ["lib@workspace:packages/lib"]
+  }
+}"#;
+        std::fs::write(tmp.path(), content).unwrap();
+        let graph = parse(tmp.path()).unwrap();
+
+        let lib = graph.packages.get("lib@workspace:packages/lib").unwrap();
+        assert_eq!(
+            lib.local_source.as_ref().and_then(LocalSource::path),
+            Some(Path::new("packages/lib"))
+        );
+
+        let app_deps = graph.importers.get("packages/app").unwrap();
+        assert_eq!(app_deps[0].dep_path, "lib@workspace:packages/lib");
     }
 
     /// npm-alias ident: bun writes `<real>@<version>` as the ident
