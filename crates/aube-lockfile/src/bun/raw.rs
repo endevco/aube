@@ -45,7 +45,7 @@ fn default_config_version() -> u32 {
     1
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawBunWorkspace {
     #[serde(default)]
@@ -179,15 +179,4 @@ pub(super) struct RawBunMeta {
     /// (`deprecated`, `hasInstallScript`, anything new bun adds).
     #[serde(flatten)]
     pub(super) extra: BTreeMap<String, serde_json::Value>,
-}
-
-impl Clone for RawBunWorkspace {
-    fn clone(&self) -> Self {
-        Self {
-            dependencies: self.dependencies.clone(),
-            dev_dependencies: self.dev_dependencies.clone(),
-            optional_dependencies: self.optional_dependencies.clone(),
-            extra: self.extra.clone(),
-        }
-    }
 }

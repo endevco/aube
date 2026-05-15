@@ -242,6 +242,9 @@ fn test_parse_multi_version_nested() {
     // bun keys nested packages using "parent/child" paths.
     // Here `bar` exists hoisted at 2.0.0 and nested under `foo` at 1.0.0.
     let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sri_top_bar = fake_sri('a');
+    let sri_foo = fake_sri('b');
+    let sri_nested_bar = fake_sri('c');
     let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -250,12 +253,15 @@ fn test_parse_multi_version_nested() {
     }
   },
   "packages": {
-    "bar": ["bar@2.0.0", "", {}, "sha512-top-bar"],
-    "foo": ["foo@1.0.0", "", { "dependencies": { "bar": "^1.0.0" } }, "sha512-foo"],
-    "foo/bar": ["bar@1.0.0", "", {}, "sha512-nested-bar"]
+    "bar": ["bar@2.0.0", "", {}, "SRI_TOP_BAR"],
+    "foo": ["foo@1.0.0", "", { "dependencies": { "bar": "^1.0.0" } }, "SRI_FOO"],
+    "foo/bar": ["bar@1.0.0", "", {}, "SRI_NESTED_BAR"]
   }
-}"#;
-    std::fs::write(tmp.path(), content).unwrap();
+}"#
+    .replace("SRI_TOP_BAR", &sri_top_bar)
+    .replace("SRI_FOO", &sri_foo)
+    .replace("SRI_NESTED_BAR", &sri_nested_bar);
+    std::fs::write(tmp.path(), &content).unwrap();
     let graph = parse(tmp.path()).unwrap();
 
     assert!(graph.packages.contains_key("bar@2.0.0"));
@@ -278,6 +284,7 @@ fn test_parse_multi_version_nested() {
 #[test]
 fn test_parse_scoped() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sri = fake_sri('s');
     let content = r#"{
   "lockfileVersion": 1,
   "workspaces": {
@@ -286,10 +293,11 @@ fn test_parse_scoped() {
     }
   },
   "packages": {
-    "@scope/pkg": ["@scope/pkg@1.0.0", "", {}, "sha512-zzz"]
+    "@scope/pkg": ["@scope/pkg@1.0.0", "", {}, "SRI"]
   }
-}"#;
-    std::fs::write(tmp.path(), content).unwrap();
+}"#
+    .replace("SRI", &sri);
+    std::fs::write(tmp.path(), &content).unwrap();
     let graph = parse(tmp.path()).unwrap();
     assert!(graph.packages.contains_key("@scope/pkg@1.0.0"));
     let root = graph.importers.get(".").unwrap();

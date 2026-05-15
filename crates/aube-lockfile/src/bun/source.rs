@@ -38,7 +38,6 @@ pub(super) fn classify_bun_ident(
     raw_name: &str,
     raw_version: &str,
     integrity: Option<&str>,
-    _path: &Path,
 ) -> Result<(String, String, Option<LocalSource>, Option<String>), Error> {
     // npm-alias tail: bun writes the registry identity into the ident,
     // so the raw name is the real registry name and the alias key is

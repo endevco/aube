@@ -85,7 +85,6 @@ pub fn parse(path: &Path) -> Result<LockfileGraph, Error> {
             &raw_name,
             &raw_version,
             entry.integrity.as_deref(),
-            path,
         )?;
         let local_source = local_source
             .map(|local| rebase_workspace_scoped_local_source(key, local, &workspace_scopes));
