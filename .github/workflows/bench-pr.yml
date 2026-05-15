@@ -58,7 +58,7 @@ jobs:
           cargo build --release
           RESULTS_JSON=/tmp/aube-bench-head.json \
             BENCH_TOOLS=aube,bun,pnpm \
-            BENCH_SCENARIOS=gvs-warm,ci-warm,ci-cold \
+            BENCH_SCENARIOS=gvs-warm,gvs-cold \
             BENCH_PHASES=0 \
             RUNS=3 \
             WARMUP=1 \

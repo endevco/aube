@@ -166,18 +166,7 @@ _hermetic_warm() {
 
 	local warm_root
 	warm_root=$(mktemp -d "${TMPDIR:-/tmp}/aube-bench-warm.XXXXXX")
-	# Extra packages pulled alongside the fixture so every bench
-	# scenario can resolve offline. `is-odd` is the subject of the
-	# Benchmark 4 "add" scenario in bench.sh — without it, each
-	# `<pm> add is-odd` would 404 against the no-uplink Verdaccio and
-	# silently time the error path.
-	node -e '
-		const fs = require("fs");
-		const base = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-		base.dependencies = base.dependencies || {};
-		base.dependencies["is-odd"] = "^3.0.1";
-		fs.writeFileSync(process.argv[2], JSON.stringify(base, null, 2));
-	' "$HERMETIC_DIR/fixture.package.json" "$warm_root/base-package.json"
+	cp "$HERMETIC_DIR/fixture.package.json" "$warm_root/base-package.json"
 
 	local reg="http://127.0.0.1:$BENCH_VERDACCIO_PORT"
 	_warm_one() {

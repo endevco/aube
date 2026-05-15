@@ -13,8 +13,6 @@ if (!input || !outputFile) {
 const labels = {
   'gvs-warm': 'Fresh install (warm cache)',
   'gvs-cold': 'Fresh install (cold cache)',
-  'ci-warm': 'CI install (warm cache, GVS disabled)',
-  'ci-cold': 'CI install (cold cache, GVS disabled)',
 }
 
 const phaseOrder = [

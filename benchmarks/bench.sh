@@ -69,7 +69,7 @@ RUNS_VLT="${RUNS_VLT:-$(((RUNS + 1) / 2))}"
 RUNS_NPM="${RUNS_NPM:-$(((RUNS + 2) / 3))}"
 RUNS_YARN="${RUNS_YARN:-$(((RUNS + 2) / 3))}"
 BENCH_TOOLS="${BENCH_TOOLS:-aube,bun,pnpm,npm,yarn,deno}"
-BENCH_SCENARIOS="${BENCH_SCENARIOS:-gvs-warm,gvs-cold,ci-warm,ci-cold,install-test,add}"
+BENCH_SCENARIOS="${BENCH_SCENARIOS:-gvs-warm,gvs-cold,install-test}"
 BENCH_PHASES="${BENCH_PHASES:-1}"
 
 # ── Validation ──────────────────────────────────────────────────────────────
@@ -447,45 +447,42 @@ BUN_BASE="HOME={home} BUN_INSTALL={home}/.bun {bin} install --cache-dir {cache} 
 # apples-to-apples guarantee for any non-default override.
 AUBE_ENV="HOME={home} XDG_CACHE_HOME={cache} XDG_DATA_HOME={home}/.local/share npm_config_minimum_release_age=${MIN_RELEASE_AGE_MINUTES}"
 
-# Per-scenario AUBE_ENV variants that pin aube's global virtual store mode
+# Per-scenario AUBE_ENV variant that pins aube's global virtual store on
 # via the `enableGlobalVirtualStore` setting's auto-synthesized env-var
 # alias (`npm_config_<snake_case>` — see `aube-settings/build.rs`).
-# Using an env var rather than `--enable-gvs` / `--disable-gvs` means
-# scenarios that go through `aube test` and `aube add` (which trigger
-# auto-install internally) get the same forcing as direct `aube install`
-# calls. The setting wins over `Linker::new`'s `CI` heuristic, so
-# GitHub Actions' inherited `CI=true` cannot silently flip the mode.
+# Using an env var rather than `--enable-gvs` means scenarios that go
+# through `aube test` (which triggers auto-install internally) get the
+# same forcing as direct `aube install` calls. The setting wins over
+# `Linker::new`'s `CI` heuristic, so GitHub Actions' inherited `CI=true`
+# cannot silently flip the mode.
 AUBE_ENV_GVS_ON="$AUBE_ENV npm_config_enable_global_virtual_store=true"
-AUBE_ENV_GVS_OFF="$AUBE_ENV npm_config_enable_global_virtual_store=false"
 
 # Scenario keys describe what's on disk before the run. Every install
 # scenario assumes a committed lockfile is present; the axes are
-# cache/store warmth and whether aube's global virtual store is disabled
-# for CI parity.
-# Plus an "add" scenario that exercises the incremental add path and an
-# "install-test" scenario that measures install + script dispatch end-to-end.
+# cache/store warmth. The "install-test" scenario measures install +
+# script dispatch end-to-end.
 
 cmd_template() {
 	case "$1:$2" in
 	gvs-warm:aube | gvs-cold:aube)
 		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} install --frozen-lockfile >/dev/null 2>&1"
 		;;
-	gvs-warm:bun | gvs-cold:bun | ci-warm:bun | ci-cold:bun)
+	gvs-warm:bun | gvs-cold:bun)
 		echo "cd {project} && $BUN_BASE --frozen-lockfile >/dev/null 2>&1"
 		;;
-	gvs-warm:npm | ci-warm:npm)
+	gvs-warm:npm)
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --prefer-offline --min-release-age=${MIN_RELEASE_AGE_DAYS} >/dev/null 2>&1"
 		;;
-	gvs-warm:pnpm | gvs-cold:pnpm | ci-warm:pnpm | ci-cold:pnpm)
+	gvs-warm:pnpm | gvs-cold:pnpm)
 		echo "cd {project} && HOME={home} {bin} install --frozen-lockfile --ignore-scripts --config.minimum-release-age=${MIN_RELEASE_AGE_MINUTES} >/dev/null 2>&1"
 		;;
-	gvs-warm:yarn | gvs-cold:yarn | ci-warm:yarn | ci-cold:yarn)
+	gvs-warm:yarn | gvs-cold:yarn)
 		# Yarn 4: --immutable replaces --frozen-lockfile and aborts
 		# if the lockfile or cache would change. Scripts/cache/linker
 		# settings are already pinned in .yarnrc.yml.
 		echo "cd {project} && HOME={home} {bin} install --immutable >/dev/null 2>&1"
 		;;
-	gvs-warm:deno | gvs-cold:deno | ci-warm:deno | ci-cold:deno)
+	gvs-warm:deno | gvs-cold:deno)
 		# Deno 2: --frozen errors out if the lockfile would change,
 		# the equivalent of --frozen-lockfile elsewhere. Lifecycle
 		# scripts are off unless --allow-scripts is passed.
@@ -493,18 +490,15 @@ cmd_template() {
 		# help but the flag itself parses fine; takes minutes.
 		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} install --frozen --quiet --minimum-dependency-age=${MIN_RELEASE_AGE_MINUTES} >/dev/null 2>&1"
 		;;
-	gvs-warm:vlt | gvs-cold:vlt | ci-warm:vlt | ci-cold:vlt)
+	gvs-warm:vlt | gvs-cold:vlt)
 		# vlt's --frozen-lockfile mirrors pnpm/npm/aube semantics: refuse
 		# to re-resolve and error out if vlt-lock.json would change.
 		# Without it vlt would silently treat the install as a fresh
 		# resolve, which is not what the other tools measure here.
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --frozen-lockfile >/dev/null 2>&1"
 		;;
-	gvs-cold:npm | ci-cold:npm)
+	gvs-cold:npm)
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps --min-release-age=${MIN_RELEASE_AGE_DAYS} >/dev/null 2>&1"
-		;;
-	ci-warm:aube | ci-cold:aube)
-		echo "cd {project} && $AUBE_ENV_GVS_OFF {bin} install --frozen-lockfile >/dev/null 2>&1"
 		;;
 	install-test:aube)
 		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} test >/dev/null 2>&1"
@@ -526,30 +520,6 @@ cmd_template() {
 		;;
 	install-test:vlt)
 		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --frozen-lockfile >/dev/null 2>&1 && HOME={home} npm_config_cache={cache} {bin} run test >/dev/null 2>&1"
-		;;
-	add:aube)
-		echo "cd {project} && $AUBE_ENV_GVS_ON {bin} add is-odd >/dev/null 2>&1"
-		;;
-	add:bun)
-		# Can't reuse $BUN_BASE: that template hardcodes `install`,
-		# this scenario needs `add`. Flag list below is intentionally
-		# kept in sync with BUN_BASE — update both together.
-		echo "cd {project} && HOME={home} BUN_INSTALL={home}/.bun {bin} add is-odd --cache-dir {cache} --ignore-scripts --no-summary --minimum-release-age=${MIN_RELEASE_AGE_SECONDS} >/dev/null 2>&1"
-		;;
-	add:npm)
-		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install --ignore-scripts --no-audit --no-fund --legacy-peer-deps --min-release-age=${MIN_RELEASE_AGE_DAYS} is-odd >/dev/null 2>&1"
-		;;
-	add:pnpm)
-		echo "cd {project} && HOME={home} {bin} add is-odd --ignore-scripts --config.minimum-release-age=${MIN_RELEASE_AGE_MINUTES} >/dev/null 2>&1"
-		;;
-	add:yarn)
-		echo "cd {project} && HOME={home} {bin} add is-odd >/dev/null 2>&1"
-		;;
-	add:deno)
-		echo "cd {project} && HOME={home} DENO_DIR={cache} {bin} add --quiet --minimum-dependency-age=${MIN_RELEASE_AGE_MINUTES} npm:is-odd >/dev/null 2>&1"
-		;;
-	add:vlt)
-		echo "cd {project} && HOME={home} npm_config_cache={cache} {bin} install is-odd >/dev/null 2>&1"
 		;;
 	esac
 }
@@ -605,8 +575,7 @@ run_bench() {
 #
 # Used by the install-test scenario to measure the "I've installed,
 # now I just want to re-run my tests" developer loop rather than the
-# "fresh checkout + install" loop (which `gvs-warm` and `ci-warm`
-# already cover).
+# "fresh checkout + install" loop (which `gvs-warm` already covers).
 run_bench_preinstall() {
 	local bench_name=$1
 
@@ -640,67 +609,6 @@ run_bench_preinstall() {
 		# iteration then re-runs the command against the settled
 		# state — the developer-loop "run my tests again" case.
 		local prepare="$warm_prep && $cmd"
-
-		local tool_runs
-		tool_runs=$(runs_for_tool "$tool")
-		echo ""
-		echo "  $tool:"
-		hyperfine \
-			--warmup "$WARMUP" \
-			--runs "$tool_runs" \
-			--ignore-failure \
-			--prepare "$prepare" \
-			--command-name "$tool" \
-			"$cmd" \
-			--export-json "$BENCH_DIR/${bench_name}-${tool}.json" ||
-			true
-	done
-}
-
-# Like `run_bench`, but tailored to the `add` scenario: the prepare step
-# restores `package.json` + the saved lockfile, then runs each tool's
-# frozen install so `node_modules` matches the pre-add lockfile state.
-# The timed run therefore measures only the *incremental* add work —
-# resolve is-odd, write to package.json + lockfile, link it in — rather
-# than folding a full install into the measurement.
-run_bench_warm_add() {
-	local bench_name=$1
-
-	for i in "${!TOOLS[@]}"; do
-		local tool="${TOOLS[$i]}"
-		local project="${TOOL_PROJECTS[$i]}"
-		local bin="${TOOL_BINS[$i]}"
-		local home="${TOOL_HOMES[$i]}"
-		local store="${TOOL_STORES[$i]}"
-		local cache="${TOOL_CACHES[$i]}"
-		local lockfile="$BENCH_DIR/saved-lockfile-$tool"
-		local lockfile_dest
-		lockfile_dest="$project/$(lockfile_name_for "$tool")"
-
-		local cmd_tpl
-		cmd_tpl=$(cmd_template "$bench_name" "$tool")
-		if [ -z "$cmd_tpl" ]; then
-			echo "warning: no $bench_name command for $tool — skipping" >&2
-			continue
-		fi
-
-		# Reuse the tool's `gvs-warm` template as the settle install:
-		# it's whichever flavor of frozen-lockfile install the tool
-		# supports, so each PM ends up syncing `node_modules` to the
-		# restored lockfile via its own native code path.
-		local settle_tpl
-		settle_tpl=$(cmd_template "gvs-warm" "$tool")
-		if [ -z "$settle_tpl" ]; then
-			echo "warning: no gvs-warm settle command for $tool — skipping $bench_name" >&2
-			continue
-		fi
-
-		local cmd
-		cmd=$(expand_template "$cmd_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
-		local settle
-		settle=$(expand_template "$settle_tpl" "$project" "$bin" "$home" "$store" "$cache" "$lockfile" "$lockfile_dest")
-
-		local prepare="cp $BENCH_DIR/original-package.json $project/package.json && cp $lockfile $lockfile_dest && $settle"
 
 		local tool_runs
 		tool_runs=$(runs_for_tool "$tool")
@@ -797,24 +705,6 @@ echo ""
 echo "━━━ Benchmark 2: Fresh install (cold cache) ━━━"
 run_scenario "gvs-cold" run_bench "gvs-cold" "$COLD_PREP"
 
-# ── Benchmark 3: CI install, warm cache ────────────────────────────────────
-# Lockfile present, node_modules deleted, store and cache warm.
-# Forces aube's global virtual store off to model real CI defaults without
-# relying on runner-provided environment variables.
-
-echo ""
-echo "━━━ Benchmark 3: CI install (warm cache, GVS disabled) ━━━"
-run_scenario "ci-warm" run_bench "ci-warm" "$WARM_PREP"
-
-# ── Benchmark 4: CI install, cold cache ────────────────────────────────────
-# Lockfile present, but store and cache are empty.
-# Forces aube's global virtual store off to model real CI defaults without
-# relying on runner-provided environment variables.
-
-echo ""
-echo "━━━ Benchmark 4: CI install (cold cache, GVS disabled) ━━━"
-run_scenario "ci-cold" run_bench "ci-cold" "$COLD_PREP"
-
 # ── Aube phase timing sample ───────────────────────────────────────────────
 # Hyperfine owns stdout/stderr and times whole commands. For attribution,
 # run aube once per install-shaped scenario with AUBE_BENCH_PHASES_FILE
@@ -826,11 +716,9 @@ echo "━━━ Aube install phase timings ━━━"
 if [ "$BENCH_PHASES" != "0" ]; then
 	run_scenario "gvs-warm" run_aube_phase_bench "gvs-warm" "$WARM_PREP"
 	run_scenario "gvs-cold" run_aube_phase_bench "gvs-cold" "$COLD_PREP"
-	run_scenario "ci-warm" run_aube_phase_bench "ci-warm" "$WARM_PREP"
-	run_scenario "ci-cold" run_aube_phase_bench "ci-cold" "$COLD_PREP"
 fi
 
-# ── Benchmark 5: install + run test (developer loop) ───────────────────────
+# ── Benchmark 3: install + run test (developer loop) ───────────────────────
 # Warm store+cache, lockfile present, node_modules *already* populated.
 # Models the developer-loop case: "I've installed, now I keep re-running
 # my tests." Each iteration's prepare runs the full install-test command
@@ -840,21 +728,8 @@ fi
 # on the timed run; tools without one still pay for lockfile revalidation.
 
 echo ""
-echo "━━━ Benchmark 5: install + run test (already installed) ━━━"
+echo "━━━ Benchmark 3: install + run test (already installed) ━━━"
 run_scenario "install-test" run_bench_preinstall "install-test"
-
-# ── Benchmark 6: Add dependency ────────────────────────────────────────────
-# Lockfile, store, and node_modules all warm; the prepare step restores
-# `package.json` + the saved lockfile and re-syncs node_modules to match,
-# so the timed run measures only the incremental add work (resolve,
-# lockfile write, link) instead of folding a full install into the
-# measurement. Kept last because the other scenarios are install-shaped
-# and this one is edit-shaped — it doesn't belong in the "install at
-# various warmth levels" progression above.
-
-echo ""
-echo "━━━ Benchmark 6: Add dependency ━━━"
-run_scenario "add" run_bench_warm_add "add"
 
 # ── Summary ────────────────────────────────────────────────────────────────
 

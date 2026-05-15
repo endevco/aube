@@ -63,7 +63,7 @@ env = {
   BENCH_BANDWIDTH = "500mbit",
   BENCH_LATENCY = "50ms",
   BENCH_TOOLS = "aube,bun,pnpm",
-  BENCH_SCENARIOS = "gvs-warm,ci-warm,ci-cold",
+  BENCH_SCENARIOS = "gvs-warm,gvs-cold",
   BENCH_PHASES = "0",
   AUBE_FORCE_METADATA_PRIMER = "true",
 }
