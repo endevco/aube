@@ -94,6 +94,47 @@ teardown() {
 	assert_dir_exists "node_modules/@sindresorhus/is"
 }
 
+@test "aube install from bun.lock links workspace deps to their package dirs" {
+	cat >package.json <<'EOF'
+{"name":"root","version":"1.0.0","workspaces":["packages/*"]}
+EOF
+	mkdir -p packages/app packages/lib
+	cat >packages/app/package.json <<'EOF'
+{"name":"app","version":"0.0.0","dependencies":{"lib":"workspace:*"}}
+EOF
+	cat >packages/lib/package.json <<'EOF'
+{"name":"lib","version":"0.0.0"}
+EOF
+	cat >bun.lock <<'EOF'
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root" },
+    "packages/app": {
+      "name": "app",
+      "version": "0.0.0",
+      "dependencies": { "lib": "workspace:*" }
+    },
+    "packages/lib": {
+      "name": "lib",
+      "version": "0.0.0"
+    }
+  },
+  "packages": {
+    "app": ["app@workspace:packages/app"],
+    "lib": ["lib@workspace:packages/lib"]
+  }
+}
+EOF
+
+	run aube install --frozen-lockfile
+	assert_success
+
+	actual="$(realpath packages/app/node_modules/lib)"
+	expected="$(realpath packages/lib)"
+	[[ "$actual" == "$expected" ]] || fail "lib link points to $actual, expected $expected"
+}
+
 @test "aube install applies peer-context suffixes when importing from bun.lock" {
 	# Regression for the bun.lock importer skipping
 	# `apply_peer_contexts`. Without the pass, `fdir` lands in the
