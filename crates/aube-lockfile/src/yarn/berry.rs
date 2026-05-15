@@ -462,7 +462,28 @@ fn patch_protocol_path(body: &str) -> Option<String> {
         .split_once("::")
         .map(|(p, _)| p)
         .unwrap_or(after_hash);
-    (!path.is_empty()).then(|| path.to_string())
+    if path.is_empty() || path.starts_with("builtin<") || path.starts_with("~builtin<") {
+        return None;
+    }
+    Some(path.to_string())
+}
+
+fn patch_spec_path(spec: &str) -> Option<String> {
+    let (_, protocol, body) = parse_berry_spec(spec)?;
+    (protocol == "patch").then(|| patch_protocol_path(body))?
+}
+
+fn patch_spec_matches(
+    spec: &str,
+    pkg: &LockedPackage,
+    patched_dependencies: &BTreeMap<String, String>,
+) -> bool {
+    let Some(path) = patch_spec_path(spec) else {
+        return false;
+    };
+    patched_dependencies
+        .get(&pkg.spec_key())
+        .is_some_and(|expected| expected == &path)
 }
 
 fn strip_hash_fragment(s: &str) -> &str {
@@ -550,6 +571,7 @@ pub fn write_berry(
     // gets folded into one block, so transitive lookups of a declared
     // range find a matching header.
     let mut extra_specs: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    let mut patch_specs: BTreeMap<String, String> = BTreeMap::new();
     let manifest_ranges: Vec<(String, String)> = manifest
         .dependencies
         .iter()
@@ -574,10 +596,11 @@ pub fn write_berry(
             continue;
         };
         let manifest_spec = format_berry_spec(&dep.name, range);
-        let exact_spec = berry_exact_spec(
-            canonical.get(&canonical_key).copied().unwrap(),
-            &graph.patched_dependencies,
-        );
+        let pkg = canonical.get(&canonical_key).copied().unwrap();
+        if patch_spec_matches(&manifest_spec, pkg, &graph.patched_dependencies) {
+            patch_specs.insert(canonical_key.clone(), manifest_spec.clone());
+        }
+        let exact_spec = berry_exact_spec(pkg, &graph.patched_dependencies, &patch_specs);
         if manifest_spec != exact_spec {
             extra_specs
                 .entry(canonical_key)
@@ -598,7 +621,11 @@ pub fn write_berry(
                 continue;
             };
             let manifest_spec = format_berry_spec(dep_name, range);
-            let exact_spec = berry_exact_spec(target_pkg, &graph.patched_dependencies);
+            if patch_spec_matches(&manifest_spec, target_pkg, &graph.patched_dependencies) {
+                patch_specs.insert(target.clone(), manifest_spec.clone());
+            }
+            let exact_spec =
+                berry_exact_spec(target_pkg, &graph.patched_dependencies, &patch_specs);
             if manifest_spec != exact_spec {
                 extra_specs.entry(target).or_default().insert(manifest_spec);
             }
@@ -615,7 +642,7 @@ pub fn write_berry(
         // specifier so transitive lookups (which parse emits as
         // `"name@npm:version"`) find a header match, then appends the
         // manifest range specs collected above.
-        let exact_spec = berry_exact_spec(pkg, &graph.patched_dependencies);
+        let exact_spec = berry_exact_spec(pkg, &graph.patched_dependencies, &patch_specs);
         let mut header_specs: Vec<String> = vec![exact_spec.clone()];
         if let Some(extras) = extra_specs.get(canonical_key) {
             for s in extras {
@@ -655,6 +682,7 @@ pub fn write_berry(
             &pkg.declared_dependencies,
             &canonical,
             &graph.patched_dependencies,
+            &patch_specs,
         );
         write_berry_dep_map(
             &mut out,
@@ -663,6 +691,7 @@ pub fn write_berry(
             &pkg.declared_dependencies,
             &canonical,
             &graph.patched_dependencies,
+            &patch_specs,
         );
         write_berry_peer_deps(&mut out, &pkg.peer_dependencies);
         write_berry_peer_meta(&mut out, &pkg.peer_dependencies_meta);
@@ -701,9 +730,11 @@ pub fn write_berry(
 fn berry_exact_spec(
     pkg: &LockedPackage,
     patched_dependencies: &BTreeMap<String, String>,
+    patch_specs: &BTreeMap<String, String>,
 ) -> String {
     let spec_key = pkg.spec_key();
     match (&pkg.local_source, patched_dependencies.get(&spec_key)) {
+        (None, Some(_)) if patch_specs.contains_key(&spec_key) => patch_specs[&spec_key].clone(),
         (None, Some(path)) => {
             format!(
                 "{}@patch:{}@npm%3A{}#{}",
@@ -722,6 +753,7 @@ fn write_berry_dep_map(
     declared: &BTreeMap<String, String>,
     canonical: &BTreeMap<String, &LockedPackage>,
     patched_dependencies: &BTreeMap<String, String>,
+    patch_specs: &BTreeMap<String, String>,
 ) {
     // Only emit edges whose target survives in `canonical`; the
     // graph-level filter layer (e.g. `--prod` prune) may have dropped
@@ -740,7 +772,7 @@ fn write_berry_dep_map(
                 None => {
                     let body = declared.get(n).cloned().unwrap_or_else(|| {
                         if patched_dependencies.contains_key(&target.spec_key()) {
-                            let exact = berry_exact_spec(target, patched_dependencies);
+                            let exact = berry_exact_spec(target, patched_dependencies, patch_specs);
                             exact
                                 .strip_prefix(&format!("{n}@"))
                                 .unwrap_or(&exact)

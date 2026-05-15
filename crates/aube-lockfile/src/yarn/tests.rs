@@ -404,6 +404,29 @@ fn test_parse_berry_patch_protocol() {
     assert_eq!(graph.importers["."][0].dep_path, "is-number@7.0.0");
 }
 
+#[test]
+fn test_parse_berry_skips_builtin_patch_protocol() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"glob@patch:glob@npm%3A8.1.0#~builtin<compat/glob>":
+  version: 8.1.0
+  resolution: "glob@patch:glob@npm%3A8.1.0#~builtin<compat/glob>"
+  checksum: 10c0/patched
+  languageName: node
+  linkType: hard
+"#;
+    std::fs::write(tmp.path(), content).unwrap();
+    let manifest = make_manifest(&[("glob", "^8.1.0")], &[]);
+    let graph = parse(tmp.path(), &manifest).unwrap();
+
+    assert!(graph.packages.is_empty());
+    assert!(graph.patched_dependencies.is_empty());
+    assert!(graph.importers["."].is_empty());
+}
+
 /// Scoped package names (`@types/node`) and the `, `-joined
 /// multi-spec header format berry uses when two package.json
 /// ranges resolve to the same version.
@@ -709,7 +732,7 @@ fn test_write_berry_roundtrips_patch_protocol() {
     let manifest = make_manifest(
         &[(
             "is-number",
-            "patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch",
+            "patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch::version=7.0.0&hash=abc123",
         )],
         &[],
     );
@@ -717,9 +740,11 @@ fn test_write_berry_roundtrips_patch_protocol() {
     let out = tempfile::NamedTempFile::new().unwrap();
     write_berry(out.path(), &graph, &manifest).unwrap();
     let written = std::fs::read_to_string(out.path()).unwrap();
-    assert!(
-        written.contains("is-number@patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch")
-    );
+    let full_spec = "is-number@patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch::version=7.0.0&hash=abc123";
+    assert!(written.contains(full_spec));
+    assert!(!written.contains(&format!(
+        "is-number@patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch, {full_spec}"
+    )));
 
     let reparsed = parse(out.path(), &manifest).unwrap();
     assert_eq!(

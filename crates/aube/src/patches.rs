@@ -148,7 +148,8 @@ pub fn load_patches_for_linker(
     Ok((patches, hashes))
 }
 
-pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
+#[cfg(test)]
+fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
     load_patches_with_lockfile_entries(cwd, &BTreeMap::new())
 }
 
