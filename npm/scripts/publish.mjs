@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Build and publish the @endevco/aube npm packages for a given tag.
 //
-// For each of the 5 release targets this:
+// For each release target this:
 //   1. downloads `aube-<tag>-<target>.{tar.gz,zip}` directly from the
 //      public GitHub release asset URL (no API, no auth token),
-//   2. extracts the three binaries (aube, aubr, aubx) into a staging
-//      dir,
+//   2. extracts the three binary entries (aube, aubr, aubx) into a
+//      staging dir,
 //   3. generates a platform-scoped package.json and publishes it as
 //      `@endevco/aube-<os>-<arch>`.
 // Then rewrites the root `npm/package.json` version and publishes
@@ -24,7 +24,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdirSync, readFileSync, writeFileSync, cpSync, rmSync, existsSync, chmodSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, cpSync, copyFileSync, rmSync, existsSync, chmodSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -149,7 +149,11 @@ async function buildPlatformPackage(repo, tag, version, target) {
         const src = resolve(extractDir, bin + target.exe);
         const destName = bin + target.exe;
         const dest = resolve(binDir, destName);
-        cpSync(src, dest);
+        // Release archives store aubr/aubx as symlinks to aube on Unix
+        // to avoid shipping duplicate binaries. npm pack drops those
+        // symlinked bin entries, so platform packages must stage real
+        // files for every declared bin target.
+        copyFileSync(realpathSync(src), dest);
         if (target.os !== 'win32') chmodSync(dest, 0o755);
         bins[bin] = `bin/${destName}`;
     }
