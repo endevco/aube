@@ -158,7 +158,7 @@ pub(super) async fn run_lockfile_only(input: LockfileOnlyInput<'_>) -> miette::R
         p.set_phase("resolving");
     }
     let client =
-        std::sync::Arc::new(super::super::make_client(cwd).with_network_mode(network_mode));
+        std::sync::Arc::new(crate::commands::make_client(cwd).with_network_mode(network_mode));
     let pnpmfile_paths = if ignore_pnpmfile {
         Vec::new()
     } else {
@@ -167,7 +167,8 @@ pub(super) async fn run_lockfile_only(input: LockfileOnlyInput<'_>) -> miette::R
             crate::pnpmfile::detect(cwd, pnpmfile, ws_config.pnpmfile_path.as_deref()).as_deref(),
         )
     };
-    super::super::run_pnpmfile_pre_resolution(&pnpmfile_paths, cwd, existing_for_resolver).await?;
+    crate::commands::run_pnpmfile_pre_resolution(&pnpmfile_paths, cwd, existing_for_resolver)
+        .await?;
     let (read_package_host, read_package_forwarders) =
         match crate::pnpmfile::ReadPackageHostChain::spawn(&pnpmfile_paths, cwd)
             .await
@@ -308,9 +309,13 @@ pub(super) fn select_lockfile_result(
         return Ok(Err(aube_lockfile::Error::NotFound(cwd.to_path_buf())));
     }
     match mode {
-        FrozenMode::No | FrozenMode::Fix => {
-            Ok(Err(aube_lockfile::Error::NotFound(cwd.to_path_buf())))
-        }
+        // Always re-resolve.
+        FrozenMode::No => Ok(Err(aube_lockfile::Error::NotFound(cwd.to_path_buf()))),
+        // Always fall through to re-resolve; `existing_for_resolver`
+        // carries the current lockfile (if any) so the resolver
+        // reuses locked versions for unchanged specs and only
+        // re-resolves entries whose spec drifted.
+        FrozenMode::Fix => Ok(Err(aube_lockfile::Error::NotFound(cwd.to_path_buf()))),
         FrozenMode::Frozen => {
             // Use the lockfile, but error out on any drift across all workspace importers.
             let parsed = parse_lockfile_dir_remapped_with_kind(
