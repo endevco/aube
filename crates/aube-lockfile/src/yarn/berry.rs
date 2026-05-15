@@ -45,6 +45,7 @@ pub(super) fn parse_berry_str(
     // every header-spec → dep_path mapping for the second pass.
     let mut spec_to_dep_path: BTreeMap<String, String> = BTreeMap::new();
     let mut packages: BTreeMap<String, LockedPackage> = BTreeMap::new();
+    let mut patched_dependencies: BTreeMap<String, String> = BTreeMap::new();
     // Transitive dep values written into each `LockedPackage` in this
     // pass are the raw header specs (e.g. `"foo@npm:^2.0.0"`); the
     // second pass collapses them down to dep_paths.
@@ -112,7 +113,19 @@ pub(super) fn parse_berry_str(
                 }
                 continue;
             }
-            "patch" | "portal" | "exec" => {
+            "patch" => {
+                let Some(patch_path) = patch_protocol_path(res_body) else {
+                    tracing::warn!(
+                        code = aube_codes::warnings::WARN_AUBE_YARN_BERRY_UNSUPPORTED,
+                        "yarn berry patch protocol in block '{}' is not supported — entry skipped",
+                        key_str,
+                    );
+                    continue;
+                };
+                patched_dependencies.insert(format!("{res_name}@{version}"), patch_path);
+                None
+            }
+            "portal" | "exec" => {
                 tracing::warn!(
                     code = aube_codes::warnings::WARN_AUBE_YARN_BERRY_UNSUPPORTED,
                     "yarn berry '{}' protocol in block '{}' is not supported — entry skipped",
@@ -290,6 +303,7 @@ pub(super) fn parse_berry_str(
     Ok(LockfileGraph {
         importers,
         packages,
+        patched_dependencies,
         ..Default::default()
     })
 }
@@ -436,6 +450,21 @@ fn file_protocol_source(body: &str) -> LocalSource {
     }
 }
 
+/// Extract the local patch file from Yarn's `patch:` protocol body.
+///
+/// Berry encodes patched npm packages as
+/// `name@patch:name@npm%3Aversion#./.yarn/patches/name.patch::version=...`.
+/// Aube applies the patch through its existing git-diff materializer, so
+/// the only part needed here is the project-relative path after `#`.
+fn patch_protocol_path(body: &str) -> Option<String> {
+    let (_, after_hash) = body.split_once('#')?;
+    let path = after_hash
+        .split_once("::")
+        .map(|(p, _)| p)
+        .unwrap_or(after_hash);
+    (!path.is_empty()).then(|| path.to_string())
+}
+
 fn strip_hash_fragment(s: &str) -> &str {
     s.split_once('#').map(|(a, _)| a).unwrap_or(s)
 }
@@ -486,9 +515,9 @@ fn classify_remote(url: &str, _block: &yaml_serde::Mapping) -> Option<LocalSourc
 ///
 /// ## What round-trips
 ///
-/// `yarn_checksum` (parsed from `checksum:`), peer-dep metadata, and
-/// all resolved transitive edges make it through parse → write →
-/// parse unchanged.
+/// `yarn_checksum` (parsed from `checksum:`), patch specs, peer-dep
+/// metadata, and all resolved transitive edges make it through parse →
+/// write → parse unchanged.
 ///
 /// ## What doesn't
 ///
@@ -500,8 +529,8 @@ fn classify_remote(url: &str, _block: &yaml_serde::Mapping) -> Option<LocalSourc
 ///   `yarn_checksum` from) are written without a `checksum:` field.
 ///   Yarn's default `checksumBehavior: throw` populates missing
 ///   checksums on the next install against its own cache.
-/// - `patch:` / `portal:` / `exec:` protocols aren't represented in
-///   aube's graph and never round-trip.
+/// - `portal:` / `exec:` protocols aren't represented in aube's graph
+///   and never round-trip.
 pub fn write_berry(
     path: &Path,
     graph: &LockfileGraph,
@@ -545,7 +574,10 @@ pub fn write_berry(
             continue;
         };
         let manifest_spec = format_berry_spec(&dep.name, range);
-        let exact_spec = berry_exact_spec(canonical.get(&canonical_key).copied().unwrap());
+        let exact_spec = berry_exact_spec(
+            canonical.get(&canonical_key).copied().unwrap(),
+            &graph.patched_dependencies,
+        );
         if manifest_spec != exact_spec {
             extra_specs
                 .entry(canonical_key)
@@ -566,7 +598,7 @@ pub fn write_berry(
                 continue;
             };
             let manifest_spec = format_berry_spec(dep_name, range);
-            let exact_spec = berry_exact_spec(target_pkg);
+            let exact_spec = berry_exact_spec(target_pkg, &graph.patched_dependencies);
             if manifest_spec != exact_spec {
                 extra_specs.entry(target).or_default().insert(manifest_spec);
             }
@@ -583,7 +615,7 @@ pub fn write_berry(
         // specifier so transitive lookups (which parse emits as
         // `"name@npm:version"`) find a header match, then appends the
         // manifest range specs collected above.
-        let exact_spec = berry_exact_spec(pkg);
+        let exact_spec = berry_exact_spec(pkg, &graph.patched_dependencies);
         let mut header_specs: Vec<String> = vec![exact_spec.clone()];
         if let Some(extras) = extra_specs.get(canonical_key) {
             for s in extras {
@@ -622,6 +654,7 @@ pub fn write_berry(
             &pkg.dependencies,
             &pkg.declared_dependencies,
             &canonical,
+            &graph.patched_dependencies,
         );
         write_berry_dep_map(
             &mut out,
@@ -629,6 +662,7 @@ pub fn write_berry(
             &pkg.optional_dependencies,
             &pkg.declared_dependencies,
             &canonical,
+            &graph.patched_dependencies,
         );
         write_berry_peer_deps(&mut out, &pkg.peer_dependencies);
         write_berry_peer_meta(&mut out, &pkg.peer_dependencies_meta);
@@ -664,10 +698,20 @@ pub fn write_berry(
 /// specifier and its `resolution:` field. Registry packages take the
 /// form `name@npm:version`; non-registry sources use the protocol
 /// recorded in `local_source`.
-fn berry_exact_spec(pkg: &LockedPackage) -> String {
-    match &pkg.local_source {
-        None => format!("{}@npm:{}", pkg.name, pkg.version),
-        Some(src) => format!("{}@{}", pkg.name, src.specifier()),
+fn berry_exact_spec(
+    pkg: &LockedPackage,
+    patched_dependencies: &BTreeMap<String, String>,
+) -> String {
+    let spec_key = pkg.spec_key();
+    match (&pkg.local_source, patched_dependencies.get(&spec_key)) {
+        (None, Some(path)) => {
+            format!(
+                "{}@patch:{}@npm%3A{}#{}",
+                pkg.name, pkg.name, pkg.version, path
+            )
+        }
+        (None, None) => format!("{}@npm:{}", pkg.name, pkg.version),
+        (Some(src), _) => format!("{}@{}", pkg.name, src.specifier()),
     }
 }
 
@@ -677,6 +721,7 @@ fn write_berry_dep_map(
     deps: &BTreeMap<String, String>,
     declared: &BTreeMap<String, String>,
     canonical: &BTreeMap<String, &LockedPackage>,
+    patched_dependencies: &BTreeMap<String, String>,
 ) {
     // Only emit edges whose target survives in `canonical`; the
     // graph-level filter layer (e.g. `--prod` prune) may have dropped
@@ -693,10 +738,17 @@ fn write_berry_dep_map(
             let target = canonical.get(&key)?;
             let spec_body = match &target.local_source {
                 None => {
-                    let body = declared
-                        .get(n)
-                        .cloned()
-                        .unwrap_or_else(|| crate::npm::dep_value_as_version(n, v).to_string());
+                    let body = declared.get(n).cloned().unwrap_or_else(|| {
+                        if patched_dependencies.contains_key(&target.spec_key()) {
+                            let exact = berry_exact_spec(target, patched_dependencies);
+                            exact
+                                .strip_prefix(&format!("{n}@"))
+                                .unwrap_or(&exact)
+                                .to_string()
+                        } else {
+                            crate::npm::dep_value_as_version(n, v).to_string()
+                        }
+                    });
                     // Declared ranges may already carry a protocol
                     // (`npm:^4`, `workspace:*`, `patch:…`) — don't
                     // double-prefix those. Bare ranges like `^4.1.0`

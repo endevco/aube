@@ -92,12 +92,12 @@ pub fn split_patch_key(key: &str) -> Result<(String, String)> {
     Ok((name.to_string(), ver.to_string()))
 }
 
-/// Read every patch declared in the project's `package.json` and
-/// `pnpm-workspace.yaml` and return them keyed by `name@version`.
+/// Read every patch declared in the active lockfile, `package.json`,
+/// and `pnpm-workspace.yaml`, then return them keyed by `name@version`.
 /// Workspace-yaml entries (pnpm v10+ canonical location) win over
-/// `package.json` on key conflict. Missing patch files become a hard
-/// error — that matches pnpm, which refuses to install with a
-/// declared-but-missing patch.
+/// `package.json`, which wins over lockfile entries, on key conflict.
+/// Missing patch files become a hard error — that matches pnpm, which
+/// refuses to install with a declared-but-missing patch.
 /// Load patches and pre-build the two shapes the linker + GVS-prewarm
 /// materializer want: a `(name@version, content)` map and a
 /// `(name@version, content_hash)` map. Both materializer call sites
@@ -111,10 +111,12 @@ pub fn split_patch_key(key: &str) -> Result<(String, String)> {
 /// resolved at install entry; patch files are static across the run.
 pub fn load_patches_for_linker(
     cwd: &Path,
+    lockfile_patched_dependencies: &BTreeMap<String, String>,
 ) -> Result<(aube_linker::Patches, BTreeMap<String, String>)> {
     use std::sync::{Mutex, OnceLock};
+    type CacheKey = (PathBuf, BTreeMap<String, String>);
     type CachedShape = (aube_linker::Patches, BTreeMap<String, String>);
-    static CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedShape>>> =
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<CacheKey, CachedShape>>> =
         OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     // Canonicalize so `cwd` and `cwd.canonicalize()` collapse to one
@@ -122,13 +124,16 @@ pub fn load_patches_for_linker(
     // would otherwise miss the cache. Falls back to the raw path when
     // canonicalize fails (e.g. cwd is the parent of a not-yet-created
     // workspace dir).
-    let key = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let key = (
+        cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()),
+        lockfile_patched_dependencies.clone(),
+    );
     if let Ok(guard) = cache.lock()
         && let Some(hit) = guard.get(&key)
     {
         return Ok(hit.clone());
     }
-    let resolved = load_patches(cwd)?;
+    let resolved = load_patches_with_lockfile_entries(cwd, lockfile_patched_dependencies)?;
     let patches: aube_linker::Patches = resolved
         .values()
         .map(|p| (p.key.clone(), p.content.clone()))
@@ -144,7 +149,15 @@ pub fn load_patches_for_linker(
 }
 
 pub fn load_patches(cwd: &Path) -> Result<BTreeMap<String, ResolvedPatch>> {
+    load_patches_with_lockfile_entries(cwd, &BTreeMap::new())
+}
+
+fn load_patches_with_lockfile_entries(
+    cwd: &Path,
+    lockfile_patched_dependencies: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, ResolvedPatch>> {
     let mut entries: BTreeMap<String, String> = BTreeMap::new();
+    entries.extend(lockfile_patched_dependencies.clone());
 
     let manifest_path = cwd.join("package.json");
     if manifest_path.exists() {
@@ -591,6 +604,32 @@ mod tests {
         )
         .unwrap();
         assert!(parsed["patchedDependencies"].is_null());
+    }
+
+    #[test]
+    fn load_reads_lockfile_patched_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".yarn/patches")).unwrap();
+        std::fs::write(
+            dir.path().join(".yarn/patches/is-number.patch"),
+            "diff --git a/index.js b/index.js\n",
+        )
+        .unwrap();
+
+        let (patches, hashes) = load_patches_for_linker(
+            dir.path(),
+            &BTreeMap::from([(
+                "is-number@7.0.0".to_string(),
+                ".yarn/patches/is-number.patch".to_string(),
+            )]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            patches.get("is-number@7.0.0").map(String::as_str),
+            Some("diff --git a/index.js b/index.js\n")
+        );
+        assert!(hashes.contains_key("is-number@7.0.0"));
     }
 
     #[test]

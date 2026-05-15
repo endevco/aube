@@ -38,11 +38,12 @@ aube reads berry's YAML-format `yarn.lock` (the one with the
 values are preserved verbatim so `yarn install` against the rewritten
 file still validates cached tarballs.
 
-Supported protocols: `npm:` (the common case), `workspace:`, `file:`,
-`link:`, plus `git:` / `git+ssh:` / `git+https:` / `https:` URLs for
-remote sources. Entries that use `patch:`, `portal:`, or `exec:` are
-skipped with a warning — aube's dependency graph doesn't model those
-yet, and they round-trip better through Yarn itself.
+Supported protocols: `npm:` (the common case), `patch:` for local
+patch files against npm-backed packages, `workspace:`, `file:`, `link:`,
+plus `git:` / `git+ssh:` / `git+https:` / `https:` URLs for remote
+sources. Entries that use `portal:` or `exec:` are skipped with a
+warning — aube's dependency graph doesn't model those yet, and they
+round-trip better through Yarn itself.
 
 ## Yarn PnP
 

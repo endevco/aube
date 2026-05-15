@@ -94,6 +94,16 @@ teardown() {
 	assert_dir_exists "node_modules/@sindresorhus/is"
 }
 
+@test "aube install applies yarn berry patch protocol" {
+	cp -R "$PROJECT_ROOT/fixtures/import-yarn-patch/." .
+
+	run aube install --ignore-scripts
+	assert_success
+
+	run node -e 'const isNumber = require("is-number"); if (isNumber(41) || !isNumber(42)) process.exit(1)'
+	assert_success
+}
+
 @test "aube install from bun.lock links workspace deps to their package dirs" {
 	cat >package.json <<'EOF'
 {"name":"root","version":"1.0.0","workspaces":["packages/*"]}

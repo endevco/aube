@@ -140,7 +140,8 @@ pub(super) fn run_link_phase(input: LinkPhaseInput<'_>) -> miette::Result<LinkPh
     // Hoisted ahead of subtree-hash so re-patched packages land in
     // the `changed` bucket and side-effects skip can't trust a stale
     // marker.
-    let (patches_for_linker, patch_hashes) = crate::patches::load_patches_for_linker(cwd)?;
+    let (patches_for_linker, patch_hashes) =
+        crate::patches::load_patches_for_linker(cwd, &graph_for_link.patched_dependencies)?;
 
     // Compute leaf + subtree hashes together when both are needed.
     // Linker invalidation reads `current_subtree_hashes`; the late
