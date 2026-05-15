@@ -32,20 +32,7 @@ pub(crate) fn read_applied_patches(nm_dir: &Path) -> BTreeMap<String, String> {
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return Default::default();
     };
-    serde_json_parse_map(&raw).unwrap_or_default()
-}
-
-/// Tiny hand-rolled JSON object parser specialized for the sidecar:
-/// `{"name@ver": "hex", ...}`. Avoids dragging serde_json into
-/// `aube-linker` for one file. Returns `None` on any malformed input
-/// so the caller falls back to "no previous state."
-fn serde_json_parse_map(s: &str) -> Option<BTreeMap<String, String>> {
-    // Old code hand-rolled JSON with split(',') and trim_matches('"').
-    // Breaks on any key or value containing a comma, escaped quote,
-    // or backslash. Keys are name@version strings today but patch
-    // content hashes are fine, and if pnpm ever extends the key
-    // schema this blows up. Real JSON parser handles escaping.
-    serde_json::from_str(s).ok()
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
 /// Write the applied-patch sidecar.
