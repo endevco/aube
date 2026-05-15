@@ -919,6 +919,10 @@ fn test_write_berry_roundtrips_portal_and_exec_protocols() {
     assert!(written.contains("exec-pkg@exec:./scripts/generate-exec.js"));
     let portal_idx = written.find("portal-pkg@portal:").unwrap();
     let exec_idx = written.find("exec-pkg@exec:").unwrap();
+    assert!(
+        exec_idx < portal_idx,
+        "expected exec block before portal block:\n{written}"
+    );
     let portal_block = &written[portal_idx..];
     let exec_block = &written[exec_idx..portal_idx];
     assert!(portal_block.contains("linkType: soft"));

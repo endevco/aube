@@ -149,14 +149,17 @@ pub(crate) fn dep_path_for(name: &str, version: &str) -> String {
 }
 
 /// Match specifier prefixes that resolve to a non-registry source
-/// (`file:`, `link:`, or a git URL form). Used by the resolver to
-/// decide whether to dispatch the local/git branch instead of the
-/// normal version-range lookup.
+/// (`file:`, `link:`, `portal:`, `exec:`, or a git URL form). Used
+/// by the resolver to decide whether to dispatch the local/git branch
+/// instead of the normal version-range lookup.
 pub(crate) fn is_non_registry_specifier(s: &str) -> bool {
     if s.starts_with("link:") {
         return true;
     }
     if s.starts_with("portal:") {
+        return true;
+    }
+    if s.starts_with("exec:") {
         return true;
     }
     // Git first so `https://host/repo.git` dispatches the git branch

@@ -199,6 +199,8 @@ impl LocalSource {
             ("link", r)
         } else if let Some(r) = spec.strip_prefix("portal:") {
             ("portal", r)
+        } else if let Some(r) = spec.strip_prefix("exec:") {
+            return Some(LocalSource::Exec(PathBuf::from(r)));
         } else {
             return None;
         };
@@ -655,6 +657,15 @@ mod tests {
         use std::path::Path;
         let parsed = LocalSource::parse("https://github.com/user/repo.git", Path::new(""));
         assert!(matches!(parsed, Some(LocalSource::Git(_))));
+    }
+
+    #[test]
+    fn parse_classifies_exec_as_local_source() {
+        let parsed = LocalSource::parse("exec:./scripts/generate.js", Path::new(""));
+        assert_eq!(
+            parsed,
+            Some(LocalSource::Exec(PathBuf::from("./scripts/generate.js")))
+        );
     }
 
     #[test]
