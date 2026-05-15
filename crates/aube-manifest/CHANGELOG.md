@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.1](https://github.com/endevco/aube/compare/aube-manifest-v1.14.0...aube-manifest-v1.14.1) - 2026-05-15
+
+### Fixed
+
+- *(manifest)* track yamlpatch value type ([#700](https://github.com/endevco/aube/pull/700))
+
 ## [1.14.0](https://github.com/endevco/aube/compare/aube-manifest-v1.13.1...aube-manifest-v1.14.0) - 2026-05-14
 
 ### Added

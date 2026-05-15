@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.1](https://github.com/endevco/aube/compare/aube-lockfile-v1.14.0...aube-lockfile-v1.14.1) - 2026-05-15
+
+### Fixed
+
+- *(lockfile)* preserve hashed npm peer roots ([#697](https://github.com/endevco/aube/pull/697))
+- *(lockfile)* parse bun workspace paths as links ([#696](https://github.com/endevco/aube/pull/696))
+
 ## [1.14.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.13.1...aube-lockfile-v1.14.0) - 2026-05-14
 
 ### Fixed

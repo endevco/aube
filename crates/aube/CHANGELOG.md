@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.1](https://github.com/endevco/aube/compare/v1.14.0...v1.14.1) - 2026-05-15
+
+### Other
+
+- *(install)* split fetch pipeline ([#704](https://github.com/endevco/aube/pull/704))
+- *(install)* split pipeline modules ([#702](https://github.com/endevco/aube/pull/702))
+- *(install)* split helper modules ([#698](https://github.com/endevco/aube/pull/698))
+
 ## [1.14.0](https://github.com/endevco/aube/compare/v1.13.1...v1.14.0) - 2026-05-14
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.1](https://github.com/endevco/aube/compare/aube-linker-v1.14.0...aube-linker-v1.14.1) - 2026-05-15
+
+### Other
+
+- *(linker)* split lib.rs into focused submodules ([#703](https://github.com/endevco/aube/pull/703))
+
 ## [1.14.0](https://github.com/endevco/aube/compare/aube-linker-v1.13.1...aube-linker-v1.14.0) - 2026-05-14
 
 ### Other
