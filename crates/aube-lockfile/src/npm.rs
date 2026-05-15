@@ -1501,6 +1501,25 @@ fn version_from_tail(tail: &str) -> &str {
     tail.split_once('(').map(|(v, _)| v).unwrap_or(tail)
 }
 
+fn strip_hashed_peer_suffix(s: &str) -> &str {
+    const MARKER_LEN: usize = 11; // `_` + 10 hex chars
+    if s.len() < MARKER_LEN {
+        return s;
+    }
+    let tail = &s[s.len() - MARKER_LEN..];
+    if !tail.starts_with('_') {
+        return s;
+    }
+    if tail[1..]
+        .chars()
+        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    {
+        &s[..s.len() - MARKER_LEN]
+    } else {
+        s
+    }
+}
+
 /// Compute the canonical `name@version` key for a child declared in
 /// [`LockedPackage::dependencies`]. Tolerates both encodings seen in
 /// practice: the documented "tail only" form (`"1.0.0"`) used by
@@ -1508,7 +1527,7 @@ fn version_from_tail(tail: &str) -> &str {
 /// currently emitted by [`parse`] above. Peer context suffixes are
 /// stripped in both branches.
 pub(crate) fn child_canonical_key(child_name: &str, value: &str) -> String {
-    let no_peer = version_from_tail(value);
+    let no_peer = strip_hashed_peer_suffix(version_from_tail(value));
     let prefix = format!("{child_name}@");
     if no_peer.starts_with(&prefix) {
         no_peer.to_string()
@@ -1521,7 +1540,7 @@ pub(crate) fn child_canonical_key(child_name: &str, value: &str) -> String {
 /// of which encoding it was stored in. Used when writing out the
 /// `dependencies` field of a nested package entry.
 pub(crate) fn dep_value_as_version<'a>(child_name: &str, value: &'a str) -> &'a str {
-    let no_peer = version_from_tail(value);
+    let no_peer = strip_hashed_peer_suffix(version_from_tail(value));
     let prefix = format!("{child_name}@");
     if let Some(rest) = no_peer.strip_prefix(&prefix) {
         rest
@@ -1538,7 +1557,7 @@ pub(crate) fn dep_value_as_version<'a>(child_name: &str, value: &'a str) -> &'a 
 /// then miss the canonical map and silently drop the package from
 /// the written lockfile).
 pub(crate) fn canonical_key_from_dep_path(dep_path: &str) -> String {
-    let trimmed = version_from_tail(dep_path);
+    let trimmed = strip_hashed_peer_suffix(version_from_tail(dep_path));
     let (name, version) = match trimmed.rfind('@') {
         Some(0) | None => return trimmed.to_string(),
         Some(idx) => (&trimmed[..idx], &trimmed[idx + 1..]),
@@ -2374,7 +2393,9 @@ mod tests {
     /// `(peer@ver)` suffix *before* splitting on `@`. A naive
     /// `rfind('@')` lands inside the peer suffix and returns the
     /// input unchanged, which silently drops every peer-contextualized
-    /// root dep from the written lockfile.
+    /// root dep from the written lockfile. Hashed suffixes use the
+    /// same canonical identity; otherwise long peer suffixes drop
+    /// out of npm package-lock output.
     #[test]
     fn test_canonical_key_strips_peer_suffix() {
         assert_eq!(canonical_key_from_dep_path("foo@1.0.0"), "foo@1.0.0");
@@ -2385,6 +2406,18 @@ mod tests {
         assert_eq!(
             canonical_key_from_dep_path("@scope/pkg@2.0.0(peer@1.0.0)"),
             "@scope/pkg@2.0.0"
+        );
+        assert_eq!(
+            canonical_key_from_dep_path("expo-router@4.0.22_94c00fd028"),
+            "expo-router@4.0.22"
+        );
+        assert_eq!(
+            child_canonical_key("expo-router", "4.0.22_94c00fd028"),
+            "expo-router@4.0.22"
+        );
+        assert_eq!(
+            dep_value_as_version("expo-router", "expo-router@4.0.22_94c00fd028"),
+            "4.0.22"
         );
     }
 
