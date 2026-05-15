@@ -332,19 +332,17 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         deps.into_iter()
             .map(|(name, value)| {
                 let dp = version_to_dep_path(&name, &value);
-                if let Some(target) = graph
+                let target = graph
                     .packages
                     .get(&dp)
-                    .or_else(|| graph.packages.get(&peerless_dep_path(&name, &value)))
+                    .or_else(|| graph.packages.get(&peerless_dep_path(&name, &value)));
+                if let Some(target) = target
                     && let Some(ref local) = target.local_source
                     && !matches!(local, LocalSource::Link(_))
                 {
                     (name, local.specifier())
                 } else if native_pnpm_aliases
-                    && let Some(target) = graph
-                        .packages
-                        .get(&dp)
-                        .or_else(|| graph.packages.get(&peerless_dep_path(&name, &value)))
+                    && let Some(target) = target
                     && let Some(real_name) = target.alias_of.as_deref()
                 {
                     (name, format!("{real_name}@{value}"))

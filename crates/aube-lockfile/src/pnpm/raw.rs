@@ -39,10 +39,7 @@ pub(super) fn parse_raw_lockfile(content: &str) -> Result<RawPnpmLockfile, yaml_
                 };
             }
             Err(e) => {
-                // Log every per-document failure so a multi-doc
-                // lockfile where every document fails surfaces all the
-                // diagnostic signal at `RUST_LOG=aube_lockfile=debug`.
-                // Break on the first failure: a malformed document
+                // Log the first per-document failure and stop. A malformed document
                 // typically puts yaml_serde's iterator into a state
                 // where further iteration is either more garbage or an
                 // infinite loop (see `test_parse_invalid_yaml`). The
