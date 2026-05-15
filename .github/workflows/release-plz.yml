@@ -251,8 +251,8 @@ jobs:
 
       # Step 1: let release-plz compute the next workspace version and
       # write Cargo.toml / Cargo.lock / CHANGELOG.md bumps into the
-      # working tree. `bump=true` iff release-plz actually produced a
-      # version-bump diff.
+      # working tree.
+      # `bump=true` iff release-plz actually produced a version-bump diff.
       - name: Apply version bumps
         id: update
         env:
@@ -331,16 +331,6 @@ jobs:
             if (!found) throw new Error(`path dependency ${name} not found in Cargo.toml`);
           }
           fs.writeFileSync('Cargo.toml', cargoToml);
-
-          const lock = fs.readFileSync('Cargo.lock', 'utf8')
-            .split(/\n(?=\[\[package\]\]\n)/)
-            .map((block) => {
-              const name = block.match(/^name = "([^"]+)"/m)?.[1];
-              if (!packages.has(name)) return block;
-              return block.replace(/^version = "\d+\.\d+\.\d+"/m, `version = "${newVersion}"`);
-            })
-            .join('\n');
-          fs.writeFileSync('Cargo.lock', lock);
 
           const subjects = execFileSync('git', ['log', '--format=%s', `${latestTag}..HEAD`], { encoding: 'utf8' })
             .trim()
