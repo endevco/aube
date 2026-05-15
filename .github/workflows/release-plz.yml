@@ -252,9 +252,7 @@ jobs:
       # Step 1: let release-plz compute the next workspace version and
       # write Cargo.toml / Cargo.lock / CHANGELOG.md bumps into the
       # working tree. `bump=true` iff release-plz actually produced a
-      # version-bump diff; the downstream regen steps run on every push
-      # regardless so bench + docs refreshes flow through the release
-      # PR on any change to main, not just release-worthy ones.
+      # version-bump diff.
       - name: Apply version bumps
         id: update
         env:
@@ -271,6 +269,133 @@ jobs:
           else
             echo "bump=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # release-plz only bumps when a packaged Cargo file changed. aube's
+      # shipped npm package, release workflows, docs, and automation are
+      # also release-critical, so force a patch release for any non-release
+      # commit that release-plz considered package-invisible.
+      - name: Force patch bump for repo-only changes
+        id: force
+        if: steps.update.outputs.bump == 'false'
+        run: |
+          head_subject=$(git log -1 --format=%s)
+          if [[ "$head_subject" =~ ^chore:\ release\ v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Head is a release commit; not opening another release PR."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! latest_tag=$(git describe --tags --match 'v[0-9]*' --abbrev=0); then
+            echo "::error::could not find latest v* tag for forced release bump"
+            exit 1
+          fi
+          if [ -z "$(git log --format=%H "${latest_tag}..HEAD")" ]; then
+            echo "No commits since ${latest_tag}; nothing to force-release."
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          metadata=$(cargo metadata --format-version=1 --no-deps)
+          old_version=$(jq -r '.packages[] | select(.name == "aube") | .version' <<<"$metadata")
+          IFS=. read -r major minor patch <<<"$old_version"
+          new_version="${major}.${minor}.$((patch + 1))"
+          packages=$(jq -r '[.packages[] | select(.source == null) | .name] | @json' <<<"$metadata")
+
+          node - "$old_version" "$new_version" "$packages" "$latest_tag" <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+
+          const [oldVersion, newVersion, packagesJson, latestTag] = process.argv.slice(2);
+          const packages = new Set(JSON.parse(packagesJson));
+          const today = new Date().toISOString().slice(0, 10);
+
+          let cargoToml = fs.readFileSync('Cargo.toml', 'utf8');
+          cargoToml = cargoToml.replace(
+            /(\[workspace\.package\][\s\S]*?version = ")\d+\.\d+\.\d+(")/,
+            `$1${newVersion}$2`,
+          );
+          for (const name of packages) {
+            let found = false;
+            cargoToml = cargoToml
+              .split('\n')
+              .map((line) => {
+                if (!line.startsWith(`${name} = {`) || !line.includes('path = ')) return line;
+                found = true;
+                const updated = line.replace(`version = "${oldVersion}"`, `version = "${newVersion}"`);
+                if (updated === line) {
+                  throw new Error(`path dependency ${name} did not contain version ${oldVersion}`);
+                }
+                return updated;
+              })
+              .join('\n');
+            if (!found) throw new Error(`path dependency ${name} not found in Cargo.toml`);
+          }
+          fs.writeFileSync('Cargo.toml', cargoToml);
+
+          const lock = fs.readFileSync('Cargo.lock', 'utf8')
+            .split(/\n(?=\[\[package\]\]\n)/)
+            .map((block) => {
+              const name = block.match(/^name = "([^"]+)"/m)?.[1];
+              if (!packages.has(name)) return block;
+              return block.replace(/^version = "\d+\.\d+\.\d+"/m, `version = "${newVersion}"`);
+            })
+            .join('\n');
+          fs.writeFileSync('Cargo.lock', lock);
+
+          const subjects = execFileSync('git', ['log', '--format=%s', `${latestTag}..HEAD`], { encoding: 'utf8' })
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .filter((subject) => !/^chore: release v\d+\.\d+\.\d+/.test(subject));
+          const sections = new Map([
+            ['feat', ['Added', []]],
+            ['fix', ['Fixed', []]],
+            ['perf', ['Changed', []]],
+            ['default', ['Other', []]],
+          ]);
+          for (const subject of subjects.reverse()) {
+            const match = subject.match(/^([a-z]+)(?:\(([^)]+)\))?!?: (.*?)(?: \(#(\d+)\))?$/);
+            const type = match?.[1] || 'default';
+            const scope = match?.[2];
+            const desc = match?.[3] || subject;
+            const pr = match?.[4];
+            const [, items] = sections.get(type) || sections.get('default');
+            const scoped = scope ? `*(${scope})* ${desc}` : desc;
+            const linked = pr ? `${scoped} ([#${pr}](https://github.com/endevco/aube/pull/${pr}))` : scoped;
+            items.push(`- ${linked}`);
+          }
+
+          const body = [];
+          for (const [, [heading, items]] of sections) {
+            if (!items.length) continue;
+            body.push(`### ${heading}`, '', ...items, '');
+          }
+          const changelogEntry = [
+            `## [${newVersion}](https://github.com/endevco/aube/compare/${latestTag}...v${newVersion}) - ${today}`,
+            '',
+            ...body,
+          ].join('\n').trimEnd();
+          const changelog = fs.readFileSync('crates/aube/CHANGELOG.md', 'utf8');
+          const anchor = '## [Unreleased]\n\n';
+          const anchorIndex = changelog.indexOf(anchor);
+          if (anchorIndex === -1) {
+            throw new Error('crates/aube/CHANGELOG.md is missing the expected Unreleased heading');
+          }
+          fs.writeFileSync(
+            'crates/aube/CHANGELOG.md',
+            changelog.slice(0, anchorIndex + anchor.length)
+              + changelogEntry
+              + '\n\n'
+              + changelog.slice(anchorIndex + anchor.length),
+          );
+          NODE
+
+          echo "Forced patch bump ${old_version} -> ${new_version}"
+          echo "bump=true" >> "$GITHUB_OUTPUT"
+
+      - name: Capture release version
+        id: version
+        run: |
           VERSION=$(cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | select(.name == "aube") | .version')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -293,9 +418,9 @@ jobs:
       # file just to reset `releasedAt` would create spurious diffs on
       # every push.
       - name: Bump release.json
-        if: steps.update.outputs.bump == 'true'
+        if: steps.update.outputs.bump == 'true' || steps.force.outputs.bump == 'true'
         env:
-          VERSION: ${{ steps.update.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           jq --arg v "$VERSION" --arg d "$RELEASED_AT" \
@@ -346,8 +471,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ steps.find_pr.outputs.branch }}
-          BUMP: ${{ steps.update.outputs.bump }}
-          TAG: ${{ steps.update.outputs.tag }}
+          BUMP: ${{ steps.update.outputs.bump == 'true' || steps.force.outputs.bump == 'true' }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           if [ "$BUMP" = "true" ]; then
             MSG="chore: release ${TAG}"
@@ -377,8 +502,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
           BRANCH: ${{ steps.find_pr.outputs.branch }}
           PR_NUMBER: ${{ steps.find_pr.outputs.pr_number }}
-          BUMP: ${{ steps.update.outputs.bump }}
-          TAG: ${{ steps.update.outputs.tag }}
+          BUMP: ${{ steps.update.outputs.bump == 'true' || steps.force.outputs.bump == 'true' }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           if [ "$BUMP" = "true" ]; then
             TITLE="chore: release ${TAG}"
