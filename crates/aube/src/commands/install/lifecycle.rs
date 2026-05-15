@@ -1089,7 +1089,7 @@ fn collect_missing_required_scripts(
 /// The sniff is derived from the live materialized tree and not
 /// persisted to install state.
 #[derive(Debug, Clone)]
-pub(super) struct UnreviewedBuild {
+pub(in crate::commands::install) struct UnreviewedBuild {
     pub spec_key: String,
     pub suspicions: Vec<aube_scripts::Suspicion>,
 }
