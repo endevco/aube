@@ -1340,7 +1340,7 @@ mod yaml_patch {
                     } else {
                         out.push(Edit::Yp(Patch {
                             route: route_obj.with_key(key.to_string()),
-                            operation: Op::Replace(to_serde_value(path, after_v)?),
+                            operation: Op::Replace(after_v.clone()),
                         }));
                     }
                 }
@@ -1540,7 +1540,8 @@ mod yaml_patch {
     }
 
     /// Bridge `yaml_serde::Value` (our typed parse type) to
-    /// `serde_yaml::Value` (yamlpatch's payload type). yaml_serde is
+    /// `serde_yaml::Value` (the manual injector's render type).
+    /// yaml_serde is
     /// the maintained fork of serde_yaml 0.9, so a YAML round-trip is
     /// lossless for every variant we use (scalars, sequences,
     /// mappings, tagged values). Errors on either side propagate
