@@ -14,9 +14,13 @@ mod dep_selection;
 mod frozen;
 mod git_prepare;
 mod lifecycle;
+mod lockfile_dir;
 pub(crate) mod node_gyp_bootstrap;
 mod settings;
 mod side_effects_cache;
+mod summary;
+mod sweep;
+mod unreviewed_builds;
 
 pub(crate) use bin_linking::{PkgJsonCache, link_dep_bins, materialized_pkg_dir};
 use bin_linking::{link_bin_entries, link_bins, link_bins_for_dep};
@@ -28,8 +32,12 @@ pub(crate) use lifecycle::{
     run_dep_lifecycle_scripts,
 };
 use lifecycle::{
-    UnreviewedBuild, resolve_link_strategy, run_import_on_blocking, run_root_lifecycle,
-    unreviewed_dep_builds, validate_required_scripts,
+    resolve_link_strategy, run_import_on_blocking, run_root_lifecycle, unreviewed_dep_builds,
+    validate_required_scripts,
+};
+use lockfile_dir::{
+    guard_against_foreign_importers, parse_lockfile_dir_remapped,
+    parse_lockfile_dir_remapped_with_kind, write_lockfile_dir_remapped,
 };
 pub(crate) use settings::PeerDependencyRules;
 pub(crate) use settings::{ResolverConfigInputs, configure_resolver};
@@ -45,6 +53,10 @@ use settings::{
     resolve_strict_store_pkg_content_check, resolve_symlink, resolve_use_running_store_server,
     resolve_verify_store_integrity,
 };
+use summary::{
+    print_already_up_to_date, print_direct_dependency_summary, should_print_human_install_summary,
+};
+use sweep::{invalidate_changed_aube_entries, sweep_orphaned_aube_entries};
 
 #[derive(Debug, clap::Args)]
 pub struct InstallArgs {
@@ -2103,7 +2115,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         && state::restore_missing_lockfile_if_fresh(&cwd, &opts.cli_flags);
 
     if missing_lockfile_restore_eligible {
-        emit_unreviewed_builds_warning(&unreviewed_builds_from_state(&cwd));
+        unreviewed_builds::emit_warning(&unreviewed_builds::from_state(&cwd));
         print_already_up_to_date();
         return Ok(());
     }
@@ -2134,7 +2146,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         // `print_install_summary` is never called. `--silent` additionally
         // has its `SilentStderrGuard` redirect fd 2 to /dev/null, so this
         // check is belt-and-suspenders for `-v` and the JSON reporters.
-        emit_unreviewed_builds_warning(&unreviewed_builds_from_state(&cwd));
+        unreviewed_builds::emit_warning(&unreviewed_builds::from_state(&cwd));
         print_already_up_to_date();
         let _ = start;
         return Ok(());
@@ -5208,7 +5220,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     // Skipped under `--ignore-scripts`, `virtualStoreOnly`, and
     // `strictDepBuilds=true` (the strict path already errored above).
     if !unreviewed_builds.is_empty() {
-        emit_unreviewed_builds_warning(&unreviewed_builds);
+        unreviewed_builds::emit_warning(&unreviewed_builds);
     }
 
     Ok(())
@@ -5242,466 +5254,6 @@ fn resolve_osv_routing_settings(cwd: &std::path::Path) -> OsvRoutingSettings {
             ),
         }
     })
-}
-
-/// Materialize the warm-path replay set. The on-disk state file
-/// stores spec_keys only; suspicion data is re-derived per-install
-/// from the live tree and not persisted, so warm-path replays
-/// always carry empty `suspicions`. Live installs that need
-/// content-sniff data build `UnreviewedBuild`s directly from
-/// `unreviewed_dep_builds`.
-fn unreviewed_builds_from_state(cwd: &std::path::Path) -> Vec<UnreviewedBuild> {
-    state::read_state_unreviewed_builds(cwd)
-        .into_iter()
-        .map(|spec_key| UnreviewedBuild {
-            spec_key,
-            suspicions: Vec::new(),
-        })
-        .collect()
-}
-
-/// Emit the `ignored build scripts for ...` warning. Same wording
-/// fires from the full install path and the warm-path short-circuit
-/// so users see the nudge on every repeat install while
-/// `allowBuilds` placeholders are still pending review.
-///
-/// When any entry carries non-empty `suspicions` (live-install path
-/// only — the warm-path replay reads spec_keys from disk state and
-/// has no script bodies to scan), an additional
-/// `WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT` is emitted per flagged
-/// package listing the matched shape and the lifecycle hook it
-/// fired from. Advisory only — `allowBuilds` still gates execution.
-fn emit_unreviewed_builds_warning(unreviewed: &[UnreviewedBuild]) {
-    if unreviewed.is_empty() {
-        return;
-    }
-    // Cap the inline list so a napi-rs / prebuilt-variants tree
-    // (tens of per-platform binding packages) doesn't splat into
-    // one hard-to-scan line. Users who want the full list run
-    // `aube ignored-builds`.
-    const MAX_INLINE: usize = 5;
-    let spec_keys: Vec<&str> = unreviewed.iter().map(|b| b.spec_key.as_str()).collect();
-    let list = if spec_keys.len() <= MAX_INLINE {
-        spec_keys.join(", ")
-    } else {
-        format!(
-            "{}, and {} more",
-            spec_keys[..MAX_INLINE].join(", "),
-            spec_keys.len() - MAX_INLINE
-        )
-    };
-    tracing::warn!(
-        code = aube_codes::warnings::WARN_AUBE_IGNORED_BUILD_SCRIPTS,
-        count = unreviewed.len(),
-        packages = ?spec_keys,
-        "ignored build scripts for {} package(s): {}. Run `aube approve-builds` to review and enable them, or set `strictDepBuilds=true` to fail installs that have unreviewed builds.",
-        unreviewed.len(),
-        list
-    );
-    for build in unreviewed {
-        if build.suspicions.is_empty() {
-            continue;
-        }
-        // Aggregate `(hook, category)` pairs into a stable list for
-        // the user-facing line. Each Suspicion already carries the
-        // hook + kind, so this is a presentation join — no extra
-        // logic about which signals matter.
-        let detail: Vec<String> = build
-            .suspicions
-            .iter()
-            .map(|s| format!("{}: {}", s.hook, s.kind.description()))
-            .collect();
-        tracing::warn!(
-            code = aube_codes::warnings::WARN_AUBE_SUSPICIOUS_LIFECYCLE_SCRIPT,
-            package = build.spec_key.as_str(),
-            findings = ?detail,
-            "suspicious lifecycle script in {}: {}. Inspect the script in `node_modules/.aube/<dep_path>/node_modules/<name>/package.json` before approving the build.",
-            build.spec_key,
-            detail.join("; ")
-        );
-    }
-}
-
-/// Read a lockfile from `lockfile_dir` and remap its importer key
-/// for the current project from the project's relative-path key to
-/// `"."`, so the rest of the install pipeline can keep treating the
-/// project as the root importer. No-op when `importer_key == "."`.
-fn parse_lockfile_dir_remapped(
-    lockfile_dir: &std::path::Path,
-    importer_key: &str,
-    manifest: &aube_manifest::PackageJson,
-) -> Result<aube_lockfile::LockfileGraph, aube_lockfile::Error> {
-    let mut graph = aube_lockfile::parse_lockfile(lockfile_dir, manifest)?;
-    if importer_key != "."
-        && let Some(deps) = graph.importers.remove(importer_key)
-    {
-        graph.importers.insert(".".to_string(), deps);
-    }
-    Ok(graph)
-}
-
-/// Same as [`parse_lockfile_dir_remapped`] but preserves the detected
-/// kind for callers that need format-aware behavior.
-fn parse_lockfile_dir_remapped_with_kind(
-    lockfile_dir: &std::path::Path,
-    importer_key: &str,
-    manifest: &aube_manifest::PackageJson,
-) -> Result<(aube_lockfile::LockfileGraph, aube_lockfile::LockfileKind), aube_lockfile::Error> {
-    let (mut graph, kind) = aube_lockfile::parse_lockfile_with_kind(lockfile_dir, manifest)?;
-    if importer_key != "."
-        && let Some(deps) = graph.importers.remove(importer_key)
-    {
-        graph.importers.insert(".".to_string(), deps);
-    }
-    Ok((graph, kind))
-}
-
-/// Refuse to operate on a `--lockfile-dir` lockfile that already
-/// records other importers besides the current project. This PR
-/// scopes `--lockfile-dir` to single-project relocation; multi-
-/// project shared lockfiles need workspace coordination (resolve
-/// every importer's deps in one pass, prune packages by union of all
-/// importers) which is out of scope. Without this guard, a second
-/// project pointed at the same dir would silently orphan-strip the
-/// first project's package entries on the next install. Loud-fail
-/// here so the user can move to a workspace setup or pick a
-/// different `lockfileDir`.
-fn guard_against_foreign_importers(
-    lockfile_dir: &std::path::Path,
-    importer_key: &str,
-    graph: &aube_lockfile::LockfileGraph,
-) -> Result<(), aube_lockfile::Error> {
-    // Caller gates on `importer_key != "."`, so any `"."` entry on
-    // disk is itself a project that ran `aube install` directly in
-    // `lockfile_dir` without `--lockfile-dir`. That entry would be
-    // dropped on write, so it counts as foreign.
-    let foreign: Vec<&str> = graph
-        .importers
-        .keys()
-        .map(String::as_str)
-        .filter(|k| *k != importer_key)
-        .collect();
-    if foreign.is_empty() {
-        return Ok(());
-    }
-    Err(aube_lockfile::Error::Parse(
-        lockfile_dir.to_path_buf(),
-        format!(
-            "lockfile already records importers from other projects ({}); \
-             aube does not yet support multi-project shared lockfiles outside a workspace. \
-             Use a `pnpm-workspace.yaml` workspace, or point each project at its own `--lockfile-dir`.",
-            foreign.join(", ")
-        ),
-    ))
-}
-
-/// Write `graph` to `lockfile_dir`, remapping the project's `"."`
-/// importer key to its relative-path key from `lockfile_dir`.
-/// No-op remap when `importer_key == "."`.
-fn write_lockfile_dir_remapped(
-    lockfile_dir: &std::path::Path,
-    importer_key: &str,
-    graph: &aube_lockfile::LockfileGraph,
-    manifest: &aube_manifest::PackageJson,
-    kind: aube_lockfile::LockfileKind,
-) -> Result<std::path::PathBuf, aube_lockfile::Error> {
-    if importer_key == "." {
-        return aube_lockfile::write_lockfile_as(lockfile_dir, graph, manifest, kind);
-    }
-    let mut remapped = graph.clone();
-    let deps = remapped.importers.remove(".").ok_or_else(|| {
-        aube_lockfile::Error::Parse(
-            lockfile_dir.to_path_buf(),
-            format!(
-                "in-memory lockfile graph missing `.` importer; cannot write under key `{importer_key}`"
-            ),
-        )
-    })?;
-    remapped.importers.insert(importer_key.to_string(), deps);
-    aube_lockfile::write_lockfile_as(lockfile_dir, &remapped, manifest, kind)
-}
-
-fn print_already_up_to_date() {
-    if clx::progress::output() == clx::progress::ProgressOutput::Text {
-        return;
-    }
-    use clx::style;
-    use std::io::Write;
-    // Routed through the shared `aube_prefix_line` helper so this
-    // site and `print_install_summary`'s no-op branch can't drift —
-    // both produce `aube VERSION by en.dev · ✓ Already up to date`.
-    let msg = format!(
-        "{} {}",
-        style::egreen("✓").bold(),
-        style::ebold("Already up to date"),
-    );
-    let line = crate::progress::aube_prefix_line(&msg);
-    let _ = writeln!(std::io::stderr(), "{line}");
-}
-
-fn print_direct_dependency_summary(
-    graph: &aube_lockfile::LockfileGraph,
-    manifests: &[(String, aube_manifest::PackageJson)],
-    direct_dep_info: &std::collections::HashMap<String, aube_resolver::DirectDepInfo>,
-) {
-    use clx::style;
-    let importers: Vec<(&String, &Vec<aube_lockfile::DirectDep>)> = graph
-        .importers
-        .iter()
-        .filter(|(_, deps)| !deps.is_empty())
-        .collect();
-    if importers.is_empty() {
-        return;
-    }
-    let show_importer_headers = importers.len() > 1;
-    for (idx, (importer, deps)) in importers.iter().enumerate() {
-        if idx > 0 {
-            eprintln!();
-        }
-        if show_importer_headers {
-            let label = direct_dependency_importer_label(importer, manifests);
-            eprintln!("{}{}", style::ebold(&label), style::edim(":"));
-        }
-        print_direct_dependency_section(
-            graph,
-            deps,
-            aube_lockfile::DepType::Production,
-            direct_dep_info,
-        );
-        print_direct_dependency_section(
-            graph,
-            deps,
-            aube_lockfile::DepType::Optional,
-            direct_dep_info,
-        );
-        print_direct_dependency_section(graph, deps, aube_lockfile::DepType::Dev, direct_dep_info);
-    }
-    eprintln!();
-}
-
-fn direct_dependency_importer_label(
-    importer: &str,
-    manifests: &[(String, aube_manifest::PackageJson)],
-) -> String {
-    manifests
-        .iter()
-        .find(|(path, _)| path == importer)
-        .and_then(|(_, manifest)| manifest.name.clone())
-        .unwrap_or_else(|| importer.to_string())
-}
-
-fn should_print_human_install_summary() -> bool {
-    let flags = super::global_output_flags();
-    !flags.silent && !flags.ndjson
-}
-
-fn print_direct_dependency_section(
-    graph: &aube_lockfile::LockfileGraph,
-    deps: &[aube_lockfile::DirectDep],
-    dep_type: aube_lockfile::DepType,
-    direct_dep_info: &std::collections::HashMap<String, aube_resolver::DirectDepInfo>,
-) {
-    use clx::style;
-    let mut deps: Vec<&aube_lockfile::DirectDep> =
-        deps.iter().filter(|dep| dep.dep_type == dep_type).collect();
-    if deps.is_empty() {
-        return;
-    }
-    deps.sort_by(|a, b| a.name.cmp(&b.name));
-    let label = aube_lockfile::dep_type_label(dep_type);
-    eprintln!("{}{}", style::ebold(label), style::edim(":"));
-    for dep in deps {
-        let version = graph
-            .get_package(&dep.dep_path)
-            .map(|pkg| pkg.version.as_str())
-            .unwrap_or("?");
-        let badges = render_direct_dep_badges(direct_dep_info.get(&dep.dep_path));
-        eprintln!(
-            "{} {}{}{}",
-            style::egreen("+").bold(),
-            dep.name,
-            style::edim(format!("@{version}")),
-            badges,
-        );
-    }
-}
-
-/// Render the trailing badge column for a direct-dep line. Empty string
-/// when there's nothing to flag, otherwise a leading two-space gap and
-/// one or more dim-separated tags (`deprecated`, `latest 2.0.0`). The
-/// caller passes `direct_dep_info.get(dep_path)`, and `direct_dep_info`
-/// only carries entries with at least one signal set — so when `info`
-/// is `Some(...)`, `parts` is guaranteed non-empty.
-fn render_direct_dep_badges(info: Option<&aube_resolver::DirectDepInfo>) -> String {
-    use clx::style;
-    let Some(info) = info else {
-        return String::new();
-    };
-    let mut parts: Vec<String> = Vec::new();
-    if info.deprecated {
-        parts.push(style::eyellow("deprecated").to_string());
-    }
-    if let Some(latest) = &info.latest {
-        parts.push(style::eyellow(format!("latest {latest}")).to_string());
-    }
-    let sep = style::edim(" · ").to_string();
-    format!("  {}", parts.join(&sep))
-}
-
-fn invalidate_changed_aube_entries(
-    aube_dir: &std::path::Path,
-    dep_paths: &[String],
-    virtual_store_dir_max_length: usize,
-) -> usize {
-    let mut removed = 0usize;
-    for dep_path in dep_paths {
-        let path = aube_dir.join(dep_path_to_filename(dep_path, virtual_store_dir_max_length));
-        let result = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
-        match result {
-            Ok(()) => removed += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(
-                code = aube_codes::warnings::WARN_AUBE_DELTA_INVALIDATE_FAILED,
-                "delta: failed to invalidate {}: {e}",
-                path.display()
-            ),
-        }
-    }
-    removed
-}
-
-/// Remove `node_modules/.aube/<encoded_dep_path>` entries that aren't
-/// referenced by the current lockfile graph AND whose last-modified
-/// time is older than `max_age`. The `.aube/` directory accumulates
-/// orphaned entries as dependencies are upgraded or removed; this
-/// pass enforces `modulesCacheMaxAge` (default 7 days) so stale
-/// packages don't live forever.
-///
-/// Runs best-effort: I/O errors are logged and swallowed so a partial
-/// sweep never fails an install that otherwise succeeded. Returns the
-/// number of entries successfully removed so the caller can decide
-/// whether to emit a tracing line.
-///
-/// The sweep identifies orphans by **name**: it builds `in_use` from
-/// `dep_path_to_filename` over the unfiltered lockfile graph, then
-/// removes any entry whose encoded name is absent from that set AND
-/// whose mtime is older than `max_age`. The linker does not refresh
-/// mtimes on cache hits — the `in_use` name check is what guarantees
-/// graph-referenced entries are never removed, regardless of how
-/// stale their on-disk mtime is. Mtime is read via `symlink_metadata`
-/// so that, in global-virtual-store mode where `.aube/<dep_path>` is
-/// a symlink into the shared `~/.cache/aube/virtual-store/`, the
-/// orphan age reflects "when did *this project* last write the
-/// link" rather than the global target's last-materialized time
-/// (which any other project's install can refresh, indefinitely
-/// preserving an otherwise-orphaned entry). Entries we don't
-/// recognize are always preserved: dotfiles (`.patches`, future
-/// sidecars) and the `.aube/node_modules/` hidden hoist tree
-/// populated by `link_hidden_hoist` — that one isn't a
-/// `dep_path_to_filename` output, so it never appears in `in_use`,
-/// and the linker manages its lifecycle on every run independent
-/// of this sweep.
-fn sweep_orphaned_aube_entries(
-    aube_dir: &std::path::Path,
-    graph: &aube_lockfile::LockfileGraph,
-    virtual_store_dir_max_length: usize,
-    max_age: std::time::Duration,
-) -> usize {
-    use aube_lockfile::dep_path_filename::dep_path_to_filename;
-
-    let entries = match std::fs::read_dir(aube_dir) {
-        Ok(e) => e,
-        // No `.aube` directory = nothing to sweep (e.g. fresh CI
-        // install). Not an error.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
-        Err(e) => {
-            tracing::debug!(
-                "modulesCacheMaxAge: cannot read {}: {e}; skipping sweep",
-                aube_dir.display()
-            );
-            return 0;
-        }
-    };
-
-    let in_use: std::collections::HashSet<String> = graph
-        .packages
-        .keys()
-        .map(|dep_path| dep_path_to_filename(dep_path, virtual_store_dir_max_length))
-        .collect();
-
-    let now = std::time::SystemTime::now();
-    let mut removed = 0usize;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        // Dotfiles (`.patches`, future sidecars) are always preserved.
-        if name_str.starts_with('.') {
-            continue;
-        }
-        // `.aube/node_modules/` is the hidden hoist tree populated
-        // by `link_hidden_hoist`, not a `dep_path_to_filename`
-        // output, so it never appears in `in_use`. Removing it
-        // would break Node's parent-walk resolution for packages
-        // inside the virtual store. The hoist is fully managed by
-        // the linker (it sweeps stale entries on every run when
-        // `hoist=false`), so the modulesCacheMaxAge sweep has no
-        // business touching it.
-        if name_str == "node_modules" {
-            continue;
-        }
-        if in_use.contains(name_str.as_ref()) {
-            continue;
-        }
-        // `symlink_metadata` so the mtime reflects the local
-        // `.aube/<dep>` symlink (or directory in CI mode) and not
-        // the shared virtual-store target — see the function-level
-        // docs for why following the symlink is wrong here.
-        let metadata = match entry.path().symlink_metadata() {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::debug!(
-                    "modulesCacheMaxAge: cannot stat {}: {e}",
-                    entry.path().display()
-                );
-                continue;
-            }
-        };
-        let modified = match metadata.modified() {
-            Ok(t) => t,
-            Err(_) => continue, // platform doesn't expose mtime; keep.
-        };
-        let age = now.duration_since(modified).unwrap_or_default();
-        if age < max_age {
-            continue;
-        }
-        let path = entry.path();
-        // `.aube/<dep>` is typically a symlink into the shared
-        // virtual store (global-store mode) or a real directory
-        // containing a materialized copy (CI mode). On older Linux
-        // kernels (pre-5.6, before `openat2`), `remove_dir_all`
-        // can follow a symlink and recursively delete the link's
-        // *target* — which here would be the shared
-        // `~/.cache/aube/virtual-store/<entry>` that other projects
-        // depend on. Route symlinks straight to `remove_file` so
-        // only the local link is unlinked; only call
-        // `remove_dir_all` for real directories, with `remove_file`
-        // as a safety net for Windows junctions / platforms where
-        // either call may decline the other's file type.
-        let file_type = metadata.file_type();
-        let result = if file_type.is_symlink() {
-            std::fs::remove_file(&path)
-        } else {
-            std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path))
-        };
-        match result {
-            Ok(()) => removed += 1,
-            Err(e) => tracing::debug!(
-                "modulesCacheMaxAge: failed to remove {}: {e}",
-                path.display()
-            ),
-        }
-    }
-    removed
 }
 
 fn filter_graph_to_workspace_selection(
