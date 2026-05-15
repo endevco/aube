@@ -1,6 +1,12 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
+pub(super) struct InstallPathInfo {
+    pub(super) name: String,
+    pub(super) dep_path: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct RawNpmLockfile {
     #[serde(rename = "lockfileVersion")]

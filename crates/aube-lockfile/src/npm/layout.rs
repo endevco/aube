@@ -1,7 +1,7 @@
 use crate::{DirectDep, LockedPackage};
 use std::collections::{BTreeMap, VecDeque};
 
-use super::read::InstallPathInfo;
+use super::raw::InstallPathInfo;
 
 /// Resolve a transitive dep name from the perspective of a package at
 /// `pkg_install_path` using npm's nested-resolution walk: look first inside

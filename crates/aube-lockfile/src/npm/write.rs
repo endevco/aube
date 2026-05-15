@@ -119,14 +119,9 @@ struct WriteNpmPeerDepMeta {
 /// Lossy areas (documented so callers know what to expect):
 ///  - Peer-contextualized variants of the same `name@version` collapse
 ///    to one entry. npm's layout can't represent per-context peers.
-///  - `resolved` tarball URLs are omitted for non-aliased packages —
-///    we don't persist the origin URL in [`LockedPackage`]. npm's own
-///    consumers tolerate missing `resolved` (they refetch from the
-///    registry); aube's own parser only needs `integrity`, so round-trip
-///    through the parser is lossless for the data it inspects. Aliased
-///    entries always emit `resolved:` because the install-path name is
-///    the alias — without the URL the consumer can't recover the real
-///    registry location.
+///  - Registry `resolved` tarball URLs are emitted when they were
+///    present in the parsed graph. Graphs synthesized without
+///    `tarball_url` fall back to npm's tolerated no-`resolved` form.
 ///  - Non-git local source entries (`file:`, URL tarballs) aren't
 ///    emitted yet. Git sources emit their pinned `resolved:` URL.
 ///    Workspace `link:` packages are emitted as importer entries plus
