@@ -17,6 +17,7 @@ mod frozen;
 mod git_prepare;
 mod layout;
 mod lifecycle;
+mod link;
 mod lockfile_dir;
 mod materialize;
 pub(crate) mod node_gyp_bootstrap;
@@ -30,7 +31,6 @@ mod workspace;
 use advisory::resolve_osv_routing_settings;
 pub use args::{InstallArgs, InstallOptions};
 pub(crate) use bin_linking::{PkgJsonCache, link_dep_bins, materialized_pkg_dir};
-use bin_linking::{link_bin_entries, link_bins, link_bins_for_dep};
 pub use dep_selection::DepSelection;
 pub(super) use fetch::fetch_packages;
 use fetch::{
@@ -69,7 +69,7 @@ use settings::{
 use summary::{
     print_already_up_to_date, print_direct_dependency_summary, should_print_human_install_summary,
 };
-use sweep::{invalidate_changed_aube_entries, sweep_orphaned_aube_entries};
+use sweep::sweep_orphaned_aube_entries;
 use workspace::{
     filter_graph_to_importers, filter_graph_to_workspace_selection, importer_project_dir,
     order_lifecycle_manifests, write_per_project_lockfiles,
@@ -2436,363 +2436,39 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
         crate::progress::safe_eprintln(&format!("warn: {w}"));
     }
 
-    // 6. Link node_modules
-    let phase_start = std::time::Instant::now();
-    // Resolve `packageImportMethod`. CLI override wins, then
-    // `.npmrc` / `pnpm-workspace.yaml`, then `auto` (detect). Unknown
-    // CLI values hard-error (preserving the explicit `--package-import-method`
-    // diagnostic). Settings-file values flow through the generated typed
-    // accessor, which collapses unknown values to `None` so they behave
-    // like an absent setting.
-    let strategy = resolve_link_strategy(&cwd, &settings_ctx, planned_gvs)?;
-    if let Some(p) = prog_ref {
-        p.set_phase("linking");
-    }
-    tracing::debug!("Link strategy: {strategy:?}");
-
-    let shamefully_hoist = aube_settings::resolved::shamefully_hoist(&settings_ctx);
-    let public_hoist_pattern = aube_settings::resolved::public_hoist_pattern(&settings_ctx);
-    let hoist = aube_settings::resolved::hoist(&settings_ctx);
-    let hoist_pattern = aube_settings::resolved::hoist_pattern(&settings_ctx);
-    let hoist_workspace_packages = aube_settings::resolved::hoist_workspace_packages(&settings_ctx);
-    let dedupe_direct_deps = aube_settings::resolved::dedupe_direct_deps(&settings_ctx);
-    let virtual_store_only = aube_settings::resolved::virtual_store_only(&settings_ctx);
-    // Resolve the layout mode. CLI override wins, then `.npmrc` /
-    // `pnpm-workspace.yaml`, then default (Isolated). `pnp` is a
-    // hard error regardless of source — we don't ship a PnP runtime,
-    // so accepting it would silently mislead. The CLI path hard-errors
-    // on an unknown value so typos surface immediately; settings-file
-    // values with an unknown spelling fall through to the generated
-    // default today, so a `.npmrc` typo degrades to `isolated`
-    // without a warning. Worth revisiting if that ever bites.
-    let reject_pnp =
-        miette!("node-linker=pnp is not supported by aube; use `isolated` (default) or `hoisted`");
-    let node_linker_cli = aube_settings::values::string_from_cli("nodeLinker", settings_ctx.cli);
-    let node_linker = if let Some(cli) = node_linker_cli.as_deref() {
-        let trimmed = cli.trim();
-        if trimmed.eq_ignore_ascii_case("pnp") {
-            return Err(reject_pnp);
-        }
-        trimmed.parse::<aube_linker::NodeLinker>().map_err(|_| {
-            miette!("unknown --node-linker value `{cli}`; expected `isolated` or `hoisted`")
-        })?
-    } else {
-        match aube_settings::resolved::node_linker(&settings_ctx) {
-            aube_settings::resolved::NodeLinker::Pnp => return Err(reject_pnp),
-            aube_settings::resolved::NodeLinker::Hoisted => aube_linker::NodeLinker::Hoisted,
-            aube_settings::resolved::NodeLinker::Isolated => aube_linker::NodeLinker::Isolated,
-        }
-    };
-    tracing::debug!("node-linker: {:?}", node_linker);
-
-    let mut linker = aube_linker::Linker::new(store.as_ref(), strategy)
-        .with_shamefully_hoist(shamefully_hoist)
-        .with_public_hoist_pattern(&public_hoist_pattern)
-        .with_hoist(hoist)
-        .with_hoist_pattern(&hoist_pattern)
-        .with_hoist_workspace_packages(hoist_workspace_packages)
-        .with_dedupe_direct_deps(dedupe_direct_deps)
-        .with_virtual_store_dir_max_length(virtual_store_dir_max_length)
-        .with_node_linker(node_linker)
-        .with_link_concurrency(link_concurrency_setting)
-        .with_virtual_store_only(virtual_store_only)
-        .with_modules_dir_name(modules_dir_name.clone())
-        .with_aube_dir_override(aube_dir.clone());
-    if let Some(enabled) = use_global_virtual_store_override {
-        linker = linker.with_use_global_virtual_store(enabled);
-    }
-
-    // Patches for delta-fingerprint folding and linker injection.
-    // Hoisted ahead of subtree-hash so re-patched packages land in
-    // the `changed` bucket and side-effects skip can't trust a stale
-    // marker.
-    let (patches_for_linker, patch_hashes) = crate::patches::load_patches_for_linker(&cwd)?;
-
-    // Compute leaf + subtree hashes together when both are needed.
-    // Linker invalidation reads `current_subtree_hashes`; the late
-    // state writeback reads the leaf map. Sharing the BLAKE3 leaf
-    // pass cuts a duplicate `compute_package_hashes` traversal.
-    let (current_leaf_hashes, current_subtree_hashes) = if !virtual_store_only
-        && matches!(node_linker, aube_linker::NodeLinker::Isolated)
-        && !opts.dep_selection.is_filtered()
-        && opts.workspace_filter.is_empty()
-    {
-        let (leaf, subtree) =
-            delta::compute_leaf_and_subtree_hashes(&graph_for_link, &patch_hashes);
-        (Some(leaf), Some(subtree))
-    } else {
-        (None, None)
-    };
-    if !linker.uses_global_virtual_store()
-        && let Some(current_subtree_hashes) = current_subtree_hashes.as_ref()
-        && let Some(prior_subtrees) = state::read_state_subtree_hashes(&cwd)
-    {
-        let touched = delta::changed_subtree_roots(&prior_subtrees, current_subtree_hashes);
-        let invalidated =
-            invalidate_changed_aube_entries(&aube_dir, &touched, virtual_store_dir_max_length);
-        if invalidated > 0 {
-            tracing::debug!("delta: invalidated {invalidated} changed .aube entry/entries");
-        }
-    }
-
-    // 6a. Pre-compute content-addressed virtual-store hashes.
-    //     Only necessary when linking into the shared global virtual
-    //     store — in per-project mode (`CI=1`) the `.aube/<dep_path>`
-    //     directories are already isolated so there's nothing to
-    //     address. Folding engine state into the subdir name for any
-    //     build-allowed package (plus every ancestor in its dep
-    //     graph) keeps two projects resolving the same `(integrity,
-    //     deps)` under different node / arch combos from stomping on
-    //     each other; pure-JS packages with no build-allowed
-    //     descendants get engine-agnostic hashes and stay shared.
-    let patch_hash_fn = |name: &str, version: &str| -> Option<String> {
-        let key = format!("{name}@{version}");
-        patch_hashes.get(&key).cloned()
-    };
-
-    if linker.uses_global_virtual_store() {
-        // Reuse the prewarm task's `compute_graph_hashes` output when
-        // the link-phase graph matches what the prewarm hashed. The
-        // prewarm hashed the unfiltered post-resolve graph; if no
-        // dep-selection or workspace filter applied, `graph_for_link`
-        // == that graph by node count + key set, so the cached
-        // hashes are byte-identical to a fresh compute. Falling
-        // through to a fresh compute keeps the contract simple
-        // whenever the graphs diverge.
-        let cached_hashes = prewarm_graph_hashes.as_ref().filter(|arc| {
-            arc.node_hash.len() == graph_for_link.packages.len()
-                && graph_for_link
-                    .packages
-                    .keys()
-                    .all(|k| arc.node_hash.contains_key(k))
-        });
-        let graph_hashes = if let Some(arc) = cached_hashes {
-            (**arc).clone()
-        } else {
-            let engine = node_version
-                .as_deref()
-                .map(aube_lockfile::graph_hash::engine_name_default);
-            let allow = |name: &str, version: &str| {
-                matches!(
-                    build_policy.decide(name, version),
-                    aube_scripts::AllowDecision::Allow
-                )
-            };
-            aube_lockfile::graph_hash::compute_graph_hashes_with_patches(
-                &graph_for_link,
-                &allow,
-                engine.as_ref(),
-                &patch_hash_fn,
-            )
-        };
-        linker = linker.with_graph_hashes(graph_hashes);
-    }
-    if !patches_for_linker.is_empty() {
-        linker = linker.with_patches(patches_for_linker);
-    }
-    let stats = if has_workspace {
-        linker
-            .link_workspace(&cwd, &graph_for_link, &package_indices, &ws_dirs)
-            .into_diagnostic()
-            .wrap_err("failed to link workspace node_modules")?
-    } else {
-        linker
-            .link_all(&cwd, &graph_for_link, &package_indices)
-            .into_diagnostic()
-            .wrap_err("failed to link node_modules")?
-    };
-
-    tracing::debug!(
-        "phase:link {:.1?} ({} files)",
-        phase_start.elapsed(),
-        stats.files_linked
-    );
-    phase_timings.record("link", phase_start.elapsed());
-
-    // Apply `dependenciesMeta.<name>.injected` overrides. Only runs in
-    // workspace + isolated mode: hoisted layouts don't have a
-    // `.aube/<dep_path>/` virtual store for `apply_injected` to
-    // sibling-link against, and hoisted resolution already walks the
-    // consumer's root-level tree so the peer-context guarantee
-    // injection is meant to give is already in place. Timed
-    // separately so the `phase:link` metric isn't polluted with copy
-    // work. Skipped under `virtualStoreOnly` — the workspace member
-    // trees that `apply_injected` writes into don't exist.
-    if has_workspace
-        && matches!(node_linker, aube_linker::NodeLinker::Isolated)
-        && !virtual_store_only
-    {
-        let inject_start = std::time::Instant::now();
-        let injected_count = super::inject::apply_injected(
-            &cwd,
-            &modules_dir_name,
-            &aube_dir,
-            virtual_store_dir_max_length,
-            &graph_for_link,
-            &manifests,
-            &ws_dirs,
-        )?;
-        if injected_count > 0 {
-            tracing::debug!(
-                "phase:inject {:.1?} ({injected_count} workspace deps injected)",
-                inject_start.elapsed()
-            );
-        }
-        phase_timings.record("inject", inject_start.elapsed());
-    }
-
-    // 7. Link .bin entries (root + each workspace package).
-    //    Use graph_for_link so dev-only bins aren't linked under --prod.
-    //    In hoisted mode, the placement map returned from linking
-    //    tells bin-resolution where each dep ended up on disk
-    //    instead of assuming the `.aube/<dep_path>` convention.
-    //    Skipped under `virtualStoreOnly` — the top-level
-    //    `node_modules/.bin` directory is not meant to exist in that
-    //    mode.
+    let link::LinkPhaseOutput {
+        stats,
+        node_linker,
+        virtual_store_only,
+        current_leaf_hashes,
+        current_subtree_hashes,
+        patch_hashes,
+    } = link::run_link_phase(link::LinkPhaseInput {
+        cwd: &cwd,
+        settings_ctx: &settings_ctx,
+        store: store.as_ref(),
+        graph_for_link: &graph_for_link,
+        package_indices: &package_indices,
+        ws_dirs: &ws_dirs,
+        manifests: &manifests,
+        manifest: &manifest,
+        build_policy: &build_policy,
+        node_version: node_version.as_deref(),
+        prewarm_graph_hashes: prewarm_graph_hashes.as_ref(),
+        aube_dir: &aube_dir,
+        modules_dir_name: &modules_dir_name,
+        virtual_store_dir_max_length,
+        link_concurrency_setting,
+        use_global_virtual_store_override,
+        planned_gvs,
+        has_workspace,
+        dep_selection_filtered: opts.dep_selection.is_filtered(),
+        workspace_filter_empty: opts.workspace_filter.is_empty(),
+        ignore_scripts: opts.ignore_scripts,
+        prog_ref,
+        phase_timings: &mut phase_timings,
+    })?;
     let placements_ref = stats.hoisted_placements.as_ref();
-    let phase_start = std::time::Instant::now();
-    // `extendNodePath` controls whether shim scripts export `NODE_PATH`.
-    // `preferSymlinkedExecutables` only matters on POSIX: `Some(true)`
-    // keeps the symlink layout, `Some(false)` swaps in a shell shim so
-    // `extendNodePath` can actually take effect (bare symlinks can't set
-    // env vars). When the user leaves it unset, default to shim under the
-    // isolated linker (NODE_PATH matters there so transitives hoisted to
-    // `.aube/node_modules/` resolve from a shimmed bin) and symlink under
-    // hoisted (every dep is already on the root `node_modules/` walk-up
-    // path, so NODE_PATH is unnecessary). Mirrors pnpm's effective
-    // default. Windows always writes cmd/ps1/sh wrappers regardless,
-    // since real symlinks there need Developer Mode.
-    let extend_node_path = aube_settings::resolved::extend_node_path(&settings_ctx);
-    let isolated = !matches!(node_linker, aube_linker::NodeLinker::Hoisted);
-    let prefer_symlinked_executables =
-        aube_settings::resolved::prefer_symlinked_executables(&settings_ctx)
-            .or(isolated.then_some(false));
-    // Only the isolated layout has a hidden modules dir worth exposing
-    // via NODE_PATH — under `node-linker=hoisted` every dep is already
-    // on the top-level `node_modules/` walk-up path, so appending
-    // `.aube/node_modules/` would just stuff a non-existent entry into
-    // every shim. `add.rs` (global install, hoisted-shaped) passes
-    // `None` for the same reason.
-    let hidden_modules_dir = aube_dir.join("node_modules");
-    let shim_opts = aube_linker::BinShimOptions {
-        extend_node_path,
-        prefer_symlinked_executables,
-        hidden_modules_dir: isolated.then_some(hidden_modules_dir.as_path()),
-    };
-    if !virtual_store_only {
-        let mut pkg_json_cache = bin_linking::PkgJsonCache::new();
-        let mut ws_pkg_json_cache = bin_linking::WsPkgJsonCache::new();
-        let ws_dirs_for_bins = has_workspace.then_some(&ws_dirs);
-        link_bins(
-            &cwd,
-            &modules_dir_name,
-            &aube_dir,
-            &graph_for_link,
-            virtual_store_dir_max_length,
-            placements_ref,
-            shim_opts,
-            &mut pkg_json_cache,
-            ws_dirs_for_bins,
-            &mut ws_pkg_json_cache,
-        )?;
-        // Root importer's own `bin` (discussion #228). Runs after
-        // `link_bins` so a self-bin overrides a same-named dep bin.
-        // Self-bin targets are files in the importer's own tree — often
-        // build outputs that don't exist at install time, or are
-        // later restored from an `actions/upload-artifact` round-trip
-        // that strips the POSIX exec bit. A POSIX shim (shell script
-        // that invokes `node`) is itself `+x` and does not rely on
-        // the target's exec bit, so `aube run` works in both flows.
-        if let Some(bin) = manifest.extra.get("bin") {
-            let root_bin_dir = cwd.join(&modules_dir_name).join(".bin");
-            let self_shim_opts = aube_linker::BinShimOptions {
-                prefer_symlinked_executables: Some(false),
-                ..shim_opts
-            };
-            link_bin_entries(
-                &root_bin_dir,
-                &cwd,
-                manifest.name.as_deref(),
-                bin,
-                self_shim_opts,
-            )?;
-        }
-        if has_workspace {
-            for (importer_path, deps) in &graph_for_link.importers {
-                if importer_path == "." {
-                    continue;
-                }
-                // pnpm v9 emits nested peer-context importer entries
-                // (e.g. `a/node_modules/@scope/b`). Those paths are
-                // reached through the workspace-to-workspace symlink
-                // chain, not distinct directories to receive their own
-                // `.bin`. Walking them here duplicates work on the
-                // physical workspace and, at monorepo depth, pushes the
-                // kernel's per-lookup symlink budget over SYMLOOP_MAX.
-                if !aube_linker::is_physical_importer(importer_path) {
-                    continue;
-                }
-                let pkg_dir = cwd.join(importer_path);
-                let bin_dir = pkg_dir.join(&modules_dir_name).join(".bin");
-                std::fs::create_dir_all(&bin_dir).into_diagnostic()?;
-                for dep in deps {
-                    if let Some(ws_dir) = ws_dirs.get(&dep.name) {
-                        bin_linking::link_bins_for_workspace_dep(
-                            &mut ws_pkg_json_cache,
-                            &bin_dir,
-                            ws_dir,
-                            &dep.name,
-                            shim_opts,
-                        )?;
-                    } else {
-                        link_bins_for_dep(
-                            &mut pkg_json_cache,
-                            &aube_dir,
-                            &bin_dir,
-                            &graph_for_link,
-                            &dep.dep_path,
-                            &dep.name,
-                            virtual_store_dir_max_length,
-                            placements_ref,
-                            shim_opts,
-                        )?;
-                    }
-                }
-                // Workspace member's own `bin` (discussion #228). `manifests`
-                // was parsed once upstream and keys by importer relpath.
-                // See the root self-bin call site for why this forces a
-                // POSIX shim instead of a symlink.
-                if let Some((_, member_manifest)) =
-                    manifests.iter().find(|(p, _)| p == importer_path)
-                    && let Some(bin) = member_manifest.extra.get("bin")
-                {
-                    let self_shim_opts = aube_linker::BinShimOptions {
-                        prefer_symlinked_executables: Some(false),
-                        ..shim_opts
-                    };
-                    link_bin_entries(
-                        &bin_dir,
-                        &pkg_dir,
-                        member_manifest.name.as_deref(),
-                        bin,
-                        self_shim_opts,
-                    )?;
-                }
-            }
-        }
-        if !opts.ignore_scripts && build_policy.has_any_allow_rule() {
-            link_dep_bins(
-                &aube_dir,
-                &graph_for_link,
-                virtual_store_dir_max_length,
-                placements_ref,
-                shim_opts,
-                &mut pkg_json_cache,
-            )?;
-        }
-        tracing::debug!("phase:link_bins {:.1?}", phase_start.elapsed());
-        phase_timings.record("link_bins", phase_start.elapsed());
-    }
 
     // Tear down the progress display before running post-link lifecycle
     // scripts or printing the final summary — scripts write directly to
