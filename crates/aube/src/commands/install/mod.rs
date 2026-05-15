@@ -15,6 +15,7 @@ mod dep_selection;
 mod fetch;
 mod frozen;
 mod git_prepare;
+mod layout;
 mod lifecycle;
 mod lockfile_dir;
 mod materialize;
@@ -46,8 +47,7 @@ use lifecycle::{
     validate_required_scripts,
 };
 use lockfile_dir::{
-    guard_against_foreign_importers, parse_lockfile_dir_remapped,
-    parse_lockfile_dir_remapped_with_kind, write_lockfile_dir_remapped,
+    parse_lockfile_dir_remapped, parse_lockfile_dir_remapped_with_kind, write_lockfile_dir_remapped,
 };
 use materialize::{
     GvsPrewarmInputs, combine_install_pipeline_errors, materialize_channel, spawn_gvs_prewarm,
@@ -285,167 +285,22 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
     let settings_ctx = files.ctx(&raw_workspace, &opts.env_snapshot, &opts.cli_flags);
     super::configure_script_settings(&settings_ctx);
 
-    // `--lockfile-dir` / `lockfileDir`: relocate `aube-lock.yaml` to a
-    // different directory than the project root. The project becomes
-    // an importer keyed by its relative path from the lockfile dir.
-    // Defaults to the project root → importer key `.` → back-compat
-    // with every existing install. Multi-project shared lockfiles
-    // (`pnpm-workspace.yaml`, `sharedWorkspaceLockfile`) are out of
-    // scope here — see the read-side guard in
-    // `parse_lockfile_dir_remapped`.
-    //
-    // Relative paths resolve against the project root, not cwd
-    // (pnpm convention). Both sides are canonicalized so equality and
-    // `pathdiff` work regardless of symlinks or `./project/..` style
-    // inputs (`cwd` itself originates from `find_project_root`, which
-    // doesn't canonicalize).
-    let (lockfile_dir, lockfile_importer_key): (std::path::PathBuf, String) =
-        match aube_settings::resolved::lockfile_dir(&settings_ctx) {
-            Some(raw) => {
-                let raw_path = std::path::Path::new(&raw);
-                let resolved = if raw_path.is_absolute() {
-                    raw_path.to_path_buf()
-                } else {
-                    cwd.join(raw_path)
-                };
-                // pnpm creates the lockfile directory on demand; mirror that
-                // so users can point at a not-yet-materialized shared dir.
-                std::fs::create_dir_all(&resolved)
-                    .into_diagnostic()
-                    .wrap_err_with(|| format!("--lockfile-dir: {}", resolved.display()))?;
-                let canon = std::fs::canonicalize(&resolved)
-                    .into_diagnostic()
-                    .wrap_err_with(|| format!("--lockfile-dir: {}", resolved.display()))?;
-                let canon_cwd = std::fs::canonicalize(&cwd).into_diagnostic()?;
-                if canon == canon_cwd {
-                    (cwd.clone(), ".".to_string())
-                } else {
-                    let key = pathdiff::diff_paths(&canon_cwd, &canon)
-                        .map(|p| {
-                            // Lockfile importer keys use forward slashes on every
-                            // platform so committed lockfiles stay portable across
-                            // Windows ↔ Unix CI.
-                            let s = p.to_string_lossy().into_owned();
-                            if std::path::MAIN_SEPARATOR == '/' {
-                                s
-                            } else {
-                                s.replace(std::path::MAIN_SEPARATOR, "/")
-                            }
-                        })
-                        .ok_or_else(|| {
-                            miette!(
-                                "lockfile-dir {} cannot be related to project {}",
-                                canon.display(),
-                                canon_cwd.display()
-                            )
-                        })?;
-                    (canon, key)
-                }
-            }
-            None => (cwd.clone(), ".".to_string()),
-        };
-
-    // Fail fast on multi-project shared lockfiles (see
-    // `guard_against_foreign_importers`). The downstream lockfile-read
-    // sites only fire on `Fix`/`Prefer`/`--lockfile-only` paths, so a
-    // `--no-frozen-lockfile` install pointed at someone else's lockfile
-    // dir would silently overwrite their entries — this guard moves
-    // the check ahead of the resolver so it fires regardless of
-    // FrozenMode. `NotFound` means we're the first project writing
-    // here; that's exactly the supported case.
-    if lockfile_importer_key != "." {
-        match aube_lockfile::parse_lockfile(&lockfile_dir, &manifest) {
-            Ok(graph) => {
-                guard_against_foreign_importers(&lockfile_dir, &lockfile_importer_key, &graph)
-                    .map_err(miette::Report::new)?;
-            }
-            Err(aube_lockfile::Error::NotFound(_)) => {}
-            Err(e) => return Err(miette::Report::new(e)).wrap_err("failed to parse lockfile"),
-        }
-    }
-
-    // `modulesDir` controls the project-level directory name that
-    // holds the top-level `<name>` entries. Defaults to
-    // `"node_modules"` — Node's own module resolution algorithm still
-    // walks up looking for a literal `node_modules/`, so users who
-    // change this need to point `NODE_PATH` at the new directory
-    // themselves. Resolved once here and threaded into the linker,
-    // scripts runner, and every command helper that touches the
-    // project-level directory — the inner virtual-store paths
-    // (`.aube/<dep>/node_modules/<name>`) keep the literal name that
-    // Node requires when walking up from inside a package.
-    //
-    let modules_dir_name = aube_settings::resolved::modules_dir(&settings_ctx);
-    // `virtualStoreDir` controls the per-project `.aube/<dep>/node_modules/`
-    // tree. Resolved once here and threaded into the linker (via
-    // `with_aube_dir_override`), the engines check,
-    // `fetch_packages_with_root`'s "already linked" fast path,
-    // `materialized_pkg_dir`, and the orphan sweep — every read-side
-    // and write-side caller needs to land on the same path so a user
-    // who sets `virtualStoreDir` to a custom location still gets a
-    // coherent install. Relative paths and `~` are expanded against
-    // the project root inside `resolve_virtual_store_dir`; unset
-    // values derive from `modulesDir` (matching pnpm's
-    // `<modulesDir>/.pnpm` default).
-    let aube_dir = super::resolve_virtual_store_dir(&settings_ctx, &cwd);
-
-    // Whether this install reads or writes a lockfile. Defaults to
-    // true (npm/pnpm parity). Set `lockfile=false` in `.npmrc` /
-    // `pnpm-workspace.yaml` to run a pure resolver-driven install with
-    // no `aube-lock.yaml` write — equivalent to `npm install
-    // --no-package-lock`. Combined with `--lockfile-only` the two
-    // options contradict, so we reject that combination up front.
-    //
-    // `--frozen-lockfile` (which sets `strict_no_lockfile=true`) is a
-    // similar contradiction: "fail hard if the lockfile doesn't match"
-    // makes no sense without a lockfile. Reject that too so the error
-    // points at the actual conflict instead of falling through to the
-    // generic "no lockfile found and --frozen-lockfile is set" path.
-    let lockfile_enabled = aube_settings::resolved::lockfile(&settings_ctx);
-    // `sharedWorkspaceLockfile=false` flips the workspace-install layout:
-    // each member writes its own lockfile next to its `package.json`
-    // instead of a single root lockfile recording every importer. Only
-    // affects the lockfile *write* phase — the resolver still runs once
-    // over the whole workspace so `workspace:*` deps resolve correctly.
-    // The auto-install state file and frozen-lockfile fast path stay
-    // anchored at the workspace root, so installs under this layout
-    // re-resolve more eagerly than shared installs do.
-    let shared_workspace_lockfile =
-        aube_settings::resolved::shared_workspace_lockfile(&settings_ctx);
-    // `enableModulesDir=false` is pnpm's persistent equivalent of
-    // `--lockfile-only`: resolve + write the lockfile, but don't
-    // populate `node_modules/` (no virtual store, no top-level
-    // symlinks, no lifecycle scripts). We collapse it onto the
-    // existing `lockfile_only` flag so every downstream branch stays
-    // in one place.
-    let modules_dir_enabled = aube_settings::resolved::enable_modules_dir(&settings_ctx);
-    let lockfile_only_effective = opts.lockfile_only || !modules_dir_enabled;
-    if !lockfile_enabled && opts.lockfile_only {
-        return Err(miette!(
-            "--lockfile-only is incompatible with lockfile=false; \
-             remove one or the other"
-        ));
-    }
-    if !lockfile_enabled && !modules_dir_enabled {
-        // Both resolved-side and link-side suppression active — there
-        // is literally nothing to do. Error out so users see the
-        // conflict instead of staring at a silent no-op install.
-        return Err(miette!(
-            "enableModulesDir=false is incompatible with lockfile=false; \
-             remove one or the other"
-        ));
-    }
-    if !lockfile_enabled && opts.strict_no_lockfile {
-        return Err(miette!(
-            "--frozen-lockfile is incompatible with lockfile=false; \
-             remove one or the other"
-        ));
-    }
-    let lockfile_include_tarball_url =
-        aube_settings::resolved::lockfile_include_tarball_url(&settings_ctx);
-    tracing::debug!(
-        "lockfile: enabled={lockfile_enabled}, include-tarball-url={lockfile_include_tarball_url}"
-    );
+    let layout::InstallLayoutConfig {
+        lockfile_dir,
+        lockfile_importer_key,
+        modules_dir_name,
+        aube_dir,
+        lockfile_enabled,
+        shared_workspace_lockfile,
+        lockfile_only_effective,
+        lockfile_include_tarball_url,
+    } = layout::resolve_install_layout(
+        &cwd,
+        &manifest,
+        &settings_ctx,
+        opts.lockfile_only,
+        opts.strict_no_lockfile,
+    )?;
 
     // Branch-lockfile merge — run *before* any lockfile parsing so the
     // normal read path picks up the merged `aube-lock.yaml`. Triggered
