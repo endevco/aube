@@ -4,20 +4,6 @@ pub(super) fn is_retriable_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
-/// Refuse a response whose declared `Content-Length` exceeds `cap`
-/// before reading the body. A hostile registry (or MITM on a
-/// compromised mirror) could otherwise stream gigabytes into the
-/// resolver and OOM the install. Servers that omit `Content-Length`
-/// (chunked transfer) still reach `bytes()` below, where the read is
-/// bounded by the caller's operational timeout. The full-streaming
-/// cap-while-reading variant is left for a follow-up, since it needs
-/// a `futures` / `tokio-stream` dep that the crate does not yet pull
-/// in.
-///
-/// A `cap` of `0` disables the check entirely — an escape hatch for
-/// users who need to pull packuments that exceed the default (e.g.
-/// packages with very long release histories) and accept the DoS
-/// exposure on the trusted-registry side.
 /// Stream-and-count read of a response body that enforces `cap` even
 /// when the server omits `Content-Length` (chunked transfer encoding).
 /// `check_body_cap` only inspects the precheck header; this function
@@ -90,6 +76,17 @@ pub(super) async fn read_body_capped_streaming_sha512(
     Ok((buf.freeze(), digest))
 }
 
+/// Refuse a response whose declared `Content-Length` exceeds `cap`
+/// before reading the body. A hostile registry (or MITM on a
+/// compromised mirror) could otherwise stream gigabytes into the
+/// resolver and OOM the install. Servers that omit `Content-Length`
+/// still reach the capped read helpers, where chunked bodies are
+/// bounded while streaming.
+///
+/// A `cap` of `0` disables the check entirely — an escape hatch for
+/// users who need to pull packuments that exceed the default (e.g.
+/// packages with very long release histories) and accept the DoS
+/// exposure on the trusted-registry side.
 pub(super) fn check_body_cap(resp: &reqwest::Response, cap: u64, label: &str) -> Result<(), Error> {
     if cap == 0 {
         return Ok(());

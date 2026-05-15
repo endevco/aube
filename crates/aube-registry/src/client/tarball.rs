@@ -4,7 +4,7 @@ use super::body::{
 };
 use crate::{Error, NetworkMode};
 
-fn validate_tarball_url(client: &RegistryClient, url: &str) -> Result<String, Error> {
+fn validate_tarball_url(client: &RegistryClient, url: &str) -> Result<(), Error> {
     // Refuse non-http(s) tarball URLs at the aube boundary so
     // attacker-controlled `dist.tarball` from a hostile mirror
     // cannot reach `file:///` (local file disclosure) or the
@@ -24,7 +24,7 @@ fn validate_tarball_url(client: &RegistryClient, url: &str) -> Result<String, Er
     if client.network_mode == NetworkMode::Offline {
         return Err(Error::Offline(format!("tarball {safe_url}")));
     }
-    Ok(safe_url)
+    Ok(())
 }
 
 impl RegistryClient {
@@ -131,8 +131,8 @@ impl RegistryClient {
                         aube_util::diag::jstr(&aube_util::url::redact_url(url))
                     )
                 });
-        let safe_url = validate_tarball_url(self, url)?;
-
+        validate_tarball_url(self, url)?;
+        let safe_url = aube_util::url::redact_url(url);
         let label = format!("tarball {safe_url}");
         let max_attempts = self.fetch_policy.retries.saturating_add(1);
         let mut timeout_retries: u32 = 0;
