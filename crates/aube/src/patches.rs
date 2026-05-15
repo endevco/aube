@@ -230,7 +230,9 @@ pub fn upsert_patched_dependency(cwd: &Path, key: &str, rel_patch_path: &str) ->
 }
 
 /// Drop an entry from `patchedDependencies` in whichever file declares
-/// it (workspace yaml, `package.json#pnpm.patchedDependencies`,
+/// it (workspace yaml, Bun's top-level
+/// `package.json#patchedDependencies`,
+/// `package.json#pnpm.patchedDependencies`,
 /// `package.json#aube.patchedDependencies`, or any combination).
 /// Returns the files that were rewritten — empty when no location held
 /// the entry. Each side peeks before rewriting so the no-op case
@@ -244,13 +246,60 @@ pub fn remove_patched_dependency(cwd: &Path, key: &str) -> Result<Vec<PathBuf>> 
     {
         rewritten.push(ws_path);
     }
-    if aube_manifest::workspace::remove_setting_entry(cwd, "patchedDependencies", key)
-        .map_err(miette::Report::new)
-        .wrap_err("failed to write package.json")?
-    {
+    let removed_namespaced =
+        aube_manifest::workspace::remove_setting_entry(cwd, "patchedDependencies", key)
+            .map_err(miette::Report::new)
+            .wrap_err("failed to write package.json")?;
+    let removed_bun =
+        remove_bun_patched_dependency(cwd, key).wrap_err("failed to write package.json")?;
+    if removed_namespaced || removed_bun {
         rewritten.push(cwd.join("package.json"));
     }
     Ok(rewritten)
+}
+
+fn remove_bun_patched_dependency(cwd: &Path, key: &str) -> Result<bool> {
+    let path = cwd.join("package.json");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(&path)
+        .into_diagnostic()
+        .map_err(|e| miette!("failed to read {}: {e}", path.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)
+        .into_diagnostic()
+        .map_err(|e| miette!("failed to parse {}: {e}", path.display()))?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| miette!("package.json is not an object"))?;
+    let before = obj.clone();
+
+    let mut remove_empty_map = false;
+    let removed = if let Some(patched) = obj
+        .get_mut("patchedDependencies")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let removed = patched.remove(key).is_some();
+        remove_empty_map = patched.is_empty();
+        removed
+    } else {
+        false
+    };
+    if remove_empty_map {
+        obj.remove("patchedDependencies");
+    }
+    if *obj == before {
+        return Ok(removed);
+    }
+
+    let mut out = serde_json::to_string_pretty(&value)
+        .into_diagnostic()
+        .map_err(|e| miette!("failed to serialize {}: {e}", path.display()))?;
+    out.push('\n');
+    std::fs::write(&path, out)
+        .into_diagnostic()
+        .map_err(|e| miette!("failed to write {}: {e}", path.display()))?;
+    Ok(removed)
 }
 
 /// Read every declared `patchedDependencies` entry across both the
@@ -459,6 +508,53 @@ mod tests {
         // The patch entry must be inside pnpm.
         let parsed: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert!(parsed["pnpm"]["patchedDependencies"]["a@1.0.0"].is_string());
+    }
+
+    #[test]
+    fn remove_deletes_bun_top_level_patched_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{
+  "patchedDependencies": {
+    "a@1.0.0": "patches/a.patch",
+    "b@2.0.0": "patches/b.patch"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let rewritten = remove_patched_dependency(dir.path(), "a@1.0.0").unwrap();
+        assert_eq!(rewritten, vec![dir.path().join("package.json")]);
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("package.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(parsed["patchedDependencies"]["a@1.0.0"].is_null());
+        assert_eq!(parsed["patchedDependencies"]["b@2.0.0"], "patches/b.patch");
+    }
+
+    #[test]
+    fn remove_drops_empty_bun_top_level_patched_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{
+  "patchedDependencies": {
+    "a@1.0.0": "patches/a.patch"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        remove_patched_dependency(dir.path(), "a@1.0.0").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("package.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(parsed["patchedDependencies"].is_null());
     }
 
     #[test]
