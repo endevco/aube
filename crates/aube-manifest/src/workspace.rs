@@ -908,24 +908,33 @@ where
     Ok(())
 }
 
-/// Force-approve `names` in the project's `allowBuilds` map. Routes
+/// Force-write `names` in the project's `allowBuilds` map. Routes
 /// through [`config_write_target`]: workspace yaml when one exists,
 /// otherwise `package.json#pnpm.allowBuilds`. Returns the file that
 /// was written. Used by `aube approve-builds` and the
-/// `--allow-build=<pkg>` CLI flag — entries are forcibly set to
-/// `true`, overwriting any prior value.
-pub fn add_to_allow_builds(project_dir: &Path, names: &[String]) -> Result<PathBuf, crate::Error> {
+/// `--allow-build=<pkg>` / `--deny-build=<pkg>` CLI flags — entries
+/// are forcibly set, overwriting any prior value.
+pub fn set_allow_builds(
+    project_dir: &Path,
+    names: &[String],
+    allow: bool,
+) -> Result<PathBuf, crate::Error> {
     match config_write_target(project_dir) {
-        ConfigWriteTarget::WorkspaceYaml(path) => write_allow_builds_yaml(&path, names),
+        ConfigWriteTarget::WorkspaceYaml(path) => write_allow_builds_yaml(&path, names, allow),
         ConfigWriteTarget::PackageJson => {
             edit_setting_map(project_dir, "allowBuilds", |map| {
                 for name in names {
-                    map.insert(name.clone(), serde_json::Value::Bool(true));
+                    map.insert(name.clone(), serde_json::Value::Bool(allow));
                 }
             })?;
             Ok(project_dir.join("package.json"))
         }
     }
+}
+
+/// Force-approve `names` in the project's `allowBuilds` map.
+pub fn add_to_allow_builds(project_dir: &Path, names: &[String]) -> Result<PathBuf, crate::Error> {
+    set_allow_builds(project_dir, names, true)
 }
 
 /// Upsert a single `<map>.<entry>` pair into the project's
@@ -1124,12 +1133,16 @@ where
     Ok(path.to_path_buf())
 }
 
-fn write_allow_builds_yaml(path: &Path, names: &[String]) -> Result<PathBuf, crate::Error> {
+fn write_allow_builds_yaml(
+    path: &Path,
+    names: &[String],
+    allow: bool,
+) -> Result<PathBuf, crate::Error> {
     edit_workspace_yaml(path, |map| {
         let allow_builds = workspace_yaml_submap(map, "allowBuilds", path)?;
         for name in names {
             let key = yaml_serde::Value::String(name.clone());
-            allow_builds.insert(key, yaml_serde::Value::Bool(true));
+            allow_builds.insert(key, yaml_serde::Value::Bool(allow));
         }
         Ok(())
     })

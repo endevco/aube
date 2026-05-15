@@ -46,6 +46,14 @@ Bypass the [`lowDownloadThreshold`] confirm prompt / refusal for this invocation
 
 `aube add` looks up each candidate's weekly download count and prompts (interactive) or fails (CI) when the count is below [`lowDownloadThreshold`]. The flag is intended for the cases where you've already verified the package out-of-band — adding a brand-new niche tool, a fresh fork, an internal scratch package — and don't want the prompt to interrupt scripted workflows. Does not affect the OSV malicious-package check, which remains a hard block.
 
+### `--deny-build… <PKG>`
+
+Mark a dependency's lifecycle scripts as reviewed and denied.
+
+Writes `allowBuilds: { <pkg>: false }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's lifecycle scripts stay skipped without tripping `strictDepBuilds=true`. Repeatable — pass the flag once per package.
+
+Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned denial in the workspace yaml on restore.
+
 ### `--no-save`
 
 Install without persisting the dependency to `package.json`.

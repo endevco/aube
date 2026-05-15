@@ -140,6 +140,27 @@
             "global": false
           },
           {
+            "name": "deny-build",
+            "usage": "--deny-build… <PKG>",
+            "help": "Mark a dependency's lifecycle scripts as reviewed and denied",
+            "help_long": "Mark a dependency's lifecycle scripts as reviewed and denied.\n\nWrites `allowBuilds: { <pkg>: false }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's lifecycle scripts stay skipped without tripping `strictDepBuilds=true`. Repeatable — pass the flag once per package.\n\nConflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned denial in the workspace yaml on restore.",
+            "help_first_line": "Mark a dependency's lifecycle scripts as reviewed and denied",
+            "short": [],
+            "long": [
+              "deny-build"
+            ],
+            "var": true,
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "PKG",
+              "usage": "<PKG>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            }
+          },
+          {
             "name": "ignore-scripts",
             "usage": "--ignore-scripts",
             "help": "Skip lifecycle scripts (no-op; aube already skips by default)",
