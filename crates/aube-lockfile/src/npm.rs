@@ -1510,10 +1510,7 @@ fn strip_hashed_peer_suffix(s: &str) -> &str {
     if !tail.starts_with('_') {
         return s;
     }
-    if tail[1..]
-        .chars()
-        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-    {
+    if tail[1..].chars().all(|c| c.is_ascii_hexdigit()) {
         &s[..s.len() - MARKER_LEN]
     } else {
         s
@@ -2418,6 +2415,10 @@ mod tests {
         assert_eq!(
             dep_value_as_version("expo-router", "expo-router@4.0.22_94c00fd028"),
             "4.0.22"
+        );
+        assert_eq!(
+            canonical_key_from_dep_path("expo-router@4.0.22_94C00FD028"),
+            "expo-router@4.0.22"
         );
     }
 
