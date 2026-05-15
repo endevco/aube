@@ -522,6 +522,8 @@ fn source_kind(pkg: &LockedPackage) -> &'static str {
         Some(LocalSource::Directory(_)) => "file",
         Some(LocalSource::Tarball(_)) => "file",
         Some(LocalSource::Link(_)) => "link",
+        Some(LocalSource::Portal(_)) => "portal",
+        Some(LocalSource::Exec(_)) => "exec",
         Some(LocalSource::Git(_)) => "git",
         Some(LocalSource::RemoteTarball(_)) => "remote",
     }

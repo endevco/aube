@@ -230,6 +230,17 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
                 path: None,
             }),
             Some(LocalSource::Link(_)) => None,
+            Some(local @ LocalSource::Portal(_)) | Some(local @ LocalSource::Exec(_)) => {
+                Some(WritableResolution {
+                    integrity: None,
+                    directory: Some(local.path_posix()),
+                    tarball: None,
+                    commit: None,
+                    repo: None,
+                    type_: Some(local.kind_str().to_string()),
+                    path: None,
+                })
+            }
             Some(LocalSource::Git(g)) => Some(WritableResolution {
                 integrity: None,
                 directory: None,

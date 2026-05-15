@@ -40,6 +40,8 @@ pub(crate) fn rebase_local(
         LocalSource::Directory(_) => LocalSource::Directory(rebased),
         LocalSource::Tarball(_) => LocalSource::Tarball(rebased),
         LocalSource::Link(_) => LocalSource::Link(rebased),
+        LocalSource::Portal(_) => LocalSource::Portal(rebased),
+        LocalSource::Exec(_) => LocalSource::Exec(rebased),
         LocalSource::Git(_) | LocalSource::RemoteTarball(_) => local.clone(),
     }
 }
@@ -97,10 +99,11 @@ fn read_tarball_package_json(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// Read the `package.json` of a `file:` / `link:` target to discover
 /// the real package name, version, and production dependencies.
 ///
-/// For `LocalSource::Directory` and `LocalSource::Link` we read the
-/// target dir's `package.json` directly. For `LocalSource::Tarball` we
-/// open the `.tgz`, find the first `*/package.json` entry, and parse
-/// its contents without extracting the rest of the archive.
+/// For `LocalSource::Directory`, `LocalSource::Link`, and
+/// `LocalSource::Portal` we read the target dir's `package.json`
+/// directly. For `LocalSource::Tarball` we open the `.tgz`, find the
+/// first `*/package.json` entry, and parse its contents without
+/// extracting the rest of the archive.
 pub(crate) fn read_local_manifest(
     local: &LocalSource,
     importer_root: &std::path::Path,
@@ -114,7 +117,7 @@ pub(crate) fn read_local_manifest(
     let path = importer_root.join(local_path);
 
     let content = match local {
-        LocalSource::Directory(_) | LocalSource::Link(_) => {
+        LocalSource::Directory(_) | LocalSource::Link(_) | LocalSource::Portal(_) => {
             std::fs::read(path.join("package.json"))
                 .map_err(|e| Error::Registry(local.specifier(), e.to_string()))?
         }
@@ -123,10 +126,10 @@ pub(crate) fn read_local_manifest(
                 .map_err(|e| Error::Registry(local.specifier(), e.to_string()))?;
             read_tarball_package_json(&bytes).map_err(|e| Error::Registry(local.specifier(), e))?
         }
-        LocalSource::Git(_) | LocalSource::RemoteTarball(_) => {
+        LocalSource::Exec(_) | LocalSource::Git(_) | LocalSource::RemoteTarball(_) => {
             return Err(Error::Registry(
                 local.specifier(),
-                "read_local_manifest: remote source handled separately".to_string(),
+                "read_local_manifest: generated or remote source handled separately".to_string(),
             ));
         }
     };
@@ -151,6 +154,9 @@ pub(crate) fn dep_path_for(name: &str, version: &str) -> String {
 /// normal version-range lookup.
 pub(crate) fn is_non_registry_specifier(s: &str) -> bool {
     if s.starts_with("link:") {
+        return true;
+    }
+    if s.starts_with("portal:") {
         return true;
     }
     // Git first so `https://host/repo.git` dispatches the git branch
@@ -183,7 +189,9 @@ pub(crate) fn should_block_exotic_subdep(
             .is_some_and(|pkg| {
                 matches!(
                     pkg.local_source,
-                    Some(LocalSource::Directory(_)) | Some(LocalSource::Link(_))
+                    Some(LocalSource::Directory(_))
+                        | Some(LocalSource::Link(_))
+                        | Some(LocalSource::Portal(_))
                 )
             })
 }

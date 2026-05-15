@@ -466,6 +466,14 @@ fn fingerprint(pkg: &LockedPackage, patch_hash: Option<&str>) -> String {
                 h.update(b"link");
                 update_field(&mut h, b"path", p.to_string_lossy().as_bytes());
             }
+            LocalSource::Portal(p) => {
+                h.update(b"portal");
+                update_field(&mut h, b"path", p.to_string_lossy().as_bytes());
+            }
+            LocalSource::Exec(p) => {
+                h.update(b"exec");
+                update_field(&mut h, b"path", p.to_string_lossy().as_bytes());
+            }
             LocalSource::Git(g) => {
                 h.update(b"git");
                 update_field(&mut h, b"url", g.url.as_bytes());

@@ -19,6 +19,14 @@ pub enum LocalSource {
     /// materialized into the virtual store. Transitive deps are the
     /// target's responsibility.
     Link(PathBuf),
+    /// `portal:<dir>` — a Yarn Berry package portal. The target is a
+    /// package on disk, but unlike `link:` its dependencies are still
+    /// modeled in the lockfile graph.
+    Portal(PathBuf),
+    /// `exec:<script>` — a Yarn Berry generator script. The script is
+    /// executed at fetch time and writes the package files into a
+    /// generated build directory.
+    Exec(PathBuf),
     /// `git+https://`, `git+ssh://`, `github:user/repo`, etc. — a
     /// remote git repo. Cloned at fetch time and imported like a
     /// `file:` directory. `url` is the normalized clone URL (what
@@ -62,7 +70,11 @@ impl LocalSource {
     /// in `package.json`. `None` for non-path sources like git.
     pub fn path(&self) -> Option<&Path> {
         match self {
-            LocalSource::Directory(p) | LocalSource::Tarball(p) | LocalSource::Link(p) => Some(p),
+            LocalSource::Directory(p)
+            | LocalSource::Tarball(p)
+            | LocalSource::Link(p)
+            | LocalSource::Portal(p)
+            | LocalSource::Exec(p) => Some(p),
             LocalSource::Git(_) | LocalSource::RemoteTarball(_) => None,
         }
     }
@@ -72,6 +84,8 @@ impl LocalSource {
         match self {
             LocalSource::Directory(_) | LocalSource::Tarball(_) => "file",
             LocalSource::Link(_) => "link",
+            LocalSource::Portal(_) => "portal",
+            LocalSource::Exec(_) => "exec",
             LocalSource::Git(_) => "git",
             LocalSource::RemoteTarball(_) => "url",
         }
@@ -183,6 +197,8 @@ impl LocalSource {
             ("file", r)
         } else if let Some(r) = spec.strip_prefix("link:") {
             ("link", r)
+        } else if let Some(r) = spec.strip_prefix("portal:") {
+            ("portal", r)
         } else {
             return None;
         };
@@ -190,6 +206,9 @@ impl LocalSource {
         let abs = project_root.join(&rel);
         if kind == "link" {
             return Some(LocalSource::Link(rel));
+        }
+        if kind == "portal" {
+            return Some(LocalSource::Portal(rel));
         }
         if abs.is_file() && Self::path_looks_like_tarball(&rel) {
             return Some(LocalSource::Tarball(rel));

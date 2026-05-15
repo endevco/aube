@@ -806,9 +806,9 @@ impl Resolver {
                                 .and_then(|dp| resolved.get(dp))
                                 .and_then(|pkg| pkg.local_source.as_ref())
                                 .and_then(|src| match src {
-                                    LocalSource::Directory(p) | LocalSource::Link(p) => {
-                                        Some(self.project_root.join(p))
-                                    }
+                                    LocalSource::Directory(p)
+                                    | LocalSource::Link(p)
+                                    | LocalSource::Portal(p) => Some(self.project_root.join(p)),
                                     _ => None,
                                 })
                         })
@@ -848,6 +848,8 @@ impl Resolver {
                             LocalSource::Directory(_)
                                 | LocalSource::Tarball(_)
                                 | LocalSource::Link(_)
+                                | LocalSource::Portal(_)
+                                | LocalSource::Exec(_)
                         )
                     {
                         return Err(Error::Registry(
@@ -987,8 +989,9 @@ impl Resolver {
                                 .await;
                         }
                         // Enqueue transitive deps of the local package
-                        // (directories + tarballs only — `link:` deps
-                        // are fully the target's responsibility).
+                        // (directories, tarballs, portals, and exec
+                        // outputs — `link:` deps are fully the
+                        // target's responsibility).
                         if !matches!(local, LocalSource::Link(_)) {
                             let mut child_ancestors = task.ancestors.clone();
                             child_ancestors.push((linked_name.clone(), real_version.clone()));

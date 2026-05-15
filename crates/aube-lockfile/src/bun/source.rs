@@ -176,6 +176,8 @@ pub(super) fn rebase_workspace_scoped_local_source(
         LocalSource::Directory(_) => LocalSource::Directory(rebased),
         LocalSource::Tarball(_) => LocalSource::Tarball(rebased),
         LocalSource::Link(_) => LocalSource::Link(rebased),
+        LocalSource::Portal(_) => LocalSource::Portal(rebased),
+        LocalSource::Exec(_) => LocalSource::Exec(rebased),
         LocalSource::Git(_) | LocalSource::RemoteTarball(_) => local,
     }
 }
