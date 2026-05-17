@@ -329,8 +329,8 @@ EOF
 # and (b) `aube update`'s `filtered_existing` strips direct deps from
 # `existing.packages` to force a fresh re-resolve, so the lockfile-
 # reuse path's time-carry-forward never fired for them. Transitive
-# deps stayed in `existing.packages` and kept their times — the
-# asymmetry @mrazauskas flagged.
+# deps stayed in `existing.packages`; the writer now prunes transitive
+# publish times for pnpm v11 parity.
 @test "aube update preserves time: entries for direct deps" {
 	# `^0.1.0` is the only spec that exposes the bug cleanly: `>=0.1.0`
 	# would bump is-odd to 3.0.1 and the resolver would (correctly)
@@ -387,22 +387,17 @@ EOF
 	run aube update
 	assert_success
 
-	# Every locked dep — direct AND transitive — must keep a `time:`
-	# entry after the rewrite. We can't pin the timestamp value
-	# because the resolver may have refreshed it from the packument
-	# during re-resolve, but the entry MUST be present. The
-	# pre-fix bug dropped the is-odd line entirely while leaving the
-	# transitive entries intact.
+	# The direct dep must keep a `time:` entry after the rewrite. We
+	# can't pin the timestamp value because the resolver may have
+	# refreshed it from the packument during re-resolve, but the entry
+	# MUST be present. pnpm v11 prunes transitive publish times from the
+	# written lockfile, so only the importer dep is asserted here.
 	#
-	# The character after the colon-space distinguishes a `time:`
-	# block entry (`  is-odd@0.1.2: <ISO>` — pnpm-style writers may
-	# quote or omit quotes depending on YAML rules) from a
-	# `packages:`/`snapshots:` key (`  is-odd@0.1.2:` followed by
-	# EOL or `{...}`). A non-empty char after `: ` is enough.
-	run grep -E "^  is-odd@0\.1\.2: [^[:space:]]" aube-lock.yaml
+	time_block="$(awk '/^time:/{f=1;next} /^[^[:space:]].*:/{f=0} f' aube-lock.yaml)"
+	run bash -c "grep -E '^  is-odd@0\\.1\\.2: [^[:space:]]' <<<\"\$1\"" _ "$time_block"
 	assert_success
-	run grep -E "^  is-number@3\.0\.0: [^[:space:]]" aube-lock.yaml
-	assert_success
-	run grep -E "^  kind-of@3\.2\.2: [^[:space:]]" aube-lock.yaml
-	assert_success
+	run bash -c "grep -E '^  is-number@3\\.0\\.0: [^[:space:]]' <<<\"\$1\"" _ "$time_block"
+	assert_failure
+	run bash -c "grep -E '^  kind-of@3\\.2\\.2: [^[:space:]]' <<<\"\$1\"" _ "$time_block"
+	assert_failure
 }

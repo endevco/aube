@@ -670,6 +670,117 @@ fn test_write_and_reparse_roundtrip() {
 }
 
 #[test]
+fn test_write_prunes_time_to_direct_importer_deps() {
+    let dir = tempfile::tempdir().unwrap();
+    let lockfile_path = dir.path().join("pnpm-lock.yaml");
+
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        "foo@1.0.0".to_string(),
+        LockedPackage {
+            name: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            integrity: Some("sha512-foo==".to_string()),
+            dependencies: [("bar".to_string(), "2.0.0".to_string())]
+                .into_iter()
+                .collect(),
+            dep_path: "foo@1.0.0".to_string(),
+            ..Default::default()
+        },
+    );
+    packages.insert(
+        "bar@2.0.0".to_string(),
+        LockedPackage {
+            name: "bar".to_string(),
+            version: "2.0.0".to_string(),
+            integrity: Some("sha512-bar==".to_string()),
+            dep_path: "bar@2.0.0".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let graph = LockfileGraph {
+        importers: [(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "foo".to_string(),
+                dep_path: "foo@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("^1.0.0".to_string()),
+            }],
+        )]
+        .into_iter()
+        .collect(),
+        packages,
+        times: [
+            (
+                "foo@1.0.0".to_string(),
+                "2026-01-01T00:00:00.000Z".to_string(),
+            ),
+            (
+                "bar@2.0.0".to_string(),
+                "2026-01-02T00:00:00.000Z".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+
+    write(&lockfile_path, &graph, &PackageJson::default()).unwrap();
+    let written = std::fs::read_to_string(&lockfile_path).unwrap();
+
+    assert!(written.contains("\n  foo@1.0.0: 2026-01-01T00:00:00.000Z\n"));
+    assert!(!written.contains("\n  bar@2.0.0: 2026-01-02T00:00:00.000Z\n"));
+}
+
+#[test]
+fn test_write_preserves_real_name_time_for_aube_aliases() {
+    let dir = tempfile::tempdir().unwrap();
+    let lockfile_path = dir.path().join("aube-lock.yaml");
+
+    let graph = LockfileGraph {
+        importers: [(
+            ".".to_string(),
+            vec![DirectDep {
+                name: "alias-pkg".to_string(),
+                dep_path: "alias-pkg@1.0.0".to_string(),
+                dep_type: DepType::Production,
+                specifier: Some("npm:real-pkg@^1.0.0".to_string()),
+            }],
+        )]
+        .into_iter()
+        .collect(),
+        packages: [(
+            "alias-pkg@1.0.0".to_string(),
+            LockedPackage {
+                name: "alias-pkg".to_string(),
+                version: "1.0.0".to_string(),
+                integrity: Some("sha512-alias==".to_string()),
+                dep_path: "alias-pkg@1.0.0".to_string(),
+                alias_of: Some("real-pkg".to_string()),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        times: [(
+            "real-pkg@1.0.0".to_string(),
+            "2026-01-01T00:00:00.000Z".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+
+    write(&lockfile_path, &graph, &PackageJson::default()).unwrap();
+    let written = std::fs::read_to_string(&lockfile_path).unwrap();
+
+    assert!(written.contains("\n  alias-pkg@1.0.0: 2026-01-01T00:00:00.000Z\n"));
+    assert!(!written.contains("\n  real-pkg@1.0.0: 2026-01-01T00:00:00.000Z\n"));
+}
+
+#[test]
 fn writer_preserves_workspace_importer_specifiers() {
     let dir = tempfile::tempdir().unwrap();
     let lockfile_path = dir.path().join("pnpm-lock.yaml");
