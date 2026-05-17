@@ -790,25 +790,105 @@ impl RegimeDetector {
 
         let dev = sample_us as i64 - next_baseline as i64;
         if dev >= 0 {
-            let pos = self
-                .pos
-                .fetch_add(dev as u64, Ordering::Relaxed)
-                .saturating_add(dev as u64);
+            // Combined accumulate-or-reset CAS so only one thread
+            // can fire `Rising` per threshold crossing. The naive
+            // `fetch_add` + `if pos >= threshold { store(0) }`
+            // sequence races: thread A and thread B can both
+            // observe their post-add pos >= threshold (B's add
+            // happened after A's, so B sees an even larger value),
+            // both reset to 0, and both return `Rising`. The
+            // limiter then applies a 0.7x shrink twice (~0.49x)
+            // for one regime change. Floor bounds damage but
+            // throughput recovery slows. CAS makes the winner
+            // unique: only the thread that successfully transitions
+            // from the over-threshold value to 0 returns `Rising`;
+            // racers see 0 on retry and treat their delta as a
+            // fresh accumulation against the now-cleared sum.
+            let abs_dev = dev as u64;
+            let mut current = self.pos.load(Ordering::Relaxed);
+            loop {
+                let next = current.saturating_add(abs_dev);
+                if next >= self.threshold_us {
+                    match self.pos.compare_exchange(
+                        current,
+                        0,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            self.neg.store(0, Ordering::Relaxed);
+                            return RegimeSignal::Rising;
+                        }
+                        Err(observed) if observed < current => {
+                            // Winner already cleared the accumulator and
+                            // fired `Rising` for this crossing event. Our
+                            // sample is part of the same event — folding
+                            // its delta in via `fetch_add` on the post-
+                            // clear base means the next genuine crossing
+                            // sees correct state, while we return
+                            // `Stable` so the limiter does not double-
+                            // shrink. Without this guard, a single
+                            // sample whose `abs_dev >= threshold` would
+                            // re-enter the threshold arm on retry,
+                            // CAS(0, 0) would succeed, and the loser
+                            // would also fire `Rising`.
+                            self.pos.fetch_add(abs_dev, Ordering::Relaxed);
+                            self.neg.store(0, Ordering::Relaxed);
+                            return RegimeSignal::Stable;
+                        }
+                        Err(observed) => {
+                            current = observed;
+                            continue;
+                        }
+                    }
+                }
+                match self
+                    .pos
+                    .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                {
+                    Ok(_) => break,
+                    Err(observed) => current = observed,
+                }
+            }
             self.neg.store(0, Ordering::Relaxed);
-            if pos >= self.threshold_us {
-                self.pos.store(0, Ordering::Relaxed);
-                return RegimeSignal::Rising;
-            }
         } else {
-            let neg = self
-                .neg
-                .fetch_add(-dev as u64, Ordering::Relaxed)
-                .saturating_add(-dev as u64);
-            self.pos.store(0, Ordering::Relaxed);
-            if neg >= self.threshold_us {
-                self.neg.store(0, Ordering::Relaxed);
-                return RegimeSignal::Falling;
+            let abs_dev = (-dev) as u64;
+            let mut current = self.neg.load(Ordering::Relaxed);
+            loop {
+                let next = current.saturating_add(abs_dev);
+                if next >= self.threshold_us {
+                    match self.neg.compare_exchange(
+                        current,
+                        0,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            self.pos.store(0, Ordering::Relaxed);
+                            return RegimeSignal::Falling;
+                        }
+                        Err(observed) if observed < current => {
+                            // Mirror of the `Rising` post-winner-clear
+                            // guard above.
+                            self.neg.fetch_add(abs_dev, Ordering::Relaxed);
+                            self.pos.store(0, Ordering::Relaxed);
+                            return RegimeSignal::Stable;
+                        }
+                        Err(observed) => {
+                            current = observed;
+                            continue;
+                        }
+                    }
+                }
+                match self
+                    .neg
+                    .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                {
+                    Ok(_) => break,
+                    Err(observed) => current = observed,
+                }
             }
+            self.pos.store(0, Ordering::Relaxed);
         }
         RegimeSignal::Stable
     }
