@@ -700,13 +700,11 @@ pub fn write_berry(
         // `linkType: soft` means "just symlink, don't materialize into
         // the virtual store" — what berry uses for `link:` (and
         // `workspace:`) entries. `hard` is the default for registry
-        // packages and everything that does get materialized. Picking
-        // `hard` for a `link:` block would send yarn's own linker
-        // down the tarball-import path the next time it reads our
-        // output, which breaks `link:` projects that round-trip
-        // through aube.
+        // packages and everything that does get materialized. Portal
+        // packages are materialized by aube so their graph-visible deps
+        // can be linked under the package, so they stay `hard` here.
         let link_type = match &pkg.local_source {
-            Some(LocalSource::Link(_) | LocalSource::Portal(_)) => "soft",
+            Some(LocalSource::Link(_)) => "soft",
             _ => "hard",
         };
         out.push_str("  linkType: ");
