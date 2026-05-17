@@ -810,6 +810,17 @@ JSON
 	assert_success
 }
 
+@test "aube add rejects packages listed in both allow-build and deny-build" {
+	run aube add \
+		--allow-build=@pnpm.e2e/install-script-example \
+		--deny-build=@pnpm.e2e/install-script-example \
+		@pnpm.e2e/install-script-example
+	assert_failure
+	assert_output --partial "ERR_AUBE_CONFLICTING_BUILD_FLAGS"
+	assert_output --partial "--allow-build and --deny-build both name the same package(s)"
+	assert_output --partial "Each package may only appear in one flag"
+}
+
 @test "aube add --allow-build with no value errors and points at the = syntax" {
 	# Bare `--allow-build` is rejected by clap before it reaches our
 	# validator, because the arg has `require_equals = true` and no

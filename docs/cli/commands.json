@@ -109,7 +109,7 @@
             "name": "allow-build",
             "usage": "--allow-build… <PKG>",
             "help": "Pre-approve a dependency's lifecycle scripts as part of the add",
-            "help_long": "Pre-approve a dependency's lifecycle scripts as part of the add.\n\nWrites `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package. Mirrors `pnpm add --allow-build=<pkg>`.\n\nConflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore.",
+            "help_long": "Pre-approve a dependency's lifecycle scripts as part of the add.\n\nWrites `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package. Mirrors `pnpm add --allow-build=<pkg>`.\n\nConflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore. Also conflicts with `--deny-build` for the same package name.",
             "help_first_line": "Pre-approve a dependency's lifecycle scripts as part of the add",
             "short": [],
             "long": [
@@ -143,7 +143,7 @@
             "name": "deny-build",
             "usage": "--deny-build… <PKG>",
             "help": "Mark a dependency's lifecycle scripts as reviewed and denied",
-            "help_long": "Mark a dependency's lifecycle scripts as reviewed and denied.\n\nWrites `allowBuilds: { <pkg>: false }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's lifecycle scripts stay skipped without tripping `strictDepBuilds=true`. Repeatable — pass the flag once per package.\n\nConflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned denial in the workspace yaml on restore.",
+            "help_long": "Mark a dependency's lifecycle scripts as reviewed and denied.\n\nWrites `allowBuilds: { <pkg>: false }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's lifecycle scripts stay skipped without tripping `strictDepBuilds=true`. Repeatable — pass the flag once per package.\n\nConflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned denial in the workspace yaml on restore. Also conflicts with `--allow-build` for the same package name.",
             "help_first_line": "Mark a dependency's lifecycle scripts as reviewed and denied",
             "short": [],
             "long": [

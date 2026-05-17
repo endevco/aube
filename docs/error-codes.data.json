@@ -313,6 +313,12 @@
       "exit_code": null
     },
     {
+      "name": "ERR_AUBE_CONFLICTING_BUILD_FLAGS",
+      "category": "Engine / CLI",
+      "description": "`aube add` was passed the same package name in both `--allow-build` and `--deny-build`.",
+      "exit_code": null
+    },
+    {
       "name": "ERR_AUBE_UNSAFE_INDEX_KEY",
       "category": "Misc / safety",
       "description": "A package index key tried to escape its directory (path traversal defense in depth).",

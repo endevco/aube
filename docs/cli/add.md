@@ -38,7 +38,7 @@ Pre-approve a dependency's lifecycle scripts as part of the add.
 
 Writes `allowBuilds: { <pkg>: true }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's `preinstall` / `install` / `postinstall` scripts execute on this invocation. Repeatable — pass the flag once per package. Mirrors `pnpm add --allow-build=<pkg>`.
 
-Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore.
+Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned approval in the workspace yaml on restore. Also conflicts with `--deny-build` for the same package name.
 
 ### `--allow-low-downloads`
 
@@ -52,7 +52,7 @@ Mark a dependency's lifecycle scripts as reviewed and denied.
 
 Writes `allowBuilds: { <pkg>: false }` into the workspace yaml (or `package.json#aube.allowBuilds`) before the install runs, so the named package's lifecycle scripts stay skipped without tripping `strictDepBuilds=true`. Repeatable — pass the flag once per package.
 
-Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned denial in the workspace yaml on restore.
+Conflicts with `--no-save`, which only snapshots `package.json` and the lockfile and would leave an orphaned denial in the workspace yaml on restore. Also conflicts with `--allow-build` for the same package name.
 
 ### `--no-save`
 

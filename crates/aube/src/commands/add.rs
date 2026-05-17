@@ -34,7 +34,8 @@ pub struct AddArgs {
     ///
     /// Conflicts with `--no-save`, which only snapshots `package.json`
     /// and the lockfile and would leave an orphaned approval in the
-    /// workspace yaml on restore.
+    /// workspace yaml on restore. Also conflicts with `--deny-build` for
+    /// the same package name.
     #[arg(
         long = "allow-build",
         value_name = "PKG",
@@ -66,7 +67,8 @@ pub struct AddArgs {
     ///
     /// Conflicts with `--no-save`, which only snapshots `package.json`
     /// and the lockfile and would leave an orphaned denial in the
-    /// workspace yaml on restore.
+    /// workspace yaml on restore. Also conflicts with `--allow-build` for
+    /// the same package name.
     #[arg(
         long = "deny-build",
         value_name = "PKG",
@@ -707,6 +709,7 @@ pub async fn run(
     if packages.is_empty() {
         return Err(miette!("no packages specified"));
     }
+    reject_conflicting_build_flags(&allow_build, &deny_build)?;
 
     if global {
         return run_global(
@@ -832,8 +835,7 @@ pub async fn run(
     // `--allow-build=<pkg>` / `--deny-build=<pkg>` pre-review dep
     // lifecycle scripts as part of the add. The install pipeline
     // re-reads the map from disk, so writing before manifest mutation
-    // keeps failure-mode reasoning local. Deny runs second so an
-    // accidental same-name overlap stays safely skipped.
+    // keeps failure-mode reasoning local.
     if !allow_build.is_empty() {
         apply_allow_build_flags(&cwd, &allow_build)?;
     }
@@ -1894,6 +1896,33 @@ fn parse_deny_build_value(s: &str) -> Result<String, String> {
     }
 }
 
+fn reject_conflicting_build_flags(
+    allow_build: &[String],
+    deny_build: &[String],
+) -> miette::Result<()> {
+    if allow_build.is_empty() || deny_build.is_empty() {
+        return Ok(());
+    }
+
+    let mut overlap: Vec<&str> = allow_build
+        .iter()
+        .filter(|name| deny_build.contains(name))
+        .map(String::as_str)
+        .collect();
+    overlap.sort_unstable();
+    overlap.dedup();
+    if overlap.is_empty() {
+        return Ok(());
+    }
+
+    Err(miette!(
+        code = aube_codes::errors::ERR_AUBE_CONFLICTING_BUILD_FLAGS,
+        "--allow-build and --deny-build both name the same package(s): {}. \
+         Each package may only appear in one flag.",
+        overlap.join(", ")
+    ))
+}
+
 /// Apply `--allow-build=<pkg>` flags by writing each package as `true`
 /// to the project's `allowBuilds` map (workspace yaml or
 /// `package.json#aube.allowBuilds`), overwriting any prior value. An
@@ -2000,6 +2029,7 @@ async fn run_filtered(
     if args.packages.is_empty() {
         return Err(miette!("no packages specified"));
     }
+    reject_conflicting_build_flags(&args.allow_build, &args.deny_build)?;
     let cwd = crate::dirs::cwd()?;
     // The workspace root — not the child `cwd` — is what owns the
     // lockfile and the project lock in yarn / npm / bun monorepos.
