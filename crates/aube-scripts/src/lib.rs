@@ -1326,13 +1326,22 @@ mod windows_job_object_tests {
             let _ = run_command_killing_descendants(cmd, "test-grandchild").await;
         });
 
-        let appeared = wait_until(|| pid_file.exists(), Duration::from_secs(20)).await;
+        let appeared = wait_until(
+            || {
+                std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok())
+                    .is_some()
+            },
+            Duration::from_secs(20),
+        )
+        .await;
         assert!(appeared, "grandchild never wrote pid file at {pid_file:?}");
         let pid: u32 = std::fs::read_to_string(&pid_file)
             .expect("read pid file")
             .trim()
             .parse()
-            .expect("parse pid");
+            .expect("pid file was parseable before reading");
         assert!(
             is_process_alive(pid),
             "grandchild pid {pid} not alive immediately after writing pid file"

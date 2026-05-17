@@ -57,21 +57,15 @@ pub(super) async fn import_local_source(
                 .map_err(|e| miette!("failed to import {}: {e}{chain}", local.specifier()))?;
             Ok(Some(index))
         }
-        LocalSource::Exec(rel) => {
+        LocalSource::Exec(_) => {
             if ignore_scripts {
                 return Err(miette!(
                     "{} requires executing its generator, but scripts are disabled{chain}",
                     local.specifier()
                 ));
             }
-            let script = project_root.join(rel);
-            if !script.is_file() {
-                return Err(miette!(
-                    "exec dependency {}: {} is not a file{chain}",
-                    local.specifier(),
-                    script.display()
-                ));
-            }
+            let script = aube_resolver::resolve_exec_script_path(local, project_root)
+                .map_err(|e| miette!("exec dependency {}: {e}{chain}", local.specifier()))?;
             let temp = tempfile::Builder::new()
                 .prefix("aube-exec-")
                 .tempdir()

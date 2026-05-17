@@ -15,6 +15,7 @@ mod types;
 
 pub use direct_dep_info::DirectDepInfo;
 pub use error::{AgeGateDetails, CatalogDetails, Error, ExoticSubdepDetails, NoMatchDetails};
+pub use local_source::resolve_exec_script_path;
 pub use package_ext::is_deprecation_allowed;
 pub use peer_context::{
     PeerContextOptions, UnmetPeer, apply_peer_contexts, detect_unmet_peers,
