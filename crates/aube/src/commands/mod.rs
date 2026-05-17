@@ -571,6 +571,7 @@ pub(crate) fn build_resolver(
             // mutating `dist-tags` between commands). The abbreviated
             // cache stays on either way.
             cache_full_packuments: false,
+            ignore_scripts: false,
         },
         None,
     )

@@ -28,6 +28,9 @@ pub(crate) fn rebase_local(
     // case — no rewrite needed and we preserve the raw specifier
     // bytes for a byte-identical lockfile round-trip.
     if importer_root == project_root {
+        if let LocalSource::Exec(path) = local {
+            return LocalSource::Exec(normalize_lexical(path));
+        }
         return local.clone();
     }
     let Some(local_path) = local.path() else {
@@ -183,17 +186,9 @@ pub(crate) async fn resolve_exec_manifest(
         "buildDir": build_dir,
         "locator": format!("{name}@{}", local.specifier()),
     });
-    let wrapper = r#"
-const env = JSON.parse(process.env.AUBE_YARN_EXEC_ENV);
-globalThis.execEnv = env;
-for (const name of ['fs', 'path', 'child_process', 'os', 'crypto', 'url', 'util', 'stream', 'buffer']) {
-  globalThis[name] = require(name);
-}
-require(process.argv[1]);
-"#;
     let status = tokio::process::Command::new("node")
         .arg("-e")
-        .arg(wrapper)
+        .arg(crate::YARN_EXEC_WRAPPER)
         .arg(&script)
         .env("AUBE_YARN_EXEC_ENV", env.to_string())
         .current_dir(project_root)
@@ -606,6 +601,21 @@ mod rebase_local_tests {
             Path::new(""),
         );
         assert_eq!(a.dep_path("vendor-dir"), b.dep_path("vendor-dir"));
+    }
+
+    #[test]
+    fn root_and_transitive_exec_paths_collide_on_dep_path() {
+        let root = rebase_local(
+            &LocalSource::Exec(PathBuf::from("./scripts/generate-exec.js")),
+            Path::new(""),
+            Path::new(""),
+        );
+        let transitive = rebase_local(
+            &LocalSource::Exec(PathBuf::from("../../scripts/generate-exec.js")),
+            Path::new("packages/portal"),
+            Path::new(""),
+        );
+        assert_eq!(root.dep_path("exec-pkg"), transitive.dep_path("exec-pkg"));
     }
 
     #[test]

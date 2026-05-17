@@ -89,23 +89,14 @@ pub(super) async fn import_local_source(
                 .wrap_err_with(|| {
                     format!("create exec temp dir for {}{chain}", local.specifier())
                 })?;
-            let locator = format!("{pkg_name}@{pkg_version}");
             let env = serde_json::json!({
                 "tempDir": temp_dir,
                 "buildDir": build_dir,
-                "locator": locator,
+                "locator": format!("{pkg_name}@{}", local.specifier()),
             });
-            let wrapper = r#"
-const env = JSON.parse(process.env.AUBE_YARN_EXEC_ENV);
-globalThis.execEnv = env;
-for (const name of ['fs', 'path', 'child_process', 'os', 'crypto', 'url', 'util', 'stream', 'buffer']) {
-  globalThis[name] = require(name);
-}
-require(process.argv[1]);
-"#;
             let status = tokio::process::Command::new("node")
                 .arg("-e")
-                .arg(wrapper)
+                .arg(aube_resolver::YARN_EXEC_WRAPPER)
                 .arg(&script)
                 .env("AUBE_YARN_EXEC_ENV", env.to_string())
                 .current_dir(project_root)

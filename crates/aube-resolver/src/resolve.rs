@@ -892,6 +892,15 @@ impl Resolver {
                         // `project_root.join(rel)`.
                         let local = rebase_local(&raw_local, &importer_root, &self.project_root);
                         let (version, deps) = if matches!(local, LocalSource::Exec(_)) {
+                            if self.ignore_scripts {
+                                return Err(Error::Registry(
+                                    task.name.clone(),
+                                    format!(
+                                        "{} requires executing its generator, but scripts are disabled",
+                                        local.specifier()
+                                    ),
+                                ));
+                            }
                             resolve_exec_manifest(&task.name, &local, &self.project_root).await?
                         } else {
                             let (_target_name, version, deps) =
