@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0](https://github.com/endevco/aube/compare/v1.14.1...v1.15.0) - 2026-05-17
+
+### Added
+
+- *(yarn)* support berry portal and exec protocols ([#729](https://github.com/endevco/aube/pull/729))
+- *(add)* add deny-build flag ([#730](https://github.com/endevco/aube/pull/730))
+- *(yarn)* support berry patch protocol ([#728](https://github.com/endevco/aube/pull/728))
+
+### Fixed
+
+- *(update)* keep member updates on workspace lockfile ([#732](https://github.com/endevco/aube/pull/732))
+- *(bun)* apply top-level patchedDependencies ([#724](https://github.com/endevco/aube/pull/724))
+
+### Other
+
+- refresh benchmarks for v1.14.1 ([#721](https://github.com/endevco/aube/pull/721))
+- *(install)* split resolve phase ([#715](https://github.com/endevco/aube/pull/715))
+- *(install)* split finalize phase ([#712](https://github.com/endevco/aube/pull/712))
+- *(install)* split link phase ([#711](https://github.com/endevco/aube/pull/711))
+- *(install)* split layout resolution ([#708](https://github.com/endevco/aube/pull/708))
+
 ## [1.14.1](https://github.com/endevco/aube/compare/v1.14.0...v1.14.1) - 2026-05-15
 
 ### Other

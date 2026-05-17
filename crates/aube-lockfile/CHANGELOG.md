@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0](https://github.com/endevco/aube/compare/aube-lockfile-v1.14.1...aube-lockfile-v1.15.0) - 2026-05-17
+
+### Added
+
+- *(yarn)* support berry portal and exec protocols ([#729](https://github.com/endevco/aube/pull/729))
+- *(yarn)* support berry patch protocol ([#728](https://github.com/endevco/aube/pull/728))
+
+### Fixed
+
+- *(lockfile)* prune pnpm time entries to direct deps ([#735](https://github.com/endevco/aube/pull/735))
+- *(lockfile)* parse yarn classic dependency tails ([#733](https://github.com/endevco/aube/pull/733))
+
+### Other
+
+- *(lockfile)* clean up pnpm split feedback ([#720](https://github.com/endevco/aube/pull/720))
+- refresh benchmarks for v1.14.1 ([#721](https://github.com/endevco/aube/pull/721))
+- *(lockfile)* split bun modules ([#718](https://github.com/endevco/aube/pull/718))
+- *(lockfile)* split npm and yarn modules ([#717](https://github.com/endevco/aube/pull/717))
+- *(lockfile)* split pnpm modules ([#719](https://github.com/endevco/aube/pull/719))
+- *(lockfile)* split drift checks ([#714](https://github.com/endevco/aube/pull/714))
+- *(lockfile)* split format io ([#713](https://github.com/endevco/aube/pull/713))
+- *(lockfile)* split package source parsing ([#710](https://github.com/endevco/aube/pull/710))
+
 ## [1.14.1](https://github.com/endevco/aube/compare/aube-lockfile-v1.14.0...aube-lockfile-v1.14.1) - 2026-05-15
 
 ### Fixed

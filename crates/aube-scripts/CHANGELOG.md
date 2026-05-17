@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0](https://github.com/endevco/aube/compare/aube-scripts-v1.14.1...aube-scripts-v1.15.0) - 2026-05-17
+
+### Added
+
+- *(yarn)* support berry portal and exec protocols ([#729](https://github.com/endevco/aube/pull/729))
+
+### Other
+
+- refresh benchmarks for v1.14.1 ([#721](https://github.com/endevco/aube/pull/721))
+
 ## [1.14.0](https://github.com/endevco/aube/compare/aube-scripts-v1.13.1...aube-scripts-v1.14.0) - 2026-05-14
 
 ### Added
