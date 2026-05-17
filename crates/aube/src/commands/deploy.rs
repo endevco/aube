@@ -418,6 +418,7 @@ fn seed_target_lockfile(
                     src,
                     aube_lockfile::LocalSource::Link(_)
                         | aube_lockfile::LocalSource::Portal(_)
+                        | aube_lockfile::LocalSource::Exec(_)
                         | aube_lockfile::LocalSource::Directory(_)
                         | aube_lockfile::LocalSource::Tarball(_)
                 )
