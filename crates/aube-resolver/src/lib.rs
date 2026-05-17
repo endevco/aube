@@ -37,11 +37,10 @@ for (const name of ['fs', 'path', 'child_process', 'os', 'crypto', 'url', 'util'
   globalThis[name] = require(name);
 }
 (async () => {
-  const { pathToFileURL } = require('url');
-  await import(pathToFileURL(process.argv[1]).href);
+  await import(url.pathToFileURL(process.argv[1]).href);
 })().catch((err) => {
   console.error(err);
-  process.exitCode = 1;
+  process.exit(1);
 });
 "#;
 
