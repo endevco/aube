@@ -114,6 +114,17 @@ teardown() {
 	assert_success
 }
 
+@test "aube install fresh-resolves yarn berry portal transitive exec protocol" {
+	cp -R "$PROJECT_ROOT/fixtures/import-yarn-portal-exec/." .
+	rm yarn.lock
+
+	run aube install
+	assert_success
+
+	run node -e 'if (require("portal-pkg") !== "portal ok + exec ok") process.exit(1); if (require("exec-pkg") !== "exec ok") process.exit(1)'
+	assert_success
+}
+
 @test "aube install from bun.lock links workspace deps to their package dirs" {
 	cat >package.json <<'EOF'
 {"name":"root","version":"1.0.0","workspaces":["packages/*"]}
