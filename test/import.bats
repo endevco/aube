@@ -114,6 +114,27 @@ teardown() {
 	assert_success
 }
 
+@test "aube install supports yarn berry esm exec generators" {
+	cat >package.json <<'EOF'
+{"name":"root","version":"1.0.0","dependencies":{"esm-exec-pkg":"exec:./scripts/generate-exec.mjs"}}
+EOF
+	mkdir -p scripts
+	cat >scripts/generate-exec.mjs <<'EOF'
+fs.writeFileSync(path.join(execEnv.buildDir, 'package.json'), JSON.stringify({
+  name: 'esm-exec-pkg',
+  version: '1.0.0',
+  main: 'index.js'
+}));
+fs.writeFileSync(path.join(execEnv.buildDir, 'index.js'), "module.exports = 'esm exec ok';\n");
+EOF
+
+	run aube install
+	assert_success
+
+	run node -e 'if (require("esm-exec-pkg") !== "esm exec ok") process.exit(1)'
+	assert_success
+}
+
 @test "aube install fresh-resolves yarn berry portal transitive exec protocol" {
 	cp -R "$PROJECT_ROOT/fixtures/import-yarn-portal-exec/." .
 	rm yarn.lock
