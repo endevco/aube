@@ -68,7 +68,7 @@ bar@^2.0.0:
     assert_eq!(foo.integrity.as_deref(), Some("sha512-aaa"));
     assert_eq!(
         foo.dependencies.get("bar").map(String::as_str),
-        Some("bar@2.5.0")
+        Some("2.5.0")
     );
 
     let root = graph.importers.get(".").unwrap();
@@ -141,7 +141,60 @@ fn test_parse_npm_protocol_alias_transitive() {
     let core = &graph.packages["@docusaurus/core@2.1.0"];
     assert_eq!(
         core.dependencies.get("react-loadable").map(String::as_str),
-        Some("react-loadable@5.5.2")
+        Some("5.5.2")
+    );
+}
+
+#[test]
+fn test_parse_classic_dependency_values_are_dep_path_tails() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let content = r#"# yarn lockfile v1
+
+"@rollup/plugin-replace@2.4.1":
+  version "2.4.1"
+  integrity sha512-aaa
+  dependencies:
+    "@rollup/pluginutils" "^3.1.0"
+    magic-string "^0.25.9"
+
+"@rollup/pluginutils@^3.1.0":
+  version "3.1.0"
+  integrity sha512-bbb
+
+magic-string@^0.25.9:
+  version "0.25.9"
+  integrity sha512-ccc
+  dependencies:
+    sourcemap-codec "^1.4.8"
+
+sourcemap-codec@^1.4.8:
+  version "1.4.8"
+  integrity sha512-ddd
+"#;
+    std::fs::write(tmp.path(), content).unwrap();
+    let manifest = make_manifest(&[("@rollup/plugin-replace", "2.4.1")], &[]);
+    let graph = parse(tmp.path(), &manifest).unwrap();
+
+    let replace = &graph.packages["@rollup/plugin-replace@2.4.1"];
+    assert_eq!(
+        replace
+            .dependencies
+            .get("@rollup/pluginutils")
+            .map(String::as_str),
+        Some("3.1.0")
+    );
+    assert_eq!(
+        replace.dependencies.get("magic-string").map(String::as_str),
+        Some("0.25.9")
+    );
+
+    let magic_string = &graph.packages["magic-string@0.25.9"];
+    assert_eq!(
+        magic_string
+            .dependencies
+            .get("sourcemap-codec")
+            .map(String::as_str),
+        Some("1.4.8")
     );
 }
 
@@ -251,7 +304,7 @@ bar@^2.0.0:
             .dependencies
             .get("bar")
             .map(String::as_str),
-        Some("bar@2.5.0")
+        Some("2.5.0")
     );
 }
 

@@ -97,7 +97,10 @@ pub(super) fn parse_classic_str(
         let mut deps: BTreeMap<String, String> = BTreeMap::new();
         for (name, raw_spec) in &pkg.dependencies {
             if let Some(resolved_path) = spec_to_dep_path.get(raw_spec) {
-                deps.insert(name.clone(), resolved_path.clone());
+                deps.insert(
+                    name.clone(),
+                    crate::npm::dep_path_tail(name, resolved_path).to_string(),
+                );
             }
         }
         resolved.insert(dep_path.clone(), deps);
@@ -243,13 +246,7 @@ fn parse_header_specs(header: &str) -> Result<Vec<String>, String> {
     let mut specs = Vec::new();
     for raw in header.split(',') {
         let s = raw.trim();
-        let unquoted = if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
-            || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
-        {
-            &s[1..s.len() - 1]
-        } else {
-            s
-        };
+        let unquoted = unquote_yarn_scalar(s);
         if unquoted.is_empty() {
             return Err(format!("empty spec in header '{header}'"));
         }
@@ -266,14 +263,20 @@ fn parse_header_specs(header: &str) -> Result<Vec<String>, String> {
 fn split_key_value(line: &str) -> Option<(String, String)> {
     let (key, rest) = line.split_once(char::is_whitespace)?;
     let value = rest.trim();
-    let unquoted = if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
+    Some((
+        unquote_yarn_scalar(key).to_string(),
+        unquote_yarn_scalar(value).to_string(),
+    ))
+}
+
+fn unquote_yarn_scalar(value: &str) -> &str {
+    if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
         || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
     {
         &value[1..value.len() - 1]
     } else {
         value
-    };
-    Some((key.to_string(), unquoted.to_string()))
+    }
 }
 
 /// Extract the package name from a spec like `foo@^1.0.0` or `@scope/pkg@^1.0.0`.
