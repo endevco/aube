@@ -36,7 +36,12 @@ globalThis.execEnv = env;
 for (const name of ['fs', 'path', 'child_process', 'os', 'crypto', 'url', 'util', 'stream', 'buffer']) {
   globalThis[name] = require(name);
 }
-require(process.argv[1]);
+(async () => {
+  await import(url.pathToFileURL(process.argv[1]).href);
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 "#;
 
 use semver_util::version_satisfies;
