@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0](https://github.com/endevco/aube/compare/aube-manifest-v1.14.1...aube-manifest-v1.15.0) - 2026-05-17
+
+### Added
+
+- *(add)* add deny-build flag ([#730](https://github.com/endevco/aube/pull/730))
+
+### Fixed
+
+- *(bun)* apply top-level patchedDependencies ([#724](https://github.com/endevco/aube/pull/724))
+
+### Other
+
+- refresh benchmarks for v1.14.1 ([#721](https://github.com/endevco/aube/pull/721))
+
 ## [1.14.1](https://github.com/endevco/aube/compare/aube-manifest-v1.14.0...aube-manifest-v1.14.1) - 2026-05-15
 
 ### Fixed
