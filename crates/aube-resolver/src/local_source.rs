@@ -144,6 +144,92 @@ pub(crate) fn read_local_manifest(
     ))
 }
 
+pub(crate) async fn resolve_exec_manifest(
+    name: &str,
+    local: &LocalSource,
+    project_root: &std::path::Path,
+) -> Result<(String, BTreeMap<String, String>), Error> {
+    let LocalSource::Exec(rel) = local else {
+        return Err(Error::Registry(
+            name.to_string(),
+            "resolve_exec_manifest called on non-exec source".to_string(),
+        ));
+    };
+    let script = project_root.join(rel);
+    if !script.is_file() {
+        return Err(Error::Registry(
+            name.to_string(),
+            format!(
+                "exec dependency {}: {} is not a file",
+                local.specifier(),
+                script.display()
+            ),
+        ));
+    }
+
+    let temp = tempfile::Builder::new()
+        .prefix("aube-exec-resolve-")
+        .tempdir()
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+    let build_dir = temp.path().join("build");
+    let temp_dir = temp.path().join("temp");
+    std::fs::create_dir_all(&build_dir)
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+
+    let env = serde_json::json!({
+        "tempDir": temp_dir,
+        "buildDir": build_dir,
+        "locator": format!("{name}@{}", local.specifier()),
+    });
+    let wrapper = r#"
+const env = JSON.parse(process.env.AUBE_YARN_EXEC_ENV);
+globalThis.execEnv = env;
+for (const name of ['fs', 'path', 'child_process', 'os', 'crypto', 'url', 'util', 'stream', 'buffer']) {
+  globalThis[name] = require(name);
+}
+require(process.argv[1]);
+"#;
+    let status = tokio::process::Command::new("node")
+        .arg("-e")
+        .arg(wrapper)
+        .arg(&script)
+        .env("AUBE_YARN_EXEC_ENV", env.to_string())
+        .current_dir(project_root)
+        .status()
+        .await
+        .map_err(|e| {
+            Error::Registry(
+                name.to_string(),
+                format!("execute {} with Node.js from PATH: {e}", local.specifier()),
+            )
+        })?;
+    if !status.success() {
+        return Err(Error::Registry(
+            name.to_string(),
+            format!(
+                "exec dependency {} failed with status {status}",
+                local.specifier()
+            ),
+        ));
+    }
+
+    let content = std::fs::read(build_dir.join("package.json")).map_err(|e| {
+        Error::Registry(
+            name.to_string(),
+            format!("read generated package.json for {}: {e}", local.specifier()),
+        )
+    })?;
+    let pj: aube_manifest::PackageJson = sonic_rs::from_slice(&content)
+        .or_else(|_| serde_json::from_slice(&content))
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+    Ok((
+        pj.version.unwrap_or_else(|| "0.0.0".to_string()),
+        pj.dependencies,
+    ))
+}
+
 pub(crate) fn dep_path_for(name: &str, version: &str) -> String {
     format!("{name}@{version}")
 }

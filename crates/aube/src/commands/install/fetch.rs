@@ -111,8 +111,12 @@ require(process.argv[1]);
                 .current_dir(project_root)
                 .status()
                 .await
-                .into_diagnostic()
-                .wrap_err_with(|| format!("execute {}{chain}", local.specifier()))?;
+                .map_err(|e| {
+                    miette!(
+                        "execute {} with Node.js from PATH: {e}{chain}",
+                        local.specifier()
+                    )
+                })?;
             if !status.success() {
                 return Err(miette!(
                     "exec dependency {} failed with status {status}{chain}",

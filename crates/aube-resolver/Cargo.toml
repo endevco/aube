@@ -32,9 +32,9 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 
 [build-dependencies]
 rkyv = { workspace = true }

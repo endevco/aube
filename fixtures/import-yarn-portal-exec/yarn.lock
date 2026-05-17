@@ -5,6 +5,14 @@ __metadata:
 "exec-pkg@exec:./scripts/generate-exec.js":
   version: 2.0.0
   resolution: "exec-pkg@exec:./scripts/generate-exec.js"
+  dependencies:
+    is-number: "npm:7.0.0"
+  languageName: node
+  linkType: hard
+
+"is-number@npm:7.0.0":
+  version: 7.0.0
+  resolution: "is-number@npm:7.0.0"
   languageName: node
   linkType: hard
 

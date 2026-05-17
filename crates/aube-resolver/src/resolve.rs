@@ -1,6 +1,6 @@
 use crate::local_source::{
-    dep_path_for, is_non_registry_specifier, read_local_manifest, rebase_local, resolve_git_source,
-    resolve_remote_tarball, should_block_exotic_subdep,
+    dep_path_for, is_non_registry_specifier, read_local_manifest, rebase_local,
+    resolve_exec_manifest, resolve_git_source, resolve_remote_tarball, should_block_exotic_subdep,
 };
 use crate::package_ext::{apply_package_extensions, pick_override_spec};
 use crate::semver_util::{PickResult, pick_version, version_satisfies};
@@ -891,10 +891,15 @@ impl Resolver {
                         // can resolve it with a single
                         // `project_root.join(rel)`.
                         let local = rebase_local(&raw_local, &importer_root, &self.project_root);
-                        let (_target_name, version, deps) =
-                            read_local_manifest(&raw_local, &importer_root).unwrap_or_else(|_| {
-                                (task.name.clone(), "0.0.0".to_string(), BTreeMap::new())
-                            });
+                        let (version, deps) = if matches!(local, LocalSource::Exec(_)) {
+                            resolve_exec_manifest(&task.name, &local, &self.project_root).await?
+                        } else {
+                            let (_target_name, version, deps) =
+                                read_local_manifest(&raw_local, &importer_root).unwrap_or_else(
+                                    |_| (task.name.clone(), "0.0.0".to_string(), BTreeMap::new()),
+                                );
+                            (version, deps)
+                        };
                         (local, version, deps)
                     };
                     let dep_path = local.dep_path(&task.name);
