@@ -195,6 +195,7 @@ pub(crate) fn should_block_exotic_subdep(
                     Some(LocalSource::Directory(_))
                         | Some(LocalSource::Link(_))
                         | Some(LocalSource::Portal(_))
+                        | Some(LocalSource::Exec(_))
                 )
             })
 }

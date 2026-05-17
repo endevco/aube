@@ -108,6 +108,7 @@ require(process.argv[1]);
                 .arg(wrapper)
                 .arg(&script)
                 .env("AUBE_YARN_EXEC_ENV", env.to_string())
+                .current_dir(project_root)
                 .status()
                 .await
                 .into_diagnostic()
