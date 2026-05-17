@@ -1156,6 +1156,85 @@ fn exclude_links_from_lockfile_drops_link_deps_from_importer() {
 }
 
 #[test]
+fn writer_uses_pnpm_resolution_types_for_portal_and_exec() {
+    let dir = tempfile::tempdir().unwrap();
+    let lockfile_path = dir.path().join("pnpm-lock.yaml");
+
+    let portal_source = LocalSource::Portal(std::path::PathBuf::from("./packages/portal"));
+    let exec_source = LocalSource::Exec(std::path::PathBuf::from("./scripts/generate-exec.js"));
+    let portal_dep_path = portal_source.dep_path("portal-pkg");
+    let exec_dep_path = exec_source.dep_path("exec-pkg");
+
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        portal_dep_path.clone(),
+        LockedPackage {
+            name: "portal-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            dep_path: portal_dep_path.clone(),
+            local_source: Some(portal_source),
+            ..Default::default()
+        },
+    );
+    packages.insert(
+        exec_dep_path.clone(),
+        LockedPackage {
+            name: "exec-pkg".to_string(),
+            version: "2.0.0".to_string(),
+            dep_path: exec_dep_path.clone(),
+            local_source: Some(exec_source),
+            ..Default::default()
+        },
+    );
+
+    let mut importers = BTreeMap::new();
+    importers.insert(
+        ".".to_string(),
+        vec![
+            DirectDep {
+                name: "portal-pkg".to_string(),
+                dep_path: portal_dep_path,
+                dep_type: DepType::Production,
+                specifier: Some("portal:./packages/portal".to_string()),
+            },
+            DirectDep {
+                name: "exec-pkg".to_string(),
+                dep_path: exec_dep_path,
+                dep_type: DepType::Production,
+                specifier: Some("exec:./scripts/generate-exec.js".to_string()),
+            },
+        ],
+    );
+
+    let graph = LockfileGraph {
+        importers,
+        packages,
+        ..Default::default()
+    };
+    let manifest = PackageJson {
+        name: Some("root".to_string()),
+        version: Some("0.0.0".to_string()),
+        ..Default::default()
+    };
+
+    write(&lockfile_path, &graph, &manifest).unwrap();
+    let yaml = std::fs::read_to_string(&lockfile_path).unwrap();
+
+    assert!(
+        yaml.contains("portal-pkg@portal:./packages/portal:"),
+        "portal package should be written:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("resolution: {directory: ./packages/portal, type: directory}"),
+        "portal should use pnpm's directory resolution type:\n{yaml}"
+    );
+    assert!(
+        !yaml.contains("type: portal") && !yaml.contains("type: exec"),
+        "pnpm lockfiles must not contain non-standard local source types:\n{yaml}"
+    );
+}
+
+#[test]
 fn test_parse_invalid_yaml() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pnpm-lock.yaml");

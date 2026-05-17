@@ -794,11 +794,11 @@ impl Resolver {
                             importer: task.importer.clone(),
                         })));
                     }
-                    // Pull the parent's on-disk source root, when the
-                    // parent is a path-backed source. The BFS always
-                    // inserts a parent into `resolved` before enqueuing
-                    // its children, so for transitive tasks the parent
-                    // record is reliably present here.
+                    // Pull the parent's on-disk package root, when the
+                    // parent is a directory-backed source. `exec:` stores
+                    // the generator script path, not the generated package
+                    // directory, so it cannot safely anchor relative
+                    // transitive local specifiers.
                     let parent_source_root: Option<std::path::PathBuf> = (!task.is_root)
                         .then(|| {
                             task.parent
@@ -808,8 +808,7 @@ impl Resolver {
                                 .and_then(|src| match src {
                                     LocalSource::Directory(p)
                                     | LocalSource::Link(p)
-                                    | LocalSource::Portal(p)
-                                    | LocalSource::Exec(p) => Some(self.project_root.join(p)),
+                                    | LocalSource::Portal(p) => Some(self.project_root.join(p)),
                                     _ => None,
                                 })
                         })
