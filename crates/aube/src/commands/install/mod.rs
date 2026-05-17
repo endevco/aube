@@ -969,7 +969,8 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             );
             let lock_build_policy = std::sync::Arc::new(build_policy.clone());
             let lock_strategy = resolve_link_strategy(&cwd, &settings_ctx, planned_gvs)?;
-            let (lock_patches, lock_patch_hashes) = crate::patches::load_patches_for_linker(&cwd)?;
+            let (lock_patches, lock_patch_hashes) =
+                crate::patches::load_patches_for_linker(&cwd, &graph.patched_dependencies)?;
             let (lock_materialize_tx, lock_materialize_rx) = materialize_channel();
             let lock_prewarm_inputs = GvsPrewarmInputs {
                 graph: std::sync::Arc::new(graph.clone()),
@@ -1704,7 +1705,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             let materialize_graph_arc = std::sync::Arc::new(graph.clone());
             let materialize_strategy = resolve_link_strategy(&cwd, &settings_ctx, planned_gvs)?;
             let (materialize_patches, materialize_patch_hashes) =
-                crate::patches::load_patches_for_linker(&cwd)?;
+                crate::patches::load_patches_for_linker(&cwd, &graph.patched_dependencies)?;
             let materialize_inputs = GvsPrewarmInputs {
                 graph: materialize_graph_arc.clone(),
                 store: store.clone(),

@@ -369,6 +369,64 @@ __metadata:
     assert_eq!(root[0].dep_path, "foo@1.2.3");
 }
 
+#[test]
+fn test_parse_berry_patch_protocol() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"is-number@patch:is-number@npm%3A7.0.0#./.yarn/patches/is-number.patch::version=7.0.0&hash=abc123":
+  version: 7.0.0
+  resolution: "is-number@patch:is-number@npm%3A7.0.0#./.yarn/patches/is-number.patch::version=7.0.0&hash=abc123"
+  checksum: 10c0/patched
+  languageName: node
+  linkType: hard
+"#;
+    std::fs::write(tmp.path(), content).unwrap();
+    let manifest = make_manifest(
+        &[(
+            "is-number",
+            "patch:is-number@npm%3A7.0.0#./.yarn/patches/is-number.patch::version=7.0.0&hash=abc123",
+        )],
+        &[],
+    );
+    let graph = parse(tmp.path(), &manifest).unwrap();
+
+    assert!(graph.packages.contains_key("is-number@7.0.0"));
+    assert_eq!(
+        graph
+            .patched_dependencies
+            .get("is-number@7.0.0")
+            .map(String::as_str),
+        Some("./.yarn/patches/is-number.patch")
+    );
+    assert_eq!(graph.importers["."][0].dep_path, "is-number@7.0.0");
+}
+
+#[test]
+fn test_parse_berry_skips_builtin_patch_protocol() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"glob@patch:glob@npm%3A8.1.0#~builtin<compat/glob>":
+  version: 8.1.0
+  resolution: "glob@patch:glob@npm%3A8.1.0#~builtin<compat/glob>"
+  checksum: 10c0/patched
+  languageName: node
+  linkType: hard
+"#;
+    std::fs::write(tmp.path(), content).unwrap();
+    let manifest = make_manifest(&[("glob", "^8.1.0")], &[]);
+    let graph = parse(tmp.path(), &manifest).unwrap();
+
+    assert!(graph.packages.is_empty());
+    assert!(graph.patched_dependencies.is_empty());
+    assert!(graph.importers["."].is_empty());
+}
+
 /// Scoped package names (`@types/node`) and the `, `-joined
 /// multi-spec header format berry uses when two package.json
 /// ranges resolve to the same version.
@@ -635,6 +693,68 @@ fn test_write_berry_roundtrip() {
     let root = reparsed.importers.get(".").unwrap();
     assert_eq!(root.len(), 1);
     assert_eq!(root[0].dep_path, "foo@1.2.3");
+}
+
+#[test]
+fn test_write_berry_roundtrips_patch_protocol() {
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        "is-number@7.0.0".to_string(),
+        LockedPackage {
+            name: "is-number".to_string(),
+            version: "7.0.0".to_string(),
+            dep_path: "is-number@7.0.0".to_string(),
+            yarn_checksum: Some("10c0/patched".to_string()),
+            ..Default::default()
+        },
+    );
+    let graph = LockfileGraph {
+        importers: {
+            let mut m = BTreeMap::new();
+            m.insert(
+                ".".to_string(),
+                vec![crate::DirectDep {
+                    name: "is-number".to_string(),
+                    dep_path: "is-number@7.0.0".to_string(),
+                    dep_type: DepType::Production,
+                    specifier: None,
+                }],
+            );
+            m
+        },
+        packages,
+        patched_dependencies: BTreeMap::from([(
+            "is-number@7.0.0".to_string(),
+            ".yarn/patches/is-number.patch".to_string(),
+        )]),
+        ..Default::default()
+    };
+    let manifest = make_manifest(
+        &[(
+            "is-number",
+            "patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch::version=7.0.0&hash=abc123",
+        )],
+        &[],
+    );
+
+    let out = tempfile::NamedTempFile::new().unwrap();
+    write_berry(out.path(), &graph, &manifest).unwrap();
+    let written = std::fs::read_to_string(out.path()).unwrap();
+    let full_spec = "is-number@patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch::version=7.0.0&hash=abc123";
+    assert!(written.contains(full_spec));
+    assert!(!written.contains(&format!(
+        "is-number@patch:is-number@npm%3A7.0.0#.yarn/patches/is-number.patch, {full_spec}"
+    )));
+
+    let reparsed = parse(out.path(), &manifest).unwrap();
+    assert_eq!(
+        reparsed
+            .patched_dependencies
+            .get("is-number@7.0.0")
+            .map(String::as_str),
+        Some(".yarn/patches/is-number.patch")
+    );
+    assert_eq!(reparsed.importers["."][0].dep_path, "is-number@7.0.0");
 }
 
 /// `link:` deps are pure symlinks in berry's model, which means
