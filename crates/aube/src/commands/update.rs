@@ -1288,6 +1288,8 @@ fn merge_update_graph_into_workspace_lockfile(
         root_graph
             .workspace_extra_fields
             .insert(importer_path, extra);
+    } else {
+        root_graph.workspace_extra_fields.remove(&importer_path);
     }
     root_graph.packages.extend(pkg_graph.packages);
     root_graph.times.extend(pkg_graph.times);
