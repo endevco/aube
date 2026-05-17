@@ -1229,6 +1229,10 @@ fn writer_uses_pnpm_resolution_types_for_portal_and_exec() {
         "portal should use pnpm's directory resolution type:\n{yaml}"
     );
     assert!(
+        !yaml.contains("exec-pkg@exec:./scripts/generate-exec.js:"),
+        "exec packages should be omitted from pnpm packages entries:\n{yaml}"
+    );
+    assert!(
         !yaml.contains("type: portal") && !yaml.contains("type: exec"),
         "pnpm lockfiles must not contain non-standard local source types:\n{yaml}"
     );

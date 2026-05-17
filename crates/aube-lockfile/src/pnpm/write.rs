@@ -147,7 +147,9 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         // Local deps use the canonical specifier in their key (e.g.
         // `foo@file:./vendor/foo`) so pnpm can read the lockfile.
         // `link:` deps are omitted from the packages section entirely,
-        // matching pnpm.
+        // matching pnpm. `exec:` has no pnpm resolution analogue, so
+        // keep it out too instead of writing a package key with no
+        // resolution block.
         // Non-registry transitive entries (github overrides, remote
         // tarballs fetched by URL) keep the URL in their dep-path key
         // and carry the real semver on `pkg.version`. `tarball_url`
@@ -161,7 +163,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
             .as_ref()
             .is_some_and(|url| parse_dep_path(&pkg.dep_path).is_some_and(|(_, v)| v == *url));
         let canonical = match pkg.local_source.as_ref() {
-            Some(LocalSource::Link(_)) => continue,
+            Some(LocalSource::Link(_)) | Some(LocalSource::Exec(_)) => continue,
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
             None => {
                 if native_pnpm_aliases && let Some(real_name) = pkg.alias_of.as_deref() {
@@ -363,11 +365,13 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
     };
     let mut snapshots = BTreeMap::new();
     for (dep_path, pkg) in &graph.packages {
-        // `link:` deps are omitted from snapshots (pnpm parity); other
-        // local deps use the canonical specifier key so pnpm's parser
-        // lines them up with the packages entry above.
+        // `link:` deps are omitted from snapshots (pnpm parity). `exec:`
+        // is omitted for the same reason it is omitted from packages:
+        // pnpm has no resolution shape for generated packages.
+        // Other local deps use the canonical specifier key so pnpm's
+        // parser lines them up with the packages entry above.
         let key = match pkg.local_source.as_ref() {
-            Some(LocalSource::Link(_)) => continue,
+            Some(LocalSource::Link(_)) | Some(LocalSource::Exec(_)) => continue,
             Some(local) => format!("{}@{}", pkg.name, local.specifier()),
             None => {
                 if native_pnpm_aliases && let Some(real_name) = pkg.alias_of.as_deref() {
