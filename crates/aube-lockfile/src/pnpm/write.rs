@@ -400,11 +400,7 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
         );
     }
 
-    let time = if graph.times.is_empty() {
-        None
-    } else {
-        Some(graph.times.clone())
-    };
+    let time = pruned_time_entries(graph, native_pnpm_aliases);
 
     let catalogs = if graph.catalogs.is_empty() {
         None
@@ -482,6 +478,57 @@ pub fn write(path: &Path, graph: &LockfileGraph, manifest: &PackageJson) -> Resu
     // atomic_write_lockfile for full rationale.
     crate::atomic_write_lockfile(path, yaml.as_bytes())?;
     Ok(())
+}
+
+fn pruned_time_entries(
+    graph: &LockfileGraph,
+    native_pnpm_aliases: bool,
+) -> Option<BTreeMap<String, String>> {
+    if graph.times.is_empty() {
+        return None;
+    }
+
+    let mut time = BTreeMap::new();
+    for deps in graph.importers.values() {
+        for dep in deps {
+            let Some(pkg) = graph.packages.get(&dep.dep_path) else {
+                tracing::debug!(
+                    dep_path = %dep.dep_path,
+                    "direct importer dep missing from package table while pruning pnpm time entries"
+                );
+                continue;
+            };
+            if pkg.local_source.is_some() {
+                continue;
+            }
+            let name = if native_pnpm_aliases {
+                pkg.alias_of.as_deref().unwrap_or(dep.name.as_str())
+            } else {
+                dep.name.as_str()
+            };
+            let tail = dep_path_tail(&dep.dep_path, &dep.name);
+            let version = tail.split('(').next().unwrap_or(tail);
+            let key = version_to_dep_path(name, version);
+            let internal_key = version_to_dep_path(&dep.name, version);
+            let value = graph
+                .times
+                .get(&key)
+                .or_else(|| graph.times.get(&internal_key))
+                .or_else(|| {
+                    (!native_pnpm_aliases)
+                        .then_some(pkg.alias_of.as_deref())
+                        .flatten()
+                        .and_then(|real_name| {
+                            graph.times.get(&version_to_dep_path(real_name, version))
+                        })
+                });
+            if let Some(value) = value {
+                time.insert(key, value.clone());
+            }
+        }
+    }
+
+    (!time.is_empty()).then_some(time)
 }
 
 // -- Writable serde types for pnpm-lock.yaml v9 --
