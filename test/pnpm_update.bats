@@ -250,6 +250,32 @@ YAML
 	assert_success
 }
 
+@test "aube up from a workspace member writes the shared root lockfile" {
+	cat >package.json <<'JSON'
+{ "workspaces": ["sub", "lib"] }
+JSON
+	mkdir sub lib
+	cat >sub/package.json <<'JSON'
+{ "name": "sub", "version": "0.0.0", "dependencies": { "lib": "workspace:*" } }
+JSON
+	cat >lib/package.json <<'JSON'
+{ "name": "lib", "version": "1.0.0" }
+JSON
+
+	cd sub
+	run aube install
+	assert_success
+	assert_file_exists ../aube-lock.yaml
+	assert_file_not_exists aube-lock.yaml
+
+	run aube up
+	assert_success
+	assert_file_exists ../aube-lock.yaml
+	assert_file_not_exists aube-lock.yaml
+	run grep 'sub:' ../aube-lock.yaml
+	assert_success
+}
+
 @test "aube update -r --no-shared-workspace-lockfile: writes a per-project lockfile" {
 	# Ported from pnpm/test/update.ts:118 ('recursive update
 	# --no-shared-workspace-lockfile').

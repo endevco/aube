@@ -741,7 +741,7 @@ pub async fn run(
         }
     }
 
-    super::write_and_log_lockfile(&cwd, &graph, &manifest)?;
+    write_update_lockfile(&cwd, &graph, &manifest)?;
 
     // Propagate `--ignore-pnpmfile` / `--pnpmfile` / `--global-pnpmfile`
     // into the chained install. Frozen-prefer normally short-circuits to
@@ -1206,7 +1206,7 @@ fn merge_filtered_update_lockfile(
     pkg_dir: &std::path::Path,
     pkg_manifest: &aube_manifest::PackageJson,
     root_manifest: &aube_manifest::PackageJson,
-    mut root_graph: aube_lockfile::LockfileGraph,
+    root_graph: aube_lockfile::LockfileGraph,
 ) -> miette::Result<()> {
     let importer_path = super::workspace_importer_path(workspace_root, pkg_dir)?;
     let remove_pkg_lockfile = importer_path != ".";
@@ -1215,13 +1215,61 @@ fn merge_filtered_update_lockfile(
         return Ok(());
     }
 
-    let mut pkg_graph = aube_lockfile::parse_lockfile(pkg_dir, pkg_manifest)
+    let pkg_graph = aube_lockfile::parse_lockfile(pkg_dir, pkg_manifest)
         .map_err(miette::Report::new)
         .wrap_err_with(|| format!("failed to parse {}", pkg_lockfile.display()))?;
+    merge_update_graph_into_workspace_lockfile(
+        workspace_root,
+        pkg_dir,
+        root_manifest,
+        root_graph,
+        pkg_graph,
+    )?;
+    if remove_pkg_lockfile {
+        std::fs::remove_file(&pkg_lockfile)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to remove {}", pkg_lockfile.display()))?;
+    }
+    Ok(())
+}
+
+fn write_update_lockfile(
+    cwd: &std::path::Path,
+    graph: &aube_lockfile::LockfileGraph,
+    manifest: &aube_manifest::PackageJson,
+) -> miette::Result<()> {
+    let Some(workspace_root) = crate::dirs::find_workspace_root(cwd) else {
+        super::write_and_log_lockfile(cwd, graph, manifest)?;
+        return Ok(());
+    };
+    if workspace_root == cwd || !resolve_shared_workspace_lockfile(&workspace_root)? {
+        super::write_and_log_lockfile(cwd, graph, manifest)?;
+        return Ok(());
+    }
+
+    let root_manifest = super::load_manifest_or_default(&workspace_root)?;
+    let root_graph = read_workspace_lockfile(&workspace_root, &root_manifest)?;
+    merge_update_graph_into_workspace_lockfile(
+        &workspace_root,
+        cwd,
+        &root_manifest,
+        root_graph,
+        graph.clone(),
+    )
+}
+
+fn merge_update_graph_into_workspace_lockfile(
+    workspace_root: &std::path::Path,
+    pkg_dir: &std::path::Path,
+    root_manifest: &aube_manifest::PackageJson,
+    mut root_graph: aube_lockfile::LockfileGraph,
+    mut pkg_graph: aube_lockfile::LockfileGraph,
+) -> miette::Result<()> {
+    let importer_path = super::workspace_importer_path(workspace_root, pkg_dir)?;
     let pkg_deps = pkg_graph.importers.remove(".").ok_or_else(|| {
         miette!(
-            "filtered update wrote {} without a root importer",
-            pkg_lockfile.display()
+            "workspace update for {} resolved without a root importer",
+            pkg_dir.display()
         )
     })?;
     let pkg_skipped_optional = pkg_graph.skipped_optional_dependencies.remove(".");
@@ -1230,11 +1278,16 @@ fn merge_filtered_update_lockfile(
     if let Some(skipped) = pkg_skipped_optional {
         root_graph
             .skipped_optional_dependencies
-            .insert(importer_path, skipped);
+            .insert(importer_path.clone(), skipped);
     } else {
         root_graph
             .skipped_optional_dependencies
             .remove(&importer_path);
+    }
+    if let Some(extra) = pkg_graph.workspace_extra_fields.remove(".") {
+        root_graph
+            .workspace_extra_fields
+            .insert(importer_path, extra);
     }
     root_graph.packages.extend(pkg_graph.packages);
     root_graph.times.extend(pkg_graph.times);
@@ -1252,11 +1305,6 @@ fn merge_filtered_update_lockfile(
     let mut root_graph = root_graph.filter_deps(|_| true);
     retain_package_times(&mut root_graph);
     super::write_and_log_lockfile(workspace_root, &root_graph, root_manifest)?;
-    if remove_pkg_lockfile {
-        std::fs::remove_file(&pkg_lockfile)
-            .into_diagnostic()
-            .wrap_err_with(|| format!("failed to remove {}", pkg_lockfile.display()))?;
-    }
     Ok(())
 }
 
