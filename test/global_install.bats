@@ -202,6 +202,23 @@ teardown() {
 	assert_success
 }
 
+@test "aube add -g --deny-build=<pkg> marks a global dep's build scripts reviewed" {
+	AUBE_STRICT_DEP_BUILDS=true run aube add -g \
+		--deny-build=aube-test-builds-marker \
+		aube-test-builds-marker@1.0.0
+	assert_success
+	refute_output --partial "must be reviewed before install"
+	refute_output --partial "ignored build scripts"
+
+	pkg_dir="$AUBE_HOME/global-aube"
+	install_dir="$(find "$pkg_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+	# Denied dep stayed skipped, but strictDepBuilds accepted the
+	# explicit review decision.
+	assert_file_not_exists "$install_dir/aube-builds-marker.txt"
+	run grep -q '"aube-test-builds-marker": false' "$install_dir/package.json"
+	assert_success
+}
+
 @test "aube remove -g on a missing package errors" {
 	run aube remove -g nonexistent-pkg
 	assert_failure

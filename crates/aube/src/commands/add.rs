@@ -34,7 +34,8 @@ pub struct AddArgs {
     ///
     /// Conflicts with `--no-save`, which only snapshots `package.json`
     /// and the lockfile and would leave an orphaned approval in the
-    /// workspace yaml on restore.
+    /// workspace yaml on restore. Also conflicts with `--deny-build` for
+    /// the same package name.
     #[arg(
         long = "allow-build",
         value_name = "PKG",
@@ -56,6 +57,26 @@ pub struct AddArgs {
     /// which remains a hard block.
     #[arg(long)]
     pub allow_low_downloads: bool,
+    /// Mark a dependency's lifecycle scripts as reviewed and denied.
+    ///
+    /// Writes `allowBuilds: { <pkg>: false }` into the workspace yaml
+    /// (or `package.json#aube.allowBuilds`) before the install runs,
+    /// so the named package's lifecycle scripts stay skipped without
+    /// tripping `strictDepBuilds=true`. Repeatable — pass the flag
+    /// once per package.
+    ///
+    /// Conflicts with `--no-save`, which only snapshots `package.json`
+    /// and the lockfile and would leave an orphaned denial in the
+    /// workspace yaml on restore. Also conflicts with `--allow-build` for
+    /// the same package name.
+    #[arg(
+        long = "deny-build",
+        value_name = "PKG",
+        conflicts_with = "no_save",
+        require_equals = true,
+        value_parser = parse_deny_build_value,
+    )]
+    pub deny_build: Vec<String>,
     /// Skip lifecycle scripts (no-op; aube already skips by default).
     #[arg(long, hide = true)]
     pub ignore_scripts: bool,
@@ -671,6 +692,7 @@ pub async fn run(
         save_catalog,
         save_catalog_name,
         allow_build,
+        deny_build,
         allow_low_downloads,
         lockfile,
         network,
@@ -687,11 +709,13 @@ pub async fn run(
     if packages.is_empty() {
         return Err(miette!("no packages specified"));
     }
+    reject_conflicting_build_flags(&allow_build, &deny_build)?;
 
     if global {
         return run_global(
             packages,
             allow_build,
+            deny_build,
             allow_low_downloads,
             lockfile,
             network,
@@ -808,15 +832,15 @@ pub async fn run(
     } else {
         None
     };
-    // `--allow-build=<pkg>` pre-approves dep lifecycle scripts as part
-    // of the add. The conflict check (refuses to flip a pre-existing
-    // `false` to `true`) runs BEFORE `update_manifest_for_add` so a
-    // failure can't leave the manifest with new deps written but no
-    // matching install. Approval bytes themselves are also written here
-    // — the order doesn't matter for the install pipeline (it re-reads
-    // both files from disk) but keeps the failure-mode reasoning local.
+    // `--allow-build=<pkg>` / `--deny-build=<pkg>` pre-review dep
+    // lifecycle scripts as part of the add. The install pipeline
+    // re-reads the map from disk, so writing before manifest mutation
+    // keeps failure-mode reasoning local.
     if !allow_build.is_empty() {
         apply_allow_build_flags(&cwd, &allow_build)?;
+    }
+    if !deny_build.is_empty() {
+        apply_deny_build_flags(&cwd, &deny_build)?;
     }
 
     // OSV / downloads gates fire pre-manifest-mutation — they're
@@ -1862,6 +1886,43 @@ fn parse_allow_build_value(s: &str) -> Result<String, String> {
     }
 }
 
+fn parse_deny_build_value(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        Err("The --deny-build flag is missing a package name. \
+             Please specify the package name(s) that are denied from running installation scripts."
+            .to_string())
+    } else {
+        Ok(s.to_string())
+    }
+}
+
+fn reject_conflicting_build_flags(
+    allow_build: &[String],
+    deny_build: &[String],
+) -> miette::Result<()> {
+    if allow_build.is_empty() || deny_build.is_empty() {
+        return Ok(());
+    }
+
+    let mut overlap: Vec<&str> = allow_build
+        .iter()
+        .filter(|name| deny_build.contains(name))
+        .map(String::as_str)
+        .collect();
+    overlap.sort_unstable();
+    overlap.dedup();
+    if overlap.is_empty() {
+        return Ok(());
+    }
+
+    Err(miette!(
+        code = aube_codes::errors::ERR_AUBE_CONFLICTING_BUILD_FLAGS,
+        "--allow-build and --deny-build both name the same package(s): {}. \
+         Each package may only appear in one flag.",
+        overlap.join(", ")
+    ))
+}
+
 /// Apply `--allow-build=<pkg>` flags by writing each package as `true`
 /// to the project's `allowBuilds` map (workspace yaml or
 /// `package.json#aube.allowBuilds`), overwriting any prior value. An
@@ -1871,6 +1932,15 @@ fn apply_allow_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::R
     aube_manifest::workspace::add_to_allow_builds(cwd, names)
         .into_diagnostic()
         .wrap_err("failed to write --allow-build entries")?;
+    Ok(())
+}
+
+/// Apply `--deny-build=<pkg>` flags by writing each package as `false`
+/// to the project's `allowBuilds` map, overwriting any prior value.
+fn apply_deny_build_flags(cwd: &std::path::Path, names: &[String]) -> miette::Result<()> {
+    aube_manifest::workspace::set_allow_builds(cwd, names, false)
+        .into_diagnostic()
+        .wrap_err("failed to write --deny-build entries")?;
     Ok(())
 }
 
@@ -1959,6 +2029,7 @@ async fn run_filtered(
     if args.packages.is_empty() {
         return Err(miette!("no packages specified"));
     }
+    reject_conflicting_build_flags(&args.allow_build, &args.deny_build)?;
     let cwd = crate::dirs::cwd()?;
     // The workspace root — not the child `cwd` — is what owns the
     // lockfile and the project lock in yarn / npm / bun monorepos.
@@ -1969,12 +2040,15 @@ async fn run_filtered(
     let (root, matched) = super::select_workspace_packages(&cwd, filter, "add")?;
     let _lock = super::take_project_lock(&root)?;
 
-    // `--allow-build=<pkg>` writes against the workspace root (where
+    // CLI build review flags write against the workspace root (where
     // `allowBuilds` lives) — same as the non-filtered path. Run before
-    // any per-package manifest mutation so a conflict can't leave the
+    // any per-package manifest mutation so a failure can't leave the
     // child manifests half-mutated.
     if !args.allow_build.is_empty() {
         apply_allow_build_flags(&root, &args.allow_build)?;
+    }
+    if !args.deny_build.is_empty() {
+        apply_deny_build_flags(&root, &args.deny_build)?;
     }
 
     // OSV / downloads gates fire once against the workspace root
@@ -2122,6 +2196,7 @@ async fn run_filtered(
 async fn run_global(
     packages: &[String],
     allow_build: Vec<String>,
+    deny_build: Vec<String>,
     allow_low_downloads: bool,
     lockfile: crate::cli_args::LockfileArgs,
     network: crate::cli_args::NetworkArgs,
@@ -2174,6 +2249,7 @@ async fn run_global(
     let result = run_global_inner(
         packages,
         allow_build,
+        deny_build,
         allow_low_downloads,
         &layout,
         &install_dir,
@@ -2214,6 +2290,7 @@ async fn run_global(
 async fn run_global_inner(
     packages: &[String],
     allow_build: Vec<String>,
+    deny_build: Vec<String>,
     allow_low_downloads: bool,
     layout: &super::global::GlobalLayout,
     install_dir: &std::path::Path,
@@ -2295,6 +2372,10 @@ async fn run_global_inner(
         // install" even when the user explicitly approved the dep
         // (see Discussion #617).
         allow_build,
+        // Same contract as `allow_build`, but force-denies matching
+        // packages so global installs can satisfy `strictDepBuilds=true`
+        // while keeping selected lifecycle scripts skipped.
+        deny_build,
         // The synthetic inner `run()` is the one that actually fires
         // the supply-chain gate (`add` only checks once, in the main
         // path). Forward the outer caller's `--allow-low-downloads`
