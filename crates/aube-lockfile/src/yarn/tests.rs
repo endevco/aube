@@ -925,7 +925,7 @@ fn test_write_berry_roundtrips_portal_and_exec_protocols() {
     );
     let portal_block = &written[portal_idx..];
     let exec_block = &written[exec_idx..portal_idx];
-    assert!(portal_block.contains("linkType: hard"));
+    assert!(portal_block.contains("linkType: soft"));
     assert!(exec_block.contains("linkType: hard"));
 }
 
