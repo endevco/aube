@@ -659,6 +659,7 @@ pub(crate) struct ResolverConfigInputs<'a> {
     /// window only matters when `needs_time` routes through the full
     /// cache.
     pub(crate) cache_full_packuments: bool,
+    pub(crate) ignore_scripts: bool,
 }
 
 pub(crate) fn configure_resolver(
@@ -675,6 +676,7 @@ pub(crate) fn configure_resolver(
         minimum_release_age_override,
         target_lockfile_kind,
         cache_full_packuments,
+        ignore_scripts,
     } = inputs;
     let auto_install_peers = resolve_auto_install_peers(settings_ctx);
     let exclude_links_from_lockfile = resolve_exclude_links_from_lockfile(settings_ctx);
@@ -787,6 +789,7 @@ pub(crate) fn configure_resolver(
         .with_minimum_release_age(minimum_release_age)
         .with_catalogs(workspace_catalogs.clone())
         .with_project_root(cwd.to_path_buf())
+        .with_ignore_scripts(ignore_scripts)
         .with_dependency_policy(dependency_policy)
         .with_git_shallow_hosts(git_shallow_hosts);
     if let Some(hook) = read_package_hook {

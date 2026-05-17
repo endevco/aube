@@ -38,6 +38,7 @@ impl Resolver {
             ignored_optional_dependencies: BTreeSet::new(),
             resolution_mode: ResolutionMode::Highest,
             project_root: PathBuf::from("."),
+            ignore_scripts: false,
             minimum_release_age: None,
             catalogs: BTreeMap::new(),
             read_package_hook: None,
@@ -83,6 +84,7 @@ impl Resolver {
                 ignored_optional_dependencies: BTreeSet::new(),
                 resolution_mode: ResolutionMode::Highest,
                 project_root: PathBuf::from("."),
+                ignore_scripts: false,
                 minimum_release_age: None,
                 catalogs: BTreeMap::new(),
                 read_package_hook: None,
@@ -263,6 +265,11 @@ impl Resolver {
     /// local package's transitive deps.
     pub fn with_project_root(mut self, project_root: PathBuf) -> Self {
         self.project_root = project_root;
+        self
+    }
+
+    pub fn with_ignore_scripts(mut self, ignore_scripts: bool) -> Self {
+        self.ignore_scripts = ignore_scripts;
         self
     }
 

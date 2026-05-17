@@ -152,7 +152,8 @@ pub(super) fn run_link_phase(input: LinkPhaseInput<'_>) -> miette::Result<LinkPh
         && !dep_selection_filtered
         && workspace_filter_empty
     {
-        let (leaf, subtree) = delta::compute_leaf_and_subtree_hashes(graph_for_link, &patch_hashes);
+        let (leaf, subtree) =
+            delta::compute_leaf_and_subtree_hashes(graph_for_link, &patch_hashes, cwd);
         (Some(leaf), Some(subtree))
     } else {
         (None, None)

@@ -243,7 +243,7 @@ pub(super) async fn run_finalize_phase(input: FinalizePhaseInput<'_>) -> miette:
                 leaf.len() == graph.packages.len()
                     && graph.packages.keys().all(|k| leaf.contains_key(k))
             })
-            .unwrap_or_else(|| delta::compute_package_hashes(graph, &patch_hashes));
+            .unwrap_or_else(|| delta::compute_package_hashes(graph, &patch_hashes, cwd));
         let package_subtree_hashes = current_subtree_hashes.unwrap_or_else(|| {
             delta::compute_subtree_hashes_from_leaf(graph, &package_content_hashes)
         });

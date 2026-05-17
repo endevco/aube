@@ -15,6 +15,7 @@ mod types;
 
 pub use direct_dep_info::DirectDepInfo;
 pub use error::{AgeGateDetails, CatalogDetails, Error, ExoticSubdepDetails, NoMatchDetails};
+pub use local_source::resolve_exec_script_path;
 pub use package_ext::is_deprecation_allowed;
 pub use peer_context::{
     PeerContextOptions, UnmetPeer, apply_peer_contexts, detect_unmet_peers,
@@ -28,6 +29,15 @@ pub use types::{
     DependencyPolicy, MinimumReleaseAge, PackageExtension, ReadPackageHook, ResolutionMode,
     ResolvedPackage, TrustPolicy,
 };
+
+pub const YARN_EXEC_WRAPPER: &str = r#"
+const env = JSON.parse(process.env.AUBE_YARN_EXEC_ENV);
+globalThis.execEnv = env;
+for (const name of ['fs', 'path', 'child_process', 'os', 'crypto', 'url', 'util', 'stream', 'buffer']) {
+  globalThis[name] = require(name);
+}
+require(process.argv[1]);
+"#;
 
 use semver_util::version_satisfies;
 
@@ -120,6 +130,9 @@ pub struct Resolver {
     /// target directory. Defaults to the current working directory;
     /// callers set it via `with_project_root`.
     project_root: PathBuf,
+    /// When true, resolver-time `exec:` generators are blocked the
+    /// same way fetch-time execution is blocked.
+    ignore_scripts: bool,
     /// pnpm v11's `minimumReleaseAge` triplet. `None` disables the
     /// supply-chain age gate entirely (matching `minimumReleaseAge: 0`).
     minimum_release_age: Option<MinimumReleaseAge>,

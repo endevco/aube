@@ -13,12 +13,14 @@ use miette::{Context, IntoDiagnostic, miette};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
-/// Materialize a `file:` / `link:` package into the store.
+/// Materialize a local-source package into the store.
 ///
 /// `Directory` walks the target and hash-imports every file; `Tarball`
 /// opens the `.tgz` and reuses the normal tarball importer. `Link`
 /// returns `None` because link deps never have a store-backed index —
-/// the linker symlinks directly to the target in step 2.
+/// the linker symlinks directly to the target in step 2. `Portal`
+/// imports the target package like a directory so its dependency graph
+/// is linked, and `Exec` runs the generator into a temp build dir.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn import_local_source(
     store: &std::sync::Arc<aube_store::Store>,
@@ -41,7 +43,7 @@ pub(super) async fn import_local_source(
     use aube_lockfile::LocalSource;
     match local {
         LocalSource::Link(_) => Ok(None),
-        LocalSource::Directory(rel) => {
+        LocalSource::Directory(rel) | LocalSource::Portal(rel) => {
             let abs = project_root.join(rel);
             if !abs.is_dir() {
                 return Err(miette!(
@@ -53,6 +55,65 @@ pub(super) async fn import_local_source(
             let index = store
                 .import_directory(&abs)
                 .map_err(|e| miette!("failed to import {}: {e}{chain}", local.specifier()))?;
+            Ok(Some(index))
+        }
+        LocalSource::Exec(_) => {
+            if ignore_scripts {
+                return Err(miette!(
+                    "{} requires executing its generator, but scripts are disabled{chain}",
+                    local.specifier()
+                ));
+            }
+            let script = aube_resolver::resolve_exec_script_path(local, project_root)
+                .map_err(|e| miette!("exec dependency {}: {e}{chain}", local.specifier()))?;
+            let temp = tempfile::Builder::new()
+                .prefix("aube-exec-")
+                .tempdir()
+                .into_diagnostic()
+                .wrap_err_with(|| format!("create temp dir for {}{chain}", local.specifier()))?;
+            let build_dir = temp.path().join("build");
+            let temp_dir = temp.path().join("temp");
+            std::fs::create_dir_all(&build_dir)
+                .into_diagnostic()
+                .wrap_err_with(|| {
+                    format!("create exec build dir for {}{chain}", local.specifier())
+                })?;
+            std::fs::create_dir_all(&temp_dir)
+                .into_diagnostic()
+                .wrap_err_with(|| {
+                    format!("create exec temp dir for {}{chain}", local.specifier())
+                })?;
+            let env = serde_json::json!({
+                "tempDir": temp_dir,
+                "buildDir": build_dir,
+                "locator": format!("{pkg_name}@{}", local.specifier()),
+            });
+            let status = tokio::process::Command::new("node")
+                .arg("-e")
+                .arg(aube_resolver::YARN_EXEC_WRAPPER)
+                .arg(&script)
+                .env("AUBE_YARN_EXEC_ENV", env.to_string())
+                .current_dir(project_root)
+                .status()
+                .await
+                .map_err(|e| {
+                    miette!(
+                        "execute {} with Node.js from PATH: {e}{chain}",
+                        local.specifier()
+                    )
+                })?;
+            if !status.success() {
+                return Err(miette!(
+                    "exec dependency {} failed with status {status}{chain}",
+                    local.specifier()
+                ));
+            }
+            let index = store.import_directory(&build_dir).map_err(|e| {
+                miette!(
+                    "failed to import generated {}: {e}{chain}",
+                    local.specifier()
+                )
+            })?;
             Ok(Some(index))
         }
         LocalSource::Tarball(rel) => {

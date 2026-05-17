@@ -685,6 +685,64 @@ fn test_parse_berry_http_and_git_protocols() {
     assert!(matches!(&ssh.local_source, Some(LocalSource::Git(_))));
 }
 
+#[test]
+fn test_parse_berry_portal_and_exec_protocols() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let content = r#"__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"portal-pkg@portal:./packages/portal":
+  version: 1.0.0
+  resolution: "portal-pkg@portal:./packages/portal"
+  dependencies:
+    left-pad: "npm:^1.3.0"
+  languageName: node
+  linkType: soft
+
+"exec-pkg@exec:./scripts/generate-exec.js":
+  version: 2.0.0
+  resolution: "exec-pkg@exec:./scripts/generate-exec.js"
+  languageName: node
+  linkType: hard
+
+"left-pad@npm:^1.3.0":
+  version: 1.3.0
+  resolution: "left-pad@npm:1.3.0"
+  languageName: node
+  linkType: hard
+"#;
+    std::fs::write(tmp.path(), content).unwrap();
+    let manifest = make_manifest(
+        &[
+            ("portal-pkg", "portal:./packages/portal"),
+            ("exec-pkg", "exec:./scripts/generate-exec.js"),
+        ],
+        &[],
+    );
+    let graph = parse(tmp.path(), &manifest).unwrap();
+
+    let portal_key = LocalSource::Portal(PathBuf::from("./packages/portal")).dep_path("portal-pkg");
+    let portal = &graph.packages[&portal_key];
+    assert!(matches!(
+        &portal.local_source,
+        Some(LocalSource::Portal(p)) if p == &PathBuf::from("./packages/portal")
+    ));
+    assert_eq!(
+        portal.dependencies.get("left-pad").map(String::as_str),
+        Some("left-pad@1.3.0")
+    );
+
+    let exec_key =
+        LocalSource::Exec(PathBuf::from("./scripts/generate-exec.js")).dep_path("exec-pkg");
+    let exec = &graph.packages[&exec_key];
+    assert!(matches!(
+        &exec.local_source,
+        Some(LocalSource::Exec(p)) if p == &PathBuf::from("./scripts/generate-exec.js")
+    ));
+    assert_eq!(graph.importers["."].len(), 2);
+}
+
 /// Round-trip: parse berry → write berry → parse berry should
 /// preserve packages, versions, checksum (via `yarn_checksum`),
 /// and transitive edges. This is the core round-trip contract.
@@ -868,6 +926,60 @@ fn test_write_berry_link_type_soft_for_link_deps() {
         regular_block.contains("linkType: hard"),
         "registry block should be hard-linked:\n{regular_block}"
     );
+}
+
+#[test]
+fn test_write_berry_roundtrips_portal_and_exec_protocols() {
+    let portal_source = LocalSource::Portal(PathBuf::from("./packages/portal"));
+    let exec_source = LocalSource::Exec(PathBuf::from("./scripts/generate-exec.js"));
+    let mut packages = BTreeMap::new();
+    packages.insert(
+        portal_source.dep_path("portal-pkg"),
+        LockedPackage {
+            name: "portal-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            dep_path: portal_source.dep_path("portal-pkg"),
+            local_source: Some(portal_source),
+            ..Default::default()
+        },
+    );
+    packages.insert(
+        exec_source.dep_path("exec-pkg"),
+        LockedPackage {
+            name: "exec-pkg".to_string(),
+            version: "2.0.0".to_string(),
+            dep_path: exec_source.dep_path("exec-pkg"),
+            local_source: Some(exec_source),
+            ..Default::default()
+        },
+    );
+    let graph = LockfileGraph {
+        importers: {
+            let mut m = BTreeMap::new();
+            m.insert(".".to_string(), vec![]);
+            m
+        },
+        packages,
+        ..Default::default()
+    };
+    let manifest = make_manifest(&[], &[]);
+
+    let out = tempfile::NamedTempFile::new().unwrap();
+    write_berry(out.path(), &graph, &manifest).unwrap();
+    let written = std::fs::read_to_string(out.path()).unwrap();
+
+    assert!(written.contains("portal-pkg@portal:./packages/portal"));
+    assert!(written.contains("exec-pkg@exec:./scripts/generate-exec.js"));
+    let portal_idx = written.find("portal-pkg@portal:").unwrap();
+    let exec_idx = written.find("exec-pkg@exec:").unwrap();
+    assert!(
+        exec_idx < portal_idx,
+        "expected exec block before portal block:\n{written}"
+    );
+    let portal_block = &written[portal_idx..];
+    let exec_block = &written[exec_idx..portal_idx];
+    assert!(portal_block.contains("linkType: soft"));
+    assert!(exec_block.contains("linkType: hard"));
 }
 
 /// Header and `resolution:` both carry spec strings that may

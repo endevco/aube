@@ -125,15 +125,12 @@ pub(super) fn parse_berry_str(
                 patched_dependencies.insert(format!("{res_name}@{version}"), patch_path);
                 None
             }
-            "portal" | "exec" => {
-                tracing::warn!(
-                    code = aube_codes::warnings::WARN_AUBE_YARN_BERRY_UNSUPPORTED,
-                    "yarn berry '{}' protocol in block '{}' is not supported — entry skipped",
-                    res_protocol,
-                    key_str,
-                );
-                continue;
-            }
+            "portal" => Some(LocalSource::Portal(PathBuf::from(strip_hash_fragment(
+                res_body,
+            )))),
+            "exec" => Some(LocalSource::Exec(PathBuf::from(strip_hash_fragment(
+                res_body,
+            )))),
             "file" => Some(file_protocol_source(res_body)),
             "link" => Some(LocalSource::Link(PathBuf::from(strip_hash_fragment(
                 res_body,
@@ -550,8 +547,6 @@ fn classify_remote(url: &str, _block: &yaml_serde::Mapping) -> Option<LocalSourc
 ///   `yarn_checksum` from) are written without a `checksum:` field.
 ///   Yarn's default `checksumBehavior: throw` populates missing
 ///   checksums on the next install against its own cache.
-/// - `portal:` / `exec:` protocols aren't represented in aube's graph
-///   and never round-trip.
 pub fn write_berry(
     path: &Path,
     graph: &LockfileGraph,
@@ -703,15 +698,11 @@ pub fn write_berry(
         }
         out.push_str("  languageName: node\n");
         // `linkType: soft` means "just symlink, don't materialize into
-        // the virtual store" — what berry uses for `link:` (and
-        // `workspace:`) entries. `hard` is the default for registry
-        // packages and everything that does get materialized. Picking
-        // `hard` for a `link:` block would send yarn's own linker
-        // down the tarball-import path the next time it reads our
-        // output, which breaks `link:` projects that round-trip
-        // through aube.
+        // the virtual store" — what berry uses for local directory refs
+        // (`link:`, `portal:`, and `workspace:`). `hard` is the default
+        // for registry packages and generated/cache-backed sources.
         let link_type = match &pkg.local_source {
-            Some(LocalSource::Link(_)) => "soft",
+            Some(LocalSource::Link(_) | LocalSource::Portal(_)) => "soft",
             _ => "hard",
         };
         out.push_str("  linkType: ");

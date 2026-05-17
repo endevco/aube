@@ -104,6 +104,44 @@ teardown() {
 	assert_success
 }
 
+@test "aube install supports yarn berry portal and exec protocols" {
+	cp -R "$PROJECT_ROOT/fixtures/import-yarn-portal-exec/." .
+
+	run aube install
+	assert_success
+
+	run node -e 'if (require("portal-pkg") !== "portal ok + exec ok") process.exit(1); if (require("exec-pkg") !== "exec ok") process.exit(1)'
+	assert_success
+}
+
+@test "aube install fresh-resolves yarn berry portal transitive exec protocol" {
+	cp -R "$PROJECT_ROOT/fixtures/import-yarn-portal-exec/." .
+	rm yarn.lock
+
+	run aube install
+	assert_success
+
+	run node -e 'if (require("portal-pkg") !== "portal ok + exec ok") process.exit(1); if (require("exec-pkg") !== "exec ok") process.exit(1)'
+	assert_success
+	run grep -F "is-number@7.0.0:" aube-lock.yaml
+	assert_success
+	run grep -F "version: exec:scripts/generate-exec.js" aube-lock.yaml
+	assert_success
+	run grep -A 4 -F "portal-pkg@portal:./packages/portal:" aube-lock.yaml
+	assert_output --partial "exec-pkg: exec:scripts/generate-exec.js"
+	run grep -F "0.0.0" aube-lock.yaml
+	assert_failure
+}
+
+@test "aube install --ignore-scripts does not run yarn berry exec generator during fresh resolve" {
+	cp -R "$PROJECT_ROOT/fixtures/import-yarn-portal-exec/." .
+	rm yarn.lock
+
+	run aube install --ignore-scripts
+	assert_failure
+	assert_output --partial "scripts are disabled"
+}
+
 @test "aube install from bun.lock links workspace deps to their package dirs" {
 	cat >package.json <<'EOF'
 {"name":"root","version":"1.0.0","workspaces":["packages/*"]}

@@ -3,6 +3,7 @@ use aube_lockfile::{LocalSource, LockedPackage};
 use aube_registry::client::RegistryClient;
 use aube_util::path::normalize_lexical;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// Rewrite a `LocalSource` whose path is relative to `importer_root`
 /// into one whose path is relative to `project_root`, so downstream
@@ -20,14 +21,17 @@ use std::collections::BTreeMap;
 /// lockfile's `version:` string.
 pub(crate) fn rebase_local(
     local: &LocalSource,
-    importer_root: &std::path::Path,
-    project_root: &std::path::Path,
+    importer_root: &Path,
+    project_root: &Path,
 ) -> LocalSource {
     // The fast path: importer_root == project_root. Root-importer
     // installs take this branch, which is also the single-project
     // case — no rewrite needed and we preserve the raw specifier
     // bytes for a byte-identical lockfile round-trip.
     if importer_root == project_root {
+        if let LocalSource::Exec(path) = local {
+            return LocalSource::Exec(normalize_lexical(path));
+        }
         return local.clone();
     }
     let Some(local_path) = local.path() else {
@@ -40,8 +44,38 @@ pub(crate) fn rebase_local(
         LocalSource::Directory(_) => LocalSource::Directory(rebased),
         LocalSource::Tarball(_) => LocalSource::Tarball(rebased),
         LocalSource::Link(_) => LocalSource::Link(rebased),
+        LocalSource::Portal(_) => LocalSource::Portal(rebased),
+        LocalSource::Exec(_) => LocalSource::Exec(rebased),
         LocalSource::Git(_) | LocalSource::RemoteTarball(_) => local.clone(),
     }
+}
+
+/// Resolve an `exec:` generator path and reject scripts outside the project root.
+pub fn resolve_exec_script_path(
+    local: &LocalSource,
+    project_root: &Path,
+) -> Result<PathBuf, String> {
+    let LocalSource::Exec(rel) = local else {
+        return Err("resolve_exec_script_path called on non-exec source".to_string());
+    };
+    let script = project_root.join(rel);
+    if !script.is_file() {
+        return Err(format!("{} is not a file", script.display()));
+    }
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize project root {}: {e}", project_root.display()))?;
+    let canonical_script = script
+        .canonicalize()
+        .map_err(|e| format!("canonicalize exec script {}: {e}", script.display()))?;
+    if !canonical_script.starts_with(&canonical_root) {
+        return Err(format!(
+            "{} resolves outside project root {}",
+            script.display(),
+            canonical_root.display()
+        ));
+    }
+    Ok(canonical_script)
 }
 
 /// Walk a gzipped npm tarball once and return the raw bytes of its
@@ -97,13 +131,14 @@ fn read_tarball_package_json(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// Read the `package.json` of a `file:` / `link:` target to discover
 /// the real package name, version, and production dependencies.
 ///
-/// For `LocalSource::Directory` and `LocalSource::Link` we read the
-/// target dir's `package.json` directly. For `LocalSource::Tarball` we
-/// open the `.tgz`, find the first `*/package.json` entry, and parse
-/// its contents without extracting the rest of the archive.
+/// For `LocalSource::Directory`, `LocalSource::Link`, and
+/// `LocalSource::Portal` we read the target dir's `package.json`
+/// directly. For `LocalSource::Tarball` we open the `.tgz`, find the
+/// first `*/package.json` entry, and parse its contents without
+/// extracting the rest of the archive.
 pub(crate) fn read_local_manifest(
     local: &LocalSource,
-    importer_root: &std::path::Path,
+    importer_root: &Path,
 ) -> Result<(String, String, BTreeMap<String, String>), Error> {
     let Some(local_path) = local.path() else {
         return Err(Error::Registry(
@@ -114,7 +149,7 @@ pub(crate) fn read_local_manifest(
     let path = importer_root.join(local_path);
 
     let content = match local {
-        LocalSource::Directory(_) | LocalSource::Link(_) => {
+        LocalSource::Directory(_) | LocalSource::Link(_) | LocalSource::Portal(_) => {
             std::fs::read(path.join("package.json"))
                 .map_err(|e| Error::Registry(local.specifier(), e.to_string()))?
         }
@@ -123,10 +158,10 @@ pub(crate) fn read_local_manifest(
                 .map_err(|e| Error::Registry(local.specifier(), e.to_string()))?;
             read_tarball_package_json(&bytes).map_err(|e| Error::Registry(local.specifier(), e))?
         }
-        LocalSource::Git(_) | LocalSource::RemoteTarball(_) => {
+        LocalSource::Exec(_) | LocalSource::Git(_) | LocalSource::RemoteTarball(_) => {
             return Err(Error::Registry(
                 local.specifier(),
-                "read_local_manifest: remote source handled separately".to_string(),
+                "read_local_manifest: generated or remote source handled separately".to_string(),
             ));
         }
     };
@@ -141,16 +176,95 @@ pub(crate) fn read_local_manifest(
     ))
 }
 
+pub(crate) async fn resolve_exec_manifest(
+    name: &str,
+    local: &LocalSource,
+    project_root: &Path,
+) -> Result<(String, BTreeMap<String, String>), Error> {
+    let LocalSource::Exec(_) = local else {
+        return Err(Error::Registry(
+            name.to_string(),
+            "resolve_exec_manifest called on non-exec source".to_string(),
+        ));
+    };
+    let script = resolve_exec_script_path(local, project_root).map_err(|e| {
+        Error::Registry(
+            name.to_string(),
+            format!("exec dependency {}: {e}", local.specifier()),
+        )
+    })?;
+
+    let temp = tempfile::Builder::new()
+        .prefix("aube-exec-resolve-")
+        .tempdir()
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+    let build_dir = temp.path().join("build");
+    let temp_dir = temp.path().join("temp");
+    std::fs::create_dir_all(&build_dir)
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+
+    let env = serde_json::json!({
+        "tempDir": temp_dir,
+        "buildDir": build_dir,
+        "locator": format!("{name}@{}", local.specifier()),
+    });
+    let status = tokio::process::Command::new("node")
+        .arg("-e")
+        .arg(crate::YARN_EXEC_WRAPPER)
+        .arg(&script)
+        .env("AUBE_YARN_EXEC_ENV", env.to_string())
+        .current_dir(project_root)
+        .status()
+        .await
+        .map_err(|e| {
+            Error::Registry(
+                name.to_string(),
+                format!("execute {} with Node.js from PATH: {e}", local.specifier()),
+            )
+        })?;
+    if !status.success() {
+        return Err(Error::Registry(
+            name.to_string(),
+            format!(
+                "exec dependency {} failed with status {status}",
+                local.specifier()
+            ),
+        ));
+    }
+
+    let content = std::fs::read(build_dir.join("package.json")).map_err(|e| {
+        Error::Registry(
+            name.to_string(),
+            format!("read generated package.json for {}: {e}", local.specifier()),
+        )
+    })?;
+    let pj: aube_manifest::PackageJson = sonic_rs::from_slice(&content)
+        .or_else(|_| serde_json::from_slice(&content))
+        .map_err(|e| Error::Registry(name.to_string(), e.to_string()))?;
+    Ok((
+        pj.version.unwrap_or_else(|| "0.0.0".to_string()),
+        pj.dependencies,
+    ))
+}
+
 pub(crate) fn dep_path_for(name: &str, version: &str) -> String {
     format!("{name}@{version}")
 }
 
 /// Match specifier prefixes that resolve to a non-registry source
-/// (`file:`, `link:`, or a git URL form). Used by the resolver to
-/// decide whether to dispatch the local/git branch instead of the
-/// normal version-range lookup.
+/// (`file:`, `link:`, `portal:`, `exec:`, or a git URL form). Used
+/// by the resolver to decide whether to dispatch the local/git branch
+/// instead of the normal version-range lookup.
 pub(crate) fn is_non_registry_specifier(s: &str) -> bool {
     if s.starts_with("link:") {
+        return true;
+    }
+    if s.starts_with("portal:") {
+        return true;
+    }
+    if s.starts_with("exec:") {
         return true;
     }
     // Git first so `https://host/repo.git` dispatches the git branch
@@ -183,7 +297,10 @@ pub(crate) fn should_block_exotic_subdep(
             .is_some_and(|pkg| {
                 matches!(
                     pkg.local_source,
-                    Some(LocalSource::Directory(_)) | Some(LocalSource::Link(_))
+                    Some(LocalSource::Directory(_))
+                        | Some(LocalSource::Link(_))
+                        | Some(LocalSource::Portal(_))
+                        | Some(LocalSource::Exec(_))
                 )
             })
 }
@@ -511,6 +628,21 @@ mod rebase_local_tests {
     }
 
     #[test]
+    fn root_and_transitive_exec_paths_collide_on_dep_path() {
+        let root = rebase_local(
+            &LocalSource::Exec(PathBuf::from("./scripts/generate-exec.js")),
+            Path::new(""),
+            Path::new(""),
+        );
+        let transitive = rebase_local(
+            &LocalSource::Exec(PathBuf::from("../../scripts/generate-exec.js")),
+            Path::new("packages/portal"),
+            Path::new(""),
+        );
+        assert_eq!(root.dep_path("exec-pkg"), transitive.dep_path("exec-pkg"));
+    }
+
+    #[test]
     fn normalize_preserves_unresolvable_leading_parent() {
         // `..` at the root of the project is still meaningful —
         // don't silently drop it.
@@ -530,6 +662,33 @@ mod rebase_local_tests {
         assert_eq!(win.dep_path("foo"), unix.dep_path("foo"));
         assert_eq!(win.specifier(), "file:vendor/nested/dir");
         assert_eq!(unix.specifier(), "file:vendor/nested/dir");
+    }
+
+    #[test]
+    fn exec_script_must_stay_inside_project_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let project_root = temp.path().join("project");
+        let outside = temp.path().join("outside.js");
+        std::fs::create_dir(&project_root).unwrap();
+        std::fs::write(&outside, "").unwrap();
+
+        let local = LocalSource::Exec(PathBuf::from("../outside.js"));
+        let err = resolve_exec_script_path(&local, &project_root).unwrap_err();
+        assert!(err.contains("resolves outside project root"), "{err}");
+    }
+
+    #[test]
+    fn exec_script_inside_project_root_is_allowed() {
+        let temp = tempfile::tempdir().unwrap();
+        let project_root = temp.path().join("project");
+        let script_dir = project_root.join("scripts");
+        let script = script_dir.join("generate.js");
+        std::fs::create_dir_all(&script_dir).unwrap();
+        std::fs::write(&script, "").unwrap();
+
+        let local = LocalSource::Exec(PathBuf::from("scripts/generate.js"));
+        let resolved = resolve_exec_script_path(&local, &project_root).unwrap();
+        assert_eq!(resolved, script.canonicalize().unwrap());
     }
 }
 

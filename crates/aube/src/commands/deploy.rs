@@ -417,6 +417,8 @@ fn seed_target_lockfile(
                 matches!(
                     src,
                     aube_lockfile::LocalSource::Link(_)
+                        | aube_lockfile::LocalSource::Portal(_)
+                        | aube_lockfile::LocalSource::Exec(_)
                         | aube_lockfile::LocalSource::Directory(_)
                         | aube_lockfile::LocalSource::Tarball(_)
                 )
@@ -672,7 +674,8 @@ fn plan_injections(
             } else if let Some(local) = aube_lockfile::LocalSource::parse(&dep_spec, &pkg_dir) {
                 match local {
                     aube_lockfile::LocalSource::Directory(rel)
-                    | aube_lockfile::LocalSource::Link(rel) => {
+                    | aube_lockfile::LocalSource::Link(rel)
+                    | aube_lockfile::LocalSource::Portal(rel) => {
                         let abs = pkg_dir.join(&rel);
                         let canonical = canonicalize(&abs);
                         // Same back-ref guard as the `workspace:` branch:
@@ -730,10 +733,11 @@ fn plan_injections(
                             );
                         }
                     }
-                    // Git / RemoteTarball: install fetches these
+                    // Exec / Git / RemoteTarball: install fetches these
                     // standalone from their source — the deploy target
                     // doesn't need a bundled copy.
-                    aube_lockfile::LocalSource::Git(_)
+                    aube_lockfile::LocalSource::Exec(_)
+                    | aube_lockfile::LocalSource::Git(_)
                     | aube_lockfile::LocalSource::RemoteTarball(_) => {}
                 }
             }
@@ -1264,8 +1268,10 @@ fn rewrite_local_refs(
                 let abs = match &local {
                     aube_lockfile::LocalSource::Directory(rel)
                     | aube_lockfile::LocalSource::Link(rel)
+                    | aube_lockfile::LocalSource::Portal(rel)
                     | aube_lockfile::LocalSource::Tarball(rel) => source_pkg_dir.join(rel),
-                    aube_lockfile::LocalSource::Git(_)
+                    aube_lockfile::LocalSource::Exec(_)
+                    | aube_lockfile::LocalSource::Git(_)
                     | aube_lockfile::LocalSource::RemoteTarball(_) => continue,
                 };
                 let canonical = canonicalize(&abs);

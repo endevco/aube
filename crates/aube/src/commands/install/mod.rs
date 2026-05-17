@@ -715,6 +715,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
             pnpmfile: opts.pnpmfile.as_deref(),
             minimum_release_age_override: opts.minimum_release_age_override,
             ws_package_versions: &ws_package_versions,
+            ignore_scripts: opts.ignore_scripts,
             prog_ref,
         })
         .await?;
@@ -1151,6 +1152,7 @@ pub async fn run(opts: InstallOptions) -> miette::Result<()> {
                     target_lockfile_kind: lockfile_enabled
                         .then(|| source_kind_before.unwrap_or(aube_lockfile::LockfileKind::Aube)),
                     cache_full_packuments: true,
+                    ignore_scripts: opts.ignore_scripts,
                 },
                 read_package_hook,
             );

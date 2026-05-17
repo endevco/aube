@@ -28,7 +28,10 @@
 use aube_lockfile::{LocalSource, LockedPackage, LockfileGraph};
 use blake3::Hasher;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 /// 2048-bit wide-add multiset hash over per-package fingerprints.
 /// LtHash construction from Maitin-Shepard et al. 2017.
@@ -178,6 +181,7 @@ impl DeltaPlan {
 pub fn compute_package_hashes(
     graph: &LockfileGraph,
     patch_hashes: &BTreeMap<String, String>,
+    project_root: &Path,
 ) -> BTreeMap<String, String> {
     // Pure, per-package, CPU-bound. Perfect rayon target. 500-pkg
     // graph drops from ~25 ms serial to ~6 ms on 4 cores.
@@ -187,7 +191,7 @@ pub fn compute_package_hashes(
         .map(|(dep_path, pkg)| {
             let patch_key = format!("{}@{}", pkg.name, pkg.version);
             let patch = patch_hashes.get(&patch_key).map(String::as_str);
-            (dep_path.clone(), fingerprint(pkg, patch))
+            (dep_path.clone(), fingerprint(pkg, patch, project_root))
         })
         .collect()
 }
@@ -209,8 +213,9 @@ pub fn compute_package_hashes(
 pub fn compute_leaf_and_subtree_hashes(
     graph: &LockfileGraph,
     patch_hashes: &BTreeMap<String, String>,
+    project_root: &Path,
 ) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
-    let leaf = compute_package_hashes(graph, patch_hashes);
+    let leaf = compute_package_hashes(graph, patch_hashes, project_root);
     let subtree = compute_subtree_hashes_from_leaf(graph, &leaf);
     (leaf, subtree)
 }
@@ -426,7 +431,7 @@ pub fn diff(stored: &BTreeMap<String, String>, current: &BTreeMap<String, String
 /// Field order matters. Changing it invalidates every stored
 /// fingerprint on the next install. That still cascades to a full
 /// install, just costs one "already up to date" miss.
-fn fingerprint(pkg: &LockedPackage, patch_hash: Option<&str>) -> String {
+fn fingerprint(pkg: &LockedPackage, patch_hash: Option<&str>, project_root: &Path) -> String {
     let mut h = Hasher::new();
     update_field(&mut h, b"name", pkg.name.as_bytes());
     update_field(&mut h, b"version", pkg.version.as_bytes());
@@ -465,6 +470,22 @@ fn fingerprint(pkg: &LockedPackage, patch_hash: Option<&str>) -> String {
             LocalSource::Link(p) => {
                 h.update(b"link");
                 update_field(&mut h, b"path", p.to_string_lossy().as_bytes());
+            }
+            LocalSource::Portal(p) => {
+                h.update(b"portal");
+                update_field(&mut h, b"path", p.to_string_lossy().as_bytes());
+            }
+            LocalSource::Exec(p) => {
+                h.update(b"exec");
+                update_field(&mut h, b"path", p.to_string_lossy().as_bytes());
+                let script = if p.is_absolute() {
+                    p.as_path().to_path_buf()
+                } else {
+                    project_root.join(p)
+                };
+                if let Ok(content) = std::fs::read(script) {
+                    update_field(&mut h, b"content", &content);
+                }
             }
             LocalSource::Git(g) => {
                 h.update(b"git");
@@ -540,15 +561,15 @@ mod tests {
     }
 
     fn fp(p: &LockedPackage) -> String {
-        fingerprint(p, None)
+        fingerprint(p, None, Path::new(""))
     }
 
     fn cph(g: &LockfileGraph) -> BTreeMap<String, String> {
-        compute_package_hashes(g, &BTreeMap::new())
+        compute_package_hashes(g, &BTreeMap::new(), Path::new(""))
     }
 
     fn csh(g: &LockfileGraph) -> BTreeMap<String, String> {
-        compute_leaf_and_subtree_hashes(g, &BTreeMap::new()).1
+        compute_leaf_and_subtree_hashes(g, &BTreeMap::new(), Path::new("")).1
     }
 
     #[test]
@@ -580,6 +601,22 @@ mod tests {
         b.dependencies
             .insert("loose-envify".into(), "loose-envify@1.5.0".into());
         assert_ne!(fp(&a), fp(&b));
+    }
+
+    #[test]
+    fn fingerprint_changes_on_exec_script_edit() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("generate.js");
+        std::fs::write(&script, "module.exports = { name: 'before' }").unwrap();
+        let rel = script.strip_prefix(temp.path()).unwrap();
+        let mut pkg = pkg("generated", "1.0.0");
+        pkg.local_source = Some(LocalSource::Exec(rel.to_path_buf()));
+
+        let before = fingerprint(&pkg, None, temp.path());
+        std::fs::write(&script, "module.exports = { name: 'after' }").unwrap();
+        let after = fingerprint(&pkg, None, temp.path());
+
+        assert_ne!(before, after);
     }
 
     #[test]
@@ -697,8 +734,8 @@ mod tests {
         before_patches.insert("react@18.2.0".to_string(), "patch-old".to_string());
         let mut after_patches = BTreeMap::new();
         after_patches.insert("react@18.2.0".to_string(), "patch-new".to_string());
-        let before = compute_package_hashes(&graph, &before_patches);
-        let after = compute_package_hashes(&graph, &after_patches);
+        let before = compute_package_hashes(&graph, &before_patches, Path::new(""));
+        let after = compute_package_hashes(&graph, &after_patches, Path::new(""));
         let plan = diff(&before, &after);
         assert_eq!(plan.changed, vec!["react@18.2.0".to_string()]);
         assert!(plan.added.is_empty());
@@ -717,8 +754,8 @@ mod tests {
                 .into_iter()
                 .collect();
         assert_eq!(
-            compute_package_hashes(&graph, &empty),
-            compute_package_hashes(&graph, &unrelated_patch)
+            compute_package_hashes(&graph, &empty, Path::new("")),
+            compute_package_hashes(&graph, &unrelated_patch, Path::new(""))
         );
     }
 

@@ -330,10 +330,12 @@ pub(crate) fn link_hoisted_importer(
         };
 
         // `link:` deps: symlink the package dir straight at the
-        // target. No files to copy, no transitive symlinks — Node
-        // will follow the link and pick the target's own deps up
-        // naturally. `rebase_local` in the resolver already
-        // normalized the relative path to be importer-relative.
+        // target. `link:` packages were excluded from the dependency
+        // plan above because their target owns its deps. `portal:`
+        // packages stay on the materialized-package path so their
+        // graph-visible deps are linked like Yarn expects.
+        // `rebase_local` in the resolver already normalized the
+        // relative path to be importer-relative.
         if let Some(LocalSource::Link(rel)) = pkg.local_source.as_ref() {
             if let Some(parent) = pkg_dir.parent() {
                 crate::mkdirp(parent)?;

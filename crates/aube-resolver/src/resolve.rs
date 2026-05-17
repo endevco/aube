@@ -1,6 +1,6 @@
 use crate::local_source::{
-    dep_path_for, is_non_registry_specifier, read_local_manifest, rebase_local, resolve_git_source,
-    resolve_remote_tarball, should_block_exotic_subdep,
+    dep_path_for, is_non_registry_specifier, read_local_manifest, rebase_local,
+    resolve_exec_manifest, resolve_git_source, resolve_remote_tarball, should_block_exotic_subdep,
 };
 use crate::package_ext::{apply_package_extensions, pick_override_spec};
 use crate::semver_util::{PickResult, pick_version, version_satisfies};
@@ -794,11 +794,11 @@ impl Resolver {
                             importer: task.importer.clone(),
                         })));
                     }
-                    // Pull the parent's on-disk source root, when the
-                    // parent is a Directory/Link source. The BFS always
-                    // inserts a parent into `resolved` before enqueuing
-                    // its children, so for transitive tasks the parent
-                    // record is reliably present here.
+                    // Pull the parent's on-disk package root, when the
+                    // parent is a directory-backed source. `exec:` stores
+                    // the generator script path, not the generated package
+                    // directory, so it cannot safely anchor relative
+                    // transitive local specifiers.
                     let parent_source_root: Option<std::path::PathBuf> = (!task.is_root)
                         .then(|| {
                             task.parent
@@ -806,9 +806,9 @@ impl Resolver {
                                 .and_then(|dp| resolved.get(dp))
                                 .and_then(|pkg| pkg.local_source.as_ref())
                                 .and_then(|src| match src {
-                                    LocalSource::Directory(p) | LocalSource::Link(p) => {
-                                        Some(self.project_root.join(p))
-                                    }
+                                    LocalSource::Directory(p)
+                                    | LocalSource::Link(p)
+                                    | LocalSource::Portal(p) => Some(self.project_root.join(p)),
                                     _ => None,
                                 })
                         })
@@ -848,6 +848,8 @@ impl Resolver {
                             LocalSource::Directory(_)
                                 | LocalSource::Tarball(_)
                                 | LocalSource::Link(_)
+                                | LocalSource::Portal(_)
+                                | LocalSource::Exec(_)
                         )
                     {
                         return Err(Error::Registry(
@@ -889,10 +891,24 @@ impl Resolver {
                         // can resolve it with a single
                         // `project_root.join(rel)`.
                         let local = rebase_local(&raw_local, &importer_root, &self.project_root);
-                        let (_target_name, version, deps) =
-                            read_local_manifest(&raw_local, &importer_root).unwrap_or_else(|_| {
-                                (task.name.clone(), "0.0.0".to_string(), BTreeMap::new())
-                            });
+                        let (version, deps) = if matches!(local, LocalSource::Exec(_)) {
+                            if self.ignore_scripts {
+                                return Err(Error::Registry(
+                                    task.name.clone(),
+                                    format!(
+                                        "{} requires executing its generator, but scripts are disabled",
+                                        local.specifier()
+                                    ),
+                                ));
+                            }
+                            resolve_exec_manifest(&task.name, &local, &self.project_root).await?
+                        } else {
+                            let (_target_name, version, deps) =
+                                read_local_manifest(&raw_local, &importer_root).unwrap_or_else(
+                                    |_| (task.name.clone(), "0.0.0".to_string(), BTreeMap::new()),
+                                );
+                            (version, deps)
+                        };
                         (local, version, deps)
                     };
                     let dep_path = local.dep_path(&task.name);
@@ -987,8 +1003,9 @@ impl Resolver {
                                 .await;
                         }
                         // Enqueue transitive deps of the local package
-                        // (directories + tarballs only — `link:` deps
-                        // are fully the target's responsibility).
+                        // (directories, tarballs, portals, and exec
+                        // outputs — `link:` deps are fully the
+                        // target's responsibility).
                         if !matches!(local, LocalSource::Link(_)) {
                             let mut child_ancestors = task.ancestors.clone();
                             child_ancestors.push((linked_name.clone(), real_version.clone()));

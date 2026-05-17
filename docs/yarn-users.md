@@ -40,10 +40,11 @@ file still validates cached tarballs.
 
 Supported protocols: `npm:` (the common case), `patch:` for local
 patch files against npm-backed packages, `workspace:`, `file:`, `link:`,
-plus `git:` / `git+ssh:` / `git+https:` / `https:` URLs for remote
-sources. Entries that use `portal:` or `exec:` are skipped with a
-warning — aube's dependency graph doesn't model those yet, and they
-round-trip better through Yarn itself.
+`portal:`, `exec:`, plus `git:` / `git+ssh:` /
+`git+https:` / `https:` URLs for remote sources. Entries that use
+unsupported protocols are skipped with a warning — aube's dependency
+graph doesn't model those yet, and they round-trip better through Yarn
+itself.
 
 ## Yarn PnP
 

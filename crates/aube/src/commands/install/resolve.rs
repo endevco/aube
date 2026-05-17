@@ -52,6 +52,7 @@ pub(super) struct LockfileOnlyInput<'a> {
     pub pnpmfile: Option<&'a Path>,
     pub minimum_release_age_override: Option<u64>,
     pub ws_package_versions: &'a HashMap<String, String>,
+    pub ignore_scripts: bool,
     pub prog_ref: Option<&'a InstallProgress>,
 }
 
@@ -80,6 +81,7 @@ pub(super) async fn run_lockfile_only(input: LockfileOnlyInput<'_>) -> miette::R
         pnpmfile,
         minimum_release_age_override,
         ws_package_versions,
+        ignore_scripts,
         prog_ref,
     } = input;
 
@@ -197,6 +199,7 @@ pub(super) async fn run_lockfile_only(input: LockfileOnlyInput<'_>) -> miette::R
             target_lockfile_kind: lockfile_enabled
                 .then(|| source_kind_before.unwrap_or(LockfileKind::Aube)),
             cache_full_packuments: true,
+            ignore_scripts,
         },
         read_package_hook,
     );
