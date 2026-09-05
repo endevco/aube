@@ -2120,6 +2120,46 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_tarball_imports_preserve_contents_and_executable_bits() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("files"));
+        store.ensure_shards_exist().unwrap();
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(gz);
+        // Cross the parallel-import threshold, with duplicate content to
+        // exercise competing CAS writers as multiple archives share a pool.
+        for i in 0..48 {
+            let content = format!("module.exports = {};\n", i % 8);
+            let mut header = tar::Header::new_gnu();
+            header.set_path(format!("package/lib/{i}.js")).unwrap();
+            header.set_size(content.len() as u64);
+            header.set_mode(if i % 3 == 0 { 0o755 } else { 0o644 });
+            header.set_cksum();
+            archive.append(&header, content.as_bytes()).unwrap();
+        }
+        let tarball = archive.into_inner().unwrap().finish().unwrap();
+
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                scope.spawn(|| {
+                    let index = store.import_tarball(&tarball).unwrap();
+                    assert_eq!(index.len(), 48);
+                    for i in 0..48 {
+                        let stored = &index[&format!("lib/{i}.js")];
+                        let content = format!("module.exports = {};\n", i % 8);
+                        assert_eq!(
+                            std::fs::read(&stored.store_path).unwrap(),
+                            content.as_bytes()
+                        );
+                        assert_eq!(stored.hex_hash, blake3_hex(content.as_bytes()));
+                        assert_eq!(stored.executable, i % 3 == 0);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
     fn test_import_tarball_streams_large_entry_into_cas() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("files"));

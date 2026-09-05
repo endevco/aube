@@ -653,7 +653,10 @@ Targets `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap
     }
     flag "-h --help" help="Print help" action=help builtin=#true
 }
-cmd completion help="Generate shell completions (bash, zsh, fish)" effect=read {
+cmd completion help="Generate shell completions (bash, zsh, fish, powershell)" effect=read {
+    flag --bin help="Generate a script for just one executable: aube, aubr, or aubx" conflicts=--install {
+        arg <BIN>
+    }
     flag --force help="Replace a file at a target path that aube did not write" effect=write requires=--install
     flag --install help="Install the scripts where this shell looks for them, instead of printing them" effect=write {
         long_help #"""
@@ -663,7 +666,7 @@ Writes one script per program — aube, aubr and aubx — and nothing else: no s
 """#
     }
     flag "-h --help" help="Print help" action=help builtin=#true
-    arg <SHELL> help="The shell to generate completions for (bash, zsh, fish)"
+    arg <SHELL> help="The shell to generate completions for (bash, zsh, fish, powershell)"
 }
 cmd config help="Read and write settings in `.npmrc`" effect=read {
     alias c

@@ -1,6 +1,12 @@
 use crate::{Error, PackageIndex, Store, StoredFile};
 use std::path::Path;
 
+// CAS writes compete with package materialization for filesystem metadata
+// operations. Large Rayon pools can saturate that work during cold installs;
+// keep these workers bounded and separate from CPU work on every platform.
+static IMPORT_POOL: std::sync::OnceLock<Result<rayon::ThreadPool, rayon::ThreadPoolBuildError>> =
+    std::sync::OnceLock::new();
+
 /// Deterministic fingerprint of a directory imported as a `file:` package.
 ///
 /// This deliberately mirrors [`Store::import_directory`]: `.git` and
@@ -273,9 +279,9 @@ impl Store {
         /*
          * Chunked staged pipeline. Read N entries, flush them to CAS
          * via rayon parallel writes, repeat. Keeps the existing
-         * rayon global pool warm across chunks and partially
+         * import worker pool warm across chunks and partially
          * overlaps tar parsing with file writes within a single
-         * tarball. No new threads spawned (per-call thread::scope
+         * tarball. No per-chunk threads spawned (per-call thread::scope
          * was tried and live locked at 80 s, see git history if
          * curious). Chunk size of 64 is roughly the median npm
          * package's file count, so most tarballs flush at most
@@ -324,14 +330,33 @@ impl Store {
                 // losing meaningful parallelism — 8 × 50µs = 400µs,
                 // well under a typical OS scheduling slice.
                 const RAYON_TASK_MIN_LEN: usize = 8;
-                let results: Vec<Result<(String, StoredFile), Error>> = chunk
-                    .into_par_iter()
-                    .with_min_len(RAYON_TASK_MIN_LEN)
-                    .map(|(rel_path, content, executable)| {
-                        self.import_bytes_gated(&rel_path, &content, executable)
-                            .map(|stored| (rel_path, stored))
+                let import = || {
+                    chunk
+                        .into_par_iter()
+                        .with_min_len(RAYON_TASK_MIN_LEN)
+                        .map(|(rel_path, content, executable)| {
+                            self.import_bytes_gated(&rel_path, &content, executable)
+                                .map(|stored| (rel_path, stored))
+                        })
+                        .collect::<Vec<Result<(String, StoredFile), Error>>>()
+                };
+                let pool = IMPORT_POOL
+                    .get_or_init(|| {
+                        rayon::ThreadPoolBuilder::new()
+                            .num_threads(2)
+                            .thread_name(|i| format!("aube-import-{i}"))
+                            .build()
                     })
-                    .collect();
+                    .as_ref()
+                    .map_err(|err| {
+                        Error::Io(
+                            self.root.clone(),
+                            std::io::Error::other(format!(
+                                "failed to create CAS import worker pool: {err}"
+                            )),
+                        )
+                    })?;
+                let results = pool.install(import);
                 for r in results {
                     let (rel_path, stored) = r?;
                     index.insert(rel_path, stored);

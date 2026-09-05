@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.12](https://github.com/jdx/aube/compare/v2.2.11...v2.2.12) - 2026-09-05
+
+### Fixed
+
+- inline coderabbit configuration after repository transfer ([#1498](https://github.com/jdx/aube/pull/1498))
+
 ## [2.2.11](https://github.com/aubepkg/aube/compare/v2.2.9...v2.2.11) - 2026-09-05
 
 ### Fixed

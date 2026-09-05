@@ -31,7 +31,7 @@ inherits = "release"
 panic = "unwind"
 
 [workspace.package]
-version = "2.2.11"
+version = "2.2.12"
 edition = "2024"
 # Kept at the floor mise can build with (its distro packaging pins the
 # toolchain) so mise can embed the library crates. CI enforces this via

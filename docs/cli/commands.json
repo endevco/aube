@@ -2833,20 +2833,42 @@
         "full_cmd": [
           "completion"
         ],
-        "usage": "completion [--force] [--install] <SHELL>",
+        "usage": "completion [FLAGS] <SHELL>",
         "subcommands": {},
         "args": [
           {
             "name": "SHELL",
             "usage": "<SHELL>",
-            "help": "The shell to generate completions for (bash, zsh, fish)",
-            "help_first_line": "The shell to generate completions for (bash, zsh, fish)",
+            "help": "The shell to generate completions for (bash, zsh, fish, powershell)",
+            "help_first_line": "The shell to generate completions for (bash, zsh, fish, powershell)",
             "required": true,
             "double_dash": "Optional",
             "hide": false
           }
         ],
         "flags": [
+          {
+            "name": "bin",
+            "usage": "--bin <BIN>",
+            "help": "Generate a script for just one executable: aube, aubr, or aubx",
+            "help_first_line": "Generate a script for just one executable: aube, aubr, or aubx",
+            "short": [],
+            "long": [
+              "bin"
+            ],
+            "hide": false,
+            "global": false,
+            "arg": {
+              "name": "BIN",
+              "usage": "<BIN>",
+              "required": true,
+              "double_dash": "Optional",
+              "hide": false
+            },
+            "conflicts": [
+              "--install"
+            ]
+          },
           {
             "name": "force",
             "usage": "--force",
@@ -2899,7 +2921,7 @@
         "unknown_flags": null,
         "hide": false,
         "args_override_self": true,
-        "help": "Generate shell completions (bash, zsh, fish)",
+        "help": "Generate shell completions (bash, zsh, fish, powershell)",
         "name": "completion",
         "aliases": [],
         "hidden_aliases": [],

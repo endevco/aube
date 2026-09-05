@@ -8,9 +8,13 @@ const PROGRAMS: [&str; 3] = ["aube", "aubr", "aubx"];
 
 #[derive(usage_rs::Args)]
 pub struct CompletionArgs {
-    /// The shell to generate completions for (bash, zsh, fish)
+    /// The shell to generate completions for (bash, zsh, fish, powershell)
     #[usage(arg, name = "SHELL")]
     pub shell: String,
+
+    /// Generate a script for just one executable: aube, aubr, or aubx
+    #[usage(long, conflicts = "--install")]
+    pub bin: Option<String>,
 
     /// Replace a file at a target path that aube did not write
     #[usage(long, requires = "--install", effect = "write")]
@@ -31,7 +35,17 @@ pub async fn run(args: CompletionArgs) -> Result<()> {
     if args.install {
         return install(shell, args.force);
     }
-    for program in PROGRAMS {
+    if let Some(program) = &args.bin
+        && !PROGRAMS.contains(&program.as_str())
+    {
+        return Err(miette!(
+            "unsupported executable {program:?}: expected aube, aubr, or aubx"
+        ));
+    }
+    for program in PROGRAMS
+        .into_iter()
+        .filter(|program| args.bin.as_deref().is_none_or(|bin| bin == *program))
+    {
         print!(
             "{}",
             crate::completion_app(program).completion_script(shell)

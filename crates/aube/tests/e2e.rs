@@ -349,3 +349,42 @@ fn run_reports_a_missing_command_like_a_shell() {
         assert.failure();
     }
 }
+
+#[test]
+fn completion_bin_selects_one_program_and_rejects_install() {
+    let _guard = e2e_lock();
+    let sbx = Sandbox::new();
+    for program in ["aube", "aubr", "aubx"] {
+        let output = sbx
+            .cmd()
+            .args(["completion", "bash", "--bin", program])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let script = String::from_utf8(output).unwrap();
+        let registrations: Vec<_> = script
+            .lines()
+            .filter(|line| line.starts_with("complete "))
+            .collect();
+        assert_eq!(registrations.len(), 1, "{script}");
+        assert!(
+            registrations[0].ends_with(&format!("'{program}'")),
+            "{script}"
+        );
+    }
+    sbx.cmd()
+        .args(["completion", "bash", "--bin", "unknown"])
+        .assert()
+        .failure();
+    sbx.cmd()
+        .args(["completion", "bash", "--bin", "aube", "--install"])
+        .assert()
+        .failure();
+    assert!(
+        !sbx.home
+            .join(".local/share/bash-completion/completions/aube")
+            .exists()
+    );
+}

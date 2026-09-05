@@ -84,7 +84,7 @@
 - [`aube check [--json]`](/cli/check.md)
 - [`aube ci [FLAGS]`](/cli/ci.md)
 - [`aube clean [-l --lockfile]`](/cli/clean.md)
-- [`aube completion [--force] [--install] <SHELL>`](/cli/completion.md)
+- [`aube completion [FLAGS] <SHELL>`](/cli/completion.md)
 - [`aube config [FLAGS] <SUBCOMMAND>`](/cli/config.md)
 - [`aube config delete [--local] [--location <LOCATION>] <KEY>`](/cli/config/delete.md)
 - [`aube config explain <KEY>`](/cli/config/explain.md)

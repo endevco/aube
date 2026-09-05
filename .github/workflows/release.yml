@@ -94,7 +94,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: "24"
           package-manager-cache: false
       - name: Generate metadata primer
         id: primer
@@ -513,7 +513,7 @@ jobs:
           path: crates/aube-resolver/data
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: "24"
           package-manager-cache: false
       # rustc 1.94.0 on aarch64-apple-darwin miscompiles the
       # PGO-instrumented binary — the resulting `aube install` SIGSEGVs
@@ -767,6 +767,49 @@ jobs:
           gh release download "$TAG" --repo "$REPO" --dir dist --clobber \
             --pattern 'aube-v*.tar.gz' --pattern 'aube-v*.zip'
           ls -la dist
+      - name: Install completion syntax checkers
+        timeout-minutes: 5
+        run: |
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y zsh fish
+          # Hosted runners include PowerShell; Namespace images have its signed apt repository.
+          if ! command -v pwsh >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y powershell
+          fi
+      - name: Publish CLI specifications and completions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AUBE_GH_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p bin resources
+          tar -xzf "dist/aube-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C bin
+          bin/aube usage > resources/aube.usage.kdl
+          for program in aube aubr aubx; do
+            for shell in bash zsh fish powershell; do
+              bin/aube completion "$shell" --bin "$program" > "resources/$program.$shell"
+              test -s "resources/$program.$shell"
+              grep -Fq '__complete_word__' "resources/$program.$shell"
+            done
+            bash -n "resources/$program.bash"
+            zsh -n "resources/$program.zsh"
+            fish --no-execute "resources/$program.fish"
+          done
+          bin/aube __complete_word__ --shell bash --line 'aube ins' | grep -Fq -- 'install'
+          cat > completion-syntax-check.ps1 <<'POWERSHELL'
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in Get-ChildItem -LiteralPath "resources" -Filter '*.powershell') {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors.Count) { $parseErrors | Write-Error; exit 1 }
+          }
+          POWERSHELL
+          pwsh -NoProfile -NonInteractive -File completion-syntax-check.ps1
+          gh release upload "$TAG" resources/* --repo "$REPO" --clobber
       # The jobs that built these archives already attested them as they went,
       # which is the stronger claim; attesting again here would only add a
       # second statement about the same digests.
@@ -775,5 +818,19 @@ jobs:
           tag: ${{ inputs.tag }}
           artifacts: dist/aube-v*.tar.gz dist/aube-v*.zip
           bin: aube aubr aubx
+          resources: |
+            cli-spec/usage/aube=asset:resources/aube.usage.kdl
+            completion/bash/aube=asset:resources/aube.bash
+            completion/zsh/aube=asset:resources/aube.zsh
+            completion/fish/aube=asset:resources/aube.fish
+            completion/powershell/aube=asset:resources/aube.powershell
+            completion/bash/aubr=asset:resources/aubr.bash
+            completion/zsh/aubr=asset:resources/aubr.zsh
+            completion/fish/aubr=asset:resources/aubr.fish
+            completion/powershell/aubr=asset:resources/aubr.powershell
+            completion/bash/aubx=asset:resources/aubx.bash
+            completion/zsh/aubx=asset:resources/aubx.zsh
+            completion/fish/aubx=asset:resources/aubx.fish
+            completion/powershell/aubx=asset:resources/aubx.powershell
           attest: "false"
           token: ${{ secrets.AUBE_GH_TOKEN }}

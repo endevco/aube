@@ -398,7 +398,7 @@ enum Commands {
     /// `--lockfile` / `-l` also deletes lockfiles. A `clean` script in
     /// the root `package.json` overrides the built-in.
     Clean(commands::clean::CleanArgs),
-    /// Generate shell completions (bash, zsh, fish)
+    /// Generate shell completions (bash, zsh, fish, powershell)
     Completion(commands::completion::CompletionArgs),
     /// Read and write settings in `.npmrc`
     #[usage(alias = "c")]
