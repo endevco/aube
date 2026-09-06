@@ -54,13 +54,11 @@ onBeforeUnmount(() => clearTimeout(copyTimer));
           <span aria-hidden="true">↗</span>
         </a>
         <p class="aube-eyebrow">A package manager for Node.js</p>
-        <h1 id="aube-hero-title">
-          Run your project.<br /><em>We’ll handle the install.</em>
-        </h1>
+        <h1 id="aube-hero-title">Skip the install step.</h1>
         <p class="aube-lede">
-          Run a script. aube installs what’s missing, reuses what’s there, and
-          keeps your existing lockfile. Written in Rust, built for the everyday
-          loop.
+          aube installs missing or stale dependencies before running your
+          scripts, shares packages across projects, and keeps your existing
+          lockfile.
         </p>
         <div class="aube-actions">
           <a class="aube-button" href="/getting-started"
