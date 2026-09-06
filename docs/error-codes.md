@@ -1,3 +1,7 @@
+---
+description: Find stable aube error and warning identifiers, diagnostic fields, and process exit codes.
+---
+
 # Error and warning codes
 
 <script setup>
@@ -18,9 +22,14 @@ directly from the registry.
 miette-rendered output, e.g. `× foo (ERR_AUBE_NO_LOCKFILE)`. Warnings
 include the code as a structured field after the message.
 
-**ndjson output** (`aube --reporter ndjson <cmd>`): every record carries
-a `code` field. Branch on `code == "ERR_AUBE_..."` instead of
-substring-matching the human message.
+**ndjson output** (`aube --reporter ndjson <cmd>`): diagnostic events include
+a `code` field. Progress and other informational events may not have one.
+Read the structured code when present instead of matching the human message.
+The reporter writes to stderr; for example:
+
+```sh
+aube --reporter ndjson install 2> aube-events.ndjson
+```
 
 ```jsonc
 {

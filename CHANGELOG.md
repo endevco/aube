@@ -1,5 +1,9 @@
 # Changelog
 
+For current releases, see [GitHub Releases](https://github.com/jdx/aube/releases)
+and the [CLI changelog](crates/aube/CHANGELOG.md). The entries below record the
+early project releases.
+
 ## [Unreleased]
 
 ## [v1.0.0-beta.2](https://github.com/jdx/aube/releases/tag/v1.0.0-beta.2) - 2026-04-18

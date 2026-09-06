@@ -1,7 +1,18 @@
+---
+description: Run project scripts, installed binaries, and one-off tools with aubr, aube exec, and aubx.
+---
+
 # Run scripts and binaries
 
-aube follows npm and pnpm script conventions while adding an install-state
-check before script execution.
+`aubr` runs project scripts, `aube exec` runs installed binaries, and `aubx`
+runs one-off tools. Script and exec commands install missing or stale
+dependencies before running.
+
+| Command | Lookup order |
+| --- | --- |
+| `aubr <name>` / `aube run <name>` | `package.json` script, then local binary |
+| `aube exec <name>` | Binary on the project command path |
+| `aubx <name>` / `aube dlx <name>` | Local binary, then a throwaway install |
 
 ## Scripts
 
@@ -31,6 +42,20 @@ aube run --if-present lint
 When no `package.json` script matches, `aube run <name>` falls back to a
 local binary with the same name in `node_modules/.bin`. Scripts still win over
 bins, so a project can override a tool command with its own script.
+
+### Forward arguments
+
+Put aube options before the script name; arguments after the name go to the script:
+
+```sh
+aube run --no-install test --watch
+```
+
+For `exec`, use `--` to separate tool arguments when needed:
+
+```sh
+aube exec tsc -- --noEmit
+```
 
 ### Echoed command lines
 

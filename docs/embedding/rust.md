@@ -1,10 +1,13 @@
+---
+description: Embed aube in Rust with host initialization, install options, runtime control, events, and cancellation.
+---
+
 # Embedding in Rust
 
-## Migrating to aube 2
+Use the `aube::embed` facade to install dependencies and run commands inside
+a Rust host. The host owns its runtime, output handling, and cancellation.
 
-`aube_resolver::ResolutionMode` now includes `LowestDirect` and is
-`#[non_exhaustive]`. Downstream matches must include a wildcard arm so future
-resolution modes can be added without another source-breaking enum change.
+## Add the dependency
 
 Add aube without its binary-only default features:
 
@@ -234,3 +237,9 @@ if let Err(error) = embed::install(options).await {
 
 Code identifiers and meanings are stable once published. Human-readable
 messages and rendered diagnostics may evolve.
+
+## Migrating to aube 2
+
+`aube_resolver::ResolutionMode` includes `LowestDirect` and is
+`#[non_exhaustive]`. Downstream matches need a wildcard arm so future
+resolution modes can be added without another source-breaking enum change.

@@ -1,57 +1,55 @@
-# Guide
+---
+description: Find aube tutorials, migration guides, package-management workflows, and command and settings references.
+---
 
-aube is a package manager for Node.js projects. It uses pnpm-style isolated
-`node_modules` for fast, disk-efficient installs.
+# Documentation
 
-Existing projects keep their lockfile format. aube reads and writes
-`pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, and
-`bun.lock` in place. New projects without a supported lockfile get
-`aube-lock.yaml`.
+aube is a Node.js package manager written in Rust. It installs dependencies
+before you run scripts, shares package files across projects, and preserves
+supported lockfiles in their original format.
 
-::: info Name
-`aube` means dawn in French. It is pronounced `/ob/`.
-:::
+New to aube? Follow [getting started](/getting-started) to install it and run
+your first project script.
 
-## Start here
+## Set up your project
 
-- [Installation](/installation) shows the recommended mise install path,
-  source builds, and shell completions.
-- For existing projects, see the [pnpm](/pnpm-users), [npm](/npm-users),
-  [yarn](/yarn-users), or [bun](/bun-users) guide.
-- [Run scripts and binaries](/package-manager/scripts) covers the normal local
-  workflow. `aubr <script>`, `aube test`, and `aube exec <bin>` install first
-  when dependencies are stale; `aubx <pkg>` handles one-off tools.
-- [Install dependencies](/package-manager/install) covers explicit install
-  work: setup-only installs, CI mode, production installs, offline installs,
-  and lockfile modes.
-- [Lifecycle scripts](/package-manager/lifecycle-scripts) and
-  [Jailed builds](/package-manager/jailed-builds) cover dependency build
-  approval, jailed execution, and package-specific jail permissions.
-- [Manage dependencies](/package-manager/dependencies) covers `add`, `remove`,
-  `update`, `dedupe`, and `prune`.
-- [Workspaces](/package-manager/workspaces) covers `aube-workspace.yaml`,
-  workspace linking, filters, recursive runs, catalogs, and deploys.
+| I want to… | Read |
+| --- | --- |
+| Install or update aube | [Installation](/installation) |
+| Try it in an existing project | [pnpm](/pnpm-users), [npm](/npm-users), [Yarn](/yarn-users), or [Bun](/bun-users) |
+| Run builds, tests, and tools | [Scripts and binaries](/package-manager/scripts) |
+| Set up a monorepo | [Workspaces](/package-manager/workspaces) |
+| Pin Node.js | [Node runtime switching](/package-manager/node-runtime) |
+| Configure CI or a container | [CI and containers](/package-manager/ci) |
 
-## Package-manager model
+## Manage dependencies
 
-aube has the same CLI, config, and internals that pnpm v11 does.
+- [Install dependencies](/package-manager/install): lockfile modes, offline installs, and package layouts.
+- [Manage dependencies](/package-manager/dependencies): add, remove, update, dedupe, and prune.
+- [Lockfiles](/package-manager/lockfiles): supported formats, precedence, and conversion.
+- [Configuration](/package-manager/configuration): choose where a setting belongs and inspect its effective value.
+- [Registry and authentication](/package-manager/registry-auth): private packages, tokens, proxies, and TLS.
+- [Publishing](/package-manager/publishing): inspect a package, publish it, and manage releases.
 
-- A strict, isolated `node_modules` layout.
-- A content-addressable global store.
-- A shared lockfile for workspaces.
-- `workspace:`, `link:`, `file:`, git, tarball URL, npm alias, and catalog
-  dependency specifiers.
-- Root lifecycle scripts, with dependency lifecycle scripts gated by an
-  explicit allowlist and optional jailed execution.
+## Understand the defaults
 
-aube uses its own internal directory names: `node_modules/.aube/` for the
-virtual store and `$XDG_DATA_HOME/aube/store/v1/` (defaulting to
-`~/.local/share/aube/store/v1/`) for the global store. Existing lockfiles are
-preserved in place; only projects with no supported lockfile yet start with
-`aube-lock.yaml`.
+Dependency scripts require an allow rule or built-in trust. Resolution checks
+release age and publishing evidence. [Security](/security) explains which checks
+warn, which block, and which need an explicit opt-in.
 
-## Reference sections
+The default layout isolates dependencies. A global content store shares package
+files, while the global virtual store also shares directory trees for local
+installs. Read about [node_modules](/package-manager/node-modules),
+the [global virtual store](/package-manager/global-virtual-store), and the
+[benchmarks](/benchmarks).
 
-- [CLI Reference](/cli/) is generated from the command parser.
-- [Settings Reference](/settings/) is generated from `settings.toml`.
-- [Benchmarks](/benchmarks) explains the performance measurements.
+## Look up a detail
+
+- [CLI reference](/cli/): commands, arguments, and flags.
+- [Settings reference](/settings/): defaults and supported configuration sources.
+- [Error and warning codes](/error-codes): stable identifiers and exit codes.
+- [Troubleshooting](/troubleshooting): symptoms, diagnostics, and targeted fixes.
+- [Embedding](/embedding/): Rust, Node-API, and C ABI integration.
+
+To help improve aube, see [contributing](/contributing) or start a
+[Discussion](https://github.com/jdx/aube/discussions).

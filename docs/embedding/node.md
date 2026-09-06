@@ -1,3 +1,7 @@
+---
+description: Install packages from Node.js and Bun using aube Node-API bindings, progress events, and cancellation.
+---
+
 # Node-API
 
 `@jdxcode/aube-node` exposes aube's installer to Node.js, Bun, Electron, and
@@ -11,6 +15,9 @@ npm install @jdxcode/aube-node
 
 ```ts
 import { install } from "@jdxcode/aube-node"
+
+const projectDirectory = process.cwd()
+const abortController = new AbortController()
 
 const result = await install(projectDirectory, {
   add: [

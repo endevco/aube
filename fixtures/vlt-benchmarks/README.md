@@ -6,10 +6,10 @@ own install benchmarks measure against the same project shapes the vlt
 team curates.
 
 If you're looking for cross-package-manager numbers (npm, pnpm, yarn,
-bun, vlt, deno, ...), the vlt team publishes a continuously updated
-dashboard at **<https://benchmarks.vlt.sh>** — go check it out. A lot of
-this work would be much harder without theirs; thanks to the vlt folks
-for both the suite and being so generous about sharing it.
+Bun, vlt, and Deno), see the upstream
+[benchmark dashboard](https://benchmarks.vlt.sh). Our results use aube's own
+[harness and methodology](../../docs/benchmarks.md), so compare the conditions
+before comparing timings.
 
 The upstream license (BSD-2-Clause + patent grant) covers everything in
 this directory and is reproduced verbatim in [LICENSE](LICENSE).

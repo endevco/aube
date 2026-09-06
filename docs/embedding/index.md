@@ -1,3 +1,7 @@
+---
+description: Choose Rust, Node-API, or C ABI integration for installing packages inside a host application.
+---
+
 # Embedding aube
 
 aube can run inside another application instead of being invoked as a child
@@ -10,7 +14,11 @@ Node-API and C ABI distributions are thin adapters over it.
 
 ## Supported operations
 
-The stable `aube::embed` facade supports:
+The Rust `aube::embed` facade supports the operations below. Node-API and
+C ABI expose install/add workflows; use the Rust guide for in-process script
+and runtime commands.
+
+Common embedding capabilities include:
 
 - installing a project's declared dependencies
 - adding packages and installing the resulting dependency graph

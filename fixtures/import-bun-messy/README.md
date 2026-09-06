@@ -1,4 +1,7 @@
-Messy Bun workspace fixture for import/install coverage.
+# Bun import and install fixture
+
+This workspace exercises Bun lockfile import and installation across mixed
+dependency protocols.
 
 This fixture is intentionally broader than the first BATS smoke test will
 need. Normal registry packages resolve from the test Verdaccio registry, but

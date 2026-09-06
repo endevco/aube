@@ -1,9 +1,30 @@
+---
+description: Diagnose aube installs, lockfile drift, missing dependencies, build scripts, private registries, and workspace filters.
+---
+
 # Troubleshooting
+
+Start with the failing command's first error and any `ERR_AUBE_*` or
+`WARN_AUBE_*` code. Record the aube and Node versions and inspect the environment:
+
+```sh
+aube --version
+aube doctor
+```
+
+Use the [error code reference](/error-codes) to identify a failure category.
+Choose the symptom below before changing install settings or deleting state.
 
 ## Try disabling the global virtual store first
 
-If an install or build is behaving oddly, turn the global virtual
-store off for the project before digging further:
+For a tool that cannot follow symlinks outside the project, try one install
+with the global virtual store disabled:
+
+```sh
+aube install --disable-global-virtual-store
+```
+
+If that fixes the build, persist the setting for that project:
 
 ```sh
 aube config set enableGlobalVirtualStore false --location project
@@ -50,8 +71,9 @@ same package declares, even though the package was installed correctly. Some
 native or framework toolchains swallow the config-load error and fail later
 with generated code or build output that looks unrelated.
 
-This usually means the loader is not symlink-aware; it does not mean aube
-linked the package incorrectly.
+A loader that evaluates the symlink path rather than the real path can cause
+this symptom. Confirm the package declares the missing dependency before
+attributing the failure to the loader.
 
 If you maintain the loader, resolve the config file's real path before
 evaluating it:
@@ -127,11 +149,15 @@ rolling aube into CI.
 
 ## The lockfile is out of sync
 
-For a strict CI install:
+Reproduce a frozen-lockfile failure without clearing `node_modules`:
 
 ```sh
-aube ci
+aube install --frozen-lockfile
 ```
+
+A frozen install checks consistency; it does not repair the lockfile. If the
+manifest change is intentional, run `aube install` locally, inspect the diff,
+and commit the updated lockfile.
 
 For a local repair:
 
@@ -190,7 +216,7 @@ Check what aube sees:
 
 ```sh
 aube config get registry
-aube config list --json
+aube config explain registry
 ```
 
 For publishing and login flows, see [Registry and auth](/package-manager/registry-auth).
@@ -218,4 +244,6 @@ lockfiles in place, the original package manager can keep using the same file
 during rollout. If aube hits a bug in a project, fall back for that job,
 keep the failing command and lockfile handy, and open a thread in
 [GitHub Discussions](https://github.com/aubepkg/aube/discussions) with the
-exact command and package manager versions.
+exact command, first substantive error, stable error code, package-manager
+versions, OS, and a minimal reproduction. Redact tokens and private registry
+details before sharing logs.

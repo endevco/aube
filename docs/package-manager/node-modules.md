@@ -1,7 +1,14 @@
+---
+description: Understand isolated and hoisted dependency layouts, shared package files, and virtual stores.
+---
+
 # node_modules layout
 
-aube defaults to an isolated symlink layout like pnpm's `node-linker=isolated`.
-The difference is directory ownership: aube writes `.aube/`, not `.pnpm/`.
+aube defaults to isolated dependencies: a package resolves the dependencies
+it declares through symlinks beside its installed files. Compatible local
+projects use a shared virtual store; CI uses a project-local store by default.
+
+The project-local layout looks like this:
 
 ```text
 project/
@@ -53,5 +60,7 @@ CI and off under CI.
 
 ## Coexistence with pnpm
 
-aube does not reuse `node_modules/.pnpm/` or `~/.pnpm-store/`. If a pnpm-built
-tree already exists, aube installs alongside it in `node_modules/.aube/`.
+aube uses its own stores and does not reuse pnpm's `.pnpm/` virtual store.
+Both virtual-store directories can exist, but the package manager that installs
+last controls the project's top-level dependency links. Run that manager's
+install command after switching tools.

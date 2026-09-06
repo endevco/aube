@@ -1,4 +1,8 @@
-# For yarn users
+---
+description: Use Yarn Classic and Berry lockfiles with aube, prepare PnP projects, and review workspace and build-policy differences.
+---
+
+# For Yarn users
 
 aube can install directly from both Yarn classic (v1) and Yarn berry (v2+)
 lockfiles. You do not need to delete `yarn.lock` or remove `node_modules`
@@ -10,10 +14,10 @@ before trying aube.
 aube install
 ```
 
-Run this once when you specifically want to verify that aube can read and
-write the existing Yarn lockfile. For normal local work, run the command you
-wanted instead: `aubr build`, `aube test`, and `aube exec <bin>` auto-install
-first when dependencies are stale; `aubx <pkg>` handles one-off tools.
+Run this from the project root, then review the lockfile diff and run your
+tests. For daily work, `aubr build`, `aube test`, and `aube exec <bin>`
+install automatically when dependencies are stale. Use `aubx <pkg>` for
+one-off tools.
 
 aube reads and updates Yarn v1 `yarn.lock` in place and installs packages
 into `node_modules/.aube/`.
@@ -23,8 +27,8 @@ same resolved versions. You do not need `aube import` for a normal rollout;
 `aube install` keeps `yarn.lock` as the shared source of truth.
 
 Use `aube import` only if the team intentionally wants to convert the project
-to `aube-lock.yaml`. After import succeeds, remove `yarn.lock` so future
-installs keep writing `aube-lock.yaml`.
+to `aube-lock.yaml`. The new `aube-lock.yaml` takes precedence on later installs. Retire the old
+lockfile once the team has switched, to avoid maintaining two sources of truth.
 
 ## Yarn berry (v2+)
 
@@ -66,11 +70,10 @@ can drop in against the same `yarn.lock`.
 - aube uses isolated symlinks instead of a hoisted flat tree by default.
 - Workspace package discovery follows `aube-workspace.yaml` (or
   `pnpm-workspace.yaml` when the project already has one).
-- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
-  not run by default. Yarn runs them for every dependency; aube runs them
-  only for packages approved in `allowBuilds`; legacy
-  `pnpm.onlyBuiltDependencies` entries are still honored. This follows
-  the pnpm v11 model. Approved dependency builds can also run in a
+- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`)
+  run only when project policy or aube's built-in trusted-dependencies list
+  allows them. Explicit denies win. Legacy `pnpm.onlyBuiltDependencies`
+  entries are still honored. Approved dependency builds can also run in a
   [jail](/package-manager/jailed-builds) with package-specific env, path,
   and network permissions.
 
@@ -78,3 +81,9 @@ References:
 [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)
 ·
 [Yarn berry install](https://yarnpkg.com/cli/install)
+
+## Next steps
+
+See [lifecycle scripts](/package-manager/lifecycle-scripts) for build approvals,
+[CI and containers](/package-manager/ci) for reproducible installs, and
+[troubleshooting](/troubleshooting) for compatibility problems.

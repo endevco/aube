@@ -1,8 +1,31 @@
+---
+description: Choose configuration sources, inspect aube settings, and enforce managed security policy.
+---
+
 # Configuration
 
 aube reads pnpm-compatible configuration from project `.npmrc`, user `.npmrc`,
 user aube config, `aube-workspace.yaml`, environment variables, and supported
-CLI flags. Existing `pnpm-workspace.yaml` files are migration inputs.
+CLI flags. An existing `pnpm-workspace.yaml` is read and updated in place.
+
+Start with `aube config find <words>` to locate a setting and
+`aube config explain <key>` to see its default and supported sources.
+The [settings reference](/settings/) contains every registered setting.
+
+## Choose a configuration source
+
+| Scope | Where to put it |
+| --- | --- |
+| One command | A supported CLI flag or environment variable |
+| Shared registry and authentication setup | Project `.npmrc`; keep token values in environment variables |
+| Shared workspace and build policy | `aube-workspace.yaml` or an existing `pnpm-workspace.yaml` |
+| Personal aube defaults | `aube config set <key> <value>` |
+| Enforced organization policy | `/etc/aube/managed.toml` |
+
+CLI and environment overrides generally beat file settings. Some settings
+combine map or list values, and some give workspace YAML priority over `.npmrc`.
+Use the source details for the individual setting; managed policy applies after
+normal resolution and cannot be weakened by a local override.
 
 ## Defaults worth knowing
 
@@ -12,8 +35,8 @@ CLI flags. Existing `pnpm-workspace.yaml` files are migration inputs.
 | Package imports | `packageImportMethod=auto` | Links files from the store with the faster same-filesystem primitive per platform — reflink (clonefile) on macOS, hardlink on Linux and elsewhere — falling back to copy on cross-filesystem boundaries. Set `clone` or `clone-or-copy` to attempt reflink first, still falling back to copy when reflink is unavailable. |
 | New releases | `minimumReleaseAge=1440` | Avoids installing versions published in the last 24 hours by default. |
 | Exotic transitive deps | `blockExoticSubdeps=true` | Blocks transitive git and tarball dependencies unless you opt out. |
-| Dependency scripts | approval required | Build scripts in dependencies stay skipped until approved. |
-| Jailed builds | `jailBuilds=false` | Opt in to running approved dependency scripts with a restricted env, temporary `HOME`, and native macOS jail. Planned to default to `true` in the next major version. |
+| Dependency scripts | allowlist | Project approvals and built-in trusted packages may run scripts; explicit denies win. |
+| Jailed builds | `jailBuilds=false` | Opt in to running approved dependency scripts with a restricted environment, temporary `HOME`, and native macOS/Linux enforcement. Planned to default to `true` in the next major version. |
 | Auto-install before scripts | enabled | `aube run`, `aube test`, and `aube exec` repair stale installs first. |
 
 ## User aube config
@@ -85,7 +108,7 @@ aube config set --local allowBuilds.@mongodb-js/zstd true
 aube config set --local overrides.lodash 4.17.21
 ```
 
-The write lands in `pnpm-workspace.yaml#<map>.<entry>` when a workspace yaml
+The write lands in the existing workspace YAML at `<map>.<entry>` when a workspace file
 exists, otherwise `package.json#aube.<map>.<entry>` — the same place install
 reads from. User-scope dotted writes for these maps error: aube only reads
 them per project. For `allowBuilds`, `aube approve-builds <pkg>` is the

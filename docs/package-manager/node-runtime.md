@@ -1,3 +1,7 @@
+---
+description: Pin and resolve project Node.js versions, configure runtime installation, and optionally activate shell shims.
+---
+
 # Node runtime switching
 
 aube switches Node.js versions per project. When a project pins a Node
@@ -42,7 +46,7 @@ aube runtime set node 24 --save-exact
 aube runtime list
 ```
 
-## Where the node comes from
+## Where Node comes from
 
 aube looks for a satisfying version in order, stopping at the first
 hit — the common cases never touch the network:
@@ -67,7 +71,8 @@ mirrors are supported via [`nodeDownloadMirrors`](/settings/#setting-nodedownloa
 
 ## Shell activation
 
-Use activation when you want ordinary tool names to go through aube:
+Use the command for your shell when you want ordinary tool names to go through
+aube. Add that one line to the corresponding shell startup file for persistence:
 
 ```sh
 eval "$(aube activate bash)"
@@ -133,13 +138,13 @@ The same machinery manages aube's own version (corepack semantics,
 pnpm's `managePackageManagerVersions` — on by default). Pin via either:
 
 ```json
-{ "packageManager": "aube@1.18.2" }
+{ "packageManager": "aube@2.2.12" }
 ```
 
 ```json
 {
   "devEngines": {
-    "packageManager": { "name": "aube", "version": "^1.18" }
+    "packageManager": { "name": "aube", "version": "^2.2" }
   }
 }
 ```

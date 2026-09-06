@@ -1,66 +1,112 @@
+---
+description: Set up aube for development, run tests, maintain generated documentation, and prepare a focused pull request.
+---
+
 # Contributing
 
-## Contribution Expectations
+Help is welcome with reproducible bug reports, focused fixes, tests, and clear
+documentation. For a new feature or a substantial change, discuss the direction
+in [GitHub Discussions](https://github.com/jdx/aube/discussions) or
+[Discord](https://discord.gg/UBa7pJUN7Z) before investing in an implementation.
+Small, obvious fixes can go straight to a pull request.
 
-Before opening a PR, unless it is something obvious, consider creating a
-discussion or mentioning what you plan to do in
-[Discord](https://discord.gg/UBa7pJUN7Z). The important part is to settle the
-direction before much review happens. aube has a specific scope and design
-taste. I am comfortable saying no to changes that do not clearly fit.
-
-Before I review a PR, CI must be passing and all automated AI review comments
-must be addressed. If those are still open, assume I will wait to look at the
-PR.
-
-If I am on the fence about a contribution, I will probably reject it for that
-reason alone. If I did not do this, aube would suffer from feature bloat. I
-may also reject a PR if the quality is poor enough that I do not have confidence
-the contributor can get it across the finish line. I do not have time to coach
-contributors.
-
-I get hundreds of PRs per week across my projects, so I do not have time to
-respond to every PR with detailed context. A rejection may be brief.
-
-## Code Style
-
-All of these repos use [hk](https://hk.jdx.dev) for linting and formatting.
-Run the checks before opening a PR:
+## Set up the repository
 
 ```sh
-hk check --all
-hk fix --all
+git clone https://github.com/aubepkg/aube
+cd aube
+mise install
+mise run build
 ```
 
-Some repos also expose wrapper tasks such as `mise run lint` and
-`mise run lint-fix`; prefer those when they exist.
+Use the Rust toolchain declared by the project and the tools pinned in
+`mise.toml`. `mise run` activates the Cargo build-cache wrapper. If you run
+Cargo directly, activate mise in your shell first.
 
-## Commit and PR Titles
+The debug binary is `target/debug/aube`. BATS tests use that binary; release
+builds are for profiling and benchmarks.
 
-Use Conventional Commits for commit messages and PR titles. Examples:
+## Run the relevant checks
 
-- `fix: handle missing config file`
-- `docs: clarify installation steps`
-- `feat: add quiet output mode`
-
-## Building and running tests
-
-```bash
-cargo build
-cargo test                                 # Unit tests
-cargo clippy --all-targets -- -D warnings  # Lint
-cargo fmt --check                          # Formatting
-cargo audit --deny warnings                # RustSec advisories
-cargo deny check bans licenses sources     # License/source policy
-
-# BATS integration tests (needs Node.js 22 and `verdaccio` on PATH; the
-# first run will `npm i -g verdaccio@6` if it isn't installed). The mise
-# task shards files across cores via `bats --jobs`, driven by the
-# mise-managed `rush` binary (no GNU `parallel` needed) — prefer it over
-# the raw runner.
-mise run test:bats                            # full suite, in parallel
-mise run test:bats test/install.bats          # one or more files
-./test/bats/bin/bats -f "<substring>" test/   # filter by test name
+```sh
+mise run test
+mise run lint
+mise run test:bats test/install.bats
 ```
+
+`mise run lint` runs the repository's hk checks, including formatting and
+Clippy. `mise run lint-fix` applies supported fixes. The equivalent core Cargo
+checks are:
+
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+BATS tests use the project's mise-managed Node and `rush` for parallel runs.
+Use `mise run test:bats` for the full shell suite. Supply specific `.bats` files
+for a focused run. The registry helper installs Verdaccio if it is unavailable.
+
+Release validation also includes `cargo audit --deny warnings` and
+`cargo deny check bans licenses sources`.
+
+### Cargo build cache
+
+The project uses [mbx](https://mr-boxington.jdx.dev) through mise's Cargo
+wrapper. To diagnose a wrapper failure, run the exact same Cargo check with
+`MBX_DISABLE=1`; do not omit flags or weaken the check. For example:
+
+```sh
+MBX_DISABLE=1 cargo clippy --all-targets -- -D warnings
+```
+
+If only the bypass succeeds, see the
+[build-cache reporting instructions](https://github.com/aubepkg/aube/blob/main/CONTRIBUTING.md#mbx-build-cache).
+
+## Work on documentation
+
+```sh
+mise run docs:dev
+mise run docs:build
+```
+
+The site lives under `docs/`; navigation and styles live in `docs/.vitepress/`.
+The build validates internal page links and social-preview metadata. Use
+`node scripts/check-docs.mjs` to check local Markdown links and built-site
+fragment targets after a docs build.
+
+Some references are generated:
+
+| Output | Edit this source |
+| --- | --- |
+| `docs/cli/*.md` and nested command pages | Command help in `crates/aube/src/`; examples and navigation in `scripts/patch-generated-cli-docs.mjs` |
+| `docs/settings/index.md` | `crates/aube-settings/settings.toml` and its docs generator |
+| Error-code data | `crates/aube-codes/src/` |
+| Benchmark charts and README ratios | `benchmarks/results.json`, regenerated by `mise run bench:bump` |
+
+Run `mise run render` after changing generated reference sources. Keep command
+examples copyable, explain which file holds a setting, and describe current
+behavior separately from proposals. Historical release notes and vendored
+third-party documentation should retain their original content.
+
+## Prepare a pull request
+
+Keep the scope focused and describe the problem, resulting behavior, and
+validation. CI must pass, and automated review comments must be addressed
+before maintainer review. Changes may be declined when they do not fit the
+project's scope; discussing substantial changes early reduces that risk.
+
+Use Conventional Commits for commit messages and PR titles:
+
+- `fix(install): preserve locked versions during repair`
+- `docs: clarify dependency build approvals`
+- `feat(resolver): support a new dependency protocol`
+
+Start the description with a lowercase imperative verb. Keep subjects concise;
+PR titles determine release version bumps. Do not add tool branding or a PR
+number to the title. Open pull requests ready for review, and include the
+AI-assistance disclosure required by the repository instructions when applicable.
 
 ## The offline Verdaccio test registry
 
@@ -156,9 +202,3 @@ The tradeoff is the ~8 MB of `.tgz` files under `test/registry/storage/`
 and the manual seeding step above. For a package manager project that
 feels like the right tradeoff — we're exercising real tarball extraction
 and linking, so mock registries aren't an option.
-
-## Commit style
-
-Follow the existing commit log — short imperative subject, blank line,
-body wrapped at ~72 columns. Don't amend published commits. Don't skip
-hooks (`--no-verify`).

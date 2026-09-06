@@ -1,3 +1,7 @@
+---
+description: Configure a Bun-compatible security scanner in aube and understand bootstrapping, failures, and process boundaries.
+---
+
 # Security scanner
 
 aube ships a drop-in implementation of [Bun's Security Scanner
@@ -18,8 +22,9 @@ securityScanner: "@acme/bun-security-scanner"
 # securityScanner: ./scripts/scanner.mjs
 ```
 
-Install the scanner package as a dev dep so it lives in
-`node_modules/` by the time the gate runs:
+Install a package-based scanner **before enabling the setting**. The gate
+runs before fetching project dependencies, so it cannot bootstrap its own
+scanner package:
 
 ```sh
 aube add -D @acme/bun-security-scanner
@@ -77,6 +82,9 @@ export const scanner: Security.Scanner = {
 };
 ```
 
+The example assumes an `isMalicious(name, version)` function backed by your
+scanner's advisory source.
+
 **Levels**:
 
 - `fatal` — aborts the install with
@@ -123,10 +131,9 @@ That surface covers everything the oven-sh template
   runtime. The bridge surfaces this as
   `ERR_AUBE_SECURITY_SCANNER_FAILED` and the install **fails
   closed** (see below).
-- A `fatal` advisory on `aube add` exits non-zero with
-  `package.json` already mutated. Bun behaves the same way;
-  revert with `git checkout package.json` if you don't want to
-  keep the edit.
+- A `fatal` advisory on `aube add` exits non-zero after the manifest may
+  have changed. Inspect `git diff -- package.json` and remove only the rejected
+  dependency edit if you do not want to keep it.
 
 ## Failure semantics
 
@@ -145,28 +152,21 @@ re-enable.
 
 ## Performance
 
-One `node` subprocess per command invocation. The scanner sees the
-full resolved graph in one batched `scan({ packages })` call — no
-per-package round-trips. Cold-start cost is bounded:
+The bridge starts one Node process and sends the resolved graph in a single
+batch. Cost depends on scanner startup and any requests the scanner makes.
+Warm installs that return before resolution do not run this scanner; do not
+use it as evidence that an unchanged install was rescanned.
 
-| Phase | Approx. cost |
-|---|---|
-| `node` cold start | 50–150 ms |
-| Bridge + shim load | 50–200 ms |
-| Scanner module load | depends on scanner |
-| `scan()` invocation | depends on scanner (Socket's hits their API for verdicts) |
+## Scanner process boundary
 
-A passing `aube install` against a scanner that returns no
-advisories typically adds well under one second. Warm-cache
-installs that short-circuit before resolve don't run the scanner
-at all.
-
-## Security hardening
+The scanner is executable project code. It is not run inside the dependency
+build jail; only the named environment variables below are removed. Choose
+and review the scanner accordingly.
 
 - The subprocess environment is scrubbed of `AUBE_AUTH_TOKEN`,
   `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `GITHUB_TOKEN`, and `GH_TOKEN`
-  before exec. A hostile or compromised scanner package can't
-  read those out of `process.env`.
+  before exec. This removes those values from `process.env`; it does not restrict
+  filesystem reads or the scanner's other access.
 - `kill_on_drop(true)` on the spawn ensures a hung scanner is
   SIGKILLed at the 30 s timeout instead of leaking as an orphan
   process.

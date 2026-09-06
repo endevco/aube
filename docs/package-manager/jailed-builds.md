@@ -1,175 +1,112 @@
+---
+description: Restrict approved dependency builds with aube jails and understand filesystem, network, environment, and platform limits.
+---
+
 # Jailed dependency builds
 
-Dependency lifecycle scripts are one of the sharpest supply-chain edges in a
-JavaScript install. aube already keeps dependency scripts skipped until a
-project approves them with `allowBuilds`. Jailed
-builds add a second boundary: approved packages may build, but they do
-not automatically get the user's full filesystem, network, and environment.
+Build approval decides whether a dependency script can run. A build jail
+restricts an approved script's environment, filesystem writes, and network
+access. The jail is optional and does not replace build review.
 
-Jailed builds default to `false` today and are planned to default to `true` in
-the next major version. Enable them now in workspace config:
+Enable it in `aube-workspace.yaml` or an existing `pnpm-workspace.yaml`:
 
 ```yaml
 jailBuilds: true
 ```
 
-If one reviewed package cannot run in the jail yet, keep jailed builds enabled
-globally and exempt only that package:
-
-```yaml
-jailBuilds: true
-jailBuildExclusions:
-  - "@vendor/*"
-```
-
-If a package only needs a narrow exception, grant that privilege instead of
-turning the jail off:
-
-```yaml
-jailBuilds: true
-jailBuildPermissions:
-  "@vendor/*":
-    env:
-      - SHARP_DIST_BASE_URL
-    write:
-      - ~/.cache/sharp
-```
-
-## Goals
-
-- Keep dependency lifecycle scripts denied by default.
-- Run approved dependency scripts inside a narrow build jail.
-- Prevent approved build scripts from reading credentials or mutating unrelated
-  project and user files.
-- Preserve compatibility for common native-package builds such as `esbuild`,
-  `sharp`, `node-gyp`, `prebuild-install`, and `napi-postinstall`.
-- Avoid Docker, daemon processes, images, and other heavyweight runtime
-  dependencies.
+`jailBuilds` defaults to `false`. Root lifecycle scripts are not jailed.
+See [lifecycle scripts](/package-manager/lifecycle-scripts) for approvals.
 
 ## Default profile
 
-When `jailBuilds` is enabled and a dependency is approved through `allowBuilds`,
-aube runs its `preinstall`, `install`, and
-`postinstall` scripts with a default native jail profile:
+| Capability | macOS and supported Linux systems | Windows |
+| --- | --- | --- |
+| Filesystem reads | Unrestricted | Unrestricted |
+| Filesystem writes | Package directory and jail-owned temporary directories | No native restriction |
+| Network | Denied | No native restriction |
+| Environment | Scrubbed allowlist | Scrubbed allowlist |
+| `HOME` | Temporary jail directory | Temporary jail directory |
 
-| Capability | Default |
-| --- | --- |
-| Filesystem reads | unrestricted today; package/toolchain-only reads are planned |
-| Filesystem writes | package directory and aube-owned temporary directories |
-| Network | denied |
-| Environment | scrubbed allowlist only |
-| Home directory | temporary aube-owned jail home |
+::: warning Current boundary
+Filesystem reads are unrestricted. A temporary `HOME` and scrubbed environment
+do not prevent a script from reading a known absolute path to a credential file.
+Windows currently provides environment scrubbing and a temporary home only;
+aube warns that native filesystem and network enforcement are unavailable.
+:::
 
-The important distinction is that approval means "this package may build
-itself." It does not mean "this package may write shell startup files, modify
-unrelated workspace files, inherit registry tokens, or reach the network."
+## Grant a specific permission
 
-## Package permissions
-
-Package-specific permissions let a reviewed package keep the jail while gaining
-only the privileges its build script needs:
+If a reviewed package needs an environment variable, writable cache, or network
+access, grant that permission while keeping the rest of the jail:
 
 ```yaml
+jailBuilds: true
 jailBuildPermissions:
   sharp:
     env:
       - SHARP_DIST_BASE_URL
-    read:
-      - ~/.cache/node-gyp
     write:
       - ~/.cache/sharp
     network: true
 ```
 
-Boolean `allowBuilds` entries stay compatible with pnpm and continue to mean
-"approved to run." aube-specific `jailBuildPermissions` narrow or widen the
-jail used after that approval decision.
+| Key | Effect |
+| --- | --- |
+| `env` | Inherit the named variables from the parent process |
+| `write` | Add paths to the native write allowlist on macOS and Linux |
+| `network` | Permit network access when `true` |
+| `read` | Reserved for a future read-restricted profile; reads are currently unrestricted |
 
-Keys use the same package glob syntax as `allowBuilds` and
-`neverBuiltDependencies`: bare names, `*` wildcards like `@scope/*` and
-`*-native`, exact `name@version` pins, and exact version unions. `env` entries
-are exact variable names inherited from the parent process. `write` entries are
-added to the macOS Seatbelt write allowlist today. `read` entries are accepted
-now for the stricter future read-deny profile; reads are currently
-unrestricted.
+Environment grants can expose secrets, and `network: true` enables network
+access rather than a host-specific allowlist. Grant only what the build needs.
 
-`jailBuildExclusions` remains the package-level escape hatch when the
-needed privilege is too broad. It accepts the same package glob syntax, only
-disables the jail, and does not bypass the build approval policy.
+Package keys accept bare names, exact `name@version` pins, exact version unions,
+and name wildcards such as `@scope/*`. A bare name applies to every version;
+use an exact pin when the exception belongs to one reviewed release.
+
+## Exclude a package
+
+If a reviewed package cannot run with individual permission grants, exclude it:
+
+```yaml
+jailBuilds: true
+jailBuildExclusions:
+  - "legacy-native-addon@1.2.3"
+```
+
+An exclusion disables the jail for that package. It does not approve the build:
+the package must still pass the active build policy. See
+[`jailBuildExclusions`](/settings/#setting-jailbuildexclusions).
 
 ## Native enforcement
 
-The jail uses the same lightweight strategy as mise:
+- **macOS:** a Seatbelt profile, applied through `sandbox-exec`, restricts writes
+  and network access.
+- **Linux:** Landlock write restrictions and a seccomp network filter are applied
+  in the child process. The baseline requires kernel 5.19 or newer with Landlock
+  ABI v2. If the requested jail cannot be enforced, the build fails rather than
+  running without it. Landlock v2 does not restrict `truncate()` on otherwise
+  read-only paths; that protection requires kernel 6.2 or newer.
+- **Windows:** environment scrubbing and a temporary home are applied, with a
+  warning about unavailable native enforcement.
 
-- macOS: generate a Seatbelt profile and run scripts through `sandbox-exec` to
-  deny network access and writes outside the package / temporary directories.
-- Linux: apply Landlock write restrictions (kernel ≥ 5.19, Landlock ABI v2) and
-  a seccomp network filter in the child process before it execs the script. If
-  the kernel cannot enforce the requested jail, the script fails instead of
-  running unsandboxed. Landlock v2 does not gate `truncate()` on otherwise
-  read-only paths; build scripts that need that protection require kernel ≥ 6.2.
-- Windows: start with environment scrubbing, a temporary home directory, and an
-  unsupported-native-jail warning until there is a good OS-native policy.
-
-The implementation should live below the script runner rather than the install
-driver. Every npm-style lifecycle path funnels through
-`aube_scripts::run_script`, so the install path, `rebuild`, and other callers
-can share one enforcement point.
-
-## Quarantined build directory
-
-The stronger future mode is to build each dependency in quarantine:
-
-1. Reflink, hardlink, or copy the package into an aube-owned temporary build
-   directory.
-2. Run lifecycle scripts with writes limited to that build directory and a
-   temporary jail home.
-3. Copy the resulting package tree back into the linked package directory after
-   a successful build.
-4. Save that result in the side-effects cache when caching is enabled.
-
-This keeps build output package-local and prevents a script from mutating
-sibling packages, project files, lockfiles, global stores, or unrelated
-`node_modules` state.
+The jail runs below the dependency script runner, so approved builds from
+install and `aube rebuild` use the same policy.
 
 ## Environment policy
 
-Dependency scripts should receive only the environment they need to behave like
-npm lifecycle scripts:
+The scrubbed environment includes values needed for build tools, such as `PATH`,
+`INIT_CWD`, and npm lifecycle metadata. `HOME` points to a temporary directory.
+Common credential variables such as `NPM_TOKEN`, `NODE_AUTH_TOKEN`,
+`GITHUB_TOKEN`, and `SSH_AUTH_SOCK` are removed unless explicitly granted.
 
-- `PATH`
-- `HOME`, pointing at the jail home
-- `INIT_CWD`
-- `npm_lifecycle_event`
-- `npm_package_name`
-- `npm_package_version`
-- selected `npm_config_*` values needed for platform and build tooling
+## Diagnose a failed build
 
-Tokens are denied unless a package-specific env grant allows them:
+1. Confirm the package is approved with `aube ignored-builds`.
+2. Read the failing script and its first error. Identify the missing variable,
+   denied write, or required network access.
+3. Add a package-specific permission and retry `aube rebuild`.
+4. Commit the policy once the build works on the platforms your project supports.
 
-- `AUBE_AUTH_TOKEN`
-- `NPM_TOKEN`
-- `NODE_AUTH_TOKEN`
-- `GITHUB_TOKEN`
-- `SSH_AUTH_SOCK`
-- `AWS_*`
-- `GOOGLE_*`
-- `AZURE_*`
-
-Root lifecycle scripts can remain unjailed at first because they are project
-code. The supply-chain boundary is dependency code.
-
-## Rollout
-
-1. Add `jailBuilds` as an opt-in for dependency lifecycle scripts.
-2. Add package/toolchain-only read enforcement.
-3. Add Linux Landlock / seccomp enforcement.
-4. Teach `aube approve-builds` to show the default jail profile for newly
-   approved packages.
-5. Add more granular jail permission kinds as real packages need them.
-6. Make jailed dependency builds the default in the next major version.
-7. Keep explicit config escape hatches for debugging:
-   `jailBuilds=false` globally, or `jailBuildExclusions` for a package.
-
-The escape hatch should be noisy in CI-oriented output because disabling the
-jail turns an approved dependency build back into ambient code execution.
+Read [security defaults](/security) for the other install protections and
+[configuration](/package-manager/configuration) for managed organization policy.

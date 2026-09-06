@@ -1,57 +1,75 @@
-# Getting Started
+---
+description: Install aube, run your first script, and review dependency builds in an existing Node.js project.
+---
 
-aube is a fast Node.js package manager that can run in existing projects
-without changing the lockfile format first. If your project already has
-`pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, or
-`bun.lock`, aube reads it and writes updates back to the same file.
+# Getting started
 
-## Install
+You need a Node.js project with a `package.json`. aube can use your existing
+pnpm, npm, Yarn, or Bun text lockfile; no conversion is needed to try it.
 
-See the [installation guide](/installation).
-
-## Use it
+## 1. Install aube
 
 ```sh
-# run a script from package.json
-aubr build
-
-# add a dependency
-aube add lodash
-
-# install + run the test script (equivalent to `pnpm install-test`)
-aube test
+mise use -g aube
+aube --version
 ```
 
-::: tip Just run the command you wanted
-`aubr build`, `aube test`, and `aube exec vitest` all check install freshness
-before running. If `package.json` or the lockfile changed, aube installs first;
-otherwise it skips straight to the script or binary. For one-off tools, use
-`aubx cowsay hi` instead of running an install step yourself.
+This installs aube globally with [mise](https://mise.jdx.dev).
+See [installation](/installation) for Homebrew, npm, Cargo, and Linux packages.
 
-You rarely need a separate `aube install` step in day-to-day work. Use it when
-the install itself is the task: first local setup without running a script,
-lockfile updates, Docker layers, production-only installs, or CI flows.
-:::
+## 2. Run a project script
 
-::: tip Shortcut binaries: `aubr` and `aubx`
-`aubr` is shorthand for `aube run`, and `aubx` is shorthand for
-`aube dlx`. They ship alongside `aube` in every release, so you can
-write `aubr build` instead of `aube run build`, or `aubx cowsay hi`
-instead of `aube dlx cowsay hi`.
-:::
+From your project directory, run a script that exists in `package.json`:
 
-## Learn the package-manager flow
+```sh
+aubr build
+```
 
-- [For pnpm users](/pnpm-users) maps the common pnpm commands and files
-  to aube.
-- [Install dependencies](/package-manager/install) covers lockfile modes,
-  production installs, offline installs, and linker modes.
-- [Manage dependencies](/package-manager/dependencies) covers adding,
-  removing, updating, deduping, and pruning dependencies.
-- [Workspaces](/package-manager/workspaces) covers filters, recursive runs,
-  catalogs, workspace dependencies, and deploys.
-- [Lifecycle scripts](/package-manager/lifecycle-scripts) explains the
-  dependency script allowlist model.
-- [Jailed builds](/package-manager/jailed-builds) explains how to run
-  approved dependency scripts with restricted environment, filesystem, and
-  network access.
+`aubr` means `aube run`. It installs missing or stale dependencies, then starts
+the script. When the manifest, lockfile, and install settings are unchanged,
+the next run goes straight to the script.
+
+<TerminalPreview />
+
+To install without starting a script, use `aube install`. To start a new
+project, run `aube init`, then add the dependencies you need.
+
+## 3. Review dependency builds
+
+Root lifecycle scripts run normally. Dependency lifecycle scripts need project
+approval or aube's built-in trust; an explicit deny always wins. If a native
+package is missing its build output, inspect the skipped scripts:
+
+```sh
+aube ignored-builds
+aube approve-builds
+aube rebuild
+```
+
+Approve only packages you have reviewed. Commit the resulting `allowBuilds`
+policy along with any manifest and lockfile changes.
+See [lifecycle scripts](/package-manager/lifecycle-scripts) for policy details.
+
+## 4. Keep working
+
+| What you need | Command |
+| --- | --- |
+| Add a runtime dependency | `aube add react` |
+| Add a test tool | `aube add -D vitest` |
+| Run the test script | `aube test` |
+| Run an installed tool | `aube exec vitest` |
+| Run a one-off tool | `aubx cowsay hi` |
+| Install from a committed lockfile in CI | `aube ci` |
+
+`aubx` means `aube dlx`: it uses a matching local binary when available,
+otherwise installs the tool in a throwaway project.
+
+## Before switching your team
+
+Review the lockfile diff and run your project's tests. aube preserves supported
+lockfile formats, but its isolated dependency layout and security defaults can
+expose assumptions in an existing project.
+
+Choose your migration guide: [pnpm](/pnpm-users), [npm](/npm-users),
+[Yarn](/yarn-users), or [Bun](/bun-users). Then set up
+[CI](/package-manager/ci) and explore the [documentation guide](/guide).

@@ -1,3 +1,7 @@
+---
+description: Add, remove, inspect, update, deduplicate, and prune dependencies with aube.
+---
+
 # Manage dependencies
 
 Use `add`, `remove`, `update`, `dedupe`, and `prune` to change a project's
@@ -25,7 +29,7 @@ tarball URLs:
 aube add react@latest
 aube add alias-name@npm:actual-name@^1
 aube add jsr:@std/collections@^1.0.0
-aube add @acme/ui@workspace:*
+aube add '@acme/ui@workspace:*'
 aube add file:../local-package
 aube add link:../linked-package
 aube add https://registry.example.test/pkg/-/pkg-1.0.0.tgz
@@ -36,6 +40,18 @@ aube add https://registry.example.test/pkg/-/pkg-1.0.0.tgz
 `.npmrc` setup is needed — the install fetches the package under its
 compat name (`@jsr/<scope>__<name>`) and writes `jsr:<range>` back to
 `package.json`.
+
+## Inspect before changing
+
+```sh
+aube outdated
+aube why react
+aube list --depth 0
+```
+
+Use `outdated` to compare installed and available versions, and `why` to find
+which dependency introduced a package. In a workspace, add
+`--filter @acme/app` to scope a supported command.
 
 ## Remove
 

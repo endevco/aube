@@ -1,4 +1,23 @@
+---
+description: Install aube with mise, Homebrew, npm, Cargo, Linux packages, or from source, and configure shell completions.
+---
+
 # Installation
+
+Choose one installation method, then confirm `aube --version` works in your
+shell. Release archives include `aube` plus the `aubr` and `aubx` shortcuts.
+Node.js is needed to run JavaScript; aube can resolve a
+[project-pinned Node version](/package-manager/node-runtime) for you.
+
+| Method | Use it when |
+| --- | --- |
+| [mise](#recommended-mise) | You want aube and Node managed together |
+| [Homebrew](#from-homebrew) | You use Homebrew on macOS or Linux |
+| [npm](#from-npm) | You want installation through an existing npm setup |
+| [Cargo](#from-crates-io) | You have a Rust toolchain and want to compile the release |
+| [Ubuntu PPA](#ubuntu-ppa) / [Fedora COPR](#fedora-rhel-copr) | You prefer system packages on a supported distribution |
+| [Source](#from-source) | You want to build a checkout |
+
 
 ## Recommended: mise
 
@@ -45,7 +64,7 @@ aube is published from the jdx tap until it lands in homebrew-core:
 brew install jdx/tap/aube
 ```
 
-The tap formula builds from source and installs shell completions.
+The tap provides the formula and shell completions.
 
 ## From npm
 
@@ -124,38 +143,9 @@ This installs the `aube` binary into `~/.cargo/bin`.
 
 ## GitHub Actions
 
-For CI workflows, use the
-[`jdx/aube-action`](https://github.com/jdx/aube-action) Action.
-It downloads the prebuilt aube binary that matches the runner's OS and
-architecture, adds it to `PATH`, and (optionally) installs Node.js
-inline via [mise](https://mise.jdx.dev) so a single step covers both
-the package manager and the runtime:
-
-```yaml
-- uses: jdx/aube-action@v1
-- run: aube install
-```
-
-Pin a specific aube version, install Node, and run `aube install` in
-one go:
-
-```yaml
-- uses: jdx/aube-action@v1
-  with:
-    version: 2.2.4         # or "latest"
-    node-version: "22"     # or "auto" to read mise.toml / .tool-versions / .nvmrc
-    run-install: true
-```
-
-::: tip
-With `node-version: auto`, the action runs `mise ls --current node`
-against the workspace, so any of `mise.toml`, `.tool-versions`,
-`.nvmrc`, `.node-version`, or `package.json` `devEngines.runtime` is
-honored — no separate `actions/setup-node` step required.
-:::
-
-See the [`aube-action` README](https://github.com/jdx/aube-action#readme)
-for the full input/output reference.
+Use [`jdx/aube-action`](https://github.com/jdx/aube-action) to install the native
+binary and optionally Node.js. See [CI and containers](/package-manager/ci)
+for a complete workflow and advice on frozen installs and caches.
 
 ## Verify
 
@@ -172,15 +162,26 @@ that first:
 mise use -g usage
 ```
 
-Then render the completion script for your shell:
+Install completion files for your shell:
 
 ```sh
-aube completion bash   > /etc/bash_completion.d/aube
-aube completion zsh    > "${fpath[1]}/_aube"
-aube completion fish   > ~/.config/fish/completions/aube.fish
+aube completion bash --install
+aube completion zsh --install
+aube completion fish --install
 ```
+
+Run the command for the shell you use. It installs completion files for `aube`,
+`aubr`, and `aubx` and prints any shell-specific setup still needed. It does not
+edit your shell startup file. Omit `--install` to print the completion script
+instead. See [`aube completion`](/cli/completion) for PowerShell and per-binary
+options.
 
 `aube run <TAB>` and `aubr <TAB>` complete the scripts declared in the
 `package.json` nearest your current directory, with each script's command
 shown as the description. A `-C` earlier on the line isn't taken into
 account — the scripts offered are always the current directory's.
+
+## Next step
+
+[Run your first project script](/getting-started#_2-run-a-project-script), or
+choose a migration guide from the [documentation map](/guide).

@@ -1,15 +1,30 @@
+---
+description: Define aube workspaces, link local packages, select projects with filters, and share versions with catalogs.
+---
+
 # Workspaces
 
-aube discovers workspaces from `aube-workspace.yaml` and links workspace
-packages into the isolated dependency graph. Existing pnpm projects can keep
-`pnpm-workspace.yaml` during migration; aube reads it as the source for the
-aube-owned manifest.
+Define workspace package paths in `aube-workspace.yaml` at the repository root.
+If the project already has `pnpm-workspace.yaml`, keep it: aube reads and updates
+that file in place. If both exist, `aube-workspace.yaml` takes precedence.
+
+Each matched package needs its own `package.json` with a name. For example:
 
 ```yaml
 packages:
   - "packages/*"
   - "apps/*"
 ```
+
+Install from the workspace root, then run a script across packages:
+
+```sh
+aube install
+aube -r run build
+```
+
+Recursive builds run in dependency order by default. Use the explicit
+`workspace:` protocol when a dependency must resolve to a local package.
 
 ## Workspace protocol
 
@@ -57,7 +72,8 @@ aube -r list --depth 0
 
 ## Catalogs
 
-aube resolves `catalog:` and `catalog:<name>` from `aube-workspace.yaml`.
+Catalogs keep shared version ranges in the workspace YAML. Define them in
+`aube-workspace.yaml` or the existing `pnpm-workspace.yaml`:
 
 ```yaml
 catalog:

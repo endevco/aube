@@ -25,7 +25,7 @@ const COLORS: Record<string, string> = {
   // from the brand kit reads better next to the other tools' chips.
   deno: "#70c7a9",
   vlt: "#5b4eef",
-  aube: "#7c3aed",
+  aube: "var(--aube-accent)",
 };
 
 function legendLabel(pm: string): string {
@@ -67,10 +67,15 @@ function winner(row: Row): string | null {
   <div class="bench-chart">
     <div class="legend">
       <span v-for="pm in managers" :key="pm" class="legend-item">
-        <span class="swatch" :style="{ background: COLORS[pm] || '#888' }"></span>
+        <span
+          class="swatch"
+          :style="{ background: COLORS[pm] || '#888' }"
+        ></span>
         {{ legendLabel(pm) }}
       </span>
-      <span v-if="nodeVersion" class="legend-runtime">node {{ nodeVersion }}</span>
+      <span v-if="nodeVersion" class="legend-runtime"
+        >node {{ nodeVersion }}</span
+      >
     </div>
     <div v-for="row in rows" :key="row.label" class="scenario">
       <div class="scenario-label">{{ row.label }}</div>
@@ -78,13 +83,13 @@ function winner(row: Row): string | null {
         <template v-for="pm in managers" :key="pm">
           <div class="bar-row">
             <div class="bar-name">{{ pm }}</div>
-            <div class="bar-track">
+            <div class="bar-track" aria-hidden="true">
               <div
                 v-if="row.values[pm] != null"
                 class="bar"
                 :class="{ winner: winner(row) === pm }"
                 :style="{
-                  width: ((row.values[pm]! / rowMax(row)) * 100) + '%',
+                  width: (row.values[pm]! / rowMax(row)) * 100 + '%',
                   background: COLORS[pm] || '#888',
                 }"
               ></div>
