@@ -136,13 +136,17 @@ register_tool() {
 
 run_scenario() {
 	local name=$1
-	case ",$BENCH_SCENARIOS," in
-	*,"$name",*) ;;
-	*) return ;;
-	esac
+	scenario_selected "$name" || return
 
 	shift
 	"$@"
+}
+
+scenario_selected() {
+	case ",$BENCH_SCENARIOS," in
+	*,"$1",*) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 # Order matters for the console output; keep aube first so the
@@ -154,6 +158,58 @@ register_tool "pnpm" "$PNPM_BIN"
 register_tool "npm" "$NPM_BIN"
 register_tool "yarn" "$YARN_BIN"
 register_tool "vlt" "$VLT_BIN"
+
+# A durable progress line works in both an interactive terminal and Actions
+# logs, unlike a carriage-return animation whose earlier states disappear.
+# Count store population, every selected scenario/tool cell, and the optional
+# aube-only phase samples as separate units of the complete benchmark run.
+PROGRESS_COMPLETED=0
+PROGRESS_STARTED=0
+PROGRESS_TOTAL=${#TOOLS[@]}
+for scenario in gvs-warm gvs-cold install-test; do
+	if scenario_selected "$scenario"; then
+		PROGRESS_TOTAL=$((PROGRESS_TOTAL + ${#TOOLS[@]}))
+	fi
+done
+if [ "$BENCH_PHASES" != "0" ]; then
+	for tool in "${TOOLS[@]}"; do
+		[ "$tool" = "aube" ] || continue
+		for scenario in gvs-warm gvs-cold; do
+			if scenario_selected "$scenario"; then
+				PROGRESS_TOTAL=$((PROGRESS_TOTAL + 1))
+			fi
+		done
+	done
+fi
+
+progress_render() {
+	local message=$1 width=24 filled empty fill blank percent
+	filled=$((width * PROGRESS_COMPLETED / PROGRESS_TOTAL))
+	empty=$((width - filled))
+	percent=$((100 * PROGRESS_COMPLETED / PROGRESS_TOTAL))
+	printf -v fill '%*s' "$filled" ''
+	printf -v blank '%*s' "$empty" ''
+	fill=${fill// /#}
+	blank=${blank// /-}
+	printf '[%s%s] %d/%d (%d%%) %s\n' \
+		"$fill" "$blank" "$PROGRESS_COMPLETED" "$PROGRESS_TOTAL" "$percent" "$message"
+}
+
+progress_start() {
+	PROGRESS_STARTED=$SECONDS
+	progress_render "running $1"
+}
+
+progress_finish() {
+	local label=$1 outcome=${2:-completed} elapsed
+	elapsed=$((SECONDS - PROGRESS_STARTED))
+	PROGRESS_COMPLETED=$((PROGRESS_COMPLETED + 1))
+	progress_render "$outcome $label in ${elapsed}s"
+}
+
+if [ "$PROGRESS_TOTAL" -gt 0 ]; then
+	progress_render "preparing benchmark matrix"
+fi
 
 echo "workdir: $BENCH_DIR"
 # Capture each tool's reported --version string so generate-results.js
@@ -293,6 +349,7 @@ for i in "${!TOOLS[@]}"; do
 	store="${TOOL_STORES[$i]}"
 	cache="${TOOL_CACHES[$i]}"
 	lockfile_name=$(lockfile_name_for "$tool")
+	progress_start "populate/$tool"
 	echo "Populating store and cache for $tool..."
 	# Wipe every known lockfile so an earlier failed run doesn't
 	# leave a stale one behind that would fool the pm into a
@@ -360,6 +417,7 @@ for i in "${!TOOLS[@]}"; do
 		exit 1
 	fi
 	cp "$dir/$lockfile_name" "$BENCH_DIR/saved-lockfile-$tool"
+	progress_finish "populate/$tool"
 done
 
 if [ "${BENCH_HERMETIC:-0}" = "1" ]; then
@@ -546,7 +604,9 @@ run_bench() {
 		local cmd_tpl
 		cmd_tpl=$(cmd_template "$bench_name" "$tool")
 		if [ -z "$cmd_tpl" ]; then
+			progress_start "$bench_name/$tool"
 			echo "warning: no $bench_name command for $tool — skipping" >&2
+			progress_finish "$bench_name/$tool" "skipped"
 			continue
 		fi
 
@@ -558,6 +618,7 @@ run_bench() {
 
 		local tool_runs
 		tool_runs=$(runs_for_tool "$tool")
+		progress_start "$bench_name/$tool"
 		echo ""
 		echo "  $tool:"
 		hyperfine \
@@ -569,6 +630,7 @@ run_bench() {
 			"$cmd" \
 			--export-json "$BENCH_DIR/${bench_name}-${tool}.json" ||
 			true
+		progress_finish "$bench_name/$tool"
 	done
 }
 
@@ -597,7 +659,9 @@ run_bench_preinstall() {
 		local cmd_tpl
 		cmd_tpl=$(cmd_template "$bench_name" "$tool")
 		if [ -z "$cmd_tpl" ]; then
+			progress_start "$bench_name/$tool"
 			echo "warning: no $bench_name command for $tool — skipping" >&2
+			progress_finish "$bench_name/$tool" "skipped"
 			continue
 		fi
 
@@ -616,6 +680,7 @@ run_bench_preinstall() {
 
 		local tool_runs
 		tool_runs=$(runs_for_tool "$tool")
+		progress_start "$bench_name/$tool"
 		echo ""
 		echo "  $tool:"
 		hyperfine \
@@ -627,6 +692,7 @@ run_bench_preinstall() {
 			"$cmd" \
 			--export-json "$BENCH_DIR/${bench_name}-${tool}.json" ||
 			true
+		progress_finish "$bench_name/$tool"
 	done
 }
 
@@ -668,15 +734,19 @@ run_aube_phase_bench() {
 		# both traps and works the same on every bash we care about.
 		cmd="${cmd%%&& *}&& AUBE_BENCH_PHASES_FILE=$PHASES_FILE AUBE_BENCH_SCENARIO=$bench_name ${cmd#*&& }"
 
+		progress_start "phases/$bench_name"
 		echo "  $bench_name"
 		if ! eval "$prepare"; then
 			echo "warning: phase timing prepare failed for $bench_name - skipping sample" >&2
+			progress_finish "phases/$bench_name" "skipped"
 			continue
 		fi
 		if ! eval "$cmd"; then
 			echo "warning: phase timing run failed for $bench_name - skipping sample" >&2
+			progress_finish "phases/$bench_name" "skipped"
 			continue
 		fi
+		progress_finish "phases/$bench_name"
 	done
 }
 
