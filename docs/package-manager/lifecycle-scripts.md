@@ -1,3 +1,7 @@
+---
+description: Review root and dependency lifecycle behavior, approve builds, and configure package-specific build policy.
+---
+
 # Lifecycle scripts
 
 Packages can define lifecycle scripts such as `preinstall`, `install`,

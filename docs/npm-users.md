@@ -1,3 +1,7 @@
+---
+description: Use aube with package-lock.json or npm-shrinkwrap.json and account for isolated dependencies and build approvals.
+---
+
 # For npm users
 
 aube can install directly from npm lockfiles. You do not need to delete
@@ -9,17 +13,18 @@ aube can install directly from npm lockfiles. You do not need to delete
 aube install
 ```
 
-Run this once when you specifically want to verify that aube can read and
-write the existing npm lockfile. For normal local work, run the command you
-wanted instead: `aubr build`, `aube test`, and `aube exec <bin>` auto-install
-first when dependencies are stale; `aubx <pkg>` handles one-off tools.
+Run this from the project root, then review the lockfile diff and run your
+tests. For daily work, `aubr build`, `aube test`, and `aube exec <bin>`
+install automatically when dependencies are stale. Use `aubx <pkg>` for
+one-off tools.
 
 aube reads:
 
-- `package-lock.json`
+- `package-lock.json` v2 or v3
 - `npm-shrinkwrap.json`
 
-It updates whichever of those two files the project already has on disk and
+If both files exist, `npm-shrinkwrap.json` takes precedence. aube updates the
+selected file and
 installs packages into `node_modules/.aube/`.
 
 ## Keep npm working during rollout
@@ -30,8 +35,8 @@ npm and aube users see the same resolved versions. You do not need
 the shared source of truth.
 
 Use `aube import` only if the team intentionally wants to convert the project
-to `aube-lock.yaml`. After import succeeds, remove the npm lockfile so future
-installs keep writing `aube-lock.yaml`.
+to `aube-lock.yaml`. The new `aube-lock.yaml` takes precedence on later installs. Retire the old
+lockfile once the team has switched, to avoid maintaining two sources of truth.
 
 ## Differences from npm
 
@@ -40,14 +45,19 @@ installs keep writing `aube-lock.yaml`.
 - Only declared direct dependencies appear at the project top level,
   unless you opt into
   [`nodeLinker: hoisted`](/settings/#setting-nodelinker).
-- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`) do
-  not run by default. npm runs them for every dependency; aube runs them
-  only for packages approved in `allowBuilds`; legacy
-  `pnpm.onlyBuiltDependencies` entries are still honored. This follows
-  the pnpm v11 model. Approved dependency builds can also run in a
+- Dependency lifecycle scripts (`preinstall`, `install`, `postinstall`)
+  run only when project policy or aube's built-in trusted-dependencies list
+  allows them. Explicit denies win. Legacy `pnpm.onlyBuiltDependencies`
+  entries are still honored. Approved dependency builds can also run in a
   [jail](/package-manager/jailed-builds) with package-specific env, path,
   and network permissions.
 - Global installs live under aube's global package directory instead of npm's
   shared global `node_modules`.
 
 Reference: [npm install](https://docs.npmjs.com/cli/v10/commands/npm-install)
+
+## Next steps
+
+See [lifecycle scripts](/package-manager/lifecycle-scripts) for build approvals,
+[CI and containers](/package-manager/ci) for reproducible installs, and
+[troubleshooting](/troubleshooting) for compatibility problems.

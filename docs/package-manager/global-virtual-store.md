@@ -1,3 +1,7 @@
+---
+description: Share materialized package trees across local projects, configure store locations, and handle tool compatibility.
+---
+
 # Global virtual store
 
 aube's global virtual store reuses fully materialized package directories across
@@ -13,7 +17,7 @@ This is separate from the global content store:
   `~/.cache/aube/virtual-store/v1/`) stores package directory trees keyed by
   dependency graph. Project `node_modules` entries symlink into it.
 
-## Default behavior
+## Without the global virtual store
 
 Without the global virtual store, each project gets its own virtual store under
 `node_modules/.aube/`. Package files are still deduplicated through the global
@@ -53,7 +57,7 @@ project-b/
 ```
 
 The global virtual store still imports package files from the global content
-store. The win is that aube avoids rebuilding the same package directory tree in
+store. Sharing avoids rebuilding the same package directory tree in
 every checkout.
 
 ## Cleanup

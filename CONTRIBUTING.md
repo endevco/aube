@@ -1,6 +1,15 @@
 # Contributing
 
-See the [contributing guide](https://aube.sh/contributing).
+Read the [contributing guide](docs/contributing.md) for setup, tests,
+documentation, and pull-request expectations. The same guide is available
+[on the docs site](https://aube.sh/contributing).
+
+```sh
+mise install
+mise run build
+mise run test
+mise run docs:dev
+```
 
 ## mbx build cache
 

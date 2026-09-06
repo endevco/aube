@@ -10,4 +10,4 @@ new URL.
 `docs:build` tests text wrapping and PNG rendering, then checks the built HTML
 for matching Open Graph/Twitter metadata and the exact image expected from each
 page title. Regression tests reject swapped images and empty alt text. Edit
-`social-images.mjs` to adjust colors or layout.
+[`social-images.mjs`](social-images.mjs) to adjust colors or layout.

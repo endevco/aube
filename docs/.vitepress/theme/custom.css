@@ -1,4 +1,10 @@
-@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("../fonts/SpaceGrotesk.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+}
 
 /* Aube docs palette */
 :root {
@@ -9,7 +15,7 @@
   --aube-line-soft: oklch(0.3 0.014 40 / 0.35);
   --aube-text: oklch(0.96 0.008 80);
   --aube-muted: oklch(0.78 0.012 60);
-  --aube-faint: oklch(0.58 0.018 50);
+  --aube-faint: oklch(0.7 0.018 50);
   --aube-teal: #5ee0ba;
   --aube-yellow: #e2b046;
   --aube-coral: oklch(0.75 0.16 45);
@@ -21,9 +27,9 @@
   --aube-accent-3: var(--aube-coral-dark);
   --aube-accent-ink: var(--aube-coral-ink);
   --aube-good: oklch(0.76 0.14 155);
-  --aube-serif: "Instrument Serif", "EB Garamond", Georgia, serif;
-  --aube-sans: "Inter Tight", "Inter", system-ui, -apple-system, sans-serif;
-  --aube-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --aube-serif: Georgia, serif;
+  --aube-sans: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --aube-mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
   --aube-teal-dark: #1d8f79;
 
   --vp-c-bg: var(--aube-bg);
@@ -116,7 +122,7 @@ body {
 .aube-team-role {
   color: var(--aube-accent);
   font-family: var(--aube-mono);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -157,28 +163,14 @@ body {
   }
 }
 
-/* Navbar logo */
+/* Use the same mark as the repository and release assets. */
 .VPNavBarTitle .VPImage.logo {
-  display: none;
+  width: 30px;
+  height: 30px;
 }
-
 .VPNavBarTitle .title {
-  font-family: var(--aube-serif);
-  font-size: 22px;
-  font-weight: 400;
-}
-
-.VPNavBarTitle .title::before {
-  background-image: url("data:image/svg+xml,%3Csvg width='24' height='24' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 15H21' stroke='%23f4f0e8' stroke-width='1.6' stroke-linecap='round'/%3E%3Cpath d='M7 15A5 5 0 0 1 17 15' stroke='%23f4f0e8' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 24px 24px;
-  content: "";
-  display: inline-block;
-  height: 24px;
-  margin-right: 10px;
-  vertical-align: -6px;
-  width: 24px;
+  font-size: 24px;
+  letter-spacing: -0.06em;
 }
 
 .AubeSocialLinks {
@@ -220,7 +212,7 @@ body {
   bottom: 0;
   color: var(--vp-c-text-3);
   font-family: var(--aube-mono);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   left: 50%;
   letter-spacing: 0;
@@ -292,1164 +284,534 @@ body {
   width: 28px;
 }
 
-/* Hero image glow */
-.VPHero .VPImage {
-  filter: drop-shadow(0 12px 40px rgba(94, 224, 186, 0.35));
+/* Reading surfaces use the same ink and copper palette as the landing page. */
+:root {
+  --vp-font-family-base: var(--aube-sans);
+  --vp-font-family-mono: var(--aube-mono);
+  --vp-c-text-1: var(--aube-text);
+  --vp-c-text-2: var(--aube-muted);
+  --vp-c-text-3: var(--aube-faint);
+  --vp-c-divider: var(--aube-line);
+  --vp-c-gutter: var(--aube-line);
+  --vp-code-bg: var(--aube-bg-soft);
+  --vp-code-color: var(--aube-accent-2);
+  --vp-code-block-bg: var(--aube-bg-alt);
+  --vp-sidebar-width: 272px;
 }
 
-.VPHome {
-  overflow: clip;
+:root:not(.dark) {
+  --aube-bg: #ffffff;
+  --aube-bg-alt: #f5f6f8;
+  --aube-bg-soft: #edf0f4;
+  --aube-line: #d5dae1;
+  --aube-line-soft: #e3e7ed;
+  --aube-text: #18212d;
+  --aube-muted: #465468;
+  --aube-faint: #59677a;
+  --aube-coral: #ad411b;
+  --aube-coral-soft: #903415;
+  --aube-coral-dark: #c75027;
+  --aube-coral-ink: #ffffff;
+  --aube-good: #237451;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-brand-soft: #ad411b12;
+  --vp-c-tip-1: #14755e;
+  --vp-c-tip-soft: #14755e0d;
+  --vp-c-warning-1: #865900;
+  --vp-c-warning-soft: #8659000d;
 }
 
+.VPDoc .content-container {
+  max-width: 800px !important;
+}
+.vp-doc {
+  font-size: 16px;
+  line-height: 1.8;
+}
+.vp-doc h1 {
+  font-size: clamp(2rem, 4vw, 2.65rem);
+  line-height: 1.18;
+  letter-spacing: -0.045em;
+}
+.vp-doc h2 {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  font-size: 1.6rem;
+  letter-spacing: -0.035em;
+}
+.vp-doc h3 {
+  font-size: 1.2rem;
+  line-height: 1.5;
+}
+.vp-doc p,
+.vp-doc li {
+  color: var(--aube-muted);
+}
+.vp-doc strong {
+  color: var(--aube-text);
+}
+.vp-doc a {
+  text-underline-offset: 3px;
+}
+.vp-doc h1 + p {
+  font-size: 1.125rem;
+  line-height: 1.7;
+}
+.vp-doc table {
+  width: 100%;
+  font-size: 0.875rem;
+  line-height: 1.65;
+}
+.vp-doc th {
+  background: var(--aube-bg-soft);
+  color: var(--aube-text);
+  text-align: left;
+}
+.vp-doc td,
+.vp-doc th {
+  padding: 12px 16px;
+}
+.vp-doc tr:nth-child(2n) {
+  background: var(--aube-bg-alt);
+}
+.vp-doc :not(pre) > code {
+  overflow-wrap: anywhere;
+}
+.vp-doc div[class*="language-"] {
+  border: 1px solid var(--aube-line);
+  border-radius: 10px;
+}
+.vp-doc .custom-block {
+  border: 1px solid var(--aube-line);
+  border-left: 3px solid var(--vp-c-brand-1);
+  border-radius: 6px;
+}
+.VPSidebarItem .text {
+  font-size: 14px;
+}
+.VPSidebarItem.is-active > .item {
+  background: var(--vp-c-brand-soft);
+  border-radius: 5px;
+}
+.VPDocAsideOutline .outline-link {
+  font-size: 14px;
+}
+:where(a, button, input, select, summary):focus-visible {
+  outline: 2px solid var(--aube-accent);
+  outline-offset: 4px;
+}
+
+/* Landing: a working terminal beside editorial type, followed by open rows. */
 .VPHome .VPHomeContent {
   padding: 0;
 }
-
 .aube-home {
-  box-sizing: border-box;
+  max-width: 1240px;
+  margin: auto;
+  padding: 48px 40px 88px;
   color: var(--aube-text);
-  margin: 0 auto;
-  max-width: 1200px;
-  padding: 80px 32px 100px;
-  position: relative;
-  width: 100%;
 }
-
-.aube-hero-glow {
-  background: radial-gradient(
-    ellipse 50% 40% at 50% 45%,
-    oklch(0.58 0.18 45 / 0.28) 0%,
-    oklch(0.52 0.14 25 / 0.18) 35%,
-    transparent 65%
-  );
-  content: "";
-  filter: blur(2px);
-  height: 900px;
-  left: 50%;
-  pointer-events: none;
-  position: absolute;
-  top: -100px;
-  transform: translateX(-50%);
-  width: 1400px;
-  z-index: -1;
-}
-
 .aube-hero {
-  align-items: center;
   display: grid;
+  grid-template-columns: 1.1fr 1fr;
   gap: 64px;
-  grid-template-columns: minmax(0, 1fr) minmax(500px, 1.08fr);
-  min-height: 560px;
-  position: relative;
+  align-items: center;
+  padding: 24px 0 72px;
 }
-
-.aube-hero-copy {
-  max-width: 590px;
+.aube-hero-copy,
+.aube-terminal-wrap {
   min-width: 0;
 }
-
-.aube-release {
-  align-items: center;
-  background: var(--aube-bg-soft);
-  border: 1px solid var(--aube-line);
-  border-radius: 999px;
-  color: var(--aube-muted);
+.vp-doc .aube-release {
   display: inline-flex;
-  font-family: var(--aube-mono);
-  font-size: 12px;
+  align-items: center;
   gap: 10px;
-  letter-spacing: 0;
-  padding: 7px 12px;
-  position: absolute;
-  right: 32px;
-  top: 32px;
-  z-index: 1;
-}
-
-.aube-release span:first-child {
-  background: var(--aube-accent);
-  border-radius: 50%;
-  box-shadow: 0 0 12px var(--aube-accent);
-  height: 6px;
-  width: 6px;
-}
-
-.aube-release .aube-release-version {
-  color: inherit;
-  font-weight: inherit;
+  color: var(--aube-muted);
+  font-size: 0.8125rem;
   text-decoration: none;
-  transition: color 120ms ease;
+  border-bottom: 1px solid var(--aube-line);
+  padding-bottom: 8px;
+  margin-bottom: 32px;
 }
-
-.aube-release .aube-release-version:hover,
-.aube-release .aube-release-version:focus-visible {
-  color: var(--aube-accent);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.aube-pronunciation {
-  color: var(--aube-faint);
-  font-family: var(--aube-mono);
-  font-size: 12px;
-  letter-spacing: 0;
-  margin: -12px 0 20px;
-}
-
-.aube-hero h1 {
-  color: var(--aube-text);
-  font-family: var(--aube-serif);
-  font-size: clamp(56px, 9vw, 112px);
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 0.96;
-  margin: 0 0 24px;
-}
-
-.aube-hero h1 em {
-  color: var(--aube-accent);
+.vp-doc .aube-eyebrow,
+.aube-eyebrow {
   display: block;
-  font-style: italic;
-}
-
-.aube-lede {
-  color: var(--aube-muted);
-  font-size: 19px;
-  line-height: 1.5;
+  font-family: var(--aube-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--aube-accent);
   margin: 0 0 18px;
-  max-width: 520px;
 }
-
-.custom-block {
-  --aube-block-accent: var(--aube-muted);
-  --aube-block-bg: oklch(0.24 0.018 45 / 0.55);
-  --aube-block-border: oklch(0.46 0.025 55 / 0.45);
-  --aube-block-ink: var(--aube-accent-ink);
-
-  background: var(--aube-block-bg);
-  border: 1px solid var(--aube-block-border);
-  border-radius: 8px;
-  box-sizing: border-box;
-  color: var(--aube-muted);
-  margin: 24px 0;
-  padding: 16px 18px 16px 56px;
-  position: relative;
-}
-
-.custom-block.info,
-.custom-block.note {
-  --aube-block-accent: var(--aube-teal);
-  --aube-block-bg: oklch(0.22 0.038 180 / 0.42);
-  --aube-block-border: oklch(0.67 0.11 175 / 0.45);
-  --aube-block-mark: "i";
-}
-
-.custom-block.tip,
-.custom-block.important {
-  --aube-block-accent: var(--aube-good);
-  --aube-block-bg: oklch(0.22 0.042 150 / 0.4);
-  --aube-block-border: oklch(0.7 0.13 150 / 0.45);
-  --aube-block-mark: "+";
-}
-
-.custom-block.warning {
-  --aube-block-accent: var(--aube-accent);
-  --aube-block-bg: oklch(0.24 0.04 45 / 0.55);
-  --aube-block-border: oklch(0.58 0.12 55 / 0.5);
-  --aube-block-mark: "!";
-}
-
-.custom-block.danger,
-.custom-block.caution,
-.custom-block.error {
-  --aube-block-accent: oklch(0.72 0.18 25);
-  --aube-block-bg: oklch(0.23 0.045 25 / 0.5);
-  --aube-block-border: oklch(0.58 0.15 25 / 0.5);
-  --aube-block-mark: "x";
-}
-
-.custom-block.details {
-  --aube-block-accent: var(--aube-yellow);
-  --aube-block-bg: oklch(0.23 0.028 70 / 0.44);
-  --aube-block-border: oklch(0.6 0.1 75 / 0.45);
-  --aube-block-mark: "?";
-}
-
-.custom-block::before {
-  align-items: center;
-  background: var(--aube-block-accent);
-  border-radius: 6px;
-  color: var(--aube-accent-ink);
-  content: var(--aube-block-mark, "i");
-  display: inline-flex;
-  font-family: var(--aube-mono);
-  font-size: 14px;
-  font-weight: 700;
-  height: 28px;
-  justify-content: center;
-  left: 16px;
-  position: absolute;
-  top: 16px;
-  width: 28px;
-}
-
-.custom-block p,
-.custom-block summary {
-  color: var(--aube-muted);
-  font-size: 15px;
-  line-height: 1.5;
-}
-
-.custom-block p:first-child {
-  margin-top: 0;
-}
-
-.custom-block p:last-child {
-  margin-bottom: 0;
-}
-
-.custom-block .custom-block-title,
-.custom-block summary {
-  color: var(--aube-block-accent);
-  font-weight: 600;
-  line-height: 1.4;
-  margin-bottom: 4px;
-}
-
-.custom-block.details summary {
-  cursor: pointer;
-}
-
-.aube-actions {
-  align-items: flex-start;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 56px;
-  margin-top: 0;
-}
-
-.aube-button {
-  align-items: center;
-  background: var(--aube-bg-soft);
-  border: 1px solid var(--aube-line);
-  border-radius: 10px;
-  box-sizing: border-box;
-  color: var(--aube-text);
-  display: inline-flex;
-  font-size: 14px;
+.vp-doc .aube-hero h1 {
+  font-size: clamp(2.6rem, 4.5vw, 4.1rem);
   font-weight: 500;
-  gap: 10px;
-  justify-content: center;
-  min-height: 50px;
-  padding: 0 20px;
-  text-decoration: none !important;
-  transition:
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease,
-    transform 0.18s ease;
-}
-
-.aube-button:hover {
-  border-color: var(--aube-faint);
-  color: var(--aube-text);
-  transform: translateY(-1px);
-}
-
-.aube-button-primary,
-.aube-button-primary:visited {
-  background: var(--aube-accent);
-  border-color: var(--aube-accent);
-  color: var(--aube-accent-ink) !important;
-  -webkit-text-fill-color: var(--aube-accent-ink) !important;
-}
-
-.aube-button-primary:hover {
-  filter: brightness(1.06);
-  color: var(--aube-accent-ink) !important;
-  -webkit-text-fill-color: var(--aube-accent-ink) !important;
-}
-
-.aube-install-stack {
-  align-items: flex-start;
-  display: inline-flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.aube-install-command {
-  align-items: center;
-  background: var(--aube-bg-soft);
-  border: 1px solid var(--aube-line);
-  border-radius: 10px;
-  box-sizing: border-box;
-  display: inline-flex;
-  color: var(--aube-muted);
-  font-family: var(--aube-mono);
-  font-size: 13px;
-  gap: 9px;
-  min-height: 50px;
-  padding: 0 10px 0 18px;
-}
-
-.aube-button-prompt {
-  color: var(--aube-accent);
-}
-
-.vp-doc .aube-install-command code,
-.aube-install-code {
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 0;
-  color: var(--aube-muted);
-  font-family: inherit;
-  font-size: inherit;
-  min-width: 0;
-  line-height: inherit;
-  padding: 0 !important;
-}
-
-.aube-install-command button {
-  background: oklch(0.3 0.02 40 / 0.6);
-  border: 0;
-  border-radius: 4px;
-  color: var(--aube-muted);
-  cursor: pointer;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  min-height: 28px;
-  padding: 0 9px;
-}
-
-.aube-install-command button:hover {
-  color: var(--aube-text);
-}
-
-.aube-install-link {
-  color: var(--aube-muted);
-  font-size: 14px;
-  text-decoration: none !important;
-}
-
-.aube-install-link:hover {
-  color: var(--aube-text);
-}
-
-.aube-stats {
-  border-top: 1px solid var(--aube-line-soft);
-  display: grid;
-  gap: 40px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  line-height: 1.06;
+  letter-spacing: -0.065em;
   margin: 0;
-  padding-top: 32px;
 }
-
-.aube-stats div {
-  min-width: 0;
-}
-
-.aube-stat-with-tip {
-  position: relative;
-}
-
-.aube-stats dt {
-  color: var(--aube-text);
+.aube-hero h1 em {
+  display: inline-block;
   font-family: var(--aube-serif);
-  font-size: 34px;
-  line-height: 1;
-  position: relative;
+  font-weight: 400;
+  letter-spacing: -0.05em;
+  color: var(--aube-accent-2);
+  margin-top: 10px;
 }
-
-.aube-stats dd {
-  color: var(--aube-faint);
-  font-size: 12px;
-  line-height: 1.35;
-  margin: 4px 0 0;
+.vp-doc .aube-lede {
+  font-size: 1.125rem;
+  line-height: 1.75;
+  margin: 28px 0;
+  max-width: 34em;
 }
-
-.aube-stat-linked {
-  position: relative;
+.aube-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin: 32px 0;
 }
-
-.aube-stats .aube-stat-link {
-  border-radius: 8px;
-  inset: -8px;
-  position: absolute;
-  z-index: 1;
-}
-
-.aube-stats .aube-stat-link:focus-visible {
-  outline: 2px solid var(--aube-accent);
-  outline-offset: 0;
-}
-
-.aube-stats dt,
-.aube-stats dd {
-  transition: color 120ms ease;
-}
-
-.aube-stat-linked:has(.aube-stat-link:hover) dt,
-.aube-stat-linked:has(.aube-stat-link:focus-visible) dt {
-  color: var(--aube-accent);
-}
-
-.aube-stat-linked:has(.aube-stat-link:hover) dd,
-.aube-stat-linked:has(.aube-stat-link:focus-visible) dd {
-  color: var(--aube-muted);
-}
-
-.aube-stat-tip {
+.vp-doc .aube-button {
   display: inline-flex;
-  font-family: var(--aube-mono);
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  border-radius: 6px;
+  padding: 12px 20px;
+  background: var(--aube-accent);
+  color: var(--aube-accent-ink);
+  font-size: 1rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 150ms;
+}
+.vp-doc .aube-button:hover {
+  background: var(--aube-accent-2);
+}
+.vp-doc .aube-text-link {
+  font-size: 0.9375rem;
+  text-decoration: none;
+}
+.aube-text-link span {
   margin-left: 8px;
-  position: relative;
-  vertical-align: 8px;
 }
-
-.aube-stat-tip button {
-  background: transparent;
+.vp-doc .aube-text-link:hover {
+  text-decoration: underline;
+}
+.aube-install-command {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  max-width: 380px;
   border: 1px solid var(--aube-line);
-  border-radius: 50%;
-  color: var(--aube-muted);
-  cursor: help;
+  border-radius: 6px;
   font-family: var(--aube-mono);
-  font-size: 10px;
-  height: 20px;
-  line-height: 1;
-  padding: 0;
-  width: 20px;
+  background: var(--aube-bg-alt);
 }
-
-.aube-stat-tip button:hover,
-.aube-stat-tip button:focus-visible {
+.aube-install-command > span {
+  color: var(--aube-faint);
+}
+.vp-doc .aube-install-command code {
+  background: transparent;
+  color: var(--aube-text);
+  font-size: 0.875rem;
+  padding: 0;
+}
+.aube-install-command button {
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--aube-line);
+  border-radius: 4px;
+  color: var(--aube-muted);
+  font-size: 0.875rem;
+}
+.aube-install-command button:hover {
   border-color: var(--aube-accent);
   color: var(--aube-text);
-  outline: none;
 }
-
-.aube-stat-tip [role="tooltip"] {
-  background: var(--aube-bg-soft);
-  border: 1px solid var(--aube-line);
-  border-radius: 8px;
-  bottom: calc(100% + 10px);
-  box-shadow: 0 20px 50px oklch(0 0 0 / 0.35);
+.aube-install-note {
+  margin-top: 10px;
+  font-size: 0.8125rem;
+  min-height: 3.5em;
+}
+.aube-install-note [role="status"] {
+  display: block;
   color: var(--aube-muted);
-  font-size: 12px;
-  left: 50%;
-  line-height: 1.45;
-  max-width: min(280px, calc(100vw - 40px));
-  opacity: 0;
-  padding: 12px 14px;
-  pointer-events: none;
-  position: absolute;
-  transform: translateX(-50%) translateY(4px);
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-  visibility: hidden;
-  width: max-content;
-  z-index: 5;
 }
-
-.aube-stat-tip:hover [role="tooltip"],
-.aube-stat-tip:focus-within [role="tooltip"] {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-  visibility: visible;
-}
-
-.aube-stage {
-  min-width: 0;
-  position: relative;
-}
-
 .aube-terminal {
-  background: linear-gradient(180deg, oklch(0.22 0.012 35) 0%, oklch(0.17 0.012 35) 100%);
-  border: 1px solid var(--aube-line);
-  border-radius: 14px;
-  box-shadow:
-    0 1px 0 oklch(0.35 0.012 40 / 0.4) inset,
-    0 40px 80px -30px oklch(0 0 0 / 0.6),
-    0 0 0 1px oklch(0.28 0.012 40 / 0.4);
-  overflow: hidden;
-  position: relative;
-  z-index: 2;
+  background: #13181e;
+  color: #edf2f7;
+  border: 1px solid #35414d;
+  border-radius: 10px;
+  box-shadow: 0 24px 64px #00000018;
+  transform: rotate(-1deg);
 }
-
-@media (min-width: 961px) {
-  .aube-terminal {
-    margin-right: -28px;
-  }
-}
-
-.aube-terminal::after {
-  background: radial-gradient(ellipse at top, oklch(0.4 0.05 45 / 0.12) 0%, transparent 55%);
-  content: "";
-  inset: 0;
-  pointer-events: none;
-  position: absolute;
-}
-
 .aube-terminal-bar {
-  align-items: center;
-  background: oklch(0.22 0.012 35 / 0.5);
-  border-bottom: 1px solid oklch(0.28 0.012 40 / 0.5);
   display: flex;
-  gap: 8px;
-  padding: 12px 14px;
-  position: relative;
-  z-index: 1;
-}
-
-.aube-terminal-bar span {
-  background: var(--aube-muted);
-  border-radius: 50%;
-  height: 9px;
-  width: 9px;
-}
-
-.aube-terminal-bar span:nth-child(1) {
-  background: var(--aube-coral);
-}
-
-.aube-terminal-bar span:nth-child(2) {
-  background: var(--aube-yellow);
-}
-
-.aube-terminal-bar span:nth-child(3) {
-  background: var(--aube-teal);
-}
-
-.aube-terminal-bar strong {
-  color: oklch(0.65 0.012 60);
-  font-family: var(--aube-mono);
-  font-size: 11.5px;
-  font-weight: 500;
-  margin-left: 12px;
-}
-
-.aube-clx {
-  color: oklch(0.9 0.008 70);
-  font-family: var(--aube-mono);
-  font-size: 13.5px;
-  line-height: 1.7;
-  min-height: 260px;
-  overflow: hidden;
-  padding: 16px 24px 26px;
-  position: relative;
-  z-index: 1;
-}
-
-.aube-command {
-  color: oklch(0.92 0.008 70);
-  margin-bottom: 2px;
-}
-
-.aube-mise-output {
-  color: oklch(0.55 0.012 50);
-  margin-bottom: 2px;
-  white-space: nowrap;
-}
-
-.aube-progress-root {
-  align-items: center;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: auto auto auto auto minmax(0, 1fr) auto;
-  margin-top: 2px;
-  white-space: nowrap;
-}
-
-.aube-name {
-  color: var(--aube-accent-2);
-  font-weight: 500;
-}
-
-.aube-version,
-.aube-byline {
-  color: oklch(0.55 0.012 50);
-}
-
-.aube-phase {
-  color: var(--aube-accent-2);
-}
-
-.aube-progress-bar {
-  color: var(--aube-accent);
-  letter-spacing: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: clip;
-}
-
-.aube-progress-count {
-  color: var(--aube-text);
-}
-
-.aube-fetch-row {
-  align-items: center;
-  color: oklch(0.78 0.012 60);
-  display: flex;
-  gap: 10px;
-  padding-left: 0;
-  transition: opacity 0.3s;
-}
-
-.aube-spinner {
-  color: var(--aube-accent);
-  display: inline-block;
-  width: 16px;
-}
-
-.aube-done-row {
-  color: var(--aube-good);
-}
-
-.aube-install-summary {
-  align-items: center;
-  color: var(--aube-good);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  white-space: nowrap;
-}
-
-.aube-done-check {
-  color: var(--aube-good);
-}
-
-.aube-caret {
-  animation: aube-blink 1s steps(1) infinite;
-  color: var(--aube-accent);
-}
-
-@keyframes aube-blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-.aube-proof {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin-top: 44px;
-  min-width: 0;
-}
-
-.vp-doc a.aube-proof-item {
-  background: var(--aube-bg);
-  border: 1px solid var(--aube-line-soft);
-  border-radius: 8px;
-  color: var(--aube-text);
-  box-sizing: border-box;
-  display: grid;
-  grid-column: span 2;
-  grid-template-rows: auto auto auto 1fr auto;
-  min-height: 410px;
-  min-width: 0;
-  padding: 34px 24px 30px;
-  position: relative;
-  text-decoration: none !important;
-  transition:
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    transform 0.18s ease;
-}
-
-.vp-doc a.aube-proof-item:nth-child(4),
-.vp-doc a.aube-proof-item:nth-child(5) {
-  grid-column: span 3;
-}
-
-.vp-doc a.aube-proof-item:hover {
-  background: var(--aube-bg-alt);
-  border-color: var(--aube-line);
-  transform: translateY(-2px);
-}
-
-.aube-proof-number {
-  color: var(--aube-faint);
-  display: inline-block;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  margin-bottom: 24px;
-}
-
-.aube-proof-tag {
-  background: oklch(0.28 0.04 45 / 0.3);
-  border-radius: 4px;
-  color: var(--aube-accent);
-  display: inline-block;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  padding: 4px 9px;
-  position: absolute;
-  right: 24px;
-  top: 34px;
-}
-
-.aube-proof-visual {
-  align-self: stretch;
-  display: block;
-  height: 132px;
-  margin-bottom: 30px;
-  min-width: 0;
-  overflow: hidden;
-  position: relative;
-}
-
-.aube-proof-chart {
-  display: grid;
-  gap: 8px;
-}
-
-.aube-chart-row {
-  align-items: center;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 56px minmax(0, 1fr);
-  line-height: 1;
-}
-
-.aube-chart-row > span:first-child {
-  color: var(--aube-faint);
-  font-family: var(--aube-mono);
-  font-size: 11px;
-}
-
-.aube-chart-row > span:last-child {
-  background: oklch(0.24 0.012 35);
-  border-radius: 3px;
-  display: block;
-  height: 12px;
-  min-width: 0;
-  overflow: hidden;
-  position: relative;
-}
-
-.aube-chart-row i {
-  background: linear-gradient(90deg, oklch(0.5 0.012 50), oklch(0.68 0.012 60));
-  border-radius: inherit;
-  display: block;
-  height: 100%;
-  width: var(--bar-width);
-}
-
-.aube-chart-row-aube > span:first-child {
-  color: var(--aube-accent-2);
-}
-
-.aube-chart-row-aube i {
-  background: oklch(0.72 0.13 48);
-}
-
-.aube-proof-lockfiles {
-  display: grid;
-  gap: 5px;
-  grid-template-rows: auto 1fr auto;
-}
-
-.aube-lockfile-formats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-  min-width: 0;
-}
-
-.aube-lockfile-formats code {
-  background: transparent !important;
-  border: 1px solid var(--aube-line-soft) !important;
-  border-left: 2px solid var(--aube-accent) !important;
-  border-radius: 4px;
-  color: var(--aube-muted) !important;
-  flex: 0 0 auto;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  line-height: 1.2;
-  max-width: 100%;
-  padding: 7px 8px !important;
-  white-space: nowrap;
-}
-
-.aube-lockfile-loop {
-  align-items: center;
-  display: flex;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  gap: 9px;
-  justify-content: center;
-  min-width: 0;
-}
-
-.aube-lockfile-loop span {
-  color: var(--aube-faint);
-}
-
-.aube-lockfile-loop i {
-  background: linear-gradient(90deg, oklch(0.55 0.012 55), var(--aube-accent));
-  display: block;
-  flex: 1;
-  height: 1px;
-  min-width: 18px;
-}
-
-.aube-lockfile-loop b {
-  background: oklch(0.26 0.06 45 / 0.78);
-  border: 1px solid oklch(0.58 0.12 55 / 0.5);
-  border-radius: 8px;
-  color: var(--aube-accent);
-  font-weight: 500;
-  padding: 10px 14px;
-}
-
-.aube-lockfile-caption {
-  color: var(--aube-accent);
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  justify-self: center;
-  min-width: 0;
-}
-
-.aube-proof-run {
-  background: oklch(0.2 0.012 45 / 0.82);
-  border: 1px solid var(--aube-line-soft);
-  border-radius: 7px;
-  color: var(--aube-muted);
-  display: grid;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  gap: 7px;
-  line-height: 1.2;
-  padding: 14px;
-}
-
-.aube-proof-run span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.aube-proof-run b,
-.aube-run-install {
-  color: var(--aube-accent);
-}
-
-.aube-run-ok {
-  color: var(--aube-good);
-}
-
-.aube-proof-disk {
-  align-items: center;
-  display: grid;
-  gap: 7px;
-  font-family: var(--aube-mono);
-  grid-template-rows: auto 28px auto auto;
-  justify-items: center;
-}
-
-.aube-disk-packages {
-  display: grid;
-  gap: 4px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  min-width: 0;
-  width: 100%;
-}
-
-.aube-disk-packages i {
-  background: oklch(0.34 0.01 45 / 0.72);
-  border: 1px solid oklch(0.52 0.012 45 / 0.6);
-  border-radius: 5px;
-  color: var(--aube-muted);
-  font-size: 11px;
-  font-style: normal;
-  line-height: 1;
-  overflow: hidden;
-  padding: 6px 0;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.aube-disk-funnel {
-  background:
-    linear-gradient(90deg, transparent, oklch(0.58 0.12 55 / 0.45), transparent)
-      center bottom / 58% 1px no-repeat,
-    linear-gradient(
-      180deg,
-      oklch(0.46 0.018 45 / 0.48),
-      oklch(0.56 0.11 55 / 0.5)
-    );
-  clip-path: polygon(5% 0, 95% 0, 63% 100%, 37% 100%);
-  display: block;
-  height: 28px;
-  width: 74%;
-}
-
-.aube-disk-store {
-  background:
-    linear-gradient(90deg, transparent, oklch(0.68 0.15 60 / 0.18), transparent)
-      center / 92% 100% no-repeat,
-    linear-gradient(135deg, oklch(0.31 0.08 45), oklch(0.24 0.05 45));
-  border: 1px solid oklch(0.58 0.12 55 / 0.65);
-  border-radius: 7px;
-  color: var(--aube-accent);
-  font-size: 11px;
-  padding: 10px 13px;
-  position: relative;
-  text-align: center;
-  width: 66%;
-}
-
-.aube-disk-store::after {
-  background: linear-gradient(90deg, transparent, oklch(0.56 0.08 55 / 0.65), transparent);
-  bottom: -8px;
-  content: "";
-  height: 1px;
-  left: -28px;
-  position: absolute;
-  right: -28px;
-}
-
-.aube-disk-projects {
-  display: grid;
-  gap: 4px;
-  grid-template-columns: repeat(3, 1fr);
-  width: 82%;
-}
-
-.aube-disk-projects b {
-  border: 1px solid var(--aube-line-soft);
-  border-radius: 5px;
-  color: var(--aube-muted);
-  font-size: 10px;
-  font-weight: 500;
-  padding: 5px 0;
-  text-align: center;
-}
-
-.aube-proof-scripts {
-  display: grid;
-  gap: 10px;
-}
-
-.aube-script-row {
-  align-items: center;
-  border: 1px solid var(--aube-line-soft);
-  border-radius: 6px;
-  display: flex;
-  font-family: var(--aube-mono);
-  font-size: 11px;
-  gap: 10px;
   justify-content: space-between;
-  min-width: 0;
-  padding: 12px 12px;
+  gap: 16px;
+  border-bottom: 1px solid #35414d;
+  padding: 14px 20px;
+  color: #a3b2c3;
+  font-family: var(--aube-mono);
+  font-size: 0.8125rem;
 }
-
-.aube-script-row b {
-  color: var(--aube-muted);
-  font-weight: 400;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.aube-script-row i {
-  border: 1px solid oklch(0.5 0.02 55);
-  border-radius: 4px;
-  color: var(--aube-faint);
-  flex: 0 0 auto;
-  font-style: normal;
-  padding: 4px 6px;
-}
-
-.aube-script-row-root {
-  border-color: oklch(0.58 0.12 55 / 0.5);
-}
-
-.aube-script-row-root b,
-.aube-script-row-root i {
-  color: var(--aube-accent);
-}
-
-.aube-proof-item strong {
-  color: var(--aube-text);
-  display: block;
-  font-family: var(--aube-serif);
-  font-size: 23px;
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.08;
-}
-
-.aube-proof-item > strong + span {
-  color: var(--aube-muted);
-  display: block;
-  line-height: 1.5;
-  margin-top: 22px;
+.aube-terminal-body {
+  padding: 24px;
+  font-family: var(--aube-mono);
+  font-size: 0.875rem;
+  line-height: 1.9;
   overflow-wrap: anywhere;
 }
-
-.aube-proof-item code {
-  background: transparent;
+.vp-doc .aube-terminal-body p {
+  color: #edf2f7;
+  margin: 4px 0;
+}
+.vp-doc .aube-terminal-body .aube-terminal-muted {
+  color: #a3b2c3;
+}
+.vp-doc .aube-terminal-body .aube-terminal-success {
+  color: #82d6ae;
+}
+.aube-prompt {
+  color: #f6ac82;
+  margin-right: 10px;
+}
+.aube-terminal-divider {
+  height: 1px;
+  background: #35414d;
+  margin: 24px 0;
+}
+.vp-doc .aube-terminal-caption {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--aube-faint);
+  margin: 18px 0 0;
+}
+.aube-migration {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 26px 0;
+  border-top: 1px solid var(--aube-line);
+  border-bottom: 1px solid var(--aube-line);
+}
+.vp-doc .aube-migration p {
+  font-size: 1rem;
+  margin: 0;
+}
+.aube-migration > div {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.vp-doc .aube-migration a {
+  font-size: 1.125rem;
   color: var(--aube-text);
-  font-size: 0.95em;
-  padding: 0;
+  text-decoration: none;
 }
-
-.aube-proof-item .aube-proof-link {
+.aube-migration a span {
+  font-size: 0.875rem;
   color: var(--aube-accent);
+  margin-left: 8px;
+}
+.vp-doc .aube-home h2 {
+  border: 0;
+  padding: 0;
+  margin: 0 0 22px;
+  font-size: clamp(1.75rem, 3vw, 2.3rem);
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.05em;
+}
+.aube-workflow {
+  padding: 72px 0 40px;
+}
+.aube-section-heading {
+  max-width: 650px;
+}
+.aube-command-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--aube-line);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 32px;
+}
+.vp-doc .aube-command-grid a {
+  padding: 24px;
+  text-decoration: none;
+  background: var(--aube-bg-alt);
+  transition: background 150ms;
+}
+.aube-command-grid a + a {
+  border-left: 1px solid var(--aube-line);
+}
+.vp-doc .aube-command-grid a:hover {
+  background: var(--aube-bg-soft);
+}
+.aube-command-grid a > span {
+  display: block;
+  color: var(--aube-faint);
+  font-size: 0.8125rem;
+  margin-bottom: 24px;
+}
+.vp-doc .aube-command-grid code {
+  padding: 0;
+  font-size: 1.0625rem;
+  background: transparent;
+  color: var(--aube-accent-2);
+}
+.vp-doc .aube-command-grid p {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  margin: 16px 0 0;
+}
+.aube-principles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 80px;
+  padding: 0 0 56px;
+}
+.aube-principles article {
+  padding: 44px 0;
+  border-bottom: 1px solid var(--aube-line);
+}
+.vp-doc .aube-principles p {
+  margin-bottom: 24px;
+  line-height: 1.8;
+}
+.aube-benchmark {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 72px;
+  align-items: center;
+  padding: 40px 0 0;
+}
+.aube-benchmark-results {
+  min-width: 0;
+  padding: 26px;
+  border: 1px solid var(--aube-line);
+  border-radius: 8px;
+  background: var(--aube-bg-alt);
+}
+.vp-doc .aube-chart-label {
+  margin: 0 0 24px;
+  font-size: 0.8125rem;
+}
+.aube-chart-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0;
   font-family: var(--aube-mono);
-  font-size: 13px;
-  margin-top: 28px;
+  font-size: 0.8125rem;
+}
+.aube-chart-row > span:last-child {
+  text-align: right;
+}
+.aube-chart-track {
+  height: 14px;
+}
+.aube-chart-track > div {
+  height: 100%;
+  min-width: 2px;
+  background: var(--aube-faint);
+  border-radius: 2px;
+}
+.aube-chart-row.is-aube {
+  color: var(--aube-accent);
+  font-weight: 600;
+}
+.aube-chart-row.is-aube .aube-chart-track > div {
+  background: var(--aube-accent);
+}
+.vp-doc .aube-chart-note {
+  margin: 24px 0 0;
+  color: var(--aube-faint);
+  font-size: 0.8125rem;
+  line-height: 1.7;
 }
 
-.vp-doc a.aube-proof-item:hover,
-.vp-doc a.aube-proof-item:visited {
-  text-decoration: none !important;
-}
-
-@media (max-width: 960px) {
-  .aube-home {
-    padding: 54px 20px 80px;
-  }
-
-  .aube-release {
-    margin-bottom: 28px;
-    position: static;
-  }
-
+@media (max-width: 1000px) {
   .aube-hero {
-    gap: 44px;
     grid-template-columns: 1fr;
-    min-height: 0;
+    gap: 40px;
   }
-
   .aube-hero-copy {
-    max-width: 720px;
+    max-width: 660px;
   }
-
-  .aube-hero h1 {
-    font-size: 70px;
+  .aube-terminal-wrap {
+    max-width: 660px;
+    width: 100%;
   }
-
-  .aube-proof {
+  .aube-terminal {
+    transform: none;
+  }
+  .aube-principles {
+    gap: 0 40px;
+  }
+  .aube-benchmark {
     grid-template-columns: 1fr;
-  }
-
-  .vp-doc a.aube-proof-item,
-  .vp-doc a.aube-proof-item:first-child,
-  .vp-doc a.aube-proof-item:last-child,
-  .vp-doc a.aube-proof-item:nth-child(4),
-  .vp-doc a.aube-proof-item:nth-child(5) {
-    border-radius: 8px;
-    grid-column: auto;
+    gap: 32px;
   }
 }
-
-@media (max-width: 560px) {
+@media (max-width: 640px) {
   .aube-home {
-    padding: 42px 16px 64px;
+    padding: 28px 24px 56px;
   }
-
   .aube-hero {
-    gap: 36px;
+    padding-bottom: 40px;
   }
-
-  .aube-hero h1 {
-    font-size: 54px;
-  }
-
-  .aube-lede {
-    font-size: 17px;
-  }
-
-  .aube-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .aube-button {
-    width: 100%;
-  }
-
-  .aube-install-stack {
-    align-items: stretch;
-    width: 100%;
-  }
-
-  .aube-install-command {
-    width: 100%;
-  }
-
-  .vp-doc .aube-install-command code,
-  .aube-install-code {
-    flex: 1;
-  }
-
-  .aube-install-link {
-    align-self: center;
-    text-align: center;
-  }
-
-  .aube-stats {
-    gap: 18px;
+  .aube-command-grid,
+  .aube-principles {
     grid-template-columns: 1fr;
   }
-
-  .aube-stat-tip [role="tooltip"] {
-    left: 0;
-    transform: translateY(4px);
+  .aube-command-grid a + a {
+    border-left: 0;
+    border-top: 1px solid var(--aube-line);
   }
-
-  .aube-stat-tip:hover [role="tooltip"],
-  .aube-stat-tip:focus-within [role="tooltip"] {
-    transform: translateY(0);
+  .aube-command-grid a > span {
+    margin-bottom: 16px;
   }
-
-  .aube-clx {
-    font-size: 13px;
-    padding: 14px;
+  .aube-migration > div {
+    gap: 24px;
   }
-
-  .aube-progress-root {
-    gap: 5px;
-    grid-template-columns: auto auto auto;
+  .aube-terminal-body {
+    padding: 20px 16px;
   }
-
-  .aube-byline,
-  .aube-phase {
-    display: none;
+  .aube-terminal-bar {
+    padding: 12px 16px;
   }
-
-  .aube-progress-bar {
-    grid-column: 1 / -1;
+  .aube-benchmark-results {
+    padding: 20px 16px;
   }
-
-  .aube-progress-count {
-    grid-column: 1 / -1;
+  .aube-workflow {
+    padding-top: 48px;
   }
-
-  .aube-fetch-row {
-    padding-left: 8px;
+  .aube-principles article {
+    padding: 32px 0;
   }
-
-  .vp-doc a.aube-proof-item {
-    min-height: 0;
-    padding: 30px 24px;
+  .aube-actions {
+    gap: 20px;
   }
-
-  .aube-proof-visual {
-    height: 124px;
-    margin-bottom: 26px;
+  .aube-install-command {
+    gap: 8px;
   }
-
-  .aube-proof-tag {
-    right: 24px;
-    top: 28px;
+  .aube-install-command button {
+    padding: 4px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
   }
 }

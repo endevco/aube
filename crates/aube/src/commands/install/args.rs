@@ -50,7 +50,7 @@ pub struct InstallArgs {
     /// Skip running `.pnpmfile.mjs` / `.pnpmfile.cjs` hooks for this install.
     #[usage(long)]
     pub ignore_pnpmfile: bool,
-    /// Skip lifecycle scripts (no-op; aube already skips by default).
+    /// Skip root and dependency lifecycle scripts.
     #[usage(long)]
     pub ignore_scripts: bool,
     /// Read and write the lockfile in the given directory.

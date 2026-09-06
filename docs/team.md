@@ -1,6 +1,10 @@
+---
+description: Meet the aube maintainers and learn how project decisions are made.
+---
+
 # Team
 
-Aube is maintained by a small core team with deep experience building foundational JavaScript tooling.
+Meet the people who maintain aube and guide its development.
 
 <TeamGrid />
 

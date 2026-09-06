@@ -8,6 +8,7 @@ import EndevSponsors from "./EndevSponsors.vue";
 import ErrorCodesTable from "./ErrorCodesTable.vue";
 import HomeLanding from "./HomeLanding.vue";
 import TeamGrid from "./TeamGrid.vue";
+import TerminalPreview from "./TerminalPreview.vue";
 import { initBanner } from "./banner";
 import "./custom.css";
 
@@ -25,6 +26,7 @@ export default {
     app.component("ErrorCodesTable", ErrorCodesTable);
     app.component("HomeLanding", HomeLanding);
     app.component("TeamGrid", TeamGrid);
+    app.component("TerminalPreview", TerminalPreview);
     initBanner();
   },
 } satisfies Theme;

@@ -1,3 +1,7 @@
+---
+description: Choose lockfile, offline, production, linker, and file-import modes for aube install.
+---
+
 # Install dependencies
 
 `aube install` installs the dependencies declared in `package.json` and the
@@ -10,8 +14,8 @@ aube install
 Most local work does not need a separate install command. `aubr <script>`,
 `aube test`, and `aube exec <bin>` check install freshness first. If
 `package.json` or the lockfile changed, aube installs before running the
-script or binary. For one-off tools, `aubx <pkg>` installs into a throwaway
-environment and runs the binary.
+script or binary. For one-off tools, `aubx <pkg>` uses a matching local binary or installs into
+a throwaway environment.
 
 Use `aube install` when the install itself is the task: first local setup
 without running a script, lockfile updates, Docker layers, production-only
@@ -69,12 +73,13 @@ aube install --package-import-method=copy
 aube install --package-import-method=clone-or-copy
 ```
 
-`auto` probes the filesystem and chooses the fastest available strategy:
-reflink, hardlink, then copy.
+`auto` chooses a filesystem strategy: generally reflinks on macOS and
+hardlinks on Linux, with copies when linking is unavailable. Small files may
+be copied directly. See [`packageImportMethod`](/settings/#setting-packageimportmethod)
+for platform details and explicit clone/copy modes.
 
-## References
+## Next steps
 
-- [pnpm install](https://pnpm.io/cli/install)
-- [Bun install](https://bun.com/docs/pm/cli/install)
-- [npm install](https://docs.npmjs.com/cli/v10/commands/npm-install)
-- [Yarn classic install](https://classic.yarnpkg.com/lang/en/docs/cli/install/)
+- [CI and containers](/package-manager/ci): choose frozen installs and caches.
+- [Lifecycle scripts](/package-manager/lifecycle-scripts): review packages that need to build.
+- [`aube install` reference](/cli/install): all arguments and flags.

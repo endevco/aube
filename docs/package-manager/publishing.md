@@ -1,7 +1,18 @@
+---
+description: Inspect package contents, publish tarballs, attach provenance, and manage dist-tags and deprecations.
+---
+
 # Publishing
 
-aube implements the npm registry publish flow for package tarballs, dist-tags,
-deprecations, and unpublishing.
+Use aube to inspect package contents, publish to your configured npm registry,
+and manage dist-tags and deprecations. Authenticate first using
+[registry configuration](/package-manager/registry-auth).
+
+Start with a dry run to check the package contents and destination:
+
+```sh
+aube publish --dry-run --json
+```
 
 ## Pack
 
@@ -49,18 +60,20 @@ attaches the bundle to the publish body.
 ## Dist-tags
 
 ```sh
-aube dist-tag add react@18.2.0 stable
-aube dist-tag ls react
-aube dist-tag rm react stable
+aube dist-tag add @acme/widget@1.2.0 stable
+aube dist-tag ls @acme/widget
+aube dist-tag rm @acme/widget stable
 ```
 
 ## Deprecate and unpublish
 
 ```sh
-aube deprecate pkg@'<2' "Use pkg 2 or newer"
-aube undeprecate pkg@'<2'
-aube unpublish pkg@1.0.0 --dry-run
-aube unpublish pkg --force
+aube deprecate '@acme/widget@<2' "Use @acme/widget 2 or newer"
+aube undeprecate '@acme/widget@<2'
+aube unpublish @acme/widget@1.0.0 --dry-run
 ```
 
-Whole-package unpublish requires `--force`.
+Replace the example package with one you own. Deprecation leaves a package
+available with a warning; unpublishing removes a version or package from the
+registry. Whole-package unpublish requires `--force`. See
+[`aube unpublish`](/cli/unpublish) before removing a published package.

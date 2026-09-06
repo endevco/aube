@@ -1,3 +1,7 @@
+---
+description: Investigate publishing-trust downgrades, inspect package evidence, and choose a narrow policy exception.
+---
+
 # Trust policy downgrades
 
 <script setup lang="ts">
@@ -25,17 +29,16 @@ identity, or provenance metadata that the selected version no longer has. That
 can indicate a compromised publisher, stolen token, malicious co-maintainer, or
 a release built outside the repository's expected CI workflow.
 
-There are also less dramatic explanations:
+A downgrade can also come from a release-process or registry change:
 
 - a maintainer manually published a release or backport;
 - a release shortcut skipped the trusted-publisher or provenance-enabled job;
 - parallel major-version lines use inconsistent release automation;
 - a registry proxy or mirror omitted trust metadata.
 
-Release-process drift may be benign, but it is still a packaging failure. Once
-a project establishes a trusted publishing path, every release should preserve
-it. Metadata lost only by a proxy or mirror is instead a registry-operator
-failure.
+Compare the package on its source registry with any proxy or mirror before
+choosing an exception. This distinguishes missing upstream evidence from
+metadata removed in transit.
 
 ## What to do before adding an exception
 
@@ -90,7 +93,7 @@ Prefer these options in order:
 Setting `trustPolicy = off` disables the check for the entire install and
 should be a last resort.
 
-## Wall of shame
+## Built-in exceptions {#wall-of-shame}
 
 The following {{ packages.length }} packages are built into aube's default
 exception list because their published metadata has triggered legitimate
@@ -105,8 +108,8 @@ exception list because their published metadata has triggered legitimate
 This list is generated directly from
 [`DEFAULT_TRUST_POLICY_EXCLUDES`](https://github.com/aubepkg/aube/blob/main/crates/aube-resolver/src/trust.rs)
 at documentation build time, so it cannot drift from the resolver. Inclusion
-is not an accusation of malware; it records inconsistent publishing evidence
-that weakens the protection for every aube user.
+records an accepted exception to the evidence check, not a verdict that a
+package is malicious or safe.
 
 If a package restores consistent trusted publishing, remove its built-in
 exception so future regressions are blocked again.

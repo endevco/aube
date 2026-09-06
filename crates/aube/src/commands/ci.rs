@@ -20,7 +20,7 @@ use super::install;
 
 #[derive(Debug, usage_rs::Args)]
 pub struct CiArgs {
-    /// Skip lifecycle scripts (no-op; aube already skips by default)
+    /// Skip root and dependency lifecycle scripts
     #[usage(long)]
     pub ignore_scripts: bool,
     /// Skip optionalDependencies; don't install optional native modules
