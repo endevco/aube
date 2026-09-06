@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.13](https://github.com/aubepkg/aube/compare/aube-lockfile-v2.2.12...aube-lockfile-v2.2.13) - 2026-09-06
+
+### Other
+
+- improve guides, references, and site design ([#1503](https://github.com/aubepkg/aube/pull/1503))
+
 ## [2.2.11](https://github.com/aubepkg/aube/compare/aube-lockfile-v2.2.9...aube-lockfile-v2.2.11) - 2026-09-05
 
 ### Other
