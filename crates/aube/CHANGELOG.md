@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.13](https://github.com/aubepkg/aube/compare/v2.2.12...v2.2.13) - 2026-09-06
+
+### Other
+
+- improve guides, references, and site design ([#1503](https://github.com/aubepkg/aube/pull/1503))
+
 ## [2.2.12](https://github.com/jdx/aube/compare/v2.2.11...v2.2.12) - 2026-09-05
 
 ### Fixed
