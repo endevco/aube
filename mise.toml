@@ -9,7 +9,7 @@ cargo.binstall_native = true
 
 [tools]
 actionlint = "latest"
-mr-boxington = "1.8.1"
+mr-boxington = "1.8.3"
 usage = "6.6.1"
 communique = "latest"
 "github:bnjbvr/cargo-machete" = "latest"
