@@ -93,16 +93,12 @@ jobs:
   # set against the frozen crates/aube-ffi/abi-symbols.txt manifest. Any failure
   # makes this job red, while `final` treats the job as advisory.
   api-stability:
-    # PR-time gate only. `final` treats the resulting skipped job as a pass on
-    # push/tag/dispatch runs.
-    if: github.event_name == 'pull_request'
+    # Run on main as well so PRs can restore caches populated by trusted code.
     continue-on-error: true
     outputs:
       results_present: ${{ steps.report.outputs.results_present }}
       checks_passed: ${{ steps.report.outputs.checks_passed }}
     runs-on: ubuntu-latest
-    # cargo-semver-checks builds both revisions of every published crate. A
-    # cold cache can exceed 20 minutes, especially alongside the C ABI build.
     timeout-minutes: 30
     env:
       CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
@@ -112,83 +108,80 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0 # zizmor: ignore[cache-poisoning] PRs restore only; saves are restricted to main
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0 # zizmor: ignore[cache-poisoning] only main saves
         with:
-          cache_save: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Both parallel API checks invoke Cargo. Complete rustup's lazy toolchain
-      # installation first so they cannot race while installing components.
+          cache_save: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare Rust toolchain
         run: rustc --version
-      - name: Fetch semver baseline
-        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-      # Run the independent Rust and C ABI checks concurrently, preserving both
-      # results so the final step can report every failure before failing the job.
-      - parallel:
-          - name: Published Rust APIs — cargo-semver-checks
-            run: |
-              set +e
-              ./bin/cargo-semver-checks semver-checks \
-                --baseline-rev origin/main \
-                --package aube \
-                --package aube-codes \
-                --package aube-linker \
-                --package aube-lockfile \
-                --package aube-manifest \
-                --package aube-registry \
-                --package aube-resolver \
-                --package aube-runtime \
-                --package aube-scripts \
-                --package aube-settings \
-                --package aube-store \
-                --package aube-util \
-                --package aube-workspace
-              semver_status=$?
-              set -e
-              printf '%s\n' "$semver_status" > /tmp/semver-status
-          - name: C ABI — frozen export set
-            run: |
-              set +e
-              (
-                mise exec -- cargo build --locked --profile ffi -p aube-ffi &&
-                grep -vE '^[[:space:]]*(#|$)' crates/aube-ffi/abi-symbols.txt | sort -u > /tmp/abi-expected.txt &&
-                nm -D --defined-only --extern-only target/ffi/libaube_ffi.so \
-                  | awk '{ print $3 }' | grep '^aube_' | sort -u > /tmp/abi-actual.txt &&
-                diff -u /tmp/abi-expected.txt /tmp/abi-actual.txt
-              )
-              ffi_status=$?
-              set -e
-              printf '%s\n' "$ffi_status" > /tmp/ffi-status
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning] only main saves
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Cleanup of the normal target removes rustdoc JSON and generated
+          # manifests. Keep semver-checks' artifacts outside that directory.
+          cache-directories: target-api
+      - name: Select semver baseline
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Main compares against itself to warm the same build/cache paths.
+          echo "SEMVER_BASELINE=${PR_BASE_SHA:-$(git rev-parse HEAD)}" >> "$GITHUB_ENV"
+      # These checks share one runner. Run sequentially so Cargo builds do not
+      # compete for CPU/memory, and GitHub streams each step's logs normally.
+      - name: Published Rust APIs — cargo-semver-checks
+        id: rust
+        continue-on-error: true
+        env:
+          CARGO_TARGET_DIR: target-api
+        run: |
+          /usr/bin/time -v ./bin/cargo-semver-checks semver-checks \
+            --baseline-rev "$SEMVER_BASELINE" \
+            --package aube \
+            --package aube-codes \
+            --package aube-linker \
+            --package aube-lockfile \
+            --package aube-manifest \
+            --package aube-registry \
+            --package aube-resolver \
+            --package aube-runtime \
+            --package aube-scripts \
+            --package aube-settings \
+            --package aube-store \
+            --package aube-util \
+            --package aube-workspace
+      - name: C ABI — frozen export set
+        id: ffi
+        continue-on-error: true
+        run: |
+          # Exported names do not require release optimization or LTO. The
+          # dev profile also unwinds, as required by the FFI boundary.
+          /usr/bin/time -v mise exec -- cargo build --locked -p aube-ffi
+          grep -vE '^[[:space:]]*(#|$)' crates/aube-ffi/abi-symbols.txt | sort -u > /tmp/abi-expected.txt
+          nm -D --defined-only --extern-only target/debug/libaube_ffi.so \
+            | awk '{ print $3 }' | grep '^aube_' | sort -u > /tmp/abi-actual.txt
+          diff -u /tmp/abi-expected.txt /tmp/abi-actual.txt
       - name: Report API stability
         id: report
         if: always()
+        env:
+          RUST_OUTCOME: ${{ steps.rust.outcome }}
+          FFI_OUTCOME: ${{ steps.ffi.outcome }}
         run: |
-          if [ ! -s /tmp/semver-status ] || [ ! -s /tmp/ffi-status ]; then
-            echo "results_present=false" >> "$GITHUB_OUTPUT"
-            echo "checks_passed=false" >> "$GITHUB_OUTPUT"
-            echo "::error::one or more API stability checks did not report a result"
-            exit 1
-          fi
+          for outcome in "$RUST_OUTCOME" "$FFI_OUTCOME"; do
+            if [[ "$outcome" != success && "$outcome" != failure ]]; then
+              echo "results_present=false" >> "$GITHUB_OUTPUT"
+              echo "checks_passed=false" >> "$GITHUB_OUTPUT"
+              echo "::error::one or more API stability checks did not report a result"
+              exit 1
+            fi
+          done
           echo "results_present=true" >> "$GITHUB_OUTPUT"
-          SEMVER=$(cat /tmp/semver-status)
-          FFI=$(cat /tmp/ffi-status)
-          fail=0
-          if [ "$SEMVER" -ne 0 ]; then
-            echo "::error::Rust API compatibility check failed. Inspect the cargo-semver-checks output above."
-            fail=1
-          fi
-          if [ "$FFI" -ne 0 ]; then
-            echo "::error::C ABI exports drifted from crates/aube-ffi/abi-symbols.txt."
-            fail=1
-          fi
-          if [ "$fail" -eq 0 ]; then
+          if [[ "$RUST_OUTCOME" == success && "$FFI_OUTCOME" == success ]]; then
             echo "checks_passed=true" >> "$GITHUB_OUTPUT"
           else
             echo "checks_passed=false" >> "$GITHUB_OUTPUT"
+            echo "::error::API compatibility check failed. Inspect the Rust and C ABI steps above."
+            exit 1
           fi
-          exit $fail
 
   # BATS integration shards. Linux runs 4 shards (matches Buildkite),
   # macOS runs 2. The jail-build tests assert native OS sandbox behavior,
@@ -324,8 +317,7 @@ jobs:
   # Aggregator that required-status-checks can target. If any upstream job
   # failed, was cancelled, or was skipped, this step exits non-zero so the PR is
   # blocked. Lets the branch-protection rule depend on one name instead of ten.
-  # Exception: the PR-only API job may skip outside pull requests, and any
-  # failure in that job is advisory even though the job itself remains red.
+  # API compatibility failures remain advisory; missing results still block.
   final:
     needs:
       - build
@@ -350,16 +342,13 @@ jobs:
           import os
           import sys
 
-          # Jobs whose `if:` legitimately skips them in this event. A skip
-          # here is a pass; every other job must actually succeed.
-          SKIP_OK = {"api-stability"}
           ADVISORY_FAILURE = {"api-stability"}
           needs = json.loads(os.environ["NEEDS_JSON"])
           failed = False
           for name, data in sorted(needs.items()):
               result = data.get("result", "unknown")
               outputs = data.get("outputs", {})
-              if name == "api-stability" and result != "skipped" and outputs.get("results_present") != "true":
+              if name == "api-stability" and outputs.get("results_present") != "true":
                   print(f"::error::{name}: one or more checks did not report a result")
                   failed = True
               elif name == "api-stability" and outputs.get("checks_passed") == "false":
@@ -368,8 +357,6 @@ jobs:
                   print(f"::notice::{name}: {result}")
               elif result == "failure" and name in ADVISORY_FAILURE:
                   print(f"::warning::{name}: {result} (advisory; inspect for an unintended major bump)")
-              elif result == "skipped" and name in SKIP_OK:
-                  print(f"::notice::{name}: {result} (allowed to skip)")
               else:
                   print(f"::error::{name}: {result}")
                   failed = True
