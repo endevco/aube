@@ -116,9 +116,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning] only main saves
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Cleanup of the normal target removes rustdoc JSON and generated
-          # manifests. Keep semver-checks' artifacts outside that directory.
-          cache-directories: target-api
+          # Older archives contain baseline checkouts inside the repository.
+          prefix-key: v1-rust-api-external
+          # Keep duplicate crate manifests outside repository discovery and
+          # preserve semver artifacts from the normal target cleanup.
+          cache-directories: ${{ runner.temp }}/aube-target-api
       - name: Select semver baseline
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -131,7 +133,7 @@ jobs:
         id: rust
         continue-on-error: true
         env:
-          CARGO_TARGET_DIR: target-api
+          CARGO_TARGET_DIR: ${{ runner.temp }}/aube-target-api
         run: |
           /usr/bin/time -v ./bin/cargo-semver-checks semver-checks \
             --baseline-rev "$SEMVER_BASELINE" \
