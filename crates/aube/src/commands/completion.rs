@@ -12,10 +12,6 @@ pub struct CompletionArgs {
     #[usage(arg, name = "SHELL")]
     pub shell: String,
 
-    /// Generate a script for just one executable: aube, aubr, or aubx
-    #[usage(long, conflicts = "--install")]
-    pub bin: Option<String>,
-
     /// Replace a file at a target path that aube did not write
     #[usage(long, requires = "--install", effect = "write")]
     pub force: bool,
@@ -29,13 +25,29 @@ pub struct CompletionArgs {
     pub install: bool,
 }
 
+/// CLI-only options are separate from the published, constructible argument struct.
+#[derive(usage_rs::Args)]
+pub(crate) struct CompletionCliArgs {
+    #[usage(flatten)]
+    pub args: CompletionArgs,
+
+    /// Generate a script for just one executable: aube, aubr, or aubx
+    #[usage(long, conflicts = "--install")]
+    pub bin: Option<String>,
+}
+
+/// Generate or install completions for all three programs through the library API.
 pub async fn run(args: CompletionArgs) -> Result<()> {
+    run_selected(args, None).await
+}
+
+pub(crate) async fn run_selected(args: CompletionArgs, bin: Option<String>) -> Result<()> {
     let shell = usage_rs::complete::Shell::from_name(&args.shell)
         .ok_or_else(|| miette!("unsupported shell {:?}", args.shell))?;
     if args.install {
         return install(shell, args.force);
     }
-    if let Some(program) = &args.bin
+    if let Some(program) = &bin
         && !PROGRAMS.contains(&program.as_str())
     {
         return Err(miette!(
@@ -44,7 +56,7 @@ pub async fn run(args: CompletionArgs) -> Result<()> {
     }
     for program in PROGRAMS
         .into_iter()
-        .filter(|program| args.bin.as_deref().is_none_or(|bin| bin == *program))
+        .filter(|program| bin.as_deref().is_none_or(|bin| bin == *program))
     {
         print!(
             "{}",

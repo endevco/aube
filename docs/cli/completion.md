@@ -10,7 +10,6 @@ Generate shell completions (bash, zsh, fish, powershell)
 - **`<SHELL>`** — The shell to generate completions for (bash, zsh, fish, powershell)
 
 ## Flags
-- **`--bin <BIN>`** — Generate a script for just one executable: aube, aubr, or aubx
 - **`--force`** — Replace a file at a target path that aube did not write
 
   **Effect:** modifies state
@@ -19,4 +18,5 @@ Generate shell completions (bash, zsh, fish, powershell)
   Writes one script per program — aube, aubr and aubx — and nothing else: no shell rc file and no PowerShell profile is edited. Where a shell needs a one-time line of its own, it is printed for you to add.
 
   **Effect:** modifies state
+- **`--bin <BIN>`** — Generate a script for just one executable: aube, aubr, or aubx
 - **`-h --help`** — Print help

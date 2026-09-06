@@ -83,6 +83,16 @@ Overrides CI's default per-project materialization and the `disableGlobalVirtual
 """#
     }
 }
+flagset completion-args {
+    flag --force help="Replace a file at a target path that aube did not write" effect=write requires=--install
+    flag --install help="Install the scripts where this shell looks for them, instead of printing them" effect=write {
+        long_help #"""
+Install the scripts where this shell looks for them, instead of printing them
+
+Writes one script per program — aube, aubr and aubx — and nothing else: no shell rc file and no PowerShell profile is edited. Where a shell needs a one-time line of its own, it is printed for you to add.
+"""#
+    }
+}
 flagset script-args {
     flag --no-install help="Skip auto-install check"
     use lockfile-args
@@ -654,16 +664,9 @@ Targets `aube-lock.yaml`, `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap
     flag "-h --help" help="Print help" action=help builtin=#true
 }
 cmd completion help="Generate shell completions (bash, zsh, fish, powershell)" effect=read {
+    use completion-args
     flag --bin help="Generate a script for just one executable: aube, aubr, or aubx" conflicts=--install {
         arg <BIN>
-    }
-    flag --force help="Replace a file at a target path that aube did not write" effect=write requires=--install
-    flag --install help="Install the scripts where this shell looks for them, instead of printing them" effect=write {
-        long_help #"""
-Install the scripts where this shell looks for them, instead of printing them
-
-Writes one script per program — aube, aubr and aubx — and nothing else: no shell rc file and no PowerShell profile is edited. Where a shell needs a one-time line of its own, it is printed for you to add.
-"""#
     }
     flag "-h --help" help="Print help" action=help builtin=#true
     arg <SHELL> help="The shell to generate completions for (bash, zsh, fish, powershell)"

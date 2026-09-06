@@ -388,3 +388,13 @@ fn completion_bin_selects_one_program_and_rejects_install() {
             .exists()
     );
 }
+
+#[test]
+fn completion_library_arguments_remain_constructible() {
+    let args = aube::commands::completion::CompletionArgs {
+        shell: "bash".to_string(),
+        force: false,
+        install: false,
+    };
+    assert_eq!(args.shell, "bash");
+}

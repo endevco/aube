@@ -399,7 +399,7 @@ enum Commands {
     /// the root `package.json` overrides the built-in.
     Clean(commands::clean::CleanArgs),
     /// Generate shell completions (bash, zsh, fish, powershell)
-    Completion(commands::completion::CompletionArgs),
+    Completion(commands::completion::CompletionCliArgs),
     /// Read and write settings in `.npmrc`
     #[usage(alias = "c")]
     Config(commands::config::ConfigArgs),
@@ -1066,7 +1066,9 @@ async fn async_main(cli: Cli, invoked_as_aubr: bool) -> miette::Result<Option<i3
                 return Ok(Some(code));
             }
         }
-        Some(Commands::Completion(args)) => commands::completion::run(args).await?,
+        Some(Commands::Completion(args)) => {
+            commands::completion::run_selected(args.args, args.bin).await?
+        }
         Some(Commands::Config(args)) => commands::config::run(args).await?,
         Some(Commands::Create(args)) => {
             if let Some(code) = commands::create::run(args).await? {
